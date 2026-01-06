@@ -82,6 +82,9 @@ class ModelCapability(str, Enum):
     video_understanding = "video_understanding"
     """Model can process and understand video content."""
 
+    document_understanding = "document_understanding"
+    """Model can process and understand documents (PDF, etc.)."""
+
 
 def _generate_run_id() -> str:
     from uuid import uuid4
@@ -101,6 +104,13 @@ def _xml_to_string(element: Element) -> str:
     return "\n".join(line for line in lines if line.strip())
 
 
+class ToolConfig(BaseModel):
+    """Tool-level configuration for fine-grained control."""
+
+    enable_load_document: bool = False
+    """Enable document URL parsing in LoadTool. Default disabled due to poor model support."""
+
+
 class ModelConfig(BaseModel):
     """Model configuration for context management."""
 
@@ -112,6 +122,9 @@ class ModelConfig(BaseModel):
 
     capabilities: set[ModelCapability] = Field(default_factory=set)
     """Set of capabilities supported by the model."""
+
+    tool_config: ToolConfig = Field(default_factory=ToolConfig)
+    """Tool-level configuration for fine-grained control."""
 
     def has_capability(self, capability: ModelCapability) -> bool:
         """Check if the model has a specific capability."""

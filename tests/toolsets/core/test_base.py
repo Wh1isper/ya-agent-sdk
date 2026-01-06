@@ -98,7 +98,9 @@ class DummyTool(BaseTool):
 
     name = "dummy_tool"
     description = "A dummy tool for testing"
-    instruction = "Use this dummy tool for testing purposes."
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        return "Use this dummy tool for testing purposes."
 
     async def call(self, ctx: RunContext[AgentContext], message: str = "hello") -> str:
         return f"Dummy: {message}"
@@ -144,7 +146,6 @@ def test_base_tool_initialization(agent_context: AgentContext) -> None:
     assert tool.ctx is ctx
     assert tool.name == "dummy_tool"
     assert tool.description == "A dummy tool for testing"
-    assert tool.instruction == "Use this dummy tool for testing purposes."
 
 
 async def test_base_tool_process_user_input_returns_none(agent_context: AgentContext) -> None:

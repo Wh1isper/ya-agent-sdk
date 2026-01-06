@@ -103,14 +103,17 @@ class GlobalHooks(BaseModel):
 class BaseTool(ABC):
     """Abstract base class for tools.
 
-    Subclasses define name, description, instruction as class attributes,
-    and implement the `call` method.
+    Subclasses define name, description as class attributes, implement
+    the `call` method, and optionally override `get_instruction()` for
+    dynamic instruction generation.
 
     Example:
         class ReadFileTool(BaseTool):
             name = "read_file"
             description = "Read contents of a file"
-            instruction = "Use this tool to read file contents from the filesystem."
+
+            def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+                return "Use this tool to read file contents from the filesystem."
 
             async def call(self, ctx: RunContext[AgentContext], path: str) -> str:
                 return Path(path).read_text()
@@ -121,9 +124,6 @@ class BaseTool(ABC):
 
     description: str
     """Description of what the tool does, shown to the model."""
-
-    instruction: str | None = None
-    """Optional instruction text injected into the system prompt."""
 
     @classmethod
     def is_available(cls) -> bool:
@@ -155,6 +155,20 @@ class BaseTool(ABC):
             ctx: The agent context for this tool instance.
         """
         self.ctx = ctx
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        """Get instruction for this tool.
+
+        Override this method to provide dynamic instructions based on context.
+        Default implementation returns None (no instruction).
+
+        Args:
+            ctx: The run context containing runtime information.
+
+        Returns:
+            Instruction text to inject into system prompt, or None.
+        """
+        return None
 
     @abstractmethod
     async def call(self, ctx: RunContext[AgentContext], /, *args: Any, **kwargs: Any) -> Any:
@@ -227,9 +241,6 @@ class HookableToolsetTool(ToolsetTool[AgentDepsT]):
 
     timeout: float | None = None
     """Timeout in seconds for tool execution."""
-
-    instruction: str | None = None
-    """Instruction text for system prompt injection."""
 
     pre_hook: PreHookFunc[AgentDepsT] | None = None
     """Tool-specific pre-hook."""
@@ -356,7 +367,6 @@ class Toolset(BaseToolset[AgentDepsT]):
                 call_func=pydantic_tool.function_schema.call,
                 is_async=pydantic_tool.function_schema.is_async,
                 timeout=self.timeout,
-                instruction=tool_instance.instruction,
                 pre_hook=self.pre_hooks.get(name),
                 post_hook=self.post_hooks.get(name),
                 tool_instance=tool_instance,
@@ -404,10 +414,9 @@ class Toolset(BaseToolset[AgentDepsT]):
         """
         instructions: list[str] = []
         for tool_instance in self._tool_instances.values():
-            if tool_instance.instruction:
-                instructions.append(
-                    f'<tool-instruction name="{tool_instance.name}">{tool_instance.instruction}</tool-instruction>'
-                )
+            instruction = tool_instance.get_instruction(ctx)
+            if instruction:
+                instructions.append(f'<tool-instruction name="{tool_instance.name}">{instruction}</tool-instruction>')
 
         return "\n".join(instructions) if instructions else None
 

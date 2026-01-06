@@ -20,6 +20,7 @@ pai_agent_sdk/
     browser_use/  # BrowserUse toolset (independent)
     core/         # Core toolsets collection
       base.py     # Base classes for toolsets (BaseTool, Toolset, etc.)
+      content/    # Content loading tools (load)
       context/    # Context management tools (handoff)
       document/   # Document processing tools
       enhance/    # Enhancement tools (todo, thinking)
@@ -27,12 +28,13 @@ pai_agent_sdk/
       shell/      # Shell command execution tools
       subagent/   # Sub-agent delegation tools
       web/        # Web interaction tools
-  context.py      # Context management
+  context.py      # Context management (AgentContext, ModelConfig, ToolConfig)
   utils.py        # Utility functions
 tests/            # Test suite (pytest)
   toolsets/
     browser_use/  # BrowserUse tests
     core/         # Core toolsets tests
+      content/    # content module tests
       enhance/    # enhance module tests
       test_base.py # base module tests
 ```
@@ -78,6 +80,7 @@ Core dependencies include:
 - httpx, anyio
 - cdp-use (browser automation)
 - pillow (image processing)
+- jinja2 (template rendering for tool instructions)
 
 Optional:
 

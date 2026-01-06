@@ -34,6 +34,7 @@ Example::
 
 from collections.abc import Sequence
 
+from pydantic_ai import DocumentUrl
 from pydantic_ai.messages import (
     BinaryContent,
     ImageUrl,
@@ -63,46 +64,20 @@ def _is_video_content(item: UserContent) -> bool:
     return isinstance(item, BinaryContent) and item.media_type.startswith("video/")
 
 
-def _filter_content(
-    content: str | Sequence[UserContent],
-    has_vision: bool,
-    has_video: bool,
-) -> str | list[UserContent]:
-    """Filter content based on model capabilities.
+def _is_document_content(item: UserContent) -> bool:
+    """Check if content item is a document (PDF)."""
+    if isinstance(item, DocumentUrl):
+        return True
+    return isinstance(item, BinaryContent) and item.media_type == "application/pdf"
 
-    Args:
-        content: The content to filter (string or sequence of content items).
-        has_vision: Whether the model supports vision.
-        has_video: Whether the model supports video understanding.
 
-    Returns:
-        Filtered content with explanatory text for removed items.
-    """
-    # If content is a string, no filtering needed
-    if isinstance(content, str):
-        return content
-
-    # Convert to list for processing
-    items: list[UserContent] = list(content)
-    filtered: list[UserContent] = []
-    removed_images = False
-    removed_videos = False
-
-    for item in items:
-        if _is_image_content(item):
-            if has_vision:
-                filtered.append(item)
-            else:
-                removed_images = True
-        elif _is_video_content(item):
-            if has_video:
-                filtered.append(item)
-            else:
-                removed_videos = True
-        else:
-            filtered.append(item)
-
-    # Add explanatory text for removed content
+def _add_filtered_messages(
+    filtered: list[UserContent],
+    removed_images: bool,
+    removed_videos: bool,
+    removed_documents: bool,
+) -> None:
+    """Add explanatory messages for filtered content types."""
     if removed_images:
         logger.info("Filtering out image content - model does not have vision capability")
         filtered.append(
@@ -119,6 +94,63 @@ def _filter_content(
             "</filtered-content>"
         )
 
+    if removed_documents:
+        logger.info("Filtering out document content - model does not have document_understanding capability")
+        filtered.append(
+            "<filtered-content type='document'>"
+            "Document content has been filtered out as the current model does not support document understanding."
+            "</filtered-content>"
+        )
+
+
+def _filter_content(
+    content: str | Sequence[UserContent],
+    has_vision: bool,
+    has_video: bool,
+    has_document: bool,
+) -> str | list[UserContent]:
+    """Filter content based on model capabilities.
+
+    Args:
+        content: The content to filter (string or sequence of content items).
+        has_vision: Whether the model supports vision.
+        has_video: Whether the model supports video understanding.
+        has_document: Whether the model supports document understanding.
+
+    Returns:
+        Filtered content with explanatory text for removed items.
+    """
+    # If content is a string, no filtering needed
+    if isinstance(content, str):
+        return content
+
+    # Convert to list for processing
+    items: list[UserContent] = list(content)
+    filtered: list[UserContent] = []
+    removed_images = False
+    removed_videos = False
+    removed_documents = False
+
+    for item in items:
+        if _is_image_content(item):
+            if has_vision:
+                filtered.append(item)
+            else:
+                removed_images = True
+        elif _is_video_content(item):
+            if has_video:
+                filtered.append(item)
+            else:
+                removed_videos = True
+        elif _is_document_content(item):
+            if has_document:
+                filtered.append(item)
+            else:
+                removed_documents = True
+        else:
+            filtered.append(item)
+
+    _add_filtered_messages(filtered, removed_images, removed_videos, removed_documents)
     return filtered
 
 
@@ -136,6 +168,7 @@ def filter_by_capability(
     Supported capability checks:
     - vision: Filters ImageUrl and image BinaryContent
     - video_understanding: Filters VideoUrl and video BinaryContent
+    - document_understanding: Filters DocumentUrl and PDF BinaryContent
 
     Args:
         ctx: Runtime context containing AgentContext with model configuration.
@@ -159,9 +192,10 @@ def filter_by_capability(
 
     has_vision = model_cfg.has_capability(ModelCapability.vision)
     has_video = model_cfg.has_capability(ModelCapability.video_understanding)
+    has_document = model_cfg.has_capability(ModelCapability.document_understanding)
 
     # If model has all capabilities, no filtering needed
-    if has_vision and has_video:
+    if has_vision and has_video and has_document:
         return message_history
 
     # Process each message
@@ -174,7 +208,7 @@ def filter_by_capability(
                 continue
 
             # Filter the content based on capabilities
-            filtered_content = _filter_content(part.content, has_vision, has_video)
+            filtered_content = _filter_content(part.content, has_vision, has_video, has_document)
 
             # Update content - handle type conversion
             if isinstance(filtered_content, str):

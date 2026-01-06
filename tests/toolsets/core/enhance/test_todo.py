@@ -46,11 +46,15 @@ def test_todo_item_priority_values() -> None:
         assert item.priority == priority
 
 
-def test_todo_read_tool_attributes() -> None:
+def test_todo_read_tool_attributes(agent_context: AgentContext) -> None:
     """Should have correct name, description and instruction."""
     assert TodoReadTool.name == "to_do_read"
     assert TodoReadTool.description == snapshot("Read the current session's to-do list.")
-    assert TodoReadTool.instruction == snapshot(
+    # Test get_instruction with a mock context
+    tool = TodoReadTool(agent_context)
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = agent_context
+    assert tool.get_instruction(mock_run_ctx) == snapshot(
         """\
 <todo-guidelines>
 
@@ -170,12 +174,16 @@ async def test_todo_read_tool_corrupted_file(tmp_path: Path) -> None:
         assert not todo_file.exists()
 
 
-def test_todo_write_tool_attributes() -> None:
+def test_todo_write_tool_attributes(agent_context: AgentContext) -> None:
     """Should have correct name, description and instruction."""
     assert TodoWriteTool.name == "to_do_write"
     assert TodoWriteTool.description == snapshot("Replace the session's to-do list with an updated list.")
-    # Same instruction as TodoReadTool
-    assert TodoWriteTool.instruction == TodoReadTool.instruction
+    # Same instruction as TodoReadTool - both load from same file
+    read_tool = TodoReadTool(agent_context)
+    write_tool = TodoWriteTool(agent_context)
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = agent_context
+    assert write_tool.get_instruction(mock_run_ctx) == read_tool.get_instruction(mock_run_ctx)
 
 
 def test_todo_write_tool_initialization(agent_context: AgentContext) -> None:

@@ -4,6 +4,7 @@ This tool allows the agent to think about something without obtaining new inform
 or making changes. Useful for complex reasoning or caching memory.
 """
 
+from functools import cache
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -16,12 +17,11 @@ from pai_agent_sdk.toolsets.core.base import BaseTool
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+@cache
 def _load_instruction() -> str:
     """Load thinking instruction from prompts/thinking.md."""
     prompt_file = _PROMPTS_DIR / "thinking.md"
-    if prompt_file.exists():
-        return prompt_file.read_text()
-    return ""
+    return prompt_file.read_text()
 
 
 class ThinkingTool(BaseTool):
@@ -29,7 +29,10 @@ class ThinkingTool(BaseTool):
 
     name = "thinking"
     description = "Think about something without obtaining new information or making changes."
-    instruction = _load_instruction()
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
+        """Load instruction from prompts/thinking.md."""
+        return _load_instruction()
 
     async def call(
         self,

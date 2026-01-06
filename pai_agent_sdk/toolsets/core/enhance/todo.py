@@ -4,6 +4,7 @@ These tools allow the agent to manage a session-level to-do list
 stored in the file operator's temporary directory.
 """
 
+from functools import cache
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -17,12 +18,11 @@ from pai_agent_sdk.toolsets.core.base import BaseTool
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+@cache
 def _load_instruction() -> str:
     """Load TO-DO instruction from prompts/todo.md."""
     prompt_file = _PROMPTS_DIR / "todo.md"
-    if prompt_file.exists():
-        return prompt_file.read_text()
-    return ""
+    return prompt_file.read_text()
 
 
 def _get_todo_file_name(run_id: str) -> str:
@@ -47,15 +47,16 @@ TodoItemsTypeAdapter = pydantic.TypeAdapter(
     config=pydantic.ConfigDict(defer_build=True, ser_json_bytes="base64", val_json_bytes="base64"),
 )
 
-_instruction = _load_instruction()
-
 
 class TodoReadTool(BaseTool):
     """Tool for reading the TO-DO list."""
 
     name = "to_do_read"
     description = "Read the current session's to-do list."
-    instruction = _instruction
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
+        """Load instruction from prompts/todo.md."""
+        return _load_instruction()
 
     async def call(
         self,
@@ -90,7 +91,10 @@ class TodoWriteTool(BaseTool):
 
     name = "to_do_write"
     description = "Replace the session's to-do list with an updated list."
-    instruction = _instruction
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
+        """Load instruction from prompts/todo.md."""
+        return _load_instruction()
 
     async def call(
         self,

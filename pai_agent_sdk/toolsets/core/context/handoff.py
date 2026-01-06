@@ -26,6 +26,7 @@ Example::
         result = await agent.run('prompt', deps=ctx)
 """
 
+from functools import cache
 from pathlib import Path
 from typing import Annotated
 
@@ -38,12 +39,11 @@ from pai_agent_sdk.toolsets.core.base import BaseTool
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+@cache
 def _load_instruction() -> str:
     """Load handoff instruction from prompts/handoff.md."""
     prompt_file = _PROMPTS_DIR / "handoff.md"
-    if prompt_file.exists():
-        return prompt_file.read_text()
-    return ""
+    return prompt_file.read_text()
 
 
 class HandoffMessage(BaseModel):
@@ -113,7 +113,10 @@ class HandoffTool(BaseTool):
 Use this tool when context is getting large and you need to preserve essential information
 before resetting. The handoff message will be injected into the new context automatically.
 """
-    instruction = _load_instruction()
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
+        """Load instruction from prompts/handoff.md."""
+        return _load_instruction()
 
     async def call(
         self,

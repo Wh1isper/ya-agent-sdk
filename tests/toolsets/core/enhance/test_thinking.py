@@ -9,13 +9,17 @@ from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.toolsets.core.enhance.thinking import ThinkingTool
 
 
-def test_thinking_tool_attributes() -> None:
+def test_thinking_tool_attributes(agent_context: AgentContext) -> None:
     """Should have correct name, description and instruction."""
     assert ThinkingTool.name == "thinking"
     assert ThinkingTool.description == snapshot(
         "Think about something without obtaining new information or making changes."
     )
-    assert ThinkingTool.instruction == snapshot(
+    # Test get_instruction with a mock context
+    tool = ThinkingTool(agent_context)
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = agent_context
+    assert tool.get_instruction(mock_run_ctx) == snapshot(
         """\
 <thinking-guidelines>
 
