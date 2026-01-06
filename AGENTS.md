@@ -31,13 +31,14 @@ After modifying any code:
 
 ## Key Commands
 
-| Command        | Description                                      |
-| -------------- | ------------------------------------------------ |
-| `make install` | Create venv with uv and install pre-commit hooks |
-| `make lint`    | Run pre-commit linters (ruff format/lint)        |
-| `make check`   | Full validation: lint + pyright + deptry         |
-| `make test`    | Run pytest with coverage                         |
-| `make build`   | Build wheel file                                 |
+| Command         | Description                                         |
+| --------------- | --------------------------------------------------- |
+| `make install`  | Create venv with uv and install pre-commit hooks    |
+| `make lint`     | Run pre-commit linters (ruff format/lint)           |
+| `make check`    | Full validation: lint + pyright + deptry            |
+| `make test`     | Run pytest with coverage (inline snapshot disabled) |
+| `make test-fix` | Run pytest with inline snapshot update enabled      |
+| `make build`    | Build wheel file                                    |
 
 ## Code Style
 
@@ -50,6 +51,7 @@ After modifying any code:
 - Framework: pytest with pytest-asyncio
 - Coverage: pytest-cov
 - Test location: `tests/`
+- **Test Style**: Use standalone functions (not classes)
 
 ## Dependencies
 
@@ -71,3 +73,41 @@ Optional:
 - Context management is centralized in `context.py`
 - Agents are modular and located in `agents/` directory
 - Logging is centralized in `_logger.py` - see [docs/logging.md](docs/logging.md) for configuration
+
+## Async Context Manager Patterns
+
+### Using AsyncExitStack for Dependent Context Managers
+
+When you have multiple async context managers where later ones depend on earlier ones,
+use `contextlib.AsyncExitStack` instead of nested `async with` statements:
+
+```python
+from contextlib import AsyncExitStack
+
+async with AsyncExitStack() as stack:
+    env = await stack.enter_async_context(
+        LocalEnvironment(allowed_paths=[path], tmp_base_dir=path)
+    )
+    ctx = await stack.enter_async_context(
+        AgentContext(file_operator=env.file_operator, shell=env.shell)
+    )
+    # Use env and ctx here
+```
+
+**Benefits:**
+
+- Flat structure instead of deeply nested code
+- Sequential initialization with proper dependency handling
+- Single exit stack manages cleanup in reverse order
+- Cleaner code when dealing with 2+ dependent context managers
+
+**When to use:**
+
+- Context managers have dependencies (one needs values from another)
+- Multiple context managers would create deep nesting
+- Dynamic number of context managers
+
+**When nested `async with` is fine:**
+
+- Only 2 context managers with simple, obvious relationship
+- Independent context managers (can use parenthesized form)

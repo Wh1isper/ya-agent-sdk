@@ -1,38 +1,193 @@
-import tempfile
+"""Agent context management.
+
+This module provides the AgentContext class for managing session state
+during agent execution. AgentContext is designed to be used inside an
+Environment context.
+
+Architecture:
+    Environment (outer, long-lived)
+      - Manages tmp_dir lifecycle
+      - Creates and owns file_operator and shell
+      - async with environment as env:
+
+        AgentContext (inner, short-lived)
+          - Manages session state (run_id, timing, handoff)
+          - Receives file_operator, shell as parameters
+          - async with AgentContext(file_operator, shell) as ctx:
+
+Example:
+    Using AsyncExitStack for flat structure (recommended for dependent contexts):
+
+    ```python
+    from contextlib import AsyncExitStack
+    from pai_agent_sdk.environment.local import LocalEnvironment
+    from pai_agent_sdk.context import AgentContext
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(tmp_base_dir=Path("/tmp"))
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(file_operator=env.file_operator, shell=env.shell)
+        )
+        # Handle request
+        await ctx.file_operator.read_file("test.txt")
+    # Resources cleaned up when stack exits
+    ```
+
+    Multiple sessions sharing environment:
+
+    ```python
+    async with LocalEnvironment(tmp_base_dir=Path("/tmp")) as env:
+        # First session
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+        ) as ctx1:
+            await ctx1.file_operator.read_file("test.txt")
+
+        # Second session (reuses same environment)
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+        ) as ctx2:
+            ...
+    # tmp_dir cleaned up when environment exits
+    ```
+"""
+
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, TypedDict, cast
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
+from pydantic_ai import RunContext
 
-from pai_agent_sdk._config import AgentContextSettings
+from pai_agent_sdk.environment.base import FileOperator, Shell
+from pai_agent_sdk.utils import get_latest_request_usage
 
 if TYPE_CHECKING:
     from typing import Self
 
 
 def _generate_run_id() -> str:
+    from uuid import uuid4
+
     return uuid4().hex
 
 
-def _get_default_working_dir() -> Path:
-    settings = AgentContextSettings()
-    return settings.working_dir if settings.working_dir else Path.cwd()
+def _xml_to_string(element: Element) -> str:
+    """Convert XML element to formatted string."""
+    from xml.dom.minidom import parseString
+
+    rough_string = tostring(element, encoding="unicode")
+    dom = parseString(rough_string)  # noqa: S318
+    # Get pretty-printed XML, skip the XML declaration line
+    lines = dom.toprettyxml(indent="  ").split("\n")[1:]
+    # Remove empty lines
+    return "\n".join(line for line in lines if line.strip())
 
 
-def _get_default_tmp_base_dir() -> Path | None:
-    settings = AgentContextSettings()
-    return settings.tmp_base_dir
+class ModelConfig(BaseModel):
+    """Model configuration for context management."""
+
+    context_window: int | None = None
+    """Total context window size in tokens."""
+
+    handoff_threshold: float | None = None
+    """Handoff threshold for context injection."""
+
+
+class RunContextMetadata(TypedDict, total=False):
+    """Metadata for RunContext passed to get_context_instructions.
+
+    This TypedDict defines the expected structure of metadata passed via
+    pydantic-ai's Agent metadata parameter. It enables handoff threshold
+    warnings when the context window usage exceeds the configured threshold.
+
+    Example:
+        Using with Agent and HandoffTool for automatic context management::
+
+            from contextlib import AsyncExitStack
+            from pydantic_ai import Agent
+
+            from pai_agent_sdk.context import AgentContext, ModelConfig, RunContextMetadata
+            from pai_agent_sdk.environment.local import LocalEnvironment
+            from pai_agent_sdk.filters.handoff import process_handoff_message
+            from pai_agent_sdk.toolsets.base import Toolset
+            from pai_agent_sdk.toolsets.context.handoff import HandoffTool
+
+            async with AsyncExitStack() as stack:
+                env = await stack.enter_async_context(LocalEnvironment())
+                ctx = await stack.enter_async_context(
+                    AgentContext(
+                        file_operator=env.file_operator,
+                        shell=env.shell,
+                        model_cfg=ModelConfig(
+                            context_window=200000,
+                            handoff_threshold=0.5,
+                        ),
+                    )
+                )
+                toolset = Toolset(ctx, tools=[HandoffTool])
+                agent = Agent(
+                    'openai:gpt-4',
+                    deps_type=AgentContext,
+                    tools=toolset.tools(),
+                    history_processors=[process_handoff_message],
+                    # Enable handoff tool via metadata - triggers threshold warning
+                    metadata=lambda _: {'enable_handoff_tool': True},
+                )
+                result = await agent.run('Your prompt here', deps=ctx)
+    """
+
+    enable_handoff_tool: bool
+    """Whether the handoff tool is enabled for this run."""
 
 
 class AgentContext(BaseModel):
+    """Context for a single agent session.
+
+    AgentContext manages session-specific state including:
+    - Run identification (run_id, parent_run_id)
+    - Timing (start_at, end_at, elapsed_time)
+    - Deferred tool metadata
+    - Handoff messages
+
+    The file_operator and shell are provided externally (typically from
+    an Environment) and are not managed by AgentContext.
+
+    Example:
+        Using AsyncExitStack (recommended for dependent contexts):
+
+        ```python
+        from contextlib import AsyncExitStack
+
+        async with AsyncExitStack() as stack:
+            env = await stack.enter_async_context(LocalEnvironment())
+            ctx = await stack.enter_async_context(
+                AgentContext(file_operator=env.file_operator, shell=env.shell)
+            )
+            await ctx.file_operator.read_file("data.json")
+        ```
+        ```
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
+
     run_id: str = Field(default_factory=_generate_run_id)
+    """Unique identifier for this session run."""
+
     parent_run_id: str | None = None
+    """Parent run_id if this is a subagent context."""
+
     start_at: datetime | None = None
+    """Timestamp when the context was entered."""
+
     end_at: datetime | None = None
+    """Timestamp when the context was exited."""
 
     deferred_tool_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Metadata for deferred tool calls, keyed by tool_call_id."""
@@ -40,14 +195,16 @@ class AgentContext(BaseModel):
     handoff_message: str | None = None
     """Rendered handoff message to be injected into new context after handoff."""
 
-    working_dir: Path = Field(default_factory=_get_default_working_dir)
-    """Working directory for tool path validation. Tools should not access paths outside this directory."""
+    file_operator: FileOperator
+    """File operator for file system operations. Provided by Environment."""
 
-    tmp_base_dir: Path | None = Field(default_factory=_get_default_tmp_base_dir)
-    """Base directory for creating the session temporary directory. If None, uses system default."""
+    shell: Shell
+    """Shell executor for command execution. Provided by Environment."""
+
+    model_cfg: ModelConfig | None = None
+    """Model configuration for context management."""
 
     _agent_name: str = "main"
-    _tmp_dir: tempfile.TemporaryDirectory[str] | None = None
 
     @property
     def elapsed_time(self) -> timedelta | None:
@@ -61,75 +218,76 @@ class AgentContext(BaseModel):
         end = self.end_at if self.end_at else datetime.now()
         return end - self.start_at
 
-    @property
-    def tmp_dir(self) -> Path:
-        """Return the session-level temporary directory path.
+    async def get_context_instructions(
+        self,
+        run_context: RunContext | None = None,
+    ) -> str:
+        """Return runtime context instructions in XML format.
 
-        The temporary directory is created on first access (lazy initialization)
-        and cleaned up when the context exits.
-
-        Raises:
-            RuntimeError: If accessed before context is entered (before __aenter__).
-        """
-        if self._tmp_dir is None:
-            raise RuntimeError("tmp_dir is not available. Use 'async with context:' to enter the context first.")
-        return Path(self._tmp_dir.name)
-
-    def is_within_working_dir(self, path: str | Path) -> bool:
-        """Check if a path is within the working directory.
+        Provides runtime information about the current session.
 
         Args:
-            path: The path to check (absolute or relative).
+            runtime_info: Additional runtime information to include.
 
         Returns:
-            True if the resolved path is within working_dir, False otherwise.
+            XML-formatted string with runtime context and optional system reminders.
         """
-        target = Path(path)
-        if not target.is_absolute():
-            target = self.working_dir / target
-        try:
-            target = target.resolve()
-            working = self.working_dir.resolve()
-            return target == working or working in target.parents
-        except (OSError, ValueError):
-            return False
+        parts: list[str] = []
 
-    def resolve_path(self, path: str | Path) -> Path:
-        """Resolve a path relative to the working directory.
+        # Build runtime-context element
+        root = Element("runtime-context")
 
-        Args:
-            path: The path to resolve (absolute or relative).
+        # Elapsed time
+        elapsed = self.elapsed_time
+        elapsed_str = f"{elapsed.total_seconds():.1f}s" if elapsed else "not started"
+        SubElement(root, "elapsed-time").text = elapsed_str
 
-        Returns:
-            The resolved absolute path.
+        # Model configuration - only context_window
+        if self.model_cfg is not None and self.model_cfg.context_window is not None:
+            config = SubElement(root, "model-config")
+            SubElement(config, "context-window").text = str(self.model_cfg.context_window)
 
-        Raises:
-            ValueError: If the resolved path is outside the working directory.
-        """
-        target = Path(path)
-        if not target.is_absolute():
-            target = self.working_dir / target
-        resolved = target.resolve()
-        if not self.is_within_working_dir(resolved):
-            raise ValueError(
-                f"Path '{path}' resolves to '{resolved}' which is outside working directory '{self.working_dir}'"
-            )
-        return resolved
+        # Token usage from runtime info
+        if (
+            run_context
+            and (request_usage := get_latest_request_usage(run_context.messages))
+            and request_usage.total_tokens is not None
+        ):
+            usage_elem = SubElement(root, "token-usage")
+            SubElement(usage_elem, "total-tokens").text = str(request_usage.total_tokens)
 
-    def relative_path(self, path: str | Path) -> Path:
-        """Get the path relative to the working directory.
+        parts.append(_xml_to_string(root))
 
-        Args:
-            path: The path to convert (absolute or relative).
+        # Build system-reminder element (sibling to runtime-context)
+        reminders: list[str] = []
 
-        Returns:
-            The path relative to working_dir.
+        # Cast metadata to typed dict for type safety
+        metadata = cast(RunContextMetadata, run_context.deps.metadata if run_context and run_context.deps else {})
 
-        Raises:
-            ValueError: If the path is outside the working directory.
-        """
-        resolved = self.resolve_path(path)
-        return resolved.relative_to(self.working_dir.resolve())
+        # Handoff threshold warning
+        if (
+            metadata.get("enable_handoff_tool", False)
+            and self.model_cfg is not None
+            and self.model_cfg.context_window is not None
+            and self.model_cfg.handoff_threshold is not None
+            and run_context
+            and (request_usage := get_latest_request_usage(run_context.messages))
+        ):
+            threshold_tokens = int(self.model_cfg.context_window * self.model_cfg.handoff_threshold)
+            if request_usage.total_tokens >= threshold_tokens:
+                reminders.append(
+                    "IMPORTANT: **You have reached the handoff threshold, please calling the `handoff` tool "
+                    "to summarize then continue the task at the appropriate time.**"
+                )
+
+        if reminders:
+            reminder_root = Element("system-reminder")
+            for reminder_text in reminders:
+                item = SubElement(reminder_root, "item")
+                item.text = reminder_text
+            parts.append(_xml_to_string(reminder_root))
+
+        return "\n\n".join(parts)
 
     @asynccontextmanager
     async def enter_subagent(
@@ -143,7 +301,7 @@ class AgentContext(BaseModel):
         - A new run_id
         - parent_run_id set to current run_id
         - Fresh start_at/end_at for independent timing
-        - Shared working_dir and tmp_dir from parent
+        - Shared file_operator and shell from parent
 
         Args:
             agent_name: Name of the subagent.
@@ -160,22 +318,16 @@ class AgentContext(BaseModel):
         }
         new_ctx = self.model_copy(update=update)
         new_ctx._agent_name = agent_name
-        new_ctx._tmp_dir = self._tmp_dir  # Share tmp_dir with subagent
         try:
             yield new_ctx
         finally:
             new_ctx.end_at = datetime.now()
 
     async def __aenter__(self):
+        """Enter the context and start timing."""
         self.start_at = datetime.now()
-        self._tmp_dir = tempfile.TemporaryDirectory(
-            prefix="pai_agent_",
-            dir=str(self.tmp_base_dir) if self.tmp_base_dir else None,
-        )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit the context and record end time."""
         self.end_at = datetime.now()
-        if self._tmp_dir is not None:
-            self._tmp_dir.cleanup()
-            self._tmp_dir = None

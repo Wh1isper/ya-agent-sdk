@@ -1,29 +1,53 @@
 """Tests for pai_agent_sdk.toolsets.enhance.thinking module."""
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.toolsets.enhance.thinking import ThinkingTool
 
-# --- ThinkingTool tests ---
-
 
 def test_thinking_tool_attributes() -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description and instruction."""
     assert ThinkingTool.name == "thinking"
-    assert "think" in ThinkingTool.description.lower()
-    assert ThinkingTool.instruction is None
+    assert ThinkingTool.description == snapshot(
+        "Think about something without obtaining new information or making changes."
+    )
+    assert ThinkingTool.instruction == snapshot(
+        """\
+<thinking-guidelines>
+
+<when-to-use>
+Use `thinking` for complex reasoning or to cache intermediate thoughts. The tool appends thoughts to the log without obtaining new information or making changes.
+</when-to-use>
+
+<appropriate-scenarios>
+- Complex multi-step reasoning that benefits from explicit thinking
+- Caching intermediate analysis or observations for later reference
+- Breaking down problems before taking action
+</appropriate-scenarios>
+
+<inappropriate-scenarios>
+- Task planning and management (use `to_do` tools instead)
+- Simple straightforward operations
+</inappropriate-scenarios>
+
+<language>
+Use user's language when writing thoughts.
+</language>
+
+</thinking-guidelines>
+"""
+    )
 
 
-def test_thinking_tool_initialization() -> None:
+def test_thinking_tool_initialization(agent_context: AgentContext) -> None:
     """Should initialize with context."""
-    ctx = AgentContext()
-    tool = ThinkingTool(ctx)
-    assert tool.ctx is ctx
+    tool = ThinkingTool(agent_context)
+    assert tool.ctx is agent_context
     assert tool.name == "thinking"
 
 
@@ -34,26 +58,24 @@ def test_thinking_tool_is_available() -> None:
 
 
 @pytest.mark.asyncio
-async def test_thinking_tool_call_returns_thought() -> None:
+async def test_thinking_tool_call_returns_thought(agent_context: AgentContext) -> None:
     """Should return the thought in a dictionary."""
-    ctx = AgentContext(tmp_dir=Path("/tmp"))  # noqa: S108
-    tool = ThinkingTool(ctx)
+    tool = ThinkingTool(agent_context)
 
     mock_run_ctx = MagicMock(spec=RunContext)
-    mock_run_ctx.deps = ctx
+    mock_run_ctx.deps = agent_context
 
     result = await tool.call(mock_run_ctx, thought="This is a test thought")
     assert result == {"thought": "This is a test thought"}
 
 
 @pytest.mark.asyncio
-async def test_thinking_tool_call_with_markdown() -> None:
+async def test_thinking_tool_call_with_markdown(agent_context: AgentContext) -> None:
     """Should handle markdown formatted thoughts."""
-    ctx = AgentContext(tmp_dir=Path("/tmp"))  # noqa: S108
-    tool = ThinkingTool(ctx)
+    tool = ThinkingTool(agent_context)
 
     mock_run_ctx = MagicMock(spec=RunContext)
-    mock_run_ctx.deps = ctx
+    mock_run_ctx.deps = agent_context
 
     markdown_thought = """
 ## Analysis
@@ -68,26 +90,24 @@ code_example()
 
 
 @pytest.mark.asyncio
-async def test_thinking_tool_call_with_empty_thought() -> None:
+async def test_thinking_tool_call_with_empty_thought(agent_context: AgentContext) -> None:
     """Should handle empty thought string."""
-    ctx = AgentContext(tmp_dir=Path("/tmp"))  # noqa: S108
-    tool = ThinkingTool(ctx)
+    tool = ThinkingTool(agent_context)
 
     mock_run_ctx = MagicMock(spec=RunContext)
-    mock_run_ctx.deps = ctx
+    mock_run_ctx.deps = agent_context
 
     result = await tool.call(mock_run_ctx, thought="")
     assert result == {"thought": ""}
 
 
 @pytest.mark.asyncio
-async def test_thinking_tool_call_with_unicode() -> None:
+async def test_thinking_tool_call_with_unicode(agent_context: AgentContext) -> None:
     """Should handle unicode characters."""
-    ctx = AgentContext(tmp_dir=Path("/tmp"))  # noqa: S108
-    tool = ThinkingTool(ctx)
+    tool = ThinkingTool(agent_context)
 
     mock_run_ctx = MagicMock(spec=RunContext)
-    mock_run_ctx.deps = ctx
+    mock_run_ctx.deps = agent_context
 
     unicode_thought = "Thinking about: Hello World"
     result = await tool.call(mock_run_ctx, thought=unicode_thought)

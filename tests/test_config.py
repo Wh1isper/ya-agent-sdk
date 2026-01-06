@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from pai_agent_sdk._config import AgentContextSettings
-from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.local import LocalEnvironment
 
 
 def test_agent_context_settings_defaults() -> None:
@@ -28,29 +28,15 @@ def test_agent_context_settings_from_env(monkeypatch, tmp_path: Path) -> None:
     assert settings.tmp_base_dir == tmp_base
 
 
-def test_agent_context_uses_settings(monkeypatch, tmp_path: Path) -> None:
-    """AgentContext should use settings from environment."""
-    working = tmp_path / "work"
-    working.mkdir()
+async def test_local_environment_uses_tmp_base_dir(tmp_path: Path) -> None:
+    """LocalEnvironment should use tmp_base_dir for creating tmp directory."""
     tmp_base = tmp_path / "tmp"
     tmp_base.mkdir()
 
-    monkeypatch.setenv("PAI_AGENT_WORKING_DIR", str(working))
-    monkeypatch.setenv("PAI_AGENT_TMP_BASE_DIR", str(tmp_base))
-
-    ctx = AgentContext()
-    assert ctx.working_dir == working
-    assert ctx.tmp_base_dir == tmp_base
-
-
-def test_agent_context_parameters_override_env(monkeypatch, tmp_path: Path) -> None:
-    """Explicit parameters should override environment variables."""
-    env_working = tmp_path / "env_work"
-    env_working.mkdir()
-    param_working = tmp_path / "param_work"
-    param_working.mkdir()
-
-    monkeypatch.setenv("PAI_AGENT_WORKING_DIR", str(env_working))
-
-    ctx = AgentContext(working_dir=param_working)
-    assert ctx.working_dir == param_working
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_base,
+    ) as env:
+        assert env.tmp_dir is not None
+        assert env.tmp_dir.parent == tmp_base

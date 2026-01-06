@@ -1,20 +1,22 @@
 """Tests for pai_agent_sdk.toolsets.enhance.todo module."""
 
 import json
+from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.toolsets.enhance.todo import (
     TodoItem,
     TodoReadTool,
     TodoWriteTool,
+    _get_todo_file_name,
 )
-
-# --- TodoItem tests ---
 
 
 def test_todo_item_creation() -> None:
@@ -45,21 +47,39 @@ def test_todo_item_priority_values() -> None:
         assert item.priority == priority
 
 
-# --- TodoReadTool tests ---
-
-
 def test_todo_read_tool_attributes() -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description and instruction."""
     assert TodoReadTool.name == "to_do_read"
-    assert "to-do" in TodoReadTool.description.lower() or "todo" in TodoReadTool.description.lower()
-    assert TodoReadTool.instruction is None
+    assert TodoReadTool.description == snapshot("Read the current session's to-do list.")
+    assert TodoReadTool.instruction == snapshot(
+        """\
+<todo-guidelines>
+
+<when-to-use>
+Use `to_do_write`/`to_do_read` to track multi-step or multi-request tasks, or when user asks for a plan.
+</when-to-use>
+
+<workflow>
+- Create entries with `{id, content, status, priority}` using uppercase slug prefix (e.g., TASK-1, TASK-2)
+- Keep numbering stable within the session
+- Update statuses immediately after finishing an item
+- Rely on the last `to_do_write` state; call `to_do_read` only when truly needed
+- Once every item is completed or cancelled, stop issuing further to-do tool calls
+</workflow>
+
+<language>
+Use user's language when writing task content.
+</language>
+
+</todo-guidelines>
+"""
+    )
 
 
-def test_todo_read_tool_initialization() -> None:
+def test_todo_read_tool_initialization(agent_context: AgentContext) -> None:
     """Should initialize with context."""
-    ctx = AgentContext()
-    tool = TodoReadTool(ctx)
-    assert tool.ctx is ctx
+    tool = TodoReadTool(agent_context)
+    assert tool.ctx is agent_context
 
 
 def test_todo_read_tool_is_available() -> None:
@@ -70,7 +90,11 @@ def test_todo_read_tool_is_available() -> None:
 @pytest.mark.asyncio
 async def test_todo_read_tool_no_file(tmp_path: Path) -> None:
     """Should return message when no file exists."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = TodoReadTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -83,11 +107,15 @@ async def test_todo_read_tool_no_file(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_todo_read_tool_empty_file(tmp_path: Path) -> None:
     """Should return message when file is empty."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = TodoReadTool(ctx)
 
-        # Create empty file
-        todo_file = ctx.tmp_dir / f"TO-DO-{ctx.run_id}.json"
+        # Create empty file in tmp_dir
+        todo_file = env.tmp_dir / _get_todo_file_name(ctx.run_id)
         todo_file.write_text("")
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -100,15 +128,19 @@ async def test_todo_read_tool_empty_file(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_todo_read_tool_valid_file(tmp_path: Path) -> None:
     """Should return list of TodoItems when file is valid."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = TodoReadTool(ctx)
 
-        # Create valid file
+        # Create valid file in tmp_dir
         todos = [
             {"id": "TASK-1", "content": "Task 1", "status": "pending", "priority": "high"},
             {"id": "TASK-2", "content": "Task 2", "status": "completed", "priority": "low"},
         ]
-        todo_file = ctx.tmp_dir / f"TO-DO-{ctx.run_id}.json"
+        todo_file = env.tmp_dir / _get_todo_file_name(ctx.run_id)
         todo_file.write_text(json.dumps(todos))
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -124,11 +156,15 @@ async def test_todo_read_tool_valid_file(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_todo_read_tool_corrupted_file(tmp_path: Path) -> None:
     """Should return error message and delete corrupted file."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = TodoReadTool(ctx)
 
-        # Create corrupted file
-        todo_file = ctx.tmp_dir / f"TO-DO-{ctx.run_id}.json"
+        # Create corrupted file in tmp_dir
+        todo_file = env.tmp_dir / _get_todo_file_name(ctx.run_id)
         todo_file.write_text("not valid json {{{")
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -139,21 +175,18 @@ async def test_todo_read_tool_corrupted_file(tmp_path: Path) -> None:
         assert not todo_file.exists()
 
 
-# --- TodoWriteTool tests ---
-
-
 def test_todo_write_tool_attributes() -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description and instruction."""
     assert TodoWriteTool.name == "to_do_write"
-    assert "to-do" in TodoWriteTool.description.lower() or "todo" in TodoWriteTool.description.lower()
-    assert TodoWriteTool.instruction is None
+    assert TodoWriteTool.description == snapshot("Replace the session's to-do list with an updated list.")
+    # Same instruction as TodoReadTool
+    assert TodoWriteTool.instruction == TodoReadTool.instruction
 
 
-def test_todo_write_tool_initialization() -> None:
+def test_todo_write_tool_initialization(agent_context: AgentContext) -> None:
     """Should initialize with context."""
-    ctx = AgentContext()
-    tool = TodoWriteTool(ctx)
-    assert tool.ctx is ctx
+    tool = TodoWriteTool(agent_context)
+    assert tool.ctx is agent_context
 
 
 def test_todo_write_tool_is_available() -> None:
@@ -164,7 +197,11 @@ def test_todo_write_tool_is_available() -> None:
 @pytest.mark.asyncio
 async def test_todo_write_tool_write_todos(tmp_path: Path) -> None:
     """Should write todos to file."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = TodoWriteTool(ctx)
 
         todos = [
@@ -179,8 +216,8 @@ async def test_todo_write_tool_write_todos(tmp_path: Path) -> None:
         assert isinstance(result, list)
         assert len(result) == 2
 
-        # Verify file was created
-        todo_file = ctx.tmp_dir / f"TO-DO-{ctx.run_id}.json"
+        # Verify file was created in tmp_dir
+        todo_file = env.tmp_dir / _get_todo_file_name(ctx.run_id)
         assert todo_file.exists()
         content = json.loads(todo_file.read_text())
         assert len(content) == 2
@@ -189,11 +226,15 @@ async def test_todo_write_tool_write_todos(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_todo_write_tool_clear_todos(tmp_path: Path) -> None:
     """Should clear todos when empty list is passed."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = TodoWriteTool(ctx)
 
-        # First create a file
-        todo_file = ctx.tmp_dir / f"TO-DO-{ctx.run_id}.json"
+        # First create a file in tmp_dir
+        todo_file = env.tmp_dir / _get_todo_file_name(ctx.run_id)
         todo_file.write_text('[{"id": "1", "content": "test", "status": "pending", "priority": "low"}]')
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -207,11 +248,15 @@ async def test_todo_write_tool_clear_todos(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_todo_write_tool_overwrite_existing(tmp_path: Path) -> None:
     """Should overwrite existing file."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = TodoWriteTool(ctx)
 
-        # Create initial file
-        todo_file = ctx.tmp_dir / f"TO-DO-{ctx.run_id}.json"
+        # Create initial file in tmp_dir
+        todo_file = env.tmp_dir / _get_todo_file_name(ctx.run_id)
         todo_file.write_text('[{"id": "OLD", "content": "old", "status": "pending", "priority": "low"}]')
 
         new_todos = [
@@ -234,7 +279,11 @@ async def test_todo_write_tool_overwrite_existing(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_todo_write_and_read_integration(tmp_path: Path) -> None:
     """Should be able to write and then read todos."""
-    async with AgentContext(tmp_base_dir=tmp_path) as ctx:
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         write_tool = TodoWriteTool(ctx)
         read_tool = TodoReadTool(ctx)
 
@@ -254,9 +303,6 @@ async def test_todo_write_and_read_integration(tmp_path: Path) -> None:
         assert len(result) == 1
         assert result[0].id == "TASK-1"
         assert result[0].content == "Integration test"
-
-
-# --- Module exports tests ---
 
 
 def test_enhance_module_exports() -> None:

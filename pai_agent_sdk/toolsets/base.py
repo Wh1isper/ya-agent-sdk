@@ -405,9 +405,11 @@ class Toolset(BaseToolset[AgentDepsT]):
         instructions: list[str] = []
         for tool_instance in self._tool_instances.values():
             if tool_instance.instruction:
-                instructions.append(tool_instance.instruction)
+                instructions.append(
+                    f'<tool-instruction name="{tool_instance.name}">{tool_instance.instruction}</tool-instruction>'
+                )
 
-        return "\n\n".join(instructions) if instructions else None
+        return "\n".join(instructions) if instructions else None
 
     def _get_tool_impl_by_name(self, name: str) -> BaseTool | None:
         """Get a tool instance by name."""

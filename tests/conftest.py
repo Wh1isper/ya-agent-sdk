@@ -3,10 +3,14 @@
 import contextlib
 import socket
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
 import pytest
+
+from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
 
 
 def get_port() -> int:
@@ -14,6 +18,20 @@ def get_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+@pytest.fixture
+def agent_context(tmp_path: Path) -> AgentContext:
+    """Create an AgentContext for testing."""
+    file_operator = LocalFileOperator(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+    )
+    shell = LocalShell(
+        allowed_paths=[tmp_path],
+        default_cwd=tmp_path,
+    )
+    return AgentContext(file_operator=file_operator, shell=shell)
 
 
 @pytest.fixture(scope="session")

@@ -137,9 +137,9 @@ def test_base_tool_unavailable() -> None:
     assert UnavailableTool.unavailable_reason() == "Missing dependency: fake-lib"
 
 
-def test_base_tool_initialization() -> None:
+def test_base_tool_initialization(agent_context: AgentContext) -> None:
     """Should initialize with context."""
-    ctx = AgentContext()
+    ctx = agent_context
     tool = DummyTool(ctx)
     assert tool.ctx is ctx
     assert tool.name == "dummy_tool"
@@ -148,9 +148,9 @@ def test_base_tool_initialization() -> None:
 
 
 @pytest.mark.asyncio
-async def test_base_tool_process_user_input_returns_none() -> None:
+async def test_base_tool_process_user_input_returns_none(agent_context: AgentContext) -> None:
     """Should return None by default."""
-    ctx = AgentContext()
+    ctx = agent_context
     tool = DummyTool(ctx)
     result = await tool.process_user_input(ctx, {"input": "data"})
     assert result is None
@@ -181,52 +181,53 @@ def test_base_toolset_get_instructions_returns_none() -> None:
 # --- Toolset tests ---
 
 
-def test_toolset_initialization() -> None:
+def test_toolset_initialization(agent_context: AgentContext) -> None:
     """Should initialize with tools."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
     assert len(toolset._tool_instances) == 1
     assert "dummy_tool" in toolset._tool_instances
 
 
-def test_toolset_skip_unavailable_tools() -> None:
+def test_toolset_skip_unavailable_tools(agent_context: AgentContext) -> None:
     """Should skip unavailable tools when skip_unavailable=True."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool, UnavailableTool], skip_unavailable=True)
     assert "dummy_tool" in toolset._tool_instances
     assert "unavailable_tool" not in toolset._tool_instances
     assert "unavailable_tool" in toolset._skipped_tools
 
 
-def test_toolset_duplicate_tool_name_raises() -> None:
+def test_toolset_duplicate_tool_name_raises(agent_context: AgentContext) -> None:
     """Should raise on duplicate tool names."""
     from pydantic_ai import UserError
 
-    ctx = AgentContext()
+    ctx = agent_context
     with pytest.raises(UserError, match="Duplicate tool name"):
         Toolset(ctx, tools=[DummyTool, DummyTool])
 
 
-def test_toolset_id() -> None:
+def test_toolset_id(agent_context: AgentContext) -> None:
     """Should store and return toolset ID."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool], toolset_id="my-toolset")
     assert toolset.id == "my-toolset"
 
 
-def test_toolset_get_instructions() -> None:
+def test_toolset_get_instructions(agent_context: AgentContext) -> None:
     """Should collect instructions from tools."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
     mock_run_ctx = MagicMock(spec=RunContext)
     instructions = toolset.get_instructions(mock_run_ctx)
-    assert instructions == "Use this dummy tool for testing purposes."
+    assert instructions is not None
+    assert "Use this dummy tool for testing purposes." in instructions
 
 
 @pytest.mark.asyncio
-async def test_toolset_get_tools() -> None:
+async def test_toolset_get_tools(agent_context: AgentContext) -> None:
     """Should return tool definitions."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
     mock_run_ctx = MagicMock(spec=RunContext)
     mock_run_ctx.deps = ctx
@@ -236,9 +237,9 @@ async def test_toolset_get_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_toolset_call_tool_with_hooks() -> None:
+async def test_toolset_call_tool_with_hooks(agent_context: AgentContext) -> None:
     """Should execute hooks in order."""
-    ctx = AgentContext()
+    ctx = agent_context
     call_order: list[str] = []
 
     async def global_pre(ctx: Any, name: str, args: dict) -> dict:
@@ -275,9 +276,9 @@ async def test_toolset_call_tool_with_hooks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_toolset_process_hitl_call_approved() -> None:
+async def test_toolset_process_hitl_call_approved(agent_context: AgentContext) -> None:
     """Should process approved HITL interactions."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
 
     interactions = [
@@ -291,9 +292,9 @@ async def test_toolset_process_hitl_call_approved() -> None:
 
 
 @pytest.mark.asyncio
-async def test_toolset_process_hitl_call_rejected() -> None:
+async def test_toolset_process_hitl_call_rejected(agent_context: AgentContext) -> None:
     """Should process rejected HITL interactions."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
 
     interactions = [
@@ -309,9 +310,9 @@ async def test_toolset_process_hitl_call_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_toolset_process_hitl_call_none() -> None:
+async def test_toolset_process_hitl_call_none(agent_context: AgentContext) -> None:
     """Should return None when no interactions."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
 
     result = await toolset.process_hitl_call(None, [])
@@ -319,9 +320,9 @@ async def test_toolset_process_hitl_call_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_toolset_process_hitl_with_user_input() -> None:
+async def test_toolset_process_hitl_with_user_input(agent_context: AgentContext) -> None:
     """Should process user input for approved interactions."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
 
     tool_call = ToolCallPart(
@@ -347,8 +348,8 @@ async def test_toolset_process_hitl_with_user_input() -> None:
 # --- InstructableToolset protocol tests ---
 
 
-def test_instructable_toolset_protocol_check() -> None:
+def test_instructable_toolset_protocol_check(agent_context: AgentContext) -> None:
     """Should recognize conforming toolsets."""
-    ctx = AgentContext()
+    ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool])
     assert isinstance(toolset, InstructableToolset)

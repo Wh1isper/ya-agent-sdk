@@ -10,13 +10,12 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 import anyio.to_thread
-from pydantic_ai import Agent, ModelMessage, ModelResponse, RunContext, ToolCallPart
+from pydantic_ai import Agent, ModelMessage, ModelResponse, RequestUsage, RunContext, ToolCallPart
 from pydantic_ai.messages import BinaryContent
 from pydantic_ai.output import OutputDataT
 
-from pai_agent_sdk.context import AgentContext
-
 if TYPE_CHECKING:
+    from pai_agent_sdk.context import AgentContext
     from pai_agent_sdk.toolsets.base import InstructableToolset
 
 P = typing.ParamSpec("P")
@@ -123,6 +122,22 @@ async def merge_async_iterators(*iterators: AsyncIterator[U]) -> AsyncIterator[U
         await _cleanup_tasks(tasks, set())
 
 
+def get_latest_request_usage(message_history: list[ModelMessage]) -> RequestUsage | None:
+    """
+    Retrieve the latest RequestUsage from the message history.
+
+    Args:
+        message_history: List of model messages from conversation
+
+    Returns:
+        The latest RequestUsage if available, otherwise None
+    """
+    for message in reversed(message_history):
+        if isinstance(message, ModelResponse) and message.usage:
+            return message.usage
+    return None
+
+
 def add_toolset_instructions(
     agent: Agent[AgentContext, OutputDataT], toolsets: list[InstructableToolset]
 ) -> Agent[AgentContext, OutputDataT]:
@@ -139,8 +154,7 @@ def add_toolset_instructions(
         parts = [instructions for toolset in toolsets if (instructions := toolset.get_instructions(ctx))]
         if not parts:
             return None
-        content = "\n".join(parts)
-        return f"<toolset-instructions>\n{content}\n</toolset-instructions>"
+        return "\n".join(parts)
 
     return agent
 

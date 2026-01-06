@@ -39,19 +39,29 @@ class DockerBrowserSandbox(BrowserSandbox):
             # Use cdp_url to connect to Chrome DevTools Protocol
             print(f"Chrome running at: {cdp_url}")
 
+        # Custom image and container prefix:
+        async with DockerBrowserSandbox(
+            image="my-chrome:latest",
+            container_prefix="my-browser",
+        ) as cdp_url:
+            ...
+
     Attributes:
-        IMAGE: Docker image for headless Chrome.
-        CONTAINER_PREFIX: Prefix for container names.
+        DEFAULT_IMAGE: Default Docker image for headless Chrome.
+        DEFAULT_CONTAINER_PREFIX: Default prefix for container names.
     """
 
-    IMAGE = "zenika/alpine-chrome:latest"
-    CONTAINER_PREFIX = "headless-chrome"
+    DEFAULT_IMAGE = "zenika/alpine-chrome:latest"
+    DEFAULT_CONTAINER_PREFIX = "headless-chrome"
 
     def __init__(
         self,
         port: int | None = None,
         container_name: str | None = None,
         auto_remove: bool = True,
+        *,
+        image: str | None = None,
+        container_prefix: str | None = None,
     ) -> None:
         """Initialize Docker browser sandbox.
 
@@ -59,11 +69,15 @@ class DockerBrowserSandbox(BrowserSandbox):
             port: Host port to bind Chrome remote debugging (auto-assigned if None).
             container_name: Custom container name (auto-generated if None).
             auto_remove: Automatically remove container when stopped.
+            image: Docker image to use (defaults to DEFAULT_IMAGE).
+            container_prefix: Prefix for auto-generated container names (defaults to DEFAULT_CONTAINER_PREFIX).
         """
         self._client: docker.DockerClient | None = None
         self._container: Any = None
         self._port = port
-        self._container_name = container_name or f"{self.CONTAINER_PREFIX}-{uuid4().hex[:8]}"
+        self._image = image or self.DEFAULT_IMAGE
+        self._container_prefix = container_prefix or self.DEFAULT_CONTAINER_PREFIX
+        self._container_name = container_name or f"{self._container_prefix}-{uuid4().hex[:8]}"
         self._auto_remove = auto_remove
 
     @property
@@ -140,7 +154,7 @@ class DockerBrowserSandbox(BrowserSandbox):
 
         def _run() -> Any:
             return self.client.containers.run(
-                self.IMAGE,
+                self._image,
                 command=[
                     "chromium-browser",
                     "--headless",
@@ -158,8 +172,8 @@ class DockerBrowserSandbox(BrowserSandbox):
             self._container = await run_in_threadpool(_run)
             logger.debug(f"Container {self._container_name} started")
         except docker.errors.ImageNotFound as e:
-            logger.exception("Docker image not found: %s", self.IMAGE)
-            raise RuntimeError(f"Docker image not found: {self.IMAGE}") from e
+            logger.exception("Docker image not found: %s", self._image)
+            raise RuntimeError(f"Docker image not found: {self._image}") from e
         except docker.errors.APIError as e:
             logger.exception("Failed to start container")
             raise RuntimeError(f"Failed to start container: {e}") from e

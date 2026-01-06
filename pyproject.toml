@@ -20,6 +20,7 @@ dependencies = [
     "anyio>=4.12.0",
     "cdp-use>=1.4.4, < 2.0.0",
     "httpx>=0.28.1",
+    "pathspec>=0.12.0",
     "pillow>=10.0.0",
     "pydantic>=2.12.5",
     "pydantic-ai-slim>=1.39.0",
@@ -45,6 +46,7 @@ dev = [
     "pyright>=1.1.390",
     "pytest-cov>=4.0.0",
     "ruff>=0.9.2",
+    "inline-snapshot>=0.20.0",
 
     # Optional dependencies included in dev
     "docker>=7.0.0",
