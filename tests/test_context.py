@@ -217,7 +217,7 @@ async def test_local_environment_file_operator_and_shell(tmp_path: Path) -> None
         assert content == "hello"
 
         # Test shell execution
-        exit_code, stdout, stderr = await env.shell.execute(["echo", "hello"])
+        exit_code, stdout, stderr = await env.shell.execute("echo hello")
         assert exit_code == 0
         assert "hello" in stdout
 
@@ -238,7 +238,7 @@ async def test_local_environment_tmp_in_allowed_paths(tmp_path: Path) -> None:
 
         # Should be able to use tmp_dir as shell cwd
         exit_code, stdout, stderr = await env.shell.execute(
-            ["ls"],
+            "ls",
             cwd=str(env.tmp_dir),
         )
         assert exit_code == 0

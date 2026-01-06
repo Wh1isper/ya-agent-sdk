@@ -11,7 +11,6 @@ from pai_agent_sdk.environment import (
     LocalFileOperator,
     LocalShell,
     PathNotAllowedError,
-    ShellExecutionError,
     ShellTimeoutError,
 )
 
@@ -252,7 +251,7 @@ def test_shell_default_cwd_included_in_allowed(tmp_path: Path) -> None:
 async def test_shell_execute_simple_command(tmp_path: Path) -> None:
     """Should execute simple command."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
-    exit_code, stdout, _ = await shell.execute(["echo", "hello"])
+    exit_code, stdout, _ = await shell.execute("echo hello")
     assert exit_code == 0
     assert "hello" in stdout
 
@@ -262,7 +261,7 @@ async def test_shell_execute_with_cwd(tmp_path: Path) -> None:
     subdir = tmp_path / "subdir"
     subdir.mkdir()
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
-    exit_code, stdout, _ = await shell.execute(["pwd"], cwd=str(subdir))
+    exit_code, stdout, _ = await shell.execute("pwd", cwd=str(subdir))
     assert exit_code == 0
     assert "subdir" in stdout
 
@@ -271,28 +270,28 @@ async def test_shell_execute_cwd_not_allowed(tmp_path: Path) -> None:
     """Should raise PathNotAllowedError for cwd outside allowed dirs."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
     with pytest.raises(PathNotAllowedError):
-        await shell.execute(["ls"], cwd="/etc")
+        await shell.execute("ls", cwd="/etc")
 
 
 async def test_shell_execute_timeout(tmp_path: Path) -> None:
     """Should raise ShellTimeoutError on timeout."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
     with pytest.raises(ShellTimeoutError):
-        await shell.execute(["sleep", "10"], timeout=0.1)
+        await shell.execute("sleep 10", timeout=0.1)
 
 
 async def test_shell_execute_command_not_found(tmp_path: Path) -> None:
-    """Should raise ShellExecutionError for non-existent command."""
+    """Should return non-zero exit code for non-existent command."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
-    with pytest.raises(ShellExecutionError) as exc_info:
-        await shell.execute(["nonexistent_command_xyz"])
-    assert "not found" in str(exc_info.value).lower()
+    exit_code, _, stderr = await shell.execute("nonexistent_command_xyz")
+    assert exit_code != 0
+    assert "not found" in stderr.lower()
 
 
 async def test_shell_execute_returns_stderr(tmp_path: Path) -> None:
     """Should capture stderr."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
-    exit_code, _, stderr = await shell.execute(["ls", "nonexistent_file_xyz"])
+    exit_code, _, stderr = await shell.execute("ls nonexistent_file_xyz")
     assert exit_code != 0
     assert stderr
 
@@ -338,7 +337,7 @@ async def test_environment_file_operations(tmp_path: Path) -> None:
 async def test_environment_shell_execution(tmp_path: Path) -> None:
     """Should be able to execute shell commands within context."""
     async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path) as env:
-        exit_code, stdout, _ = await env.shell.execute(["echo", "hello"])
+        exit_code, stdout, _ = await env.shell.execute("echo hello")
         assert exit_code == 0
         assert "hello" in stdout
 

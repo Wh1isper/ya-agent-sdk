@@ -112,13 +112,8 @@ class UnavailableTool(BaseTool):
     name = "unavailable_tool"
     description = "An unavailable tool"
 
-    @classmethod
-    def is_available(cls) -> bool:
+    def is_available(self) -> bool:
         return False
-
-    @classmethod
-    def unavailable_reason(cls) -> str | None:
-        return "Missing dependency: fake-lib"
 
     async def call(self, ctx: RunContext[AgentContext]) -> str:
         return "Should not be called"
@@ -127,16 +122,16 @@ class UnavailableTool(BaseTool):
 # --- BaseTool tests ---
 
 
-def test_base_tool_default_availability() -> None:
+def test_base_tool_default_availability(agent_context: AgentContext) -> None:
     """Should be available by default."""
-    assert DummyTool.is_available() is True
-    assert DummyTool.unavailable_reason() is None
+    tool = DummyTool(agent_context)
+    assert tool.is_available() is True
 
 
-def test_base_tool_unavailable() -> None:
+def test_base_tool_unavailable(agent_context: AgentContext) -> None:
     """Should report unavailability correctly."""
-    assert UnavailableTool.is_available() is False
-    assert UnavailableTool.unavailable_reason() == "Missing dependency: fake-lib"
+    tool = UnavailableTool(agent_context)
+    assert tool.is_available() is False
 
 
 def test_base_tool_initialization(agent_context: AgentContext) -> None:
@@ -195,7 +190,6 @@ def test_toolset_skip_unavailable_tools(agent_context: AgentContext) -> None:
     toolset = Toolset(ctx, tools=[DummyTool, UnavailableTool], skip_unavailable=True)
     assert "dummy_tool" in toolset._tool_instances
     assert "unavailable_tool" not in toolset._tool_instances
-    assert "unavailable_tool" in toolset._skipped_tools
 
 
 def test_toolset_duplicate_tool_name_raises(agent_context: AgentContext) -> None:

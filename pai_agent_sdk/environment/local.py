@@ -325,22 +325,32 @@ class LocalShell(Shell):
 
     async def execute(
         self,
-        command: list[str],
+        command: str,
         *,
         timeout: float | None = None,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> tuple[int, str, str]:
-        """Execute a command and return results."""
+        """Execute a command and return results.
+
+        Args:
+            command: Command string to execute via shell.
+            timeout: Timeout in seconds (uses default if None).
+            env: Environment variables.
+            cwd: Working directory (relative or absolute path).
+
+        Returns:
+            Tuple of (exit_code, stdout, stderr).
+        """
         if not command:
-            raise ShellExecutionError(command, stderr="Empty command")
+            raise ShellExecutionError("", stderr="Empty command")
 
         resolved_cwd = self._resolve_cwd(cwd)
         effective_timeout = timeout if timeout is not None else self._default_timeout
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
+            process = await asyncio.create_subprocess_shell(
+                command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=resolved_cwd,
@@ -364,12 +374,12 @@ class LocalShell(Shell):
         except FileNotFoundError as e:
             raise ShellExecutionError(
                 command,
-                stderr=f"Command not found: {command[0]}",
+                stderr="Command not found",
             ) from e
         except PermissionError as e:
             raise ShellExecutionError(
                 command,
-                stderr=f"Permission denied: {command[0]}",
+                stderr="Permission denied",
             ) from e
         except OSError as e:
             raise ShellExecutionError(command, stderr=str(e)) from e

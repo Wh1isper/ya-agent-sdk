@@ -54,10 +54,10 @@ def test_thinking_tool_initialization(agent_context: AgentContext) -> None:
     assert tool.name == "thinking"
 
 
-def test_thinking_tool_is_available() -> None:
+def test_thinking_tool_is_available(agent_context: AgentContext) -> None:
     """Should be available by default."""
-    assert ThinkingTool.is_available() is True
-    assert ThinkingTool.unavailable_reason() is None
+    tool = ThinkingTool(agent_context)
+    assert tool.is_available() is True
 
 
 async def test_thinking_tool_call_returns_thought(agent_context: AgentContext) -> None:

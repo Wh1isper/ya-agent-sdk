@@ -25,7 +25,7 @@ check: ## Run code quality tools.
 .PHONY: test
 test: ## Test the code with pytest
 	@echo "🚀 Testing code: Running pytest"
-	@uv run python -m pytest -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
+	@uv run python -m pytest -n auto --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
 
 .PHONY: test-fix
 test-fix: ## Test and auto-fix inline snapshots

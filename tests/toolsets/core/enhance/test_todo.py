@@ -85,9 +85,10 @@ def test_todo_read_tool_initialization(agent_context: AgentContext) -> None:
     assert tool.ctx is agent_context
 
 
-def test_todo_read_tool_is_available() -> None:
+def test_todo_read_tool_is_available(agent_context: AgentContext) -> None:
     """Should be available by default."""
-    assert TodoReadTool.is_available() is True
+    tool = TodoReadTool(agent_context)
+    assert tool.is_available() is True
 
 
 async def test_todo_read_tool_no_file(tmp_path: Path) -> None:
@@ -192,9 +193,10 @@ def test_todo_write_tool_initialization(agent_context: AgentContext) -> None:
     assert tool.ctx is agent_context
 
 
-def test_todo_write_tool_is_available() -> None:
+def test_todo_write_tool_is_available(agent_context: AgentContext) -> None:
     """Should be available by default."""
-    assert TodoWriteTool.is_available() is True
+    tool = TodoWriteTool(agent_context)
+    assert tool.is_available() is True
 
 
 async def test_todo_write_tool_write_todos(tmp_path: Path) -> None:

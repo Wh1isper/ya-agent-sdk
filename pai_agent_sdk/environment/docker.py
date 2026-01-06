@@ -77,7 +77,7 @@ class DockerShell(Shell):
 
     async def execute(
         self,
-        command: list[str],
+        command: str,
         *,
         timeout: float | None = None,
         env: dict[str, str] | None = None,
@@ -86,7 +86,7 @@ class DockerShell(Shell):
         """Execute a command inside the Docker container.
 
         Args:
-            command: Command to execute as a list of strings.
+            command: Command string to execute via shell.
             timeout: Execution timeout in seconds.
             env: Environment variables for the command.
             cwd: Working directory (relative to container_workdir, or absolute).
@@ -109,7 +109,7 @@ class DockerShell(Shell):
             try:
                 container = self.client.containers.get(self._container_id)
                 result = container.exec_run(
-                    cmd=command,
+                    cmd=["/bin/sh", "-c", command],
                     stdout=True,
                     stderr=True,
                     demux=True,

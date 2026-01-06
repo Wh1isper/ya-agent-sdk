@@ -62,10 +62,38 @@ class LoadTool(BaseTool):
     name = "load"
     description = "Load content from HTTP/HTTPS URL (images, videos, audio, text, documents)."
 
+    def is_available(self) -> bool:
+        """Check if tool is available based on model capabilities.
+
+        LoadTool requires at least one of: vision, video_understanding, or document_understanding.
+        If none are available, the tool should be disabled.
+        """
+        model_cfg = self.ctx.model_cfg
+        if model_cfg is None:
+            return False
+
+        has_vision = model_cfg.has_capability(ModelCapability.vision)
+        has_video = model_cfg.has_capability(ModelCapability.video_understanding)
+        has_document = model_cfg.has_capability(ModelCapability.document_understanding)
+        enable_load_document = model_cfg.tool_config.enable_load_document
+
+        # Available if any capability is present
+        return has_vision or has_video or (has_document and enable_load_document)
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
-        """Generate dynamic instruction based on tool config."""
-        enable_load_document = ctx.deps.model_cfg is not None and ctx.deps.model_cfg.tool_config.enable_load_document
-        return _INSTRUCTION_TEMPLATE.render(enable_load_document=enable_load_document)
+        """Generate dynamic instruction based on model capabilities."""
+        model_cfg = ctx.deps.model_cfg
+        has_vision = model_cfg is not None and model_cfg.has_capability(ModelCapability.vision)
+        has_video = model_cfg is not None and model_cfg.has_capability(ModelCapability.video_understanding)
+        has_document = model_cfg is not None and model_cfg.has_capability(ModelCapability.document_understanding)
+        enable_load_document = model_cfg is not None and model_cfg.tool_config.enable_load_document
+
+        return _INSTRUCTION_TEMPLATE.render(
+            has_vision=has_vision,
+            has_video=has_video,
+            has_document=has_document,
+            enable_load_document=enable_load_document,
+        )
 
     async def call(  # noqa: C901
         self,

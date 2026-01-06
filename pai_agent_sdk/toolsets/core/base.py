@@ -125,29 +125,6 @@ class BaseTool(ABC):
     description: str
     """Description of what the tool does, shown to the model."""
 
-    @classmethod
-    def is_available(cls) -> bool:
-        """Check if tool dependencies are available in current environment.
-
-        Override this method to check for optional dependencies like docker.
-        Tools that return False will be excluded when skip_unavailable=True.
-
-        Returns:
-            True if tool can be used, False otherwise.
-        """
-        return True
-
-    @classmethod
-    def unavailable_reason(cls) -> str | None:
-        """Return reason why tool is unavailable, or None if available.
-
-        Override this method to provide helpful error messages.
-
-        Returns:
-            Error message if unavailable, None if available.
-        """
-        return None
-
     def __init__(self, ctx: AgentContext) -> None:
         """Initialize the tool with the agent context.
 
@@ -155,6 +132,18 @@ class BaseTool(ABC):
             ctx: The agent context for this tool instance.
         """
         self.ctx = ctx
+
+    def is_available(self) -> bool:
+        """Check if tool is available in current context.
+
+        Override this method to check runtime conditions like model capabilities,
+        optional dependencies, or configuration settings.
+        Tools that return False will be excluded when skip_unavailable=True.
+
+        Returns:
+            True if tool can be used, False otherwise.
+        """
+        return True
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Get instruction for this tool.
@@ -305,18 +294,16 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         self._tool_instances: dict[str, BaseTool] = {}
         self._tool_classes: dict[str, type[BaseTool]] = {}
-        self._skipped_tools: dict[str, str] = {}  # tool_name -> unavailable_reason
 
         for tool_cls in tools:
-            # Check availability
-            if skip_unavailable and not tool_cls.is_available():
-                reason = tool_cls.unavailable_reason() or "Tool is not available"
-                self._skipped_tools[tool_cls.name] = reason
-                logger.info(f"Skipping unavailable tool {tool_cls.name!r}: {reason}")
-                continue
-
             tool_instance = tool_cls(ctx)
             name = tool_instance.name
+
+            # Check availability after instantiation
+            if skip_unavailable and not tool_instance.is_available():
+                logger.info(f"Skipping unavailable tool {name!r}")
+                continue
+
             if name in self._tool_instances:
                 msg = f"Duplicate tool name: {name!r}"
                 raise UserError(msg)

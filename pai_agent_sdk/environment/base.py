@@ -161,8 +161,9 @@ class TmpFileOperator(Protocol):
         """
         ...
 
-    def get_tmp_dir_info(self) -> str | None:
-        """Return tmp directory info for context instructions, or None."""
+    @property
+    def tmp_dir(self) -> str | None:
+        """Return tmp directory path as string, or None if not configured."""
         ...
 
 
@@ -185,7 +186,8 @@ class LocalTmpFileOperator:
         except ValueError:
             return False, path
 
-    def get_tmp_dir_info(self) -> str | None:
+    @property
+    def tmp_dir(self) -> str | None:
         return str(self._tmp_dir)
 
     def _resolve(self, path: str) -> Path:
@@ -626,7 +628,7 @@ class FileOperator(ABC):
             raise RuntimeError("tmp_dir is not configured")
         return await self._tmp_file_operator.read_file(path, encoding=encoding)
 
-    async def write_tmp_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
+    async def write_tmp_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> str:
         """Write file to tmp directory.
 
         Args:
@@ -634,12 +636,17 @@ class FileOperator(ABC):
             content: Content to write.
             encoding: Text encoding for string content.
 
+        Returns:
+            Absolute path to the written file.
+
         Raises:
             RuntimeError: If tmp_dir is not configured.
         """
         if self._tmp_file_operator is None:
             raise RuntimeError("tmp_dir is not configured")
         await self._tmp_file_operator.write_file(path, content, encoding=encoding)
+        tmp_dir = self._tmp_file_operator.tmp_dir
+        return f"{tmp_dir}/{path}" if tmp_dir else path
 
     async def tmp_exists(self, path: str) -> bool:
         """Check if path exists in tmp directory.
@@ -681,7 +688,7 @@ class FileOperator(ABC):
         paths_str = "\n".join(f"    <path>{p}</path>" for p in self._allowed_paths)
         tmp_section = ""
         if self._tmp_file_operator:
-            tmp_dir_info = self._tmp_file_operator.get_tmp_dir_info()
+            tmp_dir_info = self._tmp_file_operator.tmp_dir
             if tmp_dir_info:
                 tmp_section = f"\n  <tmp-directory>{tmp_dir_info}</tmp-directory>"
         return f"""<file-system>
@@ -735,13 +742,23 @@ class Shell(ABC):
     @abstractmethod
     async def execute(
         self,
-        command: list[str],
+        command: str,
         *,
         timeout: float | None = None,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> tuple[int, str, str]:
-        """Execute a command and return (exit_code, stdout, stderr)."""
+        """Execute a command and return (exit_code, stdout, stderr).
+
+        Args:
+            command: Command string to execute via shell.
+            timeout: Timeout in seconds (uses default if None).
+            env: Environment variables.
+            cwd: Working directory (relative or absolute path).
+
+        Returns:
+            Tuple of (exit_code, stdout, stderr).
+        """
         ...
 
     async def get_context_instructions(self) -> str | None:

@@ -43,6 +43,7 @@ dev = [
     "pytest>=7.2.0",
     "pre-commit>=2.20.0",
     "pytest-asyncio>=0.25.3",
+    "pytest-xdist>=3.0.0",
 
     "deptry>=0.22.0",
     "pyright>=1.1.390",
@@ -138,3 +139,9 @@ skip_empty = true
 [tool.coverage.run]
 branch = true
 source = ["pai_agent_sdk"]
+omit = [
+    # Agents require AI API integration tests, not suitable for unit tests
+    "pai_agent_sdk/agents/*",
+    # Re-export only __init__.py files
+    "pai_agent_sdk/toolsets/core/*/__init__.py",
+]

@@ -34,7 +34,7 @@ async def test_docker_shell_execute_empty_command() -> None:
     """Should raise error for empty command."""
     shell = DockerShell(container_id="test123")
     with pytest.raises(ShellExecutionError):
-        await shell.execute([])
+        await shell.execute("")
 
 
 async def test_docker_shell_execute_success() -> None:
@@ -51,7 +51,7 @@ async def test_docker_shell_execute_success() -> None:
     mock_client.containers.get.return_value = mock_container
     shell._client = mock_client
 
-    code, stdout, stderr = await shell.execute(["echo", "hello"])
+    code, stdout, stderr = await shell.execute("echo hello")
 
     assert code == 0
     assert stdout == "hello\n"
@@ -73,7 +73,7 @@ async def test_docker_shell_execute_with_cwd() -> None:
     mock_client.containers.get.return_value = mock_container
     shell._client = mock_client
 
-    await shell.execute(["ls"], cwd="subdir")
+    await shell.execute("ls", cwd="subdir")
 
     mock_container.exec_run.assert_called_once()
     call_kwargs = mock_container.exec_run.call_args[1]
@@ -94,7 +94,7 @@ async def test_docker_shell_execute_with_absolute_cwd() -> None:
     mock_client.containers.get.return_value = mock_container
     shell._client = mock_client
 
-    await shell.execute(["ls"], cwd="/tmp")  # noqa: S108
+    await shell.execute("ls", cwd="/tmp")  # noqa: S108
 
     call_kwargs = mock_container.exec_run.call_args[1]
     assert call_kwargs["workdir"] == "/tmp"  # noqa: S108
@@ -114,7 +114,7 @@ async def test_docker_shell_execute_with_env() -> None:
     mock_client.containers.get.return_value = mock_container
     shell._client = mock_client
 
-    await shell.execute(["env"], env={"FOO": "bar"})
+    await shell.execute("env", env={"FOO": "bar"})
 
     call_kwargs = mock_container.exec_run.call_args[1]
     assert call_kwargs["environment"] == {"FOO": "bar"}

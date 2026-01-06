@@ -37,15 +37,14 @@ class ShellExecutionError(EnvironmentError):
 
     def __init__(
         self,
-        command: list[str],
+        command: str,
         exit_code: int | None = None,
         stderr: str | None = None,
     ):
         self.command = command
         self.exit_code = exit_code
         self.stderr = stderr
-        cmd_str = " ".join(command)
-        msg = f"Command failed: {cmd_str}"
+        msg = f"Command failed: {command}"
         if exit_code is not None:
             msg += f" (exit code: {exit_code})"
         if stderr:
@@ -56,10 +55,10 @@ class ShellExecutionError(EnvironmentError):
 class ShellTimeoutError(ShellExecutionError):
     """Raised when shell command times out."""
 
-    def __init__(self, command: list[str], timeout: float):
+    def __init__(self, command: str, timeout: float):
         self.timeout = timeout
         super().__init__(command)
-        self.args = (f"Command timed out after {timeout}s: {' '.join(command)}",)
+        self.args = (f"Command timed out after {timeout}s: {command}",)
 
 
 class EnvironmentNotEnteredError(EnvironmentError):
