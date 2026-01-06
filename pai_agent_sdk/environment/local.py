@@ -363,8 +363,14 @@ class LocalShell(Shell):
                     timeout=effective_timeout,
                 )
             except TimeoutError as e:
-                process.kill()
-                await process.wait()
+                # Try graceful termination first
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except TimeoutError:
+                    # Force kill if graceful termination fails
+                    process.kill()
+                    await process.wait()
                 raise ShellTimeoutError(command, effective_timeout) from e
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
