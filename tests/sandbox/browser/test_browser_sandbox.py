@@ -3,12 +3,10 @@
 from uuid import uuid4
 
 import httpx
-import pytest
 
 from pai_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox, get_port
 
 
-@pytest.mark.asyncio
 async def test_browser_sandbox_context_manager():
     """Test browser sandbox with async context manager."""
     async with DockerBrowserSandbox() as cdp_url:
@@ -27,7 +25,6 @@ async def test_browser_sandbox_context_manager():
             assert "Protocol-Version" in data
 
 
-@pytest.mark.asyncio
 async def test_browser_sandbox_manual_start_stop():
     """Test browser sandbox with manual start/stop."""
     sandbox = DockerBrowserSandbox()
@@ -49,7 +46,6 @@ async def test_browser_sandbox_manual_start_stop():
         await sandbox.stop_browser()
 
 
-@pytest.mark.asyncio
 async def test_browser_sandbox_custom_port():
     """Test browser sandbox with custom port."""
     custom_port = get_port()
@@ -64,7 +60,6 @@ async def test_browser_sandbox_custom_port():
             assert response.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_browser_sandbox_multiple_instances():
     """Test running multiple browser sandbox instances concurrently."""
     async with DockerBrowserSandbox(container_name=str(uuid4())) as cdp_url1:
@@ -81,7 +76,6 @@ async def test_browser_sandbox_multiple_instances():
                 assert response2.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_browser_sandbox_exception_cleanup():
     """Test that browser is properly cleaned up on exception."""
     sandbox = DockerBrowserSandbox()

@@ -3,7 +3,6 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -18,7 +17,6 @@ from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.filters.handoff import process_handoff_message
 
 
-@pytest.mark.asyncio
 async def test_process_handoff_no_handoff_message(tmp_path: Path) -> None:
     """Should return unchanged history when no handoff message is set."""
     async with LocalEnvironment(
@@ -42,7 +40,6 @@ async def test_process_handoff_no_handoff_message(tmp_path: Path) -> None:
             assert len(request.parts) == 1
 
 
-@pytest.mark.asyncio
 async def test_process_handoff_with_handoff_message(tmp_path: Path) -> None:
     """Should inject handoff summary and truncate history when handoff message is set."""
     async with LocalEnvironment(
@@ -93,7 +90,6 @@ async def test_process_handoff_with_handoff_message(tmp_path: Path) -> None:
             assert ctx.handoff_message is None
 
 
-@pytest.mark.asyncio
 async def test_process_handoff_empty_history(tmp_path: Path) -> None:
     """Should return unchanged empty history even with handoff message."""
     async with LocalEnvironment(
@@ -117,7 +113,6 @@ async def test_process_handoff_empty_history(tmp_path: Path) -> None:
             assert ctx.handoff_message == "Summary"
 
 
-@pytest.mark.asyncio
 async def test_process_handoff_finds_last_user_request(tmp_path: Path) -> None:
     """Should find the last true user request (not tool return) for injection."""
     async with LocalEnvironment(
@@ -157,7 +152,6 @@ async def test_process_handoff_finds_last_user_request(tmp_path: Path) -> None:
             assert "<context-handoff>" in result[0].parts[1].content
 
 
-@pytest.mark.asyncio
 async def test_process_handoff_skips_tool_return_only_request(tmp_path: Path) -> None:
     """Should skip ModelRequest that only contains ToolReturnPart."""
     async with LocalEnvironment(

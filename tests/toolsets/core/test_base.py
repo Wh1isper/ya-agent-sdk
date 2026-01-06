@@ -9,7 +9,7 @@ from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.tools import ToolApproved, ToolDenied
 
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.base import (
+from pai_agent_sdk.toolsets.core.base import (
     BaseTool,
     BaseToolset,
     GlobalHooks,
@@ -147,7 +147,6 @@ def test_base_tool_initialization(agent_context: AgentContext) -> None:
     assert tool.instruction == "Use this dummy tool for testing purposes."
 
 
-@pytest.mark.asyncio
 async def test_base_tool_process_user_input_returns_none(agent_context: AgentContext) -> None:
     """Should return None by default."""
     ctx = agent_context
@@ -224,7 +223,6 @@ def test_toolset_get_instructions(agent_context: AgentContext) -> None:
     assert "Use this dummy tool for testing purposes." in instructions
 
 
-@pytest.mark.asyncio
 async def test_toolset_get_tools(agent_context: AgentContext) -> None:
     """Should return tool definitions."""
     ctx = agent_context
@@ -236,7 +234,6 @@ async def test_toolset_get_tools(agent_context: AgentContext) -> None:
     assert isinstance(tools["dummy_tool"], HookableToolsetTool)
 
 
-@pytest.mark.asyncio
 async def test_toolset_call_tool_with_hooks(agent_context: AgentContext) -> None:
     """Should execute hooks in order."""
     ctx = agent_context
@@ -275,7 +272,6 @@ async def test_toolset_call_tool_with_hooks(agent_context: AgentContext) -> None
     assert call_order == ["global_pre", "tool_pre", "tool_post", "global_post"]
 
 
-@pytest.mark.asyncio
 async def test_toolset_process_hitl_call_approved(agent_context: AgentContext) -> None:
     """Should process approved HITL interactions."""
     ctx = agent_context
@@ -291,7 +287,6 @@ async def test_toolset_process_hitl_call_approved(agent_context: AgentContext) -
     assert isinstance(result.approvals["call-1"], ToolApproved)
 
 
-@pytest.mark.asyncio
 async def test_toolset_process_hitl_call_rejected(agent_context: AgentContext) -> None:
     """Should process rejected HITL interactions."""
     ctx = agent_context
@@ -309,7 +304,6 @@ async def test_toolset_process_hitl_call_rejected(agent_context: AgentContext) -
     assert denied.message == "Not safe"
 
 
-@pytest.mark.asyncio
 async def test_toolset_process_hitl_call_none(agent_context: AgentContext) -> None:
     """Should return None when no interactions."""
     ctx = agent_context
@@ -319,7 +313,6 @@ async def test_toolset_process_hitl_call_none(agent_context: AgentContext) -> No
     assert result is None
 
 
-@pytest.mark.asyncio
 async def test_toolset_process_hitl_with_user_input(agent_context: AgentContext) -> None:
     """Should process user input for approved interactions."""
     ctx = agent_context

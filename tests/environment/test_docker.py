@@ -30,7 +30,6 @@ def test_docker_shell_initialization() -> None:
     assert shell._default_timeout == 60.0
 
 
-@pytest.mark.asyncio
 async def test_docker_shell_execute_empty_command() -> None:
     """Should raise error for empty command."""
     shell = DockerShell(container_id="test123")
@@ -38,7 +37,6 @@ async def test_docker_shell_execute_empty_command() -> None:
         await shell.execute([])
 
 
-@pytest.mark.asyncio
 async def test_docker_shell_execute_success() -> None:
     """Should execute command and return results."""
     shell = DockerShell(container_id="test123")
@@ -61,7 +59,6 @@ async def test_docker_shell_execute_success() -> None:
     mock_container.exec_run.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_docker_shell_execute_with_cwd() -> None:
     """Should pass workdir to docker exec."""
     shell = DockerShell(container_id="test123", container_workdir="/workspace")
@@ -83,7 +80,6 @@ async def test_docker_shell_execute_with_cwd() -> None:
     assert call_kwargs["workdir"] == "/workspace/subdir"
 
 
-@pytest.mark.asyncio
 async def test_docker_shell_execute_with_absolute_cwd() -> None:
     """Should use absolute cwd as-is."""
     shell = DockerShell(container_id="test123", container_workdir="/workspace")
@@ -104,7 +100,6 @@ async def test_docker_shell_execute_with_absolute_cwd() -> None:
     assert call_kwargs["workdir"] == "/tmp"  # noqa: S108
 
 
-@pytest.mark.asyncio
 async def test_docker_shell_execute_with_env() -> None:
     """Should pass environment variables."""
     shell = DockerShell(container_id="test123")
@@ -125,7 +120,6 @@ async def test_docker_shell_execute_with_env() -> None:
     assert call_kwargs["environment"] == {"FOO": "bar"}
 
 
-@pytest.mark.asyncio
 async def test_docker_shell_get_context_instructions() -> None:
     """Should return docker-specific instructions."""
     shell = DockerShell(
@@ -174,7 +168,6 @@ def test_docker_environment_initialization_with_image(tmp_path: Path) -> None:
     assert env._cleanup_on_exit is True
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_properties_before_enter(tmp_path: Path) -> None:
     """Should raise error when accessing properties before entering context."""
     env = DockerEnvironment(
@@ -187,7 +180,6 @@ async def test_docker_environment_properties_before_enter(tmp_path: Path) -> Non
         _ = env.shell
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_enter_with_existing_container(tmp_path: Path) -> None:
     """Should verify container and create operators on enter."""
     env = DockerEnvironment(
@@ -215,7 +207,6 @@ async def test_docker_environment_enter_with_existing_container(tmp_path: Path) 
     assert mock_container.stop.call_count == 0
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_enter_creates_new_container(tmp_path: Path) -> None:
     """Should create container when entering with image."""
     env = DockerEnvironment(
@@ -242,7 +233,6 @@ async def test_docker_environment_enter_creates_new_container(tmp_path: Path) ->
     mock_container.remove.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_file_operator_uses_mount_dir(tmp_path: Path) -> None:
     """Should configure file operator with mount_dir as default path."""
     env = DockerEnvironment(
@@ -263,7 +253,6 @@ async def test_docker_environment_file_operator_uses_mount_dir(tmp_path: Path) -
         assert (tmp_path / "test.txt").read_text() == "hello"
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_tmp_dir_enabled(tmp_path: Path) -> None:
     """Should create tmp directory when enabled."""
     env = DockerEnvironment(
@@ -289,7 +278,6 @@ async def test_docker_environment_tmp_dir_enabled(tmp_path: Path) -> None:
     assert not tmp_dir.exists()
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_tmp_dir_disabled(tmp_path: Path) -> None:
     """Should not create tmp directory when disabled."""
     env = DockerEnvironment(
@@ -309,7 +297,6 @@ async def test_docker_environment_tmp_dir_disabled(tmp_path: Path) -> None:
         assert env.tmp_dir is None
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_get_context_instructions(tmp_path: Path) -> None:
     """Should return combined context instructions."""
     env = DockerEnvironment(
@@ -335,7 +322,6 @@ async def test_docker_environment_get_context_instructions(tmp_path: Path) -> No
         assert "/workspace" in instructions
 
 
-@pytest.mark.asyncio
 async def test_docker_environment_cross_session_sharing(tmp_path: Path) -> None:
     """Should support cross-session container sharing with cleanup_on_exit=False."""
     # First session - use existing container, don't cleanup

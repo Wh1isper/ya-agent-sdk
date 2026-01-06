@@ -16,7 +16,7 @@ from pydantic_ai.output import OutputDataT
 
 if TYPE_CHECKING:
     from pai_agent_sdk.context import AgentContext
-    from pai_agent_sdk.toolsets.base import InstructableToolset
+    from pai_agent_sdk.toolsets.core.base import InstructableToolset
 
 P = typing.ParamSpec("P")
 T = typing.TypeVar("T")

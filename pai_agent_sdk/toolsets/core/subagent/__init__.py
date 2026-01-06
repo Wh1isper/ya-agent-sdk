@@ -3,7 +3,7 @@
 Tools for spawning and coordinating sub-agents.
 """
 
-from pai_agent_sdk.toolsets.base import BaseTool
+from pai_agent_sdk.toolsets.core.base import BaseTool
 
 # TODO: Implement subagent tools
 tools: list[type[BaseTool]] = []

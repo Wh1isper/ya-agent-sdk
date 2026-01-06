@@ -15,10 +15,26 @@ pai_agent_sdk/
   sandbox/        # Sandbox environments (browser, shell)
   skills/         # Skill definitions
   stream/         # Stream processing
-  toolsets/       # Tool implementations (browser_use, filesystem, shell, web, etc.)
+  toolsets/       # Tool implementations
+    __init__.py   # Re-exports from core.base and browser_use
+    browser_use/  # BrowserUse toolset (independent)
+    core/         # Core toolsets collection
+      base.py     # Base classes for toolsets (BaseTool, Toolset, etc.)
+      context/    # Context management tools (handoff)
+      document/   # Document processing tools
+      enhance/    # Enhancement tools (todo, thinking)
+      filesystem/ # File system operation tools
+      shell/      # Shell command execution tools
+      subagent/   # Sub-agent delegation tools
+      web/        # Web interaction tools
   context.py      # Context management
   utils.py        # Utility functions
 tests/            # Test suite (pytest)
+  toolsets/
+    browser_use/  # BrowserUse tests
+    core/         # Core toolsets tests
+      enhance/    # enhance module tests
+      test_base.py # base module tests
 ```
 
 ## Development Workflow

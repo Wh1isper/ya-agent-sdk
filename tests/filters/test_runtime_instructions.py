@@ -28,7 +28,6 @@ async def agent_context(tmp_path: Path) -> AgentContext:
             yield ctx
 
 
-@pytest.mark.asyncio
 async def test_inject_runtime_instructions_empty_history(tmp_path: Path) -> None:
     """Should return unchanged history when no ModelRequest found."""
     # Create a mock RunContext
@@ -52,7 +51,6 @@ async def test_inject_runtime_instructions_empty_history(tmp_path: Path) -> None
             assert result == []
 
 
-@pytest.mark.asyncio
 async def test_inject_runtime_instructions_appends_to_last_request(tmp_path: Path) -> None:
     """Should append runtime instructions to the last ModelRequest."""
     from unittest.mock import MagicMock
@@ -87,7 +85,6 @@ async def test_inject_runtime_instructions_appends_to_last_request(tmp_path: Pat
             assert "<elapsed-time>" in added_part.content
 
 
-@pytest.mark.asyncio
 async def test_inject_runtime_instructions_with_model_config(tmp_path: Path) -> None:
     """Should include model config in runtime instructions when set."""
     from unittest.mock import MagicMock
@@ -121,7 +118,6 @@ async def test_inject_runtime_instructions_with_model_config(tmp_path: Path) -> 
             assert "<context-window>200000</context-window>" in added_part.content
 
 
-@pytest.mark.asyncio
 async def test_inject_runtime_instructions_finds_last_request(tmp_path: Path) -> None:
     """Should find and modify the last ModelRequest in history."""
     from unittest.mock import MagicMock
@@ -156,7 +152,6 @@ async def test_inject_runtime_instructions_finds_last_request(tmp_path: Path) ->
             assert "<runtime-context>" in last_request.parts[1].content
 
 
-@pytest.mark.asyncio
 async def test_inject_runtime_instructions_only_response_in_history(tmp_path: Path) -> None:
     """Should return unchanged history when only ModelResponse present."""
     from unittest.mock import MagicMock

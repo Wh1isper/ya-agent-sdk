@@ -35,7 +35,6 @@ def test_get_available_port_returns_different_ports() -> None:
 # --- run_in_threadpool tests ---
 
 
-@pytest.mark.asyncio
 async def test_run_in_threadpool_runs_sync_function() -> None:
     """Should run synchronous function in threadpool."""
 
@@ -46,7 +45,6 @@ async def test_run_in_threadpool_runs_sync_function() -> None:
     assert result == 3
 
 
-@pytest.mark.asyncio
 async def test_run_in_threadpool_passes_kwargs() -> None:
     """Should correctly pass keyword arguments."""
 
@@ -60,14 +58,12 @@ async def test_run_in_threadpool_passes_kwargs() -> None:
 # --- merge_async_iterators tests ---
 
 
-@pytest.mark.asyncio
 async def test_merge_async_iterators_empty() -> None:
     """Should handle no iterators."""
     results = [item async for item in merge_async_iterators()]
     assert results == []
 
 
-@pytest.mark.asyncio
 async def test_merge_async_iterators_error_propagates() -> None:
     """Should propagate errors from iterators."""
 
@@ -170,7 +166,6 @@ def test_split_image_data_different_media_types() -> None:
         assert result[0].media_type == media_type
 
 
-@pytest.mark.asyncio
 async def test_split_image_data_async() -> None:
     """Should work asynchronously."""
     image_bytes = _create_test_image(100, 100)

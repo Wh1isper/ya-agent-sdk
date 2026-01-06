@@ -1,13 +1,12 @@
-"""Tests for pai_agent_sdk.toolsets.enhance.thinking module."""
+"""Tests for pai_agent_sdk.toolsets.core.enhance.thinking module."""
 
 from unittest.mock import MagicMock
 
-import pytest
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.enhance.thinking import ThinkingTool
+from pai_agent_sdk.toolsets.core.enhance.thinking import ThinkingTool
 
 
 def test_thinking_tool_attributes() -> None:
@@ -57,7 +56,6 @@ def test_thinking_tool_is_available() -> None:
     assert ThinkingTool.unavailable_reason() is None
 
 
-@pytest.mark.asyncio
 async def test_thinking_tool_call_returns_thought(agent_context: AgentContext) -> None:
     """Should return the thought in a dictionary."""
     tool = ThinkingTool(agent_context)
@@ -69,7 +67,6 @@ async def test_thinking_tool_call_returns_thought(agent_context: AgentContext) -
     assert result == {"thought": "This is a test thought"}
 
 
-@pytest.mark.asyncio
 async def test_thinking_tool_call_with_markdown(agent_context: AgentContext) -> None:
     """Should handle markdown formatted thoughts."""
     tool = ThinkingTool(agent_context)
@@ -89,7 +86,6 @@ code_example()
     assert result == {"thought": markdown_thought}
 
 
-@pytest.mark.asyncio
 async def test_thinking_tool_call_with_empty_thought(agent_context: AgentContext) -> None:
     """Should handle empty thought string."""
     tool = ThinkingTool(agent_context)
@@ -101,7 +97,6 @@ async def test_thinking_tool_call_with_empty_thought(agent_context: AgentContext
     assert result == {"thought": ""}
 
 
-@pytest.mark.asyncio
 async def test_thinking_tool_call_with_unicode(agent_context: AgentContext) -> None:
     """Should handle unicode characters."""
     tool = ThinkingTool(agent_context)

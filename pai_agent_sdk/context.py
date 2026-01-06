@@ -59,6 +59,7 @@ Example:
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from xml.etree.ElementTree import Element, SubElement, tostring
 
@@ -70,6 +71,16 @@ from pai_agent_sdk.utils import get_latest_request_usage
 
 if TYPE_CHECKING:
     from typing import Self
+
+
+class ModelCapability(str, Enum):
+    """Model capabilities that can be used to describe what a model supports."""
+
+    vision = "vision"
+    """Model can process and understand images."""
+
+    video_understanding = "video_understanding"
+    """Model can process and understand video content."""
 
 
 def _generate_run_id() -> str:
@@ -99,6 +110,13 @@ class ModelConfig(BaseModel):
     handoff_threshold: float | None = None
     """Handoff threshold for context injection."""
 
+    capabilities: set[ModelCapability] = Field(default_factory=set)
+    """Set of capabilities supported by the model."""
+
+    def has_capability(self, capability: ModelCapability) -> bool:
+        """Check if the model has a specific capability."""
+        return capability in self.capabilities
+
 
 class RunContextMetadata(TypedDict, total=False):
     """Metadata for RunContext passed to get_context_instructions.
@@ -116,8 +134,8 @@ class RunContextMetadata(TypedDict, total=False):
             from pai_agent_sdk.context import AgentContext, ModelConfig, RunContextMetadata
             from pai_agent_sdk.environment.local import LocalEnvironment
             from pai_agent_sdk.filters.handoff import process_handoff_message
-            from pai_agent_sdk.toolsets.base import Toolset
-            from pai_agent_sdk.toolsets.context.handoff import HandoffTool
+            from pai_agent_sdk.toolsets.core.base import Toolset
+            from pai_agent_sdk.toolsets.core.context.handoff import HandoffTool
 
             async with AsyncExitStack() as stack:
                 env = await stack.enter_async_context(LocalEnvironment())

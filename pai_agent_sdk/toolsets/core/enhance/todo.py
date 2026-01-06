@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.base import BaseTool
+from pai_agent_sdk.toolsets.core.base import BaseTool
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 

@@ -69,7 +69,6 @@ def test_agent_context_elapsed_time_after_end(file_operator: LocalFileOperator, 
     assert elapsed.total_seconds() == 5
 
 
-@pytest.mark.asyncio
 async def test_agent_context_enter_subagent(file_operator: LocalFileOperator, shell: LocalShell) -> None:
     """Should create child context with proper inheritance."""
     parent = AgentContext(file_operator=file_operator, shell=shell)
@@ -86,7 +85,6 @@ async def test_agent_context_enter_subagent(file_operator: LocalFileOperator, sh
     assert child.end_at is not None
 
 
-@pytest.mark.asyncio
 async def test_agent_context_enter_subagent_with_override(file_operator: LocalFileOperator, shell: LocalShell) -> None:
     """Should allow field overrides in subagent context."""
     parent = AgentContext(file_operator=file_operator, shell=shell)
@@ -95,7 +93,6 @@ async def test_agent_context_enter_subagent_with_override(file_operator: LocalFi
         assert child.deferred_tool_metadata == {"key": {}}
 
 
-@pytest.mark.asyncio
 async def test_agent_context_async_context_manager(file_operator: LocalFileOperator, shell: LocalShell) -> None:
     """Should set start/end times in async context."""
     ctx = AgentContext(file_operator=file_operator, shell=shell)
@@ -135,7 +132,6 @@ def test_agent_context_shell(file_operator: LocalFileOperator, shell: LocalShell
     assert ctx.shell is shell
 
 
-@pytest.mark.asyncio
 async def test_agent_context_get_environment_instructions(file_operator: LocalFileOperator, shell: LocalShell) -> None:
     """Should return runtime context instructions in XML format."""
     ctx = AgentContext(file_operator=file_operator, shell=shell)
@@ -147,7 +143,6 @@ async def test_agent_context_get_environment_instructions(file_operator: LocalFi
     assert "</runtime-context>" in instructions
 
 
-@pytest.mark.asyncio
 async def test_agent_context_subagent_shares_environment(tmp_path: Path) -> None:
     """Subagent should share file_operator and shell with parent."""
     file_op = LocalFileOperator(
@@ -172,7 +167,6 @@ async def test_agent_context_subagent_shares_environment(tmp_path: Path) -> None
 # --- Environment integration tests ---
 
 
-@pytest.mark.asyncio
 async def test_local_environment_tmp_dir(tmp_path: Path) -> None:
     """Should create and cleanup temporary directory."""
     async with LocalEnvironment(
@@ -197,7 +191,6 @@ async def test_local_environment_tmp_dir(tmp_path: Path) -> None:
     assert not saved_tmp_dir.exists()
 
 
-@pytest.mark.asyncio
 async def test_local_environment_disable_tmp_dir(tmp_path: Path) -> None:
     """Should not create tmp_dir when disabled."""
     async with LocalEnvironment(
@@ -208,7 +201,6 @@ async def test_local_environment_disable_tmp_dir(tmp_path: Path) -> None:
         assert env.tmp_dir is None
 
 
-@pytest.mark.asyncio
 async def test_local_environment_file_operator_and_shell(tmp_path: Path) -> None:
     """Should provide file_operator and shell."""
     async with LocalEnvironment(
@@ -230,7 +222,6 @@ async def test_local_environment_file_operator_and_shell(tmp_path: Path) -> None
         assert "hello" in stdout
 
 
-@pytest.mark.asyncio
 async def test_local_environment_tmp_in_allowed_paths(tmp_path: Path) -> None:
     """tmp_dir should be included in file_operator and shell allowed_paths."""
     async with LocalEnvironment(
@@ -253,7 +244,6 @@ async def test_local_environment_tmp_in_allowed_paths(tmp_path: Path) -> None:
         assert exit_code == 0
 
 
-@pytest.mark.asyncio
 async def test_context_with_environment(tmp_path: Path) -> None:
     """Should use Environment with AgentContext using AsyncExitStack."""
     async with AsyncExitStack() as stack:
@@ -276,7 +266,6 @@ async def test_context_with_environment(tmp_path: Path) -> None:
     assert ctx.end_at is not None
 
 
-@pytest.mark.asyncio
 async def test_multiple_contexts_share_environment(tmp_path: Path) -> None:
     """Multiple AgentContext sessions should share the same Environment."""
     async with LocalEnvironment(
@@ -314,7 +303,6 @@ async def test_multiple_contexts_share_environment(tmp_path: Path) -> None:
     assert not saved_tmp_dir.exists()
 
 
-@pytest.mark.asyncio
 async def test_get_context_instructions_basic(tmp_path: Path) -> None:
     """Should return XML-formatted runtime context instructions."""
     async with LocalEnvironment(
@@ -339,7 +327,6 @@ async def test_get_context_instructions_basic(tmp_path: Path) -> None:
             assert "<elapsed-time>" in instructions
 
 
-@pytest.mark.asyncio
 async def test_get_context_instructions_with_model_config(tmp_path: Path) -> None:
     """Should include model config in instructions when set."""
     from inline_snapshot import snapshot
@@ -371,7 +358,6 @@ async def test_get_context_instructions_with_model_config(tmp_path: Path) -> Non
 """)
 
 
-@pytest.mark.asyncio
 async def test_get_context_instructions_with_token_usage(tmp_path: Path) -> None:
     """Should include token usage when run_context with messages is provided."""
     from unittest.mock import MagicMock
@@ -425,7 +411,6 @@ async def test_get_context_instructions_with_token_usage(tmp_path: Path) -> None
 """)
 
 
-@pytest.mark.asyncio
 async def test_get_context_instructions_with_handoff_warning(tmp_path: Path) -> None:
     """Should include handoff warning when threshold exceeded and enabled."""
     from unittest.mock import MagicMock
@@ -483,7 +468,6 @@ async def test_get_context_instructions_with_handoff_warning(tmp_path: Path) -> 
 """)
 
 
-@pytest.mark.asyncio
 async def test_get_context_instructions_no_handoff_warning_below_threshold(tmp_path: Path) -> None:
     """Should not include handoff warning when below threshold."""
     from unittest.mock import MagicMock
@@ -527,7 +511,6 @@ async def test_get_context_instructions_no_handoff_warning_below_threshold(tmp_p
             assert "handoff" not in instructions
 
 
-@pytest.mark.asyncio
 async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_path: Path) -> None:
     """Should not include handoff warning when enable_handoff_tool is False."""
     from unittest.mock import MagicMock

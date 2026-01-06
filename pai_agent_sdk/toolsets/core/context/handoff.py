@@ -11,8 +11,8 @@ Note:
 Example::
 
     from pai_agent_sdk.context import AgentContext
-    from pai_agent_sdk.toolsets.base import Toolset
-    from pai_agent_sdk.toolsets.context.handoff import HandoffTool
+    from pai_agent_sdk.toolsets.core.base import Toolset
+    from pai_agent_sdk.toolsets.core.context.handoff import HandoffTool
     from pai_agent_sdk.filters.handoff import process_handoff_message
 
     async with AgentContext() as ctx:
@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.base import BaseTool
+from pai_agent_sdk.toolsets.core.base import BaseTool
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 

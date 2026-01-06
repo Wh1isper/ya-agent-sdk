@@ -3,7 +3,7 @@
 Tools for reading, parsing, and processing documents (PDF, Office, etc.).
 """
 
-from pai_agent_sdk.toolsets.base import BaseTool
+from pai_agent_sdk.toolsets.core.base import BaseTool
 
 # TODO: Implement document tools
 tools: list[type[BaseTool]] = []

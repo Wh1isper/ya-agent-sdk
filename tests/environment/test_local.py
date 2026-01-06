@@ -39,7 +39,6 @@ def test_file_operator_default_path_included_in_allowed(tmp_path: Path) -> None:
     assert other_path.resolve() in op._allowed_paths
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_file(tmp_path: Path) -> None:
     """Should read file content."""
     (tmp_path / "test.txt").write_text("hello world")
@@ -47,7 +46,6 @@ async def test_file_operator_read_file(tmp_path: Path) -> None:
     assert await op.read_file("test.txt") == "hello world"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_file_with_offset(tmp_path: Path) -> None:
     """Should read file content from character offset."""
     (tmp_path / "test.txt").write_text("hello world")
@@ -55,7 +53,6 @@ async def test_file_operator_read_file_with_offset(tmp_path: Path) -> None:
     assert await op.read_file("test.txt", offset=6) == "world"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_file_with_length(tmp_path: Path) -> None:
     """Should read limited characters from file."""
     (tmp_path / "test.txt").write_text("hello world")
@@ -63,7 +60,6 @@ async def test_file_operator_read_file_with_length(tmp_path: Path) -> None:
     assert await op.read_file("test.txt", length=5) == "hello"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_file_with_offset_and_length(tmp_path: Path) -> None:
     """Should read substring with offset and length."""
     (tmp_path / "test.txt").write_text("hello world")
@@ -71,7 +67,6 @@ async def test_file_operator_read_file_with_offset_and_length(tmp_path: Path) ->
     assert await op.read_file("test.txt", offset=3, length=5) == "lo wo"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_bytes(tmp_path: Path) -> None:
     """Should read file as bytes."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02")
@@ -79,7 +74,6 @@ async def test_file_operator_read_bytes(tmp_path: Path) -> None:
     assert await op.read_bytes("test.bin") == b"\x00\x01\x02"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_bytes_with_offset(tmp_path: Path) -> None:
     """Should read bytes from offset."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02\x03\x04")
@@ -87,7 +81,6 @@ async def test_file_operator_read_bytes_with_offset(tmp_path: Path) -> None:
     assert await op.read_bytes("test.bin", offset=2) == b"\x02\x03\x04"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_bytes_with_length(tmp_path: Path) -> None:
     """Should read limited bytes."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02\x03\x04")
@@ -95,7 +88,6 @@ async def test_file_operator_read_bytes_with_length(tmp_path: Path) -> None:
     assert await op.read_bytes("test.bin", length=3) == b"\x00\x01\x02"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_read_bytes_with_offset_and_length(tmp_path: Path) -> None:
     """Should read byte slice with offset and length."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02\x03\x04")
@@ -103,7 +95,6 @@ async def test_file_operator_read_bytes_with_offset_and_length(tmp_path: Path) -
     assert await op.read_bytes("test.bin", offset=1, length=3) == b"\x01\x02\x03"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_write_file_string(tmp_path: Path) -> None:
     """Should write string content."""
     op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
@@ -111,7 +102,6 @@ async def test_file_operator_write_file_string(tmp_path: Path) -> None:
     assert (tmp_path / "output.txt").read_text() == "test content"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_write_file_bytes(tmp_path: Path) -> None:
     """Should write bytes content."""
     op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
@@ -119,7 +109,6 @@ async def test_file_operator_write_file_bytes(tmp_path: Path) -> None:
     assert (tmp_path / "output.bin").read_bytes() == b"\x00\x01\x02"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_append_file(tmp_path: Path) -> None:
     """Should append content to file."""
     (tmp_path / "test.txt").write_text("hello")
@@ -128,7 +117,6 @@ async def test_file_operator_append_file(tmp_path: Path) -> None:
     assert (tmp_path / "test.txt").read_text() == "hello world"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_delete_file(tmp_path: Path) -> None:
     """Should delete file."""
     (tmp_path / "test.txt").write_text("hello")
@@ -137,7 +125,6 @@ async def test_file_operator_delete_file(tmp_path: Path) -> None:
     assert not (tmp_path / "test.txt").exists()
 
 
-@pytest.mark.asyncio
 async def test_file_operator_list_dir(tmp_path: Path) -> None:
     """Should list directory contents."""
     (tmp_path / "a.txt").touch()
@@ -148,7 +135,6 @@ async def test_file_operator_list_dir(tmp_path: Path) -> None:
     assert set(entries) == {"a.txt", "b.txt", "subdir"}
 
 
-@pytest.mark.asyncio
 async def test_file_operator_exists(tmp_path: Path) -> None:
     """Should check path existence."""
     (tmp_path / "exists.txt").touch()
@@ -157,7 +143,6 @@ async def test_file_operator_exists(tmp_path: Path) -> None:
     assert await op.exists("not_exists.txt") is False
 
 
-@pytest.mark.asyncio
 async def test_file_operator_is_file_and_is_dir(tmp_path: Path) -> None:
     """Should distinguish files and directories."""
     (tmp_path / "file.txt").touch()
@@ -169,7 +154,6 @@ async def test_file_operator_is_file_and_is_dir(tmp_path: Path) -> None:
     assert await op.is_dir("subdir") is True
 
 
-@pytest.mark.asyncio
 async def test_file_operator_mkdir(tmp_path: Path) -> None:
     """Should create directory."""
     op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
@@ -177,7 +161,6 @@ async def test_file_operator_mkdir(tmp_path: Path) -> None:
     assert (tmp_path / "new_dir").is_dir()
 
 
-@pytest.mark.asyncio
 async def test_file_operator_mkdir_parents(tmp_path: Path) -> None:
     """Should create nested directories with parents=True."""
     op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
@@ -185,7 +168,6 @@ async def test_file_operator_mkdir_parents(tmp_path: Path) -> None:
     assert (tmp_path / "a" / "b" / "c").is_dir()
 
 
-@pytest.mark.asyncio
 async def test_file_operator_move(tmp_path: Path) -> None:
     """Should move file."""
     (tmp_path / "src.txt").write_text("content")
@@ -195,7 +177,6 @@ async def test_file_operator_move(tmp_path: Path) -> None:
     assert (tmp_path / "dst.txt").read_text() == "content"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_copy(tmp_path: Path) -> None:
     """Should copy file."""
     (tmp_path / "src.txt").write_text("content")
@@ -205,7 +186,6 @@ async def test_file_operator_copy(tmp_path: Path) -> None:
     assert (tmp_path / "dst.txt").read_text() == "content"
 
 
-@pytest.mark.asyncio
 async def test_file_operator_path_not_allowed_error(tmp_path: Path) -> None:
     """Should raise PathNotAllowedError for paths outside allowed dirs."""
     op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
@@ -213,7 +193,6 @@ async def test_file_operator_path_not_allowed_error(tmp_path: Path) -> None:
         await op.read_file("/etc/passwd")
 
 
-@pytest.mark.asyncio
 async def test_file_operator_file_operation_error(tmp_path: Path) -> None:
     """Should raise FileOperationError for failed operations."""
     op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
@@ -222,7 +201,6 @@ async def test_file_operator_file_operation_error(tmp_path: Path) -> None:
     assert "file not found" in str(exc_info.value)
 
 
-@pytest.mark.asyncio
 async def test_file_operator_get_context_instructions(tmp_path: Path) -> None:
     """Should return context instructions in XML format with file tree."""
     (tmp_path / "src").mkdir()
@@ -271,7 +249,6 @@ def test_shell_default_cwd_included_in_allowed(tmp_path: Path) -> None:
     assert other_path.resolve() in shell._allowed_paths
 
 
-@pytest.mark.asyncio
 async def test_shell_execute_simple_command(tmp_path: Path) -> None:
     """Should execute simple command."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
@@ -280,7 +257,6 @@ async def test_shell_execute_simple_command(tmp_path: Path) -> None:
     assert "hello" in stdout
 
 
-@pytest.mark.asyncio
 async def test_shell_execute_with_cwd(tmp_path: Path) -> None:
     """Should execute command in specified directory."""
     subdir = tmp_path / "subdir"
@@ -291,7 +267,6 @@ async def test_shell_execute_with_cwd(tmp_path: Path) -> None:
     assert "subdir" in stdout
 
 
-@pytest.mark.asyncio
 async def test_shell_execute_cwd_not_allowed(tmp_path: Path) -> None:
     """Should raise PathNotAllowedError for cwd outside allowed dirs."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
@@ -299,7 +274,6 @@ async def test_shell_execute_cwd_not_allowed(tmp_path: Path) -> None:
         await shell.execute(["ls"], cwd="/etc")
 
 
-@pytest.mark.asyncio
 async def test_shell_execute_timeout(tmp_path: Path) -> None:
     """Should raise ShellTimeoutError on timeout."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
@@ -307,7 +281,6 @@ async def test_shell_execute_timeout(tmp_path: Path) -> None:
         await shell.execute(["sleep", "10"], timeout=0.1)
 
 
-@pytest.mark.asyncio
 async def test_shell_execute_command_not_found(tmp_path: Path) -> None:
     """Should raise ShellExecutionError for non-existent command."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
@@ -316,7 +289,6 @@ async def test_shell_execute_command_not_found(tmp_path: Path) -> None:
     assert "not found" in str(exc_info.value).lower()
 
 
-@pytest.mark.asyncio
 async def test_shell_execute_returns_stderr(tmp_path: Path) -> None:
     """Should capture stderr."""
     shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
@@ -325,7 +297,6 @@ async def test_shell_execute_returns_stderr(tmp_path: Path) -> None:
     assert stderr
 
 
-@pytest.mark.asyncio
 async def test_shell_get_context_instructions() -> None:
     """Should return context instructions in XML format."""
     shell = LocalShell(
@@ -350,7 +321,6 @@ async def test_shell_get_context_instructions() -> None:
 # --- LocalEnvironment Tests ---
 
 
-@pytest.mark.asyncio
 async def test_environment_async_context_manager(tmp_path: Path) -> None:
     """Should provide file_operator and shell via properties."""
     async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path) as env:
@@ -358,7 +328,6 @@ async def test_environment_async_context_manager(tmp_path: Path) -> None:
         assert isinstance(env.shell, LocalShell)
 
 
-@pytest.mark.asyncio
 async def test_environment_file_operations(tmp_path: Path) -> None:
     """Should be able to perform file operations within context."""
     async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path) as env:
@@ -366,7 +335,6 @@ async def test_environment_file_operations(tmp_path: Path) -> None:
         assert await env.file_operator.read_file("test.txt") == "hello"
 
 
-@pytest.mark.asyncio
 async def test_environment_shell_execution(tmp_path: Path) -> None:
     """Should be able to execute shell commands within context."""
     async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path) as env:
@@ -375,7 +343,6 @@ async def test_environment_shell_execution(tmp_path: Path) -> None:
         assert "hello" in stdout
 
 
-@pytest.mark.asyncio
 async def test_environment_tmp_dir(tmp_path: Path) -> None:
     """Should create and cleanup tmp_dir."""
     async with LocalEnvironment(
@@ -391,7 +358,6 @@ async def test_environment_tmp_dir(tmp_path: Path) -> None:
     assert not saved_tmp.exists()
 
 
-@pytest.mark.asyncio
 async def test_environment_tmp_dir_disabled(tmp_path: Path) -> None:
     """Should not create tmp_dir when disabled."""
     async with LocalEnvironment(
@@ -402,7 +368,6 @@ async def test_environment_tmp_dir_disabled(tmp_path: Path) -> None:
         assert env.tmp_dir is None
 
 
-@pytest.mark.asyncio
 async def test_environment_tmp_routing(tmp_path: Path) -> None:
     """Should route tmp path operations to tmp_file_operator."""
     async with LocalEnvironment(

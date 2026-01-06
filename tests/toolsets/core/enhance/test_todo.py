@@ -1,17 +1,16 @@
-"""Tests for pai_agent_sdk.toolsets.enhance.todo module."""
+"""Tests for pai_agent_sdk.toolsets.core.enhance.todo module."""
 
 import json
 from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.enhance.todo import (
+from pai_agent_sdk.toolsets.core.enhance.todo import (
     TodoItem,
     TodoReadTool,
     TodoWriteTool,
@@ -87,7 +86,6 @@ def test_todo_read_tool_is_available() -> None:
     assert TodoReadTool.is_available() is True
 
 
-@pytest.mark.asyncio
 async def test_todo_read_tool_no_file(tmp_path: Path) -> None:
     """Should return message when no file exists."""
     async with AsyncExitStack() as stack:
@@ -104,7 +102,6 @@ async def test_todo_read_tool_no_file(tmp_path: Path) -> None:
         assert result == "No TO-DO file found"
 
 
-@pytest.mark.asyncio
 async def test_todo_read_tool_empty_file(tmp_path: Path) -> None:
     """Should return message when file is empty."""
     async with AsyncExitStack() as stack:
@@ -125,7 +122,6 @@ async def test_todo_read_tool_empty_file(tmp_path: Path) -> None:
         assert result == "No TO-DOs found"
 
 
-@pytest.mark.asyncio
 async def test_todo_read_tool_valid_file(tmp_path: Path) -> None:
     """Should return list of TodoItems when file is valid."""
     async with AsyncExitStack() as stack:
@@ -153,7 +149,6 @@ async def test_todo_read_tool_valid_file(tmp_path: Path) -> None:
         assert result[1].status == "completed"
 
 
-@pytest.mark.asyncio
 async def test_todo_read_tool_corrupted_file(tmp_path: Path) -> None:
     """Should return error message and delete corrupted file."""
     async with AsyncExitStack() as stack:
@@ -194,7 +189,6 @@ def test_todo_write_tool_is_available() -> None:
     assert TodoWriteTool.is_available() is True
 
 
-@pytest.mark.asyncio
 async def test_todo_write_tool_write_todos(tmp_path: Path) -> None:
     """Should write todos to file."""
     async with AsyncExitStack() as stack:
@@ -223,7 +217,6 @@ async def test_todo_write_tool_write_todos(tmp_path: Path) -> None:
         assert len(content) == 2
 
 
-@pytest.mark.asyncio
 async def test_todo_write_tool_clear_todos(tmp_path: Path) -> None:
     """Should clear todos when empty list is passed."""
     async with AsyncExitStack() as stack:
@@ -245,7 +238,6 @@ async def test_todo_write_tool_clear_todos(tmp_path: Path) -> None:
         assert not todo_file.exists()
 
 
-@pytest.mark.asyncio
 async def test_todo_write_tool_overwrite_existing(tmp_path: Path) -> None:
     """Should overwrite existing file."""
     async with AsyncExitStack() as stack:
@@ -276,7 +268,6 @@ async def test_todo_write_tool_overwrite_existing(tmp_path: Path) -> None:
         assert content[0]["id"] == "NEW"
 
 
-@pytest.mark.asyncio
 async def test_todo_write_and_read_integration(tmp_path: Path) -> None:
     """Should be able to write and then read todos."""
     async with AsyncExitStack() as stack:
@@ -307,7 +298,7 @@ async def test_todo_write_and_read_integration(tmp_path: Path) -> None:
 
 def test_enhance_module_exports() -> None:
     """Should export expected symbols from enhance module."""
-    from pai_agent_sdk.toolsets import enhance
+    from pai_agent_sdk.toolsets.core import enhance
 
     assert hasattr(enhance, "ThinkingTool")
     assert hasattr(enhance, "TodoItem")

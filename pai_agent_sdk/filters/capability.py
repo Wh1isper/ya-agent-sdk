@@ -1,0 +1,185 @@
+"""Capability-based content filter for message history.
+
+This module provides a history processor that filters message content
+based on model capabilities. For example, if a model doesn't support
+vision, image content will be filtered out and replaced with explanatory text.
+
+Example::
+
+    from contextlib import AsyncExitStack
+    from pydantic_ai import Agent
+
+    from pai_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+    from pai_agent_sdk.environment.local import LocalEnvironment
+    from pai_agent_sdk.filters.capability import filter_by_capability
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment())
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                file_operator=env.file_operator,
+                shell=env.shell,
+                model_cfg=ModelConfig(
+                    capabilities={ModelCapability.vision},  # Model supports vision
+                ),
+            )
+        )
+        agent = Agent(
+            'openai:gpt-4',
+            deps_type=AgentContext,
+            history_processors=[filter_by_capability],
+        )
+        result = await agent.run('Describe this image', deps=ctx)
+"""
+
+from collections.abc import Sequence
+
+from pydantic_ai.messages import (
+    BinaryContent,
+    ImageUrl,
+    ModelMessage,
+    ModelRequest,
+    UserContent,
+    UserPromptPart,
+    VideoUrl,
+)
+from pydantic_ai.tools import RunContext
+
+from pai_agent_sdk._logger import logger
+from pai_agent_sdk.context import AgentContext, ModelCapability
+
+
+def _is_image_content(item: UserContent) -> bool:
+    """Check if content item is an image."""
+    if isinstance(item, ImageUrl):
+        return True
+    return isinstance(item, BinaryContent) and item.media_type.startswith("image/")
+
+
+def _is_video_content(item: UserContent) -> bool:
+    """Check if content item is a video."""
+    if isinstance(item, VideoUrl):
+        return True
+    return isinstance(item, BinaryContent) and item.media_type.startswith("video/")
+
+
+def _filter_content(
+    content: str | Sequence[UserContent],
+    has_vision: bool,
+    has_video: bool,
+) -> str | list[UserContent]:
+    """Filter content based on model capabilities.
+
+    Args:
+        content: The content to filter (string or sequence of content items).
+        has_vision: Whether the model supports vision.
+        has_video: Whether the model supports video understanding.
+
+    Returns:
+        Filtered content with explanatory text for removed items.
+    """
+    # If content is a string, no filtering needed
+    if isinstance(content, str):
+        return content
+
+    # Convert to list for processing
+    items: list[UserContent] = list(content)
+    filtered: list[UserContent] = []
+    removed_images = False
+    removed_videos = False
+
+    for item in items:
+        if _is_image_content(item):
+            if has_vision:
+                filtered.append(item)
+            else:
+                removed_images = True
+        elif _is_video_content(item):
+            if has_video:
+                filtered.append(item)
+            else:
+                removed_videos = True
+        else:
+            filtered.append(item)
+
+    # Add explanatory text for removed content
+    if removed_images:
+        logger.info("Filtering out image content - model does not have vision capability")
+        filtered.append(
+            "<filtered-content type='image'>"
+            "Image content has been filtered out as the current model does not support vision."
+            "</filtered-content>"
+        )
+
+    if removed_videos:
+        logger.info("Filtering out video content - model does not have video_understanding capability")
+        filtered.append(
+            "<filtered-content type='video'>"
+            "Video content has been filtered out as the current model does not support video understanding."
+            "</filtered-content>"
+        )
+
+    return filtered
+
+
+def filter_by_capability(
+    ctx: RunContext[AgentContext],
+    message_history: list[ModelMessage],
+) -> list[ModelMessage]:
+    """Filter message content based on model capabilities.
+
+    This is a pydantic-ai history_processor that filters out unsupported
+    content types based on the model's declared capabilities. For example,
+    if the model doesn't have the 'vision' capability, image content will
+    be replaced with explanatory text.
+
+    Supported capability checks:
+    - vision: Filters ImageUrl and image BinaryContent
+    - video_understanding: Filters VideoUrl and video BinaryContent
+
+    Args:
+        ctx: Runtime context containing AgentContext with model configuration.
+        message_history: List of messages to process.
+
+    Returns:
+        The message history with filtered content.
+
+    Example:
+        agent = Agent(
+            'openai:gpt-4',
+            deps_type=AgentContext,
+            history_processors=[filter_by_capability],
+        )
+    """
+    model_cfg = ctx.deps.model_cfg
+
+    # If no model config or no capability restrictions, return as-is
+    if model_cfg is None:
+        return message_history
+
+    has_vision = model_cfg.has_capability(ModelCapability.vision)
+    has_video = model_cfg.has_capability(ModelCapability.video_understanding)
+
+    # If model has all capabilities, no filtering needed
+    if has_vision and has_video:
+        return message_history
+
+    # Process each message
+    for message in message_history:
+        if not isinstance(message, ModelRequest):
+            continue
+
+        for part in message.parts:
+            if not isinstance(part, UserPromptPart):
+                continue
+
+            # Filter the content based on capabilities
+            filtered_content = _filter_content(part.content, has_vision, has_video)
+
+            # Update content - handle type conversion
+            if isinstance(filtered_content, str):
+                part.content = filtered_content
+            else:
+                part.content = filtered_content
+
+    return message_history

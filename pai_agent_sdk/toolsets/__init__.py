@@ -7,7 +7,8 @@ This module provides:
 - BrowserUseToolset: Browser automation via Chrome DevTools Protocol
 """
 
-from pai_agent_sdk.toolsets.base import (
+from pai_agent_sdk.toolsets.browser_use import BrowserUseSettings, BrowserUseToolset
+from pai_agent_sdk.toolsets.core.base import (
     BaseTool,
     BaseToolset,
     GlobalHooks,
@@ -17,7 +18,6 @@ from pai_agent_sdk.toolsets.base import (
     UserInputPreprocessResult,
     UserInteraction,
 )
-from pai_agent_sdk.toolsets.browser_use import BrowserUseSettings, BrowserUseToolset
 
 __all__ = [
     "BaseTool",
