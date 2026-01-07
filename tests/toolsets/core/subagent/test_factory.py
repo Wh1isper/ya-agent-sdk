@@ -141,7 +141,7 @@ async def test_call_returns_string(agent_context: AgentContext):
 
 @pytest.mark.asyncio
 async def test_usage_recorded(agent_context: AgentContext):
-    """Test that usage is recorded in extra_usage."""
+    """Test that usage is recorded in extra_usages."""
     SearchTool = create_subagent_tool(
         name="search",
         description="Search",
@@ -155,11 +155,13 @@ async def test_usage_recorded(agent_context: AgentContext):
     await tool.call(ctx, query="test query")
 
     # Check usage was recorded
-    assert tool_call_id in agent_context.extra_usage
-    usage = agent_context.extra_usage[tool_call_id]
-    assert usage.requests == 1
-    assert usage.input_tokens == 10
-    assert usage.output_tokens == 20
+    assert len(agent_context.extra_usages) == 1
+    record = agent_context.extra_usages[0]
+    assert record.uuid == tool_call_id
+    assert record.agent == "search"
+    assert record.usage.requests == 1
+    assert record.usage.input_tokens == 10
+    assert record.usage.output_tokens == 20
 
 
 @pytest.mark.asyncio
@@ -177,7 +179,7 @@ async def test_usage_not_recorded_without_tool_call_id(agent_context: AgentConte
     await tool.call(ctx, query="test query")
 
     # No usage should be recorded
-    assert len(agent_context.extra_usage) == 0
+    assert len(agent_context.extra_usages) == 0
 
 
 def test_instruction_string(agent_context: AgentContext):

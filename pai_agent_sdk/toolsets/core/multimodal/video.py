@@ -5,7 +5,6 @@ native video understanding capabilities.
 """
 
 from typing import Annotated
-from uuid import uuid4
 
 from pydantic import Field
 from pydantic_ai import RunContext
@@ -62,7 +61,8 @@ class ReadVideoTool(BaseTool):
             model_settings=model_settings,
         )
 
-        if uuid := ctx.tool_call_id or uuid4().hex:
-            agent_ctx.extra_usage[uuid] = usage
+        # Store usage in extra_usages with tool_call_id
+        if ctx.tool_call_id:
+            agent_ctx.add_extra_usage(agent="video_understanding", usage=usage, uuid=ctx.tool_call_id)
 
         return description

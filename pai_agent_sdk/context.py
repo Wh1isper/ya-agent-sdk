@@ -67,7 +67,7 @@ from uuid import uuid4
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
-from pydantic_ai import RunContext
+from pydantic_ai import ModelSettings, RunContext
 from pydantic_ai.messages import HandleResponseEvent as PydanticHandleResponseEvent
 from pydantic_ai.messages import (
     ModelMessage,
@@ -79,7 +79,31 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 
 from pai_agent_sdk.environment.base import FileOperator, ResourceRegistry, Shell
+from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
 from pai_agent_sdk.utils import get_latest_request_usage
+
+# =============================================================================
+# Extra Usage Record
+# =============================================================================
+
+
+class ExtraUsageRecord(BaseModel):
+    """Record of extra usage from tool calls or filters.
+
+    This model captures additional token usage that occurs outside the main
+    agent run, such as from sub-agents, filters, or tool calls that invoke
+    other models.
+    """
+
+    uuid: str
+    """Unique identifier for this usage record (e.g., tool_call_id or generated UUID)."""
+
+    agent: str
+    """Agent name that generated this usage (e.g., 'compact', 'search', 'image_understanding')."""
+
+    usage: RunUsage
+    """Token usage from this call."""
+
 
 if TYPE_CHECKING:
     from typing import Self
@@ -229,13 +253,13 @@ class ToolConfig(BaseModel):
     image_understanding_model: str | None = None
     """Model to use for image understanding. Falls back to AgentSettings.image_understanding_model."""
 
-    image_understanding_model_settings: dict[str, Any] | None = None
+    image_understanding_model_settings: ModelSettings | None = None
     """Model settings for image understanding agent."""
 
     video_understanding_model: str | None = None
     """Model to use for video understanding. Falls back to AgentSettings.video_understanding_model."""
 
-    video_understanding_model_settings: dict[str, Any] | None = None
+    video_understanding_model_settings: ModelSettings | None = None
     """Model settings for video understanding agent."""
 
     # Web search API keys
@@ -268,6 +292,9 @@ class ModelConfig(BaseModel):
 
     handoff_threshold: float | None = None
     """Handoff threshold for context injection."""
+
+    compact_threshold: float = 0.8
+    """Compact threshold for auto-compaction. When token usage exceeds this ratio, compact is triggered."""
 
     max_images: int = 20
     """Maximum number of images allowed in message history. Default is 20 (Claude's limit)."""
@@ -384,10 +411,10 @@ class AgentContext(BaseModel):
     handoff_message: str | None = None
     """Rendered handoff message to be injected into new context after handoff."""
 
-    file_operator: FileOperator
+    file_operator: FileOperator = Field(default_factory=lambda: LocalFileOperator())
     """File operator for file system operations. Provided by Environment."""
 
-    shell: Shell
+    shell: Shell = Field(default_factory=lambda: LocalShell())
     """Shell executor for command execution. Provided by Environment."""
 
     resources: ResourceRegistry = Field(default_factory=ResourceRegistry)
@@ -396,8 +423,11 @@ class AgentContext(BaseModel):
     model_cfg: ModelConfig = Field(default_factory=ModelConfig)
     """Model configuration for context management."""
 
-    extra_usage: dict[str, RunUsage] = Field(default_factory=dict)
-    """Extra usage from tool calls, keyed by tool_call_id."""
+    extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
+    """Extra usage records from tool calls and filters."""
+
+    user_prompts: list[str] = Field(default_factory=list)
+    """User prompts collected during the session for compact."""
 
     tool_id_wrapper: ToolIdWrapper = Field(default_factory=ToolIdWrapper)
     """Tool ID wrapper for normalizing tool call IDs across providers."""
@@ -550,6 +580,22 @@ class AgentContext(BaseModel):
                 )
         """
         return [self.tool_id_wrapper.wrap_messages]
+
+    def add_extra_usage(
+        self,
+        agent: str,
+        usage: RunUsage,
+        uuid: str | None = None,
+    ) -> None:
+        """Add an extra usage record.
+
+        Args:
+            agent: Agent name that generated this usage.
+            usage: Token usage from this call.
+            uuid: Unique identifier (defaults to generated UUID if not provided).
+        """
+        record_uuid = uuid or uuid4().hex
+        self.extra_usages.append(ExtraUsageRecord(uuid=record_uuid, agent=agent, usage=usage))
 
     async def __aenter__(self):
         """Enter the context and start timing."""

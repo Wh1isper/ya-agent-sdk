@@ -8,17 +8,19 @@ and design style analysis.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, BinaryContent, ImageUrl
+from pydantic_ai import Agent, BinaryContent, ImageUrl, ModelSettings
+from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 
 from pai_agent_sdk._config import AgentSettings
 from pai_agent_sdk._logger import logger
-from pai_agent_sdk.agents.models import Model, infer_model
+from pai_agent_sdk.agents.models import infer_model
 
 if TYPE_CHECKING:
     pass
@@ -103,8 +105,6 @@ DEFAULT_IMAGE_ANALYSIS_INSTRUCTION = """<instruction>
 
 def _xml_to_string(element: Element) -> str:
     """Convert XML element to formatted string."""
-    from xml.dom.minidom import parseString
-
     rough_string = tostring(element, encoding="unicode")
     dom = parseString(rough_string)  # noqa: S318
     lines = dom.toprettyxml(indent="  ").split("\n")[1:]
@@ -273,7 +273,7 @@ class ImageDescription(BaseModel):
 
 def get_image_understanding_agent(
     model: str | Model | None = None,
-    model_settings: dict[str, Any] | None = None,
+    model_settings: ModelSettings | None = None,
 ) -> Agent[None, ImageDescription]:
     """Create an image understanding agent.
 
@@ -298,11 +298,11 @@ def get_image_understanding_agent(
 
     system_prompt = _load_system_prompt()
 
-    return Agent[None, ImageDescription](  # pyright: ignore[reportCallIssue]
+    return Agent[None, ImageDescription](
         model_instance,
         output_type=ImageDescription,
         system_prompt=system_prompt,
-        model_settings=model_settings,  # pyright: ignore[reportArgumentType]
+        model_settings=model_settings,
         retries=3,
         output_retries=3,
     )
@@ -314,7 +314,7 @@ async def get_image_description(
     media_type: str | None = None,
     instruction: str | None = None,
     model: str | Model | None = None,
-    model_settings: dict[str, Any] | None = None,
+    model_settings: ModelSettings | None = None,
     max_image_size: int = DEFAULT_MAX_IMAGE_SIZE,
 ) -> tuple[str, RunUsage]:
     """Analyze an image and get a structured description.

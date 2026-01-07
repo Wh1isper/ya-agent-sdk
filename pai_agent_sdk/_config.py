@@ -32,3 +32,6 @@ class AgentSettings(BaseSettings):
 
     video_understanding_model: str | None = None
     """Model to use for video understanding when native capability is unavailable."""
+
+    compact_model: str | None = None
+    """Model to use for compact when native capability is unavailable."""

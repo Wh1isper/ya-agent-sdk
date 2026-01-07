@@ -1,5 +1,3 @@
-# Handoff Tool Usage Guide
-
 <handoff-guidelines>
 
 <when-to-handoff>

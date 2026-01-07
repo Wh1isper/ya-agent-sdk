@@ -157,9 +157,9 @@ class ViewTool(BaseTool):
                     model_settings=model_settings,
                 )
 
-                # Store usage in extra_usage with tool_call_id
+                # Store usage in extra_usages with tool_call_id
                 if ctx.tool_call_id:
-                    ctx.deps.extra_usage[ctx.tool_call_id] = usage
+                    ctx.deps.add_extra_usage(agent="image_understanding", usage=usage, uuid=ctx.tool_call_id)
 
                 return f"Video description (via image analysis):\n{description}"
             except Exception as e:

@@ -106,9 +106,9 @@ def create_subagent_tool(
             """Execute the subagent call and record usage."""
             output, usage = await call_func(ctx, **kwargs)
 
-            # Record usage in extra_usage
+            # Record usage in extra_usages
             if ctx.tool_call_id:
-                ctx.deps.extra_usage[ctx.tool_call_id] = usage
+                ctx.deps.add_extra_usage(agent=name, usage=usage, uuid=ctx.tool_call_id)
 
             # Convert output to string for LLM
             return str(output)
@@ -142,9 +142,9 @@ def _create_call_method(
         async with ctx.deps.enter_subagent(self.name, agent_id=ctx.tool_call_id) as sub_ctx:
             output, usage = await call_func(sub_ctx, **kwargs)
 
-        # Record usage in extra_usage
+        # Record usage in extra_usages
         if ctx.tool_call_id:
-            ctx.deps.extra_usage[ctx.tool_call_id] = usage
+            ctx.deps.add_extra_usage(agent=self.name, usage=usage, uuid=ctx.tool_call_id)
 
         # Convert output to string for LLM
         return str(output)

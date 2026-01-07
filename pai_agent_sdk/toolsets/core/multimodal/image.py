@@ -61,8 +61,8 @@ class ReadImageTool(BaseTool):
             model_settings=model_settings,
         )
 
-        # Store usage in extra_usage with tool_call_id
+        # Store usage in extra_usages with tool_call_id
         if ctx.tool_call_id:
-            agent_ctx.extra_usage[ctx.tool_call_id] = usage
+            agent_ctx.add_extra_usage(agent="image_understanding", usage=usage, uuid=ctx.tool_call_id)
 
         return description

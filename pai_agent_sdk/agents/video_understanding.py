@@ -7,16 +7,18 @@ screen recordings and general video content, returning structured descriptions.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
+from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field, model_validator
-from pydantic_ai import Agent, BinaryContent, VideoUrl
+from pydantic_ai import Agent, BinaryContent, ModelSettings, VideoUrl
+from pydantic_ai.models import Model
 
 from pai_agent_sdk._config import AgentSettings
 from pai_agent_sdk._logger import logger
-from pai_agent_sdk.agents.models import Model, infer_model
+from pai_agent_sdk.agents.models import infer_model
 
 if TYPE_CHECKING:
     from typing import Self
@@ -102,8 +104,6 @@ DEFAULT_VIDEO_ANALYSIS_INSTRUCTION = """<instruction>
 
 def _xml_to_string(element: Element) -> str:
     """Convert XML element to formatted string."""
-    from xml.dom.minidom import parseString
-
     rough_string = tostring(element, encoding="unicode")
     dom = parseString(rough_string)  # noqa: S318
     lines = dom.toprettyxml(indent="  ").split("\n")[1:]
@@ -344,7 +344,7 @@ class VideoDescription(BaseModel):
 
 def get_video_understanding_agent(
     model: str | Model | None = None,
-    model_settings: dict[str, Any] | None = None,
+    model_settings: ModelSettings | None = None,
 ) -> Agent[None, VideoDescription]:
     """Create a video understanding agent.
 
@@ -371,11 +371,11 @@ def get_video_understanding_agent(
 
     system_prompt = _load_system_prompt()
 
-    return Agent[None, VideoDescription](  # pyright: ignore[reportCallIssue]
+    return Agent[None, VideoDescription](
         model_instance,
         output_type=VideoDescription,
         system_prompt=system_prompt,
-        model_settings=model_settings,  # pyright: ignore[reportArgumentType]
+        model_settings=model_settings,
         retries=3,
         output_retries=3,
     )
@@ -387,7 +387,7 @@ async def get_video_description(
     media_type: str | None = None,
     instruction: str | None = None,
     model: str | Model | None = None,
-    model_settings: dict[str, Any] | None = None,
+    model_settings: ModelSettings | None = None,
     max_video_size: int = DEFAULT_MAX_VIDEO_SIZE,
 ) -> tuple[str, RunUsage]:
     """Analyze a video and get a structured description.

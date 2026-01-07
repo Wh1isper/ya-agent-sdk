@@ -64,6 +64,7 @@ After modifying any code:
 - **Formatter**: ruff (line-length: 120)
 - **Type Checking**: pyright (standard mode)
 - **Target Python**: 3.11
+- **Import Style**: All imports must be at module level (top of file). Do not use function-level imports except within `TYPE_CHECKING` blocks for avoiding circular dependencies.
 
 ## Testing
 
