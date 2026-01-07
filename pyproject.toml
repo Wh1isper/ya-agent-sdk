@@ -86,8 +86,6 @@ pythonVersion = "3.11"
 typeCheckingMode = "standard"
 reportTypedDictNotRequiredAccess = false
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py311"

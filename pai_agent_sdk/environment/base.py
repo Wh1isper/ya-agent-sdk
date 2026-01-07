@@ -72,6 +72,7 @@ from xml.etree import ElementTree as ET
 
 import anyio
 import pathspec
+from pydantic_ai.toolsets import AbstractToolset
 
 from pai_agent_sdk.environment.exceptions import EnvironmentNotEnteredError
 
@@ -1122,6 +1123,7 @@ class Environment(ABC):
     - Call super().__init__() to initialize the resource registry
     - Implement _setup() to create file_operator, shell, and any custom resources
     - Implement _teardown() to clean up environment-specific resources
+    - Optionally populate self._toolsets in _setup() to provide environment-specific tools
     - NOT override __aenter__ or __aexit__ (use _setup/_teardown instead)
 
     The base class handles:
@@ -1145,6 +1147,8 @@ class Environment(ABC):
                     resources=env.resources,
                 )
             )
+            # Optionally add environment toolsets to agent
+            agent = Agent(..., toolsets=[*core_toolsets, *env.toolsets])
             ...
         # Resources cleaned up when stack exits
         ```
@@ -1155,6 +1159,7 @@ class Environment(ABC):
         self._resources = ResourceRegistry()
         self._file_operator: FileOperator | None = None
         self._shell: Shell | None = None
+        self._toolsets: list[AbstractToolset[Any]] = []
 
     @property
     def file_operator(self) -> FileOperator:
@@ -1185,6 +1190,25 @@ class Environment(ABC):
         Resources can be accessed by AgentContext and tools.
         """
         return self._resources
+
+    @property
+    def toolsets(self) -> list[AbstractToolset[Any]]:
+        """Return optional pydantic-ai toolsets provided by this environment.
+
+        Subclasses can populate self._toolsets in _setup() to provide
+        environment-specific tools. These can be injected into an Agent's
+        toolsets list.
+
+        Example:
+            ```python
+            async with MyEnvironment() as env:
+                agent = Agent(
+                    ...,
+                    toolsets=[core_toolset, *env.toolsets],
+                )
+            ```
+        """
+        return self._toolsets
 
     # --- Subclass hooks ---
 

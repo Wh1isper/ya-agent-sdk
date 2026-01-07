@@ -18,6 +18,7 @@ Environment (ABC) - Long-lived, owns resources
   ├── _resources: ResourceRegistry     # Runtime resources (browser, db, etc.)
   ├── _file_operator: FileOperator     # File system operations
   ├── _shell: Shell                    # Command execution
+  ├── _toolsets: list[AbstractToolset] # Optional pydantic-ai toolsets
   ├── _setup() -> None                 # Subclass hook: initialization
   ├── _teardown() -> None              # Subclass hook: cleanup
   ├── __aenter__() -> Self             # Base class: calls _setup()
@@ -201,3 +202,66 @@ async with DockerEnvironment(
 3. **Register resources** that need cleanup via `_resources.set()`
 4. **Use `get_typed()`** for type-safe resource access in tools
 5. **Don't override `__aenter__`/`__aexit__`** - use `_setup`/`_teardown` instead
+
+## Environment Toolsets
+
+Environments can optionally provide pydantic-ai toolsets via the `toolsets` property. Subclasses populate `self._toolsets` in `_setup()` to expose environment-specific tools.
+
+### Creating Environment with Toolsets
+
+```python
+from pydantic_ai.toolsets import FunctionToolset
+from pai_agent_sdk.environment import Environment
+
+class ContainerEnvironment(Environment):
+    async def _setup(self) -> None:
+        # Set up file_operator and shell...
+        self._file_operator = ...
+        self._shell = ...
+
+        # Create environment-specific toolset
+        container_toolset = FunctionToolset()
+
+        @container_toolset.tool
+        def get_container_status() -> str:
+            """Get the status of the container."""
+            return "running"
+
+        @container_toolset.tool
+        def get_resource_usage() -> dict:
+            """Get container resource usage."""
+            return {"cpu": "10%", "memory": "256MB"}
+
+        self._toolsets = [container_toolset]
+
+    async def _teardown(self) -> None:
+        self._file_operator = None
+        self._shell = None
+        self._toolsets = []
+```
+
+### Using Environment Toolsets with Agent
+
+```python
+from pydantic_ai import Agent
+
+async with ContainerEnvironment() as env:
+    ctx = await stack.enter_async_context(
+        AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+            resources=env.resources,
+        )
+    )
+
+    # Inject environment toolsets into agent
+    agent = Agent(
+        "openai:gpt-4",
+        toolsets=[
+            core_toolset,        # Your core tools
+            *env.toolsets,       # Environment-specific tools
+        ],
+    )
+```
+
+The `toolsets` property returns an empty list by default, so environments without custom tools work seamlessly.
