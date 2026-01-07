@@ -22,7 +22,7 @@ async def agent_context(tmp_path: Path) -> AgentContext:
             shell=env.shell,
             model_cfg=ModelConfig(
                 context_window=200000,
-                handoff_threshold=0.5,
+                proactive_context_management_threshold=0.5,
             ),
         ) as ctx:
             yield ctx
@@ -101,7 +101,7 @@ async def test_inject_runtime_instructions_with_model_config(tmp_path: Path) -> 
             shell=env.shell,
             model_cfg=ModelConfig(
                 context_window=200000,
-                handoff_threshold=0.5,
+                proactive_context_management_threshold=0.5,
             ),
         ) as ctx:
             mock_ctx = MagicMock()

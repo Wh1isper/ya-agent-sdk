@@ -349,8 +349,8 @@ class ModelConfig(BaseModel):
     context_window: int | None = None
     """Total context window size in tokens."""
 
-    handoff_threshold: float | None = None
-    """Handoff threshold for context injection."""
+    proactive_context_management_threshold: float | None = None
+    """Proactive context management threshold. When token usage exceeds this ratio, reminders are triggered."""
 
     compact_threshold: float = 0.8
     """Compact threshold for auto-compaction. When token usage exceeds this ratio, compact is triggered."""
@@ -402,7 +402,7 @@ class RunContextMetadata(TypedDict, total=False):
                         shell=env.shell,
                         model_cfg=ModelConfig(
                             context_window=200000,
-                            handoff_threshold=0.5,
+                            proactive_context_management_threshold=0.5,
                         ),
                     )
                 )
@@ -412,14 +412,14 @@ class RunContextMetadata(TypedDict, total=False):
                     deps_type=AgentContext,
                     toolsets=[toolset],
                     history_processors=[process_handoff_message],
-                    # Enable handoff tool via metadata - triggers threshold warning
-                    metadata=lambda _: {'enable_handoff_tool': True},
+                    # Set context management tool name - triggers threshold warning
+                    metadata=lambda _: {'context_manage_tool': 'handoff'},
                 )
                 result = await agent.run('Your prompt here', deps=ctx)
     """
 
-    enable_handoff_tool: bool
-    """Whether the handoff tool is enabled for this run."""
+    context_manage_tool: str
+    """Name of the context management tool to use (e.g., 'handoff')."""
 
 
 class AgentContext(BaseModel):
@@ -564,16 +564,18 @@ class AgentContext(BaseModel):
 
         # Handoff threshold warning
         if (
-            metadata.get("enable_handoff_tool", False)
+            (context_manage_tool := metadata.get("context_manage_tool"))
             and self.model_cfg.context_window is not None
-            and self.model_cfg.handoff_threshold is not None
+            and self.model_cfg.proactive_context_management_threshold is not None
             and run_context
             and (request_usage := get_latest_request_usage(run_context.messages))
         ):
-            threshold_tokens = int(self.model_cfg.context_window * self.model_cfg.handoff_threshold)
+            threshold_tokens = int(
+                self.model_cfg.context_window * self.model_cfg.proactive_context_management_threshold
+            )
             if request_usage.total_tokens >= threshold_tokens:
                 reminders.append(
-                    "IMPORTANT: **You have reached the handoff threshold, please calling the `handoff` tool "
+                    f"IMPORTANT: **You have reached the handoff threshold, please calling the `{context_manage_tool}` tool "
                     "to summarize then continue the task at the appropriate time.**"
                 )
 

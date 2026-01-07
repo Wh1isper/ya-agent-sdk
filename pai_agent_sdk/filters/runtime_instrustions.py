@@ -29,7 +29,7 @@ Example::
                 shell=env.shell,
                 model_cfg=ModelConfig(
                     context_window=200000,
-                    handoff_threshold=0.5,
+                    proactive_context_management_threshold=0.5,
                 ),
             )
         )
@@ -37,7 +37,7 @@ Example::
             'openai:gpt-4',
             deps_type=AgentContext,
             history_processors=[inject_runtime_instructions],
-            metadata=lambda _: {'enable_handoff_tool': True},
+            metadata=lambda _: {'context_manage_tool': 'handoff'},
         )
         result = await agent.run('Your prompt here', deps=ctx)
 """

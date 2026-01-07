@@ -343,7 +343,7 @@ async def test_get_context_instructions_with_model_config(tmp_path: Path) -> Non
             shell=env.shell,
             model_cfg=ModelConfig(
                 context_window=200000,
-                handoff_threshold=0.5,
+                proactive_context_management_threshold=0.5,
             ),
         ) as ctx:
             instructions = await ctx.get_context_instructions()
@@ -378,7 +378,7 @@ async def test_get_context_instructions_with_token_usage(tmp_path: Path) -> None
             shell=env.shell,
             model_cfg=ModelConfig(
                 context_window=200000,
-                handoff_threshold=0.5,
+                proactive_context_management_threshold=0.5,
             ),
         ) as ctx:
             # Create mock run_context with messages containing usage
@@ -431,13 +431,13 @@ async def test_get_context_instructions_with_handoff_warning(tmp_path: Path) -> 
             shell=env.shell,
             model_cfg=ModelConfig(
                 context_window=200000,
-                handoff_threshold=0.5,  # 50% = 100000 tokens
+                proactive_context_management_threshold=0.5,  # 50% = 100000 tokens
             ),
         ) as ctx:
             # Create mock run_context with high token usage
             mock_run_context = MagicMock()
             mock_run_context.deps = ctx
-            mock_run_context.metadata = {"enable_handoff_tool": True}
+            mock_run_context.metadata = {"context_manage_tool": "handoff"}
             mock_run_context.messages = [
                 ModelRequest(parts=[UserPromptPart(content="Hello")]),
                 ModelResponse(
@@ -487,12 +487,12 @@ async def test_get_context_instructions_no_handoff_warning_below_threshold(tmp_p
             shell=env.shell,
             model_cfg=ModelConfig(
                 context_window=200000,
-                handoff_threshold=0.5,
+                proactive_context_management_threshold=0.5,
             ),
         ) as ctx:
             mock_run_context = MagicMock()
             mock_run_context.deps = ctx
-            mock_run_context.metadata = {"enable_handoff_tool": True}
+            mock_run_context.metadata = {"context_manage_tool": "handoff"}
             mock_run_context.messages = [
                 ModelRequest(parts=[UserPromptPart(content="Hello")]),
                 ModelResponse(
@@ -512,7 +512,7 @@ async def test_get_context_instructions_no_handoff_warning_below_threshold(tmp_p
 
 
 async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_path: Path) -> None:
-    """Should not include handoff warning when enable_handoff_tool is False."""
+    """Should not include handoff warning when context_manage_tool is False."""
     from unittest.mock import MagicMock
 
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
@@ -530,12 +530,12 @@ async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_pat
             shell=env.shell,
             model_cfg=ModelConfig(
                 context_window=200000,
-                handoff_threshold=0.5,
+                proactive_context_management_threshold=0.5,
             ),
         ) as ctx:
             mock_run_context = MagicMock()
             mock_run_context.deps = ctx
-            mock_run_context.metadata = {"enable_handoff_tool": False}  # Disabled
+            mock_run_context.metadata = {"context_manage_tool": False}  # Disabled
             mock_run_context.messages = [
                 ModelRequest(parts=[UserPromptPart(content="Hello")]),
                 ModelResponse(
