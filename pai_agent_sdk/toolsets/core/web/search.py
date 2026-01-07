@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from functools import cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
@@ -18,16 +20,29 @@ if TYPE_CHECKING:
 
 URL_CHECK_TIMEOUT = 5.0
 URL_VALIDATION_CONCURRENCY = 5
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+@cache
+def _load_search_instruction() -> str:
+    return (_PROMPTS_DIR / "search.md").read_text()
+
+
+@cache
+def _load_search_stock_image_instruction() -> str:
+    return (_PROMPTS_DIR / "search_stock_image.md").read_text()
+
+
+@cache
+def _load_search_image_instruction() -> str:
+    return (_PROMPTS_DIR / "search_image.md").read_text()
 
 
 class SearchTool(BaseTool):
     """Web search tool using Google or Tavily."""
 
     name = "search"
-    description = """Search the web for information.
-If the initial query is too broad or results are not ideal, refine the search by progressively reducing keywords.
-Useful for retrieving up-to-date information, specific data, or detailed background research.
-"""
+    description = "Search the web for information using Google or Tavily APIs."
 
     def is_available(self) -> bool:
         """Available if Google or Tavily API keys are configured."""
@@ -35,6 +50,9 @@ Useful for retrieving up-to-date information, specific data, or detailed backgro
         has_google = bool(cfg.google_search_api_key and cfg.google_search_cx)
         has_tavily = bool(cfg.tavily_api_key)
         return has_google or has_tavily
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        return _load_search_instruction()
 
     async def call(
         self,
@@ -98,22 +116,14 @@ class SearchStockImageTool(BaseTool):
     """Stock image search using Pixabay."""
 
     name = "search_stock_image"
-    description = """Search high-quality stock images from Pixabay.
-Ideal for finding professional stock photos, illustrations, and graphics for landing pages, websites, and design work.
-Pixabay offers royalty-free images with commercial usage rights.
-
-Best for:
-- High-quality stock photography and illustrations
-- Landing page design elements
-- Website backgrounds and hero images
-- Abstract concepts and artistic content
-
-NOTE: For specific characters, celebrities, or real-world references, use search_image instead.
-"""
+    description = "Search royalty-free stock images from Pixabay for design work."
 
     def is_available(self) -> bool:
         """Available if Pixabay API key is configured."""
         return bool(self.ctx.model_cfg.tool_config.pixabay_api_key)
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        return _load_search_stock_image_instruction()
 
     async def call(
         self,
@@ -173,22 +183,14 @@ class SearchImageTool(BaseTool):
     """Real-time image search using RapidAPI."""
 
     name = "search_image"
-    description = """Search real-time images from the internet via RapidAPI.
-Provides high-precision search results similar to Google Images.
-
-Best for:
-- Celebrity photos and public figures
-- Movie and fictional characters (e.g., Harry Potter, Marvel heroes)
-- Current events and news-related images
-- Specific products, brands, or locations
-- Real-world objects and entities
-
-PRIORITY USE: First choice for specific characters, people, or entities where accuracy matters.
-"""
+    description = "Search real-time images via RapidAPI (similar to Google Images)."
 
     def is_available(self) -> bool:
         """Available if RapidAPI key is configured."""
         return bool(self.ctx.model_cfg.tool_config.rapidapi_api_key)
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        return _load_search_image_instruction()
 
     async def call(
         self,

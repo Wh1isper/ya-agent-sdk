@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import cache
+from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -15,26 +17,22 @@ from pai_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, safe
 logger = get_logger(__name__)
 
 CONTENT_TRUNCATE_THRESHOLD = 60000
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+@cache
+def _load_instruction() -> str:
+    return (_PROMPTS_DIR / "fetch.md").read_text()
 
 
 class FetchTool(BaseTool):
     """Fetch web files with optional HEAD-only mode for checking existence."""
 
     name = "fetch"
-    description = """Read a file or image from the web.
+    description = "Read web files or check resource availability via HTTP."
 
-With head_only=True, only check if the resource exists without downloading content.
-Returns information about resource existence, content type, and size.
-
-For large files, use `download` tool to save locally.
-For PDF files, download first then use `pdf_convert` tool.
-
-Example use cases:
-- View JSON/text files from the web
-- Display images inline for analysis
-- Verify resource availability (head_only=True)
-- Check content type before downloading
-"""
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        return _load_instruction()
 
     async def call(
         self,

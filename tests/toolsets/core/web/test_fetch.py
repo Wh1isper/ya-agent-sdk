@@ -15,7 +15,7 @@ from pai_agent_sdk.toolsets.core.web.fetch import FetchTool
 def test_fetch_tool_attributes() -> None:
     """Should have correct name and description."""
     assert FetchTool.name == "fetch"
-    assert "Read a file or image from the web" in FetchTool.description
+    assert "web" in FetchTool.description.lower()
 
 
 async def test_fetch_tool_head_only(tmp_path: Path, httpx_mock) -> None:

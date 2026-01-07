@@ -15,7 +15,7 @@ from pai_agent_sdk.toolsets.core.web.scrape import CONTENT_TRUNCATE_THRESHOLD, S
 def test_scrape_tool_attributes() -> None:
     """Should have correct name and description."""
     assert ScrapeTool.name == "scrape"
-    assert "Turn websites into Markdown" in ScrapeTool.description
+    assert "Markdown" in ScrapeTool.description
 
 
 async def test_scrape_tool_forbidden_url(tmp_path: Path) -> None:

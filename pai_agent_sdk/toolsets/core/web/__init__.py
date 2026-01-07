@@ -10,32 +10,16 @@ try:
 except ImportError as e:
     raise ImportError("Web toolset requires optional dependencies. Install with: pip install pai-agent-sdk[web]") from e
 
-from pai_agent_sdk.toolsets.core.web._types import (
-    DownloadResult,
-    ErrorResult,
-    FetchTextResult,
-    HeadOnlyResult,
-    ImageSearchResult,
-    ScrapeResult,
-    SearchResult,
-)
 from pai_agent_sdk.toolsets.core.web.download import DownloadTool
 from pai_agent_sdk.toolsets.core.web.fetch import FetchTool
 from pai_agent_sdk.toolsets.core.web.scrape import ScrapeTool
 from pai_agent_sdk.toolsets.core.web.search import SearchImageTool, SearchStockImageTool, SearchTool
 
 __all__ = [
-    "DownloadResult",
     "DownloadTool",
-    "ErrorResult",
-    "FetchTextResult",
     "FetchTool",
-    "HeadOnlyResult",
-    "ImageSearchResult",
-    "ScrapeResult",
     "ScrapeTool",
     "SearchImageTool",
-    "SearchResult",
     "SearchStockImageTool",
     "SearchTool",
 ]

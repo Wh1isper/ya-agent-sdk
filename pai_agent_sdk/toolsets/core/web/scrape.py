@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import cache
+from pathlib import Path
 from typing import Annotated, Any
 
 import anyio.to_thread
@@ -18,23 +20,26 @@ from pai_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, veri
 logger = get_logger(__name__)
 
 CONTENT_TRUNCATE_THRESHOLD = 60000
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+@cache
+def _load_instruction() -> str:
+    return (_PROMPTS_DIR / "scrape.md").read_text()
 
 
 class ScrapeTool(BaseTool):
     """Web scraping tool that converts websites to Markdown."""
 
     name = "scrape"
-    description = """Turn websites into Markdown format data.
-Use this tool to understand the content of a website.
-
-If web scraping fails or returns insufficient content, consider using browser tools for visual capture.
-
-IMPORTANT: Use full http url, e.g. https://example.com
-"""
+    description = "Convert websites to Markdown format for content analysis."
 
     def __init__(self, ctx: AgentContext) -> None:
         super().__init__(ctx)
         self._md = MarkItDown(enable_plugins=True)
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        return _load_instruction()
 
     async def call(
         self,

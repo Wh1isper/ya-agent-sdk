@@ -14,7 +14,7 @@ from pai_agent_sdk.toolsets.core.web.download import DownloadTool
 def test_download_tool_attributes() -> None:
     """Should have correct name and description."""
     assert DownloadTool.name == "download"
-    assert "Download files from the web" in DownloadTool.description
+    assert "Download" in DownloadTool.description
 
 
 async def test_download_tool_single_file(tmp_path: Path, httpx_mock) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+from functools import cache
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
@@ -17,20 +18,22 @@ from pai_agent_sdk.toolsets.core.base import BaseTool
 from pai_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, safe_request, verify_url
 
 logger = get_logger(__name__)
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+@cache
+def _load_instruction() -> str:
+    return (_PROMPTS_DIR / "download.md").read_text()
 
 
 class DownloadTool(BaseTool):
     """Download files from the web and save to local filesystem."""
 
     name = "download"
-    description = """Download files from the web (HTML, images, documents, etc.) and save them locally.
-Supports various file types including HTML, PNG, JPEG, PDF, and more.
+    description = "Download files from URLs and save to local filesystem."
 
-IMPORTANT:
-- For PDF, download first then use `pdf_convert` tool
-- Use `scrape` tool if you need to read web page content
-- Use `fetch` tool to view files directly without saving
-"""
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        return _load_instruction()
 
     async def call(
         self,
@@ -102,15 +105,11 @@ IMPORTANT:
 
     def _get_extension(self, content_type: str, original_name: str) -> str:
         """Get file extension from content type or original name."""
-        # Try original name first
-        original_ext = Path(original_name).suffix
-        if original_ext:
-            return original_ext
+        # Try to get extension from original name
+        ext = Path(original_name).suffix
+        if ext:
+            return ext
 
-        # Guess from content type
-        if content_type:
-            ext = mimetypes.guess_extension(content_type)
-            if ext:
-                return ext
-
-        return ""
+        # Fallback to content type
+        ext = mimetypes.guess_extension(content_type) or ""
+        return ext
