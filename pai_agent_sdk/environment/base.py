@@ -64,9 +64,11 @@ Example:
 
 import asyncio
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, TypeVar, runtime_checkable
+from xml.etree import ElementTree as ET
 
 import anyio
 import pathspec
@@ -599,13 +601,15 @@ class FileOperator(ABC):
         )
         self._instructions_max_depth = instructions_max_depth
 
-        # Auto-create LocalTmpFileOperator when tmp_dir provided but no operator
+        # Auto-create LocalTmpFileOperator with tmp_dir or a random temp directory
+        self._owned_tmp_dir: Path | None = None  # Track tmp_dir we created (for cleanup)
         if tmp_file_operator is not None:
             self._tmp_file_operator: TmpFileOperator | None = tmp_file_operator
-        elif tmp_dir is not None:
-            self._tmp_file_operator = LocalTmpFileOperator(tmp_dir)
         else:
-            self._tmp_file_operator = None
+            if tmp_dir is None:
+                tmp_dir = Path(tempfile.mkdtemp(prefix="pai_agent_"))
+                self._owned_tmp_dir = tmp_dir  # We created it, we must clean it up
+            self._tmp_file_operator = LocalTmpFileOperator(tmp_dir)
 
     def _is_tmp_path(self, path: str) -> tuple[bool, str]:
         """Delegate to tmp_file_operator to check if path is managed."""
@@ -974,27 +978,58 @@ class FileOperator(ABC):
 
     async def get_context_instructions(self) -> str | None:
         """Return file system context in XML format."""
-        filetree = await generate_filetree(
-            self,
-            root_path=".",
-            max_depth=self._instructions_max_depth,
-            skip_dirs=self._instructions_skip_dirs,
-        )
-        paths_str = "\n".join(f"    <path>{p}</path>" for p in self._allowed_paths)
-        tmp_section = ""
+        root = ET.Element("file-system")
+
+        # Default directory
+        default_dir = ET.SubElement(root, "default-directory")
+        default_dir.text = str(self._default_path)
+
+        # Tmp directory (if configured)
         if self._tmp_file_operator:
             tmp_dir_info = self._tmp_file_operator.tmp_dir
             if tmp_dir_info:
-                tmp_section = f"\n  <tmp-directory>{tmp_dir_info}</tmp-directory>"
-        return f"""<file-system>
-  <allowed-directories>
-{paths_str}
-  </allowed-directories>
-  <default-directory>{self._default_path}</default-directory>{tmp_section}
-  <file-tree>
-{filetree}
-  </file-tree>
-</file-system>"""
+                tmp_dir = ET.SubElement(root, "tmp-directory")
+                tmp_dir.text = tmp_dir_info
+
+        # File trees for each allowed path
+        file_trees = ET.SubElement(root, "file-trees")
+        for allowed_path in self._allowed_paths:
+            try:
+                rel_path = str(allowed_path.relative_to(self._default_path))
+                if rel_path == ".":
+                    rel_path = "."
+            except ValueError:
+                # Path is not under default_path, use absolute path
+                rel_path = str(allowed_path)
+
+            tree = await generate_filetree(
+                self,
+                root_path=rel_path,
+                max_depth=self._instructions_max_depth,
+                skip_dirs=self._instructions_skip_dirs,
+            )
+            if tree and not tree.startswith("Directory not found"):
+                directory = ET.SubElement(file_trees, "directory")
+                directory.set("path", str(allowed_path))
+                directory.text = "\n" + tree + "\n    "
+
+        # Convert to string with indentation
+        ET.indent(root, space="  ")
+        return ET.tostring(root, encoding="unicode")
+
+    async def close(self) -> None:
+        """Clean up resources owned by this FileOperator.
+
+        If the FileOperator created its own tmp_dir (when neither tmp_dir
+        nor tmp_file_operator was provided), this method will remove it.
+
+        Subclasses can override this to clean up additional resources.
+        Always call super().close() when overriding.
+        """
+        if self._owned_tmp_dir is not None:
+            await anyio.to_thread.run_sync(shutil.rmtree, self._owned_tmp_dir, True)  # type: ignore[reportAttributeAccessIssue]
+            self._owned_tmp_dir = None
+        self._tmp_file_operator = None
 
 
 class Shell(ABC):
@@ -1067,6 +1102,14 @@ class Shell(ABC):
   <default-timeout>{self._default_timeout}s</default-timeout>
   <note>Commands will be executed with the working directory validated.</note>
 </shell-execution>"""
+
+    async def close(self) -> None:  # noqa: B027
+        """Clean up resources owned by this Shell.
+
+        Subclasses can override this to clean up additional resources
+        (e.g., persistent shell sessions, SSH connections).
+        Always call super().close() when overriding.
+        """
 
 
 class Environment(ABC):
@@ -1184,6 +1227,11 @@ class Environment(ABC):
         try:
             await self._teardown()
         finally:
+            # Close file_operator and shell, then close all registered resources
+            if self._file_operator is not None:
+                await self._file_operator.close()
+            if self._shell is not None:
+                await self._shell.close()
             await self._resources.close_all()
 
     async def get_context_instructions(self) -> str:
@@ -1252,18 +1300,19 @@ async def generate_filetree(  # noqa: C901
     max_depth: int = DEFAULT_INSTRUCTIONS_MAX_DEPTH,
     skip_dirs: frozenset[str] | None = None,
 ) -> str:
-    """Generate a file tree using FileOperator interface.
+    """Generate a flat file listing using FileOperator interface.
 
     This function works with any FileOperator implementation.
+    Output format is flat paths like: src/main.py, src/cli.py
 
     Args:
         file_op: FileOperator instance to use for file operations.
-        root_path: Root path to generate file tree for.
+        root_path: Root path to generate file listing for.
         max_depth: Maximum depth to traverse.
         skip_dirs: Set of directory names to skip but mark.
 
     Returns:
-        String representation of the file tree with indentation.
+        Newline-separated flat file paths.
     """
     if skip_dirs is None:
         skip_dirs = DEFAULT_INSTRUCTIONS_SKIP_DIRS
@@ -1274,12 +1323,10 @@ async def generate_filetree(  # noqa: C901
     # Try to load gitignore
     gitignore_spec: pathspec.PathSpec | None = None
     gitignore_path = f"{root_path}/.gitignore" if root_path != "." else ".gitignore"
-    gitignore_patterns: list[str] = []
     try:
         if await file_op.exists(gitignore_path):
             content = await file_op.read_file(gitignore_path)
             gitignore_spec = _load_gitignore_spec(content)
-            gitignore_patterns = [p.strip() for p in content.splitlines() if p.strip() and not p.startswith("#")]
     except Exception:  # noqa: S110
         pass
 
@@ -1289,7 +1336,8 @@ async def generate_filetree(  # noqa: C901
         path = rel_path + "/" if is_dir else rel_path
         return gitignore_spec.match_file(path)
 
-    async def _collect_tree(current_path: str, current_depth: int, prefix: str = "") -> list[str]:  # noqa: C901
+    async def _collect_paths(current_path: str, current_depth: int, path_prefix: str = "") -> list[str]:  # noqa: C901
+        """Collect all file paths recursively, returning flat paths."""
         result: list[str] = []
         try:
             entries = await file_op.list_dir(current_path)
@@ -1304,44 +1352,40 @@ async def generate_filetree(  # noqa: C901
                     file_entries.append(name)
             dir_entries.sort()
             file_entries.sort()
-            sorted_entries = dir_entries + file_entries
 
-            for name in sorted_entries:
+            # Process directories first
+            for name in dir_entries:
                 entry_path = f"{current_path}/{name}" if current_path != "." else name
-                is_dir = name in dir_entries
+                flat_path = f"{path_prefix}{name}" if path_prefix else name
 
-                should_skip, should_mark = _should_skip_hidden_item(name, is_dir, skip_dirs)
+                should_skip, should_mark = _should_skip_hidden_item(name, True, skip_dirs)
                 if should_skip:
                     if should_mark:
-                        result.append(f"{prefix}{name}/ (skipped)")
+                        result.append(f"{flat_path}/ (skipped)")
                     continue
 
-                # Calculate relative path for gitignore matching
-                if root_path == ".":
-                    rel_path = entry_path
-                else:
-                    rel_path = entry_path[len(root_path) + 1 :] if entry_path.startswith(root_path + "/") else name
+                # Check gitignore
+                if _is_gitignored(flat_path, True):
+                    result.append(f"{flat_path}/ (gitignored)")
+                    continue
 
-                gitignored_suffix = " (gitignored)" if _is_gitignored(rel_path, is_dir) else ""
+                if current_depth < max_depth:
+                    result.extend(await _collect_paths(entry_path, current_depth + 1, f"{flat_path}/"))
 
-                if is_dir:
-                    if name in skip_dirs:
-                        result.append(f"{prefix}{name}/ (skipped)")
-                    else:
-                        result.append(f"{prefix}{name}/{gitignored_suffix}")
-                        if current_depth < max_depth:
-                            result.extend(await _collect_tree(entry_path, current_depth + 1, prefix + "  "))
-                else:
-                    result.append(f"{prefix}{name}{gitignored_suffix}")
+            # Then files
+            for name in file_entries:
+                flat_path = f"{path_prefix}{name}" if path_prefix else name
+
+                should_skip, _ = _should_skip_hidden_item(name, False, skip_dirs)
+                if should_skip:
+                    continue
+
+                suffix = " (gitignored)" if _is_gitignored(flat_path, False) else ""
+                result.append(f"{flat_path}{suffix}")
+
         except Exception:  # noqa: S110
             pass
         return result
 
-    all_paths = await _collect_tree(root_path, 1)
-    result = "\n".join(all_paths)
-
-    # Append gitignore patterns summary
-    if gitignore_patterns:
-        result += f"\n\n.gitignore: {', '.join(gitignore_patterns)}"
-
-    return result
+    all_paths = await _collect_paths(root_path, 1)
+    return "\n".join(all_paths)

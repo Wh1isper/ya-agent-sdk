@@ -33,7 +33,7 @@ def test_file_operator_default_path_included_in_allowed(tmp_path: Path) -> None:
     """Should ensure default_path is in allowed_paths."""
     other_path = tmp_path / "other"
     other_path.mkdir()
-    op = LocalFileOperator(allowed_paths=[other_path], default_path=tmp_path)
+    op = LocalFileOperator(allowed_paths=[other_path], default_path=tmp_path, tmp_dir=tmp_path)
     assert tmp_path.resolve() in op._allowed_paths
     assert other_path.resolve() in op._allowed_paths
 
@@ -207,7 +207,7 @@ async def test_file_operator_get_context_instructions(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# readme")
     (tmp_path / ".git").mkdir()
 
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path, tmp_dir=tmp_path)
     instructions = await op.get_context_instructions()
 
     # Replace dynamic path with placeholder for snapshot
@@ -216,17 +216,17 @@ async def test_file_operator_get_context_instructions(tmp_path: Path) -> None:
     assert normalized == snapshot(
         """\
 <file-system>
-  <allowed-directories>
-    <path>/test/workspace</path>
-  </allowed-directories>
   <default-directory>/test/workspace</default-directory>
-  <file-tree>
+  <tmp-directory>/test/workspace</tmp-directory>
+  <file-trees>
+    <directory path="/test/workspace">
 .git/ (skipped)
-src/
-  main.py
+src/main.py
 README.md
-  </file-tree>
-</file-system>"""
+    </directory>
+  </file-trees>
+</file-system>\
+"""
     )
 
 

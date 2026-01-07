@@ -244,6 +244,8 @@ class ToolConfig(BaseModel):
     - FIRECRAWL_API_KEY for Firecrawl Web Scraping
     """
 
+    model_config = {"arbitrary_types_allowed": True}
+
     skip_url_verification: bool = True
     """Skip SSRF URL verification. Default enabled (skip). Set to False to enable verification for public-facing environments."""
 
@@ -286,6 +288,8 @@ class ToolConfig(BaseModel):
 
 class ModelConfig(BaseModel):
     """Model configuration for context management."""
+
+    model_config = {"arbitrary_types_allowed": True}
 
     context_window: int | None = None
     """Total context window size in tokens."""
