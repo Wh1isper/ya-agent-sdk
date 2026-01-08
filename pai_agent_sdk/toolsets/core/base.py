@@ -12,10 +12,16 @@ import functools
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext, Tool, UserError
+
+if TYPE_CHECKING:
+    from pydantic_ai import ModelSettings
+    from pydantic_ai.models import Model
+
+    from pai_agent_sdk.subagents import SubagentConfig
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import (
     DeferredToolResults,
@@ -383,6 +389,66 @@ class Toolset(BaseToolset[AgentDepsT]):
             global_hooks=global_hooks,
             max_retries=self.max_retries,
             timeout=self.timeout,
+        )
+
+    def with_subagents(
+        self,
+        configs: Sequence[SubagentConfig],
+        *,
+        model: str | Model | None = None,
+        model_settings: ModelSettings | dict[str, Any] | str | None = None,
+    ) -> Toolset[AgentDepsT]:
+        """Create a new Toolset that includes subagent tools.
+
+        Subagent tools are created from the provided configurations, using this
+        toolset as the parent. Each subagent will have access to a subset of
+        tools as specified in its configuration.
+
+        Args:
+            configs: Sequence of SubagentConfig defining the subagents to create.
+            model: Fallback model for subagents with 'inherit' or None model.
+            model_settings: Fallback model settings for subagents with 'inherit' or None.
+
+        Returns:
+            A new Toolset instance with subagent tools added.
+
+        Example::
+
+            from pai_agent_sdk.subagents import SubagentConfig
+
+            # Create toolset with subagents
+            config = SubagentConfig(
+                name="debugger",
+                description="Debug code issues",
+                system_prompt="You are a debugging expert...",
+                tools=["grep_tool", "view"],
+            )
+            toolset_with_subs = toolset.with_subagents(
+                [config],
+                model="anthropic:claude-sonnet-4",
+            )
+        """
+        # Import here to avoid circular dependency
+        from pai_agent_sdk.subagents import create_subagent_tool_from_config
+
+        if not configs:
+            return self
+
+        subagent_tools = [
+            create_subagent_tool_from_config(cfg, parent_toolset=self, model=model, model_settings=model_settings)
+            for cfg in configs
+        ]
+        all_tools = list(self._tool_classes.values()) + subagent_tools
+
+        return Toolset(
+            ctx=self.ctx,
+            tools=all_tools,
+            pre_hooks=self.pre_hooks,
+            post_hooks=self.post_hooks,
+            global_hooks=self.global_hooks,
+            max_retries=self.max_retries,
+            timeout=self.timeout,
+            toolset_id=self._id,
         )
 
     def _create_pydantic_tool(self, name: str, tool_instance: BaseTool) -> Tool[AgentDepsT]:

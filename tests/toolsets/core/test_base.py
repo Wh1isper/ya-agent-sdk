@@ -457,3 +457,89 @@ def test_toolset_subset_nonexistent_tool_skipped(agent_context: AgentContext) ->
     subset = toolset.subset(["dummy_tool", "nonexistent_tool"])
 
     assert subset.tool_names == ["dummy_tool"]
+
+
+# --- Toolset.with_subagents tests ---
+
+
+def test_toolset_with_subagents_empty_configs(agent_context: AgentContext) -> None:
+    """Should return self when configs is empty."""
+    ctx = agent_context
+    toolset = Toolset(ctx, tools=[DummyTool])
+    result = toolset.with_subagents([])
+
+    assert result is toolset
+
+
+def test_toolset_with_subagents_creates_new_toolset(agent_context: AgentContext) -> None:
+    """Should create new toolset with subagent tools added."""
+    from pai_agent_sdk.subagents import SubagentConfig
+
+    ctx = agent_context
+    toolset = Toolset(ctx, tools=[DummyTool])
+
+    config = SubagentConfig(
+        name="test_subagent",
+        description="A test subagent",
+        system_prompt="You are a test subagent.",
+        tools=["dummy_tool"],
+    )
+    result = toolset.with_subagents([config])
+
+    assert result is not toolset
+    assert "dummy_tool" in result.tool_names
+    assert "test_subagent" in result.tool_names
+
+
+def test_toolset_with_subagents_preserves_hooks(agent_context: AgentContext) -> None:
+    """Should preserve hooks in new toolset."""
+    from pai_agent_sdk.subagents import SubagentConfig
+
+    async def pre_hook(ctx: Any, args: dict) -> dict:
+        return args
+
+    ctx = agent_context
+    toolset = Toolset(
+        ctx,
+        tools=[DummyTool],
+        pre_hooks={"dummy_tool": pre_hook},
+        max_retries=5,
+        timeout=30.0,
+    )
+
+    config = SubagentConfig(
+        name="test_subagent",
+        description="A test subagent",
+        system_prompt="You are a test subagent.",
+    )
+    result = toolset.with_subagents([config])
+
+    assert result.max_retries == 5
+    assert result.timeout == 30.0
+    assert "dummy_tool" in result.pre_hooks
+
+
+def test_toolset_with_subagents_multiple_configs(agent_context: AgentContext) -> None:
+    """Should handle multiple subagent configs."""
+    from pai_agent_sdk.subagents import SubagentConfig
+
+    ctx = agent_context
+    toolset = Toolset(ctx, tools=[DummyTool])
+
+    configs = [
+        SubagentConfig(
+            name="subagent_a",
+            description="Subagent A",
+            system_prompt="You are subagent A.",
+        ),
+        SubagentConfig(
+            name="subagent_b",
+            description="Subagent B",
+            system_prompt="You are subagent B.",
+        ),
+    ]
+    result = toolset.with_subagents(configs)
+
+    assert "dummy_tool" in result.tool_names
+    assert "subagent_a" in result.tool_names
+    assert "subagent_b" in result.tool_names

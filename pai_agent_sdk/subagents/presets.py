@@ -33,7 +33,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    pass
+    from pydantic_ai import ModelSettings
 
 # =============================================================================
 # Constants
@@ -434,7 +434,7 @@ def get_model_settings(preset: str | ModelSettingsPreset) -> dict[str, Any]:
 
 
 def resolve_model_settings(
-    preset_or_dict: str | dict[str, Any] | ModelSettingsPreset | None,
+    preset_or_dict: ModelSettings | str | dict[str, Any] | ModelSettingsPreset | None,
 ) -> dict[str, Any] | None:
     """Resolve a preset name or dict to ModelSettings.
 
@@ -443,9 +443,10 @@ def resolve_model_settings(
     - str -> lookup preset by name
     - ModelSettingsPreset -> lookup preset by enum
     - dict -> return as-is (assumed to be valid ModelSettings)
+    - ModelSettings -> convert to dict using model_dump()
 
     Args:
-        preset_or_dict: Preset name, enum, dict, or None.
+        preset_or_dict: Preset name, enum, dict, ModelSettings, or None.
 
     Returns:
         ModelSettings dict or None.
@@ -462,9 +463,12 @@ def resolve_model_settings(
     """
     if preset_or_dict is None:
         return None
-    if isinstance(preset_or_dict, dict):
-        return preset_or_dict
-    return get_model_settings(preset_or_dict)
+    if isinstance(preset_or_dict, str):
+        return get_model_settings(preset_or_dict)
+    if isinstance(preset_or_dict, ModelSettingsPreset):
+        return get_model_settings(preset_or_dict)
+    # ModelSettings is a TypedDict (subclass of dict), return as-is
+    return dict(preset_or_dict)
 
 
 def list_presets() -> list[str]:

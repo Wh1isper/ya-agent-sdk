@@ -222,3 +222,183 @@ def test_load_builtin_subagent_tools_with_preset_model_settings(agent_context) -
     assert len(tools) == 4
     for tool_cls in tools:
         assert issubclass(tool_cls, BaseTool)
+
+
+# --- create_agent subagent integration tests ---
+
+
+async def test_create_agent_with_subagent_configs(agent_context) -> None:
+    """Test create_agent with custom subagent_configs."""
+    from pai_agent_sdk.agents.main import create_agent
+    from pai_agent_sdk.subagents import SubagentConfig
+    from pai_agent_sdk.toolsets.core.base import BaseTool
+
+    class DummyTool(BaseTool):
+        name = "dummy_tool"
+        description = "A dummy tool"
+
+        async def call(self, ctx, message: str = "hello") -> str:
+            return f"dummy: {message}"
+
+    config = SubagentConfig(
+        name="custom_subagent",
+        description="A custom subagent",
+        system_prompt="You are a custom subagent.",
+        tools=["dummy_tool"],
+    )
+
+    async with create_agent(
+        "test",
+        tools=[DummyTool],
+        subagent_configs=[config],
+        compact_model="test",
+    ) as runtime:
+        # Verify subagent tool was added
+        assert runtime.core_toolset is not None
+        assert "dummy_tool" in runtime.core_toolset.tool_names
+        assert "custom_subagent" in runtime.core_toolset.tool_names
+
+
+async def test_create_agent_with_include_builtin_subagents(agent_context) -> None:
+    """Test create_agent with include_builtin_subagents=True."""
+    from pai_agent_sdk.agents.main import create_agent
+    from pai_agent_sdk.subagents import get_builtin_subagent_configs
+    from pai_agent_sdk.toolsets.core.base import BaseTool
+
+    # Create tools needed by builtin subagents
+    class GrepTool(BaseTool):
+        name = "grep_tool"
+        description = "Search"
+
+        async def call(self, ctx, pattern: str) -> str:
+            return pattern
+
+    class ViewTool(BaseTool):
+        name = "view"
+        description = "View"
+
+        async def call(self, ctx, path: str) -> str:
+            return path
+
+    class LsTool(BaseTool):
+        name = "ls"
+        description = "List"
+
+        async def call(self, ctx) -> str:
+            return "."
+
+    class SearchTavilyTool(BaseTool):
+        name = "search_with_tavily"
+        description = "Search"
+
+        async def call(self, ctx, query: str) -> str:
+            return query
+
+    class VisitWebpageTool(BaseTool):
+        name = "visit_webpage"
+        description = "Visit"
+
+        async def call(self, ctx, url: str) -> str:
+            return url
+
+    async with create_agent(
+        "test",
+        tools=[GrepTool, ViewTool, LsTool, SearchTavilyTool, VisitWebpageTool],
+        include_builtin_subagents=True,
+        compact_model="test",
+    ) as runtime:
+        # Verify builtin subagent tools were added
+        assert runtime.core_toolset is not None
+        builtin_names = set(get_builtin_subagent_configs().keys())
+        for name in builtin_names:
+            assert name in runtime.core_toolset.tool_names
+
+
+async def test_create_agent_with_both_custom_and_builtin_subagents() -> None:
+    """Test create_agent with both custom and builtin subagents."""
+    from pai_agent_sdk.agents.main import create_agent
+    from pai_agent_sdk.subagents import SubagentConfig, get_builtin_subagent_configs
+    from pai_agent_sdk.toolsets.core.base import BaseTool
+
+    class GrepTool(BaseTool):
+        name = "grep_tool"
+        description = "Search"
+
+        async def call(self, ctx, pattern: str) -> str:
+            return pattern
+
+    class ViewTool(BaseTool):
+        name = "view"
+        description = "View"
+
+        async def call(self, ctx, path: str) -> str:
+            return path
+
+    class LsTool(BaseTool):
+        name = "ls"
+        description = "List"
+
+        async def call(self, ctx) -> str:
+            return "."
+
+    class SearchTavilyTool(BaseTool):
+        name = "search_with_tavily"
+        description = "Search"
+
+        async def call(self, ctx, query: str) -> str:
+            return query
+
+    class VisitWebpageTool(BaseTool):
+        name = "visit_webpage"
+        description = "Visit"
+
+        async def call(self, ctx, url: str) -> str:
+            return url
+
+    custom_config = SubagentConfig(
+        name="my_custom_agent",
+        description="My custom agent",
+        system_prompt="You are my custom agent.",
+    )
+
+    async with create_agent(
+        "test",
+        tools=[GrepTool, ViewTool, LsTool, SearchTavilyTool, VisitWebpageTool],
+        subagent_configs=[custom_config],
+        include_builtin_subagents=True,
+        compact_model="test",
+    ) as runtime:
+        assert runtime.core_toolset is not None
+        # Check custom subagent
+        assert "my_custom_agent" in runtime.core_toolset.tool_names
+        # Check builtin subagents
+        builtin_names = set(get_builtin_subagent_configs().keys())
+        for name in builtin_names:
+            assert name in runtime.core_toolset.tool_names
+
+
+async def test_create_agent_no_subagents_by_default() -> None:
+    """Test that create_agent does not include subagents by default."""
+    from pai_agent_sdk.agents.main import create_agent
+    from pai_agent_sdk.subagents import get_builtin_subagent_configs
+    from pai_agent_sdk.toolsets.core.base import BaseTool
+
+    class DummyTool(BaseTool):
+        name = "dummy_tool"
+        description = "A dummy tool"
+
+        async def call(self, ctx) -> str:
+            return "dummy"
+
+    async with create_agent(
+        "test",
+        tools=[DummyTool],
+        compact_model="test",
+    ) as runtime:
+        assert runtime.core_toolset is not None
+        # Only dummy_tool should be present
+        assert runtime.core_toolset.tool_names == ["dummy_tool"]
+        # No builtin subagents
+        builtin_names = set(get_builtin_subagent_configs().keys())
+        for name in builtin_names:
+            assert name not in runtime.core_toolset.tool_names

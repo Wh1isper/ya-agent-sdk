@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from pydantic_ai import ModelSettings
     from pydantic_ai.toolsets import AbstractToolset
 
+    from pai_agent_sdk.subagents import SubagentConfig
+
 # =============================================================================
 # Type Variables
 # =============================================================================
@@ -142,6 +144,9 @@ async def create_agent(
     compact_model: str | Model | None = None,
     compact_model_settings: ModelSettings | None = None,
     compact_model_cfg: ModelConfig | None = None,
+    # --- Subagent ---
+    subagent_configs: Sequence[SubagentConfig] | None = None,
+    include_builtin_subagents: bool = False,
     # --- Agent ---
     agent_tools: Sequence[Any] | None = None,
     system_prompt: str | None = None,
@@ -174,6 +179,9 @@ async def create_agent(
 
         tools: Sequence of BaseTool classes to include in the toolset.
         toolsets: Additional AbstractToolset instances to include.
+
+        subagent_configs: Sequence of SubagentConfig for custom subagents.
+        include_builtin_subagents: If True, include builtin subagents from presets/.
         pre_hooks: Dict mapping tool names to pre-hook functions.
         post_hooks: Dict mapping tool names to post-hook functions.
         global_hooks: GlobalHooks instance for all tools.
@@ -265,6 +273,22 @@ async def create_agent(
                 timeout=toolset_timeout,
                 skip_unavailable=skip_unavailable_tools,
             )
+
+            # Add subagent tools if requested
+            if subagent_configs or include_builtin_subagents:
+                from pai_agent_sdk.subagents import get_builtin_subagent_configs
+
+                all_subagent_configs = list(subagent_configs) if subagent_configs else []
+                if include_builtin_subagents:
+                    all_subagent_configs.extend(get_builtin_subagent_configs().values())
+
+                if all_subagent_configs:
+                    core_toolset = core_toolset.with_subagents(
+                        all_subagent_configs,
+                        model=model,
+                        model_settings=model_settings,
+                    )
+
             all_toolsets.append(core_toolset)
 
         # Add user-provided toolsets

@@ -23,6 +23,7 @@ from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from pai_agent_sdk.toolsets.core.subagent import create_subagent_call_func, create_subagent_tool
 
 if TYPE_CHECKING:
+    from pydantic_ai import ModelSettings
     from pydantic_ai.models import Model
 
 
@@ -31,7 +32,7 @@ def create_subagent_tool_from_config(
     parent_toolset: Toolset[Any],
     *,
     model: str | Model | None = None,
-    model_settings: dict[str, Any] | str | None = None,
+    model_settings: ModelSettings | dict[str, Any] | str | None = None,
 ) -> type[BaseTool]:
     """Create a subagent tool from a SubagentConfig.
 
