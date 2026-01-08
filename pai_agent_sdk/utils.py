@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 import anyio.to_thread
+from PIL import Image
 from pydantic_ai import Agent, ModelMessage, ModelResponse, RequestUsage, RunContext, ToolCallPart
 from pydantic_ai.messages import BinaryContent
 from pydantic_ai.output import OutputDataT
@@ -212,8 +213,6 @@ def _split_image_data_sync(
     media_type: ImageMediaType = "image/png",
 ) -> list[BinaryContent]:
     """Synchronous implementation of split_image_data."""
-    from PIL import Image
-
     image = Image.open(io.BytesIO(image_bytes))
     width, height = image.size
 

@@ -1266,7 +1266,7 @@ class Environment(ABC):
         instructions.
 
         Returns:
-            Combined XML-formatted instructions string.
+            Combined XML-formatted instructions string wrapped in <environment-context> tags.
 
         Raises:
             EnvironmentNotEnteredError: If environment has not been entered yet.
@@ -1287,7 +1287,11 @@ class Environment(ABC):
         except RuntimeError as e:
             raise EnvironmentNotEnteredError("shell") from e
 
-        return "\n\n".join(parts) if parts else ""
+        if not parts:
+            return ""
+
+        content = "\n\n".join(parts)
+        return f"<environment-context>\n{content}\n</environment-context>"
 
 
 # --- File tree generation utilities ---

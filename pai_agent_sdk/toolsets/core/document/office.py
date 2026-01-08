@@ -7,12 +7,14 @@ Install with: pip install pai-agent-sdk[document]
 """
 
 import base64
+import functools
 import re
 import uuid
 from functools import cache
 from pathlib import Path
 from typing import Annotated, Any
 
+import anyio.to_thread
 from pydantic import Field
 from pydantic_ai import RunContext
 
@@ -44,10 +46,6 @@ def _load_instruction() -> str:
 
 async def _run_in_threadpool(func, *args, **kwargs):
     """Run a sync function in a thread pool."""
-    import functools
-
-    import anyio.to_thread
-
     return await anyio.to_thread.run_sync(functools.partial(func, *args, **kwargs))
 
 

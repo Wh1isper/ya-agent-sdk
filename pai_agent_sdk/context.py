@@ -57,6 +57,7 @@ Example:
 """
 
 import asyncio
+import os
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -64,6 +65,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import uuid4
+from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
@@ -271,8 +273,6 @@ def _generate_run_id() -> str:
 
 def _xml_to_string(element: Element) -> str:
     """Convert XML element to formatted string."""
-    from xml.dom.minidom import parseString
-
     rough_string = tostring(element, encoding="unicode")
     dom = parseString(rough_string)  # noqa: S318
     # Get pretty-printed XML, skip the XML declaration line
@@ -283,8 +283,6 @@ def _xml_to_string(element: Element) -> str:
 
 def _env_str(key: str) -> str | None:
     """Get string from environment variable."""
-    import os
-
     return os.environ.get(key) or None
 
 

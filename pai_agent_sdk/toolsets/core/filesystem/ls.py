@@ -1,5 +1,6 @@
 """List tool for directory listing."""
 
+import fnmatch
 from functools import cache
 from pathlib import Path
 from typing import Annotated, Any
@@ -44,8 +45,6 @@ class ListTool(BaseTool):
         ] = None,
     ) -> dict[str, Any]:
         """List directory contents with detailed information."""
-        import fnmatch
-
         file_operator = ctx.deps.file_operator
 
         if not await file_operator.exists(path):

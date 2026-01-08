@@ -19,7 +19,7 @@ Example::
 
     from pai_agent_sdk.context import AgentContext, ModelConfig
     from pai_agent_sdk.environment.local import LocalEnvironment
-    from pai_agent_sdk.filters.runtime_instrustions import inject_runtime_instructions
+    from pai_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment())

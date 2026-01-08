@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.filters.runtime_instrustions module."""
+"""Tests for pai_agent_sdk.filters.runtime_instructions module."""
 
 from pathlib import Path
 
@@ -33,7 +33,7 @@ async def test_inject_runtime_instructions_empty_history(tmp_path: Path) -> None
     # Create a mock RunContext
     from unittest.mock import MagicMock
 
-    from pai_agent_sdk.filters.runtime_instrustions import inject_runtime_instructions
+    from pai_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -55,7 +55,7 @@ async def test_inject_runtime_instructions_appends_to_last_request(tmp_path: Pat
     """Should append runtime instructions to the last ModelRequest."""
     from unittest.mock import MagicMock
 
-    from pai_agent_sdk.filters.runtime_instrustions import inject_runtime_instructions
+    from pai_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -89,7 +89,7 @@ async def test_inject_runtime_instructions_with_model_config(tmp_path: Path) -> 
     """Should include model config in runtime instructions when set."""
     from unittest.mock import MagicMock
 
-    from pai_agent_sdk.filters.runtime_instrustions import inject_runtime_instructions
+    from pai_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -122,7 +122,7 @@ async def test_inject_runtime_instructions_finds_last_request(tmp_path: Path) ->
     """Should find and modify the last ModelRequest in history."""
     from unittest.mock import MagicMock
 
-    from pai_agent_sdk.filters.runtime_instrustions import inject_runtime_instructions
+    from pai_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -156,7 +156,7 @@ async def test_inject_runtime_instructions_only_response_in_history(tmp_path: Pa
     """Should return unchanged history when only ModelResponse present."""
     from unittest.mock import MagicMock
 
-    from pai_agent_sdk.filters.runtime_instrustions import inject_runtime_instructions
+    from pai_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],

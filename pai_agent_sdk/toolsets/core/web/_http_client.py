@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from functools import lru_cache
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -138,8 +138,6 @@ async def safe_request(
 
             # Handle relative redirects
             if not location.startswith(("http://", "https://")):
-                from urllib.parse import urljoin
-
                 location = urljoin(current_url, location)
 
             if not skip_verification:

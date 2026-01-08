@@ -8,6 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic_ai import Agent
+
 from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.subagents.config import (
     INHERIT,
@@ -42,8 +44,6 @@ def create_subagent_tool_from_config(
     Returns:
         A BaseTool subclass that wraps the subagent.
     """
-    from pydantic_ai import Agent
-
     # Resolve model
     # Priority: config.model (if not inherit/None) > function arg model
     if config.model is not None and config.model != INHERIT:
