@@ -96,6 +96,15 @@ Optional:
 - Agents are modular and located in `agents/` directory
 - Logging is centralized in `_logger.py` - see [docs/logging.md](docs/logging.md) for configuration
 
+## AgentContext and Sessions
+
+See [docs/context.md](docs/context.md) for detailed AgentContext documentation, including:
+
+- Session state management (run_id, timing, user prompts)
+- Resumable sessions with `export_state()` and `with_state()`
+- Extending `AgentContext` and `ResumableState` for custom fields
+- Using `create_agent` with `state` parameter for session restoration
+
 ## Toolset Architecture
 
 See [docs/toolset.md](docs/toolset.md) for detailed Toolset documentation, including:

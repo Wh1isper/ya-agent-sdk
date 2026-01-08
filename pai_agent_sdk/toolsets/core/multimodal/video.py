@@ -50,8 +50,8 @@ class ReadVideoTool(BaseTool):
         # Get model and settings from tool_config if available
         model = None
         model_settings = None
-        if agent_ctx.model_cfg and agent_ctx.model_cfg.tool_config:
-            tool_config = agent_ctx.model_cfg.tool_config
+        if agent_ctx.tool_config:
+            tool_config = agent_ctx.tool_config
             model = tool_config.video_understanding_model
             model_settings = tool_config.video_understanding_model_settings
 

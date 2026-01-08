@@ -236,7 +236,7 @@ def _build_compacted_messages(summary: str, continue_prompt: str) -> list[ModelM
     ]
 
 
-async def create_compact_filter(
+def create_compact_filter(
     model: str | Model | None = None,
     model_settings: ModelSettings | None = None,
     model_cfg: ModelConfig | None = None,

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext, ModelConfig
+from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.toolsets.core.web.download import DownloadTool
 
@@ -29,9 +29,7 @@ async def test_download_tool_single_file(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(
-            AgentContext(file_operator=env.file_operator, shell=env.shell, model_cfg=ModelConfig())
-        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = DownloadTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -71,9 +69,7 @@ async def test_download_tool_multiple_files(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(
-            AgentContext(file_operator=env.file_operator, shell=env.shell, model_cfg=ModelConfig())
-        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = DownloadTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -101,7 +97,7 @@ async def test_download_tool_forbidden_url(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(skip_url_verification=False)),
+                tool_config=ToolConfig(skip_url_verification=False),
             )
         )
         tool = DownloadTool(ctx)

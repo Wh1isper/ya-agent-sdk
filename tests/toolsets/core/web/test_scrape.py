@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
+from pai_agent_sdk.context import AgentContext, ToolConfig
 from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.toolsets.core.web.scrape import CONTENT_TRUNCATE_THRESHOLD, ScrapeTool
 
@@ -28,7 +28,7 @@ async def test_scrape_tool_forbidden_url(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(skip_url_verification=False)),
+                tool_config=ToolConfig(skip_url_verification=False),
             )
         )
         tool = ScrapeTool(ctx)
@@ -53,7 +53,7 @@ async def test_scrape_tool_fallback_to_markitdown(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig()),  # No firecrawl key
+                tool_config=ToolConfig(),  # No firecrawl key
             )
         )
         tool = ScrapeTool(ctx)
@@ -83,7 +83,7 @@ async def test_scrape_tool_truncates_long_content(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(firecrawl_api_key=None)),  # Force MarkItDown fallback
+                tool_config=ToolConfig(firecrawl_api_key=None),  # Force MarkItDown fallback
             )
         )
         tool = ScrapeTool(ctx)

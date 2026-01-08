@@ -143,8 +143,8 @@ class ViewTool(BaseTool):
                 # Get model and settings from tool_config if available
                 model = None
                 model_settings = None
-                if ctx.deps.model_cfg and ctx.deps.model_cfg.tool_config:
-                    tool_config = ctx.deps.model_cfg.tool_config
+                if ctx.deps.tool_config:
+                    tool_config = ctx.deps.tool_config
                     model = tool_config.image_understanding_model
                     model_settings = tool_config.image_understanding_model_settings
 

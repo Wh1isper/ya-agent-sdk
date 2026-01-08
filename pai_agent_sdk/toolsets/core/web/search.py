@@ -46,7 +46,7 @@ class SearchTool(BaseTool):
 
     def is_available(self) -> bool:
         """Available if Google or Tavily API keys are configured."""
-        cfg = self.ctx.model_cfg.tool_config
+        cfg = self.ctx.tool_config
         has_google = bool(cfg.google_search_api_key and cfg.google_search_cx)
         has_tavily = bool(cfg.tavily_api_key)
         return has_google or has_tavily
@@ -65,7 +65,7 @@ class SearchTool(BaseTool):
         ] = "basic",
     ) -> list[dict[str, Any]] | dict[str, Any]:
         """Execute web search."""
-        cfg = ctx.deps.model_cfg.tool_config
+        cfg = ctx.deps.tool_config
 
         # Prefer Google if available
         if cfg.google_search_api_key and cfg.google_search_cx:
@@ -120,7 +120,7 @@ class SearchStockImageTool(BaseTool):
 
     def is_available(self) -> bool:
         """Available if Pixabay API key is configured."""
-        return bool(self.ctx.model_cfg.tool_config.pixabay_api_key)
+        return bool(self.ctx.tool_config.pixabay_api_key)
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         return _load_search_stock_image_instruction()
@@ -134,7 +134,7 @@ class SearchStockImageTool(BaseTool):
         ],
     ) -> dict[str, Any]:
         """Search Pixabay for stock images."""
-        cfg = ctx.deps.model_cfg.tool_config
+        cfg = ctx.deps.tool_config
         client = get_http_client()
 
         params = {"q": query, "key": cfg.pixabay_api_key}
@@ -187,7 +187,7 @@ class SearchImageTool(BaseTool):
 
     def is_available(self) -> bool:
         """Available if RapidAPI key is configured."""
-        return bool(self.ctx.model_cfg.tool_config.rapidapi_api_key)
+        return bool(self.ctx.tool_config.rapidapi_api_key)
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         return _load_search_image_instruction()
@@ -203,7 +203,7 @@ class SearchImageTool(BaseTool):
         ] = "any",
     ) -> dict[str, Any]:
         """Search images via RapidAPI."""
-        cfg = ctx.deps.model_cfg.tool_config
+        cfg = ctx.deps.tool_config
         client = get_http_client()
 
         params = {

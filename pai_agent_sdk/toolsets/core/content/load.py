@@ -75,7 +75,7 @@ class LoadTool(BaseTool):
         has_vision = model_cfg.has_capability(ModelCapability.vision)
         has_video = model_cfg.has_capability(ModelCapability.video_understanding)
         has_document = model_cfg.has_capability(ModelCapability.document_understanding)
-        enable_load_document = model_cfg.tool_config.enable_load_document
+        enable_load_document = self.ctx.tool_config.enable_load_document
 
         # Available if any capability is present
         return has_vision or has_video or (has_document and enable_load_document)
@@ -86,7 +86,7 @@ class LoadTool(BaseTool):
         has_vision = model_cfg is not None and model_cfg.has_capability(ModelCapability.vision)
         has_video = model_cfg is not None and model_cfg.has_capability(ModelCapability.video_understanding)
         has_document = model_cfg is not None and model_cfg.has_capability(ModelCapability.document_understanding)
-        enable_load_document = model_cfg is not None and model_cfg.tool_config.enable_load_document
+        enable_load_document = ctx.deps.tool_config.enable_load_document
 
         return _INSTRUCTION_TEMPLATE.render(
             has_vision=has_vision,
@@ -127,7 +127,7 @@ class LoadTool(BaseTool):
         has_vision = model_cfg is not None and model_cfg.has_capability(ModelCapability.vision)
         has_video = model_cfg is not None and model_cfg.has_capability(ModelCapability.video_understanding)
         has_document = model_cfg is not None and model_cfg.has_capability(ModelCapability.document_understanding)
-        enable_load_document = model_cfg is not None and model_cfg.tool_config.enable_load_document
+        enable_load_document = ctx.deps.tool_config.enable_load_document
 
         # Return appropriate content type based on category and capabilities
         if category == ContentCategory.image:

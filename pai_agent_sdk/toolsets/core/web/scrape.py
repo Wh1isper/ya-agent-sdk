@@ -47,7 +47,7 @@ class ScrapeTool(BaseTool):
         url: Annotated[str, Field(description="URL of the web page to scrape. e.g. https://example.com")],
     ) -> dict[str, Any]:
         """Scrape webpage and return content as Markdown."""
-        skip_verification = ctx.deps.model_cfg.tool_config.skip_url_verification
+        skip_verification = ctx.deps.tool_config.skip_url_verification
 
         # Verify URL security
         if not skip_verification:
@@ -57,7 +57,7 @@ class ScrapeTool(BaseTool):
                 logger.warning(f"URL access forbidden: {url} - {e}")
                 return {"success": False, "error": f"URL access forbidden - {e}"}
 
-        cfg = ctx.deps.model_cfg.tool_config
+        cfg = ctx.deps.tool_config
 
         # Try Firecrawl first if available
         if cfg.firecrawl_api_key:

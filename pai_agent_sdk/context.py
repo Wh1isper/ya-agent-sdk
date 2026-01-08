@@ -167,6 +167,30 @@ class ResumableState(BaseModel):
             result[key] = ModelMessagesTypeAdapter.validate_python(messages_data)
         return result
 
+    def restore(self, ctx: "AgentContext") -> None:
+        """Restore state into an AgentContext.
+
+        This method applies the saved state to the given context.
+        Subclasses can override this method to restore additional fields.
+
+        Args:
+            ctx: The AgentContext to restore state into.
+
+        Example::
+
+            class MyState(ResumableState):
+                custom_field: str = ""
+
+                def restore(self, ctx: "MyContext") -> None:
+                    super().restore(ctx)
+                    ctx.custom_field = self.custom_field
+        """
+        ctx.subagent_history = self.to_subagent_history()
+        ctx.extra_usages = list(self.extra_usages)
+        ctx.user_prompts = list(self.user_prompts)
+        ctx.handoff_message = self.handoff_message
+        ctx.deferred_tool_metadata = dict(self.deferred_tool_metadata)
+
 
 class ToolIdWrapper:
     """Wrapper for tool call IDs to ensure stable, cross-provider compatible identifiers.
@@ -365,9 +389,6 @@ class ModelConfig(BaseModel):
     capabilities: set[ModelCapability] = Field(default_factory=set)
     """Set of capabilities supported by the model."""
 
-    tool_config: ToolConfig = Field(default_factory=ToolConfig)
-    """Tool-level configuration for fine-grained control."""
-
     def has_capability(self, capability: ModelCapability) -> bool:
         """Check if the model has a specific capability."""
         return capability in self.capabilities
@@ -480,6 +501,9 @@ class AgentContext(BaseModel):
     model_cfg: ModelConfig = Field(default_factory=ModelConfig)
     """Model configuration for context management."""
 
+    tool_config: ToolConfig = Field(default_factory=ToolConfig)
+    """Tool-level configuration for API keys and tool-specific settings."""
+
     extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
     """Extra usage records from tool calls and filters."""
 
@@ -499,6 +523,7 @@ class AgentContext(BaseModel):
     """
 
     subagent_history: dict[str, list[ModelMessage]] = Field(default_factory=dict)
+    """Subagent history for resuming sessions."""
 
     _agent_name: str = "main"
 
@@ -558,7 +583,10 @@ class AgentContext(BaseModel):
         reminders: list[str] = []
 
         # Cast metadata to typed dict for type safety
-        metadata = cast(RunContextMetadata, run_context.metadata if run_context and run_context.deps else {})
+        metadata = cast(
+            RunContextMetadata,
+            run_context.metadata if run_context and run_context.deps else {},
+        )
 
         # Handoff threshold warning
         if (
@@ -640,7 +668,23 @@ class AgentContext(BaseModel):
                     history_processors=ctx.get_history_processors(),
                 )
         """
-        return [self.tool_id_wrapper.wrap_messages]
+        # Import filters here to avoid circular imports
+        from pai_agent_sdk.filters.capability import filter_by_capability
+        from pai_agent_sdk.filters.handoff import process_handoff_message
+        from pai_agent_sdk.filters.image import drop_extra_images, drop_extra_videos, drop_gif_images
+        from pai_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
+        from pai_agent_sdk.filters.tool_args import fix_truncated_tool_args
+
+        return [
+            drop_extra_images,
+            drop_gif_images,
+            drop_extra_videos,
+            fix_truncated_tool_args,
+            process_handoff_message,
+            filter_by_capability,
+            inject_runtime_instructions,
+            self.tool_id_wrapper.wrap_messages,
+        ]
 
     def add_extra_usage(
         self,
@@ -697,14 +741,16 @@ class AgentContext(BaseModel):
             deferred_tool_metadata=dict(self.deferred_tool_metadata),
         )
 
-    def with_state(self, state: ResumableState) -> "Self":
+    def with_state(self, state: ResumableState | None) -> "Self":
         """Restore session state from a ResumableState.
 
         Updates the context with state from a previously exported ResumableState.
         This allows resuming a session after serialization/deserialization.
 
+        If state is None, returns self unchanged for convenient chaining.
+
         Args:
-            state: ResumableState to restore from.
+            state: ResumableState to restore from, or None to skip restoration.
 
         Returns:
             Self for method chaining.
@@ -715,10 +761,12 @@ class AgentContext(BaseModel):
                 state = ResumableState.model_validate_json(f.read())
             async with AgentContext(...).with_state(state) as ctx:
                 ...
+
+            # Also works with None for conditional restoration
+            async with AgentContext(...).with_state(maybe_state) as ctx:
+                ...
         """
-        self.subagent_history = state.to_subagent_history()
-        self.extra_usages = list(state.extra_usages)
-        self.user_prompts = list(state.user_prompts)
-        self.handoff_message = state.handoff_message
-        self.deferred_tool_metadata = dict(state.deferred_tool_metadata)
+        if state is None:
+            return self
+        state.restore(self)
         return self

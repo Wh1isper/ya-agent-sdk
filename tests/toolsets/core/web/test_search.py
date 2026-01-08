@@ -8,7 +8,7 @@ import httpx
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
+from pai_agent_sdk.context import AgentContext, ToolConfig
 from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.toolsets.core.web.search import (
     SearchImageTool,
@@ -37,9 +37,7 @@ async def test_search_tool_is_available_with_google(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(
-                    tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
-                ),
+                tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
             )
         )
         tool = SearchTool(ctx)
@@ -56,7 +54,7 @@ async def test_search_tool_is_available_with_tavily(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(tavily_api_key="test-key")),
+                tool_config=ToolConfig(tavily_api_key="test-key"),
             )
         )
         tool = SearchTool(ctx)
@@ -78,7 +76,7 @@ async def test_search_tool_not_available_without_keys(tmp_path: Path, monkeypatc
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig()),
+                tool_config=ToolConfig(),
             )
         )
         tool = SearchTool(ctx)
@@ -105,9 +103,7 @@ async def test_search_tool_google_search(tmp_path: Path, httpx_mock) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(
-                    tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
-                ),
+                tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
             )
         )
         tool = SearchTool(ctx)
@@ -145,7 +141,7 @@ async def test_search_stock_image_tool_is_available(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(pixabay_api_key="test-key")),
+                tool_config=ToolConfig(pixabay_api_key="test-key"),
             )
         )
         tool = SearchStockImageTool(ctx)
@@ -185,7 +181,7 @@ async def test_search_stock_image_tool_search(tmp_path: Path, httpx_mock) -> Non
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(pixabay_api_key="test-key")),
+                tool_config=ToolConfig(pixabay_api_key="test-key"),
             )
         )
         tool = SearchStockImageTool(ctx)
@@ -220,7 +216,7 @@ async def test_search_image_tool_is_available(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(rapidapi_api_key="test-key")),
+                tool_config=ToolConfig(rapidapi_api_key="test-key"),
             )
         )
         tool = SearchImageTool(ctx)
@@ -256,7 +252,7 @@ async def test_search_image_tool_search(tmp_path: Path, httpx_mock) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(rapidapi_api_key="test-key")),
+                tool_config=ToolConfig(rapidapi_api_key="test-key"),
             )
         )
         tool = SearchImageTool(ctx)

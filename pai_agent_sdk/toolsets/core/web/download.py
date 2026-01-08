@@ -62,7 +62,7 @@ class DownloadTool(BaseTool):
     ) -> dict[str, Any]:
         """Download a single file."""
         file_operator = ctx.deps.file_operator
-        skip_verification = ctx.deps.model_cfg.tool_config.skip_url_verification
+        skip_verification = ctx.deps.tool_config.skip_url_verification
 
         # Verify URL security
         if not skip_verification:

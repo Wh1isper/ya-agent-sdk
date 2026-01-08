@@ -23,6 +23,7 @@ pip install pai-agent-sdk[docker]
 
 ## Documentation
 
+- [AgentContext & Sessions](docs/context.md) - Session state, resumable sessions, extending context
 - [Toolset Architecture](docs/toolset.md) - Create tools, use hooks, handle errors, extend Toolset
 - [Custom Environments](docs/environment.md) - Extend context management with custom environments
 - [Logging Configuration](docs/logging.md) - Configure SDK logging levels

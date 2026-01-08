@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 from inline_snapshot import snapshot
 from pydantic_ai import BinaryContent, RunContext
 
-from pai_agent_sdk.context import AgentContext, ModelConfig
+from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.toolsets.core.web.fetch import FetchTool
 
@@ -33,9 +33,7 @@ async def test_fetch_tool_head_only(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(
-            AgentContext(file_operator=env.file_operator, shell=env.shell, model_cfg=ModelConfig())
-        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = FetchTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -65,9 +63,7 @@ async def test_fetch_tool_get_text(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(
-            AgentContext(file_operator=env.file_operator, shell=env.shell, model_cfg=ModelConfig())
-        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = FetchTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -90,9 +86,7 @@ async def test_fetch_tool_get_image(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(
-            AgentContext(file_operator=env.file_operator, shell=env.shell, model_cfg=ModelConfig())
-        )
+        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
         tool = FetchTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -115,7 +109,7 @@ async def test_fetch_tool_forbidden_url(tmp_path: Path) -> None:
             AgentContext(
                 file_operator=env.file_operator,
                 shell=env.shell,
-                model_cfg=ModelConfig(tool_config=ToolConfig(skip_url_verification=False)),
+                tool_config=ToolConfig(skip_url_verification=False),
             )
         )
         tool = FetchTool(ctx)
