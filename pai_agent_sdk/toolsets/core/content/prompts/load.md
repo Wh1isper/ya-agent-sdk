@@ -1,23 +1,24 @@
-# Load Tool Usage Guide
+<load-tool>
 
-Use this tool to load web content from HTTP/HTTPS URLs:
+<description>Load images or videos directly from URL for model analysis.</description>
 
+<supported_urls>
 {% if has_vision %}
-- **Images**: Returns visual content for direct model processing
-{% else %}
-- **Images**: Not supported by current model. Use `read_image` tool instead.
+- **Images**: `https://example.com/photo.jpg`, `https://example.com/image.png`
 {% endif %}
 {% if has_video %}
-- **Videos**: Returns video content for direct model processing
-{% else %}
-- **Videos**: Not supported by current model. Use `read_video` tool instead.
+- **Videos**: `https://example.com/video.mp4`, `https://youtube.com/watch?v=xxx`
 {% endif %}
-- **Audio**: Returns audio content
-- **Text/HTML**: Returns document content for processing
-{% if enable_load_document and has_document %}
-- **Documents (PDF)**: Returns document content for model processing
-{% else %}
-- **Documents (PDF)**: Not supported. Use download tool to save locally, then use pdf_convert.
+{% if has_document and enable_load_document %}
+- **Documents**: `https://example.com/file.pdf`
+{% endif %}
+</supported_urls>
+
+{% if not has_vision %}
+<note>Image loading not supported. Use `read_image` tool instead.</note>
+{% endif %}
+{% if not has_video %}
+<note>Video/YouTube loading not supported. Use `read_video` tool instead.</note>
 {% endif %}
 
-**Note**: Only HTTP/HTTPS URLs are supported. Other protocols will be rejected.
+</load-tool>

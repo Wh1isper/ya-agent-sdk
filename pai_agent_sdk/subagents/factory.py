@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
 
+from pai_agent_sdk.agents.models import infer_model
 from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.presets import resolve_model_settings
 from pai_agent_sdk.subagents.config import (
@@ -79,7 +80,7 @@ def create_subagent_tool_from_config(
 
     # Create the subagent
     subagent: Agent[AgentContext, str] = Agent(
-        model=effective_model,
+        model=infer_model(effective_model),
         system_prompt=config.system_prompt,
         toolsets=[sub_toolset],
         model_settings=resolved_settings,  # type: ignore[arg-type]

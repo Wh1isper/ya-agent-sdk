@@ -11,6 +11,7 @@ This directory contains detailed documentation for pai-agent-sdk.
 | [logging.md](logging.md)         | Logging configuration and usage                                            |
 | [model.md](model.md)             | Model configuration and usage                                              |
 | [toolset.md](toolset.md)         | Toolset architecture, creating tools, hooks, error handling                |
+| [subagent.md](subagent.md)       | Subagent system, configuration, builtin presets, hierarchical agents       |
 
 ## Quick Links
 

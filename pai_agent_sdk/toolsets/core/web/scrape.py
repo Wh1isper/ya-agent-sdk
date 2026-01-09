@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import anyio.to_thread
-from firecrawl import AsyncFirecrawlApp
 from markitdown import MarkItDown
 from pydantic import Field
 from pydantic_ai import RunContext
@@ -62,6 +61,8 @@ class ScrapeTool(BaseTool):
         # Try Firecrawl first if available
         if cfg.firecrawl_api_key:
             try:
+                from firecrawl import AsyncFirecrawlApp
+
                 logger.info(f"Scraping webpage with Firecrawl: {url}")
                 app = AsyncFirecrawlApp(api_key=cfg.firecrawl_api_key)
                 result = await app.scrape(url=url, formats=["markdown"])

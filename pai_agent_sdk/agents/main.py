@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
-from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
+from pydantic_ai import Agent, DeferredToolResults
 from pydantic_ai._agent_graph import CallToolsNode, HistoryProcessor, ModelRequestNode
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.models import KnownModelName, Model
+from pydantic_ai.output import OutputSpec
 from pydantic_ai.run import AgentRun
 from typing_extensions import TypeVar
 
@@ -141,7 +142,7 @@ async def create_agent(
     *,
     # --- Model Configuration ---
     model_settings: ModelSettings | None = None,
-    output_type: type[OutputT] = str,  # type: ignore[assignment]
+    output_type: OutputSpec[OutputT] = str,  # type: ignore[assignment]
     # --- Environment ---
     env: Environment | type[Environment] = LocalEnvironment,
     env_kwargs: dict[str, Any] | None = None,
@@ -362,10 +363,7 @@ async def create_agent(
                 system_prompt=effective_system_prompt,
                 model_settings=model_settings,
                 deps_type=context_type,
-                output_type=[
-                    output_type,
-                    DeferredToolRequests,
-                ],
+                output_type=output_type,
                 tools=agent_tools or (),
                 toolsets=all_toolsets if all_toolsets else None,
                 history_processors=all_processors if all_processors else None,

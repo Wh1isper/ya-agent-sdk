@@ -38,6 +38,7 @@ import json
 from pathlib import Path
 
 from pydantic_ai import (
+    DeferredToolRequests,
     DeferredToolResults,
     ModelMessage,
     ModelMessagesTypeAdapter,
@@ -57,7 +58,7 @@ from pydantic_ai.messages import (
 
 from pai_agent_sdk.agents.main import create_agent, stream_agent
 from pai_agent_sdk.context import ModelCapability, ModelConfig, ResumableState, RunContextMetadata, StreamEvent
-from pai_agent_sdk.presets import OPENAI_DEFAULT
+from pai_agent_sdk.presets import GEMINI_THINKING_LEVEL_HIGH
 from pai_agent_sdk.toolsets.core.base import UserInteraction
 from pai_agent_sdk.toolsets.core.content import tools as content_tools
 from pai_agent_sdk.toolsets.core.context import tools as context_tools
@@ -66,6 +67,7 @@ from pai_agent_sdk.toolsets.core.enhance import tools as enhance_tools
 from pai_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
 from pai_agent_sdk.toolsets.core.multimodal import tools as multimodal_tools
 from pai_agent_sdk.toolsets.core.shell import tools as shell_tools
+from pai_agent_sdk.toolsets.core.web import tools as web_tools
 
 # =============================================================================
 # Prompt Configuration
@@ -303,8 +305,8 @@ async def main():
     system_prompt = load_system_prompt()
 
     async with create_agent(
-        model="openai:gpt-5.2",
-        model_settings=cast(ModelSettings, OPENAI_DEFAULT),
+        model="gemini@google-vertex:gemini-3-pro-preview",
+        model_settings=cast(ModelSettings, GEMINI_THINKING_LEVEL_HIGH),
         system_prompt=system_prompt,
         tools=[
             *content_tools,
@@ -314,10 +316,12 @@ async def main():
             *filesystem_tools,
             *multimodal_tools,
             *shell_tools,
+            *web_tools,
         ],
         need_user_approve_tools=["shell"],
         model_cfg=ModelConfig(context_window=200_000, capabilities={ModelCapability.vision}),
         state=state,
+        output_type=[str, DeferredToolRequests],
         include_builtin_subagents=True,
         metadata=RunContextMetadata(context_manage_tool="handoff"),
     ) as agent_runtime:

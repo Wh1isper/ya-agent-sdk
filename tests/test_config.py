@@ -9,8 +9,6 @@ from pai_agent_sdk.environment.local import LocalEnvironment
 def test_agent_context_settings_defaults() -> None:
     """Should have correct default values."""
     settings = AgentSettings()
-    assert settings.working_dir is None
-    assert settings.tmp_base_dir is None
     assert settings.image_understanding_model is None
     assert settings.video_understanding_model is None
 
@@ -22,14 +20,10 @@ def test_agent_context_settings_from_env(monkeypatch, tmp_path: Path) -> None:
     tmp_base = tmp_path / "tmp"
     tmp_base.mkdir()
 
-    monkeypatch.setenv("PAI_AGENT_WORKING_DIR", str(working))
-    monkeypatch.setenv("PAI_AGENT_TMP_BASE_DIR", str(tmp_base))
     monkeypatch.setenv("PAI_AGENT_IMAGE_UNDERSTANDING_MODEL", "openai:gpt-4o")
     monkeypatch.setenv("PAI_AGENT_VIDEO_UNDERSTANDING_MODEL", "google-gla:gemini-2.0-flash")
 
     settings = AgentSettings()
-    assert settings.working_dir == working
-    assert settings.tmp_base_dir == tmp_base
     assert settings.image_understanding_model == "openai:gpt-4o"
     assert settings.video_understanding_model == "google-gla:gemini-2.0-flash"
 

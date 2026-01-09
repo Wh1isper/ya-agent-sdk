@@ -60,7 +60,7 @@ class LoadTool(BaseTool):
     """
 
     name = "load"
-    description = "Load content from HTTP/HTTPS URL (images, videos, audio, text, documents)."
+    description = "Load content directly from HTTP/HTTPS URL (images, videos). e.g. https://example.com/image.png, https://example.com/video.mp4, https://youtube.com/watch?v=abc123"
 
     def is_available(self) -> bool:
         """Check if tool is available based on model capabilities.
@@ -95,7 +95,7 @@ class LoadTool(BaseTool):
             enable_load_document=enable_load_document,
         )
 
-    async def call(  # noqa: C901
+    async def call(
         self,
         ctx: RunContext[AgentContext],
         url: Annotated[
@@ -163,10 +163,4 @@ class LoadTool(BaseTool):
                 )
             return DocumentUrl(url=url)
 
-        # For text or unknown content, return as document URL
-        # The model can then process the text content
-        if category == ContentCategory.text or category == ContentCategory.unknown:
-            # Text content doesn't require special capability
-            return DocumentUrl(url=url)
-
-        return DocumentUrl(url=url)
+        return f"Unknown content category: {category}, try again with a different URL or use `fetch` tool to download."

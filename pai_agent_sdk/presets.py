@@ -78,12 +78,18 @@ class ModelSettingsPreset(str, Enum):
     OPENAI_RESPONSES_MEDIUM = "openai_responses_medium"
     OPENAI_RESPONSES_LOW = "openai_responses_low"
 
-    # Gemini presets (with thinking config)
-    GEMINI_DEFAULT = "gemini_default"
-    GEMINI_HIGH = "gemini_high"
-    GEMINI_MEDIUM = "gemini_medium"
-    GEMINI_LOW = "gemini_low"
-    GEMINI_MINIMAL = "gemini_minimal"
+    # Gemini thinking_budget presets (for Gemini 2.5)
+    GEMINI_THINKING_BUDGET_DEFAULT = "gemini_thinking_budget_default"
+    GEMINI_THINKING_BUDGET_HIGH = "gemini_thinking_budget_high"
+    GEMINI_THINKING_BUDGET_MEDIUM = "gemini_thinking_budget_medium"
+    GEMINI_THINKING_BUDGET_LOW = "gemini_thinking_budget_low"
+
+    # Gemini thinking_level presets (for Gemini 3)
+    GEMINI_THINKING_LEVEL_DEFAULT = "gemini_thinking_level_default"
+    GEMINI_THINKING_LEVEL_HIGH = "gemini_thinking_level_high"
+    GEMINI_THINKING_LEVEL_MEDIUM = "gemini_thinking_level_medium"
+    GEMINI_THINKING_LEVEL_LOW = "gemini_thinking_level_low"
+    GEMINI_THINKING_LEVEL_MINIMAL = "gemini_thinking_level_minimal"
 
 
 # =============================================================================
@@ -266,86 +272,130 @@ OPENAI_RESPONSES_LOW: dict[str, Any] = _openai_responses_settings(
 
 
 # =============================================================================
-# Gemini Presets
+# Gemini thinking_budget Presets (for Gemini 2.5)
 # =============================================================================
 
 
-def _gemini_settings(
-    thinking_level: Literal["HIGH", "MEDIUM", "LOW"] | None = None,
-    thinking_budget: int | None = None,
+def _gemini_thinking_budget_settings(
+    thinking_budget: int,
     max_tokens: int | None = None,
     include_thoughts: bool = False,
 ) -> dict[str, Any]:
-    """Create Gemini model settings with thinking config.
-
-    Note: Gemini 3 uses thinking_level, Gemini 2.5 uses thinking_budget.
-    You can specify both for compatibility.
+    """Create Gemini model settings with thinking_budget only (for Gemini 2.5).
 
     Args:
-        thinking_level: For Gemini 3+ ('HIGH', 'MEDIUM', 'LOW').
-        thinking_budget: For Gemini 2.5 (token budget).
+        thinking_budget: Token budget for thinking.
         max_tokens: Maximum output tokens.
         include_thoughts: Whether to include thinking in response.
 
     Returns:
         Dict suitable for GoogleModelSettings.
     """
-    thinking_config: dict[str, Any] = {
-        "include_thoughts": include_thoughts,
-    }
-    if thinking_level is not None:
-        thinking_config["thinking_level"] = thinking_level
-    if thinking_budget is not None:
-        thinking_config["thinking_budget"] = thinking_budget
-
     settings: dict[str, Any] = {
-        "google_thinking_config": thinking_config,
+        "google_thinking_config": {
+            "thinking_budget": thinking_budget,
+            "include_thoughts": include_thoughts,
+        },
     }
     if max_tokens is not None:
         settings["max_tokens"] = max_tokens
     return settings
 
 
-GEMINI_DEFAULT: dict[str, Any] = _gemini_settings(
-    thinking_level="MEDIUM",
+GEMINI_THINKING_BUDGET_DEFAULT: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=16 * K_TOKENS,
     max_tokens=16 * K_TOKENS,
     include_thoughts=False,
 )
-"""Gemini default: Same as medium, balanced reasoning."""
+"""Gemini 2.5 default: 16K thinking budget, balanced reasoning."""
 
-GEMINI_HIGH: dict[str, Any] = _gemini_settings(
-    thinking_level="HIGH",
+GEMINI_THINKING_BUDGET_HIGH: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=32 * K_TOKENS,
     max_tokens=21 * K_TOKENS,
     include_thoughts=False,
 )
-"""Gemini high: Maximum reasoning depth (default for Gemini 3)."""
+"""Gemini 2.5 high: 32K thinking budget, maximum reasoning depth."""
 
-GEMINI_MEDIUM: dict[str, Any] = _gemini_settings(
-    thinking_level="MEDIUM",
+GEMINI_THINKING_BUDGET_MEDIUM: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=16 * K_TOKENS,
     max_tokens=16 * K_TOKENS,
     include_thoughts=False,
 )
-"""Gemini medium: Balanced reasoning (Gemini 3 Flash only)."""
+"""Gemini 2.5 medium: 16K thinking budget, balanced reasoning."""
 
-GEMINI_LOW: dict[str, Any] = _gemini_settings(
-    thinking_level="LOW",
+GEMINI_THINKING_BUDGET_LOW: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=4 * K_TOKENS,
     max_tokens=8 * K_TOKENS,
     include_thoughts=False,
 )
-"""Gemini low: Minimal reasoning, lower latency."""
+"""Gemini 2.5 low: 4K thinking budget, minimal reasoning overhead."""
 
-GEMINI_MINIMAL: dict[str, Any] = {
-    "google_thinking_config": {
-        "thinking_level": "MINIMAL",
-        "include_thoughts": False,
-    },
-    "max_tokens": 4 * K_TOKENS,
-}
-"""Gemini minimal: Near-zero thinking (Gemini 3 Flash only, may still think for complex tasks)."""
+
+# =============================================================================
+# Gemini thinking_level Presets (for Gemini 3)
+# =============================================================================
+
+
+def _gemini_thinking_level_settings(
+    thinking_level: Literal["HIGH", "MEDIUM", "LOW", "MINIMAL"],
+    max_tokens: int | None = None,
+    include_thoughts: bool = False,
+) -> dict[str, Any]:
+    """Create Gemini model settings with thinking_level only (for Gemini 3).
+
+    Args:
+        thinking_level: Thinking level ('HIGH', 'MEDIUM', 'LOW', 'MINIMAL').
+        max_tokens: Maximum output tokens.
+        include_thoughts: Whether to include thinking in response.
+
+    Returns:
+        Dict suitable for GoogleModelSettings.
+    """
+    settings: dict[str, Any] = {
+        "google_thinking_config": {
+            "thinking_level": thinking_level,
+            "include_thoughts": include_thoughts,
+        },
+    }
+    if max_tokens is not None:
+        settings["max_tokens"] = max_tokens
+    return settings
+
+
+GEMINI_THINKING_LEVEL_DEFAULT: dict[str, Any] = _gemini_thinking_level_settings(
+    thinking_level="LOW",
+    max_tokens=16 * K_TOKENS,
+    include_thoughts=False,
+)
+"""Gemini 3 default: MEDIUM thinking level, balanced reasoning."""
+
+GEMINI_THINKING_LEVEL_HIGH: dict[str, Any] = _gemini_thinking_level_settings(
+    thinking_level="HIGH",
+    max_tokens=21 * K_TOKENS,
+    include_thoughts=False,
+)
+"""Gemini 3 high: HIGH thinking level, maximum reasoning depth."""
+
+GEMINI_THINKING_LEVEL_MEDIUM: dict[str, Any] = _gemini_thinking_level_settings(
+    thinking_level="MEDIUM",
+    max_tokens=16 * K_TOKENS,
+    include_thoughts=False,
+)
+"""Gemini 3 medium: MEDIUM thinking level, balanced reasoning."""
+
+GEMINI_THINKING_LEVEL_LOW: dict[str, Any] = _gemini_thinking_level_settings(
+    thinking_level="LOW",
+    max_tokens=8 * K_TOKENS,
+    include_thoughts=False,
+)
+"""Gemini 3 low: LOW thinking level, minimal reasoning overhead."""
+
+GEMINI_THINKING_LEVEL_MINIMAL: dict[str, Any] = _gemini_thinking_level_settings(
+    thinking_level="MINIMAL",
+    max_tokens=4 * K_TOKENS,
+    include_thoughts=False,
+)
+"""Gemini 3 minimal: MINIMAL thinking level (Flash only, may still think for complex tasks)."""
 
 
 # =============================================================================
@@ -369,12 +419,17 @@ _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
     ModelSettingsPreset.OPENAI_RESPONSES_HIGH.value: OPENAI_RESPONSES_HIGH,
     ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM.value: OPENAI_RESPONSES_MEDIUM,
     ModelSettingsPreset.OPENAI_RESPONSES_LOW.value: OPENAI_RESPONSES_LOW,
-    # Gemini
-    ModelSettingsPreset.GEMINI_DEFAULT.value: GEMINI_DEFAULT,
-    ModelSettingsPreset.GEMINI_HIGH.value: GEMINI_HIGH,
-    ModelSettingsPreset.GEMINI_MEDIUM.value: GEMINI_MEDIUM,
-    ModelSettingsPreset.GEMINI_LOW.value: GEMINI_LOW,
-    ModelSettingsPreset.GEMINI_MINIMAL.value: GEMINI_MINIMAL,
+    # Gemini thinking_budget (for Gemini 2.5)
+    ModelSettingsPreset.GEMINI_THINKING_BUDGET_DEFAULT.value: GEMINI_THINKING_BUDGET_DEFAULT,
+    ModelSettingsPreset.GEMINI_THINKING_BUDGET_HIGH.value: GEMINI_THINKING_BUDGET_HIGH,
+    ModelSettingsPreset.GEMINI_THINKING_BUDGET_MEDIUM.value: GEMINI_THINKING_BUDGET_MEDIUM,
+    ModelSettingsPreset.GEMINI_THINKING_BUDGET_LOW.value: GEMINI_THINKING_BUDGET_LOW,
+    # Gemini thinking_level (for Gemini 3)
+    ModelSettingsPreset.GEMINI_THINKING_LEVEL_DEFAULT.value: GEMINI_THINKING_LEVEL_DEFAULT,
+    ModelSettingsPreset.GEMINI_THINKING_LEVEL_HIGH.value: GEMINI_THINKING_LEVEL_HIGH,
+    ModelSettingsPreset.GEMINI_THINKING_LEVEL_MEDIUM.value: GEMINI_THINKING_LEVEL_MEDIUM,
+    ModelSettingsPreset.GEMINI_THINKING_LEVEL_LOW.value: GEMINI_THINKING_LEVEL_LOW,
+    ModelSettingsPreset.GEMINI_THINKING_LEVEL_MINIMAL.value: GEMINI_THINKING_LEVEL_MINIMAL,
 }
 
 # Short aliases for convenience
@@ -383,7 +438,9 @@ _PRESET_ALIASES: dict[str, str] = {
     "anthropic": ModelSettingsPreset.ANTHROPIC_DEFAULT.value,
     "openai": ModelSettingsPreset.OPENAI_DEFAULT.value,
     "openai_responses": ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT.value,
-    "gemini": ModelSettingsPreset.GEMINI_DEFAULT.value,
+    "gemini_2.5": ModelSettingsPreset.GEMINI_THINKING_BUDGET_DEFAULT.value,
+    "gemini_3": ModelSettingsPreset.GEMINI_THINKING_LEVEL_DEFAULT.value,
+    "gemini": ModelSettingsPreset.GEMINI_THINKING_LEVEL_DEFAULT.value,  # Default to Gemini 3
     # Generic level aliases (default to anthropic)
     "high": ModelSettingsPreset.ANTHROPIC_HIGH.value,
     "medium": ModelSettingsPreset.ANTHROPIC_MEDIUM.value,

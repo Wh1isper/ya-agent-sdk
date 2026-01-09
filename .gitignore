@@ -143,6 +143,3 @@ cython_debug/
 TO-DO.json
 dev/
 pai_agent_sdk/sandbox/shell/templates/public
-# skills/docs
-# skills/examples
-# skills/README.md

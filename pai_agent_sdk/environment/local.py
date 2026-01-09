@@ -5,6 +5,7 @@ using standard library functions.
 """
 
 import asyncio
+import glob as glob_module
 import shutil
 import tempfile
 from pathlib import Path
@@ -309,14 +310,34 @@ class LocalFileOperator(FileOperator):
     async def _glob_impl(self, pattern: str) -> list[str]:
         """Find files matching glob pattern."""
         matches = []
-        for p in self._default_path.glob(pattern):
-            try:
-                rel = p.relative_to(self._default_path)
-                matches.append(str(rel))
-            except ValueError:
-                matches.append(str(p))
+        pattern_path = Path(pattern)
+
+        # Handle absolute paths - Python 3.13's pathlib.glob() doesn't support them
+        if pattern_path.is_absolute():
+            # Use glob module for absolute patterns
+            for p_str in glob_module.glob(pattern, recursive=True):
+                resolved = Path(p_str).resolve()
+                # Filter by allowed_paths for security
+                if self._is_path_allowed(resolved):
+                    matches.append(p_str)
+        else:
+            # Use pathlib for relative patterns
+            for p in self._default_path.glob(pattern):
+                try:
+                    rel = p.relative_to(self._default_path)
+                    matches.append(str(rel))
+                except ValueError:
+                    matches.append(str(p))
+
         # Sort by modification time (newest first)
-        matches.sort(key=lambda x: (self._default_path / x).stat().st_mtime, reverse=True)
+        def get_mtime(x: str) -> float:
+            try:
+                p = Path(x) if Path(x).is_absolute() else (self._default_path / x)
+                return p.stat().st_mtime
+            except (OSError, FileNotFoundError):
+                return 0.0
+
+        matches.sort(key=get_mtime, reverse=True)
         return matches
 
 

@@ -146,11 +146,9 @@ def get_compact_agent(
     if effective_settings is None and main_model_settings is not None:
         effective_settings = main_model_settings
 
-    model_instance = infer_model(effective_model) if isinstance(effective_model, str) else effective_model
-
     system_prompt = _load_system_prompt()
     return Agent[AgentContext, CondenseResult](
-        model_instance,
+        model=infer_model(effective_model),
         model_settings=effective_settings,
         output_type=CondenseResult,
         deps_type=AgentContext,

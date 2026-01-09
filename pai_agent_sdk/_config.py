@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,13 +17,8 @@ class AgentSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        case_sensitive=False,
     )
-
-    working_dir: Path | None = None
-    """Working directory for tool path validation. If None, uses current working directory."""
-
-    tmp_base_dir: Path | None = None
-    """Base directory for creating the session temporary directory. If None, uses system default."""
 
     image_understanding_model: str | None = None
     """Model to use for image understanding when native vision is unavailable."""

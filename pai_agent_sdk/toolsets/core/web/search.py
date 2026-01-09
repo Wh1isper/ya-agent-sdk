@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import Field
 from pydantic_ai import RunContext
-from tavily import AsyncTavilyClient
 
 from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.toolsets.core.base import BaseTool
@@ -38,6 +37,17 @@ def _load_search_image_instruction() -> str:
     return (_PROMPTS_DIR / "search_image.md").read_text()
 
 
+@cache
+def _is_tavily_available() -> bool:
+    """Check if tavily package is installed."""
+    try:
+        import tavily  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 class SearchTool(BaseTool):
     """Web search tool using Google or Tavily."""
 
@@ -45,10 +55,10 @@ class SearchTool(BaseTool):
     description = "Search the web for information using Google or Tavily APIs."
 
     def is_available(self) -> bool:
-        """Available if Google or Tavily API keys are configured."""
+        """Available if Google or Tavily API keys are configured (and tavily package installed)."""
         cfg = self.ctx.tool_config
         has_google = bool(cfg.google_search_api_key and cfg.google_search_cx)
-        has_tavily = bool(cfg.tavily_api_key)
+        has_tavily = bool(cfg.tavily_api_key) and _is_tavily_available()
         return has_google or has_tavily
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
@@ -103,6 +113,8 @@ class SearchTool(BaseTool):
         self, query: str, search_depth: Literal["basic", "advanced"], api_key: str
     ) -> list[dict[str, Any]] | dict[str, Any]:
         """Search using Tavily API."""
+        from tavily import AsyncTavilyClient
+
         client = AsyncTavilyClient(api_key)
         results = await client.search(query, search_depth=search_depth)  # type: ignore[arg-type]
 

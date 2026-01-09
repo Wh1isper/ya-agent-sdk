@@ -585,7 +585,11 @@ class Toolset(BaseToolset[AgentDepsT]):
             args = await tool.pre_hook(ctx, args)
 
         logger.debug(f"call_tool: {name!r} executing tool function")
-        result = await self._call_tool_func(args, ctx, tool)
+        try:
+            result = await self._call_tool_func(args, ctx, tool)
+        except Exception as e:
+            logger.warning(f"call_tool: {name!r} raised exception: {type(e).__name__}")
+            result = f"Error calling tool {name}: {e}"
 
         if tool.post_hook:
             logger.debug(f"call_tool: {name!r} executing tool post-hook")
