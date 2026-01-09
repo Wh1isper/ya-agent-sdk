@@ -6,6 +6,11 @@ import pytest
 from inline_snapshot import snapshot
 
 from pai_agent_sdk.presets import (
+    ANTHROPIC_1M_DEFAULT,
+    ANTHROPIC_1M_HIGH,
+    ANTHROPIC_1M_LOW,
+    ANTHROPIC_1M_MEDIUM,
+    ANTHROPIC_1M_OFF,
     ANTHROPIC_DEFAULT,
     ANTHROPIC_HIGH,
     ANTHROPIC_LOW,
@@ -27,11 +32,10 @@ from pai_agent_sdk.presets import (
 
 
 def test_anthropic_presets_structure() -> None:
-    """Test that Anthropic presets have expected structure."""
-    # All should have beta headers and caching
+    """Test that Anthropic standard presets have expected structure (no beta headers)."""
+    # Standard presets should NOT have beta headers but should have caching
     for preset in [ANTHROPIC_DEFAULT, ANTHROPIC_HIGH, ANTHROPIC_MEDIUM, ANTHROPIC_LOW]:
-        assert "extra_headers" in preset
-        assert "anthropic-beta" in preset["extra_headers"]
+        assert "extra_headers" not in preset
         assert preset["anthropic_cache_instructions"] is True
         assert preset["anthropic_cache_messages"] is True
 
@@ -43,15 +47,53 @@ def test_anthropic_presets_structure() -> None:
 
     # OFF should have thinking disabled
     assert ANTHROPIC_OFF["anthropic_thinking"]["type"] == "disabled"
+    assert "extra_headers" not in ANTHROPIC_OFF
+
+
+def test_anthropic_1m_presets_structure() -> None:
+    """Test that Anthropic 1M presets have beta headers and caching."""
+    # All 1M presets should have beta headers and caching
+    for preset in [
+        ANTHROPIC_1M_DEFAULT,
+        ANTHROPIC_1M_HIGH,
+        ANTHROPIC_1M_MEDIUM,
+        ANTHROPIC_1M_LOW,
+    ]:
+        assert "extra_headers" in preset
+        assert "anthropic-beta" in preset["extra_headers"]
+        assert preset["anthropic_cache_instructions"] is True
+        assert preset["anthropic_cache_messages"] is True
+
+    # Thinking presets should have thinking config
+    for preset in [ANTHROPIC_1M_HIGH, ANTHROPIC_1M_MEDIUM, ANTHROPIC_1M_LOW]:
+        assert "anthropic_thinking" in preset
+        assert preset["anthropic_thinking"]["type"] == "enabled"
+        assert "budget_tokens" in preset["anthropic_thinking"]
+
+    # 1M OFF should have thinking disabled but still have beta headers
+    assert ANTHROPIC_1M_OFF["anthropic_thinking"]["type"] == "disabled"
+    assert "extra_headers" in ANTHROPIC_1M_OFF
+    assert "anthropic-beta" in ANTHROPIC_1M_OFF["extra_headers"]
 
 
 def test_anthropic_thinking_budgets() -> None:
     """Test that Anthropic thinking budgets are ordered correctly."""
+    # Standard presets
     high_budget = ANTHROPIC_HIGH["anthropic_thinking"]["budget_tokens"]
     medium_budget = ANTHROPIC_MEDIUM["anthropic_thinking"]["budget_tokens"]
     low_budget = ANTHROPIC_LOW["anthropic_thinking"]["budget_tokens"]
-
     assert high_budget > medium_budget > low_budget
+
+    # 1M presets (should have same budget values)
+    high_budget_1m = ANTHROPIC_1M_HIGH["anthropic_thinking"]["budget_tokens"]
+    medium_budget_1m = ANTHROPIC_1M_MEDIUM["anthropic_thinking"]["budget_tokens"]
+    low_budget_1m = ANTHROPIC_1M_LOW["anthropic_thinking"]["budget_tokens"]
+    assert high_budget_1m > medium_budget_1m > low_budget_1m
+
+    # Verify same values between standard and 1M
+    assert high_budget == high_budget_1m
+    assert medium_budget == medium_budget_1m
+    assert low_budget == low_budget_1m
 
 
 def test_openai_chat_presets_structure() -> None:
@@ -78,17 +120,29 @@ def test_get_model_settings_by_enum() -> None:
     settings = get_model_settings(ModelSettingsPreset.ANTHROPIC_HIGH)
     assert settings == ANTHROPIC_HIGH
 
+    # Test 1M preset
+    settings_1m = get_model_settings(ModelSettingsPreset.ANTHROPIC_1M_HIGH)
+    assert settings_1m == ANTHROPIC_1M_HIGH
+
 
 def test_get_model_settings_by_string() -> None:
     """Test getting model settings by string name."""
     settings = get_model_settings("anthropic_high")
     assert settings == ANTHROPIC_HIGH
 
+    # Test 1M preset
+    settings_1m = get_model_settings("anthropic_1m_high")
+    assert settings_1m == ANTHROPIC_1M_HIGH
+
 
 def test_get_model_settings_by_alias() -> None:
     """Test getting model settings by alias."""
     settings = get_model_settings("anthropic")
     assert settings == ANTHROPIC_DEFAULT
+
+    # Test 1M alias
+    settings_1m = get_model_settings("anthropic_1m")
+    assert settings_1m == ANTHROPIC_1M_DEFAULT
 
     settings = get_model_settings("openai")
     assert settings == OPENAI_DEFAULT
@@ -118,6 +172,10 @@ def test_resolve_model_settings_string() -> None:
     result = resolve_model_settings("anthropic_medium")
     assert result == ANTHROPIC_MEDIUM
 
+    # Test 1M preset
+    result_1m = resolve_model_settings("anthropic_1m_medium")
+    assert result_1m == ANTHROPIC_1M_MEDIUM
+
 
 def test_list_presets() -> None:
     """Test list_presets returns all available presets."""
@@ -125,6 +183,12 @@ def test_list_presets() -> None:
 
     assert presets == snapshot([
         "anthropic",
+        "anthropic_1m",
+        "anthropic_1m_default",
+        "anthropic_1m_high",
+        "anthropic_1m_low",
+        "anthropic_1m_medium",
+        "anthropic_1m_off",
         "anthropic_default",
         "anthropic_high",
         "anthropic_low",

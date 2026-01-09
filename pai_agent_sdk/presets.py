@@ -59,12 +59,19 @@ ANTHROPIC_BETA_HEADERS = {
 class ModelSettingsPreset(str, Enum):
     """Available ModelSettings presets."""
 
-    # Anthropic presets (Claude with thinking)
+    # Anthropic standard presets (no beta headers)
     ANTHROPIC_DEFAULT = "anthropic_default"
     ANTHROPIC_HIGH = "anthropic_high"
     ANTHROPIC_MEDIUM = "anthropic_medium"
     ANTHROPIC_LOW = "anthropic_low"
     ANTHROPIC_OFF = "anthropic_off"
+
+    # Anthropic 1M context presets (with beta headers for extended context)
+    ANTHROPIC_1M_DEFAULT = "anthropic_1m_default"
+    ANTHROPIC_1M_HIGH = "anthropic_1m_high"
+    ANTHROPIC_1M_MEDIUM = "anthropic_1m_medium"
+    ANTHROPIC_1M_LOW = "anthropic_1m_low"
+    ANTHROPIC_1M_OFF = "anthropic_1m_off"
 
     # OpenAI Chat Completions presets (GPT-4, etc.)
     OPENAI_DEFAULT = "openai_default"
@@ -100,18 +107,20 @@ class ModelSettingsPreset(str, Enum):
 def _anthropic_settings(
     thinking_budget: int,
     max_tokens: int = 21 * K_TOKENS,
+    *,
+    use_1m_context: bool = False,
 ) -> dict[str, Any]:
     """Create Anthropic model settings with thinking enabled.
 
     Args:
         thinking_budget: Token budget for thinking (higher = more reasoning).
         max_tokens: Maximum output tokens.
+        use_1m_context: Whether to include 1M context beta headers.
 
     Returns:
         Dict suitable for AnthropicModelSettings.
     """
-    return {
-        "extra_headers": ANTHROPIC_BETA_HEADERS,
+    settings: dict[str, Any] = {
         "max_tokens": max_tokens,
         "anthropic_thinking": {
             "type": "enabled",
@@ -121,7 +130,36 @@ def _anthropic_settings(
         "anthropic_cache_response": True,
         "anthropic_cache_messages": True,
     }
+    if use_1m_context:
+        settings["extra_headers"] = ANTHROPIC_BETA_HEADERS
+    return settings
 
+
+def _anthropic_off_settings(*, use_1m_context: bool = False) -> dict[str, Any]:
+    """Create Anthropic model settings with thinking disabled.
+
+    Args:
+        use_1m_context: Whether to include 1M context beta headers.
+
+    Returns:
+        Dict suitable for AnthropicModelSettings.
+    """
+    settings: dict[str, Any] = {
+        "anthropic_thinking": {
+            "type": "disabled",
+        },
+        "anthropic_cache_instructions": True,
+        "anthropic_cache_response": True,
+        "anthropic_cache_messages": True,
+    }
+    if use_1m_context:
+        settings["extra_headers"] = ANTHROPIC_BETA_HEADERS
+    return settings
+
+
+# -----------------------------------------------------------------------------
+# Standard Anthropic presets (no beta headers)
+# -----------------------------------------------------------------------------
 
 ANTHROPIC_DEFAULT: dict[str, Any] = _anthropic_settings(
     thinking_budget=16 * K_TOKENS,
@@ -147,16 +185,43 @@ ANTHROPIC_LOW: dict[str, Any] = _anthropic_settings(
 )
 """Anthropic low thinking: 4K thinking budget, minimal reasoning overhead."""
 
-ANTHROPIC_OFF: dict[str, Any] = {
-    "extra_headers": ANTHROPIC_BETA_HEADERS,
-    "anthropic_thinking": {
-        "type": "disabled",
-    },
-    "anthropic_cache_instructions": True,
-    "anthropic_cache_response": True,
-    "anthropic_cache_messages": True,
-}
-"""Anthropic off: Thinking disabled, with 1M context beta and caching enabled."""
+ANTHROPIC_OFF: dict[str, Any] = _anthropic_off_settings()
+"""Anthropic off: Thinking disabled, caching enabled."""
+
+# -----------------------------------------------------------------------------
+# Anthropic 1M context presets (with beta headers for extended context)
+# -----------------------------------------------------------------------------
+
+ANTHROPIC_1M_DEFAULT: dict[str, Any] = _anthropic_settings(
+    thinking_budget=16 * K_TOKENS,
+    max_tokens=16 * K_TOKENS,
+    use_1m_context=True,
+)
+"""Anthropic 1M default: Same as medium, 16K thinking budget, with 1M context beta."""
+
+ANTHROPIC_1M_HIGH: dict[str, Any] = _anthropic_settings(
+    thinking_budget=32 * K_TOKENS,
+    max_tokens=21 * K_TOKENS,
+    use_1m_context=True,
+)
+"""Anthropic 1M high thinking: 32K thinking budget, max reasoning depth, with 1M context beta."""
+
+ANTHROPIC_1M_MEDIUM: dict[str, Any] = _anthropic_settings(
+    thinking_budget=16 * K_TOKENS,
+    max_tokens=16 * K_TOKENS,
+    use_1m_context=True,
+)
+"""Anthropic 1M medium thinking: 16K thinking budget, balanced reasoning, with 1M context beta."""
+
+ANTHROPIC_1M_LOW: dict[str, Any] = _anthropic_settings(
+    thinking_budget=4 * K_TOKENS,
+    max_tokens=8 * K_TOKENS,
+    use_1m_context=True,
+)
+"""Anthropic 1M low thinking: 4K thinking budget, minimal reasoning overhead, with 1M context beta."""
+
+ANTHROPIC_1M_OFF: dict[str, Any] = _anthropic_off_settings(use_1m_context=True)
+"""Anthropic 1M off: Thinking disabled, with 1M context beta and caching enabled."""
 
 
 # =============================================================================
@@ -403,12 +468,18 @@ GEMINI_THINKING_LEVEL_MINIMAL: dict[str, Any] = _gemini_thinking_level_settings(
 # =============================================================================
 
 _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
-    # Anthropic
+    # Anthropic standard (no beta headers)
     ModelSettingsPreset.ANTHROPIC_DEFAULT.value: ANTHROPIC_DEFAULT,
     ModelSettingsPreset.ANTHROPIC_HIGH.value: ANTHROPIC_HIGH,
     ModelSettingsPreset.ANTHROPIC_MEDIUM.value: ANTHROPIC_MEDIUM,
     ModelSettingsPreset.ANTHROPIC_LOW.value: ANTHROPIC_LOW,
     ModelSettingsPreset.ANTHROPIC_OFF.value: ANTHROPIC_OFF,
+    # Anthropic 1M context (with beta headers)
+    ModelSettingsPreset.ANTHROPIC_1M_DEFAULT.value: ANTHROPIC_1M_DEFAULT,
+    ModelSettingsPreset.ANTHROPIC_1M_HIGH.value: ANTHROPIC_1M_HIGH,
+    ModelSettingsPreset.ANTHROPIC_1M_MEDIUM.value: ANTHROPIC_1M_MEDIUM,
+    ModelSettingsPreset.ANTHROPIC_1M_LOW.value: ANTHROPIC_1M_LOW,
+    ModelSettingsPreset.ANTHROPIC_1M_OFF.value: ANTHROPIC_1M_OFF,
     # OpenAI Chat
     ModelSettingsPreset.OPENAI_DEFAULT.value: OPENAI_DEFAULT,
     ModelSettingsPreset.OPENAI_HIGH.value: OPENAI_HIGH,
@@ -436,6 +507,7 @@ _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
 _PRESET_ALIASES: dict[str, str] = {
     # Provider defaults (default preset)
     "anthropic": ModelSettingsPreset.ANTHROPIC_DEFAULT.value,
+    "anthropic_1m": ModelSettingsPreset.ANTHROPIC_1M_DEFAULT.value,
     "openai": ModelSettingsPreset.OPENAI_DEFAULT.value,
     "openai_responses": ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT.value,
     "gemini_2.5": ModelSettingsPreset.GEMINI_THINKING_BUDGET_DEFAULT.value,
