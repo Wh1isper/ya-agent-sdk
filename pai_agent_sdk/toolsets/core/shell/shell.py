@@ -6,13 +6,17 @@ using the shell provided by AgentContext.
 
 from functools import cache
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import Shell
 from pai_agent_sdk.toolsets.core.base import BaseTool
+
+logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -43,6 +47,13 @@ class ShellTool(BaseTool):
 
     name = "shell"
     description = "Execute a shell command."
+
+    def is_available(self) -> bool:
+        """Check if tool is available (requires shell)."""
+        if self.ctx.shell is None:
+            logger.debug("ShellTool unavailable: shell is not configured")
+            return False
+        return True
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
         """Load instruction from prompts/shell.md."""
@@ -76,7 +87,7 @@ class ShellTool(BaseTool):
                 error="Command cannot be empty.",
             )
 
-        shell = ctx.deps.shell
+        shell = cast(Shell, ctx.deps.shell)
         file_op = ctx.deps.file_operator
 
         try:
@@ -93,23 +104,29 @@ class ShellTool(BaseTool):
                 return_code=exit_code,
             )
 
-            # Handle stdout truncation
+            # Handle stdout truncation (only save to file if file_operator is available)
             if len(stdout) > OUTPUT_TRUNCATE_LIMIT:
-                stdout_file = f"stdout-{ctx.deps.run_id[:8]}.log"
-                stdout_path = await file_op.write_tmp_file(stdout_file, stdout)
-                result["stdout"] = (
-                    stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stdout_file_path`)"
-                )
-                result["stdout_file_path"] = stdout_path
+                if file_op is not None:
+                    stdout_file = f"stdout-{ctx.deps.run_id[:8]}.log"
+                    stdout_path = await file_op.write_tmp_file(stdout_file, stdout)
+                    result["stdout"] = (
+                        stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stdout_file_path`)"
+                    )
+                    result["stdout_file_path"] = stdout_path
+                else:
+                    result["stdout"] = stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
 
-            # Handle stderr truncation
+            # Handle stderr truncation (only save to file if file_operator is available)
             if len(stderr) > OUTPUT_TRUNCATE_LIMIT:
-                stderr_file = f"stderr-{ctx.deps.run_id[:8]}.log"
-                stderr_path = await file_op.write_tmp_file(stderr_file, stderr)
-                result["stderr"] = (
-                    stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stderr_file_path`)"
-                )
-                result["stderr_file_path"] = stderr_path
+                if file_op is not None:
+                    stderr_file = f"stderr-{ctx.deps.run_id[:8]}.log"
+                    stderr_path = await file_op.write_tmp_file(stderr_file, stderr)
+                    result["stderr"] = (
+                        stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stderr_file_path`)"
+                    )
+                    result["stderr_file_path"] = stderr_path
+                else:
+                    result["stderr"] = stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
 
             return result
 

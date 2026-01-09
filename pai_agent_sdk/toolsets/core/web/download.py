@@ -6,7 +6,7 @@ import asyncio
 import mimetypes
 from functools import cache
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 from pydantic import Field
@@ -14,6 +14,7 @@ from pydantic_ai import RunContext
 
 from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 from pai_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, safe_request, verify_url
 
@@ -32,6 +33,13 @@ class DownloadTool(BaseTool):
     name = "download"
     description = "Download files from URLs and save to local filesystem."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("DownloadTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         return _load_instruction()
 
@@ -45,7 +53,7 @@ class DownloadTool(BaseTool):
         ],
     ) -> list[dict[str, Any]]:
         """Download files from URLs and save to local directory."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
 
         # Ensure directory exists
         await file_operator.mkdir(save_dir, parents=True)
@@ -61,7 +69,7 @@ class DownloadTool(BaseTool):
         save_dir: str,
     ) -> dict[str, Any]:
         """Download a single file."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
         skip_verification = ctx.deps.tool_config.skip_url_verification
 
         # Verify URL security

@@ -3,14 +3,18 @@
 import fnmatch
 from functools import cache
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 from pai_agent_sdk.toolsets.core.filesystem._types import FileInfoWithStats
+
+logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -27,6 +31,13 @@ class ListTool(BaseTool):
 
     name = "ls"
     description = "List directory contents with file info (name, type, size, modified time)."
+
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("ListTool unavailable: file_operator is not configured")
+            return False
+        return True
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/ls.md."""
@@ -45,7 +56,7 @@ class ListTool(BaseTool):
         ] = None,
     ) -> dict[str, Any]:
         """List directory contents with detailed information."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
 
         if not await file_operator.exists(path):
             return {"success": False, "error": f"Directory not found: {path}"}

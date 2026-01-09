@@ -63,7 +63,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import uuid4
 from xml.dom.minidom import parseString
@@ -84,7 +83,6 @@ from pydantic_ai.usage import RunUsage
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pai_agent_sdk.environment.base import FileOperator, ResourceRegistry, Shell
-from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
 from pai_agent_sdk.utils import get_latest_request_usage
 
 # =============================================================================
@@ -474,6 +472,21 @@ class ModelConfig(BaseModel):
         """Check if the model has a specific capability."""
         return capability in self.capabilities
 
+    @property
+    def has_vision(self) -> bool:
+        """Check if the model supports vision (image understanding)."""
+        return ModelCapability.vision in self.capabilities
+
+    @property
+    def has_video_understanding(self) -> bool:
+        """Check if the model supports video understanding."""
+        return ModelCapability.video_understanding in self.capabilities
+
+    @property
+    def has_document_understanding(self) -> bool:
+        """Check if the model supports document understanding."""
+        return ModelCapability.document_understanding in self.capabilities
+
 
 class RunContextMetadata(TypedDict, total=False):
     """Metadata for RunContext passed to get_context_instructions.
@@ -570,11 +583,11 @@ class AgentContext(BaseModel):
     handoff_message: str | None = None
     """Rendered handoff message to be injected into new context after handoff."""
 
-    file_operator: FileOperator = Field(default_factory=lambda: LocalFileOperator(default_path=Path.cwd()))
-    """File operator for file system operations. Provided by Environment."""
+    file_operator: FileOperator | None = None
+    """File operator for file system operations. Provided by Environment. Optional."""
 
-    shell: Shell = Field(default_factory=lambda: LocalShell(default_cwd=Path.cwd()))
-    """Shell executor for command execution. Provided by Environment."""
+    shell: Shell | None = None
+    """Shell executor for command execution. Provided by Environment. Optional."""
 
     resources: ResourceRegistry = Field(default_factory=ResourceRegistry)
     """Resource registry for runtime resources. Provided by Environment."""

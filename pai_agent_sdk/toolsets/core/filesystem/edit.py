@@ -2,16 +2,19 @@
 
 from functools import cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 from pai_agent_sdk.toolsets.core.filesystem._types import EditItem
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+logger = get_logger(__name__)
 
 
 @cache
@@ -33,6 +36,13 @@ class EditTool(BaseTool):
 
     name = "edit"
     description = "Performs exact string replacement in files. Use empty `old_string` to create new files."
+
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("EditTool unavailable: file_operator is not configured")
+            return False
+        return True
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/edit.md."""
@@ -56,7 +66,7 @@ class EditTool(BaseTool):
         ] = False,
     ) -> str:
         """Edit a file by performing a single find-and-replace operation."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
 
         if not old_string:
             if await file_operator.exists(file_path):
@@ -93,6 +103,13 @@ class MultiEditTool(BaseTool):
     name = "multi_edit"
     description = "Perform multiple find-and-replace operations on a single file efficiently."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("MultiEditTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/multi_edit.md."""
         return _load_multi_edit_instruction()
@@ -120,7 +137,7 @@ class MultiEditTool(BaseTool):
         ],
     ) -> str:
         """Edit a file by performing multiple find-and-replace operations."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
 
         if not edits:
             return "Error: At least one edit operation must be provided."

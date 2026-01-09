@@ -2,14 +2,18 @@
 
 from functools import cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 from pai_agent_sdk.toolsets.core.filesystem._types import CopyResult, MoveResult, PathPair
+
+logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -34,6 +38,13 @@ class MoveTool(BaseTool):
     name = "move"
     description = "Move files or directories. Supports batch operations with multiple src/dst pairs."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("MoveTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/move.md."""
         return _load_move_instruction()
@@ -51,7 +62,7 @@ class MoveTool(BaseTool):
         ] = False,
     ) -> list[MoveResult]:
         """Move files or directories."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
         results: list[MoveResult] = []
 
         for pair in pairs:
@@ -85,6 +96,13 @@ class CopyTool(BaseTool):
     name = "copy"
     description = "Copy files. Supports batch operations with multiple src/dst pairs. Files only."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("CopyTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/copy.md."""
         return _load_copy_instruction()
@@ -102,7 +120,7 @@ class CopyTool(BaseTool):
         ] = False,
     ) -> list[CopyResult]:
         """Copy files."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
         results: list[CopyResult] = []
 
         for pair in pairs:

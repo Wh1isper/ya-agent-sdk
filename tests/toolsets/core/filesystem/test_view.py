@@ -46,28 +46,28 @@ def test_is_image_file(agent_context: AgentContext) -> None:
     """Should correctly identify image files."""
     tool = ViewTool(agent_context)
     for ext in IMAGE_EXTENSIONS:
-        assert tool._is_image_file(Path(f"test{ext}")) is True
-        assert tool._is_image_file(Path(f"test{ext.upper()}")) is True
-    assert tool._is_image_file(Path("test.txt")) is False
-    assert tool._is_image_file(Path("test.py")) is False
+        assert tool._is_image_file(f"test{ext}") is True
+        assert tool._is_image_file(f"test{ext.upper()}") is True
+    assert tool._is_image_file("test.txt") is False
+    assert tool._is_image_file("test.py") is False
 
 
 def test_is_video_file(agent_context: AgentContext) -> None:
     """Should correctly identify video files."""
     tool = ViewTool(agent_context)
     for ext in VIDEO_EXTENSIONS:
-        assert tool._is_video_file(Path(f"test{ext}")) is True
-        assert tool._is_video_file(Path(f"test{ext.upper()}")) is True
-    assert tool._is_video_file(Path("test.txt")) is False
-    assert tool._is_video_file(Path("test.png")) is False
+        assert tool._is_video_file(f"test{ext}") is True
+        assert tool._is_video_file(f"test{ext.upper()}") is True
+    assert tool._is_video_file("test.txt") is False
+    assert tool._is_video_file("test.png") is False
 
 
 def test_get_media_type(agent_context: AgentContext) -> None:
     """Should return correct media type for extensions."""
     tool = ViewTool(agent_context)
     for ext, expected in MEDIA_TYPE_MAP.items():
-        assert tool._get_media_type(Path(f"test{ext}")) == expected
-    assert tool._get_media_type(Path("test.unknown")) == "application/octet-stream"
+        assert tool._get_media_type(f"test{ext}") == expected
+    assert tool._get_media_type("test.unknown") == "application/octet-stream"
 
 
 async def test_view_text_file_simple(tmp_path: Path) -> None:
@@ -199,11 +199,20 @@ async def test_view_directory_error(tmp_path: Path) -> None:
 
 async def test_view_image_file(tmp_path: Path) -> None:
     """Should return ToolReturn with BinaryContent for image files."""
+    from pai_agent_sdk.context import ModelCapability, ModelConfig
+
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        # Create context with vision capability
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                file_operator=env.file_operator,
+                shell=env.shell,
+                model_cfg=ModelConfig(capabilities={ModelCapability.vision}),
+            )
+        )
         tool = ViewTool(ctx)
 
         # Create a minimal PNG file (1x1 transparent pixel)
@@ -292,11 +301,20 @@ async def test_view_image_file(tmp_path: Path) -> None:
 
 async def test_view_video_file_with_video_model(tmp_path: Path) -> None:
     """Should return video content when model supports video."""
+    from pai_agent_sdk.context import ModelCapability, ModelConfig
+
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        # Create context with video_understanding capability
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                file_operator=env.file_operator,
+                shell=env.shell,
+                model_cfg=ModelConfig(capabilities={ModelCapability.video_understanding}),
+            )
+        )
         tool = ViewTool(ctx)
 
         # Create a minimal video file
@@ -307,21 +325,7 @@ async def test_view_video_file_with_video_model(tmp_path: Path) -> None:
         mock_run_ctx.deps = ctx
         mock_run_ctx.tool_call_id = "test-id"
 
-        # Mock model_config via getattr patch
-        mock_model_config = MagicMock()
-        mock_model_config.is_video_understanding_model = True
-
-        with patch.object(ctx, "__getattribute__", wraps=ctx.__getattribute__):
-            # Override getattr for model_config
-            original_getattribute = ctx.__class__.__getattribute__
-
-            def patched_getattr(self, name):
-                if name == "model_config":
-                    return mock_model_config
-                return original_getattribute(self, name)
-
-            with patch.object(ctx.__class__, "__getattribute__", patched_getattr):
-                result = await tool.call(mock_run_ctx, file_path="test.mp4")
+        result = await tool.call(mock_run_ctx, file_path="test.mp4")
 
         assert isinstance(result, ToolReturn)
         assert "video is attached" in result.return_value
@@ -384,11 +388,20 @@ async def test_view_video_fallback_failure(tmp_path: Path) -> None:
 
 async def test_view_webm_video(tmp_path: Path) -> None:
     """Should handle webm video with correct media type."""
+    from pai_agent_sdk.context import ModelCapability, ModelConfig
+
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        # Create context with video_understanding capability
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                file_operator=env.file_operator,
+                shell=env.shell,
+                model_cfg=ModelConfig(capabilities={ModelCapability.video_understanding}),
+            )
+        )
         tool = ViewTool(ctx)
 
         test_file = tmp_path / "test.webm"
@@ -398,18 +411,7 @@ async def test_view_webm_video(tmp_path: Path) -> None:
         mock_run_ctx.deps = ctx
         mock_run_ctx.tool_call_id = "test-id"
 
-        mock_model_config = MagicMock()
-        mock_model_config.is_video_understanding_model = True
-
-        original_getattribute = ctx.__class__.__getattribute__
-
-        def patched_getattr(self, name):
-            if name == "model_config":
-                return mock_model_config
-            return original_getattribute(self, name)
-
-        with patch.object(ctx.__class__, "__getattribute__", patched_getattr):
-            result = await tool.call(mock_run_ctx, file_path="test.webm")
+        result = await tool.call(mock_run_ctx, file_path="test.webm")
 
         assert isinstance(result, ToolReturn)
         assert result.content[0].media_type == "video/webm"

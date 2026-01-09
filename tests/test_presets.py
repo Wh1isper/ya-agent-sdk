@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pai_agent_sdk.subagents.presets import (
+from pai_agent_sdk.presets import (
     ANTHROPIC_DEFAULT,
     ANTHROPIC_HIGH,
     ANTHROPIC_LOW,

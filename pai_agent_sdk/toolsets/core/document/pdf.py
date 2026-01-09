@@ -9,7 +9,7 @@ Install with: pip install pai-agent-sdk[document]
 import functools
 from functools import cache
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import anyio.to_thread
 from pydantic import Field
@@ -17,6 +17,7 @@ from pydantic_ai import RunContext
 
 from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 
 logger = get_logger(__name__)
@@ -33,28 +34,6 @@ except ImportError as e:
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 DEFAULT_MAX_PAGES = 20
-
-
-@cache
-def _load_instruction() -> str:
-    """Load PDF convert instruction from prompts/pdf.md."""
-    prompt_file = _PROMPTS_DIR / "pdf.md"
-    return prompt_file.read_text()
-
-
-async def _run_in_threadpool(func, *args, **kwargs):
-    """Run a sync function in a thread pool."""
-    return await anyio.to_thread.run_sync(functools.partial(func, *args, **kwargs))
-
-
-def _resolve_pdf_path(file_op, file_path: str) -> Path:
-    """Resolve PDF path to absolute path."""
-    pdf_path = file_op._default_path / file_path
-    if not pdf_path.exists():
-        pdf_path = Path(file_path)
-        if not pdf_path.is_absolute():
-            pdf_path = file_op._default_path / file_path
-    return pdf_path
 
 
 def _validate_page_params(
@@ -89,17 +68,36 @@ def _validate_page_params(
     return start_page, min(end_page, total_pages - 1), None
 
 
+@cache
+def _load_instruction() -> str:
+    """Load PDF convert instruction from prompts/pdf.md."""
+    prompt_file = _PROMPTS_DIR / "pdf.md"
+    return prompt_file.read_text()
+
+
+async def _run_in_threadpool(func, *args, **kwargs):
+    """Run a sync function in a thread pool."""
+    return await anyio.to_thread.run_sync(functools.partial(func, *args, **kwargs))
+
+
 class PdfConvertTool(BaseTool):
     """Tool for converting PDF files to markdown."""
 
     name = "pdf_convert"
     description = "Convert PDF to markdown with image extraction."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("PdfConvertTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
         """Load instruction from prompts/pdf.md."""
         return _load_instruction()
 
-    async def call(
+    async def call(  # noqa: C901
         self,
         ctx: RunContext[AgentContext],
         file_path: Annotated[str, Field(description="Path to the PDF file to convert.")],
@@ -112,26 +110,34 @@ class PdfConvertTool(BaseTool):
             Field(description="Ending page number (1-based, inclusive). Default: 20. Use -1 for all pages."),
         ] = None,
     ) -> dict[str, Any]:
-        file_op = ctx.deps.file_operator
+        file_op = cast(FileOperator, ctx.deps.file_operator)
 
         # Check file exists
         if not await file_op.exists(file_path):
             return {"error": f"File not found: {file_path}", "success": False}
 
-        # Resolve absolute path for pymupdf
-        pdf_path = _resolve_pdf_path(file_op, file_path)
-
-        if pdf_path.suffix.lower() != ".pdf":
+        # Get file extension and stem from path
+        ext = self._get_extension(file_path)
+        if ext != ".pdf":
             return {"error": f"Not a PDF file: {file_path}", "success": False}
 
-        # Create export directory
-        export_dir_name = f"export_{pdf_path.stem}"
-        export_dir = pdf_path.parent / export_dir_name
-        images_dir = export_dir / "images"
+        stem = self._get_stem(file_path)
+
+        # Step 1: Copy source file to tmp directory
+        try:
+            file_content = await file_op.read_bytes(file_path)
+            tmp_source_path = await file_op.write_tmp_file(f"source_{stem}.pdf", file_content)
+        except Exception as e:
+            return {"error": f"Failed to read file: {e}", "success": False}
+
+        # Step 2: Process in tmp directory
+        tmp_source = Path(tmp_source_path)
+        tmp_export_dir = tmp_source.parent / f"export_{stem}"
+        tmp_images_dir = tmp_export_dir / "images"
 
         try:
-            export_dir.mkdir(exist_ok=True)
-            images_dir.mkdir(exist_ok=True)
+            await _run_in_threadpool(tmp_export_dir.mkdir, exist_ok=True)
+            await _run_in_threadpool(tmp_images_dir.mkdir, exist_ok=True)
         except Exception as e:
             return {"error": f"Failed to create export directory: {e}", "success": False}
 
@@ -142,7 +148,7 @@ class PdfConvertTool(BaseTool):
                 with pymupdf.open(path) as doc:
                     return len(doc)
 
-            total_pages = await _run_in_threadpool(get_page_count, pdf_path)
+            total_pages = await _run_in_threadpool(get_page_count, tmp_source)
         except Exception as e:
             logger.exception("Failed to read PDF file")
             return {"error": f"Failed to read PDF file: {e}", "success": False}
@@ -157,40 +163,80 @@ class PdfConvertTool(BaseTool):
         # Convert PDF to markdown
         try:
             content = await _run_in_threadpool(
-                pymupdf4llm.to_markdown,  # type: ignore[union-attr]
-                str(pdf_path),
+                pymupdf4llm.to_markdown,
+                str(tmp_source),
                 write_images=True,
-                image_path=str(images_dir),
+                image_path=str(tmp_images_dir),
                 pages=list(range(start_page, actual_end_page + 1)),
             )
         except Exception as e:
             return {"error": f"Failed to convert PDF: {e}", "success": False}
 
         # Fix image paths in markdown (pymupdf4llm uses absolute paths)
-        content = content.replace(str(images_dir) + "/", "./images/")
+        content = content.replace(str(tmp_images_dir) + "/", "./images/")
 
-        # Write markdown file
-        md_filename = f"{pdf_path.stem}.md"
-        md_path = export_dir / md_filename
-
+        # Write markdown file to tmp
+        md_filename = f"{stem}.md"
+        tmp_md_path = tmp_export_dir / md_filename
         try:
-            md_path.write_text(content, encoding="utf-8")
+            await _run_in_threadpool(tmp_md_path.write_text, content, encoding="utf-8")
         except Exception as e:
             return {"error": f"Failed to write markdown: {e}", "success": False}
 
-        # Get relative path for response
+        # Step 3: Copy results back to target directory
+        source_dir = self._get_dir(file_path)
+        target_export_dir = f"{source_dir}/export_{stem}" if source_dir else f"export_{stem}"
+        target_md_path = f"{target_export_dir}/{md_filename}"
+        target_images_dir = f"{target_export_dir}/images"
+
         try:
-            rel_export_dir = export_dir.relative_to(file_op._default_path)
-            rel_md_path = md_path.relative_to(file_op._default_path)
-        except ValueError:
-            rel_export_dir = export_dir
-            rel_md_path = md_path
+            # Create target directories first
+            await file_op.mkdir(target_export_dir, parents=True)
+            await file_op.mkdir(target_images_dir, parents=True)
+
+            # Copy markdown file
+            await file_op.copy(str(tmp_md_path), target_md_path)
+
+            # Copy images (use thread pool for directory iteration)
+            def list_image_files():
+                return [f for f in tmp_images_dir.iterdir() if f.is_file()]
+
+            image_files = await _run_in_threadpool(list_image_files)
+            for img_file in image_files:
+                target_img_path = f"{target_images_dir}/{img_file.name}"
+                await file_op.copy(str(img_file), target_img_path)
+        except Exception as e:
+            return {"error": f"Failed to copy results to target: {e}", "success": False}
 
         return {
             "success": True,
-            "export_path": str(rel_export_dir),
-            "markdown_path": str(rel_md_path),
+            "export_path": target_export_dir,
+            "markdown_path": target_md_path,
             "total_pages": total_pages,
             "converted_pages": converted_pages,
             "page_range": f"{start_page + 1}-{actual_end_page + 1}",
         }
+
+    def _get_extension(self, file_path: str) -> str:
+        """Extract file extension from path string."""
+        idx = file_path.rfind(".")
+        if idx == -1:
+            return ""
+        last_sep = max(file_path.rfind("/"), file_path.rfind("\\"))
+        if idx < last_sep:
+            return ""
+        return file_path[idx:].lower()
+
+    def _get_stem(self, file_path: str) -> str:
+        """Extract file stem (name without extension) from path string."""
+        last_sep = max(file_path.rfind("/"), file_path.rfind("\\"))
+        basename = file_path[last_sep + 1 :] if last_sep >= 0 else file_path
+        idx = basename.rfind(".")
+        return basename[:idx] if idx > 0 else basename
+
+    def _get_dir(self, file_path: str) -> str:
+        """Extract directory part from path string."""
+        last_sep = max(file_path.rfind("/"), file_path.rfind("\\"))
+        if last_sep < 0:
+            return ""
+        return file_path[:last_sep]

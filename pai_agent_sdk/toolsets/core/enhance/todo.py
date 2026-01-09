@@ -6,14 +6,18 @@ stored in the file operator's temporary directory.
 
 from functools import cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import pydantic
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
+
+logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -54,6 +58,13 @@ class TodoReadTool(BaseTool):
     name = "to_do_read"
     description = "Read the current session's to-do list."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("TodoReadTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
         """Load instruction from prompts/todo.md."""
         return _load_instruction()
@@ -62,7 +73,7 @@ class TodoReadTool(BaseTool):
         self,
         ctx: RunContext[AgentContext],
     ) -> list[TodoItem] | str:
-        file_op = ctx.deps.file_operator
+        file_op = cast(FileOperator, ctx.deps.file_operator)
         todo_file = _get_todo_file_name(ctx.deps.run_id)
 
         try:
@@ -92,6 +103,13 @@ class TodoWriteTool(BaseTool):
     name = "to_do_write"
     description = "Replace the session's to-do list with an updated list."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("TodoWriteTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
         """Load instruction from prompts/todo.md."""
         return _load_instruction()
@@ -101,7 +119,7 @@ class TodoWriteTool(BaseTool):
         ctx: RunContext[AgentContext],
         to_dos: Annotated[list[TodoItem], Field(description="The updated TO-DO list.")],
     ) -> list[TodoItem] | str:
-        file_op = ctx.deps.file_operator
+        file_op = cast(FileOperator, ctx.deps.file_operator)
         todo_file = _get_todo_file_name(ctx.deps.run_id)
 
         try:

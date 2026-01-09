@@ -2,13 +2,17 @@
 
 from functools import cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
+
+logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -25,6 +29,13 @@ class ReplaceTool(BaseTool):
 
     name = "replace"
     description = "Write or overwrite entire file content. For partial edits, use `edit` tool instead."
+
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("ReplaceTool unavailable: file_operator is not configured")
+            return False
+        return True
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/replace.md."""
@@ -44,7 +55,7 @@ class ReplaceTool(BaseTool):
         ] = "w",
     ) -> str:
         """Write content to a file in the local filesystem."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
 
         if mode not in ("w", "a"):
             return f"Error: Invalid mode '{mode}'. Only 'w' and 'a' are supported."

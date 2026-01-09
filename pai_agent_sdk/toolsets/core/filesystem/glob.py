@@ -2,13 +2,17 @@
 
 from functools import cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
+
+logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -26,6 +30,13 @@ class GlobTool(BaseTool):
     name = "glob_tool"
     description = "Find files by glob pattern. Returns paths sorted by modification time (newest first)."
 
+    def is_available(self) -> bool:
+        """Check if tool is available (requires file_operator)."""
+        if self.ctx.file_operator is None:
+            logger.debug("GlobTool unavailable: file_operator is not configured")
+            return False
+        return True
+
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/glob.md."""
         return _load_instruction()
@@ -39,7 +50,7 @@ class GlobTool(BaseTool):
         ],
     ) -> list[str]:
         """Find files matching the given glob pattern."""
-        file_operator = ctx.deps.file_operator
+        file_operator = cast(FileOperator, ctx.deps.file_operator)
         return await file_operator.glob(pattern)
 
 
