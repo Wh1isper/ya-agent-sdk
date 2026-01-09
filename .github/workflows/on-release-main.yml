@@ -68,7 +68,9 @@ jobs:
         run: bash scripts/sync-skills.sh
 
       - name: Create SKILL.zip
-        run: zip -r SKILL.zip skills
+        run: |
+          mv skills pai-agent-sdk
+          zip -r SKILL.zip pai-agent-sdk
 
       - name: Upload SKILL.zip to release
         uses: svenstaro/upload-release-action@v2
