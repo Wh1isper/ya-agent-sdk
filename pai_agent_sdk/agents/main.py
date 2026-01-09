@@ -49,6 +49,21 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # =============================================================================
+# Exceptions
+# =============================================================================
+
+
+class AgentInterrupted(Exception):
+    """Raised when agent execution is interrupted by user.
+
+    This exception is raised when `AgentStreamer.interrupt()` is called,
+    providing immediate cancellation of all running tasks.
+    """
+
+    pass
+
+
+# =============================================================================
 # Type Variables
 # =============================================================================
 
@@ -435,22 +450,29 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
                 if should_stop:
                     streamer.interrupt()
                     break
-            # After streaming, check for exceptions
-            streamer.raise_if_exception()
+            # After streaming, AgentInterrupted is raised automatically
             # Access final result and usage
             if streamer.run:
                 print(f"Usage: {streamer.run.usage()}")
     """
 
     _event_generator: AsyncIterator[StreamEvent]
-    _cancel_event: asyncio.Event
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
     run: AgentRun[AgentDepsT, OutputT] | None = None
     exception: BaseException | None = None
+    _interrupted: bool = False
 
     def interrupt(self) -> None:
-        """Interrupt the stream, causing iteration to stop."""
-        self._cancel_event.set()
+        """Interrupt the stream immediately, cancelling all running tasks.
+
+        This method provides hard cancellation - all running tasks are cancelled
+        immediately via asyncio.Task.cancel(). When the context manager exits,
+        AgentInterrupted will be raised.
+        """
+        self._interrupted = True
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
 
     def raise_if_exception(self) -> None:
         """Raise the captured exception if any occurred during streaming.
@@ -459,7 +481,8 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
         the main agent or subagent tasks.
 
         Raises:
-            BaseException: The exception that occurred during streaming.
+            AgentInterrupted: If interrupt() was called.
+            BaseException: Any other exception that occurred during streaming.
         """
         if self.exception is not None:
             raise self.exception
@@ -527,7 +550,6 @@ async def stream_agent(  # noqa: C901
                         pass
     """
     output_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
-    cancel_event = asyncio.Event()
     main_done = asyncio.Event()
     poll_done = asyncio.Event()
 
@@ -544,8 +566,8 @@ async def stream_agent(  # noqa: C901
     async def process_node(
         node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT],
         run: AgentRun[AgentDepsT, OutputT],
-    ) -> bool:
-        """Process a single node with hooks. Returns False if cancelled."""
+    ) -> None:
+        """Process a single node with hooks."""
         # PRE NODE HOOK
         logger.debug("Processing node: %s", type(node).__name__)
         if pre_node_hook:
@@ -555,9 +577,6 @@ async def stream_agent(  # noqa: C901
 
         async with node.stream(run.ctx) as request_stream:
             async for event in request_stream:
-                if cancel_event.is_set():
-                    return False
-
                 # PRE EVENT HOOK
                 if pre_event_hook:
                     await pre_event_hook(
@@ -582,7 +601,6 @@ async def stream_agent(  # noqa: C901
             await post_node_hook(
                 NodeHookContext(agent_info=main_agent_info, node=node, run=run, output_queue=output_queue)
             )
-        return True
 
     async def run_main() -> None:
         """Run the main agent and push events to output_queue."""
@@ -593,15 +611,11 @@ async def stream_agent(  # noqa: C901
             ) as run:
                 streamer.run = run  # Expose run immediately
                 async for node in run:
-                    if cancel_event.is_set():
-                        return
-
                     if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
                         continue
 
-                    if Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):  # noqa: SIM102
-                        if not await process_node(node, run):
-                            return
+                    if Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):
+                        await process_node(node, run)
         except Exception:
             logger.exception("Error in main agent task")
             raise
@@ -619,9 +633,6 @@ async def stream_agent(  # noqa: C901
                     all_empty = all(q.empty() for q in ctx.subagent_stream_queues.values())
                     if all_empty:
                         return
-
-                if cancel_event.is_set():
-                    return
 
                 # Collect events from all subagent queues
                 for agent_id, queue in list(ctx.subagent_stream_queues.items()):
@@ -650,9 +661,6 @@ async def stream_agent(  # noqa: C901
             if poll_done.is_set() and output_queue.empty():
                 return
 
-            if cancel_event.is_set():
-                return
-
             try:
                 event = await asyncio.wait_for(output_queue.get(), timeout=0.1)
                 yield event
@@ -665,17 +673,21 @@ async def stream_agent(  # noqa: C901
 
     streamer: AgentStreamer[AgentDepsT, OutputT] = AgentStreamer(
         _event_generator=generate_events(),
-        _cancel_event=cancel_event,
         _tasks=[main_task, poll_task],
     )
 
     try:
         yield streamer
     finally:
-        cancel_event.set()
         # Wait for tasks to complete and capture any exception
         results = await asyncio.gather(main_task, poll_task, return_exceptions=True)
-        for result in results:
-            if isinstance(result, BaseException):
-                streamer.exception = result
-                break
+
+        # Find first real exception (non-CancelledError)
+        exceptions = [r for r in results if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)]
+
+        if streamer._interrupted:
+            streamer.exception = AgentInterrupted("Agent execution was interrupted")
+        elif exceptions:
+            streamer.exception = exceptions[0]
+
+        streamer.raise_if_exception()

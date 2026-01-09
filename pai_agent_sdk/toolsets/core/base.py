@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
-from pydantic_ai import RunContext, Tool, UserError
+from pydantic_ai import ApprovalRequired, RunContext, Tool, UserError
 
 if TYPE_CHECKING:
     from pydantic_ai import ModelSettings
@@ -167,6 +167,9 @@ class BaseTool(ABC):
         """
         return None
 
+    def get_approval_metadata(self) -> dict[str, Any] | None:
+        return None
+
     @abstractmethod
     async def call(self, ctx: RunContext[AgentContext], /, *args: Any, **kwargs: Any) -> Any:
         """Execute the tool logic.
@@ -303,6 +306,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         self._tool_instances: dict[str, BaseTool] = {}
         self._tool_classes: dict[str, type[BaseTool]] = {}
 
+        logger.debug(f"Initializing Toolset with {len(tools)} tool classes")
         for tool_cls in tools:
             tool_instance = tool_cls(ctx)
             name = tool_instance.name
@@ -317,8 +321,10 @@ class Toolset(BaseToolset[AgentDepsT]):
                 raise UserError(msg)
             self._tool_instances[name] = tool_instance
             self._tool_classes[name] = tool_cls
+            logger.debug(f"Registered tool: {name!r}")
 
         self._pydantic_tools: dict[str, Tool[AgentDepsT]] = {}
+        logger.debug(f"Toolset initialized with tools: {list(self._tool_instances.keys())}")
 
     @property
     def id(self) -> str | None:
@@ -470,6 +476,7 @@ class Toolset(BaseToolset[AgentDepsT]):
 
     async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
         """Return all tools in this toolset."""
+        logger.debug(f"get_tools called, preparing {len(self._tool_instances)} tools")
         tools: dict[str, ToolsetTool[AgentDepsT]] = {}
 
         for name, tool_instance in self._tool_instances.items():
@@ -540,30 +547,43 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         If the final result is still an Exception after all hooks, it will be raised.
         """
+        logger.debug(f"call_tool: {name!r} with args keys: {list(tool_args.keys())}")
+
         if not isinstance(tool, HookableToolsetTool):
             msg = f"Expected HookableToolsetTool, got {type(tool)}"
             raise UserError(msg)
 
+        if name in ctx.deps.need_user_approve_tools and not ctx.tool_call_approved:
+            metadata = tool.tool_instance.get_approval_metadata() if tool.tool_instance else None
+            raise ApprovalRequired(metadata=metadata)
+
         args = tool_args
 
         if self.global_hooks.pre:
+            logger.debug(f"call_tool: {name!r} executing global pre-hook")
             args = await self.global_hooks.pre(ctx, name, args)
 
         if tool.pre_hook:
+            logger.debug(f"call_tool: {name!r} executing tool pre-hook")
             args = await tool.pre_hook(ctx, args)
 
+        logger.debug(f"call_tool: {name!r} executing tool function")
         result = await self._call_tool_func(args, ctx, tool)
 
         if tool.post_hook:
+            logger.debug(f"call_tool: {name!r} executing tool post-hook")
             result = await tool.post_hook(ctx, result)
 
         if self.global_hooks.post:
+            logger.debug(f"call_tool: {name!r} executing global post-hook")
             result = await self.global_hooks.post(ctx, name, result)
 
         # Re-raise if result is still an exception after hooks
         if isinstance(result, BaseException):
+            logger.debug(f"call_tool: {name!r} raising exception: {type(result).__name__}")
             raise result
 
+        logger.debug(f"call_tool: {name!r} completed successfully")
         return result
 
     def get_instructions(self, ctx: RunContext[AgentDepsT]) -> str | None:

@@ -824,3 +824,54 @@ async def test_resumable_state_with_multiple_binary_contents(
         content2 = req2.parts[0].content
         assert content2[0].data == minimal_jpeg
         assert content2[0].media_type == "image/jpeg"
+
+
+async def test_resumable_state_with_need_user_approve_tools(
+    file_operator: LocalFileOperator, shell: LocalShell
+) -> None:
+    """Should serialize and deserialize ResumableState with need_user_approve_tools."""
+    from pai_agent_sdk.context import ResumableState
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        # Set need_user_approve_tools
+        ctx.need_user_approve_tools = ["shell", "edit", "replace"]
+
+        state = ctx.export_state()
+
+        # Verify state contains the tools list
+        assert state.need_user_approve_tools == ["shell", "edit", "replace"]
+
+        # Serialize to JSON string
+        json_str = state.model_dump_json()
+        assert isinstance(json_str, str)
+        assert "need_user_approve_tools" in json_str
+        assert "shell" in json_str
+
+        # Deserialize from JSON string
+        restored_state = ResumableState.model_validate_json(json_str)
+
+        # Verify restored state
+        assert restored_state.need_user_approve_tools == ["shell", "edit", "replace"]
+
+        # Verify restore method works
+        new_ctx = AgentContext(file_operator=file_operator, shell=shell)
+        assert new_ctx.need_user_approve_tools == []  # Default is empty
+
+        restored_state.restore(new_ctx)
+        assert new_ctx.need_user_approve_tools == ["shell", "edit", "replace"]
+
+
+def test_agent_context_need_user_approve_tools_default(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should have empty need_user_approve_tools by default."""
+    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    assert ctx.need_user_approve_tools == []
+
+
+def test_agent_context_need_user_approve_tools_modification(
+    file_operator: LocalFileOperator, shell: LocalShell
+) -> None:
+    """Should allow modification of need_user_approve_tools."""
+    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx.need_user_approve_tools.append("shell")
+    ctx.need_user_approve_tools.append("edit")
+    assert ctx.need_user_approve_tools == ["shell", "edit"]

@@ -160,6 +160,9 @@ class ResumableState(BaseModel):
     agent_registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Serialized agent registry for tracking agent metadata."""
 
+    need_user_approve_tools: list[str] = Field(default_factory=list)
+    """List of tool names that require user approval before execution."""
+
     def to_subagent_history(self) -> dict[str, list[ModelMessage]]:
         """Deserialize subagent_history to ModelMessage objects.
 
@@ -196,6 +199,7 @@ class ResumableState(BaseModel):
         ctx.deferred_tool_metadata = dict(self.deferred_tool_metadata)
         # Restore agent_registry from serialized format
         ctx.agent_registry = {agent_id: AgentInfo(**info) for agent_id, info in self.agent_registry.items()}
+        ctx.need_user_approve_tools = list(self.need_user_approve_tools)
 
 
 class ToolIdWrapper:
@@ -598,6 +602,13 @@ class AgentContext(BaseModel):
     enabling real-time streaming of subagent responses.
     """
 
+    need_user_approve_tools: list[str] = Field(default_factory=list)
+    """List of tool names that require user approval before execution.
+
+    Tools in this list will trigger HITL (Human-in-the-Loop) flow,
+    deferring execution until the user explicitly approves.
+    """
+
     subagent_history: dict[str, list[ModelMessage]] = Field(default_factory=dict)
     """Subagent history for resuming sessions."""
 
@@ -846,6 +857,7 @@ class AgentContext(BaseModel):
             handoff_message=self.handoff_message,
             deferred_tool_metadata=dict(self.deferred_tool_metadata),
             agent_registry=serialized_registry,
+            need_user_approve_tools=list(self.need_user_approve_tools),
         )
 
     def with_state(self, state: ResumableState | None) -> "Self":
