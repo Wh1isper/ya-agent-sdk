@@ -1,7 +1,8 @@
-"""Load tool for loading content from HTTP/HTTPS URLs.
+"""Load media URL tool for loading multimedia content from HTTP/HTTPS URLs.
 
-This tool allows the agent to load content from web URLs and returns
-appropriate content types based on model capabilities.
+This tool allows the agent to load multimedia content (images, videos, audio,
+documents) from web URLs and returns appropriate content types based on model
+capabilities.
 
 Note:
     Only HTTP and HTTPS URLs are supported. Other protocols will be rejected.
@@ -10,7 +11,7 @@ Example::
 
     from pai_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
     from pai_agent_sdk.toolsets.core.base import Toolset
-    from pai_agent_sdk.toolsets.core.content.load import LoadTool
+    from pai_agent_sdk.toolsets.core.content.load_media_url import LoadMediaUrlTool
 
     async with AgentContext(
         file_operator=env.file_operator,
@@ -19,8 +20,8 @@ Example::
             capabilities={ModelCapability.vision},
         ),
     ) as ctx:
-        toolset = Toolset(ctx, tools=[LoadTool])
-        # Agent can now load URLs and get appropriate content types
+        toolset = Toolset(ctx, tools=[LoadMediaUrlTool])
+        # Agent can now load multimedia URLs and get appropriate content types
 """
 
 from pathlib import Path
@@ -43,24 +44,24 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 def _load_instruction_template() -> Template:
-    """Load load instruction template from prompts/load.md."""
-    prompt_file = _PROMPTS_DIR / "load.md"
+    """Load load_media_url instruction template from prompts/load_media_url.md."""
+    prompt_file = _PROMPTS_DIR / "load_media_url.md"
     return Template(prompt_file.read_text())
 
 
 _INSTRUCTION_TEMPLATE = _load_instruction_template()
 
 
-class LoadTool(BaseTool):
-    """Tool for loading content from HTTP/HTTPS URLs.
+class LoadMediaUrlTool(BaseTool):
+    """Tool for loading multimedia content from HTTP/HTTPS URLs.
 
     This tool validates that the URL uses HTTP or HTTPS protocol,
-    detects the content type, and returns an appropriate URL type
-    based on the model's capabilities.
+    detects the content type (image, video, audio, document), and returns
+    an appropriate URL type based on the model's capabilities.
     """
 
-    name = "load"
-    description = "Load content directly from HTTP/HTTPS URL (images, videos). e.g. https://example.com/image.png, https://example.com/video.mp4, https://youtube.com/watch?v=abc123"
+    name = "load_media_url"
+    description = "Load multimedia content directly from HTTP/HTTPS URL (images, videos, audio). e.g. https://example.com/image.png, https://example.com/video.mp4, https://youtube.com/watch?v=abc123"
 
     def is_available(self) -> bool:
         """Check if tool is available based on model capabilities.

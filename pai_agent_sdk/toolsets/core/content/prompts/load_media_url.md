@@ -1,6 +1,6 @@
-<load-tool>
+<load-media-url-tool>
 
-<description>Load images or videos directly from URL for model analysis.</description>
+<description>Load multimedia content (images, videos, audio) directly from URL for model analysis.</description>
 
 <supported_urls>
 {% if has_vision %}
@@ -21,4 +21,4 @@
 <note>Video/YouTube loading not supported. Use `read_video` tool instead.</note>
 {% endif %}
 
-</load-tool>
+</load-media-url-tool>

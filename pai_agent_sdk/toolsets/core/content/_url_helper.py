@@ -1,7 +1,7 @@
-"""URL helper utilities for the load tool.
+"""URL helper utilities for the load_media_url tool.
 
 This module provides helper functions to validate URLs and detect content types
-for the LoadTool.
+for the LoadMediaUrlTool.
 """
 
 from enum import Enum
