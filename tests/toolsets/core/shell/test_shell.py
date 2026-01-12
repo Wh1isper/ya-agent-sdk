@@ -23,7 +23,7 @@ async def test_shell_tool_empty_command(tmp_path: Path) -> None:
     """Should return error for empty command."""
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -37,7 +37,7 @@ async def test_shell_tool_execute_success(tmp_path: Path) -> None:
     """Should execute command and return results."""
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -51,7 +51,7 @@ async def test_shell_tool_execute_with_timeout(tmp_path: Path) -> None:
     """Should respect timeout parameter."""
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -68,7 +68,7 @@ async def test_shell_tool_execute_with_cwd(tmp_path: Path) -> None:
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -82,7 +82,7 @@ async def test_shell_tool_execute_with_env(tmp_path: Path) -> None:
     """Should pass environment variables to command."""
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -96,7 +96,7 @@ async def test_shell_tool_execute_failure(tmp_path: Path) -> None:
     """Should return non-zero exit code on command failure."""
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -109,7 +109,7 @@ async def test_shell_tool_captures_stderr(tmp_path: Path) -> None:
     """Should capture stderr output."""
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -125,7 +125,7 @@ async def test_shell_tool_stdout_truncation(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ShellTool(ctx)
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx

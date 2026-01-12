@@ -54,9 +54,9 @@ class SearchTool(BaseTool):
     name = "search"
     description = "Search the web for information using Google or Tavily APIs."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available if Google or Tavily API keys are configured (and tavily package installed)."""
-        cfg = self.ctx.tool_config
+        cfg = ctx.deps.tool_config
         has_google = bool(cfg.google_search_api_key and cfg.google_search_cx)
         has_tavily = bool(cfg.tavily_api_key) and _is_tavily_available()
         return has_google or has_tavily
@@ -130,9 +130,9 @@ class SearchStockImageTool(BaseTool):
     name = "search_stock_image"
     description = "Search royalty-free stock images from Pixabay for design work."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available if Pixabay API key is configured."""
-        return bool(self.ctx.tool_config.pixabay_api_key)
+        return bool(ctx.deps.tool_config.pixabay_api_key)
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         return _load_search_stock_image_instruction()
@@ -197,9 +197,9 @@ class SearchImageTool(BaseTool):
     name = "search_image"
     description = "Search real-time images via RapidAPI (similar to Google Images)."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available if RapidAPI key is configured."""
-        return bool(self.ctx.tool_config.rapidapi_api_key)
+        return bool(ctx.deps.tool_config.rapidapi_api_key)
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         return _load_search_image_instruction()

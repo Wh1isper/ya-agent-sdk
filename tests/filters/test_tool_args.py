@@ -23,10 +23,7 @@ async def test_fix_truncated_tool_args_valid_json(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -51,10 +48,7 @@ async def test_fix_truncated_tool_args_invalid_json(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -81,10 +75,7 @@ async def test_fix_truncated_tool_args_skips_model_request(tmp_path: Path) -> No
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -104,10 +95,7 @@ async def test_fix_truncated_tool_args_dict_args_unchanged(tmp_path: Path) -> No
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -133,10 +121,7 @@ async def test_fix_truncated_tool_args_empty_string(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -162,10 +147,7 @@ async def test_fix_truncated_tool_args_multiple_tool_calls(tmp_path: Path) -> No
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -201,10 +183,7 @@ async def test_fix_truncated_tool_args_mixed_parts(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 

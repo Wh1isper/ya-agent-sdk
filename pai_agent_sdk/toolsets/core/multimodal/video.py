@@ -28,8 +28,8 @@ class ReadVideoTool(BaseTool):
         """No instruction needed for this tool."""
         return None
 
-    def is_available(self) -> bool:
-        return not self.ctx.model_cfg.has_video_understanding
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        return not ctx.deps.model_cfg.has_video_understanding
 
     async def call(
         self,

@@ -18,8 +18,7 @@ async def agent_context(tmp_path: Path) -> AgentContext:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 context_window=200000,
                 proactive_context_management_threshold=0.5,
@@ -40,10 +39,7 @@ async def test_inject_runtime_instructions_empty_history(tmp_path: Path) -> None
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -62,10 +58,7 @@ async def test_inject_runtime_instructions_appends_to_last_request(tmp_path: Pat
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -97,8 +90,7 @@ async def test_inject_runtime_instructions_with_model_config(tmp_path: Path) -> 
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 context_window=200000,
                 proactive_context_management_threshold=0.5,
@@ -129,10 +121,7 @@ async def test_inject_runtime_instructions_finds_last_request(tmp_path: Path) ->
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -163,10 +152,7 @@ async def test_inject_runtime_instructions_only_response_in_history(tmp_path: Pa
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 

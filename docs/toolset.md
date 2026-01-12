@@ -49,8 +49,11 @@ class MyTool(BaseTool):
     name = "my_tool"
     description = "..."
 
-    def is_available(self) -> bool:
-        """Return False to exclude this tool when skip_unavailable=True."""
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        """Return False to exclude this tool when skip_unavailable=True.
+
+        Called at get_tools() time when skip_unavailable=True.
+        """
         return some_dependency_available()
 
     def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
@@ -64,20 +67,40 @@ class MyTool(BaseTool):
 
 ## Using Toolset
 
-```python
-from pai_agent_sdk.toolsets.core.base import Toolset, GlobalHooks
-from pai_agent_sdk.context import AgentContext
+Toolsets are typically used through `create_agent`:
 
-ctx = AgentContext()
-toolset = Toolset(
-    ctx,
+```python
+from pai_agent_sdk.agents import create_agent, stream_agent
+
+runtime = create_agent(
+    "openai:gpt-4",
     tools=[ReadFileTool, WriteFileTool],
     pre_hooks={"read_file": my_pre_hook},
     post_hooks={"write_file": my_post_hook},
     global_hooks=GlobalHooks(pre=global_pre, post=global_post),
 )
+async with stream_agent(runtime, "Read config.json") as streamer:
+    async for event in streamer:
+        print(event)
+```
 
-agent = Agent(model="openai:gpt-4", toolsets=[toolset])
+For manual toolset creation:
+
+```python
+from pai_agent_sdk.toolsets.core.base import Toolset, GlobalHooks
+from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.environment import LocalEnvironment
+
+async with LocalEnvironment() as env:
+    async with AgentContext(env=env) as ctx:
+        toolset = Toolset(
+            ctx,
+            tools=[ReadFileTool, WriteFileTool],
+            pre_hooks={"read_file": my_pre_hook},
+            post_hooks={"write_file": my_post_hook},
+            global_hooks=GlobalHooks(pre=global_pre, post=global_post),
+        )
+        agent = Agent(model="openai:gpt-4", toolsets=[toolset])
 ```
 
 ## Hook System

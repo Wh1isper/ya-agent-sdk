@@ -30,9 +30,9 @@ class ReplaceTool(BaseTool):
     name = "replace"
     description = "Write or overwrite entire file content. For partial edits, use `edit` tool instead."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("ReplaceTool unavailable: file_operator is not configured")
             return False
         return True

@@ -38,9 +38,9 @@ class MoveTool(BaseTool):
     name = "move"
     description = "Move files or directories. Supports batch operations with multiple src/dst pairs."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("MoveTool unavailable: file_operator is not configured")
             return False
         return True
@@ -96,9 +96,9 @@ class CopyTool(BaseTool):
     name = "copy"
     description = "Copy files. Supports batch operations with multiple src/dst pairs. Files only."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("CopyTool unavailable: file_operator is not configured")
             return False
         return True

@@ -56,9 +56,9 @@ class OfficeConvertTool(BaseTool):
     name = "office_to_markdown"
     description = "Convert Office documents (Word, PowerPoint, Excel) and EPub to markdown."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("OfficeConvertTool unavailable: file_operator is not configured")
             return False
         return True

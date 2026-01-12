@@ -146,12 +146,15 @@ class BaseTool(ABC):
         """
         self.ctx = ctx
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available in current context.
 
         Override this method to check runtime conditions like model capabilities,
         optional dependencies, or configuration settings.
         Tools that return False will be excluded when skip_unavailable=True.
+
+        Args:
+            ctx: The run context containing runtime information.
 
         Returns:
             True if tool can be used, False otherwise.
@@ -294,12 +297,13 @@ class Toolset(BaseToolset[AgentDepsT]):
             max_retries: Maximum retries for tool execution.
             timeout: Default timeout for tool execution.
             toolset_id: Optional unique ID for the toolset.
-            skip_unavailable: If True, skip tools where is_available() returns False.
+            skip_unavailable: If True, skip tools where is_available() returns False in get_tools().
         """
         self.ctx = ctx
         self.max_retries = max_retries
         self.timeout = timeout
         self._id = toolset_id
+        self._skip_unavailable = skip_unavailable
 
         self.pre_hooks = pre_hooks or {}
         self.post_hooks = post_hooks or {}
@@ -312,11 +316,6 @@ class Toolset(BaseToolset[AgentDepsT]):
         for tool_cls in tools:
             tool_instance = tool_cls(ctx)
             name = tool_instance.name
-
-            # Check availability after instantiation
-            if skip_unavailable and not tool_instance.is_available():
-                logger.debug(f"Skipping unavailable tool {name!r}")
-                continue
 
             if name in self._tool_instances:
                 msg = f"Duplicate tool name: {name!r}"
@@ -338,7 +337,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         """Return list of available tool names in this toolset."""
         return list(self._tool_classes.keys())
 
-    def is_tool_available(self, tool_name: str) -> bool:
+    def is_tool_available(self, tool_name: str, ctx: RunContext[AgentDepsT] | None = None) -> bool:
         """Check if a tool is registered and available by name.
 
         This method checks both that the tool exists in this toolset and that
@@ -346,13 +345,16 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         Args:
             tool_name: The name of the tool to check.
+            ctx: The run context for availability check. If None, only checks registration.
 
         Returns:
             True if the tool exists and is available, False otherwise.
         """
         if tool_name not in self._tool_instances:
             return False
-        return self._tool_instances[tool_name].is_available()
+        if ctx is None:
+            return True  # Only check registration if no ctx provided
+        return self._tool_instances[tool_name].is_available(ctx)
 
     def subset(
         self,
@@ -509,6 +511,11 @@ class Toolset(BaseToolset[AgentDepsT]):
         tools: dict[str, ToolsetTool[AgentDepsT]] = {}
 
         for name, tool_instance in self._tool_instances.items():
+            # Check availability at get_tools time (when env is entered)
+            if self._skip_unavailable and not tool_instance.is_available(ctx):
+                logger.debug(f"Skipping unavailable tool {name!r}")
+                continue
+
             # Get or create pydantic_ai Tool wrapper
             if name not in self._pydantic_tools:
                 self._pydantic_tools[name] = self._create_pydantic_tool(name, tool_instance)

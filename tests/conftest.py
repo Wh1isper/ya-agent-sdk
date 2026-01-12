@@ -3,14 +3,17 @@
 import contextlib
 import socket
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import httpx
 import pytest
+from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
+from pai_agent_sdk.environment.local import LocalEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -35,17 +38,27 @@ def get_port() -> int:
 
 
 @pytest.fixture
-def agent_context(tmp_path: Path) -> AgentContext:
-    """Create an AgentContext for testing."""
-    file_operator = LocalFileOperator(
+async def agent_context(tmp_path: Path) -> AsyncIterator[AgentContext]:
+    """Create an AgentContext for testing with an entered environment."""
+    async with LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
-    )
-    shell = LocalShell(
-        allowed_paths=[tmp_path],
-        default_cwd=tmp_path,
-    )
-    return AgentContext(file_operator=file_operator, shell=shell)
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(env=env) as ctx:
+            yield ctx
+
+
+@pytest.fixture
+def mock_run_ctx(agent_context: AgentContext) -> MagicMock:
+    """Create a mock RunContext for testing is_available and other methods.
+
+    This fixture provides a MagicMock spec'd to RunContext with deps set to agent_context.
+    Use this for testing tool methods that require a RunContext parameter.
+    """
+    mock_ctx = MagicMock(spec=RunContext)
+    mock_ctx.deps = agent_context
+    return mock_ctx
 
 
 @pytest.fixture(scope="session")

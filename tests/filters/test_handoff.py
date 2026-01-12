@@ -24,10 +24,7 @@ async def test_process_handoff_no_handoff_message(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -47,10 +44,7 @@ async def test_process_handoff_with_handoff_message(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             ctx.handoff_message = "Previous context summary here"
 
             mock_ctx = MagicMock()
@@ -97,10 +91,7 @@ async def test_process_handoff_empty_history(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             ctx.handoff_message = "Summary"
 
             mock_ctx = MagicMock()
@@ -120,10 +111,7 @@ async def test_process_handoff_finds_last_user_request(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             ctx.handoff_message = "Context summary"
 
             mock_ctx = MagicMock()
@@ -159,10 +147,7 @@ async def test_process_handoff_skips_tool_return_only_request(tmp_path: Path) ->
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             ctx.handoff_message = "Summary"
 
             mock_ctx = MagicMock()

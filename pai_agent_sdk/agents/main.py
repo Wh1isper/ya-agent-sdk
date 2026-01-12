@@ -1,6 +1,6 @@
 """Main agent factory for creating configured agents.
 
-This module provides the create_agent context manager for building agents
+This module provides the create_agent function for building agents
 with proper environment and context lifecycle management.
 """
 
@@ -80,27 +80,74 @@ OutputT = TypeVar("OutputT", default=str)
 
 @dataclass
 class AgentRuntime(Generic[AgentDepsT, OutputT]):
-    """Container for agent runtime components.
+    """Container for agent runtime components with lifecycle management.
 
     This dataclass holds all the components needed to run an agent,
     providing a clean interface for accessing the environment, context,
-    and agent instance.
+    and agent instance. It also acts as an async context manager to
+    manage the lifecycle of env, ctx, and agent.
 
     Attributes:
         env: The environment instance managing resources.
         ctx: The agent context for session state.
         agent: The configured pydantic-ai Agent instance.
+        core_toolset: The core toolset with BaseTool instances.
 
     Example:
-        async with create_agent("openai:gpt-4") as runtime:
+        runtime = create_agent("openai:gpt-4")
+        async with runtime:
             result = await runtime.agent.run("Hello", deps=runtime.ctx)
             print(result.output)
+
+        # Or with external env management:
+        async with env:
+            runtime = create_agent("openai:gpt-4", env=env)
+            async with runtime:  # Only enters ctx and agent
+                result = await runtime.agent.run("Hello", deps=runtime.ctx)
     """
 
     env: Environment
     ctx: AgentDepsT
     agent: Agent[AgentDepsT, OutputT]
     core_toolset: Toolset[AgentDepsT] | None
+    _exit_stack: AsyncExitStack | None = field(default=None, repr=False)
+
+    async def __aenter__(self) -> AgentRuntime[AgentDepsT, OutputT]:
+        """Enter the runtime, managing env/ctx/agent lifecycles.
+
+        Only enters components that are not already entered (checked via _entered flag).
+        Uses AsyncExitStack to track what was entered, ensuring proper cleanup.
+        """
+        self._exit_stack = AsyncExitStack()
+        await self._exit_stack.__aenter__()
+
+        # Enter in order: env -> ctx -> agent
+        # Only enter if not already entered
+        if not self.env._entered:
+            await self._exit_stack.enter_async_context(self.env)
+        if not self.ctx._entered:
+            await self._exit_stack.enter_async_context(self.ctx)
+        # Agent uses reference counting, safe to enter multiple times
+        await self._exit_stack.enter_async_context(self.agent)
+
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> bool | None:
+        """Exit the runtime, cleaning up only what we entered.
+
+        AsyncExitStack automatically exits in reverse order, and only
+        exits contexts that were entered via enter_async_context().
+        """
+        if self._exit_stack:
+            result = await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+            self._exit_stack = None
+            return result
+        return None
 
 
 # =============================================================================
@@ -136,8 +183,7 @@ def _load_system_prompt(template_vars: dict[str, Any] | None = None) -> str:
 # =============================================================================
 
 
-@asynccontextmanager
-async def create_agent(
+def create_agent(
     model: Model | KnownModelName | str | None,
     *,
     # --- Model Configuration ---
@@ -179,11 +225,12 @@ async def create_agent(
     defer_model_check: bool = False,
     end_strategy: str = "exhaustive",
     metadata: RunContextMetadata | None = None,
-) -> AsyncIterator[AgentRuntime[AgentDepsT, OutputT]]:
-    """Create and configure an agent with managed lifecycle.
+) -> AgentRuntime[AgentDepsT, OutputT]:
+    """Create and configure an agent runtime.
 
-    This context manager handles the full lifecycle of Environment, AgentContext,
-    and Agent creation. It yields an AgentRuntime containing all three components.
+    This function creates an AgentRuntime containing Environment, AgentContext,
+    and Agent. The runtime should be used as an async context manager to manage
+    the lifecycle of these components.
 
     Args:
         model: Model string (e.g., "openai:gpt-4") or Model instance.
@@ -227,163 +274,152 @@ async def create_agent(
         end_strategy: Strategy for ending agent run. Defaults to "exhaustive".
         metadata: Optional RunContextMetadata for context management.
 
-    Yields:
-        AgentRuntime containing env, ctx, and agent.
+    Returns:
+        AgentRuntime containing env, ctx, and agent. Use as async context manager.
 
     Example:
         Basic usage::
 
-            async with create_agent("openai:gpt-4") as runtime:
+            runtime = create_agent("openai:gpt-4")
+            async with runtime:
                 result = await runtime.agent.run("Hello", deps=runtime.ctx)
                 print(result.output)
 
         With custom tools and configuration::
 
-            async with create_agent(
+            runtime = create_agent(
                 "anthropic:claude-3-5-sonnet",
                 tools=[ReadFileTool, WriteFileTool],
                 model_cfg=ModelConfig(context_window=200000),
                 global_hooks=GlobalHooks(pre=my_pre_hook),
-            ) as runtime:
+            )
+            async with runtime:
                 result = await runtime.agent.run("Read config.json", deps=runtime.ctx)
 
-        With custom environment::
+        With external environment management::
 
-            async with create_agent(
-                "openai:gpt-4",
-                env=DockerEnvironment,
-                env_kwargs={"image": "python:3.11"},
-            ) as runtime:
-                result = await runtime.agent.run("Run tests", deps=runtime.ctx)
+            async with DockerEnvironment(image="python:3.11") as docker_env:
+                runtime = create_agent("openai:gpt-4", env=docker_env)
+                async with runtime:  # Only enters ctx and agent
+                    result = await runtime.agent.run("Run tests", deps=runtime.ctx)
     """
-    async with AsyncExitStack() as stack:
-        # --- Environment Setup ---
-        logger.debug("Setting up environment: %s", type(env).__name__ if isinstance(env, Environment) else env.__name__)
-        if isinstance(env, Environment):
-            entered_env = env
-            # If already an instance, enter it
-            await stack.enter_async_context(env)
-        else:
-            # Create and enter new environment instance
-            entered_env = await stack.enter_async_context(env(**(env_kwargs or {})))
-        logger.debug("Environment ready: %s", entered_env)
+    # --- Environment Setup ---
+    actual_env = env if isinstance(env, Environment) else env(**(env_kwargs or {}))
+    logger.debug("Environment created: %s", type(actual_env).__name__)
 
-        # --- Build Configs ---
-        effective_model_cfg = model_cfg or ModelConfig()
-        effective_tool_config = tool_config or ToolConfig()
+    # --- Build Configs ---
+    effective_model_cfg = model_cfg or ModelConfig()
+    effective_tool_config = tool_config or ToolConfig()
 
-        # --- Context Setup ---
-        ctx = await stack.enter_async_context(
-            context_type(
-                file_operator=entered_env.file_operator,
-                shell=entered_env.shell,
-                resources=entered_env.resources,
-                model_cfg=effective_model_cfg,
-                tool_config=effective_tool_config,
-                need_user_approve_tools=list(need_user_approve_tools) if need_user_approve_tools else [],
-                **(extra_context_kwargs or {}),
-            ).with_state(state)
-        )
-        logger.debug("Context created: %s (run_id=%s)", type(ctx).__name__, ctx.run_id)
-        # --- History Processors ---
-        # Combine context's processors with built-in and user-provided ones
-        all_processors: list[HistoryProcessor[AgentDepsT]] = [
-            *ctx.get_history_processors(),
-            create_compact_filter(
-                model=compact_model,
-                model_settings=compact_model_settings,
-                model_cfg=compact_model_cfg or effective_model_cfg,
-                main_model=model,
-                main_model_settings=model_settings,
-            ),
-            create_environment_instructions_filter(entered_env),
-        ]
-        if history_processors:
-            all_processors.extend(history_processors)
+    # --- Context Setup ---
+    ctx = context_type(
+        env=actual_env,
+        model_cfg=effective_model_cfg,
+        tool_config=effective_tool_config,
+        need_user_approve_tools=list(need_user_approve_tools) if need_user_approve_tools else [],
+        **(extra_context_kwargs or {}),
+    ).with_state(state)
+    logger.debug("Context created: %s (run_id=%s)", type(ctx).__name__, ctx.run_id)
 
-        # --- Toolset Setup ---
-        all_toolsets: list[AbstractToolset[Any]] = []
-        core_toolset: Toolset[AgentDepsT] | None = None
+    # --- History Processors ---
+    # Combine context's processors with built-in and user-provided ones
+    all_processors: list[HistoryProcessor[AgentDepsT]] = [
+        *ctx.get_history_processors(),
+        create_compact_filter(
+            model=compact_model,
+            model_settings=compact_model_settings,
+            model_cfg=compact_model_cfg or effective_model_cfg,
+            main_model=model,
+            main_model_settings=model_settings,
+        ),
+        create_environment_instructions_filter(actual_env),
+    ]
+    if history_processors:
+        all_processors.extend(history_processors)
 
-        # Create Toolset from BaseTool classes if provided
-        tools = tools or []
-        logger.debug("Creating core toolset with %d tools", len(tools))
-        core_toolset = Toolset(
-            ctx,
-            tools=tools,
-            pre_hooks=pre_hooks,
-            post_hooks=post_hooks,
-            global_hooks=global_hooks,
-            max_retries=toolset_max_retries,
-            timeout=toolset_timeout,
-            skip_unavailable=skip_unavailable_tools,
-        )
+    # --- Toolset Setup ---
+    all_toolsets: list[AbstractToolset[Any]] = []
+    core_toolset: Toolset[AgentDepsT] | None = None
 
-        # Add subagent tools if requested
-        if subagent_configs or include_builtin_subagents:
-            from pai_agent_sdk.subagents import get_builtin_subagent_configs
+    # Create Toolset from BaseTool classes if provided
+    tools = tools or []
+    logger.debug("Creating core toolset with %d tools", len(tools))
+    core_toolset = Toolset(
+        ctx,
+        tools=tools,
+        pre_hooks=pre_hooks,
+        post_hooks=post_hooks,
+        global_hooks=global_hooks,
+        max_retries=toolset_max_retries,
+        timeout=toolset_timeout,
+        skip_unavailable=skip_unavailable_tools,
+    )
 
-            all_subagent_configs = list(subagent_configs) if subagent_configs else []
-            if include_builtin_subagents:
-                all_subagent_configs.extend(get_builtin_subagent_configs().values())
+    # Add subagent tools if requested
+    if subagent_configs or include_builtin_subagents:
+        from pai_agent_sdk.subagents import get_builtin_subagent_configs
 
-            if all_subagent_configs:
-                logger.debug("Adding %d subagent configs to toolset", len(all_subagent_configs))
-                core_toolset = core_toolset.with_subagents(
-                    all_subagent_configs,
-                    model=model,
-                    model_settings=model_settings,
-                    history_processors=[*ctx.get_history_processors()],
-                )
+        all_subagent_configs = list(subagent_configs) if subagent_configs else []
+        if include_builtin_subagents:
+            all_subagent_configs.extend(get_builtin_subagent_configs().values())
 
-        all_toolsets.append(core_toolset)
-
-        # Add user-provided toolsets
-        if toolsets:
-            all_toolsets.extend(toolsets)
-
-        # Add environment toolsets
-        all_toolsets.extend(entered_env.toolsets)
-
-        # --- System Prompt ---
-        effective_system_prompt: str | Sequence[str]
-        if system_prompt is not None:
-            effective_system_prompt = system_prompt
-        else:
-            # Load from template
-            loaded_prompt = _load_system_prompt(system_prompt_template_vars)
-            effective_system_prompt = loaded_prompt if loaded_prompt else ""
-
-        # --- Create Agent ---
-        logger.debug("Creating agent with model=%s, output_type=%s", model, output_type)
-        agent: Agent[AgentDepsT, OutputT] = add_toolset_instructions(
-            Agent(
-                model=infer_model(model) if isinstance(model, str) else model,
-                system_prompt=effective_system_prompt,
+        if all_subagent_configs:
+            logger.debug("Adding %d subagent configs to toolset", len(all_subagent_configs))
+            core_toolset = core_toolset.with_subagents(
+                all_subagent_configs,
+                model=model,
                 model_settings=model_settings,
-                deps_type=context_type,
-                output_type=output_type,
-                tools=agent_tools or (),
-                toolsets=all_toolsets if all_toolsets else None,
-                history_processors=[
-                    *(all_processors or []),
-                    create_system_prompt_filter(system_prompt=effective_system_prompt),
-                ],
-                retries=retries,
-                output_retries=output_retries,
-                defer_model_check=defer_model_check,
-                end_strategy=end_strategy,  # type: ignore[arg-type]
-                metadata=cast(dict[str, Any], metadata) if metadata else None,
-            ),
-            all_toolsets,
-        )
+                history_processors=[*ctx.get_history_processors()],
+            )
 
-        logger.debug(
-            "Agent created: toolsets=%d, history_processors=%d",
-            len(all_toolsets) if all_toolsets else 0,
-            len(all_processors) if all_processors else 0,
-        )
-        yield AgentRuntime(env=entered_env, ctx=ctx, agent=agent, core_toolset=core_toolset)
+    all_toolsets.append(core_toolset)
+
+    # Add user-provided toolsets
+    if toolsets:
+        all_toolsets.extend(toolsets)
+
+    # Add environment toolsets (will be available after env enters)
+    all_toolsets.extend(actual_env.toolsets)
+
+    # --- System Prompt ---
+    effective_system_prompt: str | Sequence[str]
+    if system_prompt is not None:
+        effective_system_prompt = system_prompt
+    else:
+        # Load from template
+        loaded_prompt = _load_system_prompt(system_prompt_template_vars)
+        effective_system_prompt = loaded_prompt if loaded_prompt else ""
+
+    # --- Create Agent ---
+    logger.debug("Creating agent with model=%s, output_type=%s", model, output_type)
+    agent: Agent[AgentDepsT, OutputT] = add_toolset_instructions(
+        Agent(
+            model=infer_model(model) if isinstance(model, str) else model,
+            system_prompt=effective_system_prompt,
+            model_settings=model_settings,
+            deps_type=context_type,
+            output_type=output_type,
+            tools=agent_tools or (),
+            toolsets=all_toolsets if all_toolsets else None,
+            history_processors=[
+                *(all_processors or []),
+                create_system_prompt_filter(system_prompt=effective_system_prompt),
+            ],
+            retries=retries,
+            output_retries=output_retries,
+            defer_model_check=defer_model_check,
+            end_strategy=end_strategy,  # type: ignore[arg-type]
+            metadata=cast(dict[str, Any], metadata) if metadata else None,
+        ),
+        all_toolsets,
+    )
+
+    logger.debug(
+        "Agent created: toolsets=%d, history_processors=%d",
+        len(all_toolsets) if all_toolsets else 0,
+        len(all_processors) if all_processors else 0,
+    )
+    return AgentRuntime(env=actual_env, ctx=ctx, agent=agent, core_toolset=core_toolset)
 
 
 # =============================================================================
@@ -511,10 +547,9 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
 
 @asynccontextmanager
 async def stream_agent(  # noqa: C901
-    agent: Agent[AgentDepsT, OutputT],
+    runtime: AgentRuntime[AgentDepsT, OutputT],
     user_prompt: str | Sequence[UserContent] | None = None,
     *,
-    ctx: AgentDepsT,
     message_history: Sequence[ModelMessage] | None = None,
     deferred_tool_results: DeferredToolResults | None = None,
     # Hooks
@@ -529,12 +564,26 @@ async def stream_agent(  # noqa: C901
     This context manager runs the agent and yields a streamer that merges
     events from the main agent and all subagents into a single stream.
 
+    Lifecycle Management:
+        This function automatically manages the runtime lifecycle internally.
+        When called, it will:
+        1. Enter the runtime (env -> ctx -> agent) if not already entered
+        2. Execute the agent with the given prompt
+        3. Exit the runtime when streaming completes
+
+        The runtime uses `_entered` flags to avoid double-entering components
+        that are already active. This means you can safely call stream_agent
+        without manually entering the runtime first.
+
+        Note: Manual runtime lifecycle management is not recommended.
+        Let stream_agent handle it automatically for proper resource cleanup.
+
     Args:
-        agent: The pydantic-ai Agent to run.
+        runtime: The AgentRuntime containing agent and context.
         user_prompt: The prompt to send to the agent. Can be string or
             sequence of UserContent for multimodal input.
-        ctx: The AgentContext for this run.
         message_history: Optional conversation history.
+        deferred_tool_results: Results from deferred tool calls.
         pre_node_hook: Called before node.stream() starts.
         post_node_hook: Called after node.stream() completes.
         pre_event_hook: Called before each event is yielded.
@@ -547,20 +596,24 @@ async def stream_agent(  # noqa: C901
 
     Example::
 
-        async with create_agent("openai:gpt-4") as runtime:
-            async with stream_agent(
-                runtime.agent,
-                "Search for Python tutorials",
-                ctx=runtime.ctx,
-            ) as streamer:
-                async for event in streamer:
-                    if event.agent_name == "main":
-                        # Handle main agent events
-                        pass
-                    else:
-                        # Handle subagent events
-                        pass
+        # Recommended: Let stream_agent manage the runtime lifecycle
+        runtime = create_agent("openai:gpt-4")
+        async with stream_agent(
+            runtime,
+            "Search for Python tutorials",
+        ) as streamer:
+            async for event in streamer:
+                if event.agent_name == "main":
+                    # Handle main agent events
+                    pass
+                else:
+                    # Handle subagent events
+                    pass
     """
+    # Extract agent and ctx from runtime
+    agent = runtime.agent
+    ctx = runtime.ctx
+
     output_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     main_done = asyncio.Event()
     poll_done = asyncio.Event()
@@ -624,13 +677,16 @@ async def stream_agent(  # noqa: C901
         """Run the main agent and push events to output_queue."""
         logger.debug("Main agent task started")
         try:
-            async with agent.iter(
-                user_prompt,
-                deps=ctx,
-                message_history=message_history,
-                deferred_tool_results=deferred_tool_results,
-                metadata=cast(dict[str, Any], metadata) if metadata else None,
-            ) as run:
+            async with (
+                runtime,
+                agent.iter(
+                    user_prompt,
+                    deps=ctx,
+                    message_history=message_history,
+                    deferred_tool_results=deferred_tool_results,
+                    metadata=cast(dict[str, Any], metadata) if metadata else None,
+                ) as run,
+            ):
                 streamer.run = run  # Expose run immediately
                 async for node in run:
                     if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):

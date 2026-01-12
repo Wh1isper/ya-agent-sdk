@@ -33,25 +33,31 @@ AgentContext - Short-lived, references resources
 
 ## Basic Usage
 
-### Using AsyncExitStack (Recommended)
+### Using create_agent (Recommended)
+
+The simplest way to use environments is through `create_agent`, which handles
+environment setup automatically:
 
 ```python
-from contextlib import AsyncExitStack
+from pai_agent_sdk.agents import create_agent, stream_agent
+
+# Default: uses LocalEnvironment
+runtime = create_agent("openai:gpt-4")
+async with stream_agent(runtime, "Hello") as streamer:
+    async for event in streamer:
+        print(event)
+```
+
+### Manual Environment Management (Advanced)
+
+```python
 from pai_agent_sdk.environment import LocalEnvironment
 from pai_agent_sdk.context import AgentContext
 
-async with AsyncExitStack() as stack:
-    env = await stack.enter_async_context(
-        LocalEnvironment(allowed_paths=[path], tmp_base_dir=path)
-    )
-    ctx = await stack.enter_async_context(
-        AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-            resources=env.resources,
-        )
-    )
-    # Use env and ctx here
+async with LocalEnvironment(allowed_paths=[path], tmp_base_dir=path) as env:
+    async with AgentContext(env=env) as ctx:
+        # Use env and ctx here
+        await ctx.file_operator.read_file("test.txt")
 ```
 
 ### Multiple Sessions Sharing Environment
@@ -59,19 +65,11 @@ async with AsyncExitStack() as stack:
 ```python
 async with LocalEnvironment(tmp_base_dir=Path("/tmp")) as env:
     # First session
-    async with AgentContext(
-        file_operator=env.file_operator,
-        shell=env.shell,
-        resources=env.resources,
-    ) as ctx1:
+    async with AgentContext(env=env) as ctx1:
         await ctx1.file_operator.read_file("test.txt")
 
     # Second session (reuses same environment)
-    async with AgentContext(
-        file_operator=env.file_operator,
-        shell=env.shell,
-        resources=env.resources,
-    ) as ctx2:
+    async with AgentContext(env=env) as ctx2:
         ...
 # Resources cleaned up when environment exits
 ```
@@ -243,25 +241,32 @@ class ContainerEnvironment(Environment):
 ### Using Environment Toolsets with Agent
 
 ```python
-from pydantic_ai import Agent
+from pai_agent_sdk.agents import create_agent, stream_agent
 
+# create_agent automatically includes env.toolsets
 async with ContainerEnvironment() as env:
-    ctx = await stack.enter_async_context(
-        AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-            resources=env.resources,
-        )
-    )
-
-    # Inject environment toolsets into agent
-    agent = Agent(
+    runtime = create_agent(
         "openai:gpt-4",
-        toolsets=[
-            core_toolset,        # Your core tools
-            *env.toolsets,       # Environment-specific tools
-        ],
+        env=env,  # Pass custom environment
     )
+    async with stream_agent(runtime, "Check container status") as streamer:
+        async for event in streamer:
+            print(event)
+```
+
+For manual setup:
+
+```python
+async with ContainerEnvironment() as env:
+    async with AgentContext(env=env) as ctx:
+        # Inject environment toolsets into agent
+        agent = Agent(
+            "openai:gpt-4",
+            toolsets=[
+                core_toolset,        # Your core tools
+                *env.toolsets,       # Environment-specific tools
+            ],
+        )
 ```
 
 The `toolsets` property returns an empty list by default, so environments without custom tools work seamlessly.

@@ -64,7 +64,7 @@ async def test_pdf_convert_file_not_found(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = PdfConvertTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -82,7 +82,7 @@ async def test_pdf_convert_not_pdf_file(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = PdfConvertTool(ctx)
 
         # Create a non-PDF file
@@ -104,7 +104,7 @@ async def test_pdf_convert_success(tmp_path: Path, pdf_file: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = PdfConvertTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -134,7 +134,7 @@ async def test_pdf_convert_page_range(tmp_path: Path, pdf_file: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = PdfConvertTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -188,7 +188,7 @@ async def test_office_convert_file_not_found(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = OfficeConvertTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -206,7 +206,7 @@ async def test_office_convert_unsupported_format(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = OfficeConvertTool(ctx)
 
         # Create an unsupported file
@@ -228,7 +228,7 @@ async def test_office_convert_docx_success(tmp_path: Path, docx_file: Path) -> N
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = OfficeConvertTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)

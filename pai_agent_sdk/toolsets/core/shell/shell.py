@@ -48,9 +48,9 @@ class ShellTool(BaseTool):
     name = "shell"
     description = "Execute a shell command."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires shell)."""
-        if self.ctx.shell is None:
+        if ctx.deps.shell is None:
             logger.debug("ShellTool unavailable: shell is not configured")
             return False
         return True

@@ -132,10 +132,7 @@ async def test_create_system_prompt_filter(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 

@@ -43,10 +43,7 @@ async def test_drop_extra_images_no_model_config(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -71,8 +68,7 @@ async def test_drop_extra_images_within_limit(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_images=5),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -99,8 +95,7 @@ async def test_drop_extra_images_exceeds_limit(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_images=2),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -133,8 +128,7 @@ async def test_drop_extra_images_keeps_latest_across_messages(tmp_path: Path) ->
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_images=2),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -171,8 +165,7 @@ async def test_drop_extra_images_validates_binary_content(tmp_path: Path) -> Non
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_images=10),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -202,8 +195,7 @@ async def test_drop_extra_images_skips_model_response(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_images=1),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -231,8 +223,7 @@ async def test_drop_extra_images_preserves_string_content(tmp_path: Path) -> Non
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_images=1),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -257,10 +248,7 @@ async def test_drop_extra_videos_no_model_config(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -285,8 +273,7 @@ async def test_drop_extra_videos_within_limit(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_videos=3),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -312,8 +299,7 @@ async def test_drop_extra_videos_exceeds_limit(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_videos=1),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -345,8 +331,7 @@ async def test_drop_extra_videos_keeps_latest_across_messages(tmp_path: Path) ->
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_videos=1),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -382,8 +367,7 @@ async def test_drop_extra_videos_handles_binary_video_content(tmp_path: Path) ->
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_videos=1),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -413,8 +397,7 @@ async def test_drop_extra_videos_skips_model_response(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_videos=1),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -442,8 +425,7 @@ async def test_drop_extra_videos_preserves_string_content(tmp_path: Path) -> Non
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(max_videos=1),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -469,8 +451,7 @@ async def test_drop_gif_images_support_gif_true(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(support_gif=True),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -497,8 +478,7 @@ async def test_drop_gif_images_support_gif_false(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(support_gif=False),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -524,8 +504,7 @@ async def test_drop_gif_images_keeps_other_images(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(support_gif=False),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -559,10 +538,7 @@ async def test_drop_gif_images_no_model_config(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -586,8 +562,7 @@ async def test_drop_gif_images_skips_model_response(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(support_gif=False),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -616,8 +591,7 @@ async def test_drop_gif_images_preserves_string_content(tmp_path: Path) -> None:
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(support_gif=False),
         ) as ctx:
             mock_ctx = MagicMock()

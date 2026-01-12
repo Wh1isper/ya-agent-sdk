@@ -96,9 +96,9 @@ class ViewTool(BaseTool):
         "For PDF files, use `pdf_convert` tool instead."
     )
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("ViewTool unavailable: file_operator is not configured")
             return False
         return True

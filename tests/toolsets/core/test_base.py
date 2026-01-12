@@ -113,7 +113,7 @@ class UnavailableTool(BaseTool):
     name = "unavailable_tool"
     description = "An unavailable tool"
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return False
 
     async def call(self, ctx: RunContext[AgentContext]) -> str:
@@ -125,14 +125,26 @@ class UnavailableTool(BaseTool):
 
 def test_base_tool_default_availability(agent_context: AgentContext) -> None:
     """Should be available by default."""
+    from unittest.mock import MagicMock
+
+    from pydantic_ai import RunContext
+
     tool = DummyTool(agent_context)
-    assert tool.is_available() is True
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = agent_context
+    assert tool.is_available(mock_run_ctx) is True
 
 
 def test_base_tool_unavailable(agent_context: AgentContext) -> None:
     """Should report unavailability correctly."""
+    from unittest.mock import MagicMock
+
+    from pydantic_ai import RunContext
+
     tool = UnavailableTool(agent_context)
-    assert tool.is_available() is False
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = agent_context
+    assert tool.is_available(mock_run_ctx) is False
 
 
 def test_base_tool_initialization(agent_context: AgentContext) -> None:
@@ -185,12 +197,25 @@ def test_toolset_initialization(agent_context: AgentContext) -> None:
     assert "dummy_tool" in toolset._tool_instances
 
 
-def test_toolset_skip_unavailable_tools(agent_context: AgentContext) -> None:
-    """Should skip unavailable tools when skip_unavailable=True."""
+async def test_toolset_skip_unavailable_tools(agent_context: AgentContext) -> None:
+    """Should skip unavailable tools when skip_unavailable=True in get_tools()."""
+    from unittest.mock import MagicMock
+
+    from pydantic_ai import RunContext
+
     ctx = agent_context
     toolset = Toolset(ctx, tools=[DummyTool, UnavailableTool], skip_unavailable=True)
+
+    # All tools are registered in _tool_instances
     assert "dummy_tool" in toolset._tool_instances
-    assert "unavailable_tool" not in toolset._tool_instances
+    assert "unavailable_tool" in toolset._tool_instances
+
+    # But unavailable tools are filtered out in get_tools()
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = ctx
+    tools = await toolset.get_tools(mock_run_ctx)
+    assert "dummy_tool" in tools
+    assert "unavailable_tool" not in tools
 
 
 def test_toolset_duplicate_tool_name_raises(agent_context: AgentContext) -> None:
@@ -441,13 +466,8 @@ def test_toolset_subset_with_new_context(agent_context: AgentContext, tmp_path: 
     """Should use new context when provided."""
     ctx1 = agent_context
 
-    # Create another context
-    from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
-
-    ctx2 = AgentContext(
-        file_operator=LocalFileOperator(default_path=tmp_path),
-        shell=LocalShell(default_cwd=tmp_path),
-    )
+    # Create another context with a different env reference (simulated)
+    ctx2 = AgentContext(env=ctx1.env)
 
     toolset = Toolset(ctx1, tools=[DummyTool])
     subset = toolset.subset(None, ctx=ctx2)

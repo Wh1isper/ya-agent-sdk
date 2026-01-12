@@ -1,10 +1,15 @@
 """Agent context management.
 
 This module provides the AgentContext class for managing session state
-during agent execution. AgentContext is designed to be used inside an
-Environment context.
+during agent execution. AgentContext holds a reference to an Environment
+and derives file_operator/shell/resources from it via properties.
 
 Architecture:
+    AgentRuntime (recommended entry point)
+      - Created by create_agent() factory function
+      - Manages env -> ctx -> agent lifecycle as async context manager
+      - stream_agent() handles runtime lifecycle automatically
+
     Environment (outer, long-lived)
       - Manages tmp_dir lifecycle
       - Creates and owns file_operator and shell
@@ -12,48 +17,49 @@ Architecture:
 
         AgentContext (inner, short-lived)
           - Manages session state (run_id, timing, handoff)
-          - Receives file_operator, shell as parameters
-          - async with AgentContext(file_operator, shell) as ctx:
+          - Holds env reference, derives file_operator/shell/resources from it
+          - async with AgentContext(env=env) as ctx:
 
 Example:
-    Using AsyncExitStack for flat structure (recommended for dependent contexts):
+    Using create_agent and stream_agent (recommended)::
 
-    ```python
-    from contextlib import AsyncExitStack
-    from pai_agent_sdk.environment.local import LocalEnvironment
-    from pai_agent_sdk.context import AgentContext
+        from pai_agent_sdk.agents.main import create_agent, stream_agent
 
-    async with AsyncExitStack() as stack:
-        env = await stack.enter_async_context(
-            LocalEnvironment(tmp_base_dir=Path("/tmp"))
-        )
-        ctx = await stack.enter_async_context(
-            AgentContext(file_operator=env.file_operator, shell=env.shell)
-        )
-        # Handle request
-        await ctx.file_operator.read_file("test.txt")
-    # Resources cleaned up when stack exits
-    ```
+        # create_agent returns AgentRuntime (not a context manager)
+        runtime = create_agent("openai:gpt-4")
 
-    Multiple sessions sharing environment:
+        # stream_agent manages runtime lifecycle automatically
+        async with stream_agent(runtime, "Hello") as streamer:
+            async for event in streamer:
+                print(event)
 
-    ```python
-    async with LocalEnvironment(tmp_base_dir=Path("/tmp")) as env:
-        # First session
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx1:
-            await ctx1.file_operator.read_file("test.txt")
+    Using create_agent with manual agent.run::
 
-        # Second session (reuses same environment)
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx2:
-            ...
-    # tmp_dir cleaned up when environment exits
-    ```
+        runtime = create_agent("openai:gpt-4")
+        async with runtime:  # Enter runtime to manage env/ctx/agent
+            result = await runtime.agent.run("Hello", deps=runtime.ctx)
+            print(result.output)
+
+    Manual Environment and AgentContext setup (advanced)::
+
+        from pai_agent_sdk.environment.local import LocalEnvironment
+        from pai_agent_sdk.context import AgentContext
+
+        async with LocalEnvironment() as env:
+            async with AgentContext(env=env) as ctx:
+                await ctx.file_operator.read_file("test.txt")
+
+    Multiple sessions sharing environment::
+
+        async with LocalEnvironment() as env:
+            # First session
+            async with AgentContext(env=env) as ctx1:
+                await ctx1.file_operator.read_file("test.txt")
+
+            # Second session (reuses same environment)
+            async with AgentContext(env=env) as ctx2:
+                ...
+        # tmp_dir cleaned up when environment exits
 """
 
 from __future__ import annotations
@@ -94,7 +100,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from pai_agent_sdk.environment.base import FileOperator, ResourceRegistry, Shell
+from pai_agent_sdk.environment.base import Environment, FileOperator, ResourceRegistry, Shell
 from pai_agent_sdk.events import AgentEvent
 from pai_agent_sdk.utils import get_latest_request_usage
 
@@ -579,23 +585,31 @@ class AgentContext(BaseModel):
     - Deferred tool metadata
     - Handoff messages
 
-    The file_operator and shell are provided externally (typically from
-    an Environment) and are not managed by AgentContext.
+    AgentContext holds a reference to an Environment and derives
+    file_operator, shell, and resources from it via properties.
 
     Example:
-        Using AsyncExitStack (recommended for dependent contexts):
+        Using create_agent and stream_agent (recommended)::
 
-        ```python
-        from contextlib import AsyncExitStack
+            from pai_agent_sdk.agents.main import create_agent, stream_agent
 
-        async with AsyncExitStack() as stack:
-            env = await stack.enter_async_context(LocalEnvironment())
-            ctx = await stack.enter_async_context(
-                AgentContext(file_operator=env.file_operator, shell=env.shell)
-            )
-            await ctx.file_operator.read_file("data.json")
-        ```
-        ```
+            runtime = create_agent("openai:gpt-4")
+            # stream_agent manages runtime lifecycle automatically
+            async with stream_agent(runtime, "Hello") as streamer:
+                async for event in streamer:
+                    print(event)
+
+        Using create_agent with manual agent.run::
+
+            runtime = create_agent("openai:gpt-4")
+            async with runtime:
+                result = await runtime.agent.run("Hello", deps=runtime.ctx)
+
+        Manual setup with Environment (advanced)::
+
+            async with LocalEnvironment() as env:
+                async with AgentContext(env=env) as ctx:
+                    await ctx.file_operator.read_file("data.json")
     """
 
     model_config = {"arbitrary_types_allowed": True}
@@ -618,14 +632,8 @@ class AgentContext(BaseModel):
     handoff_message: str | None = None
     """Rendered handoff message to be injected into new context after handoff."""
 
-    file_operator: FileOperator | None = None
-    """File operator for file system operations. Provided by Environment. Optional."""
-
-    shell: Shell | None = None
-    """Shell executor for command execution. Provided by Environment. Optional."""
-
-    resources: ResourceRegistry = Field(default_factory=ResourceRegistry)
-    """Resource registry for runtime resources. Provided by Environment."""
+    env: Environment | None = None
+    """Environment instance. file_operator/shell/resources are derived from it."""
 
     model_cfg: ModelConfig = Field(default_factory=ModelConfig)
     """Model configuration for context management."""
@@ -673,8 +681,30 @@ class AgentContext(BaseModel):
     _enter_lock: asyncio.Lock = None  # type: ignore[assignment]  # Initialized in __init__
 
     def __init__(self, **data: Any) -> None:
+        """Initialize AgentContext."""
         super().__init__(**data)
         object.__setattr__(self, "_enter_lock", asyncio.Lock())
+
+    @property
+    def file_operator(self) -> FileOperator | None:
+        """File operator for file system operations. Derived from env."""
+        if self.env is not None:
+            return self.env.file_operator
+        return None
+
+    @property
+    def shell(self) -> Shell | None:
+        """Shell executor for command execution. Derived from env."""
+        if self.env is not None:
+            return self.env.shell
+        return None
+
+    @property
+    def resources(self) -> ResourceRegistry | None:
+        """Resource registry for runtime resources. Derived from env."""
+        if self.env is not None:
+            return self.env.resources
+        return None
 
     @property
     def elapsed_time(self) -> timedelta | None:
@@ -813,6 +843,7 @@ class AgentContext(BaseModel):
             "end_at": None,  # Will be set by __aexit__
             "handoff_message": None,  # Subagents don't inherit handoff state
             "tool_id_wrapper": ToolIdWrapper(),  # Fresh wrapper for subagent
+            # env is inherited via model_copy (shares parent's env reference)
             **override,
         }
         new_ctx = self.model_copy(update=update)

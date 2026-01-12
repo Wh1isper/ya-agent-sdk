@@ -26,10 +26,7 @@ async def test_filter_by_capability_no_model_config(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
 
@@ -50,8 +47,7 @@ async def test_filter_by_capability_with_all_capabilities(tmp_path: Path) -> Non
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 capabilities={ModelCapability.vision, ModelCapability.video_understanding},
             ),
@@ -80,8 +76,7 @@ async def test_filter_by_capability_filters_images_without_vision(tmp_path: Path
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 capabilities=set(),  # No capabilities
             ),
@@ -111,8 +106,7 @@ async def test_filter_by_capability_filters_videos_without_video_understanding(t
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 capabilities={ModelCapability.vision},  # Only vision, no video
             ),
@@ -142,8 +136,7 @@ async def test_filter_by_capability_filters_binary_image_content(tmp_path: Path)
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(capabilities=set()),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -171,8 +164,7 @@ async def test_filter_by_capability_preserves_string_content(tmp_path: Path) -> 
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(capabilities=set()),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -194,8 +186,7 @@ async def test_filter_by_capability_skips_model_response(tmp_path: Path) -> None
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(capabilities=set()),
         ) as ctx:
             mock_ctx = MagicMock()

@@ -37,9 +37,9 @@ class EditTool(BaseTool):
     name = "edit"
     description = "Performs exact string replacement in files. Use empty `old_string` to create new files."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("EditTool unavailable: file_operator is not configured")
             return False
         return True
@@ -103,9 +103,9 @@ class MultiEditTool(BaseTool):
     name = "multi_edit"
     description = "Perform multiple find-and-replace operations on a single file efficiently."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("MultiEditTool unavailable: file_operator is not configured")
             return False
         return True

@@ -29,7 +29,7 @@ async def test_replace_create_new_file(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ReplaceTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -46,7 +46,7 @@ async def test_replace_overwrite_file(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ReplaceTool(ctx)
 
         (tmp_path / "test.txt").write_text("old content")
@@ -65,7 +65,7 @@ async def test_replace_append_mode(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ReplaceTool(ctx)
 
         (tmp_path / "test.txt").write_text("Hello ")
@@ -84,7 +84,7 @@ async def test_replace_invalid_mode(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ReplaceTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -100,7 +100,7 @@ async def test_replace_create_with_subdirectory(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ReplaceTool(ctx)
 
         (tmp_path / "subdir").mkdir()

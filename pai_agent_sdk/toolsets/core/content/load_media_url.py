@@ -63,20 +63,20 @@ class LoadMediaUrlTool(BaseTool):
     name = "load_media_url"
     description = "Load multimedia content directly from HTTP/HTTPS URL (images, videos, audio). e.g. https://example.com/image.png, https://example.com/video.mp4, https://youtube.com/watch?v=abc123"
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available based on model capabilities.
 
         LoadTool requires at least one of: vision, video_understanding, or document_understanding.
         If none are available, the tool should be disabled.
         """
-        model_cfg = self.ctx.model_cfg
+        model_cfg = ctx.deps.model_cfg
         if model_cfg is None:
             return False
 
         has_vision = model_cfg.has_capability(ModelCapability.vision)
         has_video = model_cfg.has_capability(ModelCapability.video_understanding)
         has_document = model_cfg.has_capability(ModelCapability.document_understanding)
-        enable_load_document = self.ctx.tool_config.enable_load_document
+        enable_load_document = ctx.deps.tool_config.enable_load_document
 
         # Available if any capability is present
         return has_vision or has_video or (has_document and enable_load_document)

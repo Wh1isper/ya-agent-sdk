@@ -28,7 +28,7 @@ async def test_mkdir_single_directory(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = MkdirTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -46,7 +46,7 @@ async def test_mkdir_multiple_directories(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = MkdirTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -67,7 +67,7 @@ async def test_mkdir_nested_with_parents(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = MkdirTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -84,7 +84,7 @@ async def test_mkdir_nested_without_parents(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = MkdirTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -101,7 +101,7 @@ async def test_mkdir_empty_paths(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = MkdirTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -118,7 +118,7 @@ async def test_mkdir_mixed_results(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = MkdirTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -137,7 +137,7 @@ async def test_mkdir_result_structure(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = MkdirTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)

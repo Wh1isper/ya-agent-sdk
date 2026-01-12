@@ -7,50 +7,43 @@ from pathlib import Path
 import pytest
 
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment, LocalFileOperator, LocalShell
+from pai_agent_sdk.environment.local import LocalEnvironment
 
 
 @pytest.fixture
-def file_operator(tmp_path: Path) -> LocalFileOperator:
-    """Create a LocalFileOperator for testing."""
-    return LocalFileOperator(
+async def env(tmp_path: Path):
+    """Create a LocalEnvironment for testing."""
+    async with LocalEnvironment(
         default_path=tmp_path,
         allowed_paths=[tmp_path],
-    )
+        tmp_base_dir=tmp_path,
+    ) as environment:
+        yield environment
 
 
-@pytest.fixture
-def shell(tmp_path: Path) -> LocalShell:
-    """Create a LocalShell for testing."""
-    return LocalShell(
-        default_cwd=tmp_path,
-        allowed_paths=[tmp_path],
-    )
-
-
-def test_agent_context_default_run_id(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_default_run_id(env: LocalEnvironment) -> None:
     """Should generate a unique run_id by default."""
-    ctx1 = AgentContext(file_operator=file_operator, shell=shell)
-    ctx2 = AgentContext(file_operator=file_operator, shell=shell)
+    ctx1 = AgentContext(env=env)
+    ctx2 = AgentContext(env=env)
     assert ctx1.run_id != ctx2.run_id
     assert len(ctx1.run_id) == 32  # uuid4().hex length
 
 
-def test_agent_context_no_parent_by_default(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_no_parent_by_default(env: LocalEnvironment) -> None:
     """Should have no parent by default."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     assert ctx.parent_run_id is None
 
 
-def test_agent_context_elapsed_time_before_start(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_elapsed_time_before_start(env: LocalEnvironment) -> None:
     """Should return None before context is started."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     assert ctx.elapsed_time is None
 
 
-def test_agent_context_elapsed_time_after_start(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_elapsed_time_after_start(env: LocalEnvironment) -> None:
     """Should return elapsed time after start."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     ctx.start_at = datetime.now()
     elapsed = ctx.elapsed_time
     assert elapsed is not None
@@ -58,9 +51,9 @@ def test_agent_context_elapsed_time_after_start(file_operator: LocalFileOperator
     assert elapsed.total_seconds() >= 0
 
 
-def test_agent_context_elapsed_time_after_end(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_elapsed_time_after_end(env: LocalEnvironment) -> None:
     """Should return final duration after end."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     start = datetime.now()
     ctx.start_at = start
     ctx.end_at = start + timedelta(seconds=5)
@@ -69,9 +62,9 @@ def test_agent_context_elapsed_time_after_end(file_operator: LocalFileOperator, 
     assert elapsed.total_seconds() == 5
 
 
-async def test_agent_context_create_subagent_context(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_create_subagent_context(env: LocalEnvironment) -> None:
     """Should create child context with proper inheritance."""
-    parent = AgentContext(file_operator=file_operator, shell=shell)
+    parent = AgentContext(env=env)
     parent.start_at = datetime.now()
 
     async with parent.create_subagent_context("search") as child:
@@ -85,19 +78,17 @@ async def test_agent_context_create_subagent_context(file_operator: LocalFileOpe
     assert child.end_at is not None
 
 
-async def test_agent_context_create_subagent_context_with_override(
-    file_operator: LocalFileOperator, shell: LocalShell
-) -> None:
+async def test_agent_context_create_subagent_context_with_override(env: LocalEnvironment) -> None:
     """Should allow field overrides in subagent context."""
-    parent = AgentContext(file_operator=file_operator, shell=shell)
+    parent = AgentContext(env=env)
 
     async with parent.create_subagent_context("reasoning", deferred_tool_metadata={"key": {}}) as child:
         assert child.deferred_tool_metadata == {"key": {}}
 
 
-async def test_agent_context_async_context_manager(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_async_context_manager(env: LocalEnvironment) -> None:
     """Should set start/end times in async context."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     assert ctx.start_at is None
     assert ctx.end_at is None
 
@@ -109,17 +100,17 @@ async def test_agent_context_async_context_manager(file_operator: LocalFileOpera
     assert ctx.end_at >= ctx.start_at
 
 
-async def test_agent_context_double_enter_raises_error(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_double_enter_raises_error(env: LocalEnvironment) -> None:
     """Should raise RuntimeError when entering an already-entered context."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     async with ctx:
         with pytest.raises(RuntimeError, match="has already been entered"):
             await ctx.__aenter__()
 
 
-async def test_agent_context_can_reenter_after_exit(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_can_reenter_after_exit(env: LocalEnvironment) -> None:
     """Should allow re-entering after exiting."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
 
     # First enter/exit cycle
     async with ctx:
@@ -133,11 +124,11 @@ async def test_agent_context_can_reenter_after_exit(file_operator: LocalFileOper
         assert ctx.start_at >= first_start
 
 
-async def test_agent_context_concurrent_enter_raises_error(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_concurrent_enter_raises_error(env: LocalEnvironment) -> None:
     """Should raise RuntimeError when concurrently entering the same context."""
     import asyncio
 
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     errors: list[Exception] = []
     entered_count = 0
 
@@ -159,34 +150,34 @@ async def test_agent_context_concurrent_enter_raises_error(file_operator: LocalF
     assert "has already been entered" in str(errors[0])
 
 
-def test_agent_context_deferred_tool_metadata_default(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_deferred_tool_metadata_default(env: LocalEnvironment) -> None:
     """Should have empty metadata by default."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     assert ctx.deferred_tool_metadata == {}
 
 
-def test_agent_context_deferred_tool_metadata_storage(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_deferred_tool_metadata_storage(env: LocalEnvironment) -> None:
     """Should store metadata by tool_call_id."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     ctx.deferred_tool_metadata["call-1"] = {"user_choice": "option_a"}
     assert ctx.deferred_tool_metadata["call-1"]["user_choice"] == "option_a"
 
 
-def test_agent_context_file_operator(file_operator: LocalFileOperator, shell: LocalShell) -> None:
-    """Should store the provided file operator."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
-    assert ctx.file_operator is file_operator
+async def test_agent_context_file_operator(env: LocalEnvironment) -> None:
+    """Should derive file_operator from env."""
+    ctx = AgentContext(env=env)
+    assert ctx.file_operator is env.file_operator
 
 
-def test_agent_context_shell(file_operator: LocalFileOperator, shell: LocalShell) -> None:
-    """Should store the provided shell."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
-    assert ctx.shell is shell
+async def test_agent_context_shell(env: LocalEnvironment) -> None:
+    """Should derive shell from env."""
+    ctx = AgentContext(env=env)
+    assert ctx.shell is env.shell
 
 
-async def test_agent_context_get_environment_instructions(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_get_environment_instructions(env: LocalEnvironment) -> None:
     """Should return runtime context instructions in XML format."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     instructions = await ctx.get_context_instructions()
 
     # Check structure
@@ -195,24 +186,19 @@ async def test_agent_context_get_environment_instructions(file_operator: LocalFi
     assert "</runtime-context>" in instructions
 
 
-async def test_agent_context_subagent_shares_environment(tmp_path: Path) -> None:
-    """Subagent should share file_operator and shell with parent."""
-    file_op = LocalFileOperator(
-        default_path=tmp_path,
-        allowed_paths=[tmp_path],
-    )
-    shell = LocalShell(
-        default_cwd=tmp_path,
-        allowed_paths=[tmp_path],
-    )
-    ctx = AgentContext(file_operator=file_op, shell=shell)
+async def test_agent_context_subagent_shares_environment(env: LocalEnvironment) -> None:
+    """Subagent should share env with parent."""
+    ctx = AgentContext(env=env)
 
     async with ctx:
         async with ctx.create_subagent_context("search") as child:
-            # Should share file_operator
+            # Should share env
+            assert child.env is ctx.env
+
+            # Should share file_operator (derived from env)
             assert child.file_operator is ctx.file_operator
 
-            # Should share shell
+            # Should share shell (derived from env)
             assert child.shell is ctx.shell
 
 
@@ -302,7 +288,7 @@ async def test_context_with_environment(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         assert ctx.start_at is not None
 
         # Can use file_operator from environment
@@ -329,10 +315,7 @@ async def test_multiple_contexts_share_environment(tmp_path: Path) -> None:
         assert saved_tmp_dir is not None
 
         # First session
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx1:
+        async with AgentContext(env=env) as ctx1:
             await env.file_operator.write_file(str(saved_tmp_dir / "shared.txt"), "session1")
             assert ctx1.run_id is not None
             run_id_1 = ctx1.run_id
@@ -340,10 +323,7 @@ async def test_multiple_contexts_share_environment(tmp_path: Path) -> None:
         # Second session - tmp_dir still exists
         assert saved_tmp_dir.exists()
 
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx2:
+        async with AgentContext(env=env) as ctx2:
             # Different run_id
             assert ctx2.run_id != run_id_1
 
@@ -362,10 +342,7 @@ async def test_get_context_instructions_basic(tmp_path: Path) -> None:
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-        ) as ctx:
+        async with AgentContext(env=env) as ctx:
             # Wait a tiny bit to get non-zero elapsed time
             import asyncio
 
@@ -391,8 +368,7 @@ async def test_get_context_instructions_with_model_config(tmp_path: Path) -> Non
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 context_window=200000,
                 proactive_context_management_threshold=0.5,
@@ -426,8 +402,7 @@ async def test_get_context_instructions_with_token_usage(tmp_path: Path) -> None
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 context_window=200000,
                 proactive_context_management_threshold=0.5,
@@ -479,8 +454,7 @@ async def test_get_context_instructions_with_handoff_warning(tmp_path: Path) -> 
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 context_window=200000,
                 proactive_context_management_threshold=0.5,  # 50% = 100000 tokens
@@ -535,8 +509,7 @@ async def test_get_context_instructions_no_handoff_warning_below_threshold(tmp_p
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 context_window=200000,
                 proactive_context_management_threshold=0.5,
@@ -578,8 +551,7 @@ async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_pat
         tmp_base_dir=tmp_path,
     ) as env:
         async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
+            env=env,
             model_cfg=ModelConfig(
                 context_window=200000,
                 proactive_context_management_threshold=0.5,
@@ -610,9 +582,9 @@ async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_pat
 # =============================================================================
 
 
-async def test_export_and_with_state_empty(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_export_and_with_state_empty(env: LocalEnvironment) -> None:
     """Should export and restore empty state correctly."""
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         state = ctx.export_state()
 
         assert state.subagent_history == {}
@@ -622,21 +594,21 @@ async def test_export_and_with_state_empty(file_operator: LocalFileOperator, she
         assert state.deferred_tool_metadata == {}
 
     # Restore to new context
-    async with AgentContext(file_operator=file_operator, shell=shell) as new_ctx:
+    async with AgentContext(env=env) as new_ctx:
         new_ctx.with_state(state)
 
         assert new_ctx.subagent_history == {}
         assert new_ctx.extra_usages == []
 
 
-async def test_export_and_with_state_with_data(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
     """Should export and restore state with data correctly."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RunUsage
 
     from pai_agent_sdk.context import ExtraUsageRecord
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         # Set up some state
         ctx.subagent_history["agent-1"] = [
             ModelRequest(parts=[UserPromptPart(content="Hello")]),
@@ -652,7 +624,7 @@ async def test_export_and_with_state_with_data(file_operator: LocalFileOperator,
         state = ctx.export_state()
 
     # Restore to new context
-    async with AgentContext(file_operator=file_operator, shell=shell) as new_ctx:
+    async with AgentContext(env=env) as new_ctx:
         new_ctx.with_state(state)
 
         # Verify subagent_history is restored correctly
@@ -670,14 +642,14 @@ async def test_export_and_with_state_with_data(file_operator: LocalFileOperator,
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
 
 
-async def test_export_state_include_subagent_false(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_export_state_include_subagent_false(env: LocalEnvironment) -> None:
     """Should exclude subagent_history and agent_registry when include_subagent=False."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RunUsage
 
     from pai_agent_sdk.context import ExtraUsageRecord
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         # Set up subagent-related state
         ctx.subagent_history["agent-1"] = [
             ModelRequest(parts=[UserPromptPart(content="Hello")]),
@@ -715,11 +687,11 @@ async def test_export_state_include_subagent_false(file_operator: LocalFileOpera
         assert state.need_user_approve_tools == ["shell", "edit"]
 
 
-async def test_export_state_include_subagent_true_default(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_export_state_include_subagent_true_default(env: LocalEnvironment) -> None:
     """Should include subagent_history and agent_registry when include_subagent=True (default)."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         # Set up subagent-related state
         ctx.subagent_history["agent-1"] = [
             ModelRequest(parts=[UserPromptPart(content="Hello")]),
@@ -741,13 +713,13 @@ async def test_export_state_include_subagent_true_default(file_operator: LocalFi
             assert len(state.agent_registry) > 0
 
 
-async def test_resumable_state_json_serialization(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_resumable_state_json_serialization(env: LocalEnvironment) -> None:
     """Should serialize and deserialize ResumableState to/from JSON."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
     from pai_agent_sdk.context import ResumableState
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         ctx.subagent_history["agent-1"] = [
             ModelRequest(parts=[UserPromptPart(content="Hello")]),
             ModelResponse(parts=[TextPart(content="Hi there")]),
@@ -770,15 +742,13 @@ async def test_resumable_state_json_serialization(file_operator: LocalFileOperat
         assert history["agent-1"][0].parts[0].content == "Hello"
 
 
-async def test_resumable_state_json_serialization_with_extra_usages(
-    file_operator: LocalFileOperator, shell: LocalShell
-) -> None:
+async def test_resumable_state_json_serialization_with_extra_usages(env: LocalEnvironment) -> None:
     """Should serialize and deserialize ResumableState with extra_usages (RunUsage dataclass) to/from JSON."""
     from pydantic_ai.usage import RunUsage
 
     from pai_agent_sdk.context import ExtraUsageRecord, ResumableState
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         # Add extra_usages with RunUsage dataclass
         ctx.extra_usages.append(
             ExtraUsageRecord(
@@ -827,7 +797,7 @@ async def test_resumable_state_json_serialization_with_extra_usages(
         assert rec2.usage.tool_calls == 2
 
 
-async def test_resumable_state_with_binary_content(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_resumable_state_with_binary_content(env: LocalEnvironment) -> None:
     """Should serialize and deserialize ResumableState with BinaryContent (images, audio) to/from JSON."""
     import base64
 
@@ -840,7 +810,7 @@ async def test_resumable_state_with_binary_content(file_operator: LocalFileOpera
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
     )
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         # Create BinaryContent with image data
         image_content = BinaryContent(data=red_pixel_png, media_type="image/png")
 
@@ -888,9 +858,7 @@ async def test_resumable_state_with_binary_content(file_operator: LocalFileOpera
         assert content_list[1] == "Describe this image"
 
 
-async def test_resumable_state_with_multiple_binary_contents(
-    file_operator: LocalFileOperator, shell: LocalShell
-) -> None:
+async def test_resumable_state_with_multiple_binary_contents(env: LocalEnvironment) -> None:
     """Should handle multiple BinaryContent items across different messages."""
     import base64
 
@@ -911,7 +879,7 @@ async def test_resumable_state_with_multiple_binary_contents(
         "AQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAB//2Q=="
     )
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         image1 = BinaryContent(data=red_pixel_png, media_type="image/png")
         image2 = BinaryContent(data=minimal_jpeg, media_type="image/jpeg")
 
@@ -949,13 +917,11 @@ async def test_resumable_state_with_multiple_binary_contents(
         assert content2[0].media_type == "image/jpeg"
 
 
-async def test_resumable_state_with_need_user_approve_tools(
-    file_operator: LocalFileOperator, shell: LocalShell
-) -> None:
+async def test_resumable_state_with_need_user_approve_tools(env: LocalEnvironment) -> None:
     """Should serialize and deserialize ResumableState with need_user_approve_tools."""
     from pai_agent_sdk.context import ResumableState
 
-    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+    async with AgentContext(env=env) as ctx:
         # Set need_user_approve_tools
         ctx.need_user_approve_tools = ["shell", "edit", "replace"]
 
@@ -977,24 +943,22 @@ async def test_resumable_state_with_need_user_approve_tools(
         assert restored_state.need_user_approve_tools == ["shell", "edit", "replace"]
 
         # Verify restore method works
-        new_ctx = AgentContext(file_operator=file_operator, shell=shell)
+        new_ctx = AgentContext(env=env)
         assert new_ctx.need_user_approve_tools == []  # Default is empty
 
         restored_state.restore(new_ctx)
         assert new_ctx.need_user_approve_tools == ["shell", "edit", "replace"]
 
 
-def test_agent_context_need_user_approve_tools_default(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+async def test_agent_context_need_user_approve_tools_default(env: LocalEnvironment) -> None:
     """Should have empty need_user_approve_tools by default."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     assert ctx.need_user_approve_tools == []
 
 
-def test_agent_context_need_user_approve_tools_modification(
-    file_operator: LocalFileOperator, shell: LocalShell
-) -> None:
+async def test_agent_context_need_user_approve_tools_modification(env: LocalEnvironment) -> None:
     """Should allow modification of need_user_approve_tools."""
-    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    ctx = AgentContext(env=env)
     ctx.need_user_approve_tools.append("shell")
     ctx.need_user_approve_tools.append("edit")
     assert ctx.need_user_approve_tools == ["shell", "edit"]

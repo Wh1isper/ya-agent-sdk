@@ -304,7 +304,7 @@ async def main():
     # Load system prompt from file
     system_prompt = load_system_prompt()
 
-    async with create_agent(
+    runtime = create_agent(
         model="gemini@google-vertex:gemini-3-pro-preview",
         model_settings=cast(ModelSettings, GEMINI_THINKING_LEVEL_HIGH),
         system_prompt=system_prompt,
@@ -324,37 +324,34 @@ async def main():
         output_type=[str, DeferredToolRequests],
         include_builtin_subagents=True,
         metadata=RunContextMetadata(context_manage_tool="handoff"),
-    ) as agent_runtime:
-        agent = agent_runtime.agent
-        # Process pending HITL interactions if any
-        if message_history and user_interactions and agent_runtime.core_toolset:
-            _deferred_tool_results = await agent_runtime.core_toolset.process_hitl_call(
-                user_interactions, message_history
-            )
-        else:
-            _deferred_tool_results = None
+    )
 
-        async with stream_agent(
-            agent,
-            user_prompt=user_prompt,
-            ctx=agent_runtime.ctx,
-            message_history=message_history,
-            deferred_tool_results=_deferred_tool_results,
-        ) as stream:
-            async for event in stream:
-                print_stream_event(event)
-            # Ensure final newline after streaming text
-            print()
-            # Check for exceptions that occurred during streaming
-            stream.raise_if_exception()
-            run = stream.run
+    # Process pending HITL interactions if any
+    if message_history and user_interactions and runtime.core_toolset:
+        _deferred_tool_results = await runtime.core_toolset.process_hitl_call(user_interactions, message_history)
+    else:
+        _deferred_tool_results = None
 
-        if run:
-            print(f"\nUsage: {run.usage()}")
-            print(f"Messages so far: {len(run.all_messages())}")
-            save_message_history(run.all_messages_json())
-            new_state = agent_runtime.ctx.export_state()
-            save_state(new_state)
+    async with stream_agent(
+        runtime,
+        user_prompt=user_prompt,
+        message_history=message_history,
+        deferred_tool_results=_deferred_tool_results,
+    ) as stream:
+        async for event in stream:
+            print_stream_event(event)
+        # Ensure final newline after streaming text
+        print()
+        # Check for exceptions that occurred during streaming
+        stream.raise_if_exception()
+        run = stream.run
+
+    if run:
+        print(f"\nUsage: {run.usage()}")
+        print(f"Messages so far: {len(run.all_messages())}")
+        save_message_history(run.all_messages_json())
+        new_state = runtime.ctx.export_state()
+        save_state(new_state)
 
 
 if __name__ == "__main__":

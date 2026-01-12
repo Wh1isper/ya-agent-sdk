@@ -28,7 +28,7 @@ async def test_grep_find_pattern(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         (tmp_path / "test.py").write_text("def hello():\n    print('hello')\n\ndef world():\n    pass")
@@ -47,7 +47,7 @@ async def test_grep_invalid_regex(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -63,7 +63,7 @@ async def test_grep_with_include_filter(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         (tmp_path / "test.py").write_text("hello world")
@@ -83,7 +83,7 @@ async def test_grep_context_lines(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         content = "line1\nline2\nMATCH\nline4\nline5"
@@ -105,7 +105,7 @@ async def test_grep_max_results_limit(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         # Create file with many matches
@@ -128,7 +128,7 @@ async def test_grep_max_matches_per_file(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         content = "\n".join([f"match{i}" for i in range(10)])
@@ -149,7 +149,7 @@ async def test_grep_no_matches(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         (tmp_path / "test.txt").write_text("no matches here")
@@ -167,7 +167,7 @@ async def test_grep_match_data_structure(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = GrepTool(ctx)
 
         (tmp_path / "test.txt").write_text("line with pattern")

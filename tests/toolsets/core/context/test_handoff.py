@@ -79,10 +79,10 @@ def test_handoff_tool_initialization(agent_context: AgentContext) -> None:
     assert tool.name == "handoff"
 
 
-def test_handoff_tool_is_available(agent_context: AgentContext) -> None:
+def test_handoff_tool_is_available(agent_context: AgentContext, mock_run_ctx) -> None:
     """Should be available by default."""
     tool = HandoffTool(agent_context)
-    assert tool.is_available() is True
+    assert tool.is_available(mock_run_ctx) is True
 
 
 def test_handoff_tool_get_instruction(agent_context: AgentContext) -> None:

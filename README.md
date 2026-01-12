@@ -32,11 +32,15 @@ pip install pai-agent-sdk[document]  # Document processing (pymupdf, markitdown)
 ## Quick Start
 
 ```python
-from pai_agent_sdk.agents import create_agent
+from pai_agent_sdk.agents import create_agent, stream_agent
 
-async with create_agent("openai:gpt-4o") as runtime:
-    result = await runtime.agent.run("Hello", deps=runtime.ctx)
-    print(result.output)
+# create_agent returns AgentRuntime (not a context manager)
+runtime = create_agent("openai:gpt-4o")
+
+# stream_agent manages runtime lifecycle automatically
+async with stream_agent(runtime, "Hello") as streamer:
+    async for event in streamer:
+        print(event)
 ```
 
 ## Examples

@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai._agent_graph import HistoryProcessor
 
 from pai_agent_sdk.agents.models import infer_model
@@ -112,10 +112,10 @@ def create_subagent_tool_from_config(
 
     required_tools = config.tools
 
-    def check_tools_available() -> bool:
+    def check_tools_available(ctx: RunContext[AgentContext]) -> bool:
         if required_tools is None:
             return True
-        return all(parent_toolset.is_tool_available(name) for name in required_tools)
+        return all(parent_toolset.is_tool_available(name, ctx) for name in required_tools)
 
     return create_subagent_tool(
         name=config.name,

@@ -132,7 +132,7 @@ If `model_cfg` is not specified, the subagent inherits the parent's configuratio
 The simplest way to use subagents is through `create_agent`:
 
 ```python
-from pai_agent_sdk.agents import create_agent
+from pai_agent_sdk.agents import create_agent, stream_agent
 from pai_agent_sdk.subagents import SubagentConfig
 
 # Define a custom subagent
@@ -143,16 +143,18 @@ config = SubagentConfig(
     tools=["search_with_tavily", "visit_webpage"],
 )
 
-async with create_agent(
+runtime = create_agent(
     "anthropic:claude-sonnet-4",
     tools=[SearchTool, VisitTool, ViewTool, EditTool],
     subagent_configs=[config],  # Add custom subagents
     include_builtin_subagents=True,  # Also include builtin presets
-) as runtime:
-    result = await runtime.agent.run(
-        "Debug this error: TypeError in line 42",
-        deps=runtime.ctx,
-    )
+)
+async with stream_agent(
+    runtime,
+    "Debug this error: TypeError in line 42",
+) as streamer:
+    async for event in streamer:
+        print(event)
 ```
 
 ### Loading from Markdown Files

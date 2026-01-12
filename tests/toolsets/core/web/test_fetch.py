@@ -33,7 +33,7 @@ async def test_fetch_tool_head_only(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = FetchTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -63,7 +63,7 @@ async def test_fetch_tool_get_text(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = FetchTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -86,7 +86,7 @@ async def test_fetch_tool_get_image(tmp_path: Path, httpx_mock) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = FetchTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -107,8 +107,7 @@ async def test_fetch_tool_forbidden_url(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(skip_url_verification=False),
             )
         )

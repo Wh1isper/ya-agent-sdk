@@ -26,8 +26,7 @@ async def test_scrape_tool_forbidden_url(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(skip_url_verification=False),
             )
         )
@@ -51,8 +50,7 @@ async def test_scrape_tool_fallback_to_markitdown(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(),  # No firecrawl key
             )
         )
@@ -81,8 +79,7 @@ async def test_scrape_tool_truncates_long_content(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(firecrawl_api_key=None),  # Force MarkItDown fallback
             )
         )

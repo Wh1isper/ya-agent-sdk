@@ -36,7 +36,7 @@ class SubagentCallFunc(Protocol):
 InstructionFunc = Callable[[RunContext[AgentContext]], str | None]
 
 # Type alias for availability check functions
-AvailabilityCheckFunc = Callable[[], bool]
+AvailabilityCheckFunc = Callable[[RunContext[AgentContext]], bool]
 
 
 def create_subagent_tool(
@@ -115,10 +115,10 @@ def create_subagent_tool(
         def __init__(self, ctx: AgentContext) -> None:
             super().__init__(ctx)
 
-        def is_available(self) -> bool:
+        def is_available(self, ctx: RunContext[AgentContext]) -> bool:
             if availability_check is None:
                 return True
-            return availability_check()
+            return availability_check(ctx)
 
         def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
             if instruction is None:

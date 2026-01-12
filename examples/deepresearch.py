@@ -288,7 +288,7 @@ async def main() -> None:
     system_prompt = load_system_prompt(objective)
 
     # Create and run the agent
-    async with create_agent(
+    runtime = create_agent(
         model="gemini@google-vertex:gemini-3-pro-preview",
         model_settings=cast(ModelSettings, GEMINI_THINKING_LEVEL_HIGH),
         system_prompt=system_prompt,
@@ -319,12 +319,11 @@ async def main() -> None:
             max_retries=3,
         ),
         include_builtin_subagents=True,
-    ) as agent_runtime:
-        agent = agent_runtime.agent
+    )
 
-        async with stream_agent(
-            agent,
-            user_prompt=f"""<objective>
+    async with stream_agent(
+        runtime,
+        user_prompt=f"""<objective>
 {objective}
 </objective>
 
@@ -332,28 +331,27 @@ async def main() -> None:
 Please conduct deep research on the following objective and produce a comprehensive report in {OUTPUT_DIR} directory.
 </system-reminder>
 """,
-            ctx=agent_runtime.ctx,
-            message_history=message_history,
-        ) as stream:
-            async for event in stream:
-                print_stream_event(event)
-            print()
-            stream.raise_if_exception()
-            run = stream.run
+        message_history=message_history,
+    ) as stream:
+        async for event in stream:
+            print_stream_event(event)
+        print()
+        stream.raise_if_exception()
+        run = stream.run
 
-        if run and run.result:
-            print(run.result.output.summary)
-            print(f"\nUsage: {run.usage()}")
-            print(f"Total messages: {len(run.all_messages())}")
+    if run and run.result:
+        print(run.result.output.summary)
+        print(f"\nUsage: {run.usage()}")
+        print(f"Total messages: {len(run.all_messages())}")
 
-            # Save session state
-            save_message_history(run.all_messages_json())
-            new_state = agent_runtime.ctx.export_state()
-            save_state(new_state)
+        # Save session state
+        save_message_history(run.all_messages_json())
+        new_state = runtime.ctx.export_state()
+        save_state(new_state)
 
-            print(f"\nResearch complete. Check {OUTPUT_DIR.absolute()} for results.")
-            print(f"  - Report: {OUTPUT_DIR / 'report.md'}")
-            print(f"  - Notes: {OUTPUT_DIR / 'notes/'}")
+        print(f"\nResearch complete. Check {OUTPUT_DIR.absolute()} for results.")
+        print(f"  - Report: {OUTPUT_DIR / 'report.md'}")
+        print(f"  - Notes: {OUTPUT_DIR / 'notes/'}")
 
 
 if __name__ == "__main__":

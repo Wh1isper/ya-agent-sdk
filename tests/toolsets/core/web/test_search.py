@@ -35,13 +35,16 @@ async def test_search_tool_is_available_with_google(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
             )
         )
         tool = SearchTool(ctx)
-        assert tool.is_available() is True
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        assert tool.is_available(mock_run_ctx) is True
 
 
 async def test_search_tool_is_available_with_tavily(tmp_path: Path) -> None:
@@ -52,13 +55,16 @@ async def test_search_tool_is_available_with_tavily(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(tavily_api_key="test-key"),
             )
         )
         tool = SearchTool(ctx)
-        assert tool.is_available() is True
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        assert tool.is_available(mock_run_ctx) is True
 
 
 async def test_search_tool_not_available_without_keys(tmp_path: Path) -> None:
@@ -69,8 +75,7 @@ async def test_search_tool_not_available_without_keys(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 # Explicitly pass None for all API keys to override any env defaults
                 tool_config=ToolConfig(
                     google_search_api_key=None,
@@ -80,7 +85,11 @@ async def test_search_tool_not_available_without_keys(tmp_path: Path) -> None:
             )
         )
         tool = SearchTool(ctx)
-        assert tool.is_available() is False
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        assert tool.is_available(mock_run_ctx) is False
 
 
 async def test_search_tool_google_search(tmp_path: Path, httpx_mock) -> None:
@@ -101,8 +110,7 @@ async def test_search_tool_google_search(tmp_path: Path, httpx_mock) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
             )
         )
@@ -139,13 +147,16 @@ async def test_search_stock_image_tool_is_available(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(pixabay_api_key="test-key"),
             )
         )
         tool = SearchStockImageTool(ctx)
-        assert tool.is_available() is True
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        assert tool.is_available(mock_run_ctx) is True
 
 
 async def test_search_stock_image_tool_search(tmp_path: Path, httpx_mock) -> None:
@@ -179,8 +190,7 @@ async def test_search_stock_image_tool_search(tmp_path: Path, httpx_mock) -> Non
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(pixabay_api_key="test-key"),
             )
         )
@@ -214,13 +224,16 @@ async def test_search_image_tool_is_available(tmp_path: Path) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(rapidapi_api_key="test-key"),
             )
         )
         tool = SearchImageTool(ctx)
-        assert tool.is_available() is True
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        assert tool.is_available(mock_run_ctx) is True
 
 
 async def test_search_image_tool_search(tmp_path: Path, httpx_mock) -> None:
@@ -250,8 +263,7 @@ async def test_search_image_tool_search(tmp_path: Path, httpx_mock) -> None:
         )
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 tool_config=ToolConfig(rapidapi_api_key="test-key"),
             )
         )

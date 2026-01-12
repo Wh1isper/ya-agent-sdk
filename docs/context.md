@@ -42,35 +42,45 @@ flowchart TB
 
 ## Basic Usage
 
-### Using create_agent (Recommended)
+### Using create_agent and stream_agent (Recommended)
+
+```python
+from pai_agent_sdk.agents import create_agent, stream_agent
+
+# create_agent returns AgentRuntime (not a context manager)
+runtime = create_agent("openai:gpt-4")
+
+# stream_agent manages runtime lifecycle automatically
+async with stream_agent(runtime, "Hello") as streamer:
+    async for event in streamer:
+        print(event)
+```
+
+### Using create_agent with agent.run
 
 ```python
 from pai_agent_sdk.agents import create_agent
 
-async with create_agent("openai:gpt-4") as runtime:
+runtime = create_agent("openai:gpt-4")
+async with runtime:  # Enter runtime to manage env/ctx/agent
     result = await runtime.agent.run("Hello", deps=runtime.ctx)
     print(result.output)
 ```
 
-### Manual Context Management
+### Manual Context Management (Advanced)
 
 ```python
-from contextlib import AsyncExitStack
 from pai_agent_sdk.environment import LocalEnvironment
 from pai_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
 
-async with AsyncExitStack() as stack:
-    env = await stack.enter_async_context(LocalEnvironment())
-    ctx = await stack.enter_async_context(
-        AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-            resources=env.resources,
-            model_cfg=ModelConfig(context_window=200000),
-            tool_config=ToolConfig(tavily_api_key="..."),
-        )
-    )
-    # Use ctx here
+async with LocalEnvironment() as env:
+    async with AgentContext(
+        env=env,
+        model_cfg=ModelConfig(context_window=200000),
+        tool_config=ToolConfig(tavily_api_key="..."),
+    ) as ctx:
+        # Use ctx here
+        await ctx.file_operator.read_file("test.txt")
 ```
 
 ## Resumable Sessions
@@ -99,9 +109,11 @@ from pai_agent_sdk.context import ResumableState
 with open("session.json") as f:
     state = ResumableState.model_validate_json(f.read())
 
-async with create_agent("openai:gpt-4", state=state) as runtime:
+runtime = create_agent("openai:gpt-4", state=state)
+async with stream_agent(runtime, "Continue our conversation") as streamer:
     # Session is restored
-    result = await runtime.agent.run("Continue our conversation", deps=runtime.ctx)
+    async for event in streamer:
+        print(event)
 ```
 
 ### Chaining with with_state
@@ -187,11 +199,12 @@ class MyContext(AgentContext):
 
 
 # Usage
-async with create_agent(
+runtime = create_agent(
     "openai:gpt-4",
     context_type=MyContext,
     state=loaded_state,  # MyState instance
-) as runtime:
+)
+async with runtime:
     runtime.ctx.conversation_topic = "Python programming"
     result = await runtime.agent.run("Hello", deps=runtime.ctx)
 

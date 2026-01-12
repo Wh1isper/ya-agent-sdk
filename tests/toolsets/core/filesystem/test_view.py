@@ -36,10 +36,10 @@ def test_view_tool_initialization(agent_context: AgentContext) -> None:
     assert tool.name == "view"
 
 
-def test_view_tool_is_available(agent_context: AgentContext) -> None:
+def test_view_tool_is_available(agent_context: AgentContext, mock_run_ctx) -> None:
     """Should be available by default."""
     tool = ViewTool(agent_context)
-    assert tool.is_available() is True
+    assert tool.is_available(mock_run_ctx) is True
 
 
 def test_is_image_file(agent_context: AgentContext) -> None:
@@ -76,7 +76,7 @@ async def test_view_text_file_simple(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         # Create test file
@@ -96,7 +96,7 @@ async def test_view_text_file_with_offset(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         # Create test file with multiple lines
@@ -121,7 +121,7 @@ async def test_view_text_file_with_limit(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         # Create file with many lines
@@ -144,7 +144,7 @@ async def test_view_text_file_line_truncation(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         # Create file with long line
@@ -167,7 +167,7 @@ async def test_view_file_not_found(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
@@ -183,7 +183,7 @@ async def test_view_directory_error(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         # Create a directory
@@ -208,8 +208,7 @@ async def test_view_image_file(tmp_path: Path) -> None:
         # Create context with vision capability
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 model_cfg=ModelConfig(capabilities={ModelCapability.vision}),
             )
         )
@@ -310,8 +309,7 @@ async def test_view_video_file_with_video_model(tmp_path: Path) -> None:
         # Create context with video_understanding capability
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 model_cfg=ModelConfig(capabilities={ModelCapability.video_understanding}),
             )
         )
@@ -339,7 +337,7 @@ async def test_view_video_file_fallback_to_image_understanding(tmp_path: Path) -
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         # Create a minimal video file
@@ -366,7 +364,7 @@ async def test_view_video_fallback_failure(tmp_path: Path) -> None:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
-        ctx = await stack.enter_async_context(AgentContext(file_operator=env.file_operator, shell=env.shell))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
         tool = ViewTool(ctx)
 
         # Create a minimal video file
@@ -397,8 +395,7 @@ async def test_view_webm_video(tmp_path: Path) -> None:
         # Create context with video_understanding capability
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 model_cfg=ModelConfig(capabilities={ModelCapability.video_understanding}),
             )
         )

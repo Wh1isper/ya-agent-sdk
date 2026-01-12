@@ -2,32 +2,9 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-
-import pytest
 
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
 from pai_agent_sdk.events import AgentEvent, CompactCompleteEvent, CompactFailedEvent, CompactStartEvent
-
-
-@pytest.fixture
-def file_operator(tmp_path: Path) -> LocalFileOperator:
-    """Create a LocalFileOperator for testing."""
-    return LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
-
-
-@pytest.fixture
-def shell(tmp_path: Path) -> LocalShell:
-    """Create a LocalShell for testing."""
-    return LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
-
-
-@pytest.fixture
-def agent_context(file_operator: LocalFileOperator, shell: LocalShell) -> AgentContext:
-    """Create an AgentContext for testing."""
-    return AgentContext(file_operator=file_operator, shell=shell)
-
 
 # =============================================================================
 # AgentEvent Tests

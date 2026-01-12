@@ -232,7 +232,7 @@ async def main():
             always_use_new_page=True,
             auto_cleanup_page=True,
         ) as browser_toolset:
-            async with create_agent(
+            runtime = create_agent(
                 model="gemini@google-vertex:gemini-3-pro-preview",
                 model_settings=cast(ModelSettings, GEMINI_THINKING_LEVEL_HIGH),
                 system_prompt=system_prompt,
@@ -257,28 +257,26 @@ async def main():
                     max_retries=3,
                 ),
                 metadata=RunContextMetadata(context_manage_tool="handoff"),
-            ) as agent_runtime:
-                agent = agent_runtime.agent
+            )
 
-                async with stream_agent(
-                    agent,
-                    user_prompt=user_prompt,
-                    ctx=agent_runtime.ctx,
-                    message_history=message_history,
-                ) as stream:
-                    async for event in stream:
-                        print_stream_event(event)
-                    print()
-                    stream.raise_if_exception()
-                    run = stream.run
+            async with stream_agent(
+                runtime,
+                user_prompt=user_prompt,
+                message_history=message_history,
+            ) as stream:
+                async for event in stream:
+                    print_stream_event(event)
+                print()
+                stream.raise_if_exception()
+                run = stream.run
 
-                if run and run.result:
-                    print(run.result.output.summary)
-                    print(f"\nUsage: {run.usage()}")
-                    print(f"Messages so far: {len(run.all_messages())}")
-                    save_message_history(run.all_messages_json())
-                    new_state = agent_runtime.ctx.export_state()
-                    save_state(new_state)
+            if run and run.result:
+                print(run.result.output.summary)
+                print(f"\nUsage: {run.usage()}")
+                print(f"Messages so far: {len(run.all_messages())}")
+                save_message_history(run.all_messages_json())
+                new_state = runtime.ctx.export_state()
+                save_state(new_state)
 
 
 if __name__ == "__main__":

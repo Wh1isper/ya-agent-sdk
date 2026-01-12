@@ -58,9 +58,9 @@ class TodoReadTool(BaseTool):
     name = "to_do_read"
     description = "Read the current session's to-do list."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("TodoReadTool unavailable: file_operator is not configured")
             return False
         return True
@@ -103,9 +103,9 @@ class TodoWriteTool(BaseTool):
     name = "to_do_write"
     description = "Replace the session's to-do list with an updated list."
 
-    def is_available(self) -> bool:
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
-        if self.ctx.file_operator is None:
+        if ctx.deps.file_operator is None:
             logger.debug("TodoWriteTool unavailable: file_operator is not configured")
             return False
         return True
