@@ -109,6 +109,56 @@ async def test_agent_context_async_context_manager(file_operator: LocalFileOpera
     assert ctx.end_at >= ctx.start_at
 
 
+async def test_agent_context_double_enter_raises_error(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should raise RuntimeError when entering an already-entered context."""
+    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    async with ctx:
+        with pytest.raises(RuntimeError, match="has already been entered"):
+            await ctx.__aenter__()
+
+
+async def test_agent_context_can_reenter_after_exit(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should allow re-entering after exiting."""
+    ctx = AgentContext(file_operator=file_operator, shell=shell)
+
+    # First enter/exit cycle
+    async with ctx:
+        assert ctx.start_at is not None
+        first_start = ctx.start_at
+
+    # Second enter/exit cycle should work
+    async with ctx:
+        assert ctx.start_at is not None
+        # start_at should be updated
+        assert ctx.start_at >= first_start
+
+
+async def test_agent_context_concurrent_enter_raises_error(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should raise RuntimeError when concurrently entering the same context."""
+    import asyncio
+
+    ctx = AgentContext(file_operator=file_operator, shell=shell)
+    errors: list[Exception] = []
+    entered_count = 0
+
+    async def try_enter():
+        nonlocal entered_count
+        try:
+            async with ctx:
+                entered_count += 1
+                await asyncio.sleep(0.1)  # Hold the context
+        except RuntimeError as e:
+            errors.append(e)
+
+    # Try to enter concurrently
+    await asyncio.gather(try_enter(), try_enter())
+
+    # One should succeed, one should fail
+    assert entered_count == 1
+    assert len(errors) == 1
+    assert "has already been entered" in str(errors[0])
+
+
 def test_agent_context_deferred_tool_metadata_default(file_operator: LocalFileOperator, shell: LocalShell) -> None:
     """Should have empty metadata by default."""
     ctx = AgentContext(file_operator=file_operator, shell=shell)

@@ -475,3 +475,50 @@ async def test_environment_tmp_routing(tmp_path: Path) -> None:
         # Read from tmp_dir
         content = await env.file_operator.read_file(str(tmp_file))
         assert content == "tmp content"
+
+
+async def test_environment_double_enter_raises_error(tmp_path: Path) -> None:
+    """Should raise RuntimeError when entering an already-entered environment."""
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+    async with env:
+        with pytest.raises(RuntimeError, match="has already been entered"):
+            await env.__aenter__()
+
+
+async def test_environment_can_reenter_after_exit(tmp_path: Path) -> None:
+    """Should allow re-entering after exiting."""
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+
+    # First enter/exit cycle
+    async with env:
+        await env.file_operator.write_file("test1.txt", "hello")
+
+    # Second enter/exit cycle should work
+    async with env:
+        await env.file_operator.write_file("test2.txt", "world")
+
+
+async def test_environment_concurrent_enter_raises_error(tmp_path: Path) -> None:
+    """Should raise RuntimeError when concurrently entering the same environment."""
+    import asyncio
+
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+    errors: list[Exception] = []
+    entered_count = 0
+
+    async def try_enter():
+        nonlocal entered_count
+        try:
+            async with env:
+                entered_count += 1
+                await asyncio.sleep(0.1)  # Hold the context
+        except RuntimeError as e:
+            errors.append(e)
+
+    # Try to enter concurrently
+    await asyncio.gather(try_enter(), try_enter())
+
+    # One should succeed, one should fail
+    assert entered_count == 1
+    assert len(errors) == 1
+    assert "has already been entered" in str(errors[0])

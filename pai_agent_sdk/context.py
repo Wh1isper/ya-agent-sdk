@@ -669,6 +669,12 @@ class AgentContext(BaseModel):
     """
 
     _agent_name: str = "main"
+    _entered: bool = False
+    _enter_lock: asyncio.Lock = None  # type: ignore[assignment]  # Initialized in __init__
+
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+        object.__setattr__(self, "_enter_lock", asyncio.Lock())
 
     @property
     def elapsed_time(self) -> timedelta | None:
@@ -811,6 +817,9 @@ class AgentContext(BaseModel):
         }
         new_ctx = self.model_copy(update=update)
         new_ctx._agent_name = agent_name
+        # Reset re-entry protection for subagent (independent lifecycle)
+        object.__setattr__(new_ctx, "_entered", False)
+        object.__setattr__(new_ctx, "_enter_lock", asyncio.Lock())
         return new_ctx
 
     def get_history_processors(self) -> list:
@@ -888,7 +897,18 @@ class AgentContext(BaseModel):
         await self.agent_stream_queues[self.run_id].put(event)
 
     async def __aenter__(self):
-        """Enter the context and start timing."""
+        """Enter the context and start timing.
+
+        Raises:
+            RuntimeError: If the context has already been entered.
+        """
+        async with self._enter_lock:
+            if self._entered:
+                raise RuntimeError(
+                    "AgentContext has already been entered. "
+                    "Each AgentContext instance can only be entered once at a time."
+                )
+            self._entered = True
         self.start_at = datetime.now()
         self.tool_id_wrapper.clear()
         return self
@@ -896,6 +916,8 @@ class AgentContext(BaseModel):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and record end time."""
         self.end_at = datetime.now()
+        async with self._enter_lock:
+            self._entered = False
 
     def export_state(self, *, include_subagent: bool = True) -> ResumableState:
         """Export resumable session state.

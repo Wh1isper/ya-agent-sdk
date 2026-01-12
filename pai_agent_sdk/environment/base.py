@@ -1162,6 +1162,8 @@ class Environment(ABC):
         self._file_operator: FileOperator | None = None
         self._shell: Shell | None = None
         self._toolsets: list[AbstractToolset[Any]] = []
+        self._entered: bool = False
+        self._enter_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def file_operator(self) -> FileOperator:
@@ -1244,7 +1246,18 @@ class Environment(ABC):
     # --- Fixed lifecycle management ---
 
     async def __aenter__(self) -> "Self":
-        """Enter context and setup resources."""
+        """Enter context and setup resources.
+
+        Raises:
+            RuntimeError: If the environment has already been entered.
+        """
+        async with self._enter_lock:
+            if self._entered:
+                raise RuntimeError(
+                    f"{self.__class__.__name__} has already been entered. "
+                    "Each Environment instance can only be entered once at a time."
+                )
+            self._entered = True
         await self._setup()
         return self
 
@@ -1259,6 +1272,8 @@ class Environment(ABC):
             if self._shell is not None:
                 await self._shell.close()
             await self._resources.close_all()
+            async with self._enter_lock:
+                self._entered = False
 
     async def get_context_instructions(self) -> str:
         """Return combined context instructions from file_operator and shell.
