@@ -679,6 +679,7 @@ class AgentContext(BaseModel):
     _agent_name: str = "main"
     _entered: bool = False
     _enter_lock: asyncio.Lock = None  # type: ignore[assignment]  # Initialized in __init__
+    _stream_queue_enabled: bool = False
 
     def __init__(self, **data: Any) -> None:
         """Initialize AgentContext."""
@@ -916,6 +917,9 @@ class AgentContext(BaseModel):
         allowing consumers to receive custom notifications alongside pydantic-ai
         stream events.
 
+        This method is a no-op if streaming is not enabled. Streaming is
+        automatically enabled when using stream_agent().
+
         Args:
             event: Any event object (AgentEvent subclass, pydantic-ai events, or custom).
 
@@ -925,6 +929,8 @@ class AgentContext(BaseModel):
 
             await ctx.emit_event(CompactStartEvent(event_id="abc123", message_count=50))
         """
+        if not self._stream_queue_enabled:
+            return
         await self.agent_stream_queues[self.run_id].put(event)
 
     async def __aenter__(self):

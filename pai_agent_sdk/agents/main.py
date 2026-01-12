@@ -614,6 +614,9 @@ async def stream_agent(  # noqa: C901
     agent = runtime.agent
     ctx = runtime.ctx
 
+    # Enable streaming for emit_event
+    ctx._stream_queue_enabled = True
+
     output_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     main_done = asyncio.Event()
     poll_done = asyncio.Event()

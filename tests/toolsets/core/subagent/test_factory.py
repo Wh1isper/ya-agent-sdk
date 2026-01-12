@@ -434,8 +434,9 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     # Create the call func
     call_func = create_subagent_call_func(mock_agent)
 
-    # Create context
+    # Create context with stream queue enabled
     ctx = AgentContext()
+    ctx._stream_queue_enabled = True
 
     # Call the function
     output, usage = await call_func(ctx, prompt="test streaming")

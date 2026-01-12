@@ -102,6 +102,9 @@ def test_compact_failed_event_defaults() -> None:
 
 async def test_emit_event_puts_event_in_queue(agent_context: AgentContext) -> None:
     """emit_event should put event into the agent's stream queue."""
+    # Enable stream queue for testing
+    agent_context._stream_queue_enabled = True
+
     event = CompactStartEvent(event_id="test-001", message_count=10)
 
     await agent_context.emit_event(event)
@@ -117,6 +120,9 @@ async def test_emit_event_puts_event_in_queue(agent_context: AgentContext) -> No
 
 async def test_emit_event_multiple_events(agent_context: AgentContext) -> None:
     """emit_event should queue multiple events in order."""
+    # Enable stream queue for testing
+    agent_context._stream_queue_enabled = True
+
     start_event = CompactStartEvent(event_id="test-001", message_count=50)
     complete_event = CompactCompleteEvent(
         event_id="test-001",
@@ -141,6 +147,9 @@ async def test_emit_event_multiple_events(agent_context: AgentContext) -> None:
 
 async def test_emit_event_failed_event(agent_context: AgentContext) -> None:
     """emit_event should handle CompactFailedEvent."""
+    # Enable stream queue for testing
+    agent_context._stream_queue_enabled = True
+
     start_event = CompactStartEvent(event_id="test-fail", message_count=30)
     failed_event = CompactFailedEvent(event_id="test-fail", error="Model unavailable", message_count=30)
 
@@ -156,6 +165,19 @@ async def test_emit_event_failed_event(agent_context: AgentContext) -> None:
     assert isinstance(second, CompactFailedEvent)
     assert second.error == "Model unavailable"
     assert second.message_count == 30
+
+
+async def test_emit_event_noop_when_disabled(agent_context: AgentContext) -> None:
+    """emit_event should be no-op when stream queue is disabled."""
+    # Ensure stream queue is disabled (default)
+    assert not agent_context._stream_queue_enabled
+
+    event = CompactStartEvent(event_id="test-noop", message_count=10)
+    await agent_context.emit_event(event)
+
+    # Queue should remain empty since emit_event is no-op
+    queue = agent_context.agent_stream_queues[agent_context.run_id]
+    assert queue.empty()
 
 
 # =============================================================================
