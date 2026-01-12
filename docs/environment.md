@@ -1,42 +1,29 @@
 # Environment Management
 
-This document describes the Environment architecture in pai-agent-sdk, including resource management, lifecycle hooks, and usage patterns.
+Resource management, lifecycle hooks, and environment implementations.
 
 ## Overview
-
-The Environment system provides:
 
 - **FileOperator**: Abstraction for file system operations
 - **Shell**: Abstraction for command execution
 - **ResourceRegistry**: Type-safe runtime resource management
 - **Lifecycle hooks**: `_setup()` / `_teardown()` pattern for subclasses
 
-## Architecture
-
 ```
 Environment (ABC) - Long-lived, owns resources
-  ├── _resources: ResourceRegistry     # Runtime resources (browser, db, etc.)
-  ├── _file_operator: FileOperator     # File system operations
-  ├── _shell: Shell                    # Command execution
-  ├── _toolsets: list[AbstractToolset] # Optional pydantic-ai toolsets
-  ├── _setup() -> None                 # Subclass hook: initialization
-  ├── _teardown() -> None              # Subclass hook: cleanup
-  ├── __aenter__() -> Self             # Base class: calls _setup()
-  └── __aexit__()                      # Base class: _teardown() + resources.close_all()
+  +-- _resources: ResourceRegistry
+  +-- _file_operator: FileOperator
+  +-- _shell: Shell
+  +-- _toolsets: list[AbstractToolset]
+  +-- _setup() -> None           # Subclass hook: initialization
+  +-- _teardown() -> None        # Subclass hook: cleanup
 
-AgentContext - Short-lived, references resources
-  ├── file_operator: FileOperator      # Reference from Environment
-  ├── shell: Shell                     # Reference from Environment
-  ├── resources: ResourceRegistry      # Reference from Environment
-  └── (session state: run_id, model_cfg, etc.)
+AgentContext - Short-lived, references Environment resources
 ```
 
 ## Basic Usage
 
-### Using create_agent (Recommended)
-
-The simplest way to use environments is through `create_agent`, which handles
-environment setup automatically:
+### Recommended: create_agent
 
 ```python
 from pai_agent_sdk.agents import create_agent, stream_agent
@@ -48,225 +35,100 @@ async with stream_agent(runtime, "Hello") as streamer:
         print(event)
 ```
 
-### Manual Environment Management (Advanced)
+### Manual Environment Management
 
 ```python
 from pai_agent_sdk.environment import LocalEnvironment
 from pai_agent_sdk.context import AgentContext
 
-async with LocalEnvironment(allowed_paths=[path], tmp_base_dir=path) as env:
+async with LocalEnvironment(allowed_paths=[path]) as env:
     async with AgentContext(env=env) as ctx:
-        # Use env and ctx here
         await ctx.file_operator.read_file("test.txt")
-```
-
-### Multiple Sessions Sharing Environment
-
-```python
-async with LocalEnvironment(tmp_base_dir=Path("/tmp")) as env:
-    # First session
-    async with AgentContext(env=env) as ctx1:
-        await ctx1.file_operator.read_file("test.txt")
-
-    # Second session (reuses same environment)
-    async with AgentContext(env=env) as ctx2:
-        ...
-# Resources cleaned up when environment exits
 ```
 
 ## Resource Management
 
-### ResourceRegistry
-
-The `ResourceRegistry` provides type-safe resource management with protocol validation:
+`ResourceRegistry` provides type-safe resource management with protocol validation:
 
 ```python
-from pai_agent_sdk.environment import Resource, ResourceRegistry
-
-# Resource Protocol - must implement close()
-class Browser:
-    async def close(self) -> None:
-        await self._driver.quit()
-
 # Register resources
-registry = ResourceRegistry()
-browser = await Browser.create()
-registry.set("browser", browser)  # Validates Resource protocol
+registry.set("browser", browser)  # Must implement Resource protocol (close())
 
 # Access resources
-browser = registry.get("browser")                    # Returns Resource | None
-browser = registry.get_typed("browser", Browser)     # Type-safe access
+browser = registry.get_typed("browser", Browser)
 
 # Cleanup (called automatically by Environment)
 await registry.close_all()
 ```
 
-### Using Resources in Tools
-
-```python
-async def screenshot_tool(ctx: RunContext[AgentContext], url: str) -> str:
-    browser = ctx.deps.resources.get_typed("browser", Browser)
-    if browser is None:
-        return "Browser not available"
-    return await browser.screenshot(url)
-```
+> Full API: `pai_agent_sdk/environment/base.py`
 
 ## Creating Custom Environments
 
-### The \_setup/\_teardown Pattern
-
-Subclasses implement hooks instead of `__aenter__`/`__aexit__`:
+Implement `_setup` and `_teardown` hooks instead of overriding `__aenter__`/`__aexit__`:
 
 ```python
-from pai_agent_sdk.environment import Environment, FileOperator, Shell
-
 class MyEnvironment(Environment):
-    def __init__(self, config: MyConfig):
-        super().__init__()  # Initialize ResourceRegistry
-        self._config = config
-
     async def _setup(self) -> None:
-        """Initialize resources. Called by __aenter__."""
-        # Required: set up file_operator and shell
         self._file_operator = LocalFileOperator(...)
         self._shell = LocalShell(...)
-
-        # Optional: register custom resources
-        db = await Database.connect(self._config.db_url)
+        db = await Database.connect(...)
         self._resources.set("db", db)
 
     async def _teardown(self) -> None:
-        """Clean up resources. Called by __aexit__.
-
-        Note: resources.close_all() is called automatically after this.
-        """
-        # Clean up environment-specific resources
-        if self._tmp_dir:
-            self._tmp_dir.cleanup()
-
         self._file_operator = None
         self._shell = None
+        # resources.close_all() called automatically after this
 ```
 
-### Why Not Override __aenter__/__aexit__?
+**Why hooks instead of __aenter__/__aexit__?**
 
-1. **Safe inheritance**: No need to remember `await super().__aenter__()`
-2. **Consistent cleanup**: Base class ensures `resources.close_all()` is always called
-3. **Clear contract**: `_setup` for init, `_teardown` for env-specific cleanup
+- Safe inheritance without `await super().__aenter__()` concerns
+- Base class ensures `resources.close_all()` is always called
 
 ## Available Implementations
 
 ### LocalEnvironment
 
-Local filesystem and shell execution:
-
 ```python
-from pai_agent_sdk.environment import LocalEnvironment
-
-async with LocalEnvironment(
+LocalEnvironment(
     allowed_paths=[Path("/workspace")],
     default_path=Path("/workspace"),
     shell_timeout=30.0,
-    tmp_base_dir=Path("/tmp"),
-    enable_tmp_dir=True,
-) as env:
-    ...
+)
 ```
 
 ### DockerEnvironment
 
-Docker container execution with local file mounting:
-
 ```python
-from pai_agent_sdk.environment import DockerEnvironment
-
-async with DockerEnvironment(
+DockerEnvironment(
     mount_dir=Path("/home/user/project"),
     container_workdir="/workspace",
-    image="python:3.11",              # Create new container
-    # container_id="abc123",          # Or use existing container
+    image="python:3.11",
     cleanup_on_exit=True,
-) as env:
-    # Files at mount_dir appear at container_workdir
-    await env.file_operator.write_file("test.py", "print('hello')")
-    # Shell runs inside container
-    code, stdout, stderr = await env.shell.execute("python test.py")
+)
 ```
-
-## Best Practices
-
-1. **Use AsyncExitStack** for dependent context managers
-2. **Call `super().__init__()`** in custom Environment subclasses
-3. **Register resources** that need cleanup via `_resources.set()`
-4. **Use `get_typed()`** for type-safe resource access in tools
-5. **Don't override `__aenter__`/`__aexit__`** - use `_setup`/`_teardown` instead
 
 ## Environment Toolsets
 
-Environments can optionally provide pydantic-ai toolsets via the `toolsets` property. Subclasses populate `self._toolsets` in `_setup()` to expose environment-specific tools.
-
-### Creating Environment with Toolsets
+Environments can provide pydantic-ai toolsets via the `toolsets` property:
 
 ```python
-from pydantic_ai.toolsets import FunctionToolset
-from pai_agent_sdk.environment import Environment
-
 class ContainerEnvironment(Environment):
     async def _setup(self) -> None:
-        # Set up file_operator and shell...
-        self._file_operator = ...
-        self._shell = ...
-
-        # Create environment-specific toolset
+        # ... setup file_operator, shell ...
         container_toolset = FunctionToolset()
 
         @container_toolset.tool
         def get_container_status() -> str:
-            """Get the status of the container."""
             return "running"
 
-        @container_toolset.tool
-        def get_resource_usage() -> dict:
-            """Get container resource usage."""
-            return {"cpu": "10%", "memory": "256MB"}
-
         self._toolsets = [container_toolset]
-
-    async def _teardown(self) -> None:
-        self._file_operator = None
-        self._shell = None
-        self._toolsets = []
 ```
 
-### Using Environment Toolsets with Agent
+`create_agent` automatically includes `env.toolsets`.
 
-```python
-from pai_agent_sdk.agents import create_agent, stream_agent
+## See Also
 
-# create_agent automatically includes env.toolsets
-async with ContainerEnvironment() as env:
-    runtime = create_agent(
-        "openai:gpt-4",
-        env=env,  # Pass custom environment
-    )
-    async with stream_agent(runtime, "Check container status") as streamer:
-        async for event in streamer:
-            print(event)
-```
-
-For manual setup:
-
-```python
-async with ContainerEnvironment() as env:
-    async with AgentContext(env=env) as ctx:
-        # Inject environment toolsets into agent
-        agent = Agent(
-            "openai:gpt-4",
-            toolsets=[
-                core_toolset,        # Your core tools
-                *env.toolsets,       # Environment-specific tools
-            ],
-        )
-```
-
-The `toolsets` property returns an empty list by default, so environments without custom tools work seamlessly.
+- [context.md](context.md) - AgentContext and session management
+- [toolset.md](toolset.md) - Toolset architecture
