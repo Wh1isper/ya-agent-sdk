@@ -8,10 +8,7 @@ and design style analysis.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 from urllib.parse import urlparse
-from xml.dom.minidom import parseString
-from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent, ImageUrl, ModelSettings
@@ -21,10 +18,6 @@ from pydantic_ai.usage import RunUsage
 from pai_agent_sdk._config import AgentSettings
 from pai_agent_sdk._logger import logger
 from pai_agent_sdk.agents.models import infer_model
-
-if TYPE_CHECKING:
-    pass
-
 
 # =============================================================================
 # Exceptions
@@ -86,29 +79,23 @@ IMAGE_MEDIA_TYPES: dict[str, str] = {
 
 AGENT_NAME = "image-understanding"
 
-DEFAULT_IMAGE_ANALYSIS_INSTRUCTION = """<instruction>
-  <task>Analyze this image and provide a structured description.</task>
+DEFAULT_IMAGE_ANALYSIS_INSTRUCTION = """Look at this image carefully and describe everything you observe in as much detail as possible.
 
-  <focus-areas>
-    <area>Identify all visual elements and their relationships</area>
-    <area>Extract ALL visible text (OCR)</area>
-    <area>Analyze design style if applicable (colors, typography, layout)</area>
-    <area>Provide CSS reference for web/UI designs</area>
-  </focus-areas>
-</instruction>"""
+Include:
+- All visual elements, objects, people, UI components, text, etc.
+- Extract ALL visible text (OCR)
+- Design style if applicable (colors, typography, layout)
+- For web/UI designs, provide CSS code snippets for key visual styles
+- The context, purpose, or intent behind what's shown
+- Any notable details or observations
+
+Be thorough and comprehensive. The more detail, the better.
+"""
 
 
 # =============================================================================
 # Utilities
 # =============================================================================
-
-
-def _xml_to_string(element: Element) -> str:
-    """Convert XML element to formatted string."""
-    rough_string = tostring(element, encoding="unicode")
-    dom = parseString(rough_string)  # noqa: S318
-    lines = dom.toprettyxml(indent="  ").split("\n")[1:]
-    return "\n".join(line for line in lines if line.strip())
 
 
 def guess_media_type(source: str | Path) -> str:
@@ -180,13 +167,7 @@ def _load_system_prompt() -> str:
     """Load system prompt from the prompts directory."""
     prompt_path = Path(__file__).parent / "prompts" / "image_understanding.md"
     if prompt_path.exists():
-        content = prompt_path.read_text()
-        # Extract XML content from markdown code block
-        if "```xml" in content:
-            start = content.find("```xml") + 6
-            end = content.find("```", start)
-            return content[start:end].strip()
-        return content
+        return prompt_path.read_text()
     return ""
 
 
@@ -196,74 +177,9 @@ def _load_system_prompt() -> str:
 
 
 class ImageDescription(BaseModel):
-    """Structured image description for downstream AI agents.
+    """Minimal constraint - let the model freely describe the image."""
 
-    This model provides comprehensive image content analysis including
-    visual elements, text content, and optional design style analysis.
-    """
-
-    # Required fields
-    summary: str = Field(description="Brief description of the image (2-4 sentences)")
-    visual_elements: list[str] = Field(description="Key visual elements: objects, people, UI components, shapes, etc.")
-    text_content: list[str] = Field(
-        description="All visible text in the image (OCR): labels, buttons, titles, captions"
-    )
-
-    # Optional fields - agent decides based on image content
-    style_analysis: str | None = Field(
-        default=None,
-        description="Design style analysis: colors, typography, layout, visual effects, aesthetic",
-    )
-    css_reference: str | None = Field(
-        default=None,
-        description="CSS code snippet for web/UI designs: color variables, fonts, effects",
-    )
-    context: str | None = Field(
-        default=None,
-        description="Inferred purpose or source of the image",
-    )
-    key_observations: list[str] | None = Field(
-        default=None,
-        description="Notable details, issues, or important elements",
-    )
-
-    def to_xml(self) -> str:
-        """Serialize the image description to XML format."""
-        root = Element("image-description")
-
-        # Required fields
-        SubElement(root, "summary").text = self.summary
-
-        visual_elem = SubElement(root, "visual-elements")
-        for item in self.visual_elements:
-            SubElement(visual_elem, "element").text = item
-
-        text_elem = SubElement(root, "text-content")
-        for item in self.text_content:
-            SubElement(text_elem, "text").text = item
-
-        # Optional fields
-        if self.style_analysis:
-            SubElement(root, "style-analysis").text = self.style_analysis
-
-        if self.css_reference:
-            SubElement(root, "css-reference").text = self.css_reference
-
-        if self.context:
-            SubElement(root, "context").text = self.context
-
-        if self.key_observations:
-            obs_elem = SubElement(root, "key-observations")
-            for obs in self.key_observations:
-                SubElement(obs_elem, "observation").text = obs
-
-        return _xml_to_string(root)
-
-    def __repr__(self) -> str:
-        return self.to_xml()
-
-    def __str__(self) -> str:
-        return self.to_xml()
+    description: str = Field(description="Detailed, comprehensive description of everything in the image")
 
 
 # =============================================================================
@@ -356,4 +272,4 @@ async def get_image_description(
         logger.error(f"Error analyzing image: {e}")
         raise ImageAnalysisError(f"Failed to analyze image: {e}", cause=e) from e
 
-    return result.output.to_xml(), result.usage()
+    return result.output.description, result.usage()

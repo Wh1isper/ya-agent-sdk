@@ -7,23 +7,16 @@ screen recordings and general video content, returning structured descriptions.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
-from xml.dom.minidom import parseString
-from xml.etree.ElementTree import Element, SubElement, tostring
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent, ModelSettings, VideoUrl
 from pydantic_ai.models import Model
+from pydantic_ai.usage import RunUsage
 
 from pai_agent_sdk._config import AgentSettings
 from pai_agent_sdk._logger import logger
 from pai_agent_sdk.agents.models import infer_model
-
-if TYPE_CHECKING:
-    from typing import Self
-
-from pydantic_ai.usage import RunUsage
 
 
 class VideoError(Exception):
@@ -80,34 +73,22 @@ VIDEO_MEDIA_TYPES: dict[str, str] = {
 
 AGENT_NAME = "video-understanding"
 
-DEFAULT_VIDEO_ANALYSIS_INSTRUCTION = """<instruction>
-  <task>Analyze this video and provide a structured description based on its content type.</task>
+DEFAULT_VIDEO_ANALYSIS_INSTRUCTION = """Watch this video carefully and describe everything you observe in as much detail as possible.
 
-  <for-screen-recordings>
-    <focus>Capture the complete sequence of user actions</focus>
-    <focus>Note the applications, interfaces, and UI elements involved</focus>
-    <focus>Describe each step in chronological order</focus>
-  </for-screen-recordings>
+Include:
+- What is happening in the video from start to end
+- All visual elements, scenes, objects, people, UI components, text, etc.
+- Any audio content: speech (transcribe it), music, sound effects
+- The context, purpose, or intent behind what's shown
+- Any notable details, transitions, or key moments
 
-  <for-general-content>
-    <focus>Provide a comprehensive summary of the content</focus>
-    <focus>Identify key visual elements, scenes, and themes</focus>
-    <focus>Note any important context or information presented</focus>
-  </for-general-content>
-</instruction>"""
+Be thorough and comprehensive. The more detail, the better.
+"""
 
 
 # =============================================================================
 # Utilities
 # =============================================================================
-
-
-def _xml_to_string(element: Element) -> str:
-    """Convert XML element to formatted string."""
-    rough_string = tostring(element, encoding="unicode")
-    dom = parseString(rough_string)  # noqa: S318
-    lines = dom.toprettyxml(indent="  ").split("\n")[1:]
-    return "\n".join(line for line in lines if line.strip())
 
 
 def guess_media_type(source: str | Path) -> str:
@@ -179,13 +160,7 @@ def _load_system_prompt() -> str:
     """Load system prompt from the prompts directory."""
     prompt_path = Path(__file__).parent / "prompts" / "video_understanding.md"
     if prompt_path.exists():
-        content = prompt_path.read_text()
-        # Extract XML content from markdown code block
-        if "```xml" in content:
-            start = content.find("```xml") + 6
-            end = content.find("```", start)
-            return content[start:end].strip()
-        return content
+        return prompt_path.read_text()
     return ""
 
 
@@ -195,151 +170,9 @@ def _load_system_prompt() -> str:
 
 
 class VideoDescription(BaseModel):
-    """Unified video description for downstream AI agents.
+    """Minimal constraint - let the model freely describe the video."""
 
-    This model provides comprehensive video content analysis that works for both
-    screen recordings and general video content. The model determines the video
-    type and fills in the appropriate fields.
-    """
-
-    # Video classification
-    video_type: Literal["screen_recording", "general"] = Field(
-        description="Type of video: 'screen_recording' for UI/software demos, 'general' for other content"
-    )
-
-    # Common fields (always required)
-    summary: str = Field(description="Brief description of what the video shows (2-4 sentences)")
-    visual_elements: list[str] = Field(
-        description="Key visual elements: UI components, objects, people, locations, etc."
-    )
-    text_content: list[str] = Field(
-        description="All visible text in the video: UI labels, buttons, overlays, captions, titles"
-    )
-
-    # Screen recording specific (fill when video_type='screen_recording')
-    operation_sequence: list[str] | None = Field(
-        default=None,
-        description="Step-by-step user actions in chronological order",
-    )
-    application_context: str | None = Field(
-        default=None,
-        description="Application name, browser, OS, or environment being used",
-    )
-
-    # General video specific (fill when video_type='general')
-    scenes: list[str] | None = Field(
-        default=None,
-        description="Distinct scenes or segments in the video",
-    )
-    themes: list[str] | None = Field(
-        default=None,
-        description="Identified themes, topics, or messages",
-    )
-
-    # Audio content (fill when audio is present)
-    audio_transcription: str | None = Field(
-        default=None,
-        description="Transcription of all spoken words in the video",
-    )
-    audio_description: str | None = Field(
-        default=None,
-        description="Description of non-speech audio: music, sound effects, ambient sounds",
-    )
-
-    # Meta
-    user_intent: str | None = Field(
-        default=None,
-        description="Inferred goal or purpose of the video/user actions",
-    )
-    key_observations: list[str] | None = Field(
-        default=None,
-        description="Notable details: errors, warnings, loading states, unusual behaviors",
-    )
-
-    @model_validator(mode="after")
-    def validate_screen_recording_fields(self) -> Self:
-        """Ensure screen_recording type has required fields for reproducibility."""
-        if self.video_type == "screen_recording":
-            if not self.operation_sequence:
-                raise ValueError(
-                    "operation_sequence is required for screen_recording videos "
-                    "to ensure interaction traces remain complete"
-                )
-            if not self.application_context:
-                raise ValueError(
-                    "application_context is required for screen_recording videos "
-                    "to identify the application environment"
-                )
-        return self
-
-    def to_xml(self) -> str:
-        """Serialize the video description to XML format."""
-        root = Element("video-description")
-        root.set("type", self.video_type)
-
-        self._build_common_elements(root)
-        self._build_type_specific_elements(root)
-        self._build_audio_elements(root)
-        self._build_meta_elements(root)
-
-        return _xml_to_string(root)
-
-    def _build_common_elements(self, root: Element) -> None:
-        """Build common XML elements (summary, visual_elements, text_content)."""
-        SubElement(root, "summary").text = self.summary
-
-        visual_elem = SubElement(root, "visual-elements")
-        for item in self.visual_elements:
-            SubElement(visual_elem, "element").text = item
-
-        text_elem = SubElement(root, "text-content")
-        for item in self.text_content:
-            SubElement(text_elem, "text").text = item
-
-    def _build_type_specific_elements(self, root: Element) -> None:
-        """Build video type specific XML elements."""
-        if self.video_type == "screen_recording":
-            if self.application_context:
-                SubElement(root, "application-context").text = self.application_context
-            if self.operation_sequence:
-                ops_elem = SubElement(root, "operation-sequence")
-                for i, step in enumerate(self.operation_sequence, 1):
-                    step_elem = SubElement(ops_elem, "step")
-                    step_elem.set("index", str(i))
-                    step_elem.text = step
-        elif self.video_type == "general":
-            if self.scenes:
-                scenes_elem = SubElement(root, "scenes")
-                for i, scene in enumerate(self.scenes, 1):
-                    scene_elem = SubElement(scenes_elem, "scene")
-                    scene_elem.set("index", str(i))
-                    scene_elem.text = scene
-            if self.themes:
-                themes_elem = SubElement(root, "themes")
-                for theme in self.themes:
-                    SubElement(themes_elem, "theme").text = theme
-
-    def _build_audio_elements(self, root: Element) -> None:
-        """Build audio-related XML elements."""
-        if self.audio_transcription:
-            SubElement(root, "audio-transcription").text = self.audio_transcription
-        if self.audio_description:
-            SubElement(root, "audio-description").text = self.audio_description
-
-    def _build_meta_elements(self, root: Element) -> None:
-        """Build meta XML elements (user_intent, key_observations)."""
-        if self.user_intent:
-            SubElement(root, "user-intent").text = self.user_intent
-        if self.key_observations:
-            obs_elem = SubElement(root, "key-observations")
-            for obs in self.key_observations:
-                SubElement(obs_elem, "observation").text = obs
-
-    def __repr__(self) -> str:
-        return self.to_xml()
-
-    def __str__(self) -> str:
-        return self.to_xml()
+    description: str = Field(description="Detailed, comprehensive description of everything in the video")
 
 
 def get_video_understanding_agent(
@@ -429,4 +262,4 @@ async def get_video_description(
         logger.error(f"Error analyzing video: {e}")
         raise VideoAnalysisError(f"Failed to analyze video: {e}", cause=e) from e
 
-    return result.output.to_xml(), result.usage()
+    return result.output.description, result.usage()
