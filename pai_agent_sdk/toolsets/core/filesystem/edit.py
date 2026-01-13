@@ -4,12 +4,12 @@ from functools import cache
 from pathlib import Path
 from typing import Annotated, cast
 
+from agent_environment import FileOperator
 from pydantic import Field
 from pydantic_ai import RunContext
 
 from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 from pai_agent_sdk.toolsets.core.filesystem._types import EditItem
 

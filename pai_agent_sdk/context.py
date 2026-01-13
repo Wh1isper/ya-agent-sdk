@@ -75,6 +75,7 @@ from uuid import uuid4
 from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
+from agent_environment import Environment, FileOperator, ResourceRegistry, Shell
 from pydantic import BaseModel, Field
 from pydantic_ai import (
     DeferredToolRequests,
@@ -100,7 +101,6 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from pai_agent_sdk.environment.base import Environment, FileOperator, ResourceRegistry, Shell
 from pai_agent_sdk.events import AgentEvent
 from pai_agent_sdk.utils import get_latest_request_usage
 

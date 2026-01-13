@@ -12,7 +12,8 @@ import pytest
 # Skip all tests if docker is not installed
 pytest.importorskip("docker")
 
-from pai_agent_sdk.environment import ShellExecutionError
+from agent_environment import ShellExecutionError
+
 from pai_agent_sdk.environment.docker import DockerEnvironment, DockerShell
 
 # --- DockerShell Tests ---

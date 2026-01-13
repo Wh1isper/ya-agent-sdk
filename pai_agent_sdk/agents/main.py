@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
+from agent_environment import Environment
 from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai._agent_graph import CallToolsNode, HistoryProcessor, ModelRequestNode
 from pydantic_ai.messages import ModelMessage, UserContent
@@ -35,7 +36,6 @@ from pai_agent_sdk.context import (
     StreamEvent,
     ToolConfig,
 )
-from pai_agent_sdk.environment.base import Environment
 from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.filters.environment_instructions import create_environment_instructions_filter
 from pai_agent_sdk.filters.system_prompt import create_system_prompt_filter

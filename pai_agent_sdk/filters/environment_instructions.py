@@ -30,10 +30,9 @@ Example::
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from agent_environment import Environment
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.tools import RunContext
-
-from pai_agent_sdk.environment.base import Environment
 
 
 def create_environment_instructions_filter(

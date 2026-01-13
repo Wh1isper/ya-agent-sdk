@@ -12,21 +12,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
-
-from pai_agent_sdk.environment.base import (
+from agent_environment import (
     Environment,
+    FileOperationError,
     FileOperator,
     FileStat,
+    PathNotAllowedError,
     ResourceFactory,
     ResourceRegistryState,
     Shell,
-    TmpFileOperator,
-)
-from pai_agent_sdk.environment.exceptions import (
-    FileOperationError,
-    PathNotAllowedError,
     ShellExecutionError,
     ShellTimeoutError,
+    TmpFileOperator,
 )
 
 if TYPE_CHECKING:

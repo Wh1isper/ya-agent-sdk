@@ -5,33 +5,6 @@ environment operations, allowing different backends (local, remote, S3, SSH, etc
 to be used interchangeably.
 """
 
-from pai_agent_sdk.environment.base import (
-    DEFAULT_INSTRUCTIONS_MAX_DEPTH,
-    DEFAULT_INSTRUCTIONS_SKIP_DIRS,
-    BaseResource,
-    Environment,
-    FileOperator,
-    InstructableResource,
-    LocalTmpFileOperator,
-    Resource,
-    ResourceEntry,
-    ResourceFactory,
-    ResourceRegistry,
-    ResourceRegistryState,
-    ResumableResource,
-    Shell,
-    TmpFileOperator,
-    generate_filetree,
-)
-from pai_agent_sdk.environment.exceptions import (
-    EnvironmentError as EnvironmentError,  # noqa: A004
-)
-from pai_agent_sdk.environment.exceptions import (
-    FileOperationError,
-    PathNotAllowedError,
-    ShellExecutionError,
-    ShellTimeoutError,
-)
 from pai_agent_sdk.environment.local import (
     LocalEnvironment,
     LocalFileOperator,
@@ -50,30 +23,9 @@ except ImportError:
     _DOCKER_AVAILABLE = False
 
 __all__ = [
-    "DEFAULT_INSTRUCTIONS_MAX_DEPTH",
-    "DEFAULT_INSTRUCTIONS_SKIP_DIRS",
-    "BaseResource",
-    "Environment",
-    "EnvironmentError",
-    "FileOperationError",
-    "FileOperator",
-    "InstructableResource",
     "LocalEnvironment",
     "LocalFileOperator",
     "LocalShell",
-    "LocalTmpFileOperator",
-    "PathNotAllowedError",
-    "Resource",
-    "ResourceEntry",
-    "ResourceFactory",
-    "ResourceRegistry",
-    "ResourceRegistryState",
-    "ResumableResource",
-    "Shell",
-    "ShellExecutionError",
-    "ShellTimeoutError",
-    "TmpFileOperator",
-    "generate_filetree",
 ]
 
 # Add Docker exports if available

@@ -2,6 +2,8 @@
 
 Resource management, lifecycle hooks, and environment implementations.
 
+> **Note**: Base abstractions (`Environment`, `FileOperator`, `Shell`, `ResourceRegistry`, etc.) are defined in the [agent-environment](https://github.com/youware-labs/agent-environment) protocol package. This SDK provides concrete implementations (`LocalEnvironment`, `DockerEnvironment`).
+
 ## Overview
 
 - **FileOperator**: Abstraction for file system operations
@@ -61,7 +63,7 @@ browser = registry.get_typed("browser", Browser)
 await registry.close_all()
 ```
 
-> Full API: `pai_agent_sdk/environment/base.py`
+> Full API: [agent-environment](https://github.com/youware-labs/agent-environment)
 
 ## Creating Custom Environments
 
@@ -137,7 +139,7 @@ Resources can be exported and restored across process restarts using factories.
 `BaseResource` is a convenience abstract class with async `close()` and default export/restore:
 
 ```python
-from pai_agent_sdk.environment import BaseResource
+from agent_environment import BaseResource
 
 class BrowserSession(BaseResource):
     def __init__(self, browser: Browser):
@@ -155,9 +157,16 @@ class BrowserSession(BaseResource):
 
 ### Using Factories
 
+Factory functions receive the `Environment` instance, allowing access to `file_operator`, `shell`, `resources`, and `tmp_dir`:
+
 ```python
-async def create_browser() -> BrowserSession:
-    return BrowserSession(await Browser.launch())
+from agent_environment import Environment
+
+async def create_browser(env: Environment) -> BrowserSession:
+    return BrowserSession(
+        file_operator=env.file_operator,
+        tmp_dir=env.tmp_dir,
+    )
 
 # First run: create and export
 async with LocalEnvironment() as env:

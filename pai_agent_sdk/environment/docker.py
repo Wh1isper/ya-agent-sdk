@@ -19,12 +19,16 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pai_agent_sdk.environment.base import Environment, ResourceFactory, ResourceRegistryState, Shell
-from pai_agent_sdk.environment.exceptions import (
+from agent_environment import (
+    Environment,
     EnvironmentNotEnteredError,
+    ResourceFactory,
+    ResourceRegistryState,
+    Shell,
     ShellExecutionError,
     ShellTimeoutError,
 )
+
 from pai_agent_sdk.environment.local import LocalFileOperator
 
 if TYPE_CHECKING:

@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 from uuid import uuid4
 
+from agent_environment import FileOperator
 from pydantic import Field
 from pydantic_ai import RunContext
 
 from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 from pai_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, safe_request, verify_url
 

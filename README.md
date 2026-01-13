@@ -12,7 +12,7 @@ Production-ready SDK for building AI agents with [Pydantic AI](https://ai.pydant
 
 ## Key Features
 
-- **Environment-based Architecture**: Inject file operations, shell access, and resumable resources via `Environment` for clean separation of concerns
+- **Environment-based Architecture**: Inject file operations, shell access, and resumable resources via `Environment` for clean separation of concerns(check [agent-environment](https://github.com/youware-labs/agent-environment))
 - **Resumable Sessions**: Export and restore `AgentContext` state for multi-turn conversations across restarts
 - **Hierarchical Agents**: Delegate specialized tasks to subagents with automatic tool inheritance
 - **Human-in-the-Loop**: Built-in approval workflows for sensitive tool operations

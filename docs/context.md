@@ -147,3 +147,4 @@ Used automatically by the SDK streaming infrastructure.
 
 - [environment.md](environment.md) - FileOperator, Shell, and ResourceRegistry
 - [toolset.md](toolset.md) - Creating and using tools
+- [agent-environment](https://github.com/youware-labs/agent-environment) - Base protocol definitions

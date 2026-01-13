@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Annotated, Literal, cast
 
 import pydantic
+from agent_environment import FileOperator
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
 from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.base import FileOperator
 from pai_agent_sdk.toolsets.core.base import BaseTool
 
 logger = get_logger(__name__)

@@ -3,15 +3,13 @@
 from pathlib import Path
 
 import pytest
+from agent_environment import FileOperationError, PathNotAllowedError, ShellTimeoutError
 from inline_snapshot import snapshot
 
 from pai_agent_sdk.environment import (
-    FileOperationError,
     LocalEnvironment,
     LocalFileOperator,
     LocalShell,
-    PathNotAllowedError,
-    ShellTimeoutError,
 )
 
 # --- LocalFileOperator Tests ---
