@@ -68,4 +68,4 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: youware-labs/pai-agent-sdk
-        if: ${{ matrix.python-version == '3.13' && matrix.extras == 'docker' }}
+        if: ${{ matrix.python-version == '3.13' && matrix.extras == 'all' }}
