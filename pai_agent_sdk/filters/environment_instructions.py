@@ -16,10 +16,7 @@ Example::
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment())
         ctx = await stack.enter_async_context(
-            AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
-            )
+            AgentContext(env=env)
         )
         env_filter = create_environment_instructions_filter(env)
         agent = Agent(

@@ -17,8 +17,7 @@ Example::
         env = await stack.enter_async_context(LocalEnvironment())
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 model_cfg=ModelConfig(
                     capabilities={ModelCapability.vision},  # Model supports vision
                 ),

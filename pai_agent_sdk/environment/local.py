@@ -480,11 +480,7 @@ class LocalEnvironment(Environment):
                 LocalEnvironment(allowed_paths=[Path("/workspace")])
             )
             ctx = await stack.enter_async_context(
-                AgentContext(
-                    file_operator=env.file_operator,
-                    shell=env.shell,
-                    resources=env.resources,
-                )
+                AgentContext(env=env)
             )
             await ctx.file_operator.read_file("test.txt")
         # Resources cleaned up when stack exits

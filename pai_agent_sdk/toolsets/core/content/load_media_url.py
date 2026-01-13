@@ -13,13 +13,7 @@ Example::
     from pai_agent_sdk.toolsets.core.base import Toolset
     from pai_agent_sdk.toolsets.core.content.load_media_url import LoadMediaUrlTool
 
-    async with AgentContext(
-        file_operator=env.file_operator,
-        shell=env.shell,
-        model_cfg=ModelConfig(
-            capabilities={ModelCapability.vision},
-        ),
-    ) as ctx:
+    async with AgentContext(env=env) as ctx:
         toolset = Toolset(ctx, tools=[LoadMediaUrlTool])
         # Agent can now load multimedia URLs and get appropriate content types
 """

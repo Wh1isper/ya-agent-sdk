@@ -552,8 +552,7 @@ class RunContextMetadata(TypedDict, total=False):
                 env = await stack.enter_async_context(LocalEnvironment())
                 ctx = await stack.enter_async_context(
                     AgentContext(
-                        file_operator=env.file_operator,
-                        shell=env.shell,
+                        env=env,
                         model_cfg=ModelConfig(
                             context_window=200000,
                             proactive_context_management_threshold=0.5,

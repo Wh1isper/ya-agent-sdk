@@ -16,8 +16,7 @@ Example::
         env = await stack.enter_async_context(LocalEnvironment())
         ctx = await stack.enter_async_context(
             AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
+                env=env,
                 model_cfg=ModelConfig(
                     max_images=20,  # Limit to 20 images (default)
                     max_videos=1,   # Limit to 1 video (default)

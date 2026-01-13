@@ -28,11 +28,7 @@ Example:
             LocalEnvironment(tmp_base_dir=Path("/tmp"))
         )
         ctx = await stack.enter_async_context(
-            AgentContext(
-                file_operator=env.file_operator,
-                shell=env.shell,
-                resources=env.resources,
-            )
+            AgentContext(env=env)
         )
         # Handle request
         ...
@@ -44,19 +40,11 @@ Example:
     ```python
     async with LocalEnvironment(tmp_base_dir=Path("/tmp")) as env:
         # First session
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-            resources=env.resources,
-        ) as ctx1:
+        async with AgentContext(env=env) as ctx1:
             ...
 
         # Second session (reuses same environment)
-        async with AgentContext(
-            file_operator=env.file_operator,
-            shell=env.shell,
-            resources=env.resources,
-        ) as ctx2:
+        async with AgentContext(env=env) as ctx2:
             ...
     # tmp_dir and resources cleaned up when environment exits
     ```
@@ -1143,11 +1131,7 @@ class Environment(ABC):
                 LocalEnvironment(allowed_paths=[Path("/workspace")])
             )
             ctx = await stack.enter_async_context(
-                AgentContext(
-                    file_operator=env.file_operator,
-                    shell=env.shell,
-                    resources=env.resources,
-                )
+                AgentContext(env=env)
             )
             # Optionally add environment toolsets to agent
             agent = Agent(..., toolsets=[*core_toolsets, *env.toolsets])
