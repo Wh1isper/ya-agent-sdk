@@ -12,8 +12,9 @@ Export and restore resource states across process restarts via async factories.
 - **ResourceRegistryState**: Serializable state container
 
 ```mermaid
-flowchart TB
-    subgraph "First Run"
+flowchart LR
+    subgraph first["First Run"]
+        direction TB
         A1[Environment.__aenter__] --> A2[_setup]
         A2 --> A3[register_factory]
         A3 --> A4[get_or_create]
@@ -22,13 +23,16 @@ flowchart TB
         A6 --> A7[Save JSON]
     end
 
-    subgraph "Subsequent Run"
+    subgraph second["Subsequent Run"]
+        direction TB
         B1[Load JSON] --> B2[Environment with state+factories]
         B2 --> B3[__aenter__]
         B3 --> B4[_setup]
         B4 --> B5[restore_all]
         B5 --> B6[Resource ready]
     end
+
+    first --> second
 ```
 
 ## Using BaseResource (Recommended)
