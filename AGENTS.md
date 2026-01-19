@@ -1,6 +1,6 @@
 ## Project Overview
 
-**pai-agent-sdk** is a Python SDK for building production-ready AI agents with [Pydantic AI](https://ai.pydantic.dev/).
+**pai-agent-sdk** is an application framework for building AI agents with [Pydantic AI](https://ai.pydantic.dev/). It provides environment abstractions, session management, and hierarchical agent patterns.
 
 - **Language**: Python 3.11+
 - **Package Manager**: uv
@@ -8,10 +8,14 @@
 
 ## Key Features
 
-- **Environment-based Architecture**: Inject file operations, shell access, and resources via `Environment` for clean separation of concerns
+- **Environment-based Architecture**: Inject file operations, shell access, and resources via `Environment` for clean separation of concerns (LocalEnvironment, DockerEnvironment)
 - **Resumable Sessions**: Export/restore `AgentContext` state for multi-turn conversations across restarts
-- **Hierarchical Agents**: Subagent system with task delegation and tool inheritance
-- **Human-in-the-Loop**: Built-in approval workflows for sensitive operations
+- **Hierarchical Agents**: Subagent system with task delegation, tool inheritance, and markdown-based configuration
+- **Skills System**: Markdown-based instruction files with hot reload and progressive loading
+- **Human-in-the-Loop**: Built-in approval workflows for sensitive tool operations
+- **Toolset Architecture**: Extensible tool system with pre/post hooks for logging, validation, and error handling
+- **Resumable Resources**: Export and restore resource states (like browser sessions) across process restarts
+- **Browser Automation**: Docker-based headless Chrome sandbox for safe browser automation
 - **Streaming Support**: Real-time streaming of agent responses and tool executions
 
 ## Project Structure
