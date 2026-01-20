@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -103,6 +103,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pai_agent_sdk.events import AgentEvent
 from pai_agent_sdk.utils import get_latest_request_usage
+
+# =============================================================================
+# Type Aliases
+# =============================================================================
+
+# Hook function type for converting media data to URL.
+# Can be sync or async. Returns URL string or None to use default behavior.
+MediaToUrlHook = Callable[["RunContext[AgentContext]", bytes, str], "Awaitable[str | None] | str | None"]
 
 # =============================================================================
 # Extra Usage Record
@@ -495,6 +503,41 @@ class ToolConfig(BaseModel):
     # Web scraping API key
     firecrawl_api_key: str | None = Field(default_factory=lambda: _get_tool_settings().firecrawl_api_key)
     """Firecrawl API key for web scraping."""
+
+    # Media to URL conversion hooks
+    image_to_url_hook: MediaToUrlHook | None = None
+    """Hook to convert image data to URL.
+
+    Args:
+        ctx: RunContext with AgentContext
+        image_data: Raw image bytes
+        media_type: MIME type (e.g., 'image/png')
+
+    Returns:
+        Publicly accessible URL string, or None to use default BinaryContent behavior.
+        Can be sync or async function.
+
+    Note:
+        The returned URL must be publicly accessible by the LLM provider.
+        Empty strings are treated as None (fallback to default behavior).
+    """
+
+    video_to_url_hook: MediaToUrlHook | None = None
+    """Hook to convert video data to URL.
+
+    Args:
+        ctx: RunContext with AgentContext
+        video_data: Raw video bytes
+        media_type: MIME type (e.g., 'video/mp4')
+
+    Returns:
+        Publicly accessible URL string, or None to use default BinaryContent behavior.
+        Can be sync or async function.
+
+    Note:
+        The returned URL must be publicly accessible by the LLM provider.
+        Empty strings are treated as None (fallback to default behavior).
+    """
 
 
 class ModelConfig(BaseModel):
