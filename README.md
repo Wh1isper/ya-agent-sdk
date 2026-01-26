@@ -109,6 +109,7 @@ Copy `examples/.env.example` to `examples/.env` and configure your API keys.
 - [Streaming & Hooks](docs/streaming.md) - Real-time streaming, lifecycle hooks, event handling
 - [Toolset Architecture](docs/toolset.md) - Create tools, use hooks, handle errors, extend Toolset
 - [Subagent System](docs/subagent.md) - Hierarchical agents, builtin presets, markdown configuration
+- [Message Bus](docs/message-bus.md) - Inter-agent communication, user steering during execution
 - [Skills System](docs/skills.md) - Markdown-based skills, hot reload, pre-scan hooks
 - [Custom Environments](docs/environment.md) - Environment lifecycle, resource management
 - [Resumable Resources](docs/resumable-resources.md) - Export and restore resource states across restarts
