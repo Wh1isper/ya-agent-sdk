@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inline_snapshot import snapshot
+
 from pai_agent_sdk.presets import (
     ModelSettingsPreset,
     get_model_settings,
@@ -50,8 +52,7 @@ def test_get_builtin_subagent_configs() -> None:
     assert isinstance(configs, dict)
 
     # Should have known builtin subagents
-    expected_names = {"debugger", "code-reviewer", "explorer", "searcher"}
-    assert set(configs.keys()) == expected_names
+    assert list(configs.keys()) == snapshot(["code-reviewer", "explorer", "debugger", "executor", "searcher"])
 
     # All values should be SubagentConfig
     for name, config in configs.items():
@@ -219,7 +220,7 @@ def test_load_builtin_subagent_tools_with_preset_model_settings(agent_context) -
         model_settings="anthropic_medium",
     )
 
-    assert len(tools) == 4
+    assert len(tools) == snapshot(5)
     for tool_cls in tools:
         assert issubclass(tool_cls, BaseTool)
 

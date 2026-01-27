@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from paintress_cli import __version__
+from paintress_cli import __version__  # pyright: ignore[reportAttributeAccessIssue]
 from paintress_cli.config import ConfigManager, PaintressConfig
 from paintress_cli.logging import LOG_FILE_NAME, configure_logging, get_logger
 
