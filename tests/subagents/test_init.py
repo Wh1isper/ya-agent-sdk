@@ -52,7 +52,7 @@ def test_get_builtin_subagent_configs() -> None:
     assert isinstance(configs, dict)
 
     # Should have known builtin subagents
-    assert list(configs.keys()) == snapshot(["code-reviewer", "explorer", "debugger", "executor", "searcher"])
+    assert sorted(configs.keys()) == snapshot(["code-reviewer", "debugger", "executor", "explorer", "searcher"])
 
     # All values should be SubagentConfig
     for name, config in configs.items():

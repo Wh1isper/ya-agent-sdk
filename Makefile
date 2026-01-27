@@ -42,7 +42,7 @@ test-cli: ## Test cli
 .PHONY: test-fix
 test-fix: ## Test and auto-fix inline snapshots
 	@echo "🚀 Testing code with inline-snapshot fix: Running pytest"
-	@uv run python -m pytest -vv --inline-snapshot=fix
+	@uv run python -m pytest tests -vv --inline-snapshot=fix
 
 .PHONY: build
 build: clean-build ## Build wheel file for pai-agent-sdk only
