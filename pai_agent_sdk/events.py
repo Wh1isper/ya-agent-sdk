@@ -9,6 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pydantic_ai import DeferredToolResults
+    from pydantic_ai.messages import UserContent
 
 
 @dataclass
@@ -195,3 +202,166 @@ class MessageReceivedEvent(AgentEvent):
     """
 
     messages: list[BusMessageInfo] = field(default_factory=list)
+
+
+# =============================================================================
+# Agent Lifecycle Events
+# =============================================================================
+
+
+@dataclass
+class AgentExecutionStartEvent(AgentEvent):
+    """Emitted when agent execution begins (before first node).
+
+    This event marks the start of an agent run. Use it for:
+    - Initializing progress indicators
+    - Starting execution timers
+    - Logging agent invocations
+
+    Attributes:
+        user_prompt: The user prompt passed to the agent (str or multimodal content).
+        deferred_tool_results: Results from deferred tool calls, if any.
+        message_history_count: Number of messages in provided history.
+    """
+
+    user_prompt: str | Sequence[UserContent] | None = None
+    deferred_tool_results: DeferredToolResults | None = None
+    message_history_count: int = 0
+
+
+@dataclass
+class AgentExecutionCompleteEvent(AgentEvent):
+    """Emitted when agent execution completes successfully.
+
+    This event marks successful completion of an agent run. Use it for:
+    - Finalizing progress indicators
+    - Recording execution metrics
+    - Logging completion status
+
+    Attributes:
+        total_loops: Total number of model request loops executed.
+        total_duration_seconds: Total execution time.
+        final_message_count: Number of messages after execution.
+    """
+
+    total_loops: int = 0
+    total_duration_seconds: float = 0.0
+    final_message_count: int = 0
+
+
+@dataclass
+class AgentExecutionFailedEvent(AgentEvent):
+    """Emitted when agent execution fails with an error.
+
+    This event is emitted when an exception occurs during agent execution.
+    Use it for error tracking and user notification.
+
+    Attributes:
+        error: Error message describing the failure.
+        error_type: Type name of the exception (e.g., "UsageLimitExceeded").
+        total_loops: Number of loops completed before failure.
+        total_duration_seconds: Time elapsed before failure.
+    """
+
+    error: str = ""
+    error_type: str = ""
+    total_loops: int = 0
+    total_duration_seconds: float = 0.0
+
+
+# =============================================================================
+# Model Request Events
+# =============================================================================
+
+
+@dataclass
+class ModelRequestStartEvent(AgentEvent):
+    """Emitted when agent starts a model request (thinking phase).
+
+    A model request sends the current conversation to the LLM and waits for a response.
+    This marks the beginning of a "loop" - one model request plus optional tool executions.
+
+    Use this event for:
+    - Displaying "Thinking..." status in UI
+    - Tracking loop iterations (e.g., "Loop 3/10")
+    - Implementing client-side loop limits
+
+    Attributes:
+        loop_index: Zero-based loop iteration number.
+        message_count: Number of messages in history at request start.
+    """
+
+    loop_index: int = 0
+    message_count: int = 0
+
+
+@dataclass
+class ModelRequestCompleteEvent(AgentEvent):
+    """Emitted when a model request completes (response received).
+
+    This marks the end of the thinking phase. If the model requested tool calls,
+    a ToolCallsStartEvent will follow.
+
+    Attributes:
+        loop_index: Current loop iteration number.
+        duration_seconds: Time spent waiting for model response.
+    """
+
+    loop_index: int = 0
+    duration_seconds: float = 0.0
+
+
+# =============================================================================
+# Tool Calls Events
+# =============================================================================
+
+
+@dataclass
+class ToolCallsStartEvent(AgentEvent):
+    """Emitted when agent starts executing tool calls.
+
+    This marks the transition from thinking to tool execution phase.
+    Tool calls are executed based on the model's response.
+
+    Use this event for:
+    - Displaying "Running tools..." status in UI
+    - Tracking tool execution phases
+
+    Attributes:
+        loop_index: Current loop iteration number.
+    """
+
+    loop_index: int = 0
+
+
+@dataclass
+class ToolCallsCompleteEvent(AgentEvent):
+    """Emitted when tool calls execution completes.
+
+    After this event, the agent will either:
+    - Start another model request (ModelRequestStartEvent)
+    - Complete execution (AgentExecutionCompleteEvent)
+
+    Attributes:
+        loop_index: Current loop iteration number.
+        duration_seconds: Time spent executing tools.
+    """
+
+    loop_index: int = 0
+    duration_seconds: float = 0.0
+
+
+# =============================================================================
+# Type Aliases
+# =============================================================================
+
+# Union of all lifecycle events for type hints
+LifecycleEvent = (
+    AgentExecutionStartEvent
+    | AgentExecutionCompleteEvent
+    | AgentExecutionFailedEvent
+    | ModelRequestStartEvent
+    | ModelRequestCompleteEvent
+    | ToolCallsStartEvent
+    | ToolCallsCompleteEvent
+)
