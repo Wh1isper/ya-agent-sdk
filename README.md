@@ -1,4 +1,4 @@
-# ya-agent-sdk
+# Ya Agent SDK
 
 > Yet Another Agent SDK
 
