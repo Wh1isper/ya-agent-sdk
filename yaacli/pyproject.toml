@@ -1,0 +1,52 @@
+[project]
+name = "yaacli"
+dynamic = ["version", "dependencies"]
+description = "TUI reference implementation for ya-agent-sdk"
+authors = [{ name = "wh1isper", email = "jizhongsheng957@gmail.com" }]
+readme = "README.md"
+keywords = ["python", "cli", "tui", "ai-agent"]
+requires-python = ">=3.11,<3.14"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Repository = "https://github.com/wh1isper/ya-agent-sdk"
+
+[project.scripts]
+yaacli = "yaacli.cli:cli"
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+bump = true
+
+[tool.hatch.metadata.hooks.uv-dynamic-versioning]
+dependencies = [
+    "ya-agent-sdk[all]=={{ version }}",
+    "click>=8.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "pydantic-ai",
+    "y-agent-environment>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["yaacli"]
+
+[tool.uv.sources]
+ya-agent-sdk = { workspace = true }

@@ -193,7 +193,7 @@ def load_unified_subagent_tool_from_dir(
     Example::
 
         DelegateTool = load_unified_subagent_tool_from_dir(
-            "~/.yaai/subagents",
+            "~/.yaacli/subagents",
             parent_toolset,
             model="anthropic:claude-sonnet-4",
         )

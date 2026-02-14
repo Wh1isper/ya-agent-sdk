@@ -13,9 +13,9 @@ lint: ## Lint the code
 
 .PHONY: cli
 cli: ## Run the CLI
-	@echo "🚀 Running yaai CLI"
+	@echo "🚀 Running yaacli CLI"
 	@./scripts/sync-skills.sh
-	@rm -f yaai.log && uv run yaai -v
+	@rm -f yaacli.log && uv run yaacli -v
 
 .PHONY: check
 check: ## Run code quality tools.
@@ -36,7 +36,7 @@ test: ## Test the code with pytest
 .PHONY: test-cli
 test-cli: ## Test cli
 	@echo "🚀 Testing code: Running pytest"
-	@uv run python -m pytest yaai/tests -n auto -vv --inline-snapshot=disable
+	@uv run python -m pytest yaacli/tests -n auto -vv --inline-snapshot=disable
 
 
 .PHONY: test-fix

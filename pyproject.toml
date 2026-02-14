@@ -90,14 +90,14 @@ packages = ["ya_agent_sdk"]
 
 # uv workspace configuration
 [tool.uv.workspace]
-members = ["yaai"]
+members = ["yaacli"]
 
 [tool.uv.sources]
 ya-agent-sdk = { workspace = true }
 
 [tool.pyright]
-include = ["ya_agent_sdk", "yaai"]
-exclude = ["yaai/yaai/skills", "yaai/tests", "tests", "examples", "skills/examples"]
+include = ["ya_agent_sdk", "yaacli"]
+exclude = ["yaacli/yaacli/skills", "yaacli/tests", "tests", "examples", "skills/examples"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 reportTypedDictNotRequiredAccess = false
@@ -156,8 +156,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"yaai/yaai/*" = ["C901", "SIM108"]
-"yaai/tests/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904"]
+"yaacli/yaacli/*" = ["C901", "SIM108"]
+"yaacli/tests/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904"]
 "tests/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904"]
 "skills/examples/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904", "E402"]
 "examples/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904", "E402"]
@@ -170,7 +170,7 @@ preview = true
 # anthropic is a transitive dependency from pydantic-ai-slim
 # ya-agent-sdk is self-reference in optional dependencies
 ignore = ["DEP001", "DEP002"]
-per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["ya-agent-sdk"], DEP003 = ["anthropic", "yaai", "botocore"], DEP004 = ["pytest"]}
+per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["ya-agent-sdk"], DEP003 = ["anthropic", "yaacli", "botocore"], DEP004 = ["pytest"]}
 
 [tool.coverage.report]
 skip_empty = true

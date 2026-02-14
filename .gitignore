@@ -145,4 +145,4 @@ dev/
 ya_agent_sdk/sandbox/shell/templates/public
 
 # Sync automaticlly
-yaai/yaai/skills/building-agents
+yaacli/yaacli/skills/building-agents

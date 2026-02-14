@@ -41,7 +41,7 @@ pip install ya-agent-sdk[document]  # Document processing (pymupdf, markitdown)
 This repository contains:
 
 - **ya_agent_sdk/** - Core SDK with environment abstraction, toolsets, and session management
-- **yaai/** - Reference CLI implementation with TUI for interactive agent sessions
+- **yaacli/** - Reference CLI implementation with TUI for interactive agent sessions
 - **examples/** - Code examples demonstrating SDK features
 - **docs/** - Documentation for SDK architecture and APIs
 
@@ -61,17 +61,17 @@ async with stream_agent(runtime, "Hello") as streamer:
         print(event)
 ```
 
-### Using YAAI CLI
+### Using YAACLI CLI
 
-For a ready-to-use terminal interface, try [yaai](yaai/README.md) - a TUI reference implementation built on top of ya-agent-sdk:
+For a ready-to-use terminal interface, try [yaacli](yaacli/README.md) - a TUI reference implementation built on top of ya-agent-sdk:
 
 ```bash
 # Run directly with uvx (no installation needed)
-uvx yaai
+uvx yaacli
 
 # Or install globally
-uv tool install yaai
-pip install yaai
+uv tool install yaacli
+pip install yaacli
 ```
 
 Features:

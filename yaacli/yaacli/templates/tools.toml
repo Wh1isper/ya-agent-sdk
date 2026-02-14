@@ -1,0 +1,7 @@
+# YAACLI CLI Project Configuration
+# Location: .yaacli/tools.toml
+
+[tools]
+# Tools requiring user approval before execution
+# Example: need_approval = ["shell", "replace"]
+need_approval = []

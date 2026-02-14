@@ -50,7 +50,7 @@ jobs:
 
       - name: Create SKILL.zip
         run: |
-          cp -r yaai/yaai/skills/building-agents ya-agent-sdk
+          cp -r yaacli/yaacli/skills/building-agents ya-agent-sdk
           zip -r SKILL.zip ya-agent-sdk
 
       - name: Upload SKILL.zip to release

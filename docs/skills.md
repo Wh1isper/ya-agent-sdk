@@ -99,7 +99,7 @@ Skills are discovered from `skills/` subdirectory in each of FileOperator's `all
 # Typical setup with local environment
 allowed_paths:
   - /home/user/project          # Project directory
-  - /home/user/.yaai            # Config directory
+  - /home/user/.yaacli            # Config directory
 
 # Skills will be scanned from:
 /home/user/project/skills/
@@ -108,7 +108,7 @@ allowed_paths:
     reference.md
   skill-two/
     SKILL.md
-/home/user/.yaai/skills/
+/home/user/.yaacli/skills/
   global-skill/
     SKILL.md
 ```
@@ -284,7 +284,7 @@ Skills metadata is injected into the system prompt in XML format:
 <available-skills>
 <skill name="code-review">
   <description>Review code for quality, security, and best practices.</description>
-  <path>/home/user/.yaai/skills/code-review</path>
+  <path>/home/user/.yaacli/skills/code-review</path>
 </skill>
 <skill name="debugging">
   <description>Debug errors and test failures systematically.</description>

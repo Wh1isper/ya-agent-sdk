@@ -13,7 +13,7 @@ resolution-markers = [
 [manifest]
 members = [
     "ya-agent-sdk",
-    "yaai",
+    "yaacli",
 ]
 
 [[package]]
@@ -4242,8 +4242,8 @@ dev = [
 ]
 
 [[package]]
-name = "yaai"
-source = { editable = "yaai" }
+name = "yaacli"
+source = { editable = "yaacli" }
 dependencies = [
     { name = "click" },
     { name = "pydantic" },

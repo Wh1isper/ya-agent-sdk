@@ -61,11 +61,11 @@ class SkillToolset(BaseToolset[AgentContext]):
     Example:
         FileOperator with allowed_paths:
             - /home/user/project (default_path)
-            - /home/user/.yaai
+            - /home/user/.yaacli
 
         Will scan for skills in:
             - /home/user/project/skills/
-            - /home/user/.yaai/skills/
+            - /home/user/.yaacli/skills/
 
     Usage::
 
