@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.web.fetch module."""
+"""Tests for ya_agent_sdk.toolsets.core.web.fetch module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 from inline_snapshot import snapshot
 from pydantic_ai import BinaryContent, RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.web.fetch import FetchTool
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.web.fetch import FetchTool
 
 
 def test_fetch_tool_attributes() -> None:
@@ -99,7 +99,7 @@ async def test_fetch_tool_get_image(tmp_path: Path, httpx_mock) -> None:
 
 async def test_fetch_tool_forbidden_url(tmp_path: Path) -> None:
     """Should return error for forbidden URLs when verification enabled."""
-    from pai_agent_sdk.context import ToolConfig
+    from ya_agent_sdk.context import ToolConfig
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(

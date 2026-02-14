@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.base module."""
+"""Tests for ya_agent_sdk.toolsets.base module."""
 
 from typing import Any
 from unittest.mock import MagicMock
@@ -8,14 +8,14 @@ from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.tools import ToolApproved, ToolDenied
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.base import (
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.base import (
     BaseTool,
     BaseToolset,
     InstructableToolset,
     UserInputPreprocessResult,
 )
-from pai_agent_sdk.toolsets.core.base import (
+from ya_agent_sdk.toolsets.core.base import (
     GlobalHooks,
     HookableToolsetTool,
     Toolset,
@@ -465,7 +465,7 @@ def test_toolset_with_subagents_empty_configs(agent_context: AgentContext) -> No
 
 def test_toolset_with_subagents_creates_new_toolset(agent_context: AgentContext) -> None:
     """Should create new toolset with subagent tools added."""
-    from pai_agent_sdk.subagents import SubagentConfig
+    from ya_agent_sdk.subagents import SubagentConfig
 
     toolset = Toolset(tools=[DummyTool])
     config = SubagentConfig(
@@ -482,7 +482,7 @@ def test_toolset_with_subagents_creates_new_toolset(agent_context: AgentContext)
 
 def test_toolset_with_subagents_preserves_hooks(agent_context: AgentContext) -> None:
     """Should preserve hooks in new toolset."""
-    from pai_agent_sdk.subagents import SubagentConfig
+    from ya_agent_sdk.subagents import SubagentConfig
 
     async def pre_hook(ctx: Any, args: dict, metadata: dict) -> dict:
         return args
@@ -506,7 +506,7 @@ def test_toolset_with_subagents_preserves_hooks(agent_context: AgentContext) -> 
 
 def test_toolset_with_subagents_multiple_configs(agent_context: AgentContext) -> None:
     """Should handle multiple subagent configs."""
-    from pai_agent_sdk.subagents import SubagentConfig
+    from ya_agent_sdk.subagents import SubagentConfig
 
     toolset = Toolset(tools=[DummyTool])
     configs = [

@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.web.search module."""
+"""Tests for ya_agent_sdk.toolsets.core.web.search module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -8,9 +8,9 @@ import httpx
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext, ToolConfig
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.web.search import (
+from ya_agent_sdk.context import AgentContext, ToolConfig
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.web.search import (
     SearchImageTool,
     SearchStockImageTool,
     SearchTool,

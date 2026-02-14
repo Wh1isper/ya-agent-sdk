@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.skills import SkillToolset
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.skills import SkillToolset
 
 
 @pytest.fixture

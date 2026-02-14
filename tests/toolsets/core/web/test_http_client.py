@@ -1,9 +1,9 @@
-"""Tests for pai_agent_sdk.toolsets.core.web._http_client module."""
+"""Tests for ya_agent_sdk.toolsets.core.web._http_client module."""
 
 import pytest
 from inline_snapshot import snapshot
 
-from pai_agent_sdk.toolsets.core.web._http_client import (
+from ya_agent_sdk.toolsets.core.web._http_client import (
     ForbiddenUrlError,
     _get_http_client,
     check_url_accessible,

@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.filesystem.view module."""
+"""Tests for ya_agent_sdk.toolsets.core.filesystem.view module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 from inline_snapshot import snapshot
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.filesystem.view import (
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.filesystem.view import (
     IMAGE_EXTENSIONS,
     MEDIA_TYPE_MAP,
     SUPPORTED_IMAGE_MEDIA_TYPES,
@@ -198,7 +198,7 @@ async def test_view_directory_error(tmp_path: Path) -> None:
 
 async def test_view_image_file(tmp_path: Path) -> None:
     """Should return ToolReturn with BinaryContent for image files."""
-    from pai_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelCapability, ModelConfig
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -299,7 +299,7 @@ async def test_view_image_file(tmp_path: Path) -> None:
 
 async def test_view_video_file_with_video_model(tmp_path: Path) -> None:
     """Should return video content when model supports video."""
-    from pai_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelCapability, ModelConfig
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -385,7 +385,7 @@ async def test_view_video_fallback_failure(tmp_path: Path) -> None:
 
 async def test_view_webm_video(tmp_path: Path) -> None:
     """Should handle webm video with correct media type."""
-    from pai_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelCapability, ModelConfig
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(

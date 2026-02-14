@@ -5,11 +5,11 @@ on:
     branches:
       - main
     paths:
-      - "paintress_cli/**"
+      - "yaai/**"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
-      - "paintress_cli/**"
+      - "yaai/**"
 
 jobs:
   cli-tests:
@@ -34,4 +34,4 @@ jobs:
           extras: "all"
 
       - name: Run CLI tests
-        run: uv run python -m pytest paintress_cli/tests -n auto
+        run: uv run python -m pytest yaai/tests -n auto

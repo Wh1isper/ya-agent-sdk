@@ -1,6 +1,6 @@
 """Tests for URL helper utilities."""
 
-from pai_agent_sdk.toolsets.core.content._url_helper import (
+from ya_agent_sdk.toolsets.core.content._url_helper import (
     ContentCategory,
     get_category_from_extension,
     get_category_from_mime_type,
@@ -129,7 +129,7 @@ class TestGetCategoryFromExtension:
 
 async def test_detect_content_category_fallback() -> None:
     """Should fallback to extension when HEAD request fails."""
-    from pai_agent_sdk.toolsets.core.content._url_helper import detect_content_category
+    from ya_agent_sdk.toolsets.core.content._url_helper import detect_content_category
 
     # Use a non-existent URL that will fail HEAD request
     result = await detect_content_category("https://nonexistent-domain-12345.com/image.png", timeout=1.0)

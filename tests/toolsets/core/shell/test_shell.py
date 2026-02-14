@@ -6,10 +6,10 @@ from unittest.mock import MagicMock
 
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.shell import ShellTool
-from pai_agent_sdk.toolsets.core.shell.shell import OUTPUT_TRUNCATE_LIMIT
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.shell import ShellTool
+from ya_agent_sdk.toolsets.core.shell.shell import OUTPUT_TRUNCATE_LIMIT
 
 
 async def test_shell_tool_basic_attributes(agent_context: AgentContext) -> None:

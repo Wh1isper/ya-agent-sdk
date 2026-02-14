@@ -1,6 +1,6 @@
 # Documentation
 
-This directory contains detailed documentation for pai-agent-sdk.
+This directory contains detailed documentation for ya-agent-sdk.
 
 ## Contents
 
@@ -16,10 +16,10 @@ This directory contains detailed documentation for pai-agent-sdk.
 | [toolset.md](toolset.md)                         | Toolset architecture, creating tools, hooks, error handling                |
 | [subagent.md](subagent.md)                       | Subagent system, configuration, builtin presets, hierarchical agents       |
 
-> **Note**: Base environment abstractions are defined in [agent-environment](https://github.com/youware-labs/agent-environment).
+> **Note**: Base environment abstractions are defined in [agent-environment](https://github.com/wh1isper/agent-environment).
 
 ## Quick Links
 
 - [Main README](../README.md)
 - [Contributing Guide](../CONTRIBUTING.md)
-- [API Reference](../pai_agent_sdk/)
+- [API Reference](../ya_agent_sdk/)

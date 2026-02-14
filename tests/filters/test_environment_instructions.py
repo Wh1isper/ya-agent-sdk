@@ -1,12 +1,12 @@
-"""Tests for pai_agent_sdk.filters.environment_instructions module."""
+"""Tests for ya_agent_sdk.filters.environment_instructions module."""
 
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolReturnPart, UserPromptPart
 
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.filters.environment_instructions import create_environment_instructions_filter
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.filters.environment_instructions import create_environment_instructions_filter
 
 
 async def test_create_environment_instructions_filter_returns_callable(tmp_path: Path) -> None:

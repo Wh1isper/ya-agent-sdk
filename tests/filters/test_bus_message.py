@@ -6,8 +6,8 @@ import pytest
 from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-from pai_agent_sdk.context import BusMessage, MessageBus
-from pai_agent_sdk.filters.bus_message import inject_bus_messages
+from ya_agent_sdk.context import BusMessage, MessageBus
+from ya_agent_sdk.filters.bus_message import inject_bus_messages
 
 
 def create_mock_ctx(agent_id: str = "main", message_bus: MessageBus | None = None) -> RunContext:

@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.web.download module."""
+"""Tests for ya_agent_sdk.toolsets.core.web.download module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.web.download import DownloadTool
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.web.download import DownloadTool
 
 
 def test_download_tool_attributes() -> None:
@@ -87,7 +87,7 @@ async def test_download_tool_multiple_files(tmp_path: Path, httpx_mock) -> None:
 
 async def test_download_tool_forbidden_url(tmp_path: Path) -> None:
     """Should return error for forbidden URLs when verification enabled."""
-    from pai_agent_sdk.context import ToolConfig
+    from ya_agent_sdk.context import ToolConfig
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(

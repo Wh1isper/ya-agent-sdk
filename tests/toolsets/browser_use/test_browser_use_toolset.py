@@ -1,6 +1,6 @@
 from cdp_use.client import CDPClient
 
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset, get_cdp_websocket_url
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset, get_cdp_websocket_url
 
 
 def test_get_cdp_websocket_url_with_ws_url():

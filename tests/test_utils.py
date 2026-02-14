@@ -1,11 +1,11 @@
-"""Tests for pai_agent_sdk.utils module."""
+"""Tests for ya_agent_sdk.utils module."""
 
 import io
 
 from PIL import Image
 from pydantic_ai.messages import BinaryContent, ModelResponse, ToolCallPart
 
-from pai_agent_sdk.utils import (
+from ya_agent_sdk.utils import (
     _split_image_data_sync,
     get_available_port,
     get_tool_name_from_id,

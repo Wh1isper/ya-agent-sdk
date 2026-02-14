@@ -3,9 +3,9 @@
 import pytest
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets import Instruction, Toolset
-from pai_agent_sdk.toolsets.base import BaseTool, resolve_instruction
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets import Instruction, Toolset
+from ya_agent_sdk.toolsets.base import BaseTool, resolve_instruction
 
 
 class ToolWithStringInstruction(BaseTool):

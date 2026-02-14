@@ -31,7 +31,7 @@ flowchart TB
 ### Sending Messages
 
 ```python
-from pai_agent_sdk.context import AgentContext, BusMessage
+from ya_agent_sdk.context import AgentContext, BusMessage
 
 async with AgentContext(env=env) as ctx:
     # Targeted message to main agent
@@ -82,7 +82,7 @@ async with AgentContext(env=env) as ctx:  # subscribes "main"
 ### Manual Bus Operations
 
 ```python
-from pai_agent_sdk.context import MessageBus, BusMessage
+from ya_agent_sdk.context import MessageBus, BusMessage
 
 bus = MessageBus(maxlen=100)
 
@@ -165,8 +165,8 @@ prevention within a session), the `maxlen` window (default: 500) is sufficient.
 Send real-time guidance to agents during execution:
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
-from pai_agent_sdk.context import BusMessage
+from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.context import BusMessage
 
 runtime = create_agent("openai:gpt-4o")
 
@@ -220,7 +220,7 @@ The `inject_bus_messages` filter automatically injects pending messages:
 `MessageReceivedEvent` is emitted when messages are injected:
 
 ```python
-from pai_agent_sdk.events import MessageReceivedEvent
+from ya_agent_sdk.events import MessageReceivedEvent
 
 async for event in streamer:
     if isinstance(event.event, MessageReceivedEvent):

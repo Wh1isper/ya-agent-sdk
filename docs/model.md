@@ -8,7 +8,7 @@ This SDK builds on pydantic-ai. There are two ways to configure models:
 ## Quick Start
 
 ```python
-from pai_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.models import infer_model
 
 # Option 1: Native pydantic-ai format (direct provider connection)
 model = infer_model("openai:gpt-4o")
@@ -154,7 +154,7 @@ model = infer_model(
 
 ```python
 from pydantic_ai import Agent
-from pai_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.models import infer_model
 
 agent = Agent(
     model=infer_model("mygateway@openai:gpt-4o"),

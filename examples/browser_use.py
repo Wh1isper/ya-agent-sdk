@@ -1,7 +1,7 @@
 """
-Browser Use Example for pai-agent-sdk
+Browser Use Example for ya-agent-sdk
 
-This example demonstrates browser automation capabilities using the pai-agent-sdk.
+This example demonstrates browser automation capabilities using the ya-agent-sdk.
 It uses DockerBrowserSandbox to provide a headless Chrome browser and BrowserUseToolset
 for browser automation tools.
 
@@ -13,7 +13,7 @@ Usage:
     uv run python browser_use.py
 
     # With debug logging enabled:
-    PAI_AGENT_LOG_LEVEL=DEBUG uv run python browser_use.py
+    YA_AGENT_LOG_LEVEL=DEBUG uv run python browser_use.py
 
 Key features demonstrated:
 - Docker-based headless Chrome browser sandbox
@@ -51,8 +51,8 @@ from pydantic_ai.messages import (
     TextPartDelta,
 )
 
-from pai_agent_sdk.agents.main import create_agent, stream_agent
-from pai_agent_sdk.context import (
+from ya_agent_sdk.agents.main import create_agent, stream_agent
+from ya_agent_sdk.context import (
     ModelCapability,
     ModelConfig,
     ResumableState,
@@ -60,10 +60,10 @@ from pai_agent_sdk.context import (
     StreamEvent,
     ToolConfig,
 )
-from pai_agent_sdk.presets import GEMINI_THINKING_LEVEL_HIGH
-from pai_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox
-from pai_agent_sdk.toolsets.browser_use import BrowserUseToolset
-from pai_agent_sdk.toolsets.core.context import tools as context_tools
+from ya_agent_sdk.presets import GEMINI_THINKING_LEVEL_HIGH
+from ya_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox
+from ya_agent_sdk.toolsets.browser_use import BrowserUseToolset
+from ya_agent_sdk.toolsets.core.context import tools as context_tools
 
 # =============================================================================
 # Prompt Configuration

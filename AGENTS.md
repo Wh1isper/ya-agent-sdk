@@ -1,6 +1,6 @@
 ## Project Overview
 
-**pai-agent-sdk** is an application framework for building AI agents with [Pydantic AI](https://ai.pydantic.dev/). It provides environment abstractions, session management, and hierarchical agent patterns.
+**ya-agent-sdk** is an application framework for building AI agents with [Pydantic AI](https://ai.pydantic.dev/). It provides environment abstractions, session management, and hierarchical agent patterns.
 
 - **Language**: Python 3.11+
 - **Package Manager**: uv
@@ -21,7 +21,7 @@
 ## Project Structure
 
 ```
-pai_agent_sdk/
+ya_agent_sdk/
 ├── agents/                # Agent implementations
 │   ├── main.py            # create_agent, stream_agent entry points
 │   ├── compact.py         # Compact agent variant
@@ -236,8 +236,8 @@ See [docs/model.md](docs/model.md) for details:
 
 See [docs/logging.md](docs/logging.md) for details:
 
-- Global log level: `PAI_AGENT_LOG_LEVEL`
-- Module-specific log levels: `PAI_AGENT_LOG_LEVEL_<MODULE_PATH>`
+- Global log level: `YA_AGENT_LOG_LEVEL`
+- Module-specific log levels: `YA_AGENT_LOG_LEVEL_<MODULE_PATH>`
 - Use `get_logger(__name__)` to obtain logger
 
 ## Examples
@@ -251,7 +251,7 @@ See [docs/logging.md](docs/logging.md) for details:
 ## Quick Start
 
 ```python
-from pai_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents import create_agent
 
 async with create_agent("openai:gpt-4o") as runtime:
     result = await runtime.agent.run("Hello", deps=runtime.ctx)

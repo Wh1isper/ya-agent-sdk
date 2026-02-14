@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pai_agent_sdk.toolsets.skills.config import (
+from ya_agent_sdk.toolsets.skills.config import (
     load_skill_from_file,
     load_skills_from_dir,
     parse_skill_markdown,

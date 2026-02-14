@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.context module."""
+"""Tests for ya_agent_sdk.context module."""
 
 import re
 from contextlib import AsyncExitStack
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from pai_agent_sdk.context import AgentContext, TaskStatus
-from pai_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.context import AgentContext, TaskStatus
+from ya_agent_sdk.environment.local import LocalEnvironment
 
 
 @pytest.fixture
@@ -234,7 +234,7 @@ async def test_local_environment_tmp_dir(tmp_path: Path) -> None:
         assert env.tmp_dir is not None
         assert env.tmp_dir.exists()
         assert env.tmp_dir.is_dir()
-        assert "pai_agent_" in env.tmp_dir.name
+        assert "ya_agent_" in env.tmp_dir.name
         assert env.tmp_dir.parent == tmp_path
 
         # Create a file to verify cleanup later
@@ -378,7 +378,7 @@ async def test_get_context_instructions_basic(tmp_path: Path) -> None:
 async def test_get_context_instructions_with_model_config(tmp_path: Path) -> None:
     """Should include model config in instructions when set."""
 
-    from pai_agent_sdk.context import ModelConfig
+    from ya_agent_sdk.context import ModelConfig
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -408,7 +408,7 @@ async def test_get_context_instructions_with_token_usage(tmp_path: Path) -> None
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RequestUsage
 
-    from pai_agent_sdk.context import ModelConfig
+    from ya_agent_sdk.context import ModelConfig
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -454,7 +454,7 @@ async def test_get_context_instructions_with_handoff_warning(tmp_path: Path) -> 
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RequestUsage
 
-    from pai_agent_sdk.context import ModelConfig
+    from ya_agent_sdk.context import ModelConfig
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -503,7 +503,7 @@ async def test_get_context_instructions_no_handoff_warning_below_threshold(tmp_p
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RequestUsage
 
-    from pai_agent_sdk.context import ModelConfig
+    from ya_agent_sdk.context import ModelConfig
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -545,7 +545,7 @@ async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_pat
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RequestUsage
 
-    from pai_agent_sdk.context import ModelConfig
+    from ya_agent_sdk.context import ModelConfig
 
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
@@ -610,7 +610,7 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RunUsage
 
-    from pai_agent_sdk.context import ExtraUsageRecord
+    from ya_agent_sdk.context import ExtraUsageRecord
 
     async with AgentContext(env=env) as ctx:
         # Set up some state
@@ -664,7 +664,7 @@ async def test_export_state_include_subagent_false(env: LocalEnvironment) -> Non
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RunUsage
 
-    from pai_agent_sdk.context import ExtraUsageRecord
+    from ya_agent_sdk.context import ExtraUsageRecord
 
     async with AgentContext(env=env) as ctx:
         # Set up subagent-related state
@@ -743,7 +743,7 @@ async def test_resumable_state_json_serialization(env: LocalEnvironment) -> None
     """Should serialize and deserialize ResumableState to/from JSON."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-    from pai_agent_sdk.context import ResumableState
+    from ya_agent_sdk.context import ResumableState
 
     async with AgentContext(env=env) as ctx:
         ctx.subagent_history["agent-1"] = [
@@ -772,7 +772,7 @@ async def test_resumable_state_json_serialization_with_extra_usages(env: LocalEn
     """Should serialize and deserialize ResumableState with extra_usages (RunUsage dataclass) to/from JSON."""
     from pydantic_ai.usage import RunUsage
 
-    from pai_agent_sdk.context import ExtraUsageRecord, ResumableState
+    from ya_agent_sdk.context import ExtraUsageRecord, ResumableState
 
     async with AgentContext(env=env) as ctx:
         # Add extra_usages with RunUsage dataclass
@@ -832,7 +832,7 @@ async def test_resumable_state_with_binary_content(env: LocalEnvironment) -> Non
 
     from pydantic_ai.messages import BinaryContent, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-    from pai_agent_sdk.context import ResumableState
+    from ya_agent_sdk.context import ResumableState
 
     # Create a test 1x1 red PNG image
     red_pixel_png = base64.b64decode(
@@ -893,7 +893,7 @@ async def test_resumable_state_with_multiple_binary_contents(env: LocalEnvironme
 
     from pydantic_ai.messages import BinaryContent, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-    from pai_agent_sdk.context import ResumableState
+    from ya_agent_sdk.context import ResumableState
 
     # Create test images
     red_pixel_png = base64.b64decode(
@@ -948,7 +948,7 @@ async def test_resumable_state_with_multiple_binary_contents(env: LocalEnvironme
 
 async def test_resumable_state_with_need_user_approve_tools(env: LocalEnvironment) -> None:
     """Should serialize and deserialize ResumableState with need_user_approve_tools."""
-    from pai_agent_sdk.context import ResumableState
+    from ya_agent_sdk.context import ResumableState
 
     async with AgentContext(env=env) as ctx:
         # Set need_user_approve_tools
@@ -1000,16 +1000,16 @@ async def test_agent_context_need_user_approve_tools_modification(env: LocalEnvi
 
 def test_tool_id_wrapper_init() -> None:
     """Should initialize with empty mapping."""
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
-    assert wrapper._prefix == "pai-"
+    assert wrapper._prefix == "ya-"
     assert wrapper._tool_call_maps == {}
 
 
 def test_tool_id_wrapper_clear() -> None:
     """Should clear all mappings."""
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     # Add some mappings
@@ -1022,30 +1022,30 @@ def test_tool_id_wrapper_clear() -> None:
 
 
 def test_tool_id_wrapper_upsert_already_prefixed() -> None:
-    """Should return ID unchanged if already has pai- prefix."""
-    from pai_agent_sdk.context import ToolIdWrapper
+    """Should return ID unchanged if already has ya- prefix."""
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
-    result = wrapper.upsert_tool_call_id("pai-existing-id")
-    assert result == "pai-existing-id"
+    result = wrapper.upsert_tool_call_id("ya-existing-id")
+    assert result == "ya-existing-id"
     # Should not add to mapping
-    assert "pai-existing-id" not in wrapper._tool_call_maps
+    assert "ya-existing-id" not in wrapper._tool_call_maps
 
 
 def test_tool_id_wrapper_upsert_new_id() -> None:
     """Should create new normalized ID for non-prefixed IDs."""
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     result = wrapper.upsert_tool_call_id("call_abc123")
-    assert result.startswith("pai-")
-    assert len(result) == 4 + 32  # "pai-" + uuid4().hex
+    assert result.startswith("ya-")
+    assert len(result) == 3 + 32  # "ya-" + uuid4().hex
     assert "call_abc123" in wrapper._tool_call_maps
 
 
 def test_tool_id_wrapper_upsert_idempotent() -> None:
     """Should return same normalized ID for same original ID."""
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     result1 = wrapper.upsert_tool_call_id("openai-call-id")
@@ -1055,14 +1055,14 @@ def test_tool_id_wrapper_upsert_idempotent() -> None:
 
 def test_tool_id_wrapper_upsert_different_ids() -> None:
     """Should create different normalized IDs for different original IDs."""
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     result1 = wrapper.upsert_tool_call_id("id-1")
     result2 = wrapper.upsert_tool_call_id("id-2")
     assert result1 != result2
-    assert result1.startswith("pai-")
-    assert result2.startswith("pai-")
+    assert result1.startswith("ya-")
+    assert result2.startswith("ya-")
 
 
 def test_tool_id_wrapper_wrap_event_function_tool_call() -> None:
@@ -1070,7 +1070,7 @@ def test_tool_id_wrapper_wrap_event_function_tool_call() -> None:
     from pydantic_ai import FunctionToolCallEvent
     from pydantic_ai.messages import ToolCallPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     part = ToolCallPart(tool_name="test_tool", tool_call_id="original-id", args={"key": "value"})
@@ -1078,8 +1078,8 @@ def test_tool_id_wrapper_wrap_event_function_tool_call() -> None:
 
     result = wrapper.wrap_event(event)
 
-    assert result.tool_call_id.startswith("pai-")
-    assert result.part.tool_call_id.startswith("pai-")
+    assert result.tool_call_id.startswith("ya-")
+    assert result.part.tool_call_id.startswith("ya-")
     # Same ID should be used
     assert result.tool_call_id == result.part.tool_call_id
 
@@ -1089,7 +1089,7 @@ def test_tool_id_wrapper_wrap_event_function_tool_result() -> None:
     from pydantic_ai import FunctionToolResultEvent
     from pydantic_ai.messages import ToolReturnPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     result_part = ToolReturnPart(tool_name="test_tool", tool_call_id="original-id", content="result")
@@ -1097,8 +1097,8 @@ def test_tool_id_wrapper_wrap_event_function_tool_result() -> None:
 
     result = wrapper.wrap_event(event)
 
-    assert result.tool_call_id.startswith("pai-")
-    assert result.result.tool_call_id.startswith("pai-")
+    assert result.tool_call_id.startswith("ya-")
+    assert result.result.tool_call_id.startswith("ya-")
 
 
 def test_tool_id_wrapper_wrap_event_part_start() -> None:
@@ -1106,7 +1106,7 @@ def test_tool_id_wrapper_wrap_event_part_start() -> None:
     from pydantic_ai import PartStartEvent
     from pydantic_ai.messages import ToolCallPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     part = ToolCallPart(tool_name="test_tool", tool_call_id="original-id", args={})
@@ -1114,7 +1114,7 @@ def test_tool_id_wrapper_wrap_event_part_start() -> None:
 
     result = wrapper.wrap_event(event)
 
-    assert result.part.tool_call_id.startswith("pai-")
+    assert result.part.tool_call_id.startswith("ya-")
 
 
 def test_tool_id_wrapper_wrap_event_part_end() -> None:
@@ -1122,7 +1122,7 @@ def test_tool_id_wrapper_wrap_event_part_end() -> None:
     from pydantic_ai import PartEndEvent
     from pydantic_ai.messages import ToolReturnPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     part = ToolReturnPart(tool_name="test_tool", tool_call_id="original-id", content="done")
@@ -1130,14 +1130,14 @@ def test_tool_id_wrapper_wrap_event_part_end() -> None:
 
     result = wrapper.wrap_event(event)
 
-    assert result.part.tool_call_id.startswith("pai-")
+    assert result.part.tool_call_id.startswith("ya-")
 
 
 def test_tool_id_wrapper_wrap_event_part_delta() -> None:
     """Should wrap PartDeltaEvent with ToolCallPartDelta."""
     from pydantic_ai import PartDeltaEvent, ToolCallPartDelta
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     delta = ToolCallPartDelta(tool_call_id="original-id", args_delta="partial")
@@ -1145,7 +1145,7 @@ def test_tool_id_wrapper_wrap_event_part_delta() -> None:
 
     result = wrapper.wrap_event(event)
 
-    assert result.delta.tool_call_id.startswith("pai-")
+    assert result.delta.tool_call_id.startswith("ya-")
 
 
 def test_tool_id_wrapper_wrap_event_unrelated_event() -> None:
@@ -1153,7 +1153,7 @@ def test_tool_id_wrapper_wrap_event_unrelated_event() -> None:
     from pydantic_ai import PartDeltaEvent
     from pydantic_ai.messages import TextPartDelta
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     delta = TextPartDelta(content_delta="some text")
@@ -1170,7 +1170,7 @@ def test_tool_id_wrapper_wrap_deferred_tool_requests() -> None:
     from pydantic_ai import DeferredToolRequests
     from pydantic_ai.messages import ToolCallPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     calls = [
@@ -1184,9 +1184,9 @@ def test_tool_id_wrapper_wrap_deferred_tool_requests() -> None:
 
     result = wrapper.wrap_deferred_tool_requests(deferred)
 
-    assert result.calls[0].tool_call_id.startswith("pai-")
-    assert result.calls[1].tool_call_id.startswith("pai-")
-    assert result.approvals[0].tool_call_id.startswith("pai-")
+    assert result.calls[0].tool_call_id.startswith("ya-")
+    assert result.calls[1].tool_call_id.startswith("ya-")
+    assert result.approvals[0].tool_call_id.startswith("ya-")
     # call-1 should map to same ID in both calls and approvals
     assert result.calls[0].tool_call_id == result.approvals[0].tool_call_id
 
@@ -1197,7 +1197,7 @@ def test_tool_id_wrapper_wrap_messages() -> None:
 
     from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
 
@@ -1215,8 +1215,8 @@ def test_tool_id_wrapper_wrap_messages() -> None:
 
     result = wrapper.wrap_messages(mock_ctx, messages)
 
-    assert result[0].parts[0].tool_call_id.startswith("pai-")
-    assert result[1].parts[0].tool_call_id.startswith("pai-")
+    assert result[0].parts[0].tool_call_id.startswith("ya-")
+    assert result[1].parts[0].tool_call_id.startswith("ya-")
 
 
 def test_tool_id_wrapper_wrap_messages_preserves_non_tool_parts() -> None:
@@ -1225,7 +1225,7 @@ def test_tool_id_wrapper_wrap_messages_preserves_non_tool_parts() -> None:
 
     from pydantic_ai.messages import ModelRequest, TextPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
 
@@ -1245,7 +1245,7 @@ def test_tool_id_wrapper_consistency_across_methods() -> None:
     from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent
     from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart
 
-    from pai_agent_sdk.context import ToolIdWrapper
+    from ya_agent_sdk.context import ToolIdWrapper
 
     wrapper = ToolIdWrapper()
     original_id = "consistent-id"
@@ -1285,7 +1285,7 @@ async def test_get_context_instructions_returns_xml(env: LocalEnvironment) -> No
 
 async def test_get_context_instructions_with_known_subagents(env: LocalEnvironment) -> None:
     """Should include known-subagents when agent_registry has subagents."""
-    from pai_agent_sdk.context import AgentInfo
+    from ya_agent_sdk.context import AgentInfo
 
     async with AgentContext(env=env) as ctx:
         # Register some subagents
@@ -1313,7 +1313,7 @@ async def test_get_context_instructions_with_known_subagents(env: LocalEnvironme
 
 async def test_get_context_instructions_excludes_main_agent(env: LocalEnvironment) -> None:
     """Should exclude the main agent from known-subagents."""
-    from pai_agent_sdk.context import AgentInfo
+    from ya_agent_sdk.context import AgentInfo
 
     async with AgentContext(env=env) as ctx:
         # Register main agent (should be excluded)

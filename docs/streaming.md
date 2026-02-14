@@ -41,7 +41,7 @@ flowchart TB
 ## Basic Usage
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents import create_agent, stream_agent
 
 runtime = create_agent("openai:gpt-4o")
 
@@ -91,7 +91,7 @@ async with stream_agent(
 The three lifecycle hooks provide control at key points in agent execution:
 
 ```python
-from pai_agent_sdk.agents.main import (
+from ya_agent_sdk.agents.main import (
     stream_agent,
     RuntimeReadyContext,
     AgentStartContext,
@@ -127,7 +127,7 @@ async with stream_agent(
 ### Node and Event Hooks
 
 ```python
-from pai_agent_sdk.agents.main import (
+from ya_agent_sdk.agents.main import (
     stream_agent,
     NodeHookContext,
     EventHookContext,
@@ -259,7 +259,7 @@ flowchart TB
 ### Usage Example
 
 ```python
-from pai_agent_sdk.events import (
+from ya_agent_sdk.events import (
     ModelRequestStartEvent,
     ModelRequestCompleteEvent,
     ToolCallsStartEvent,

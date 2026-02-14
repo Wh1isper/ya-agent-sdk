@@ -1,5 +1,5 @@
 """
-Standard Usage Example for pai-agent-sdk
+Standard Usage Example for ya-agent-sdk
 
 This example demonstrates the recommended patterns for building a production-ready
 agent application with session persistence and human-in-the-loop (HITL) support.
@@ -13,7 +13,7 @@ Usage:
     uv run python general.py
 
     # With debug logging enabled:
-    PAI_AGENT_LOG_LEVEL=DEBUG uv run python general.py
+    YA_AGENT_LOG_LEVEL=DEBUG uv run python general.py
 
 Key features demonstrated:
 - Session state persistence (message history + context state)
@@ -56,19 +56,19 @@ from pydantic_ai.messages import (
     ToolCallPart,
 )
 
-from pai_agent_sdk.agents.main import create_agent, stream_agent
-from pai_agent_sdk.context import ModelCapability, ModelConfig, ResumableState, RunContextMetadata, StreamEvent
-from pai_agent_sdk.presets import ANTHROPIC_DEFAULT
-from pai_agent_sdk.toolsets.core.base import UserInteraction
-from pai_agent_sdk.toolsets.core.content import tools as content_tools
-from pai_agent_sdk.toolsets.core.context import tools as context_tools
-from pai_agent_sdk.toolsets.core.document import tools as document_tools
-from pai_agent_sdk.toolsets.core.enhance import tools as enhance_tools
-from pai_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from pai_agent_sdk.toolsets.core.multimodal import tools as multimodal_tools
-from pai_agent_sdk.toolsets.core.shell import tools as shell_tools
-from pai_agent_sdk.toolsets.core.subagent import tools as subagent_tools
-from pai_agent_sdk.toolsets.core.web import tools as web_tools
+from ya_agent_sdk.agents.main import create_agent, stream_agent
+from ya_agent_sdk.context import ModelCapability, ModelConfig, ResumableState, RunContextMetadata, StreamEvent
+from ya_agent_sdk.presets import ANTHROPIC_DEFAULT
+from ya_agent_sdk.toolsets.core.base import UserInteraction
+from ya_agent_sdk.toolsets.core.content import tools as content_tools
+from ya_agent_sdk.toolsets.core.context import tools as context_tools
+from ya_agent_sdk.toolsets.core.document import tools as document_tools
+from ya_agent_sdk.toolsets.core.enhance import tools as enhance_tools
+from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
+from ya_agent_sdk.toolsets.core.multimodal import tools as multimodal_tools
+from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
+from ya_agent_sdk.toolsets.core.subagent import tools as subagent_tools
+from ya_agent_sdk.toolsets.core.web import tools as web_tools
 
 # =============================================================================
 # Prompt Configuration

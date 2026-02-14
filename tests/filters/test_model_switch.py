@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.filters.model_swtich module."""
+"""Tests for ya_agent_sdk.filters.model_swtich module."""
 
 from unittest.mock import MagicMock
 
@@ -10,7 +10,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pai_agent_sdk.filters.model_swtich import handle_model_switch
+from ya_agent_sdk.filters.model_swtich import handle_model_switch
 
 
 def test_handle_model_switch_empty_history() -> None:

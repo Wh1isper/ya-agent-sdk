@@ -1,4 +1,4 @@
-"""Common test fixtures for pai-agent-sdk tests."""
+"""Common test fixtures for ya-agent-sdk tests."""
 
 import contextlib
 import socket
@@ -12,8 +12,8 @@ import httpx
 import pytest
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +23,7 @@ def clear_http_client_cache():
     The cached HTTP client may be bound to a closed event loop from a previous test,
     causing 'Event loop is closed' errors when reused in a new test.
     """
-    from pai_agent_sdk.toolsets.core.web._http_client import _get_http_client
+    from ya_agent_sdk.toolsets.core.web._http_client import _get_http_client
 
     _get_http_client.cache_clear()
     yield

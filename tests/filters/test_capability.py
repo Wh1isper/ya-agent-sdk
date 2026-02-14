@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.filters.capability module."""
+"""Tests for ya_agent_sdk.filters.capability module."""
 
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -14,9 +14,9 @@ from pydantic_ai.messages import (
     VideoUrl,
 )
 
-from pai_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.filters.capability import filter_by_capability
+from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.filters.capability import filter_by_capability
 
 
 async def test_filter_by_capability_no_model_config(tmp_path: Path) -> None:

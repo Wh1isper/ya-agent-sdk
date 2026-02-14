@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.filesystem.edit module."""
+"""Tests for ya_agent_sdk.toolsets.core.filesystem.edit module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -7,10 +7,10 @@ from unittest.mock import MagicMock
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.filesystem._types import EditItem
-from pai_agent_sdk.toolsets.core.filesystem.edit import EditTool, MultiEditTool
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.filesystem._types import EditItem
+from ya_agent_sdk.toolsets.core.filesystem.edit import EditTool, MultiEditTool
 
 
 def test_edit_tool_attributes(agent_context: AgentContext) -> None:

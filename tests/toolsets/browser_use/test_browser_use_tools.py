@@ -13,7 +13,7 @@ works together. More detailed tests are organized in separate test files:
 
 from __future__ import annotations
 
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
 
 
 async def test_toolset_context_manager(cdp_url):

@@ -32,10 +32,10 @@ flowchart TB
 ## Quick Start
 
 ```python
-from pai_agent_sdk.agents import create_agent
-from pai_agent_sdk.toolsets.skills import SkillToolset
-from pai_agent_sdk.toolsets.core.filesystem import tools as fs_tools
-from pai_agent_sdk.toolsets.core.shell import tools as shell_tools
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.toolsets.skills import SkillToolset
+from ya_agent_sdk.toolsets.core.filesystem import tools as fs_tools
+from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
 
 skill_toolset = SkillToolset()
 
@@ -99,7 +99,7 @@ Skills are discovered from `skills/` subdirectory in each of FileOperator's `all
 # Typical setup with local environment
 allowed_paths:
   - /home/user/project          # Project directory
-  - /home/user/.config/myapp    # Config directory
+  - /home/user/.yaai            # Config directory
 
 # Skills will be scanned from:
 /home/user/project/skills/
@@ -108,7 +108,7 @@ allowed_paths:
     reference.md
   skill-two/
     SKILL.md
-/home/user/.config/myapp/skills/
+/home/user/.yaai/skills/
   global-skill/
     SKILL.md
 ```
@@ -156,8 +156,8 @@ The `pre_scan_hook` allows custom logic before skill scanning. Common use cases:
 ### Hook Signature
 
 ```python
-from pai_agent_sdk.toolsets.skills import SkillToolset, PreScanHook
-from pai_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.skills import SkillToolset, PreScanHook
+from ya_agent_sdk.context import AgentContext
 from pydantic_ai import RunContext
 
 # Sync hook
@@ -284,7 +284,7 @@ Skills metadata is injected into the system prompt in XML format:
 <available-skills>
 <skill name="code-review">
   <description>Review code for quality, security, and best practices.</description>
-  <path>/home/user/.config/myapp/skills/code-review</path>
+  <path>/home/user/.yaai/skills/code-review</path>
 </skill>
 <skill name="debugging">
   <description>Debug errors and test failures systematically.</description>

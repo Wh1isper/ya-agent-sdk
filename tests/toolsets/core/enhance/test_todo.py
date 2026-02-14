@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.enhance.todo module."""
+"""Tests for ya_agent_sdk.toolsets.core.enhance.todo module."""
 
 import json
 from contextlib import AsyncExitStack
@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.enhance.todo import (
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.enhance.todo import (
     TodoItem,
     TodoReadTool,
     TodoWriteTool,
@@ -293,7 +293,7 @@ async def test_todo_write_and_read_integration(tmp_path: Path) -> None:
 
 def test_enhance_module_exports() -> None:
     """Should export expected symbols from enhance module."""
-    from pai_agent_sdk.toolsets.core import enhance
+    from ya_agent_sdk.toolsets.core import enhance
 
     assert hasattr(enhance, "ThinkingTool")
     assert hasattr(enhance, "TodoItem")

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from inline_snapshot import snapshot
 
-from pai_agent_sdk.presets import (
+from ya_agent_sdk.presets import (
     ModelSettingsPreset,
     get_model_settings,
     list_presets,
     resolve_model_settings,
 )
-from pai_agent_sdk.subagents import (
+from ya_agent_sdk.subagents import (
     INHERIT,
     SubagentConfig,
     create_subagent_call_func,
@@ -82,18 +82,18 @@ def test_get_builtin_subagent_configs_content() -> None:
 
 def test_load_builtin_subagent_tools_import() -> None:
     """Test that load_builtin_subagent_tools is exported."""
-    from pai_agent_sdk.subagents import load_builtin_subagent_tools
+    from ya_agent_sdk.subagents import load_builtin_subagent_tools
 
     assert load_builtin_subagent_tools is not None
 
 
 def test_load_builtin_subagent_tools(agent_context) -> None:
     """Test that load_builtin_subagent_tools loads all preset subagents."""
-    from pai_agent_sdk.subagents import (
+    from ya_agent_sdk.subagents import (
         get_builtin_subagent_configs,
         load_builtin_subagent_tools,
     )
-    from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
+    from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
     # Create mock tools that the subagents need
     class GrepTool(BaseTool):
@@ -170,8 +170,8 @@ def test_load_builtin_subagent_tools(agent_context) -> None:
 
 def test_load_builtin_subagent_tools_with_preset_model_settings(agent_context) -> None:
     """Test load_builtin_subagent_tools with preset name for model_settings."""
-    from pai_agent_sdk.subagents import load_builtin_subagent_tools
-    from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
+    from ya_agent_sdk.subagents import load_builtin_subagent_tools
+    from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
     # Minimal tools
     class GrepTool(BaseTool):
@@ -230,9 +230,9 @@ def test_load_builtin_subagent_tools_with_preset_model_settings(agent_context) -
 
 async def test_create_agent_with_subagent_configs(agent_context) -> None:
     """Test create_agent with custom subagent_configs."""
-    from pai_agent_sdk.agents.main import create_agent
-    from pai_agent_sdk.subagents import SubagentConfig
-    from pai_agent_sdk.toolsets.core.base import BaseTool
+    from ya_agent_sdk.agents.main import create_agent
+    from ya_agent_sdk.subagents import SubagentConfig
+    from ya_agent_sdk.toolsets.core.base import BaseTool
 
     class DummyTool(BaseTool):
         name = "dummy_tool"
@@ -262,9 +262,9 @@ async def test_create_agent_with_subagent_configs(agent_context) -> None:
 
 async def test_create_agent_with_include_builtin_subagents(agent_context) -> None:
     """Test create_agent with include_builtin_subagents=True."""
-    from pai_agent_sdk.agents.main import create_agent
-    from pai_agent_sdk.subagents import get_builtin_subagent_configs
-    from pai_agent_sdk.toolsets.core.base import BaseTool
+    from ya_agent_sdk.agents.main import create_agent
+    from ya_agent_sdk.subagents import get_builtin_subagent_configs
+    from ya_agent_sdk.toolsets.core.base import BaseTool
 
     # Create tools needed by builtin subagents
     class GlobTool(BaseTool):
@@ -317,9 +317,9 @@ async def test_create_agent_with_include_builtin_subagents(agent_context) -> Non
 
 async def test_create_agent_with_both_custom_and_builtin_subagents() -> None:
     """Test create_agent with both custom and builtin subagents."""
-    from pai_agent_sdk.agents.main import create_agent
-    from pai_agent_sdk.subagents import SubagentConfig, get_builtin_subagent_configs
-    from pai_agent_sdk.toolsets.core.base import BaseTool
+    from ya_agent_sdk.agents.main import create_agent
+    from ya_agent_sdk.subagents import SubagentConfig, get_builtin_subagent_configs
+    from ya_agent_sdk.toolsets.core.base import BaseTool
 
     class GlobTool(BaseTool):
         name = "glob"
@@ -380,9 +380,9 @@ async def test_create_agent_with_both_custom_and_builtin_subagents() -> None:
 
 async def test_create_agent_no_subagents_by_default() -> None:
     """Test that create_agent does not include subagents by default."""
-    from pai_agent_sdk.agents.main import create_agent
-    from pai_agent_sdk.subagents import get_builtin_subagent_configs
-    from pai_agent_sdk.toolsets.core.base import BaseTool
+    from ya_agent_sdk.agents.main import create_agent
+    from ya_agent_sdk.subagents import get_builtin_subagent_configs
+    from ya_agent_sdk.toolsets.core.base import BaseTool
 
     class DummyTool(BaseTool):
         name = "dummy_tool"

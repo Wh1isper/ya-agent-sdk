@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import httpx
 
-from pai_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox, get_port
+from ya_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox, get_port
 
 
 async def test_browser_sandbox_context_manager():

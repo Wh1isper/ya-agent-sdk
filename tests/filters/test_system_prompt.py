@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.filters.system_prompt module."""
+"""Tests for ya_agent_sdk.filters.system_prompt module."""
 
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -11,9 +11,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.filters.system_prompt import create_system_prompt_filter, fix_system_prompt
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter, fix_system_prompt
 
 
 def test_fix_system_prompt_empty_history() -> None:

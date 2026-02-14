@@ -38,7 +38,7 @@ flowchart TB
 ### Recommended: create_agent + stream_agent
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents import create_agent, stream_agent
 
 runtime = create_agent("openai:gpt-4")
 async with stream_agent(runtime, "Hello") as streamer:
@@ -70,8 +70,8 @@ Templates are always rendered with Jinja2, supporting conditionals and default v
 ### Manual Context Management
 
 ```python
-from pai_agent_sdk.environment import LocalEnvironment
-from pai_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
+from ya_agent_sdk.environment import LocalEnvironment
+from ya_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
 
 async with LocalEnvironment() as env:
     async with AgentContext(
@@ -93,7 +93,7 @@ with open("session.json", "w") as f:
     f.write(state.model_dump_json())
 
 # Restore
-from pai_agent_sdk.context import ResumableState
+from ya_agent_sdk.context import ResumableState
 state = ResumableState.model_validate_json(Path("session.json").read_text())
 runtime = create_agent("openai:gpt-4", state=state)
 ```
@@ -151,7 +151,7 @@ caching, rate limiting, or cost tracking. The `wrapper_metadata` field and
 `get_wrapper_metadata()` method allow customizing the context passed to the wrapper.
 
 ```python
-from pai_agent_sdk.context import AgentContext, ModelWrapper
+from ya_agent_sdk.context import AgentContext, ModelWrapper
 from pydantic_ai.models import Model
 
 # Sync wrapper (recommended for create_agent)
@@ -241,7 +241,7 @@ For full type safety, inherit from the config class and override the field in `A
 
 ```python
 from pydantic import Field
-from pai_agent_sdk.context import AgentContext, ToolConfig, ModelConfig
+from ya_agent_sdk.context import AgentContext, ToolConfig, ModelConfig
 
 class MyToolConfig(ToolConfig):
     """Custom tool configuration with additional API keys."""
@@ -322,7 +322,7 @@ class MyState(ResumableState):
         ctx.custom_field = self.custom_field
 ```
 
-> Full examples: `pai_agent_sdk/context.py`
+> Full examples: `ya_agent_sdk/context.py`
 
 ## ToolIdWrapper
 
@@ -334,4 +334,4 @@ Used automatically by the SDK streaming infrastructure.
 
 - [environment.md](environment.md) - FileOperator, Shell, and ResourceRegistry
 - [toolset.md](toolset.md) - Creating and using tools
-- [agent-environment](https://github.com/youware-labs/agent-environment) - Base protocol definitions
+- [agent-environment](https://github.com/wh1isper/agent-environment) - Base protocol definitions

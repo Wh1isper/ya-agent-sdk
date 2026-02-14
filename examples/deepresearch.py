@@ -1,5 +1,5 @@
 """
-Deep Research Example for pai-agent-sdk
+Deep Research Example for ya-agent-sdk
 
 This example demonstrates a deep research agent that autonomously conducts
 comprehensive research on a given objective without human-in-the-loop interaction.
@@ -51,17 +51,17 @@ from pydantic_ai.messages import (
     TextPartDelta,
 )
 
-from pai_agent_sdk.agents.main import create_agent, stream_agent
-from pai_agent_sdk.context import ModelCapability, ModelConfig, ResumableState, StreamEvent, ToolConfig
-from pai_agent_sdk.presets import GEMINI_THINKING_LEVEL_HIGH
-from pai_agent_sdk.toolsets.core.content import tools as content_tools
-from pai_agent_sdk.toolsets.core.context import tools as context_tools
-from pai_agent_sdk.toolsets.core.document import tools as document_tools
-from pai_agent_sdk.toolsets.core.enhance import tools as enhance_tools
-from pai_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from pai_agent_sdk.toolsets.core.multimodal import tools as multimodal_tools
-from pai_agent_sdk.toolsets.core.shell import tools as shell_tools
-from pai_agent_sdk.toolsets.core.web import tools as web_tools
+from ya_agent_sdk.agents.main import create_agent, stream_agent
+from ya_agent_sdk.context import ModelCapability, ModelConfig, ResumableState, StreamEvent, ToolConfig
+from ya_agent_sdk.presets import GEMINI_THINKING_LEVEL_HIGH
+from ya_agent_sdk.toolsets.core.content import tools as content_tools
+from ya_agent_sdk.toolsets.core.context import tools as context_tools
+from ya_agent_sdk.toolsets.core.document import tools as document_tools
+from ya_agent_sdk.toolsets.core.enhance import tools as enhance_tools
+from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
+from ya_agent_sdk.toolsets.core.multimodal import tools as multimodal_tools
+from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
+from ya_agent_sdk.toolsets.core.web import tools as web_tools
 
 # =============================================================================
 # Configuration

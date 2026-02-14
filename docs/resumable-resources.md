@@ -2,7 +2,7 @@
 
 Export and restore resource states across process restarts via async factories.
 
-> **Note**: Base protocols and classes (`Resource`, `ResumableResource`, `BaseResource`, `ResourceRegistry`, etc.) are defined in the [agent-environment](https://github.com/youware-labs/agent-environment) protocol package.
+> **Note**: Base protocols and classes (`Resource`, `ResumableResource`, `BaseResource`, `ResourceRegistry`, etc.) are defined in the [agent-environment](https://github.com/wh1isper/agent-environment) protocol package.
 
 ## Overview
 

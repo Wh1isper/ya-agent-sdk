@@ -12,8 +12,8 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pai_agent_sdk.context import AgentContext, AgentInfo
-from pai_agent_sdk.toolsets.core.subagent.tools import (
+from ya_agent_sdk.context import AgentContext, AgentInfo
+from ya_agent_sdk.toolsets.core.subagent.tools import (
     SubagentInfoTool,
     _extract_first_user_prompt,
     _format_agent_info,

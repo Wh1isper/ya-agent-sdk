@@ -13,9 +13,9 @@ from pydantic_ai.messages import (
     VideoUrl,
 )
 
-from pai_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
-from pai_agent_sdk.filters.media_upload import create_media_upload_filter
-from pai_agent_sdk.media import MediaUploader
+from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+from ya_agent_sdk.filters.media_upload import create_media_upload_filter
+from ya_agent_sdk.media import MediaUploader
 
 
 class MockUploader:

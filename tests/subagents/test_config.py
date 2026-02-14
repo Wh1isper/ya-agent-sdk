@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from pai_agent_sdk.presets import INHERIT
-from pai_agent_sdk.subagents.config import (
+from ya_agent_sdk.presets import INHERIT
+from ya_agent_sdk.subagents.config import (
     SubagentConfig,
     load_subagent_from_file,
     load_subagents_from_dir,

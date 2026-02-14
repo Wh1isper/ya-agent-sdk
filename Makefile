@@ -13,9 +13,9 @@ lint: ## Lint the code
 
 .PHONY: cli
 cli: ## Run the CLI
-	@echo "🚀 Running paintress-cli CLI"
+	@echo "🚀 Running yaai CLI"
 	@./scripts/sync-skills.sh
-	@rm -f paintress.log && uv run paintress-cli -v
+	@rm -f yaai.log && uv run yaai -v
 
 .PHONY: check
 check: ## Run code quality tools.
@@ -26,7 +26,7 @@ check: ## Run code quality tools.
 	@echo "🚀 Static type checking: Running pyright"
 	@uv run pyright
 	@echo "🚀 Checking for obsolete dependencies: Running deptry"
-	@uv run deptry pai_agent_sdk
+	@uv run deptry ya_agent_sdk
 
 .PHONY: test
 test: ## Test the code with pytest
@@ -36,7 +36,7 @@ test: ## Test the code with pytest
 .PHONY: test-cli
 test-cli: ## Test cli
 	@echo "🚀 Testing code: Running pytest"
-	@uv run python -m pytest paintress_cli/tests -n auto -vv --inline-snapshot=disable
+	@uv run python -m pytest yaai/tests -n auto -vv --inline-snapshot=disable
 
 
 .PHONY: test-fix
@@ -45,7 +45,7 @@ test-fix: ## Test and auto-fix inline snapshots
 	@uv run python -m pytest tests -vv --inline-snapshot=fix
 
 .PHONY: build
-build: clean-build ## Build wheel file for pai-agent-sdk only
+build: clean-build ## Build wheel file for ya-agent-sdk only
 	@echo "🚀 Creating wheel file"
 	@uvx --from build pyproject-build --installer uv
 

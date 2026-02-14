@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.filesystem.mkdir module."""
+"""Tests for ya_agent_sdk.toolsets.core.filesystem.mkdir module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.filesystem.mkdir import MkdirTool
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.filesystem.mkdir import MkdirTool
 
 
 def test_mkdir_tool_attributes(agent_context: AgentContext) -> None:

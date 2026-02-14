@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pai_agent_sdk.toolsets.browser_use._tools import build_tool
-from pai_agent_sdk.toolsets.browser_use.tools import navigate_to_url
-from pai_agent_sdk.toolsets.browser_use.tools.dialog import accept_dialog, dismiss_dialog, handle_dialog
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
+from ya_agent_sdk.toolsets.browser_use._tools import build_tool
+from ya_agent_sdk.toolsets.browser_use.tools import navigate_to_url
+from ya_agent_sdk.toolsets.browser_use.tools.dialog import accept_dialog, dismiss_dialog, handle_dialog
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
 
 
 async def test_handle_dialog_no_dialog(cdp_url, test_server):

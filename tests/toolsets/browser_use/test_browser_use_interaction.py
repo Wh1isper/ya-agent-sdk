@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pai_agent_sdk.toolsets.browser_use._tools import build_tool
-from pai_agent_sdk.toolsets.browser_use.tools import (
+from ya_agent_sdk.toolsets.browser_use._tools import build_tool
+from ya_agent_sdk.toolsets.browser_use.tools import (
     click_element,
     execute_javascript,
     focus,
@@ -13,7 +13,7 @@ from pai_agent_sdk.toolsets.browser_use.tools import (
     scroll_to,
     type_text,
 )
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
 
 
 async def test_click_element(cdp_url, test_server):

@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.filters.handoff module."""
+"""Tests for ya_agent_sdk.filters.handoff module."""
 
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,10 +12,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.events import HandoffCompleteEvent, HandoffStartEvent
-from pai_agent_sdk.filters.handoff import process_handoff_message
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.events import HandoffCompleteEvent, HandoffStartEvent
+from ya_agent_sdk.filters.handoff import process_handoff_message
 
 
 async def test_process_handoff_no_handoff_message(tmp_path: Path) -> None:

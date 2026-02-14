@@ -2,7 +2,7 @@
 
 Resource management, lifecycle hooks, and environment implementations.
 
-> **Note**: Base abstractions (`Environment`, `FileOperator`, `Shell`, `ResourceRegistry`, etc.) are defined in the [agent-environment](https://github.com/youware-labs/agent-environment) protocol package. This SDK provides concrete implementations (`LocalEnvironment`, `DockerEnvironment`).
+> **Note**: Base abstractions (`Environment`, `FileOperator`, `Shell`, `ResourceRegistry`, etc.) are defined in the [agent-environment](https://github.com/wh1isper/agent-environment) protocol package. This SDK provides concrete implementations (`LocalEnvironment`, `DockerEnvironment`).
 
 ## Overview
 
@@ -28,7 +28,7 @@ AgentContext - Short-lived, references Environment resources
 ### Recommended: create_agent
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents import create_agent, stream_agent
 
 # Default: uses LocalEnvironment
 runtime = create_agent("openai:gpt-4")
@@ -40,8 +40,8 @@ async with stream_agent(runtime, "Hello") as streamer:
 ### Manual Environment Management
 
 ```python
-from pai_agent_sdk.environment import LocalEnvironment
-from pai_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment import LocalEnvironment
+from ya_agent_sdk.context import AgentContext
 
 async with LocalEnvironment(allowed_paths=[path]) as env:
     async with AgentContext(env=env) as ctx:
@@ -66,7 +66,7 @@ toolsets = await registry.get_toolsets()
 await registry.close_all()
 ```
 
-> Full API: [agent-environment](https://github.com/youware-labs/agent-environment)
+> Full API: [agent-environment](https://github.com/wh1isper/agent-environment)
 
 ## Creating Custom Environments
 

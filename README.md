@@ -1,14 +1,14 @@
-# PAI Agent SDK
+# ya-agent-sdk
 
-> PAI is for Paintress or Pydantic AI
+> Yet Another Agent SDK
 
-[![Release](https://img.shields.io/github/v/release/youware-labs/pai-agent-sdk)](https://img.shields.io/github/v/release/youware-labs/pai-agent-sdk)
-[![Build status](https://img.shields.io/github/actions/workflow/status/youware-labs/pai-agent-sdk/main.yml?branch=main)](https://github.com/youware-labs/pai-agent-sdk/actions/workflows/main.yml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/youware-labs/pai-agent-sdk/branch/main/graph/badge.svg)](https://codecov.io/gh/youware-labs/pai-agent-sdk)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/youware-labs/pai-agent-sdk)](https://img.shields.io/github/commit-activity/m/youware-labs/pai-agent-sdk)
-[![License](https://img.shields.io/github/license/youware-labs/pai-agent-sdk)](https://img.shields.io/github/license/youware-labs/pai-agent-sdk)
+[![Release](https://img.shields.io/github/v/release/wh1isper/ya-agent-sdk)](https://img.shields.io/github/v/release/wh1isper/ya-agent-sdk)
+[![Build status](https://img.shields.io/github/actions/workflow/status/wh1isper/ya-agent-sdk/main.yml?branch=main)](https://github.com/wh1isper/ya-agent-sdk/actions/workflows/main.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/wh1isper/ya-agent-sdk/branch/main/graph/badge.svg)](https://codecov.io/gh/wh1isper/ya-agent-sdk)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/wh1isper/ya-agent-sdk)](https://img.shields.io/github/commit-activity/m/wh1isper/ya-agent-sdk)
+[![License](https://img.shields.io/github/license/wh1isper/ya-agent-sdk)](https://img.shields.io/github/license/wh1isper/ya-agent-sdk)
 
-Application framework for building AI agents with [Pydantic AI](https://ai.pydantic.dev/). Used to build the next-generation agent system of [YouWare](https://www.youware.com).
+Yet Another Agent SDK for building AI agents with [Pydantic AI](https://ai.pydantic.dev/). Used at my homelab for research and prototyping.
 
 ## Key Features
 
@@ -27,21 +27,21 @@ Application framework for building AI agents with [Pydantic AI](https://ai.pydan
 
 ```bash
 # Recommended: install with all optional dependencies
-pip install pai-agent-sdk[all]
-uv add pai-agent-sdk[all]
+pip install ya-agent-sdk[all]
+uv add ya-agent-sdk[all]
 
 # Or install individual extras as needed
-pip install pai-agent-sdk[docker]    # Docker sandbox support
-pip install pai-agent-sdk[web]       # Web tools (tavily, firecrawl, markitdown)
-pip install pai-agent-sdk[document]  # Document processing (pymupdf, markitdown)
+pip install ya-agent-sdk[docker]    # Docker sandbox support
+pip install ya-agent-sdk[web]       # Web tools (tavily, firecrawl, markitdown)
+pip install ya-agent-sdk[document]  # Document processing (pymupdf, markitdown)
 ```
 
 ## Project Structure
 
 This repository contains:
 
-- **pai_agent_sdk/** - Core SDK with environment abstraction, toolsets, and session management
-- **paintress_cli/** - Reference CLI implementation with TUI for interactive agent sessions
+- **ya_agent_sdk/** - Core SDK with environment abstraction, toolsets, and session management
+- **yaai/** - Reference CLI implementation with TUI for interactive agent sessions
 - **examples/** - Code examples demonstrating SDK features
 - **docs/** - Documentation for SDK architecture and APIs
 
@@ -50,7 +50,7 @@ This repository contains:
 ### Using the SDK
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents import create_agent, stream_agent
 
 # create_agent returns AgentRuntime (not a context manager)
 runtime = create_agent("openai:gpt-4o")
@@ -61,17 +61,17 @@ async with stream_agent(runtime, "Hello") as streamer:
         print(event)
 ```
 
-### Using Paintress CLI
+### Using YAAI CLI
 
-For a ready-to-use terminal interface, try [paintress-cli](paintress_cli/README.md) - a TUI reference implementation built on top of pai-agent-sdk:
+For a ready-to-use terminal interface, try [yaai](yaai/README.md) - a TUI reference implementation built on top of ya-agent-sdk:
 
 ```bash
 # Run directly with uvx (no installation needed)
-uvx paintress-cli
+uvx yaai
 
 # Or install globally
-uv tool install paintress-cli
-pip install paintress-cli
+uv tool install yaai
+pip install yaai
 ```
 
 Features:
@@ -97,7 +97,7 @@ Check out the [examples/](examples/) directory:
 If you're using an AI agent (e.g., Claude, Cursor) that supports skills:
 
 - **Clone this repo**: The [SKILL.md](SKILL.md) file in the repository root provides comprehensive guidance for agents
-- **Download release package**: Get the latest `SKILL.zip` from the [Releases](https://github.com/youware-labs/pai-agent-sdk/releases) page (automatically built during each release)
+- **Download release package**: Get the latest `SKILL.zip` from the [Releases](https://github.com/wh1isper/ya-agent-sdk/releases) page (automatically built during each release)
 
 ## Configuration
 

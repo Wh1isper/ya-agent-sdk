@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pai_agent_sdk.toolsets.browser_use._tools import build_tool
-from pai_agent_sdk.toolsets.browser_use.tools import go_back, go_forward, navigate_to_url, reload_page
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
+from ya_agent_sdk.toolsets.browser_use._tools import build_tool
+from ya_agent_sdk.toolsets.browser_use.tools import go_back, go_forward, navigate_to_url, reload_page
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
 
 
 async def test_navigate_to_url(cdp_url, test_server):
@@ -162,7 +162,7 @@ async def test_go_back_with_timeout(cdp_url, test_server):
         await nav_tool.function_schema.call({"url": f"{test_server}/test_fixtures/navigation/page1.html"}, None)
 
         # Monkey patch _wait_for_page_ready to trigger timeout for go_back
-        from pai_agent_sdk.toolsets.browser_use.tools import navigation
+        from ya_agent_sdk.toolsets.browser_use.tools import navigation
 
         original_wait = navigation._wait_for_page_ready
 
@@ -197,7 +197,7 @@ async def test_go_forward_with_timeout(cdp_url, test_server):
         await back_tool.function_schema.call({}, None)
 
         # Monkey patch _wait_for_page_ready to trigger timeout for go_forward
-        from pai_agent_sdk.toolsets.browser_use.tools import navigation
+        from ya_agent_sdk.toolsets.browser_use.tools import navigation
 
         original_wait = navigation._wait_for_page_ready
 
@@ -228,7 +228,7 @@ async def test_reload_page_with_timeout(cdp_url, test_server):
         await nav_tool.function_schema.call({"url": f"{test_server}/test_fixtures/basic.html"}, None)
 
         # Monkey patch _wait_for_page_ready to trigger timeout for reload
-        from pai_agent_sdk.toolsets.browser_use.tools import navigation
+        from ya_agent_sdk.toolsets.browser_use.tools import navigation
 
         original_wait = navigation._wait_for_page_ready
 

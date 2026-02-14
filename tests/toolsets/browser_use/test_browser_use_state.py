@@ -8,15 +8,15 @@ from PIL import Image
 from pydantic_ai import BinaryContent
 from pydantic_ai.messages import ToolReturn
 
-from pai_agent_sdk.toolsets.browser_use._tools import build_tool
-from pai_agent_sdk.toolsets.browser_use.tools import (
+from ya_agent_sdk.toolsets.browser_use._tools import build_tool
+from ya_agent_sdk.toolsets.browser_use.tools import (
     get_page_content,
     get_page_info,
     navigate_to_url,
     take_screenshot,
 )
-from pai_agent_sdk.toolsets.browser_use.tools.state import get_viewport_info, take_element_screenshot
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
+from ya_agent_sdk.toolsets.browser_use.tools.state import get_viewport_info, take_element_screenshot
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
 
 
 async def test_get_page_info(cdp_url, test_server):

@@ -8,13 +8,13 @@ import pytest
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.usage import RunUsage
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
-from pai_agent_sdk.toolsets.core.subagent import (
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.toolsets.core.subagent import (
     create_subagent_call_func,
     create_subagent_tool,
 )
-from pai_agent_sdk.toolsets.core.subagent.factory import generate_unique_id
+from ya_agent_sdk.toolsets.core.subagent.factory import generate_unique_id
 
 # Tests for create_subagent_tool with create_subagent_call_func
 
@@ -421,7 +421,7 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     assert not queue.empty()
 
     # First event should be SubagentStartEvent
-    from pai_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
+    from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
 
     start_event = await queue.get()
     assert isinstance(start_event, SubagentStartEvent)
@@ -559,7 +559,7 @@ async def test_create_subagent_call_func_resume_with_agent_id():
     # Pre-populate history for the agent_id
     ctx.subagent_history["analyze-abcd"] = [{"role": "user", "content": "previous"}]
     # Pre-register in agent_registry
-    from pai_agent_sdk.context import AgentInfo
+    from ya_agent_sdk.context import AgentInfo
 
     ctx.agent_registry["analyze-abcd"] = AgentInfo(
         agent_id="analyze-abcd",
@@ -651,7 +651,7 @@ def test_generate_unique_id_raises_on_max_retries(monkeypatch):
     class MockUUID:
         hex = "aaaa0000bbbb1111"
 
-    monkeypatch.setattr("pai_agent_sdk.toolsets.core.subagent.factory.uuid4", lambda: MockUUID())
+    monkeypatch.setattr("ya_agent_sdk.toolsets.core.subagent.factory.uuid4", lambda: MockUUID())
 
     existing = {"5678", "aaaa"}
 

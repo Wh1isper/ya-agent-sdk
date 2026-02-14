@@ -67,5 +67,5 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: youware-labs/pai-agent-sdk
+          slug: wh1isper/ya-agent-sdk
         if: ${{ matrix.python-version == '3.13' && matrix.extras == 'all' }}

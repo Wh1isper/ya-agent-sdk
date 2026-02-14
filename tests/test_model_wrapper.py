@@ -8,8 +8,8 @@ import pytest
 from pydantic import Field
 from pydantic_ai.models import Model
 
-from pai_agent_sdk.context import AgentContext, ModelWrapper
-from pai_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.context import AgentContext, ModelWrapper
+from ya_agent_sdk.environment.local import LocalEnvironment
 
 
 @pytest.fixture

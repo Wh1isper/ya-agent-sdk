@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.mcp module."""
+"""Tests for ya_agent_sdk.mcp module."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pai_agent_sdk.mcp import MCPServerSpec, create_mcp_approval_hook
+from ya_agent_sdk.mcp import MCPServerSpec, create_mcp_approval_hook
 
 # =============================================================================
 # MCPServerSpec Tests

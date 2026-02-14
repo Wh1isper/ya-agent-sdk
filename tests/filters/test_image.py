@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.filters.image module."""
+"""Tests for ya_agent_sdk.filters.image module."""
 
 from io import BytesIO
 from pathlib import Path
@@ -15,9 +15,9 @@ from pydantic_ai.messages import (
     VideoUrl,
 )
 
-from pai_agent_sdk.context import AgentContext, ModelConfig
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.filters.image import drop_extra_images, drop_extra_videos, drop_gif_images
+from ya_agent_sdk.context import AgentContext, ModelConfig
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.filters.image import drop_extra_images, drop_extra_videos, drop_gif_images
 
 
 def _create_valid_image_bytes() -> bytes:

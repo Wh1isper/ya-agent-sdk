@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from pai_agent_sdk.toolsets.browser_use._tools import build_tool
-from pai_agent_sdk.toolsets.browser_use.tools import execute_javascript, navigate_to_url
-from pai_agent_sdk.toolsets.browser_use.tools.wait import (
+from ya_agent_sdk.toolsets.browser_use._tools import build_tool
+from ya_agent_sdk.toolsets.browser_use.tools import execute_javascript, navigate_to_url
+from ya_agent_sdk.toolsets.browser_use.tools.wait import (
     wait_for_load_state,
     wait_for_navigation,
     wait_for_selector,
 )
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
 
 
 async def test_wait_for_selector_visible(cdp_url, test_server):

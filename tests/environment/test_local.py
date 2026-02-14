@@ -6,7 +6,7 @@ import pytest
 from agent_environment import FileOperationError, PathNotAllowedError, ShellTimeoutError
 from inline_snapshot import snapshot
 
-from pai_agent_sdk.environment import (
+from ya_agent_sdk.environment import (
     LocalEnvironment,
     LocalFileOperator,
     LocalShell,
@@ -439,7 +439,7 @@ async def test_environment_tmp_dir(tmp_path: Path) -> None:
     ) as env:
         assert env.tmp_dir is not None
         assert env.tmp_dir.exists()
-        assert "pai_agent_" in env.tmp_dir.name
+        assert "ya_agent_" in env.tmp_dir.name
         saved_tmp = env.tmp_dir
 
     assert not saved_tmp.exists()

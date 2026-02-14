@@ -1,11 +1,11 @@
-"""Tests for pai_agent_sdk.toolsets.core.context.handoff module."""
+"""Tests for ya_agent_sdk.toolsets.core.context.handoff module."""
 
 from unittest.mock import MagicMock
 
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.core.context.handoff import HandoffMessage, HandoffTool
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core.context.handoff import HandoffMessage, HandoffTool
 
 
 def test_handoff_message_render() -> None:

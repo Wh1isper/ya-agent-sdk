@@ -31,7 +31,7 @@ graph LR
 The `MediaUploader` protocol defines the interface for media upload services:
 
 ```python
-from pai_agent_sdk.media import MediaUploader
+from ya_agent_sdk.media import MediaUploader
 
 class MediaUploader(Protocol):
     async def upload(self, data: bytes, media_type: str) -> str:
@@ -52,7 +52,7 @@ Implement this protocol to support different storage backends:
 The SDK provides a built-in S3 implementation:
 
 ```python
-from pai_agent_sdk.media import S3MediaConfig, S3MediaUploader
+from ya_agent_sdk.media import S3MediaConfig, S3MediaUploader
 
 config = S3MediaConfig(
     bucket="my-bucket",
@@ -110,7 +110,7 @@ Example: `uploads/2024-02-03/a1b2c3d4e5f6.png`
 Requires optional dependency:
 
 ```bash
-pip install pai-agent-sdk[s3]
+pip install ya-agent-sdk[s3]
 ```
 
 ## ToolConfig Hooks
@@ -118,8 +118,8 @@ pip install pai-agent-sdk[s3]
 Use hooks in `ToolConfig` to convert media at tool execution time:
 
 ```python
-from pai_agent_sdk.media import S3MediaConfig, create_s3_media_hook
-from pai_agent_sdk.context import ToolConfig
+from ya_agent_sdk.media import S3MediaConfig, create_s3_media_hook
+from ya_agent_sdk.context import ToolConfig
 
 config = S3MediaConfig(bucket="my-bucket")
 hook = create_s3_media_hook(config)
@@ -148,8 +148,8 @@ The hook returns `None` on failure, causing fallback to binary content.
 The `create_media_upload_filter` creates a history processor that uploads binary media:
 
 ```python
-from pai_agent_sdk.filters import create_media_upload_filter
-from pai_agent_sdk.media import S3MediaUploader, S3MediaConfig
+from ya_agent_sdk.filters import create_media_upload_filter
+from ya_agent_sdk.media import S3MediaUploader, S3MediaConfig
 
 # Create uploader
 config = S3MediaConfig(bucket="my-bucket", url_mode="cdn", cdn_base_url="https://cdn.example.com")
@@ -183,7 +183,7 @@ The filter checks model capabilities before uploading:
 Configure capabilities in `ModelConfig`:
 
 ```python
-from pai_agent_sdk.context import ModelConfig, ModelCapability
+from ya_agent_sdk.context import ModelConfig, ModelCapability
 
 model_cfg = ModelConfig(
     capabilities={
@@ -217,7 +217,7 @@ Implement your own uploader for other storage backends:
 from pathlib import Path
 from uuid import uuid4
 
-from pai_agent_sdk.media import MediaUploader
+from ya_agent_sdk.media import MediaUploader
 
 class LocalFileUploader:
     """Upload to local filesystem with public URL."""

@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.filesystem.ls module."""
+"""Tests for ya_agent_sdk.toolsets.core.filesystem.ls module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.filesystem.ls import ListTool
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.filesystem.ls import ListTool
 
 
 def test_list_tool_attributes(agent_context: AgentContext) -> None:

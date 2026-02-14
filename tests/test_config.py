@@ -1,17 +1,17 @@
-"""Tests for pai_agent_sdk._config module."""
+"""Tests for ya_agent_sdk._config module."""
 
 from pathlib import Path
 
-from pai_agent_sdk._config import AgentSettings
-from pai_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk._config import AgentSettings
+from ya_agent_sdk.environment.local import LocalEnvironment
 
 
 def test_agent_context_settings_defaults(monkeypatch) -> None:
     """Should have correct default values."""
     # Clear environment variables to test true defaults
-    monkeypatch.delenv("PAI_AGENT_IMAGE_UNDERSTANDING_MODEL", raising=False)
-    monkeypatch.delenv("PAI_AGENT_VIDEO_UNDERSTANDING_MODEL", raising=False)
-    monkeypatch.delenv("PAI_AGENT_COMPACT_MODEL", raising=False)
+    monkeypatch.delenv("YA_AGENT_IMAGE_UNDERSTANDING_MODEL", raising=False)
+    monkeypatch.delenv("YA_AGENT_VIDEO_UNDERSTANDING_MODEL", raising=False)
+    monkeypatch.delenv("YA_AGENT_COMPACT_MODEL", raising=False)
 
     settings = AgentSettings()
     assert settings.image_understanding_model is None
@@ -25,8 +25,8 @@ def test_agent_context_settings_from_env(monkeypatch, tmp_path: Path) -> None:
     tmp_base = tmp_path / "tmp"
     tmp_base.mkdir()
 
-    monkeypatch.setenv("PAI_AGENT_IMAGE_UNDERSTANDING_MODEL", "openai:gpt-4o")
-    monkeypatch.setenv("PAI_AGENT_VIDEO_UNDERSTANDING_MODEL", "google-gla:gemini-2.0-flash")
+    monkeypatch.setenv("YA_AGENT_IMAGE_UNDERSTANDING_MODEL", "openai:gpt-4o")
+    monkeypatch.setenv("YA_AGENT_VIDEO_UNDERSTANDING_MODEL", "google-gla:gemini-2.0-flash")
 
     settings = AgentSettings()
     assert settings.image_understanding_model == "openai:gpt-4o"

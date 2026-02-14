@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.subagents import (
+from ya_agent_sdk.subagents import (
     SubagentConfig,
     create_unified_subagent_tool,
     get_available_subagent_names,
     load_builtin_unified_subagent_tool,
     load_unified_subagent_tool_from_dir,
 )
-from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 # =============================================================================
 # Test fixtures and mock tools

@@ -12,8 +12,8 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "pai-agent-sdk",
-    "paintress-cli",
+    "ya-agent-sdk",
+    "yaai",
 ]
 
 [[package]]
@@ -144,7 +144,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.76.0"
+version = "0.79.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -156,9 +156,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/be/d11abafaa15d6304826438170f7574d750218f49a106c54424a40cef4494/anthropic-0.76.0.tar.gz", hash = "sha256:e0cae6a368986d5cf6df743dfbb1b9519e6a9eee9c6c942ad8121c0b34416ffe", size = 495483 }
+sdist = { url = "https://files.pythonhosted.org/packages/15/b1/91aea3f8fd180d01d133d931a167a78a3737b3fd39ccef2ae8d6619c24fd/anthropic-0.79.0.tar.gz", hash = "sha256:8707aafb3b1176ed6c13e2b1c9fb3efddce90d17aee5d8b83a86c70dcdcca871", size = 509825 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/70/7b0fd9c1a738f59d3babe2b4212031c34ab7d0fda4ffef15b58a55c5bcea/anthropic-0.76.0-py3-none-any.whl", hash = "sha256:81efa3113901192af2f0fe977d3ec73fdadb1e691586306c4256cd6d5ccc331c", size = 390309 },
+    { url = "https://files.pythonhosted.org/packages/95/b2/cc0b8e874a18d7da50b0fda8c99e4ac123f23bf47b471827c5f6f3e4a767/anthropic-0.79.0-py3-none-any.whl", hash = "sha256:04cbd473b6bbda4ca2e41dd670fe2f829a911530f01697d0a1e37321eb75f3cf", size = 405918 },
 ]
 
 [[package]]
@@ -1189,6 +1189,47 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3f/12/f4099a141677fcd2ed79dcc1fcec431e60c52e0e90c9c5d935f0ffaf8c0e/groq-1.0.0.tar.gz", hash = "sha256:66cb7bb729e6eb644daac7ce8efe945e99e4eb33657f733ee6f13059ef0c25a9", size = 146068 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/88/3175759d2ef30406ea721f4d837bfa1ba4339fde3b81ba8c5640a96ed231/groq-1.0.0-py3-none-any.whl", hash = "sha256:6e22bf92ffad988f01d2d4df7729add66b8fd5dbfb2154b5bbf3af245b72c731", size = 138292 },
+]
+
+[[package]]
+name = "grpcio"
+version = "1.78.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/06/8a/3d098f35c143a89520e568e6539cc098fcd294495910e359889ce8741c84/grpcio-1.78.0.tar.gz", hash = "sha256:7382b95189546f375c174f53a5fa873cef91c4b8005faa05cc5b3beea9c4f1c5", size = 12852416 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/c7/d0b780a29b0837bf4ca9580904dfb275c1fc321ded7897d620af7047ec57/grpcio-1.78.0-cp311-cp311-linux_armv7l.whl", hash = "sha256:2777b783f6c13b92bd7b716667452c329eefd646bfb3f2e9dabea2e05dbd34f6", size = 5951525 },
+    { url = "https://files.pythonhosted.org/packages/c5/b1/96920bf2ee61df85a9503cb6f733fe711c0ff321a5a697d791b075673281/grpcio-1.78.0-cp311-cp311-macosx_11_0_universal2.whl", hash = "sha256:9dca934f24c732750389ce49d638069c3892ad065df86cb465b3fa3012b70c9e", size = 11830418 },
+    { url = "https://files.pythonhosted.org/packages/83/0c/7c1528f098aeb75a97de2bae18c530f56959fb7ad6c882db45d9884d6edc/grpcio-1.78.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:459ab414b35f4496138d0ecd735fed26f1318af5e52cb1efbc82a09f0d5aa911", size = 6524477 },
+    { url = "https://files.pythonhosted.org/packages/8d/52/e7c1f3688f949058e19a011c4e0dec973da3d0ae5e033909677f967ae1f4/grpcio-1.78.0-cp311-cp311-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:082653eecbdf290e6e3e2c276ab2c54b9e7c299e07f4221872380312d8cf395e", size = 7198266 },
+    { url = "https://files.pythonhosted.org/packages/e5/61/8ac32517c1e856677282c34f2e7812d6c328fa02b8f4067ab80e77fdc9c9/grpcio-1.78.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:85f93781028ec63f383f6bc90db785a016319c561cc11151fbb7b34e0d012303", size = 6730552 },
+    { url = "https://files.pythonhosted.org/packages/bd/98/b8ee0158199250220734f620b12e4a345955ac7329cfd908d0bf0fda77f0/grpcio-1.78.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:f12857d24d98441af6a1d5c87442d624411db486f7ba12550b07788f74b67b04", size = 7304296 },
+    { url = "https://files.pythonhosted.org/packages/bd/0f/7b72762e0d8840b58032a56fdbd02b78fc645b9fa993d71abf04edbc54f4/grpcio-1.78.0-cp311-cp311-musllinux_1_2_i686.whl", hash = "sha256:5397fff416b79e4b284959642a4e95ac4b0f1ece82c9993658e0e477d40551ec", size = 8288298 },
+    { url = "https://files.pythonhosted.org/packages/24/ae/ae4ce56bc5bb5caa3a486d60f5f6083ac3469228faa734362487176c15c5/grpcio-1.78.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:fbe6e89c7ffb48518384068321621b2a69cab509f58e40e4399fdd378fa6d074", size = 7730953 },
+    { url = "https://files.pythonhosted.org/packages/b5/6e/8052e3a28eb6a820c372b2eb4b5e32d195c661e137d3eca94d534a4cfd8a/grpcio-1.78.0-cp311-cp311-win32.whl", hash = "sha256:6092beabe1966a3229f599d7088b38dfc8ffa1608b5b5cdda31e591e6500f856", size = 4076503 },
+    { url = "https://files.pythonhosted.org/packages/08/62/f22c98c5265dfad327251fa2f840b591b1df5f5e15d88b19c18c86965b27/grpcio-1.78.0-cp311-cp311-win_amd64.whl", hash = "sha256:1afa62af6e23f88629f2b29ec9e52ec7c65a7176c1e0a83292b93c76ca882558", size = 4799767 },
+    { url = "https://files.pythonhosted.org/packages/4e/f4/7384ed0178203d6074446b3c4f46c90a22ddf7ae0b3aee521627f54cfc2a/grpcio-1.78.0-cp312-cp312-linux_armv7l.whl", hash = "sha256:f9ab915a267fc47c7e88c387a3a28325b58c898e23d4995f765728f4e3dedb97", size = 5913985 },
+    { url = "https://files.pythonhosted.org/packages/81/ed/be1caa25f06594463f685b3790b320f18aea49b33166f4141bfdc2bfb236/grpcio-1.78.0-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:3f8904a8165ab21e07e58bf3e30a73f4dffc7a1e0dbc32d51c61b5360d26f43e", size = 11811853 },
+    { url = "https://files.pythonhosted.org/packages/24/a7/f06d151afc4e64b7e3cc3e872d331d011c279aaab02831e40a81c691fb65/grpcio-1.78.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:859b13906ce098c0b493af92142ad051bf64c7870fa58a123911c88606714996", size = 6475766 },
+    { url = "https://files.pythonhosted.org/packages/8a/a8/4482922da832ec0082d0f2cc3a10976d84a7424707f25780b82814aafc0a/grpcio-1.78.0-cp312-cp312-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:b2342d87af32790f934a79c3112641e7b27d63c261b8b4395350dad43eff1dc7", size = 7170027 },
+    { url = "https://files.pythonhosted.org/packages/54/bf/f4a3b9693e35d25b24b0b39fa46d7d8a3c439e0a3036c3451764678fec20/grpcio-1.78.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:12a771591ae40bc65ba67048fa52ef4f0e6db8279e595fd349f9dfddeef571f9", size = 6690766 },
+    { url = "https://files.pythonhosted.org/packages/c7/b9/521875265cc99fe5ad4c5a17010018085cae2810a928bf15ebe7d8bcd9cc/grpcio-1.78.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:185dea0d5260cbb2d224c507bf2a5444d5abbb1fa3594c1ed7e4c709d5eb8383", size = 7266161 },
+    { url = "https://files.pythonhosted.org/packages/05/86/296a82844fd40a4ad4a95f100b55044b4f817dece732bf686aea1a284147/grpcio-1.78.0-cp312-cp312-musllinux_1_2_i686.whl", hash = "sha256:51b13f9aed9d59ee389ad666b8c2214cc87b5de258fa712f9ab05f922e3896c6", size = 8253303 },
+    { url = "https://files.pythonhosted.org/packages/f3/e4/ea3c0caf5468537f27ad5aab92b681ed7cc0ef5f8c9196d3fd42c8c2286b/grpcio-1.78.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:fd5f135b1bd58ab088930b3c613455796dfa0393626a6972663ccdda5b4ac6ce", size = 7698222 },
+    { url = "https://files.pythonhosted.org/packages/d7/47/7f05f81e4bb6b831e93271fb12fd52ba7b319b5402cbc101d588f435df00/grpcio-1.78.0-cp312-cp312-win32.whl", hash = "sha256:94309f498bcc07e5a7d16089ab984d42ad96af1d94b5a4eb966a266d9fcabf68", size = 4066123 },
+    { url = "https://files.pythonhosted.org/packages/ad/e7/d6914822c88aa2974dbbd10903d801a28a19ce9cd8bad7e694cbbcf61528/grpcio-1.78.0-cp312-cp312-win_amd64.whl", hash = "sha256:9566fe4ababbb2610c39190791e5b829869351d14369603702e890ef3ad2d06e", size = 4797657 },
+    { url = "https://files.pythonhosted.org/packages/05/a9/8f75894993895f361ed8636cd9237f4ab39ef87fd30db17467235ed1c045/grpcio-1.78.0-cp313-cp313-linux_armv7l.whl", hash = "sha256:ce3a90455492bf8bfa38e56fbbe1dbd4f872a3d8eeaf7337dc3b1c8aa28c271b", size = 5920143 },
+    { url = "https://files.pythonhosted.org/packages/55/06/0b78408e938ac424100100fd081189451b472236e8a3a1f6500390dc4954/grpcio-1.78.0-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:2bf5e2e163b356978b23652c4818ce4759d40f4712ee9ec5a83c4be6f8c23a3a", size = 11803926 },
+    { url = "https://files.pythonhosted.org/packages/88/93/b59fe7832ff6ae3c78b813ea43dac60e295fa03606d14d89d2e0ec29f4f3/grpcio-1.78.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:8f2ac84905d12918e4e55a16da17939eb63e433dc11b677267c35568aa63fc84", size = 6478628 },
+    { url = "https://files.pythonhosted.org/packages/ed/df/e67e3734527f9926b7d9c0dde6cd998d1d26850c3ed8eeec81297967ac67/grpcio-1.78.0-cp313-cp313-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:b58f37edab4a3881bc6c9bca52670610e0c9ca14e2ea3cf9debf185b870457fb", size = 7173574 },
+    { url = "https://files.pythonhosted.org/packages/a6/62/cc03fffb07bfba982a9ec097b164e8835546980aec25ecfa5f9c1a47e022/grpcio-1.78.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:735e38e176a88ce41840c21bb49098ab66177c64c82426e24e0082500cc68af5", size = 6692639 },
+    { url = "https://files.pythonhosted.org/packages/bf/9a/289c32e301b85bdb67d7ec68b752155e674ee3ba2173a1858f118e399ef3/grpcio-1.78.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:2045397e63a7a0ee7957c25f7dbb36ddc110e0cfb418403d110c0a7a68a844e9", size = 7268838 },
+    { url = "https://files.pythonhosted.org/packages/0e/79/1be93f32add280461fa4773880196572563e9c8510861ac2da0ea0f892b6/grpcio-1.78.0-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:a9f136fbafe7ccf4ac7e8e0c28b31066e810be52d6e344ef954a3a70234e1702", size = 8251878 },
+    { url = "https://files.pythonhosted.org/packages/65/65/793f8e95296ab92e4164593674ae6291b204bb5f67f9d4a711489cd30ffa/grpcio-1.78.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:748b6138585379c737adc08aeffd21222abbda1a86a0dca2a39682feb9196c20", size = 7695412 },
+    { url = "https://files.pythonhosted.org/packages/1c/9f/1e233fe697ecc82845942c2822ed06bb522e70d6771c28d5528e4c50f6a4/grpcio-1.78.0-cp313-cp313-win32.whl", hash = "sha256:271c73e6e5676afe4fc52907686670c7cea22ab2310b76a59b678403ed40d670", size = 4064899 },
+    { url = "https://files.pythonhosted.org/packages/4d/27/d86b89e36de8a951501fb06a0f38df19853210f341d0b28f83f4aa0ffa08/grpcio-1.78.0-cp313-cp313-win_amd64.whl", hash = "sha256:f2d4e43ee362adfc05994ed479334d5a451ab7bc3f3fee1b796b8ca66895acb4", size = 4797393 },
 ]
 
 [[package]]
@@ -2341,171 +2382,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pai-agent-sdk"
-source = { editable = "." }
-dependencies = [
-    { name = "agent-environment" },
-    { name = "anyio" },
-    { name = "cdp-use" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "pathspec" },
-    { name = "pillow" },
-    { name = "pydantic" },
-    { name = "pydantic-ai-slim" },
-    { name = "pydantic-settings" },
-    { name = "pyyaml" },
-    { name = "tenacity" },
-    { name = "typing-extensions" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "boto3" },
-    { name = "docker" },
-    { name = "firecrawl-py" },
-    { name = "markitdown", extra = ["all"] },
-    { name = "pydantic-ai" },
-    { name = "pymupdf" },
-    { name = "pymupdf-layout" },
-    { name = "pymupdf4llm" },
-    { name = "python-dotenv" },
-    { name = "tavily-python" },
-]
-docker = [
-    { name = "docker" },
-]
-document = [
-    { name = "markitdown", extra = ["all"] },
-    { name = "pymupdf" },
-    { name = "pymupdf-layout" },
-    { name = "pymupdf4llm" },
-]
-examples = [
-    { name = "pydantic-ai" },
-    { name = "python-dotenv" },
-]
-s3 = [
-    { name = "boto3" },
-]
-web = [
-    { name = "firecrawl-py" },
-    { name = "markitdown", extra = ["all"] },
-    { name = "tavily-python" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "boto3" },
-    { name = "boto3-stubs", extra = ["s3"] },
-    { name = "deptry" },
-    { name = "docker" },
-    { name = "firecrawl-py" },
-    { name = "inline-snapshot" },
-    { name = "markitdown", extra = ["all"] },
-    { name = "pre-commit" },
-    { name = "pydantic-ai" },
-    { name = "pymupdf" },
-    { name = "pymupdf-layout" },
-    { name = "pymupdf4llm" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-httpx" },
-    { name = "pytest-xdist" },
-    { name = "python-dotenv" },
-    { name = "ruff" },
-    { name = "tavily-python" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "agent-environment", specifier = "==0.4.0" },
-    { name = "anyio", specifier = ">=4.12.0" },
-    { name = "boto3", marker = "extra == 'all'", specifier = ">=1.34" },
-    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.34" },
-    { name = "cdp-use", specifier = ">=1.4.4,<2.0.0" },
-    { name = "docker", marker = "extra == 'all'", specifier = ">=7.0.0" },
-    { name = "docker", marker = "extra == 'docker'", specifier = ">=7.0.0" },
-    { name = "firecrawl-py", marker = "extra == 'all'", specifier = ">=4.0.0" },
-    { name = "firecrawl-py", marker = "extra == 'web'", specifier = ">=4.0.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "jinja2", specifier = ">=3.0.0" },
-    { name = "markitdown", extras = ["all"], marker = "extra == 'all'", specifier = ">=0.1.2" },
-    { name = "markitdown", extras = ["all"], marker = "extra == 'document'", specifier = ">=0.1.2" },
-    { name = "markitdown", extras = ["all"], marker = "extra == 'web'", specifier = ">=0.1.2" },
-    { name = "pathspec", specifier = ">=0.12.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pydantic-ai", marker = "extra == 'all'" },
-    { name = "pydantic-ai", marker = "extra == 'examples'" },
-    { name = "pydantic-ai-slim", specifier = ">=1.42.0" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pymupdf", marker = "extra == 'all'", specifier = ">=1.26.6" },
-    { name = "pymupdf", marker = "extra == 'document'", specifier = ">=1.26.6" },
-    { name = "pymupdf-layout", marker = "extra == 'all'", specifier = ">=1.26.6" },
-    { name = "pymupdf-layout", marker = "extra == 'document'", specifier = ">=1.26.6" },
-    { name = "pymupdf4llm", marker = "extra == 'all'", specifier = ">=0.2.8" },
-    { name = "pymupdf4llm", marker = "extra == 'document'", specifier = ">=0.2.8" },
-    { name = "python-dotenv", marker = "extra == 'all'" },
-    { name = "python-dotenv", marker = "extra == 'examples'" },
-    { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "tavily-python", marker = "extra == 'all'", specifier = ">=0.7.0" },
-    { name = "tavily-python", marker = "extra == 'web'", specifier = ">=0.7.0" },
-    { name = "tenacity", specifier = ">=9.0.0" },
-    { name = "typing-extensions", specifier = ">=4.15.0" },
-]
-provides-extras = ["all", "docker", "document", "examples", "s3", "web"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "boto3", specifier = ">=1.34" },
-    { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.34" },
-    { name = "deptry", specifier = ">=0.22.0" },
-    { name = "docker", specifier = ">=7.0.0" },
-    { name = "firecrawl-py", specifier = ">=4.0.0" },
-    { name = "inline-snapshot", specifier = ">=0.20.0" },
-    { name = "markitdown", extras = ["all"], specifier = ">=0.1.2" },
-    { name = "pre-commit", specifier = ">=2.20.0" },
-    { name = "pydantic-ai" },
-    { name = "pymupdf", specifier = ">=1.26.6" },
-    { name = "pymupdf-layout", specifier = ">=1.26.6" },
-    { name = "pymupdf4llm", specifier = ">=0.2.8" },
-    { name = "pyright", specifier = ">=1.1.0" },
-    { name = "pytest", specifier = ">=7.2.0" },
-    { name = "pytest-asyncio", specifier = ">=0.25.3" },
-    { name = "pytest-cov", specifier = ">=4.0.0" },
-    { name = "pytest-httpx", specifier = ">=0.35.0" },
-    { name = "pytest-xdist", specifier = ">=3.0.0" },
-    { name = "python-dotenv" },
-    { name = "ruff", specifier = ">=0.9.2" },
-    { name = "tavily-python", specifier = ">=0.7.0" },
-]
-
-[[package]]
-name = "paintress-cli"
-source = { editable = "paintress_cli" }
-dependencies = [
-    { name = "agent-environment" },
-    { name = "click" },
-    { name = "pai-agent-sdk", extra = ["all"] },
-    { name = "pydantic" },
-    { name = "pydantic-ai" },
-    { name = "pydantic-settings" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "agent-environment", specifier = ">=0.1.0" },
-    { name = "click", specifier = ">=8.0" },
-    { name = "pai-agent-sdk", extras = ["all"], editable = "." },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pydantic-ai" },
-    { name = "pydantic-settings", specifier = ">=2.0" },
-]
-
-[[package]]
 name = "pandas"
 version = "2.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2880,19 +2756,19 @@ email = [
 
 [[package]]
 name = "pydantic-ai"
-version = "1.42.0"
+version = "1.59.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pydantic-ai-slim", extra = ["ag-ui", "anthropic", "bedrock", "cli", "cohere", "evals", "fastmcp", "google", "groq", "huggingface", "logfire", "mcp", "mistral", "openai", "retries", "temporal", "ui", "vertexai"] },
+    { name = "pydantic-ai-slim", extra = ["ag-ui", "anthropic", "bedrock", "cli", "cohere", "evals", "fastmcp", "google", "groq", "huggingface", "logfire", "mcp", "mistral", "openai", "retries", "temporal", "ui", "vertexai", "xai"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/0f/81a9c0a62ef8dda14aec5a8aa41ca40e3e3fbff3470061c9a809a85e5c7b/pydantic_ai-1.42.0.tar.gz", hash = "sha256:7fc541060d4d3bfc76bdba35ddc374f726a2d658196ca68c8028bf845b986d7e", size = 11640 }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/2c/70f81c74bc5a04fe37b82b6ecc8771c58fa4014ff02e2de3655fe7350964/pydantic_ai-1.59.0.tar.gz", hash = "sha256:4beeac3406bc5cb5915168a66d8eb0b7e67d2672bc5109cc46e44d540b06f270", size = 11815 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/c5/fd1227a127aee35abddb667ff29f63ec53655646f1ddd2b0b6fc8408a31f/pydantic_ai-1.42.0-py3-none-any.whl", hash = "sha256:9e441300180166f253426c435cdabbaac2ba7e18a16645fec0d30861039d1f80", size = 7198 },
+    { url = "https://files.pythonhosted.org/packages/b2/89/e57af77c43a0c30b8e47eec96191e548b034ce308981872a1f2f9abef644/pydantic_ai-1.59.0-py3-none-any.whl", hash = "sha256:4a415e460e02d5dbeb2b93c5022f1251ec5a7c68d01784fd68e5b6bf36eecabb", size = 7221 },
 ]
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "1.42.0"
+version = "1.59.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "genai-prices" },
@@ -2903,9 +2779,9 @@ dependencies = [
     { name = "pydantic-graph" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/33/468c12ba7e02e6b9e502cdb9010d010cd746a65153034189a5c2d6132cf1/pydantic_ai_slim-1.42.0.tar.gz", hash = "sha256:150ae26aeb057a9fa2a05f32b81520b861248b2a3a53850eb97e77aa26803c97", size = 372088 }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/cc/2d439fc7372e9dc8e32b9e07f87696eb3830551b2e2231ba811ad1392cf9/pydantic_ai_slim-1.59.0.tar.gz", hash = "sha256:58f54576048d1a9b042b185e158a2e98ee9d3af54d311d4b92fc21f4722db061", size = 416977 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/81/2ac440057f2d0377fae1d0e76a491ecb19ed1a0f0164cb02c2e1f371c954/pydantic_ai_slim-1.42.0-py3-none-any.whl", hash = "sha256:e3ebc9533c9c32d67165d75c6609d77a33d459845f8cca0bf2cf67189eb42543", size = 489006 },
+    { url = "https://files.pythonhosted.org/packages/3f/e0/57f9f67a60f814f4cf332b2206b3338f17b2a819660201790920fdaf233d/pydantic_ai_slim-1.59.0-py3-none-any.whl", hash = "sha256:54652934b925ad737f94288f143676240cf83d25d6fa982f94cda7af29a8ca4f", size = 544425 },
 ]
 
 [package.optional-dependencies]
@@ -2968,6 +2844,9 @@ ui = [
 vertexai = [
     { name = "google-auth" },
     { name = "requests" },
+]
+xai = [
+    { name = "xai-sdk" },
 ]
 
 [[package]]
@@ -3033,7 +2912,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-evals"
-version = "1.42.0"
+version = "1.59.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -3043,14 +2922,14 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/66/05b03e8e4bf0afd0a0519c85a24d42495781aa4ef6dc9d32ff84a66c591b/pydantic_evals-1.42.0.tar.gz", hash = "sha256:1aa861fdb87baab2e107f1886b986a962d01e8c23584942d2d6cb3f7552ab3d4", size = 47169 }
+sdist = { url = "https://files.pythonhosted.org/packages/e2/93/5838b4a12d54363ee4a86aab4c3843d81c04d7538ead04fa110aa98752ce/pydantic_evals-1.59.0.tar.gz", hash = "sha256:74dff2548a578d1c3af780b5d1306171afa80b372cb05760fe5918b9b14df712", size = 54208 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/84/e32122a3338abd24f5cc96c5c9e253e8339feebfa086296572d0783e8d91/pydantic_evals-1.42.0-py3-none-any.whl", hash = "sha256:1f5ac45b135d538ea2a7419bf51933ee7ef89ed84469c9c77592f33786f8040c", size = 56346 },
+    { url = "https://files.pythonhosted.org/packages/af/81/a405684522cbe37b239acdae3f2346894584dd015e2572936e659755eaf8/pydantic_evals-1.59.0-py3-none-any.whl", hash = "sha256:5c471fafd6c082667369d0929d7eae771975184b2445cee9e533ec36b8976de9", size = 65280 },
 ]
 
 [[package]]
 name = "pydantic-graph"
-version = "1.42.0"
+version = "1.59.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -3058,9 +2937,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/38/bc/8a1d9434c36f4b793511ab0cf62c4aa3b1319057cc62f1d12f157e6bfe4e/pydantic_graph-1.42.0.tar.gz", hash = "sha256:903e33989375c5d7eb19cd5cd3dab68812177069d0cd15277853044f10a6386b", size = 58449 }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/0f/c00431826eb5e28243949f8218495682fbb8ee7cfdbdb4a2de2c6c40f88c/pydantic_graph-1.59.0.tar.gz", hash = "sha256:9c40d5d9f92babc1300e402ff261989c5b2abbe85de3bac999bf957b79e3f900", size = 58487 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/3e/eac3c729c98fe97f56508b1f1cba53167473941577adbe5369b690037a3f/pydantic_graph-1.42.0-py3-none-any.whl", hash = "sha256:56576cbdfc88f1fe462b7e19174903b8f591f05d4730071cb016368a1e6e8290", size = 72326 },
+    { url = "https://files.pythonhosted.org/packages/2d/72/3568b5c420ab4718cdcd717c15dc460daf8676a9419a861a8c424817e4fe/pydantic_graph-1.59.0-py3-none-any.whl", hash = "sha256:9c1601b222e1a8dde2736c2c2e372e02a84c938bd4904895081f4bd65366072b", size = 72345 },
 ]
 
 [[package]]
@@ -4183,6 +4062,25 @@ wheels = [
 ]
 
 [[package]]
+name = "xai-sdk"
+version = "1.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "googleapis-common-protos" },
+    { name = "grpcio" },
+    { name = "opentelemetry-sdk" },
+    { name = "packaging" },
+    { name = "protobuf" },
+    { name = "pydantic" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9e/66/1e0163eac090733d0ed0836a0cd3c14f5b59abeaa6fdba71c7b56b1916e4/xai_sdk-1.6.1.tar.gz", hash = "sha256:b55528df188f8c8448484021d735f75b0e7d71719ddeb432c5f187ac67e3c983", size = 388223 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/98/8b4019b35f2200295c5eec8176da4b779ec3a0fd60eba7196b618f437e1f/xai_sdk-1.6.1-py3-none-any.whl", hash = "sha256:f478dee9bd8839b8d341bd075277d0432aff5cd7120a4284547d25c6c9e7ab3b", size = 240917 },
+]
+
+[[package]]
 name = "xlrd"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -4198,6 +4096,171 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/46/2c/c06ef49dc36e7954e55b802a8b231770d286a9758b3d936bd1e04ce5ba88/xlsxwriter-3.2.9.tar.gz", hash = "sha256:254b1c37a368c444eac6e2f867405cc9e461b0ed97a3233b2ac1e574efb4140c", size = 215940 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl", hash = "sha256:9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3", size = 175315 },
+]
+
+[[package]]
+name = "ya-agent-sdk"
+source = { editable = "." }
+dependencies = [
+    { name = "agent-environment" },
+    { name = "anyio" },
+    { name = "cdp-use" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "pathspec" },
+    { name = "pillow" },
+    { name = "pydantic" },
+    { name = "pydantic-ai-slim" },
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+    { name = "tenacity" },
+    { name = "typing-extensions" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "boto3" },
+    { name = "docker" },
+    { name = "firecrawl-py" },
+    { name = "markitdown", extra = ["all"] },
+    { name = "pydantic-ai" },
+    { name = "pymupdf" },
+    { name = "pymupdf-layout" },
+    { name = "pymupdf4llm" },
+    { name = "python-dotenv" },
+    { name = "tavily-python" },
+]
+docker = [
+    { name = "docker" },
+]
+document = [
+    { name = "markitdown", extra = ["all"] },
+    { name = "pymupdf" },
+    { name = "pymupdf-layout" },
+    { name = "pymupdf4llm" },
+]
+examples = [
+    { name = "pydantic-ai" },
+    { name = "python-dotenv" },
+]
+s3 = [
+    { name = "boto3" },
+]
+web = [
+    { name = "firecrawl-py" },
+    { name = "markitdown", extra = ["all"] },
+    { name = "tavily-python" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "boto3" },
+    { name = "boto3-stubs", extra = ["s3"] },
+    { name = "deptry" },
+    { name = "docker" },
+    { name = "firecrawl-py" },
+    { name = "inline-snapshot" },
+    { name = "markitdown", extra = ["all"] },
+    { name = "pre-commit" },
+    { name = "pydantic-ai" },
+    { name = "pymupdf" },
+    { name = "pymupdf-layout" },
+    { name = "pymupdf4llm" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-httpx" },
+    { name = "pytest-xdist" },
+    { name = "python-dotenv" },
+    { name = "ruff" },
+    { name = "tavily-python" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-environment", specifier = "==0.4.0" },
+    { name = "anyio", specifier = ">=4.12.0" },
+    { name = "boto3", marker = "extra == 'all'", specifier = ">=1.34" },
+    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.34" },
+    { name = "cdp-use", specifier = ">=1.4.4,<2.0.0" },
+    { name = "docker", marker = "extra == 'all'", specifier = ">=7.0.0" },
+    { name = "docker", marker = "extra == 'docker'", specifier = ">=7.0.0" },
+    { name = "firecrawl-py", marker = "extra == 'all'", specifier = ">=4.0.0" },
+    { name = "firecrawl-py", marker = "extra == 'web'", specifier = ">=4.0.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "jinja2", specifier = ">=3.0.0" },
+    { name = "markitdown", extras = ["all"], marker = "extra == 'all'", specifier = ">=0.1.2" },
+    { name = "markitdown", extras = ["all"], marker = "extra == 'document'", specifier = ">=0.1.2" },
+    { name = "markitdown", extras = ["all"], marker = "extra == 'web'", specifier = ">=0.1.2" },
+    { name = "pathspec", specifier = ">=0.12.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "pydantic-ai", marker = "extra == 'all'" },
+    { name = "pydantic-ai", marker = "extra == 'examples'" },
+    { name = "pydantic-ai-slim", specifier = ">=1.59.0" },
+    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pymupdf", marker = "extra == 'all'", specifier = ">=1.26.6" },
+    { name = "pymupdf", marker = "extra == 'document'", specifier = ">=1.26.6" },
+    { name = "pymupdf-layout", marker = "extra == 'all'", specifier = ">=1.26.6" },
+    { name = "pymupdf-layout", marker = "extra == 'document'", specifier = ">=1.26.6" },
+    { name = "pymupdf4llm", marker = "extra == 'all'", specifier = ">=0.2.8" },
+    { name = "pymupdf4llm", marker = "extra == 'document'", specifier = ">=0.2.8" },
+    { name = "python-dotenv", marker = "extra == 'all'" },
+    { name = "python-dotenv", marker = "extra == 'examples'" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "tavily-python", marker = "extra == 'all'", specifier = ">=0.7.0" },
+    { name = "tavily-python", marker = "extra == 'web'", specifier = ">=0.7.0" },
+    { name = "tenacity", specifier = ">=9.0.0" },
+    { name = "typing-extensions", specifier = ">=4.15.0" },
+]
+provides-extras = ["all", "docker", "document", "examples", "s3", "web"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "boto3", specifier = ">=1.34" },
+    { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.34" },
+    { name = "deptry", specifier = ">=0.22.0" },
+    { name = "docker", specifier = ">=7.0.0" },
+    { name = "firecrawl-py", specifier = ">=4.0.0" },
+    { name = "inline-snapshot", specifier = ">=0.20.0" },
+    { name = "markitdown", extras = ["all"], specifier = ">=0.1.2" },
+    { name = "pre-commit", specifier = ">=2.20.0" },
+    { name = "pydantic-ai" },
+    { name = "pymupdf", specifier = ">=1.26.6" },
+    { name = "pymupdf-layout", specifier = ">=1.26.6" },
+    { name = "pymupdf4llm", specifier = ">=0.2.8" },
+    { name = "pyright", specifier = ">=1.1.0" },
+    { name = "pytest", specifier = ">=7.2.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.3" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "pytest-httpx", specifier = ">=0.35.0" },
+    { name = "pytest-xdist", specifier = ">=3.0.0" },
+    { name = "python-dotenv" },
+    { name = "ruff", specifier = ">=0.9.2" },
+    { name = "tavily-python", specifier = ">=0.7.0" },
+]
+
+[[package]]
+name = "yaai"
+source = { editable = "yaai" }
+dependencies = [
+    { name = "agent-environment" },
+    { name = "click" },
+    { name = "pydantic" },
+    { name = "pydantic-ai" },
+    { name = "pydantic-settings" },
+    { name = "ya-agent-sdk", extra = ["all"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-environment", specifier = ">=0.1.0" },
+    { name = "click", specifier = ">=8.0" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic-ai" },
+    { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "ya-agent-sdk", extras = ["all"], editable = "." },
 ]
 
 [[package]]

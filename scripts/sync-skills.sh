@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sync docs and .env.example to paintress_cli/paintress_cli/skills/building-agents
+# Sync docs and .env.example to yaai/yaai/skills/building-agents
 
 set -e
 
@@ -8,7 +8,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
-SKILL_DIR="paintress_cli/paintress_cli/skills/building-agents"
+SKILL_DIR="yaai/yaai/skills/building-agents"
 
 rm -rf "$SKILL_DIR"
 mkdir -p "$SKILL_DIR/docs" "$SKILL_DIR/examples"

@@ -1,16 +1,16 @@
 ---
 name: agent-builder
-description: Build AI agents using pai-agent-sdk with Pydantic AI. Covers agent creation via create_agent(), toolset configuration, session persistence with ResumableState, subagent hierarchies, and browser automation. Use when creating agent applications, configuring custom tools, managing multi-turn sessions, setting up hierarchical agents, or implementing HITL approval flows.
+description: Build AI agents using ya-agent-sdk with Pydantic AI. Covers agent creation via create_agent(), toolset configuration, session persistence with ResumableState, subagent hierarchies, and browser automation. Use when creating agent applications, configuring custom tools, managing multi-turn sessions, setting up hierarchical agents, or implementing HITL approval flows.
 ---
 
-# Building Agents with pai-agent-sdk
+# Building Agents with ya-agent-sdk
 
 Build production-ready AI agents with Pydantic AI.
 
 ## Quick Start
 
 ```python
-from pai_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents import create_agent
 
 async with create_agent("openai:gpt-4o") as runtime:
     result = await runtime.agent.run("Hello", deps=runtime.ctx)
@@ -20,9 +20,9 @@ async with create_agent("openai:gpt-4o") as runtime:
 With tools and streaming:
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
-from pai_agent_sdk.toolsets.core.filesystem import tools as fs_tools
-from pai_agent_sdk.toolsets.core.shell import tools as shell_tools
+from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.toolsets.core.filesystem import tools as fs_tools
+from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
 
 async with create_agent(
     model="anthropic:claude-sonnet-4",
@@ -38,8 +38,8 @@ async with create_agent(
 ## Installation
 
 ```bash
-pip install pai-agent-sdk[all]
-# Or selective: pip install pai-agent-sdk[docker,web,document]
+pip install ya-agent-sdk[all]
+# Or selective: pip install ya-agent-sdk[docker,web,document]
 ```
 
 ## Core Concepts
@@ -65,9 +65,9 @@ pip install pai-agent-sdk[all]
 Inherit from `BaseTool`:
 
 ```python
-from pai_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.base import BaseTool
 from pydantic_ai import RunContext
-from pai_agent_sdk.context import AgentContext
+from ya_agent_sdk.context import AgentContext
 
 class MyTool(BaseTool):
     name = "my_tool"
@@ -90,7 +90,7 @@ with open("session.json", "w") as f:
     f.write(state.model_dump_json())
 
 # Restore
-from pai_agent_sdk.context import ResumableState
+from ya_agent_sdk.context import ResumableState
 state = ResumableState.model_validate_json(open("session.json").read())
 
 async with create_agent("openai:gpt-4o", state=state) as runtime:
@@ -120,7 +120,7 @@ Full guide: [docs/toolset.md](docs/toolset.md)
 Delegate specialized tasks to child agents:
 
 ```python
-from pai_agent_sdk.subagents import SubagentConfig
+from ya_agent_sdk.subagents import SubagentConfig
 
 config = SubagentConfig(
     name="researcher",
@@ -145,8 +145,8 @@ Full guide: [docs/subagent.md](docs/subagent.md)
 Use DockerBrowserSandbox for headless Chrome:
 
 ```python
-from pai_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox
-from pai_agent_sdk.toolsets.browser_use import BrowserUseToolset
+from ya_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox
+from ya_agent_sdk.toolsets.browser_use import BrowserUseToolset
 
 # See examples/browser_use.py for complete implementation
 ```
@@ -158,8 +158,8 @@ Full example: [examples/browser_use.py](examples/browser_use.py)
 Handle real-time events with lifecycle hooks:
 
 ```python
-from pai_agent_sdk.agents import stream_agent
-from pai_agent_sdk.stream import AgentStartContext, AgentCompleteContext
+from ya_agent_sdk.agents import stream_agent
+from ya_agent_sdk.stream import AgentStartContext, AgentCompleteContext
 
 async def on_start(ctx: AgentStartContext):
     print(f"Agent started with prompt: {ctx.user_prompt}")
@@ -227,7 +227,7 @@ Check examples/.env.example for all available environment variables
 ### ModelConfig
 
 ```python
-from pai_agent_sdk.context import ModelConfig, ModelCapability
+from ya_agent_sdk.context import ModelConfig, ModelCapability
 
 ModelConfig(
     context_window=200_000,
@@ -238,7 +238,7 @@ ModelConfig(
 ### ToolConfig
 
 ```python
-from pai_agent_sdk.context import ToolConfig
+from ya_agent_sdk.context import ToolConfig
 
 ToolConfig(
     tavily_api_key="...",
@@ -250,7 +250,7 @@ ToolConfig(
 
 ## Builtin Tools
 
-Import from `pai_agent_sdk.toolsets.core.*`:
+Import from `ya_agent_sdk.toolsets.core.*`:
 
 | Module       | Tools                                                                 |
 | ------------ | --------------------------------------------------------------------- |

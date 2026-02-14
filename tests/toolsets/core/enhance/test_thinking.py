@@ -1,12 +1,12 @@
-"""Tests for pai_agent_sdk.toolsets.core.enhance.thinking module."""
+"""Tests for ya_agent_sdk.toolsets.core.enhance.thinking module."""
 
 from unittest.mock import MagicMock
 
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.toolsets.core.enhance.thinking import ThinkingTool
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core.enhance.thinking import ThinkingTool
 
 
 def test_thinking_tool_attributes(agent_context: AgentContext) -> None:

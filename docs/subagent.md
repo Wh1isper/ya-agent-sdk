@@ -34,8 +34,8 @@ flowchart TB
 The simplest way to use subagents is via `create_agent` with `unified_subagents=True`:
 
 ```python
-from pai_agent_sdk.agents import create_agent
-from pai_agent_sdk.subagents import SubagentConfig
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.subagents import SubagentConfig
 
 # Define custom subagents
 configs = [
@@ -95,13 +95,13 @@ async def delegate(
 For more control, you can create the unified tool manually:
 
 ```python
-from pai_agent_sdk.agents import create_agent
-from pai_agent_sdk.subagents import (
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.subagents import (
     SubagentConfig,
     create_unified_subagent_tool,
     load_builtin_unified_subagent_tool,
 )
-from pai_agent_sdk.toolsets.core.base import Toolset
+from ya_agent_sdk.toolsets.core.base import Toolset
 
 # Option 1: Load builtin subagents as unified tool
 parent_toolset = Toolset(tools=[GrepTool, ViewTool, SearchTool, ...])
@@ -129,8 +129,8 @@ runtime = create_agent(
 For cases where you need each subagent as a separate tool:
 
 ```python
-from pai_agent_sdk.agents import create_agent
-from pai_agent_sdk.subagents import SubagentConfig
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.subagents import SubagentConfig
 
 config = SubagentConfig(
     name="researcher",
@@ -218,7 +218,7 @@ class MyManagementTool(BaseTool):
 
 ## Builtin Presets
 
-Located in `pai_agent_sdk/subagents/presets/`:
+Located in `ya_agent_sdk/subagents/presets/`:
 
 | Preset          | Purpose                                         | Required Tools               |
 | --------------- | ----------------------------------------------- | ---------------------------- |
@@ -228,7 +228,7 @@ Located in `pai_agent_sdk/subagents/presets/`:
 | `searcher`      | Web research for documentation and solutions    | `search`                     |
 
 ```python
-from pai_agent_sdk.subagents import (
+from ya_agent_sdk.subagents import (
     get_builtin_subagent_configs,
     load_builtin_unified_subagent_tool,  # Recommended
     load_builtin_subagent_tools,         # Individual tools
@@ -246,7 +246,7 @@ subagent_tools = load_builtin_subagent_tools(parent_toolset, model="anthropic:cl
 
 ## API Reference
 
-> Full docstrings and examples: `pai_agent_sdk/subagents/__init__.py`
+> Full docstrings and examples: `ya_agent_sdk/subagents/__init__.py`
 
 ### Core
 

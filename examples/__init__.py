@@ -1,9 +1,9 @@
-"""Example scripts for pai-agent-sdk.
+"""Example scripts for ya-agent-sdk.
 
 This package contains example scripts demonstrating various use cases.
 To use these examples, install with the examples extra:
 
-    pip install "pai-agent-sdk[examples]"
+    pip install "ya-agent-sdk[examples]"
 
 Or for development:
 

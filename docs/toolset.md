@@ -28,9 +28,9 @@ flowchart LR
 Inherit from `BaseTool` and implement the `call` method:
 
 ```python
-from pai_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.base import BaseTool
 from pydantic_ai import RunContext
-from pai_agent_sdk.context import AgentContext
+from ya_agent_sdk.context import AgentContext
 
 class MyCustomTool(BaseTool):
     name = "my_tool"
@@ -45,7 +45,7 @@ class MyCustomTool(BaseTool):
     # def get_approval_metadata(self) -> dict | None: ...
 ```
 
-> Full interface: `pai_agent_sdk/toolsets/base.py`
+> Full interface: `ya_agent_sdk/toolsets/base.py`
 
 ## Tool Instructions
 
@@ -69,7 +69,7 @@ class MyTool(BaseTool):
 When multiple related tools share the same instruction, use `Instruction` with a `group`:
 
 ```python
-from pai_agent_sdk.toolsets import Instruction
+from ya_agent_sdk.toolsets import Instruction
 
 class TaskCreateTool(BaseTool):
     name = "task_create"
@@ -102,7 +102,7 @@ class TaskListTool(BaseTool):
 Typically via `create_agent`:
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents import create_agent, stream_agent
 
 runtime = create_agent(
     "openai:gpt-4",
@@ -113,7 +113,7 @@ runtime = create_agent(
 )
 ```
 
-> For manual toolset creation, see `pai_agent_sdk/toolsets/core/base.py`
+> For manual toolset creation, see `ya_agent_sdk/toolsets/core/base.py`
 
 ## Hook System
 
@@ -141,7 +141,7 @@ Post-hooks receive the result, which **may be an Exception instance** if tool ex
 - Check `isinstance(result, Exception)` to handle errors
 - Return a fallback value for recovery, or pass through to re-raise
 
-> Examples: `pai_agent_sdk/toolsets/core/base.py` docstrings
+> Examples: `ya_agent_sdk/toolsets/core/base.py` docstrings
 
 ## Extending Toolset
 
@@ -153,7 +153,7 @@ class TimeoutToolset(Toolset):
         return await asyncio.wait_for(tool.call_func(args, ctx), timeout=30.0)
 ```
 
-> Full examples: `pai_agent_sdk/toolsets/core/base.py`
+> Full examples: `ya_agent_sdk/toolsets/core/base.py`
 
 ## Human-in-the-Loop (HITL) Approval
 
@@ -165,7 +165,7 @@ ctx.need_user_approve_tools = ["shell", "edit", "replace"]
 
 When called, these tools raise `ApprovalRequired`. Implement `get_approval_metadata()` in your tool to provide context.
 
-> HITL flow details: `pai_agent_sdk/toolsets/core/base.py`
+> HITL flow details: `ya_agent_sdk/toolsets/core/base.py`
 
 ## Architecture
 

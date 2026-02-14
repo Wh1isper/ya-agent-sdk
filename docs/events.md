@@ -12,8 +12,8 @@ The event system provides two categories of events:
 All events inherit from `AgentEvent` and are delivered via `StreamEvent` wrapper:
 
 ```python
-from pai_agent_sdk.context import StreamEvent
-from pai_agent_sdk.events import AgentEvent
+from ya_agent_sdk.context import StreamEvent
+from ya_agent_sdk.events import AgentEvent
 
 @dataclass
 class StreamEvent:
@@ -67,8 +67,8 @@ All events within the same loop share the same `loop_index`.
 ### Usage Example
 
 ```python
-from pai_agent_sdk.agents import create_agent, stream_agent
-from pai_agent_sdk.events import (
+from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.events import (
     AgentExecutionStartEvent,
     AgentExecutionCompleteEvent,
     ModelRequestStartEvent,
@@ -131,7 +131,7 @@ Emitted during context compaction (summarizing message history):
 | `CompactFailedEvent`   | Compaction failed with error      |
 
 ```python
-from pai_agent_sdk.events import CompactStartEvent, CompactCompleteEvent, CompactFailedEvent
+from ya_agent_sdk.events import CompactStartEvent, CompactCompleteEvent, CompactFailedEvent
 
 if isinstance(event, CompactCompleteEvent):
     print(f"Compacted {event.original_message_count} -> {event.compacted_message_count} messages")
@@ -148,7 +148,7 @@ Emitted during context handoff (clearing context with summary):
 | `HandoffFailedEvent`   | Handoff failed    |
 
 ```python
-from pai_agent_sdk.events import HandoffCompleteEvent
+from ya_agent_sdk.events import HandoffCompleteEvent
 
 if isinstance(event, HandoffCompleteEvent):
     print(f"Handoff complete: {event.new_message_count} messages preserved")
@@ -164,7 +164,7 @@ Emitted when delegating to subagents:
 | `SubagentCompleteEvent` | Subagent execution completed |
 
 ```python
-from pai_agent_sdk.events import SubagentStartEvent, SubagentCompleteEvent
+from ya_agent_sdk.events import SubagentStartEvent, SubagentCompleteEvent
 
 if isinstance(event, SubagentStartEvent):
     print(f"Delegating to {event.agent_name}: {event.prompt_preview}")
@@ -179,7 +179,7 @@ Emitted when messages are received from the message bus:
 | `MessageReceivedEvent` | Messages injected into context |
 
 ```python
-from pai_agent_sdk.events import MessageReceivedEvent
+from ya_agent_sdk.events import MessageReceivedEvent
 
 if isinstance(event, MessageReceivedEvent):
     for msg in event.messages:
@@ -207,7 +207,7 @@ Create custom events by subclassing `AgentEvent`:
 
 ```python
 from dataclasses import dataclass
-from pai_agent_sdk.events import AgentEvent
+from ya_agent_sdk.events import AgentEvent
 
 @dataclass
 class MyCustomEvent(AgentEvent):
@@ -223,7 +223,7 @@ await ctx.emit_event(MyCustomEvent(event_id="custom-001", custom_field="value"))
 For convenience, a union type is provided for lifecycle events:
 
 ```python
-from pai_agent_sdk.events import LifecycleEvent
+from ya_agent_sdk.events import LifecycleEvent
 
 # LifecycleEvent = (
 #     AgentExecutionStartEvent

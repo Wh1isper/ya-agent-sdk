@@ -1,6 +1,6 @@
 """Tests for Task and TaskManager."""
 
-from pai_agent_sdk.context import Task, TaskManager, TaskStatus
+from ya_agent_sdk.context import Task, TaskManager, TaskStatus
 
 # =============================================================================
 # Task Tests

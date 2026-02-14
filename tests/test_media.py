@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pai_agent_sdk.media import MediaUploader, S3MediaConfig, S3MediaUploader, create_s3_media_hook
+from ya_agent_sdk.media import MediaUploader, S3MediaConfig, S3MediaUploader, create_s3_media_hook
 
 
 def test_media_uploader_protocol():
@@ -196,7 +196,7 @@ async def test_create_s3_media_hook_success():
     hook = create_s3_media_hook(config)
 
     # Mock the uploader inside the hook
-    with patch("pai_agent_sdk.media.S3MediaUploader.upload") as mock_upload:
+    with patch("ya_agent_sdk.media.S3MediaUploader.upload") as mock_upload:
         mock_upload.return_value = "https://cdn.example.com/2024-01-01/abc123.png"
 
         # RunContext is not used, pass None
@@ -212,7 +212,7 @@ async def test_create_s3_media_hook_fallback_on_error():
     hook = create_s3_media_hook(config)
 
     # Mock upload to raise an exception
-    with patch("pai_agent_sdk.media.S3MediaUploader.upload") as mock_upload:
+    with patch("ya_agent_sdk.media.S3MediaUploader.upload") as mock_upload:
         mock_upload.side_effect = Exception("S3 error")
 
         result = await hook(None, b"image data", "image/png")  # type: ignore[arg-type]

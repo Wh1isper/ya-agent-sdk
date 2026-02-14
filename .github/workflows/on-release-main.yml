@@ -50,8 +50,8 @@ jobs:
 
       - name: Create SKILL.zip
         run: |
-          cp -r paintress_cli/paintress_cli/skills/building-agents pai-agent-sdk
-          zip -r SKILL.zip pai-agent-sdk
+          cp -r yaai/yaai/skills/building-agents ya-agent-sdk
+          zip -r SKILL.zip ya-agent-sdk
 
       - name: Upload SKILL.zip to release
         uses: svenstaro/upload-release-action@v2

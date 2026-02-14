@@ -1,10 +1,10 @@
-"""Tests for pai_agent_sdk.events module."""
+"""Tests for ya_agent_sdk.events module."""
 
 from dataclasses import dataclass
 from datetime import datetime
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.events import (
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.events import (
     AgentEvent,
     AgentExecutionCompleteEvent,
     AgentExecutionFailedEvent,

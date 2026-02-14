@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pai_agent_sdk.toolsets.browser_use._tools import build_tool
-from pai_agent_sdk.toolsets.browser_use.tools import execute_javascript, navigate_to_url
-from pai_agent_sdk.toolsets.browser_use.tools.validation import is_checked, is_enabled, is_visible
-from pai_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
+from ya_agent_sdk.toolsets.browser_use._tools import build_tool
+from ya_agent_sdk.toolsets.browser_use.tools import execute_javascript, navigate_to_url
+from ya_agent_sdk.toolsets.browser_use.tools.validation import is_checked, is_enabled, is_visible
+from ya_agent_sdk.toolsets.browser_use.toolset import BrowserUseToolset
 
 
 async def test_is_visible_true(cdp_url, test_server):

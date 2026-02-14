@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pai_agent_sdk.subagents import SubagentConfig, create_subagent_tool_from_config
-from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.subagents import SubagentConfig, create_subagent_tool_from_config
+from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 
 class GrepTool(BaseTool):

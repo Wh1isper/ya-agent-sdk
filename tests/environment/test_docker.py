@@ -14,7 +14,7 @@ pytest.importorskip("docker")
 
 from agent_environment import ShellExecutionError
 
-from pai_agent_sdk.environment.docker import DockerEnvironment, DockerShell
+from ya_agent_sdk.environment.docker import DockerEnvironment, DockerShell
 
 # --- DockerShell Tests ---
 

@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.filters.tool_args module."""
+"""Tests for ya_agent_sdk.filters.tool_args module."""
 
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -11,9 +11,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.filters.tool_args import fix_truncated_tool_args
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.filters.tool_args import fix_truncated_tool_args
 
 
 async def test_fix_truncated_tool_args_valid_json(tmp_path: Path) -> None:

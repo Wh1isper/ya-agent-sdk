@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
+from ya_agent_sdk.context import AgentContext
 
 
 @pytest.fixture

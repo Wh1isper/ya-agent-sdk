@@ -9,8 +9,8 @@ import pytest
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext
-from pai_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
 
 # Test file directory
 TEST_FILES_DIR = Path(__file__).parent
@@ -42,7 +42,7 @@ def docx_file(tmp_path: Path) -> Path:
 
 # Check if PDF tools are available
 try:
-    from pai_agent_sdk.toolsets.core.document.pdf import PdfConvertTool
+    from ya_agent_sdk.toolsets.core.document.pdf import PdfConvertTool
 
     PDF_AVAILABLE = True
 except ImportError:
@@ -166,7 +166,7 @@ async def test_pdf_convert_page_range(tmp_path: Path, pdf_file: Path) -> None:
 
 # Check if Office tools are available
 try:
-    from pai_agent_sdk.toolsets.core.document.office import OfficeConvertTool
+    from ya_agent_sdk.toolsets.core.document.office import OfficeConvertTool
 
     OFFICE_AVAILABLE = True
 except ImportError:

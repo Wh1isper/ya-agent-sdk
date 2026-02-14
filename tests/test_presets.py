@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from inline_snapshot import snapshot
 
-from pai_agent_sdk.presets import (
+from ya_agent_sdk.presets import (
     ANTHROPIC_1M_DEFAULT,
     ANTHROPIC_1M_HIGH,
     ANTHROPIC_1M_LOW,
@@ -247,7 +247,7 @@ def test_model_cfg_presets_structure() -> None:
 
 def test_model_cfg_capabilities() -> None:
     """Test that ModelConfig presets have correct capabilities."""
-    from pai_agent_sdk.context import ModelCapability
+    from ya_agent_sdk.context import ModelCapability
 
     # Claude: vision + document, no video
     cfg_claude = get_model_cfg("claude_200k")

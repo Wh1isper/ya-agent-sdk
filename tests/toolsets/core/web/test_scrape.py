@@ -1,4 +1,4 @@
-"""Tests for pai_agent_sdk.toolsets.core.web.scrape module."""
+"""Tests for ya_agent_sdk.toolsets.core.web.scrape module."""
 
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
-from pai_agent_sdk.context import AgentContext, ToolConfig
-from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.web.scrape import CONTENT_TRUNCATE_THRESHOLD, ScrapeTool
+from ya_agent_sdk.context import AgentContext, ToolConfig
+from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.web.scrape import CONTENT_TRUNCATE_THRESHOLD, ScrapeTool
 
 
 def test_scrape_tool_attributes() -> None:

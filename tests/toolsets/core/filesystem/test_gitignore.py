@@ -2,7 +2,7 @@
 
 import pytest
 
-from pai_agent_sdk.toolsets.core.filesystem._gitignore import (
+from ya_agent_sdk.toolsets.core.filesystem._gitignore import (
     GitignoreFilterResult,
     _get_top_level_dir,
     _parse_gitignore_content,
@@ -127,7 +127,7 @@ def test_gitignore_filter_result_get_ignored_summary_invalid_max_items():
 @pytest.fixture
 def mock_file_operator(tmp_path):
     """Create a mock file operator for testing."""
-    from pai_agent_sdk.environment.local import LocalFileOperator
+    from ya_agent_sdk.environment.local import LocalFileOperator
 
     return LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
 
