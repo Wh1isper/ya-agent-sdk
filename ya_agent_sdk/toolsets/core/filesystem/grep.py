@@ -6,9 +6,9 @@ from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-from agent_environment import FileOperator
 from pydantic import Field
 from pydantic_ai import RunContext
+from y_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext

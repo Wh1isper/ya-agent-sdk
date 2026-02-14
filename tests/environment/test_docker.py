@@ -12,7 +12,7 @@ import pytest
 # Skip all tests if docker is not installed
 pytest.importorskip("docker")
 
-from agent_environment import ShellExecutionError
+from y_agent_environment import ShellExecutionError
 
 from ya_agent_sdk.environment.docker import DockerEnvironment, DockerShell
 

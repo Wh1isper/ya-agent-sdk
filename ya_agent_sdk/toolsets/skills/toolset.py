@@ -30,7 +30,7 @@ from ya_agent_sdk.toolsets.base import BaseToolset
 from ya_agent_sdk.toolsets.skills.config import SkillConfig, parse_skill_markdown
 
 if TYPE_CHECKING:
-    from agent_environment import FileOperator
+    from y_agent_environment import FileOperator
 
 logger = get_logger(__name__)
 

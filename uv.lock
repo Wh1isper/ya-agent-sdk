@@ -29,21 +29,6 @@ wheels = [
 ]
 
 [[package]]
-name = "agent-environment"
-version = "0.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "pathspec" },
-    { name = "pydantic" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/02/18603bdbdd437a6854a668074bb67a4be4885d499238847f6016f81ef5f7/agent_environment-0.4.0.tar.gz", hash = "sha256:84ef44a2522d8b2c668bcd6382996bf12c5a99ed87b355c551f20ac135bf63ed", size = 78583 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/b5/37a82b532be804bc6e1212e19d426bacf535ab4d281df5c3f6f6cf9bad49/agent_environment-0.4.0-py3-none-any.whl", hash = "sha256:a9dc24197d886f75f88b57cc543daa765f7f1f7679757b638d40276fc911605a", size = 24462 },
-]
-
-[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4099,10 +4084,24 @@ wheels = [
 ]
 
 [[package]]
+name = "y-agent-environment"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "pathspec" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/77/90a031ba6afeb2436537687923fec247ac8d9bf49348511478fb593460d8/y_agent_environment-0.4.0.tar.gz", hash = "sha256:98180fb94a962f9ec8dcf2a775f15b0c14631389371ef1d72e84eef982b05c77", size = 78557 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/ff/26da55cb64ca14ab4d278bc68f1f7c7767ab2de1d62bf94c4bc84bf55a98/y_agent_environment-0.4.0-py3-none-any.whl", hash = "sha256:677a4b1bc68d5fa877a3c5d757f6b251cb65cf39023dc8e69c729a403b610ce5", size = 24538 },
+]
+
+[[package]]
 name = "ya-agent-sdk"
 source = { editable = "." }
 dependencies = [
-    { name = "agent-environment" },
     { name = "anyio" },
     { name = "cdp-use" },
     { name = "httpx" },
@@ -4115,6 +4114,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tenacity" },
     { name = "typing-extensions" },
+    { name = "y-agent-environment" },
 ]
 
 [package.optional-dependencies]
@@ -4179,7 +4179,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-environment", specifier = "==0.4.0" },
     { name = "anyio", specifier = ">=4.12.0" },
     { name = "boto3", marker = "extra == 'all'", specifier = ">=1.34" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.34" },
@@ -4213,6 +4212,7 @@ requires-dist = [
     { name = "tavily-python", marker = "extra == 'web'", specifier = ">=0.7.0" },
     { name = "tenacity", specifier = ">=9.0.0" },
     { name = "typing-extensions", specifier = ">=4.15.0" },
+    { name = "y-agent-environment", specifier = "==0.4.0" },
 ]
 provides-extras = ["all", "docker", "document", "examples", "s3", "web"]
 
@@ -4245,21 +4245,21 @@ dev = [
 name = "yaai"
 source = { editable = "yaai" }
 dependencies = [
-    { name = "agent-environment" },
     { name = "click" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings" },
+    { name = "y-agent-environment" },
     { name = "ya-agent-sdk", extra = ["all"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-environment", specifier = ">=0.1.0" },
     { name = "click", specifier = ">=8.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "y-agent-environment", specifier = ">=0.1.0" },
     { name = "ya-agent-sdk", extras = ["all"], editable = "." },
 ]
 

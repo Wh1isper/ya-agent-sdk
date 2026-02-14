@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import anyio
 import pathspec
-from agent_environment import FileOperator
+from y_agent_environment import FileOperator
 
 
 def _parse_gitignore_content(content: str) -> pathspec.PathSpec:

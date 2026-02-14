@@ -2,7 +2,7 @@
 
 Resource management, lifecycle hooks, and environment implementations.
 
-> **Note**: Base abstractions (`Environment`, `FileOperator`, `Shell`, `ResourceRegistry`, etc.) are defined in the [agent-environment](https://github.com/wh1isper/agent-environment) protocol package. This SDK provides concrete implementations (`LocalEnvironment`, `DockerEnvironment`).
+> **Note**: Base abstractions (`Environment`, `FileOperator`, `Shell`, `ResourceRegistry`, etc.) are defined in the [y-agent-environment](https://github.com/wh1isper/y-agent-environment) protocol package. This SDK provides concrete implementations (`LocalEnvironment`, `DockerEnvironment`).
 
 ## Overview
 
@@ -66,7 +66,7 @@ toolsets = await registry.get_toolsets()
 await registry.close_all()
 ```
 
-> Full API: [agent-environment](https://github.com/wh1isper/agent-environment)
+> Full API: [y-agent-environment](https://github.com/wh1isper/y-agent-environment)
 
 ## Creating Custom Environments
 
@@ -138,7 +138,7 @@ class ContainerEnvironment(Environment):
 Resources can provide their own toolsets via `get_toolsets()`. This enables better encapsulation where a resource owns both its state and the tools that operate on it:
 
 ```python
-from agent_environment import BaseResource
+from y_agent_environment import BaseResource
 
 class ProcessManager(BaseResource):
     async def setup(self) -> None:
@@ -177,7 +177,7 @@ Resources can be exported and restored across process restarts using factories.
 `BaseResource` is a convenience abstract class with async `close()` and default export/restore:
 
 ```python
-from agent_environment import BaseResource
+from y_agent_environment import BaseResource
 
 class BrowserSession(BaseResource):
     def __init__(self, browser: Browser):
@@ -206,7 +206,7 @@ class BrowserSession(BaseResource):
 Factory functions receive the `Environment` instance, allowing access to `file_operator`, `shell`, `resources`, and `tmp_dir`:
 
 ```python
-from agent_environment import Environment
+from y_agent_environment import Environment
 
 async def create_browser(env: Environment) -> BrowserSession:
     return BrowserSession(

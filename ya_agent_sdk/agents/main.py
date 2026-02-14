@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
-from agent_environment import Environment
 from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, UsageLimits, UserError
 from pydantic_ai._agent_graph import CallToolsNode, HistoryProcessor, ModelRequestNode
 from pydantic_ai.messages import ModelMessage, UserContent
@@ -24,6 +23,7 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.run import AgentRun
 from typing_extensions import TypeVar
+from y_agent_environment import Environment
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.compact import create_compact_filter

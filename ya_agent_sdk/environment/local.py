@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
-from agent_environment import (
+from y_agent_environment import (
     Environment,
     FileOperationError,
     FileOperator,

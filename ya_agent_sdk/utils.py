@@ -7,12 +7,12 @@ import typing
 from typing import TYPE_CHECKING, Literal
 
 import anyio.to_thread
-from agent_environment import Environment
 from PIL import Image
 from pydantic_ai import AbstractToolset, Agent, ModelMessage, ModelResponse, RequestUsage, RunContext, ToolCallPart
 from pydantic_ai.messages import BinaryContent
 from pydantic_ai.output import OutputDataT
 from typing_extensions import TypeVar
+from y_agent_environment import Environment
 
 if TYPE_CHECKING:
     from ya_agent_sdk.context import AgentContext

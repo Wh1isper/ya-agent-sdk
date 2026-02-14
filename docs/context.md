@@ -334,4 +334,4 @@ Used automatically by the SDK streaming infrastructure.
 
 - [environment.md](environment.md) - FileOperator, Shell, and ResourceRegistry
 - [toolset.md](toolset.md) - Creating and using tools
-- [agent-environment](https://github.com/wh1isper/agent-environment) - Base protocol definitions
+- [y-agent-environment](https://github.com/wh1isper/y-agent-environment) - Base protocol definitions

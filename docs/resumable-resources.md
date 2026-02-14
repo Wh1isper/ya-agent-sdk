@@ -2,7 +2,7 @@
 
 Export and restore resource states across process restarts via async factories.
 
-> **Note**: Base protocols and classes (`Resource`, `ResumableResource`, `BaseResource`, `ResourceRegistry`, etc.) are defined in the [agent-environment](https://github.com/wh1isper/agent-environment) protocol package.
+> **Note**: Base protocols and classes (`Resource`, `ResumableResource`, `BaseResource`, `ResourceRegistry`, etc.) are defined in the [y-agent-environment](https://github.com/wh1isper/y-agent-environment) protocol package.
 
 ## Overview
 
@@ -43,7 +43,7 @@ flowchart LR
 `BaseResource` is a convenience abstract class with async `close()` and default no-op export/restore:
 
 ```python
-from agent_environment import BaseResource
+from y_agent_environment import BaseResource
 
 class BrowserSession(BaseResource):
     def __init__(self, browser: Browser):
@@ -158,7 +158,7 @@ class BrowserSession:
 Factory functions receive the `Environment` instance:
 
 ```python
-from agent_environment import Environment
+from y_agent_environment import Environment
 
 async def create_browser(env: Environment) -> BrowserSession:
     return BrowserSession(

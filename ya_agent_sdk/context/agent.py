@@ -75,7 +75,6 @@ from uuid import uuid4
 from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from agent_environment import Environment, FileOperator, ResourceRegistry, Shell
 from pydantic import BaseModel, Field
 from pydantic_ai import (
     DeferredToolRequests,
@@ -101,6 +100,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import TypedDict
+from y_agent_environment import Environment, FileOperator, ResourceRegistry, Shell
 
 from ya_agent_sdk.events import AgentEvent
 from ya_agent_sdk.usage import ExtraUsageRecord, InternalUsage

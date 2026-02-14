@@ -31,7 +31,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from xml.etree.ElementTree import Element, SubElement, indent, tostring
 
-from agent_environment import BaseResource, Environment
+from y_agent_environment import BaseResource, Environment
 
 if TYPE_CHECKING:
     pass

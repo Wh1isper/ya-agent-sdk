@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_environment import ResourceFactory, ResourceRegistryState
+from y_agent_environment import ResourceFactory, ResourceRegistryState
 
 from ya_agent_sdk.environment.local import LocalEnvironment
 from yaai.processes import PROCESS_MANAGER_KEY, ProcessManager

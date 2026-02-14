@@ -280,7 +280,7 @@ from enum import Enum
 from typing import Callable, Any
 
 from ya_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
-from agent_environment import Environment
+from y_agent_environment import Environment
 
 class TUIState(str, Enum):
     """TUI application state."""

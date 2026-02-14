@@ -42,7 +42,7 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "pydantic-ai",
-    "agent-environment>=0.1.0",
+    "y-agent-environment>=0.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
