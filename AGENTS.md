@@ -240,6 +240,19 @@ See [docs/logging.md](docs/logging.md) for details:
 - Module-specific log levels: `YA_AGENT_LOG_LEVEL_<MODULE_PATH>`
 - Use `get_logger(__name__)` to obtain logger
 
+## Prompt Design
+
+Prompt documents should follow a **single-layer XML style** similar to the project system prompt conventions.
+
+### Rules
+
+- Use one clear top-level tag per logical block (no deep nesting by default).
+- Avoid unnecessary tags; add tags only when they provide clear structural value.
+- Prefer semantic, stable tag names (e.g., `<identity>`, `<tool_usage>`, `<safety>`).
+- Keep each block focused on one concern and keep instructions concise.
+- Use Markdown lists and short paragraphs inside tags instead of creating many micro-tags.
+- Do not encode presentation details in tags; tags are for meaning, not styling.
+
 ## Examples
 
 | Example                                     | Description                                                               |
