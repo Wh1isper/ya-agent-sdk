@@ -97,7 +97,7 @@ ya-agent-sdk = { workspace = true }
 
 [tool.pyright]
 include = ["ya_agent_sdk", "yaacli"]
-exclude = ["yaacli/yaacli/skills", "yaacli/tests", "tests", "examples", "skills/examples"]
+exclude = ["yaacli/yaacli/skills", "yaacli/tests", "tests", "examples", "skills/examples", "**/node_modules", "**/__pycache__", "**/.*", ".venv"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 reportTypedDictNotRequiredAccess = false
