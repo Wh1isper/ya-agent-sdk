@@ -15,7 +15,7 @@ lint: ## Lint the code
 cli: ## Run the CLI
 	@echo "🚀 Running yaacli CLI"
 	@./scripts/sync-skills.sh
-	@rm -f yaacli.log && uv run yaacli -v
+	@rm -f yaacli.log && YAACLI_PERF=1 uv run yaacli -v
 
 .PHONY: check
 check: ## Run code quality tools.
