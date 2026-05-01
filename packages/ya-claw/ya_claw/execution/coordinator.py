@@ -257,12 +257,14 @@ class RunCoordinator:
 
                 profile = await self._profile_resolver.resolve(run_record.profile_name or session_record.profile_name)
                 workspace_binding = self._resolve_workspace_binding(run_record, session_record, profile)
-                restore_point = await load_restore_point(
-                    db_session,
-                    self._run_store,
-                    session_record,
-                    explicit_run_id=run_record.restore_from_run_id,
-                )
+                restore_point = None
+                if _run_restores_state(run_record):
+                    restore_point = await load_restore_point(
+                        db_session,
+                        self._run_store,
+                        session_record,
+                        explicit_run_id=run_record.restore_from_run_id,
+                    )
                 dispatch_mode = self._resolve_dispatch_mode(run_id)
                 logger.debug(
                     "Run execution prepared run_id={} session_id={} profile={} dispatch_mode={} restore_from_run_id={}",
@@ -477,6 +479,11 @@ class RunCoordinator:
         )
 
         restored_state = self._extract_resumable_state(restore_point)
+        source_metadata = _runtime_source_metadata(
+            trigger_type=trigger_type,
+            run_metadata=run_metadata,
+            memory_metadata=memory_metadata,
+        )
         runtime = self._runtime_builder.build(
             profile=profile,
             binding=workspace_binding,
@@ -487,12 +494,10 @@ class RunCoordinator:
             restore_from_run_id=restore_point.run_id if restore_point is not None else None,
             dispatch_mode=dispatch_mode,
             source_kind=trigger_type,
-            source_metadata={
-                "trigger_type": trigger_type,
-                **({"memory": memory_metadata} if isinstance(memory_metadata, dict) else {}),
-            },
+            source_metadata=source_metadata,
             claw_metadata={
                 "profile": profile.metadata,
+                "trigger_type": trigger_type,
                 "run_metadata": run_metadata,
             },
         )
@@ -852,6 +857,23 @@ class RunCoordinator:
 
 
 ExecutionCoordinator = RunCoordinator
+
+
+def _run_restores_state(run_record: RunRecord) -> bool:
+    run_metadata = run_record.run_metadata if isinstance(run_record.run_metadata, dict) else {}
+    return run_metadata.get("restore_state") is not False
+
+
+def _runtime_source_metadata(
+    *,
+    trigger_type: str,
+    run_metadata: dict[str, Any],
+    memory_metadata: Any,
+) -> dict[str, Any]:
+    metadata = {"trigger_type": trigger_type, **run_metadata}
+    if isinstance(memory_metadata, dict):
+        metadata["memory"] = memory_metadata
+    return metadata
 
 
 def _memory_source_session_id(memory_metadata: Any) -> str | None:

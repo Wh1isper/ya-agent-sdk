@@ -21,6 +21,8 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 MEMORY_CONTEXT_TAG = "memory-context"
 MEMORY_MD_CONTEXT_TAG = "memory-md-context"
 MEMORY_FILE_INDEX_TAG = "memory-file-index"
+AUTO_TASK_CONTEXT_TAGS = ("heartbeat-guidance", "schedule-context", "heartbeat-context")
+_MEMORY_EXCLUDED_TRIGGER_TYPES = {TriggerType.HEARTBEAT.value, TriggerType.SCHEDULE.value, TriggerType.MEMORY.value}
 _MEMORY_TRIGGER_KEY = "memory_triggers"
 _PENDING_MEMORY_REQUESTS_KEY = "pending_requests"
 
@@ -66,13 +68,20 @@ class ClawMemoryExtension(BaseLifecycleExtension[Any, Any]):
         runtime_ctx = getattr(ctx.runtime, "ctx", None)
         if runtime_ctx is None:
             return
+        source_kind = getattr(runtime_ctx, "source_kind", None)
+        existing_tags = runtime_ctx.injected_context_tags
+        if source_kind in {TriggerType.HEARTBEAT.value, TriggerType.SCHEDULE.value}:
+            missing_auto_tags = [tag for tag in AUTO_TASK_CONTEXT_TAGS if tag not in existing_tags]
+            if missing_auto_tags:
+                runtime_ctx.injected_context_tags = (*existing_tags, *missing_auto_tags)
+            return
         if not self._settings.memory_enabled or not self._settings.memory_inject_enabled:
             return
-        if getattr(runtime_ctx, "source_kind", None) == TriggerType.MEMORY.value:
+        if source_kind == TriggerType.MEMORY.value:
             return
         missing_tags = [
             tag
-            for tag in (MEMORY_CONTEXT_TAG, MEMORY_MD_CONTEXT_TAG, MEMORY_FILE_INDEX_TAG)
+            for tag in (MEMORY_CONTEXT_TAG, MEMORY_MD_CONTEXT_TAG, MEMORY_FILE_INDEX_TAG, *AUTO_TASK_CONTEXT_TAGS)
             if tag not in runtime_ctx.injected_context_tags
         ]
         if missing_tags:
@@ -81,11 +90,13 @@ class ClawMemoryExtension(BaseLifecycleExtension[Any, Any]):
     def _on_context_handoff_complete(self, ctx: ContextHandoffCompleteContext[Any]) -> None:
         if not self._settings.memory_enabled:
             return
+        deps = ctx.deps
+        if getattr(deps, "source_kind", None) in _MEMORY_EXCLUDED_TRIGGER_TYPES:
+            return
         if ctx.source == ContextHandoffSource.COMPACT and not self._settings.memory_extract_on_compact:
             return
         if ctx.source == ContextHandoffSource.SUMMARIZE_TOOL and not self._settings.memory_extract_on_summarize:
             return
-        deps = ctx.deps
         claw_metadata = getattr(deps, "claw_metadata", None)
         source_session_id = getattr(deps, "session_id", None)
         source_run_id = getattr(deps, "claw_run_id", None)
@@ -131,7 +142,10 @@ class MemoryLifecycle:
         profile_name: str | None,
         claw_metadata: dict[str, Any] | None = None,
     ) -> list[str]:
-        if not self._settings.memory_enabled:
+        if (
+            not self._settings.memory_enabled
+            or _trigger_type_from_metadata(claw_metadata) in _MEMORY_EXCLUDED_TRIGGER_TYPES
+        ):
             return []
         queued_run_ids: list[str] = []
         async with self._session_factory() as db_session:
@@ -489,6 +503,20 @@ def _pending_requests(state: SessionMemoryStateRecord) -> list[dict[str, Any]]:
 def _extract_memory_triggers(claw_metadata: dict[str, Any] | None) -> list[dict[str, Any]]:
     value = claw_metadata.get(_MEMORY_TRIGGER_KEY) if isinstance(claw_metadata, dict) else None
     return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _trigger_type_from_metadata(claw_metadata: dict[str, Any] | None) -> str | None:
+    if not isinstance(claw_metadata, dict):
+        return None
+    trigger_type = claw_metadata.get("trigger_type")
+    if isinstance(trigger_type, str) and trigger_type.strip():
+        return trigger_type
+    run_metadata = claw_metadata.get("run_metadata")
+    if isinstance(run_metadata, dict):
+        trigger_type = run_metadata.get("trigger_type")
+        if isinstance(trigger_type, str) and trigger_type.strip():
+            return trigger_type
+    return None
 
 
 def _request_metadata(request: MemoryRunRequest, *, memory_session_id: str) -> dict[str, Any]:

@@ -16,7 +16,7 @@ from ya_claw.execution.dispatcher import RunDispatcher
 from ya_claw.execution.heartbeat import HeartbeatDispatcher
 from ya_claw.execution.schedule import ScheduleDispatcher
 from ya_claw.orm.base import Base
-from ya_claw.orm.tables import HeartbeatFireRecord, RunRecord, ScheduleFireRecord, ScheduleRecord
+from ya_claw.orm.tables import HeartbeatFireRecord, RunRecord, ScheduleFireRecord, ScheduleRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
 
@@ -166,6 +166,8 @@ async def test_schedule_controller_dispatch_due_scans_due_records_and_submits_ru
     assert run.run_metadata["source"] == "schedule"
     assert run.run_metadata["schedule_id"] == schedule.id
     assert run.run_metadata["schedule_fire_id"] == fire.id
+    assert run.run_metadata["restore_state"] is False
+    assert run.restore_from_run_id is None
 
     await db_session.refresh(record)
     assert record.fire_count == 1
@@ -173,6 +175,68 @@ async def test_schedule_controller_dispatch_due_scans_due_records_and_submits_ru
     assert record.last_run_id == fire.run_id
     assert record.next_fire_at is not None
     assert record.next_fire_at.replace(tzinfo=UTC) > now
+
+
+async def test_schedule_fork_session_creates_isolated_run_without_state_restore(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    controller = ScheduleController()
+    runtime_state = InMemoryRuntimeState()
+    supervisor = RecordingSupervisor()
+    dispatcher = RunDispatcher(supervisor)  # type: ignore[arg-type]
+    source_session = SessionRecord(
+        id="source-session-1",
+        profile_name="default",
+        session_metadata={},
+        head_run_id="source-run-1",
+        head_success_run_id="source-run-1",
+    )
+    source_run = RunRecord(
+        id="source-run-1",
+        session_id="source-session-1",
+        sequence_no=1,
+        restore_from_run_id=None,
+        status="completed",
+        trigger_type="api",
+        profile_name="default",
+        input_parts=[{"type": "text", "text": "base"}],
+        run_metadata={},
+    )
+    db_session.add_all([source_session, source_run])
+    await db_session.commit()
+
+    schedule = await controller.create(
+        db_session,
+        ScheduleCreateRequest(
+            name="Fork schedule",
+            prompt="Report forked timer status.",
+            cron="* * * * *",
+            timezone="UTC",
+            owner_session_id="source-session-1",
+            start_from_current_session=True,
+            profile_name="default",
+        ),
+    )
+
+    fire = await controller.trigger(db_session, settings, runtime_state, dispatcher, schedule.id)
+
+    assert fire.status == "submitted"
+    assert fire.run_id in supervisor.submitted_run_ids
+    assert fire.created_session_id is not None
+    fork_session = await db_session.get(SessionRecord, fire.created_session_id)
+    run = await db_session.get(RunRecord, fire.run_id)
+    assert isinstance(fork_session, SessionRecord)
+    assert isinstance(run, RunRecord)
+    assert fork_session.parent_session_id == "source-session-1"
+    assert fork_session.head_run_id == run.id
+    assert fork_session.head_success_run_id is None
+    assert fork_session.session_metadata["source"] == "schedule"
+    assert fork_session.head_run_id != "source-run-1"
+    assert run.trigger_type == "schedule"
+    assert run.restore_from_run_id is None
+    assert run.run_metadata["restore_state"] is False
+    assert run.run_metadata["execution_mode"] == "fork_session"
 
 
 async def test_schedule_fire_stays_pending_when_dispatch_skips(

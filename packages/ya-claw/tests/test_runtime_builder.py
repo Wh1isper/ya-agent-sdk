@@ -252,6 +252,84 @@ def test_runtime_builder_system_prompt_loads_workspace_guidance(tmp_path: Path) 
     assert "Workspace skills are discovered from /workspace/.agents/skills/." in system_prompt
 
 
+def test_runtime_builder_system_prompt_skips_memory_for_heartbeat_and_loads_automated_context(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        memory_enabled=True,
+        memory_inject_enabled=True,
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    memory_path = host_path / "memory"
+    memory_path.mkdir(parents=True, exist_ok=True)
+    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
+    (host_path / "HEARTBEAT.md").write_text("# Heartbeat\nCheck runtime health.\n", encoding="utf-8")
+    binding = _build_workspace_binding(host_path)
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+    )
+
+    system_prompt = builder._build_system_prompt(
+        profile=profile,
+        binding=binding,
+        source_kind="heartbeat",
+        source_metadata={"heartbeat_fire_id": "heartbeat-fire-1"},
+    )
+
+    assert '<heartbeat-context source="heartbeat">' in system_prompt
+    assert "Heartbeat fire ID: heartbeat-fire-1" in system_prompt
+    assert '<heartbeat-guidance path="/workspace/HEARTBEAT.md">' in system_prompt
+    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' not in system_prompt
+    assert '<memory-file-index path="/workspace/memory">' not in system_prompt
+
+
+def test_runtime_builder_system_prompt_skips_memory_for_schedule_and_loads_schedule_context(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        memory_enabled=True,
+        memory_inject_enabled=True,
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    memory_path = host_path / "memory"
+    memory_path.mkdir(parents=True, exist_ok=True)
+    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
+    binding = _build_workspace_binding(host_path)
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+    )
+
+    system_prompt = builder._build_system_prompt(
+        profile=profile,
+        binding=binding,
+        source_kind="schedule",
+        source_metadata={
+            "schedule_id": "schedule-1",
+            "schedule_fire_id": "fire-1",
+            "execution_mode": "fork_session",
+        },
+    )
+
+    assert '<schedule-context source="schedule">' in system_prompt
+    assert "Schedule ID: schedule-1" in system_prompt
+    assert "Schedule fire ID: fire-1" in system_prompt
+    assert "Execution mode: fork_session" in system_prompt
+    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' not in system_prompt
+    assert '<memory-file-index path="/workspace/memory">' not in system_prompt
+
+
 def test_runtime_builder_system_prompt_loads_memory_context(tmp_path: Path) -> None:
     settings = ClawSettings(
         api_token="test-token",  # noqa: S106

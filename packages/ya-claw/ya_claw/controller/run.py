@@ -95,6 +95,8 @@ class RunController:
             request.reset_state,
         )
         run_metadata = dict(request.metadata)
+        if request.reset_state:
+            run_metadata["restore_state"] = False
 
         sequence_no = await self._next_sequence_no(db_session, session_id)
         run_id = uuid4().hex

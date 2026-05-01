@@ -212,6 +212,7 @@ async def test_session_controller_create_run_supports_reset_state(
     assert rerun.restore_from_run_id is None
     assert refreshed_run.restore_from_run_id is None
     assert rerun.metadata["reset_state"] is True
+    assert rerun.metadata["restore_state"] is False
     assert refreshed_session.session_metadata == {
         "sandbox": {"container_ref": "ya-claw-workspace-ref", "container_id": "cid-1"}
     }

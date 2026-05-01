@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic_ai.messages import ModelRequest, UserPromptPart
@@ -10,9 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
 from ya_claw.config import ClawSettings
 from ya_claw.controller.memory import MemoryController
-from ya_claw.controller.models import MemoryActionRequest, MemoryJobKind, memory_state_summary_from_record
+from ya_claw.controller.models import MemoryActionRequest, MemoryJobKind, TriggerType, memory_state_summary_from_record
 from ya_claw.db.engine import create_engine, create_session_factory
-from ya_claw.memory.lifecycle import ClawMemoryExtension, MemoryLifecycle
+from ya_claw.memory.lifecycle import (
+    AUTO_TASK_CONTEXT_TAGS,
+    MEMORY_CONTEXT_TAG,
+    MEMORY_FILE_INDEX_TAG,
+    MEMORY_MD_CONTEXT_TAG,
+    ClawMemoryExtension,
+    MemoryLifecycle,
+)
 from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
@@ -115,6 +123,53 @@ async def test_memory_lifecycle_queues_extract_after_turn_threshold(
     assert memory_run.run_metadata["memory"]["source_run_ids"] == ["run-2"]
     await db_session.refresh(state)
     assert state.turns_since_extract == 0
+
+
+async def test_memory_lifecycle_skips_automated_task_runs(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session = SessionRecord(id="session-1", profile_name="general", session_metadata={})
+    schedule_run = _completed_run("schedule-run-1", "session-1", 1, trigger_type=TriggerType.SCHEDULE.value)
+    heartbeat_run = _completed_run("heartbeat-run-1", "session-1", 2, trigger_type=TriggerType.HEARTBEAT.value)
+    db_session.add_all([session, schedule_run, heartbeat_run])
+    await db_session.commit()
+
+    submitted: list[str] = []
+    lifecycle = MemoryLifecycle(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=create_runtime_state(),
+        submit_run=lambda run_id: not submitted.append(run_id),
+    )
+
+    schedule_queued = await lifecycle.on_run_committed(
+        source_session_id="session-1",
+        source_run_id="schedule-run-1",
+        source_sequence_no=1,
+        profile_name="general",
+        claw_metadata={
+            "trigger_type": TriggerType.SCHEDULE.value,
+            "memory_triggers": [{"reason": "compact_handoff", "source_run_ids": ["schedule-run-1"]}],
+        },
+    )
+    heartbeat_queued = await lifecycle.on_run_committed(
+        source_session_id="session-1",
+        source_run_id="heartbeat-run-1",
+        source_sequence_no=2,
+        profile_name="general",
+        claw_metadata={
+            "trigger_type": TriggerType.HEARTBEAT.value,
+            "run_metadata": {"trigger_type": TriggerType.API.value},
+        },
+    )
+
+    state = await db_session.get(SessionMemoryStateRecord, "session-1")
+    assert schedule_queued == []
+    assert heartbeat_queued == []
+    assert submitted == []
+    assert state is None
 
 
 async def test_memory_lifecycle_triggers_summary_after_extract_count(
@@ -300,6 +355,50 @@ async def test_memory_lifecycle_drains_pending_request_after_failed_memory_run(
     pending_run = await db_session.get(RunRecord, queued[0])
     assert isinstance(pending_run, RunRecord)
     assert pending_run.run_metadata["memory"]["source_run_ids"] == ["run-2"]
+
+
+async def test_claw_memory_extension_registers_memory_and_auto_task_tags(settings: ClawSettings) -> None:
+    extension = ClawMemoryExtension(settings=settings)
+    runtime_ctx = _RuntimeCtx(source_kind=TriggerType.API.value)
+    ctx = _RuntimeReadyCtx(runtime_ctx)
+
+    await extension.on_runtime_ready(ctx)
+
+    assert MEMORY_CONTEXT_TAG in runtime_ctx.injected_context_tags
+    assert MEMORY_MD_CONTEXT_TAG in runtime_ctx.injected_context_tags
+    assert MEMORY_FILE_INDEX_TAG in runtime_ctx.injected_context_tags
+    for tag in AUTO_TASK_CONTEXT_TAGS:
+        assert tag in runtime_ctx.injected_context_tags
+
+
+async def test_claw_memory_extension_registers_only_auto_task_tags_for_automated_runs(
+    settings: ClawSettings,
+) -> None:
+    extension = ClawMemoryExtension(settings=settings.model_copy(update={"memory_enabled": False}))
+    runtime_ctx = _RuntimeCtx(source_kind=TriggerType.SCHEDULE.value)
+    ctx = _RuntimeReadyCtx(runtime_ctx)
+
+    await extension.on_runtime_ready(ctx)
+
+    assert runtime_ctx.injected_context_tags == ("runtime-context", "environment-context", *AUTO_TASK_CONTEXT_TAGS)
+
+
+async def test_claw_memory_extension_skips_automated_task_handoff_triggers(settings: ClawSettings) -> None:
+    extension = ClawMemoryExtension(settings=settings)
+    deps = _Deps(source_kind=TriggerType.SCHEDULE.value)
+    ctx = ContextHandoffCompleteContext(
+        event_id="event-1",
+        deps=deps,
+        source=ContextHandoffSource.SUMMARIZE_TOOL,
+        original_messages=[],
+        trimmed_messages=[],
+        handoff_messages=[],
+        summary_markdown="summary",
+    )
+
+    await extension.on_context_handoff_complete(ctx)
+
+    assert deps.claw_metadata == {}
 
 
 async def test_claw_memory_extension_captures_summarize_handoff(settings: ClawSettings) -> None:
@@ -695,6 +794,25 @@ async def test_manual_extract_without_run_ids_references_source_session_state(
     assert isinstance(state, SessionMemoryStateRecord)
     await db_session.refresh(state)
     assert state.turns_since_extract == 0
+
+
+class _RuntimeCtx:
+    def __init__(self, *, source_kind: str | None) -> None:
+        self.source_kind = source_kind
+        self.injected_context_tags = ("runtime-context", "environment-context")
+
+
+class _RuntimeReadyCtx:
+    def __init__(self, runtime_ctx: _RuntimeCtx) -> None:
+        self.runtime = type("Runtime", (), {"ctx": runtime_ctx})()
+
+
+class _Deps:
+    def __init__(self, *, source_kind: str | None = None) -> None:
+        self.source_kind = source_kind
+        self.session_id = "session-1"
+        self.claw_run_id = "run-1"
+        self.claw_metadata: dict[str, Any] = {}
 
 
 @pytest.fixture

@@ -453,6 +453,7 @@ class ScheduleController:
             runtime_state,
             RunCreateRequest(
                 session_id=session.id,
+                reset_state=True,
                 profile_name=record.profile_name or session.profile_name,
                 input_parts=parse_input_parts(list(fire_record.input_parts)),
                 trigger_type=TriggerType.SCHEDULE,
@@ -481,8 +482,6 @@ class ScheduleController:
             parent_session_id=source_session.id,
             profile_name=record.profile_name or source_session.profile_name,
             session_metadata={"source": "schedule", "schedule_id": record.id, "schedule_fire_id": fire_record.id},
-            head_run_id=source_session.head_success_run_id,
-            head_success_run_id=source_session.head_success_run_id,
         )
         db_session.add(fork_session)
         await db_session.flush()
@@ -492,6 +491,7 @@ class ScheduleController:
             runtime_state,
             RunCreateRequest(
                 session_id=fork_session.id,
+                reset_state=True,
                 profile_name=fork_session.profile_name,
                 input_parts=parse_input_parts(list(fire_record.input_parts)),
                 trigger_type=TriggerType.SCHEDULE,

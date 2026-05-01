@@ -205,13 +205,17 @@ class ClawRuntimeBuilder:
         guidance = load_workspace_guidance(binding)
         if guidance is not None:
             prompt_lines.append(format_workspace_guidance(guidance))
-        memory_context = self._build_memory_context(binding)
-        if memory_context is not None:
-            prompt_lines.append(memory_context)
         if source_kind == "heartbeat":
+            prompt_lines.append(self._build_heartbeat_context(source_metadata))
             heartbeat_guidance = load_heartbeat_guidance(binding)
             if heartbeat_guidance is not None:
                 prompt_lines.append(format_heartbeat_guidance(heartbeat_guidance))
+        elif source_kind == "schedule":
+            prompt_lines.append(self._build_schedule_context(source_metadata))
+        else:
+            memory_context = self._build_memory_context(binding)
+            if memory_context is not None:
+                prompt_lines.append(memory_context)
         prompt_lines.append(f"Profile: {profile.name}")
         return "\n".join(prompt_lines)
 
@@ -222,6 +226,30 @@ class ClawRuntimeBuilder:
             summary_max_chars=self._settings.memory_context_max_chars,
             files_limit=self._settings.memory_recent_extracts_limit,
         )
+
+    def _build_heartbeat_context(self, source_metadata: dict[str, Any] | None) -> str:
+        metadata = dict(source_metadata or {})
+        heartbeat_fire_id = str(metadata.get("heartbeat_fire_id") or "")
+        return "\n".join([
+            '<heartbeat-context source="heartbeat">',
+            f"Heartbeat fire ID: {heartbeat_fire_id}",
+            "This is an automated heartbeat run. Complete the heartbeat task without updating conversation memory.",
+            "</heartbeat-context>",
+        ])
+
+    def _build_schedule_context(self, source_metadata: dict[str, Any] | None) -> str:
+        metadata = dict(source_metadata or {})
+        schedule_id = str(metadata.get("schedule_id") or "")
+        schedule_fire_id = str(metadata.get("schedule_fire_id") or "")
+        execution_mode = str(metadata.get("execution_mode") or "")
+        return "\n".join([
+            '<schedule-context source="schedule">',
+            f"Schedule ID: {schedule_id}",
+            f"Schedule fire ID: {schedule_fire_id}",
+            f"Execution mode: {execution_mode}",
+            "This is an automated scheduled run. Complete the scheduled task without updating conversation memory.",
+            "</schedule-context>",
+        ])
 
     def _build_memory_system_prompt(
         self,
@@ -245,6 +273,4 @@ class ClawRuntimeBuilder:
         ])
 
     def _resolve_lifecycle_extensions(self) -> list[ClawMemoryExtension]:
-        if not self._settings.memory_enabled:
-            return []
         return [ClawMemoryExtension(settings=self._settings, session_factory=self._session_factory)]

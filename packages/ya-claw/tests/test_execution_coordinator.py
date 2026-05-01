@@ -8,7 +8,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
-from ya_claw.execution.coordinator import ExecutionBuffers, ExecutionSupervisor, RunCoordinator
+from ya_claw.execution.coordinator import (
+    ExecutionBuffers,
+    ExecutionSupervisor,
+    RunCoordinator,
+    _run_restores_state,
+    _runtime_source_metadata,
+)
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.execution.state_machine import interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
@@ -522,6 +528,42 @@ async def test_run_coordinator_loads_restore_point_from_previous_run(
     assert isinstance(refreshed_run, RunRecord)
     await db_session.refresh(refreshed_run)
     assert refreshed_run.status == "completed"
+
+
+def test_run_restores_state_honors_restore_state_metadata() -> None:
+    run_record = RunRecord(
+        id="run-reset",
+        session_id="session-1",
+        sequence_no=1,
+        restore_from_run_id=None,
+        status="queued",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[],
+        run_metadata={"restore_state": False},
+    )
+
+    assert _run_restores_state(run_record) is False
+    run_record.run_metadata = {}
+    assert _run_restores_state(run_record) is True
+
+
+def test_runtime_source_metadata_includes_trigger_type_and_run_metadata() -> None:
+    assert _runtime_source_metadata(
+        trigger_type="schedule",
+        run_metadata={"source": "schedule", "schedule_id": "schedule-1", "schedule_fire_id": "fire-1"},
+        memory_metadata=None,
+    ) == {
+        "trigger_type": "schedule",
+        "source": "schedule",
+        "schedule_id": "schedule-1",
+        "schedule_fire_id": "fire-1",
+    }
+    assert _runtime_source_metadata(
+        trigger_type="memory",
+        run_metadata={"memory": {"kind": "extract"}},
+        memory_metadata={"kind": "extract"},
+    ) == {"trigger_type": "memory", "memory": {"kind": "extract"}}
 
 
 async def test_run_coordinator_marks_run_failed_on_exception(
