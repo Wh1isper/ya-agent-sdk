@@ -50,6 +50,87 @@ The runtime shape is:
 - one persistent workspace directory
 - one bundled web shell
 
+## Runtime Architecture Notes
+
+This section is the maintainer index for implementation details that affect code changes across YA Claw.
+
+### Runtime Defaults
+
+- `YA_CLAW_API_TOKEN` is required before service startup.
+- `/api/v1/claw/info` exposes service build metadata from `YA_CLAW_SERVICE_VERSION`, `YA_CLAW_SERVICE_COMMIT`, `YA_CLAW_SERVICE_BUILD`, and `YA_CLAW_SERVICE_IMAGE`; Docker builds inject these values for UI display.
+- SQLite is the default durable store at `~/.ya-claw/ya_claw.sqlite3`.
+- `YA_CLAW_DATA_DIR` defaults to `~/.ya-claw/data`.
+- `YA_CLAW_WORKSPACE_DIR` defaults to `~/.ya-claw/data/workspace`.
+- The default Docker workspace image is `ghcr.io/wh1isper/ya-claw-workspace:latest`.
+- Session metadata lives in the database; committed continuity blobs live in the local run store.
+
+### Implementation Conventions
+
+- Runtime code is organized around `ya_claw/api/`, `ya_claw/controller/`, and `ya_claw/orm/`.
+- Foundational execution modules live under `ya_claw/execution/`.
+- Workspace provider modules live under `ya_claw/workspace/`.
+- Internal data objects use Pydantic `BaseModel`.
+- Code prefers explicit typing and `isinstance` checks.
+- The session API is the high-level surface; the run API is the low-level surface.
+
+### Session and Run Persistence
+
+- Committed continuity blobs live in `run-store/{run_id}/state.json` and `run-store/{run_id}/message.json`.
+- `message.json` stores the compacted replay list of AGUI-aligned events as a top-level JSON array.
+- Input payloads use `input_parts`; run records preserve `input_parts` as original JSON-compatible payloads for replay and UI reconstruction.
+- Successful run records store final `output_text` directly in the database and keep `output_summary` for compact displays.
+- Session GET exposes paginated runs with optional raw `input_parts` and compacted message replay lists, returns optional top-level committed state/message from `head_success_run_id`, and derives session status from the latest run.
+- Session turns API returns successful completed turns with raw `input_parts`, `output_text`, and `output_summary`.
+- Run GET returns `session + run + optional state + optional message`.
+- Run trace API returns compact tool-call/tool-response projections from `message.json`.
+- Rerun can explicitly target failed or interrupted runs through `restore_from_run_id`.
+- JSON run/session create routes return JSON consistently; foreground SSE creation uses `POST /api/v1/runs:stream`, `POST /api/v1/sessions:stream`, and `POST /api/v1/sessions/{session_id}/runs:stream`.
+
+### Execution Coordination
+
+- Active session state, live events, async task coordination, schedules, and bridge coordination stay in the runtime process.
+- Built-in run orchestration lives in `ya_claw/execution/coordinator.py`.
+- Built-in coordinator dispatch resolves model/runtime behavior from `AgentProfile` rows.
+- `YA_CLAW_DEFAULT_PROFILE` defaults to `default`.
+- Runtime instance heartbeat lives in `runtime_instances`.
+- Run records carry claim ownership through `claimed_by` and `claimed_at`.
+- The built-in `session` toolset lets agents inspect their current session through internal HTTP client tools `list_session_turns` and `get_run_trace`; session ID and bearer token stay inside the client resource.
+
+### Workspace Providers and Docker Runtime
+
+- `LocalWorkspaceProvider` uses `LocalFileOperator` plus `LocalShell` over the real workspace path.
+- `DockerWorkspaceProvider` uses Docker mounts through `SandboxEnvironment`; file operations map the service-visible workspace path to `/workspace`, and Docker shell uses `/workspace`.
+- `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` provides the Docker daemon-visible host mount path when the YA Claw service itself runs in Docker.
+- Docker workspace containers receive UID/GID envs (`YA_CLAW_WORKSPACE_UID`, `YA_CLAW_WORKSPACE_GID`, `YA_CLAW_HOST_UID`, `YA_CLAW_HOST_GID`) from the service process by default or from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID/GID`.
+- `Dockerfile.ya-claw` can drop service execution privileges through `YA_CLAW_RUN_UID` and `YA_CLAW_RUN_GID`.
+- The official workspace image defaults to UID/GID 1000 through build args.
+
+### Bridge Runtime
+
+- Bridge adapter types are enumerated through `BridgeAdapterType`; the current built-in adapter is `lark`.
+- Bridge deployment dispatch uses `BridgeDispatchMode` (`embedded`, `manual`) and stays separate from run execution dispatch (`queue`, `async`, `stream`).
+- `embedded` is the default bridge dispatch mode and runs adapter tasks under `BridgeSupervisor` in the same HTTP server lifespan as `ExecutionSupervisor`.
+- `manual` starts the HTTP server with bridge dispatch managed outside the server lifespan.
+- Lark bridge event allowlist comes from `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`; defaults cover `im.chat.member.bot.added_v1`, `im.chat.member.user.added_v1`, `im.message.receive_v1`, and `drive.notice.comment_add_v1`.
+- Lark message events map `(adapter, tenant_key, chat_id)` one-to-one to a session.
+- Other accepted Lark events use `chat_id` when present and fall back to stable event or Drive conversation keys.
+- Each accepted inbound event creates a bridge-triggered run after event/message dedupe.
+- Lark bridge replies/actions are performed by the agent from the workspace with `lark-cli`.
+- Workspace environments receive `LARK_APP_ID` and `LARK_APP_SECRET` from process env or Lark bridge app settings.
+
+### Session Memory
+
+- Session memory is workspace-native.
+- Paired internal `session_type="memory"` sessions run background extract/summary jobs with trigger type `memory`.
+- Memory jobs share the source workspace sandbox and use the same profile tool surface as the primary agent.
+- Memory content lives in workspace files: `memory/MEMORY.md`, `memory/CHANGELOG.md`, and `memory/YYYYMMDD-event.md` files with YAML frontmatter (`name`, `description`).
+- Memory extract and summary agents use fixed XML-style prompts from `ya_claw/memory/extract_prompt.py` and `ya_claw/memory/summary_prompt.py`.
+- Primary conversation runs inject memory in the system prompt via `WorkspaceMemoryStore`, loading `memory/MEMORY.md` plus event file frontmatter as separate XML-style blocks.
+- Memory orchestration state lives in `session_memory_states`.
+- Session list/detail responses expose `memory_state`.
+- Manual endpoints are `memory:extract` and `memory:summarize`.
+- File browsing should use workspace filetree APIs.
+
 ## Quick Start
 
 From the workspace root, start the default runtime flow:
@@ -200,6 +281,8 @@ Every HTTP route except `/healthz` expects `Authorization: Bearer <YA_CLAW_API_T
 - `POST /api/v1/sessions:stream` — create a session with a first run and stream foreground SSE events
 - `GET /api/v1/sessions` — list sessions
 - `GET /api/v1/sessions/{session_id}` — inspect a session plus paginated runs, top-level committed state, and optional compacted message replay lists
+- `POST /api/v1/sessions/{session_id}/memory:extract` — enqueue a background memory extract run for the source session
+- `POST /api/v1/sessions/{session_id}/memory:summarize` — enqueue a background memory summary run for the source session
 - `POST /api/v1/sessions/{session_id}/runs` — create a run under a session and return JSON
 - `POST /api/v1/sessions/{session_id}/runs:stream` — create a run under a session and stream foreground SSE events
 - `POST /api/v1/sessions/{session_id}/steer` — steer the active run through the session surface

@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import socket
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from dotenv import dotenv_values, load_dotenv
-from pydantic import Field, PositiveInt, SecretStr
+from pydantic import AliasChoices, Field, PositiveInt, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchMode
@@ -20,6 +21,8 @@ _DEFAULT_DATA_DIR = Path("~/.ya-claw/data")
 _DEFAULT_RUN_STORE_DIRNAME = "run-store"
 _DEFAULT_WORKSPACE_DIRNAME = "workspace"
 _DEFAULT_WORKSPACE_DOCKER_IMAGE = "ghcr.io/wh1isper/ya-claw-workspace:latest"
+_SERVICE_PACKAGE_NAME = "ya-claw"
+_UNKNOWN_BUILD_VALUE = "unknown"
 
 
 def _default_instance_id() -> str:
@@ -61,6 +64,13 @@ def _parse_docker_extra_mounts(value: str) -> list[DockerExtraMount]:
     return mounts
 
 
+def _normalized_optional_str(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def load_runtime_environment() -> dict[str, str]:
     package_env_file = (_PACKAGE_ROOT / ".env").expanduser()
     cwd_env_file = Path(".env").expanduser()
@@ -96,6 +106,10 @@ class ClawSettings(BaseSettings):
     reload: bool = False
     log_level: str = "INFO"
     public_base_url: str = "http://127.0.0.1:9042"
+    service_version: str | None = None
+    service_commit: str | None = None
+    service_build: str | None = None
+    service_image: str | None = None
     instance_id: str = Field(default_factory=_default_instance_id)
     web_dist_dir: Path | None = None
     api_token: SecretStr | None = None
@@ -147,6 +161,23 @@ class ClawSettings(BaseSettings):
     heartbeat_profile: str | None = None
     heartbeat_prompt: str = "Run heartbeat according to HEARTBEAT.md."
     heartbeat_on_active: Literal["skip", "queue"] = "skip"
+    memory_enabled: bool = True
+    memory_extract_every_turns: int = 5
+    memory_summary_every_extracts: int = 4
+    memory_extract_on_compact: bool = True
+    memory_extract_on_summarize: bool = True
+    memory_inject_enabled: bool = True
+    memory_context_max_chars: int = Field(
+        default=8000,
+        validation_alias=AliasChoices(
+            "memory_context_max_chars",
+            "memory_summary_max_chars",
+            "YA_CLAW_MEMORY_CONTEXT_MAX_CHARS",
+            "YA_CLAW_MEMORY_SUMMARY_MAX_CHARS",
+        ),
+    )
+    memory_recent_extracts_limit: int = 5
+    memory_profile: str | None = None
     session_prune_enabled: bool = False
     session_prune_interval_seconds: int = 86400
     session_prune_startup_delay_seconds: int = 300
@@ -163,6 +194,35 @@ class ClawSettings(BaseSettings):
     shutdown_timeout_seconds: PositiveInt | None = None
 
     auto_migrate: bool = True
+
+    @property
+    def resolved_service_version(self) -> str:
+        configured_version = _normalized_optional_str(self.service_version)
+        if configured_version is not None:
+            return configured_version
+        try:
+            return version(_SERVICE_PACKAGE_NAME)
+        except PackageNotFoundError:
+            return _UNKNOWN_BUILD_VALUE
+
+    @property
+    def resolved_service_commit(self) -> str | None:
+        return _normalized_optional_str(self.service_commit)
+
+    @property
+    def resolved_service_build(self) -> str | None:
+        return _normalized_optional_str(self.service_build)
+
+    @property
+    def resolved_service_image(self) -> str | None:
+        return _normalized_optional_str(self.service_image)
+
+    @property
+    def resolved_service_revision(self) -> str:
+        commit = self.resolved_service_commit
+        if commit is None:
+            return self.resolved_service_version
+        return f"{self.resolved_service_version}+{commit[:12]}"
 
     @property
     def runtime_root(self) -> Path:

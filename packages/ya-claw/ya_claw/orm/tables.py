@@ -20,6 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ya_claw.orm.base import Base
 
 _ALLOWED_RUN_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
+_ALLOWED_SESSION_TYPES = ("conversation", "memory")
 _ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", "duplicate", "failed")
 _ALLOWED_SCHEDULE_STATUSES = ("active", "paused", "deleted")
 _ALLOWED_SCHEDULE_EXECUTION_MODES = ("continue_session", "fork_session", "isolate_session")
@@ -62,6 +63,14 @@ class ProfileRecord(Base):
 
 class SessionRecord(Base):
     __tablename__ = "sessions"
+    __table_args__ = (
+        CheckConstraint(
+            f"session_type IN {_ALLOWED_SESSION_TYPES!s}",
+            name="ck_sessions_session_type",
+        ),
+        Index("ix_sessions_session_type_updated", "session_type", "updated_at"),
+        Index("ix_sessions_source_session", "source_session_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     parent_session_id: Mapped[str | None] = mapped_column(
@@ -69,6 +78,8 @@ class SessionRecord(Base):
         nullable=True,
     )
     profile_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    session_type: Mapped[str] = mapped_column(String(32), default="conversation")
+    source_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     session_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     head_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     head_success_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -112,6 +123,28 @@ class RunRecord(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     session: Mapped[SessionRecord] = relationship(back_populates="runs")
+
+
+class SessionMemoryStateRecord(Base):
+    __tablename__ = "session_memory_states"
+
+    source_session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    memory_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_extracted_sequence_no: Mapped[int] = mapped_column(Integer, default=0)
+    turns_since_extract: Mapped[int] = mapped_column(Integer, default=0)
+    extract_count: Mapped[int] = mapped_column(Integer, default=0)
+    extracts_since_summary: Mapped[int] = mapped_column(Integer, default=0)
+    pending_extract: Mapped[bool] = mapped_column(Boolean, default=False)
+    pending_summary: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_extract_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_summary_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    memory_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
 class ScheduleRecord(Base):

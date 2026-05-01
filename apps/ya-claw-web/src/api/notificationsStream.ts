@@ -152,6 +152,7 @@ function invalidateForNotification(
   event: NotificationEvent,
 ) {
   const sessionId = stringPayloadField(event.payload, 'session_id')
+  const sourceSessionId = stringPayloadField(event.payload, 'source_session_id')
   const runId = stringPayloadField(event.payload, 'run_id', 'id')
   const profileName = stringPayloadField(event.payload, 'profile_name', 'name')
 
@@ -161,6 +162,10 @@ function invalidateForNotification(
     if (sessionId)
       void queryClient.invalidateQueries({
         queryKey: queryKeys.session(sessionId),
+      })
+    if (sourceSessionId && sourceSessionId !== sessionId)
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.session(sourceSessionId),
       })
     if (runId) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) })

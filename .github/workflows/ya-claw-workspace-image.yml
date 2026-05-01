@@ -10,6 +10,7 @@ on:
     paths:
       - Dockerfile.ya-claw-workspace
       - packages/ya-claw/workspace-image/**
+      - packages/yaacli/yaacli/skills/skill-creator/**
       - .github/workflows/ya-claw-workspace-image.yml
 
 permissions:

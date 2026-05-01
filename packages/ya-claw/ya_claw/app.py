@@ -58,7 +58,7 @@ class ClawApplication:
 
         app = FastAPI(
             title=self.settings.app_name,
-            version="0.1.0",
+            version=self.settings.resolved_service_revision,
             description="Workspace-native single-node agent runtime with in-process state and SQLite-first storage.",
             lifespan=self.lifespan,
         )
@@ -151,7 +151,10 @@ class ClawApplication:
             if self.settings.auto_seed_profiles:
                 seeded_profiles = await app.state.profile_resolver.seed_profiles()
                 logger.info("Profile auto-seed completed count={} names={}", len(seeded_profiles), seeded_profiles)
-            app.state.runtime_builder = ClawRuntimeBuilder(settings=self.settings)
+            app.state.runtime_builder = ClawRuntimeBuilder(
+                settings=self.settings,
+                session_factory=app.state.db_session_factory,
+            )
 
         if (
             isinstance(app.state.runtime_state, InMemoryRuntimeState)

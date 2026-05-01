@@ -40,6 +40,7 @@ from y_agent_environment import Environment
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.compact import create_cache_friendly_compact_filter, create_compact_filter
 from ya_agent_sdk.agents.guards import attach_message_bus_guard
+from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import (
     AgentContext,
@@ -198,7 +199,9 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
     ctx: AgentDepsT
     agent: Agent[AgentDepsT, OutputT]
     core_toolset: Toolset[AgentDepsT] | None
+    lifecycle_extensions: list[BaseLifecycleExtension[AgentDepsT, EnvT]] = field(default_factory=list)
     _exit_stack: AsyncExitStack | None = field(default=None, repr=False)
+    _reentrant_exit_stacks: list[AsyncExitStack] = field(default_factory=list, init=False, repr=False)
     _enter_count: int = field(default=0, init=False, repr=False)
     _enter_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
@@ -225,8 +228,16 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
         async with self._enter_lock:
             self._enter_count += 1
             if self._enter_count > 1:
-                # Already entered - just increment the counter.
-                # Resources (env, ctx, agent) are already managed by the first entry.
+                stack = AsyncExitStack()
+                await stack.__aenter__()
+                try:
+                    if not self.ctx._entered:
+                        await stack.enter_async_context(self.ctx)
+                except BaseException:
+                    self._enter_count -= 1
+                    await stack.__aexit__(*sys.exc_info())
+                    raise
+                self._reentrant_exit_stacks.append(stack)
                 return self
 
             # Build exit stack locally first, then commit on success.
@@ -274,8 +285,13 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
                 return None
             self._enter_count -= 1
             if self._enter_count > 0:
-                # Not the last exit - keep resources alive.
+                if self._reentrant_exit_stacks:
+                    stack = self._reentrant_exit_stacks.pop()
+                    return await stack.__aexit__(exc_type, exc_val, exc_tb)
                 return None
+            while self._reentrant_exit_stacks:
+                stack = self._reentrant_exit_stacks.pop()
+                await stack.__aexit__(exc_type, exc_val, exc_tb)
             if self._exit_stack:
                 result = await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
                 self._exit_stack = None
@@ -375,6 +391,7 @@ def create_agent(
     output_retries: int = 3,
     defer_model_check: bool = False,
     end_strategy: str = "exhaustive",
+    lifecycle_extensions: Sequence[BaseLifecycleExtension[AgentDepsT, EnvT]] | None = None,
 ) -> AgentRuntime[AgentDepsT, OutputT, EnvT]:
     """Create and configure an agent runtime.
 
@@ -673,7 +690,15 @@ def create_agent(
         len(all_toolsets) if all_toolsets else 0,
         len(all_capabilities),
     )
-    return AgentRuntime[AgentDepsT, OutputT, EnvT](env=actual_env, ctx=ctx, agent=agent, core_toolset=core_toolset)
+    runtime_extensions = list(lifecycle_extensions or [])
+    ctx.lifecycle_extensions = runtime_extensions
+    return AgentRuntime[AgentDepsT, OutputT, EnvT](
+        env=actual_env,
+        ctx=ctx,
+        agent=agent,
+        core_toolset=core_toolset,
+        lifecycle_extensions=runtime_extensions,
+    )
 
 
 # =============================================================================
@@ -1048,6 +1073,7 @@ async def stream_agent(  # noqa: C901
 
     # Extract agent from runtime
     agent = runtime.agent
+    extensions = list(runtime.lifecycle_extensions)
 
     # Create a fresh context for this run to isolate per-run state.
     # This prevents ContextVar tokens and other run-specific state from
@@ -1057,6 +1083,7 @@ async def stream_agent(  # noqa: C901
     fresh_ctx = runtime.ctx.prepare_new_run()
     runtime.ctx = fresh_ctx
     ctx = fresh_ctx
+    ctx.lifecycle_extensions = extensions
 
     # Enable streaming for emit_event.
     # Must use object.__setattr__ because Pydantic v2 silently ignores
@@ -1074,7 +1101,6 @@ async def stream_agent(  # noqa: C901
 
     # Build main agent info
     main_agent_info = AgentInfo(agent_id="main", agent_name=agent.name or "main")
-    ctx.user_prompts = user_prompt
 
     async def process_node(
         node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT],
@@ -1083,20 +1109,20 @@ async def stream_agent(  # noqa: C901
         """Process a single node with hooks."""
         # PRE NODE HOOK
         logger.debug("Processing node: %s", type(node).__name__)
+        node_ctx = NodeHookContext(agent_info=main_agent_info, node=node, run=run, output_queue=output_queue)
+        await run_extension_method(extensions, "on_before_node", node_ctx, logger=logger)
         if pre_node_hook:
-            await pre_node_hook(
-                NodeHookContext(agent_info=main_agent_info, node=node, run=run, output_queue=output_queue)
-            )
+            await pre_node_hook(node_ctx)
         try:
             async with node.stream(run.ctx) as request_stream:
                 async for event in request_stream:
                     # PRE EVENT HOOK
+                    event_ctx = EventHookContext(
+                        agent_info=main_agent_info, event=event, node=node, run=run, output_queue=output_queue
+                    )
+                    await run_extension_method(extensions, "on_before_event", event_ctx, logger=logger)
                     if pre_event_hook:
-                        await pre_event_hook(
-                            EventHookContext(
-                                agent_info=main_agent_info, event=event, node=node, run=run, output_queue=output_queue
-                            )
-                        )
+                        await pre_event_hook(event_ctx)
 
                     await output_queue.put(
                         StreamEvent(
@@ -1107,12 +1133,9 @@ async def stream_agent(  # noqa: C901
                     )
 
                     # POST EVENT HOOK
+                    await run_extension_method(extensions, "on_after_event", event_ctx, logger=logger)
                     if post_event_hook:
-                        await post_event_hook(
-                            EventHookContext(
-                                agent_info=main_agent_info, event=event, node=node, run=run, output_queue=output_queue
-                            )
-                        )
+                        await post_event_hook(event_ctx)
         except TypeError as e:
             # anyio CancelScope fails when asyncio.current_task() returns None during
             # httpx stream cleanup after cancellation.  Benign -- stream already closing.
@@ -1134,10 +1157,9 @@ async def stream_agent(  # noqa: C901
 
         # POST NODE HOOK
         logger.debug("Node completed: %s", type(node).__name__)
+        await run_extension_method(extensions, "on_after_node", node_ctx, logger=logger)
         if post_node_hook:
-            await post_node_hook(
-                NodeHookContext(agent_info=main_agent_info, node=node, run=run, output_queue=output_queue)
-            )
+            await post_node_hook(node_ctx)
 
     # Lifecycle tracker for loop counting.
     # loop_index is set at the start of each ModelRequest and used by both
@@ -1251,19 +1273,21 @@ async def stream_agent(  # noqa: C901
         ) as run:
             streamer.run = run
 
+            start_ctx = AgentStartContext(
+                runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run
+            )
+            await run_extension_method(extensions, "on_agent_start", start_ctx, logger=logger)
             if on_agent_start:
-                await on_agent_start(
-                    AgentStartContext(runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run)
-                )
+                await on_agent_start(start_ctx)
 
             await process_all_nodes(run)
 
+            complete_ctx = AgentCompleteContext(
+                runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run
+            )
+            await run_extension_method(extensions, "on_agent_complete", complete_ctx, logger=logger)
             if on_agent_complete:
-                await on_agent_complete(
-                    AgentCompleteContext(
-                        runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run
-                    )
-                )
+                await on_agent_complete(complete_ctx)
 
             await emit_lifecycle_event(
                 AgentExecutionCompleteEvent(
@@ -1469,17 +1493,20 @@ async def stream_agent(  # noqa: C901
         if user_prompt_factory:
             effective_user_prompt = await user_prompt_factory(runtime)
 
+        ctx.user_prompts = effective_user_prompt
+
+        ready_ctx = RuntimeReadyContext(
+            runtime=runtime,
+            agent_info=main_agent_info,
+            output_queue=output_queue,
+            user_prompt=effective_user_prompt,
+            deferred_tool_results=effective_deferred_tool_results,
+        )
+        await run_extension_method(extensions, "on_runtime_ready", ready_ctx, logger=logger)
         if on_runtime_ready:
-            ready_ctx = RuntimeReadyContext(
-                runtime=runtime,
-                agent_info=main_agent_info,
-                output_queue=output_queue,
-                user_prompt=effective_user_prompt,
-                deferred_tool_results=effective_deferred_tool_results,
-            )
             await on_runtime_ready(ready_ctx)
-            effective_user_prompt = ready_ctx.user_prompt
-            effective_deferred_tool_results = ready_ctx.deferred_tool_results
+        effective_user_prompt = ready_ctx.user_prompt
+        effective_deferred_tool_results = ready_ctx.deferred_tool_results
         return effective_user_prompt, effective_deferred_tool_results
 
     async def run_main() -> None:
@@ -1511,6 +1538,13 @@ async def stream_agent(  # noqa: C901
                 return
             else:
                 logger.exception("Error in main agent task")
+                error_ctx = AgentErrorContext(
+                    runtime=runtime,
+                    agent_info=main_agent_info,
+                    output_queue=output_queue,
+                    error=e,
+                )
+                await run_extension_method(extensions, "on_agent_error", error_ctx, logger=logger)
                 if not failure_event_emitted:
                     await emit_execution_failed_event(e, stream_start_time)
             raise

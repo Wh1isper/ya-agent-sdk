@@ -60,7 +60,7 @@ def test_profile_crud_and_seed_api(tmp_path: Path) -> None:
         """
 profiles:
   - name: seeded
-    model: gateway@openai-responses:gpt-5.4
+    model: gateway@openai-responses:gpt-5.5
     model_settings_preset: openai_responses_high
     model_config_preset: gpt5_270k
     builtin_toolsets: [core, web]
@@ -86,7 +86,7 @@ profiles:
             "/api/v1/profiles/custom",
             headers=_auth_headers(),
             json={
-                "model": "gateway@openai-responses:gpt-5.4",
+                "model": "gateway@openai-responses:gpt-5.5",
                 "model_settings_preset": "openai_responses_high",
                 "model_config_preset": "gpt5_270k",
                 "system_prompt": "You are a custom profile.",
@@ -149,7 +149,7 @@ profiles:
             "/api/v1/profiles/invalid-mcp",
             headers=_auth_headers(),
             json={
-                "model": "gateway@openai-responses:gpt-5.4",
+                "model": "gateway@openai-responses:gpt-5.5",
                 "mcp_servers": {"github": {"transport": "stdio", "url": "https://example.test/mcp"}},
             },
         )

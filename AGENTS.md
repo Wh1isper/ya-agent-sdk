@@ -85,6 +85,12 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - Lark message events map `(adapter, tenant_key, chat_id)` one-to-one to a session; other accepted Lark events use `chat_id` when present and fall back to stable event or Drive conversation keys; each accepted inbound event creates a bridge-triggered run after event/message dedupe
 - Lark bridge replies/actions are performed by the agent from the workspace with `lark-cli`; workspace environments receive `LARK_APP_ID` and `LARK_APP_SECRET` from process env or Lark bridge app settings
 - JSON run/session create routes return JSON consistently; foreground SSE creation uses `POST /api/v1/runs:stream`, `POST /api/v1/sessions:stream`, and `POST /api/v1/sessions/{session_id}/runs:stream`
+- session memory is workspace-native: paired internal `session_type="memory"` sessions run background extract/summary jobs with trigger type `memory`, share the source workspace sandbox, and use the same profile tool surface as the primary agent
+- memory agents use fixed XML-style prompts from `ya_claw/memory/extract_prompt.py` and `ya_claw/memory/summary_prompt.py`
+- memory content lives in workspace files: `memory/MEMORY.md`, `memory/CHANGELOG.md`, and `memory/YYYYMMDD-event.md` files with YAML frontmatter (`name`, `description`)
+- primary conversation runs load `AGENTS.md` through workspace guidance and load memory in the system prompt via `WorkspaceMemoryStore` from `memory/MEMORY.md` plus event file frontmatter
+- `memory-context` is registered in `injected_context_tags` so SDK trim-mode handoff strips historical memory context from user prompt history
+- memory orchestration state lives in `session_memory_states`; memory content lives in workspace files; session list/detail responses expose `memory_state`; file browsing uses workspace filetree APIs and agent filesystem tools; manual endpoints are `memory:extract` and `memory:summarize`
 
 ### `packages/ya-agent-platform`
 

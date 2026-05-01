@@ -28,7 +28,7 @@ async def test_profile_resolver_seeds_profiles_from_yaml(tmp_path: Path, db_engi
         """
 profiles:
   - name: default
-    model: gateway@openai-responses:gpt-5.4
+    model: gateway@openai-responses:gpt-5.5
     model_settings_preset: openai_responses_high
     model_config_preset: gpt5_270k
     system_prompt: |
@@ -57,7 +57,7 @@ profiles:
         description: Search the web
         system_prompt: |
           You search the web.
-        model: gateway@openai-responses:gpt-5.4-mini
+        model: gateway@openai-responses:gpt-5.5-mini
         model_settings_preset: openai_responses_high
         model_config_preset: gpt5_270k
       - name: executor
@@ -83,7 +83,7 @@ profiles:
     resolved_profile = await resolver.resolve("default")
 
     assert seeded_names == ["default"]
-    assert resolved_profile.model == "gateway@openai-responses:gpt-5.4"
+    assert resolved_profile.model == "gateway@openai-responses:gpt-5.5"
     assert resolved_profile.system_prompt == "You are the profile-scoped execution agent."
     assert resolved_profile.builtin_toolsets == ["filesystem", "shell"]
     assert resolved_profile.need_user_approve_mcps == ["context7"]
@@ -113,7 +113,7 @@ profiles:
     assert resolved_profile.workspace_backend_hint == "docker"
     assert [config.name for config in resolved_profile.subagent_configs] == ["explorer", "searcher", "executor"]
     assert resolved_profile.subagent_configs[0].tools is None
-    assert resolved_profile.subagent_configs[1].model == "gateway@openai-responses:gpt-5.4-mini"
+    assert resolved_profile.subagent_configs[1].model == "gateway@openai-responses:gpt-5.5-mini"
     assert isinstance(resolved_profile.subagent_configs[1].model_settings, dict)
     assert isinstance(resolved_profile.subagent_configs[1].model_cfg, dict)
     assert resolved_profile.subagent_configs[2].model == "inherit"
@@ -142,7 +142,7 @@ async def test_profile_resolver_updates_existing_seeded_profile_and_subagents(
         """
 profiles:
   - name: default
-    model: gateway@openai-responses:gpt-5.4
+    model: gateway@openai-responses:gpt-5.5
     system_prompt: old prompt
     builtin_toolsets: [core]
     subagents:
@@ -213,7 +213,7 @@ async def test_profile_resolver_rejects_stdio_mcp_from_yaml(
         """
 profiles:
   - name: invalid
-    model: gateway@openai-responses:gpt-5.4
+    model: gateway@openai-responses:gpt-5.5
     mcp_servers:
       github:
         transport: stdio
@@ -243,7 +243,7 @@ async def test_profile_resolver_accepts_legacy_toolsets_alias_from_yaml(
         """
 profiles:
   - name: legacy
-    model: gateway@openai-responses:gpt-5.4
+    model: gateway@openai-responses:gpt-5.5
     toolsets: [core, web]
 """.strip(),
         encoding="utf-8",
@@ -272,7 +272,7 @@ async def test_profile_resolver_preserves_explicit_empty_builtin_toolsets(
         """
 profiles:
   - name: empty-tools
-    model: gateway@openai-responses:gpt-5.4
+    model: gateway@openai-responses:gpt-5.5
     builtin_toolsets: []
 """.strip(),
         encoding="utf-8",

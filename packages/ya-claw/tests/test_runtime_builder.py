@@ -63,7 +63,7 @@ def test_runtime_builder_propagates_container_id_from_workspace_metadata(
     )
     profile = ResolvedProfile(
         name="default",
-        model="gateway@openai-responses:gpt-5.4",
+        model="gateway@openai-responses:gpt-5.5",
         model_settings=None,
         model_config=None,
         workspace_backend_hint="docker",
@@ -250,3 +250,41 @@ def test_runtime_builder_system_prompt_loads_workspace_guidance(tmp_path: Path) 
     assert "Workspace virtual root: /workspace" in system_prompt
     assert "Default working directory: /workspace" in system_prompt
     assert "Workspace skills are discovered from /workspace/.agents/skills/." in system_prompt
+
+
+def test_runtime_builder_system_prompt_loads_memory_context(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        memory_enabled=True,
+        memory_inject_enabled=True,
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    memory_path = host_path / "memory"
+    memory_path.mkdir(parents=True, exist_ok=True)
+    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
+    (memory_path / "20260501-event.md").write_text(
+        "---\nname: Project Facts\ndescription: Stable project facts\n---\n\nBody\n",
+        encoding="utf-8",
+    )
+    binding = _build_workspace_binding(host_path)
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+    )
+
+    system_prompt = builder._build_system_prompt(profile=profile, binding=binding)
+
+    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' in system_prompt
+    assert '"untrusted": true' in system_prompt
+    assert '"content": "# Memory\\n\\n- User prefers concise updates."' in system_prompt
+    assert '<memory-file-index path="/workspace/memory">' in system_prompt
+    assert (
+        '<memory-file path="/workspace/memory/20260501-event.md" name="Project Facts" description="Stable project facts" />'
+        in system_prompt
+    )

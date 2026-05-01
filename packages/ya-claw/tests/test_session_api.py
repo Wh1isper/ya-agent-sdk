@@ -13,7 +13,7 @@ from ya_claw.app import create_app
 from ya_claw.config import get_settings
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.orm.base import Base
-from ya_claw.orm.tables import RunRecord, SessionRecord
+from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 
 
 @pytest.fixture(autouse=True)
@@ -198,6 +198,7 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
     assert create_session_response.status_code == 201
     payload = create_session_response.json()
     assert payload["session"]["metadata"] == {}
+    assert payload["session"]["memory_state"] is None
     assert sorted(payload["session"]) == snapshot([
         "active_run_id",
         "created_at",
@@ -205,10 +206,13 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
         "head_success_run_id",
         "id",
         "latest_run",
+        "memory_state",
         "metadata",
         "parent_session_id",
         "profile_name",
         "run_count",
+        "session_type",
+        "source_session_id",
         "status",
         "updated_at",
     ])
@@ -533,6 +537,125 @@ def test_session_turns_return_completed_runs_with_raw_input_and_output() -> None
     assert page_2_payload["has_more"] is False
     assert [turn["run_id"] for turn in page_2_payload["turns"]] == [first_run_id]
     assert page_2_payload["turns"][0]["output_text"] == "answer-1"
+
+
+def test_list_sessions_hides_memory_sessions_by_default() -> None:
+    _create_schema()
+
+    settings = get_settings()
+
+    async def _run() -> None:
+        engine = create_engine(settings.resolved_database_url)
+        session_factory = create_session_factory(engine)
+        try:
+            async with session_factory() as db_session:
+                source_session = SessionRecord(id="source-session", profile_name="general", session_metadata={})
+                memory_session = SessionRecord(
+                    id="memory-session",
+                    parent_session_id="source-session",
+                    profile_name="general",
+                    session_type="memory",
+                    source_session_id="source-session",
+                    session_metadata={"memory": {"source_session_id": "source-session"}},
+                )
+                memory_state = SessionMemoryStateRecord(
+                    source_session_id="source-session",
+                    memory_session_id="memory-session",
+                    extract_count=3,
+                    turns_since_extract=1,
+                    extracts_since_summary=2,
+                )
+                db_session.add_all([source_session, memory_session, memory_state])
+                await db_session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+    with TestClient(create_app()) as client:
+        default_response = client.get("/api/v1/sessions", headers=_auth_headers())
+        internal_response = client.get("/api/v1/sessions?include_internal=true", headers=_auth_headers())
+
+    assert default_response.status_code == 200
+    default_payload = default_response.json()
+    assert [session["id"] for session in default_payload] == ["source-session"]
+    assert default_payload[0]["memory_state"]["extract_count"] == 3
+    assert default_payload[0]["memory_state"]["turns_since_extract"] == 1
+    assert internal_response.status_code == 200
+    assert {session["id"] for session in internal_response.json()} == {"source-session", "memory-session"}
+
+
+def test_memory_api_enqueues_jobs_exposes_state_and_uses_filetree_for_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("YA_CLAW_MEMORY_ENABLED", "true")
+    get_settings.cache_clear()
+    _create_schema()
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.execution_supervisor = None
+        create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
+        assert create_session_response.status_code == 201
+        session_id = create_session_response.json()["session"]["id"]
+
+        create_run_response = client.post(
+            f"/api/v1/sessions/{session_id}/runs",
+            headers=_auth_headers(),
+            json={"input_parts": [{"type": "text", "text": "remember this"}]},
+        )
+        assert create_run_response.status_code == 201
+        run_id = create_run_response.json()["id"]
+
+    _mark_run_completed(session_id, run_id, output_text="done")
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.execution_supervisor = None
+        extract_response = client.post(
+            f"/api/v1/sessions/{session_id}/memory:extract",
+            headers=_auth_headers(),
+            json={"reason": "api_smoke", "run_ids": [run_id]},
+        )
+        assert extract_response.status_code == 202
+        extract_payload = extract_response.json()
+        assert extract_payload["accepted"] is True
+        assert extract_payload["kind"] == "extract"
+        assert isinstance(extract_payload["run_id"], str)
+
+        summary_response = client.post(
+            f"/api/v1/sessions/{session_id}/memory:summarize",
+            headers=_auth_headers(),
+            json={"reason": "api_smoke_summary"},
+        )
+        assert summary_response.status_code == 202
+        assert summary_response.json()["kind"] == "summary"
+        assert summary_response.json()["run_id"] is None
+
+        session_response = client.get(f"/api/v1/sessions/{session_id}", headers=_auth_headers())
+        list_response = client.get("/api/v1/sessions", headers=_auth_headers())
+        internal_response = client.get("/api/v1/sessions?include_internal=true", headers=_auth_headers())
+        invalid_run_response = client.post(
+            f"/api/v1/sessions/{session_id}/memory:extract",
+            headers=_auth_headers(),
+            json={"reason": "bad_run", "run_ids": ["missing-run"]},
+        )
+        removed_memory_read_response = client.get(
+            f"/api/v1/sessions/{session_id}/memory",
+            headers=_auth_headers(),
+        )
+
+    assert session_response.status_code == 200
+    memory_state = session_response.json()["session"]["memory_state"]
+    assert memory_state["memory_session_id"] is not None
+    assert memory_state["last_extract_run_id"] == extract_payload["run_id"]
+    assert memory_state["pending_summary"] is True
+    assert memory_state["metadata"]["pending_requests"][0]["kind"] == "summary"
+    assert list_response.status_code == 200
+    assert [session["id"] for session in list_response.json()] == [session_id]
+    assert list_response.json()[0]["memory_state"]["last_extract_run_id"] == extract_payload["run_id"]
+    assert internal_response.status_code == 200
+    assert {session["session_type"] for session in internal_response.json()} == {"conversation", "memory"}
+    assert invalid_run_response.status_code == 422
+    assert removed_memory_read_response.status_code == 404
 
 
 def test_run_trace_extracts_tool_call_and_response_with_trimming() -> None:

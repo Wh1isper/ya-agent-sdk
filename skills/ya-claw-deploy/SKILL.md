@@ -63,6 +63,7 @@ Every deployment needs:
 - default profile: `default`
 - Docker workspace image: `ghcr.io/wh1isper/ya-claw-workspace:latest`
 - Docker service host bind: `0.0.0.0`
+- service build metadata: `YA_CLAW_SERVICE_VERSION`, `YA_CLAW_SERVICE_COMMIT`, `YA_CLAW_SERVICE_BUILD`, and `YA_CLAW_SERVICE_IMAGE`, exposed through `/api/v1/claw/info` and the web Overview page
 
 ## Deployment Checklist
 

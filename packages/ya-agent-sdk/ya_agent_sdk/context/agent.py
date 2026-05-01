@@ -105,6 +105,7 @@ from pydantic_ai.models import Model
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from y_agent_environment import Environment, FileOperator, ResourceRegistry, Shell
 
+from ya_agent_sdk.agents.lifecycle import LifecycleExtension
 from ya_agent_sdk.events import AgentEvent
 from ya_agent_sdk.usage import ExtraUsageRecord, InternalUsage
 from ya_agent_sdk.utils import get_latest_request_usage
@@ -934,6 +935,9 @@ class AgentContext(BaseModel):
     """
 
     model_config = {"arbitrary_types_allowed": True}
+
+    lifecycle_extensions: list[LifecycleExtension] = Field(default_factory=list, exclude=True)
+    """Runtime lifecycle extension objects attached to this context."""
 
     run_id: str = Field(default_factory=_generate_run_id)
     """Unique identifier for this session run."""

@@ -90,8 +90,10 @@ RUN set -eu; \
     test -s /opt/ya-claw/skills/lark-shared/SKILL.md; \
     rm -rf "${tmp_dir}"
 
+COPY packages/yaacli/yaacli/skills/skill-creator /opt/ya-claw/skills/skill-creator
 COPY packages/ya-claw/workspace-image/entrypoint.sh /usr/local/bin/ya-claw-workspace-entrypoint
-RUN chmod +x /usr/local/bin/ya-claw-workspace-entrypoint
+RUN test -s /opt/ya-claw/skills/skill-creator/SKILL.md \
+    && chmod +x /usr/local/bin/ya-claw-workspace-entrypoint
 
 WORKDIR /workspace
 

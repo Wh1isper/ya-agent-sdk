@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -30,6 +30,7 @@ from ya_claw.execution.restore import ResolvedRestorePoint, load_restore_point
 from ya_claw.execution.runtime import ClawRuntimeBuilder
 from ya_claw.execution.state_machine import complete_run, fail_run, interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
+from ya_claw.memory.lifecycle import MemoryLifecycle
 from ya_claw.notifications import NotificationHub
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -49,6 +50,7 @@ class ExecutionBuffers:
     terminal_event: dict[str, Any] | None = None
     output_text: str | None = None
     output_summary: str | None = None
+    claw_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class ExecutionSupervisor:
@@ -238,7 +240,7 @@ class RunCoordinator:
         self._notification_hub = notification_hub
         self._run_store = run_store or RunStore(settings)
 
-    async def execute(self, run_id: str) -> None:
+    async def execute(self, run_id: str) -> None:  # noqa: C901
         buffers = ExecutionBuffers()
         terminal_event_emitted = False
 
@@ -340,6 +342,22 @@ class RunCoordinator:
                     terminal=True,
                 )
                 terminal_event_emitted = True
+                lifecycle = MemoryLifecycle(
+                    settings=self._settings,
+                    session_factory=self._session_factory,
+                    runtime_state=self._runtime_state,
+                    submit_run=self._submit_memory_run,
+                )
+                if session_record.session_type == "memory":
+                    await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
+                else:
+                    await lifecycle.on_run_committed(
+                        source_session_id=session_record.id,
+                        source_run_id=run_record.id,
+                        source_sequence_no=run_record.sequence_no,
+                        profile_name=run_record.profile_name,
+                        claw_metadata=buffers.claw_metadata,
+                    )
                 logger.info(
                     "Run completed run_id={} session_id={} output_summary_chars={}",
                     run_id,
@@ -382,6 +400,14 @@ class RunCoordinator:
                 run_record.output_summary = buffers.output_summary
                 await db_session.commit()
                 await db_session.refresh(run_record)
+                if session_record.session_type == "memory":
+                    lifecycle = MemoryLifecycle(
+                        settings=self._settings,
+                        session_factory=self._session_factory,
+                        runtime_state=self._runtime_state,
+                        submit_run=self._submit_memory_run,
+                    )
+                    await lifecycle.on_memory_run_terminal(memory_run_id=run_record.id)
                 await _publish_run_status_notification(
                     self._notification_hub,
                     "run.updated",
@@ -437,12 +463,14 @@ class RunCoordinator:
         environment = self._environment_factory.build(workspace_binding)
         background_monitor = BackgroundMonitor(run_id=run_id, runtime_state=self._runtime_state)
         environment.resources.set(BACKGROUND_MONITOR_KEY, background_monitor)
+        memory_metadata = run_metadata.get("memory") if isinstance(run_metadata, dict) else None
+        self_client_session_id = _memory_source_session_id(memory_metadata) or session_id
         environment.resources.set(
             CLAW_SELF_CLIENT_KEY,
             ClawSelfClient(
                 base_url=self._settings.public_base_url,
                 api_token=self._settings.require_api_token(),
-                session_id=session_id,
+                session_id=self_client_session_id,
                 run_id=run_id,
                 profile_name=profile.name,
             ),
@@ -459,7 +487,10 @@ class RunCoordinator:
             restore_from_run_id=restore_point.run_id if restore_point is not None else None,
             dispatch_mode=dispatch_mode,
             source_kind=trigger_type,
-            source_metadata={"trigger_type": trigger_type},
+            source_metadata={
+                "trigger_type": trigger_type,
+                **({"memory": memory_metadata} if isinstance(memory_metadata, dict) else {}),
+            },
             claw_metadata={
                 "profile": profile.metadata,
                 "run_metadata": run_metadata,
@@ -535,6 +566,7 @@ class RunCoordinator:
                     streamer.run,
                     replay_events=self._runtime_state.get_replay_events(run_id),
                 )
+                buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
                 buffers.latest_state_payload = self._build_state_payload(
                     runtime.ctx,
                     workspace_binding=workspace_binding,
@@ -786,6 +818,19 @@ class RunCoordinator:
             value = repr(exc)
         return value[:4000]
 
+    def _submit_memory_run(self, run_id: str) -> bool:
+        supervisor = ExecutionSupervisor(
+            settings=self._settings,
+            session_factory=self._session_factory,
+            runtime_state=self._runtime_state,
+            workspace_provider=self._workspace_provider,
+            environment_factory=self._environment_factory,
+            profile_resolver=self._profile_resolver,
+            runtime_builder=self._runtime_builder,
+            notification_hub=self._notification_hub,
+        )
+        return supervisor.submit_run(run_id)
+
     def _serialize_value(self, value: Any) -> Any:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
@@ -809,6 +854,13 @@ class RunCoordinator:
 ExecutionCoordinator = RunCoordinator
 
 
+def _memory_source_session_id(memory_metadata: Any) -> str | None:
+    if not isinstance(memory_metadata, dict):
+        return None
+    value = memory_metadata.get("source_session_id")
+    return value if isinstance(value, str) and value.strip() else None
+
+
 async def _publish_run_status_notification(
     notification_hub: NotificationHub | None,
     event_type: str,
@@ -816,10 +868,13 @@ async def _publish_run_status_notification(
 ) -> None:
     if notification_hub is None:
         return
+    memory_metadata = run_record.run_metadata.get("memory") if isinstance(run_record.run_metadata, dict) else None
+    source_session_id = _memory_source_session_id(memory_metadata)
     await notification_hub.publish(
         event_type,
         {
             "session_id": run_record.session_id,
+            "source_session_id": source_session_id,
             "run_id": run_record.id,
             "status": run_record.status,
             "sequence_no": run_record.sequence_no,

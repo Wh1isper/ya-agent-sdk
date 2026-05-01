@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArchiveX,
   CalendarClock,
   Database,
   HeartPulse,
@@ -27,6 +28,10 @@ export function OverviewPage() {
   const heartbeat = useHeartbeatStatusQuery()
   const activeRuns = (sessions.data ?? []).filter(
     (session) => session.status === 'queued' || session.status === 'running',
+  )
+  const memoryExtractCount = (sessions.data ?? []).reduce(
+    (count, session) => count + (session.memory_state?.extract_count ?? 0),
+    0,
   )
 
   return (
@@ -67,6 +72,12 @@ export function OverviewPage() {
           accent="violet"
         />
         <MetricCard
+          icon={ArchiveX}
+          label="Memory extracts"
+          value={String(memoryExtractCount)}
+          accent="violet"
+        />
+        <MetricCard
           icon={CalendarClock}
           label="Schedules"
           value={String(
@@ -102,7 +113,14 @@ export function OverviewPage() {
                     {session.latest_run?.input_preview ?? 'No input yet'}
                   </p>
                 </div>
-                <StatusBadge status={session.status} />
+                <div className="flex items-center gap-2">
+                  {session.memory_state ? (
+                    <span className="rounded-full bg-violet-50 px-2 py-1 text-xs font-medium text-violet-700">
+                      {session.memory_state.extract_count} extracts
+                    </span>
+                  ) : null}
+                  <StatusBadge status={session.status} />
+                </div>
               </div>
             ))}
             {sessions.data?.length === 0 ? (
@@ -120,7 +138,19 @@ export function OverviewPage() {
               label="Environment"
               value={info.data?.environment ?? 'unknown'}
             />
-            <Detail label="Version" value={info.data?.version ?? 'unknown'} />
+            <Detail
+              label="Version"
+              value={
+                info.data?.service_version ?? info.data?.version ?? 'unknown'
+              }
+            />
+            <Detail
+              label="Revision"
+              value={shortRevision(info.data?.service_revision)}
+              title={info.data?.service_revision ?? undefined}
+            />
+            <Detail label="Build" value={info.data?.service_build ?? 'local'} />
+            <Detail label="Image" value={info.data?.service_image ?? 'local'} />
             <Detail
               label="Workspace"
               value={info.data?.workspace_provider_backend ?? 'unknown'}
@@ -169,13 +199,27 @@ function MetricCard({
   )
 }
 
-function Detail({ label, value }: { label: string; value: string }) {
+function Detail({
+  label,
+  value,
+  title,
+}: {
+  label: string
+  value: string
+  title?: string
+}) {
   return (
     <div>
       <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
         {label}
       </dt>
-      <dd className="mt-1 break-all text-slate-800">{value}</dd>
+      <dd className="mt-1 break-all text-slate-800" title={title}>
+        {value}
+      </dd>
     </div>
   )
+}
+
+function shortRevision(value: string | null | undefined) {
+  return value ? value.slice(0, 12) : 'unknown'
 }

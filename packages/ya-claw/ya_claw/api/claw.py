@@ -24,6 +24,11 @@ class ClawInfo(BaseModel):
     name: str
     environment: str
     version: str
+    service_version: str
+    service_commit: str | None = None
+    service_revision: str
+    service_build: str | None = None
+    service_image: str | None = None
     public_base_url: str
     instance_id: str
     auth: str = "bearer"
@@ -39,7 +44,12 @@ async def get_claw_info(request: Request) -> ClawInfo:
     return ClawInfo(
         name=settings.app_name,
         environment=settings.environment,
-        version="0.1.0",
+        version=settings.resolved_service_revision,
+        service_version=settings.resolved_service_version,
+        service_commit=settings.resolved_service_commit,
+        service_revision=settings.resolved_service_revision,
+        service_build=settings.resolved_service_build,
+        service_image=settings.resolved_service_image,
         public_base_url=settings.public_base_url,
         instance_id=settings.instance_id,
         surfaces=["profiles", "sessions", "runs", "schedules", "heartbeat", "notifications"],

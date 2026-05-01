@@ -32,6 +32,11 @@ jobs:
           push: false
           load: false
           tags: ya-claw:pr
+          build-args: |
+            YA_CLAW_SERVICE_VERSION=pr-${{ github.event.pull_request.number }}
+            YA_CLAW_SERVICE_COMMIT=${{ github.sha }}
+            YA_CLAW_SERVICE_BUILD=pr-${{ github.run_number }}-${{ github.run_attempt }}
+            YA_CLAW_SERVICE_IMAGE=ya-claw:pr
           cache-from: type=gha,scope=ya-claw
           cache-to: type=gha,mode=max,scope=ya-claw
 
@@ -75,6 +80,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            YA_CLAW_SERVICE_VERSION=dev
+            YA_CLAW_SERVICE_COMMIT=${{ github.sha }}
+            YA_CLAW_SERVICE_BUILD=dev-${{ github.run_number }}-${{ github.run_attempt }}
+            YA_CLAW_SERVICE_IMAGE=${{ steps.prep.outputs.image }}:dev
           cache-from: type=gha,scope=ya-claw
           cache-to: type=gha,mode=max,scope=ya-claw
 
@@ -121,5 +131,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            YA_CLAW_SERVICE_VERSION=${{ github.event.release.tag_name }}
+            YA_CLAW_SERVICE_COMMIT=${{ github.sha }}
+            YA_CLAW_SERVICE_BUILD=release-${{ github.run_number }}-${{ github.run_attempt }}
+            YA_CLAW_SERVICE_IMAGE=${{ steps.prep.outputs.image }}:${{ github.event.release.tag_name }}
           cache-from: type=gha,scope=ya-claw
           cache-to: type=gha,mode=max,scope=ya-claw

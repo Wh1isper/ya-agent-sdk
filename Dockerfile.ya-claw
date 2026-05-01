@@ -16,6 +16,11 @@ RUN corepack pnpm --dir apps/ya-claw-web build
 
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS python-builder
 
+ARG YA_CLAW_SERVICE_VERSION
+ARG YA_CLAW_SERVICE_COMMIT
+ARG YA_CLAW_SERVICE_BUILD
+ARG YA_CLAW_SERVICE_IMAGE
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
@@ -30,6 +35,11 @@ RUN uv build --package ya-claw -o /dist
 
 FROM python:3.13-slim-bookworm AS runtime
 
+ARG YA_CLAW_SERVICE_VERSION
+ARG YA_CLAW_SERVICE_COMMIT
+ARG YA_CLAW_SERVICE_BUILD
+ARG YA_CLAW_SERVICE_IMAGE
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -37,7 +47,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     YA_CLAW_HOST=0.0.0.0 \
     YA_CLAW_PORT=9042 \
     YA_CLAW_AUTO_MIGRATE=true \
-    YA_CLAW_WEB_DIST_DIR=/srv/ya-claw/web-dist
+    YA_CLAW_WEB_DIST_DIR=/srv/ya-claw/web-dist \
+    YA_CLAW_SERVICE_VERSION=${YA_CLAW_SERVICE_VERSION} \
+    YA_CLAW_SERVICE_COMMIT=${YA_CLAW_SERVICE_COMMIT} \
+    YA_CLAW_SERVICE_BUILD=${YA_CLAW_SERVICE_BUILD} \
+    YA_CLAW_SERVICE_IMAGE=${YA_CLAW_SERVICE_IMAGE}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gosu tini \

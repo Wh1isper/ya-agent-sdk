@@ -8,9 +8,7 @@ the conversation.
 from __future__ import annotations
 
 import copy
-import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import replace
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any, cast
@@ -27,24 +25,33 @@ from pydantic_ai import (
 )
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
-    BinaryContent,
-    ImageUrl,
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
     SystemPromptPart,
     TextPart,
-    ToolReturnPart,
     UserPromptPart,
-    VideoUrl,
 )
 from pydantic_ai.models import Model
 from pydantic_ai.tools import RunContext
 
 from ya_agent_sdk._config import AgentSettings
 from ya_agent_sdk._logger import logger
+from ya_agent_sdk.agents import trim as _trim_helpers
+from ya_agent_sdk.agents.lifecycle import (
+    CompactCompleteContext,
+    CompactFailedContext,
+    CompactLifecycleCallback,
+    CompactStartContext,
+    ContextHandoffSource,
+    run_compact_complete_callbacks,
+    run_extension_method,
+)
 from ya_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.trim import (
+    TrimHistoryOptions,
+    trim_history_for_summary,
+)
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.context.agent import ENVIRONMENT_CONTEXT_TAG, RUNTIME_CONTEXT_TAG
 from ya_agent_sdk.events import (
@@ -62,7 +69,6 @@ from ya_agent_sdk.filters._builders import (
     build_context_restored_part,
     build_original_request_parts,
     build_steering_parts,
-    has_keep_tag,
 )
 from ya_agent_sdk.usage import InternalUsage
 from ya_agent_sdk.utils import get_latest_request_usage
@@ -150,14 +156,14 @@ _INCOMPATIBLE_BETAS = frozenset({
     "interleaved-thinking-2025-05-14",
 })
 
+# Default injected context tags used when no AgentContext is available.
+_DEFAULT_INJECTED_TAGS = (RUNTIME_CONTEXT_TAG, ENVIRONMENT_CONTEXT_TAG)
+
 # Maximum characters to keep in a single tool return content for compact
 _MAX_TOOL_RETURN_CHARS = 500
 # Characters to keep from the beginning and end when truncating
 _TOOL_RETURN_KEEP_HEAD = 200
 _TOOL_RETURN_KEEP_TAIL = 200
-
-# Default injected context tags used when no AgentContext is available.
-_DEFAULT_INJECTED_TAGS = (RUNTIME_CONTEXT_TAG, ENVIRONMENT_CONTEXT_TAG)
 
 
 def _strip_beta_headers(result: dict[str, Any]) -> None:
@@ -234,220 +240,24 @@ def _strip_incompatible_settings(settings: ModelSettings) -> ModelSettings:
 
 
 def _truncate_str(content: str, max_chars: int = _MAX_TOOL_RETURN_CHARS) -> str:
-    """Truncate a string, keeping head and tail portions.
-
-    Args:
-        content: The string to potentially truncate.
-        max_chars: Maximum allowed length before truncation.
-
-    Returns:
-        Original string if within limit, otherwise head + marker + tail.
-    """
-    if len(content) <= max_chars:
-        return content
-
-    head = content[:_TOOL_RETURN_KEEP_HEAD]
-    tail = content[-_TOOL_RETURN_KEEP_TAIL:]
-    truncated_count = len(content) - _TOOL_RETURN_KEEP_HEAD - _TOOL_RETURN_KEEP_TAIL
-    return f"{head}\n[... {truncated_count} chars truncated ...]\n{tail}"
-
-
-def _is_media_content(item: object) -> bool:
-    """Check if a UserContent item is image or video media."""
-    if isinstance(item, (ImageUrl, VideoUrl)):
-        return True
-    return isinstance(item, BinaryContent) and (
-        item.media_type.startswith("image/") or item.media_type.startswith("video/")
+    options = TrimHistoryOptions(
+        max_tool_return_chars=max_chars,
+        tool_return_keep_head=_TOOL_RETURN_KEEP_HEAD,
+        tool_return_keep_tail=_TOOL_RETURN_KEEP_TAIL,
     )
+    from ya_agent_sdk.agents.trim import _truncate_str as _public_truncate_str
 
-
-def _media_to_placeholder(item: object) -> str:
-    """Convert a media content item to a descriptive text placeholder."""
-    if isinstance(item, ImageUrl):
-        return f"[image: {item.url}]"
-    if isinstance(item, VideoUrl):
-        return f"[video: {item.url}]"
-    if isinstance(item, BinaryContent):
-        return f"[{item.media_type} binary content removed]"
-    return "[media content removed]"
-
-
-def _truncate_tool_return(part: ToolReturnPart) -> tuple[ToolReturnPart, bool]:
-    """Truncate a ToolReturnPart if its content exceeds the limit.
-
-    Returns:
-        A tuple of (possibly replaced part, whether it was modified).
-    """
-    content_str = part.model_response_str()
-    if len(content_str) > _MAX_TOOL_RETURN_CHARS:
-        return replace(part, content=_truncate_str(content_str)), True
-    return part, False
-
-
-def _strip_media_from_user_prompt(part: UserPromptPart) -> tuple[UserPromptPart, bool]:
-    """Replace image/video content in a UserPromptPart with text placeholders.
-
-    Returns:
-        A tuple of (possibly replaced part, whether it was modified).
-    """
-    content = part.content
-
-    # Handle direct media content (e.g., content=ImageUrl(...))
-    if _is_media_content(content):
-        return replace(part, content=_media_to_placeholder(content)), True
-
-    if not isinstance(content, Sequence) or isinstance(content, str):
-        return part, False
-
-    has_media = any(_is_media_content(item) for item in content)
-    if not has_media:
-        return part, False
-
-    replaced = [_media_to_placeholder(item) if _is_media_content(item) else item for item in content]
-    return replace(part, content=replaced), True
-
-
-def _build_tag_regex(tags: tuple[str, ...]) -> re.Pattern[str] | None:
-    """Build a combined regex pattern to match XML blocks for the given tag names.
-
-    Handles tags with or without attributes (e.g., ``<tag>`` and ``<tag attr=val>``).
-
-    Args:
-        tags: Tuple of XML tag names to match.
-
-    Returns:
-        Compiled regex pattern, or None if tags is empty.
-    """
-    if not tags:
-        return None
-    # Each tag matches: <tag> or <tag attr=...> through </tag>
-    alternatives = "|".join(re.escape(tag) for tag in tags)
-    return re.compile(rf"<({alternatives})[\s>].*?</\1>", re.DOTALL)
-
-
-def _build_tag_prefixes(tags: tuple[str, ...]) -> tuple[str, ...]:
-    """Build prefix strings for matching list-type content items.
-
-    Args:
-        tags: Tuple of XML tag names.
-
-    Returns:
-        Tuple of prefix strings like ``("<tag1", "<tag2", ...)``.
-    """
-    return tuple(f"<{tag}" for tag in tags)
+    return _public_truncate_str(content, options)
 
 
 def _strip_injected_context(
     part: UserPromptPart,
     tags: tuple[str, ...] = _DEFAULT_INJECTED_TAGS,
 ) -> UserPromptPart | None:
-    """Strip injected context blocks and instruction items from a UserPromptPart.
+    from ya_agent_sdk.agents.trim import _strip_injected_context as _public_strip_injected_context
 
-    Removes XML blocks (e.g., ``<runtime-context>...</runtime-context>``) from
-    string content, and tag-prefixed items from list content. The exact tags to
-    strip are determined by the ``tags`` parameter.
-
-    These are injected per-turn by filters and will be re-injected fresh
-    on the latest request, so historical copies are redundant.
-
-    Args:
-        part: The UserPromptPart to process.
-        tags: Tuple of XML tag names to strip. Defaults to SDK-level tags.
-
-    Returns:
-        The cleaned part, or None if the part became empty after stripping.
-    """
-    content = part.content
-
-    if isinstance(content, str):
-        tag_re = _build_tag_regex(tags)
-        cleaned = tag_re.sub("", content) if tag_re else content
-        cleaned = cleaned.strip()
-        if not cleaned:
-            return None
-        if cleaned != content:
-            return replace(part, content=cleaned)
-        return part
-
-    if isinstance(content, Sequence):
-        prefixes = _build_tag_prefixes(tags)
-        filtered = [
-            item
-            for item in content
-            if not (isinstance(item, str) and any(item.lstrip().startswith(p) for p in prefixes))
-        ]
-        if not filtered:
-            return None
-        if len(filtered) != len(content):
-            return replace(part, content=filtered)
-
-    return part
-
-
-def _find_last_user_turn_index(message_history: list[ModelMessage]) -> int | None:
-    """Find the index of the last user-initiated turn in message history.
-
-    A user turn is a ModelRequest that does NOT contain ToolReturnPart or
-    RetryPromptPart, indicating it was initiated by user input rather than
-    being an intermediate tool response.
-
-    Args:
-        message_history: The message history to search.
-
-    Returns:
-        The index of the last user turn, or None if no user turn found.
-    """
-    for i in range(len(message_history) - 1, -1, -1):
-        msg = message_history[i]
-        if isinstance(msg, ModelRequest) and not any(
-            isinstance(part, (ToolReturnPart, RetryPromptPart)) for part in msg.parts
-        ):
-            return i
-    return None
-
-
-def _trim_request_parts(
-    message: ModelRequest,
-    *,
-    is_in_last_turn: bool,
-    injected_context_tags: tuple[str, ...],
-) -> ModelRequest:
-    """Trim parts of a ModelRequest for compact.
-
-    Truncates large ToolReturnPart, strips media and injected context
-    from UserPromptPart.
-
-    Args:
-        message: The ModelRequest to trim.
-        is_in_last_turn: Whether this message is in the last user turn.
-        injected_context_tags: XML tag names to strip from historical turns.
-
-    Returns:
-        A trimmed copy of the ModelRequest.
-    """
-    new_parts = []
-
-    for part in message.parts:
-        if isinstance(part, ToolReturnPart):
-            part, _ = _truncate_tool_return(part)
-            new_parts.append(part)
-        elif isinstance(part, UserPromptPart):
-            # Always strip media (compact agent can't process images/videos)
-            part, _ = _strip_media_from_user_prompt(part)
-            if is_in_last_turn:
-                # Preserve injected context in the last turn
-                new_parts.append(part)
-            else:
-                # Strip injected context from historical turns
-                stripped = _strip_injected_context(part, tags=injected_context_tags)
-                if stripped is not None:
-                    new_parts.append(stripped)
-                # If None, the part was purely injected context - drop it
-        else:
-            # SystemPromptPart, RetryPromptPart - keep as-is
-            new_parts.append(part)
-
-    return replace(message, parts=new_parts)
+    stripped, _ = _public_strip_injected_context(part, tags)
+    return stripped
 
 
 def _trim_history_for_compact(
@@ -456,63 +266,24 @@ def _trim_history_for_compact(
     preserve_last_turn: bool = False,
     injected_context_tags: tuple[str, ...] = _DEFAULT_INJECTED_TAGS,
 ) -> list[ModelMessage]:
-    """Pre-trim message history before sending to compact agent.
+    """Pre-trim message history before sending to compact agent."""
+    return trim_history_for_summary(
+        message_history,
+        TrimHistoryOptions(
+            preserve_last_turn=preserve_last_turn,
+            injected_context_tags=injected_context_tags,
+            max_tool_return_chars=_MAX_TOOL_RETURN_CHARS,
+            tool_return_keep_head=_TOOL_RETURN_KEEP_HEAD,
+            tool_return_keep_tail=_TOOL_RETURN_KEEP_TAIL,
+        ),
+    ).messages
 
-    Performs multiple operations to aggressively reduce token count:
 
-    1. Preserves ThinkingPart in ModelResponse for providers that require reasoning round-trips
-    2. Truncates large ToolReturnPart content (keeps head + tail)
-    3. Drops all image/video content from UserPromptPart
-    4. Strips injected context blocks (identified by ``injected_context_tags``) from UserPromptPart
-    5. Removes UserPromptPart that become empty after stripping
-    6. Removes empty ModelRequest messages
-
-    Args:
-        message_history: The full message history from the main agent.
-        preserve_last_turn: If True, the last user turn and its subsequent tool
-            interactions preserve their injected context without stripping,
-            since the compact agent may need the latest context for an accurate
-            summary. Default False (strip all turns for maximum compression).
-        injected_context_tags: XML tag names for per-turn injected context
-            blocks to strip. Read from ``AgentContext.injected_context_tags``.
-
-    Returns:
-        A trimmed copy of the message history suitable for the compact agent.
-    """
-    # Optionally find the last user turn boundary to preserve its injected context.
-    last_user_turn_idx = _find_last_user_turn_index(message_history) if preserve_last_turn else None
-
-    trimmed: list[ModelMessage] = []
-
-    for i, message in enumerate(message_history):
-        # Skip messages tagged for preservation (prior session summaries)
-        if has_keep_tag(message):
-            trimmed.append(message)
-            continue
-
-        if isinstance(message, ModelResponse):
-            # Preserve ThinkingPart. Some providers, including DeepSeek reasoning
-            # models, require reasoning content to be round-tripped in follow-up
-            # requests.
-            trimmed.append(message)
-            continue
-
-        if not isinstance(message, ModelRequest):
-            trimmed.append(message)
-            continue
-
-        # Determine if this message is in the last user turn (when preservation is enabled)
-        is_in_last_turn = last_user_turn_idx is not None and i >= last_user_turn_idx
-
-        trimmed.append(
-            _trim_request_parts(
-                message,
-                is_in_last_turn=is_in_last_turn,
-                injected_context_tags=injected_context_tags,
-            )
-        )
-
-    return trimmed
+_build_tag_regex = _trim_helpers._build_tag_regex
+_find_last_user_turn_index = _trim_helpers._find_last_user_turn_index
+_is_media_content = _trim_helpers._is_media_content
+_media_to_placeholder = _trim_helpers._media_to_placeholder
+_strip_media = _trim_helpers._strip_media
 
 
 # =============================================================================
@@ -771,6 +542,7 @@ def _build_compacted_messages(
 
 def create_cache_friendly_compact_filter(
     model_cfg: ModelConfig | None = None,
+    callbacks: Sequence[CompactLifecycleCallback] | None = None,
 ) -> Callable[[RunContext[AgentContext], list[ModelMessage]], Awaitable[list[ModelMessage]]]:
     """Create a cache-friendly compact filter that reuses the current agent.
 
@@ -803,35 +575,85 @@ def create_cache_friendly_compact_filter(
 
         object.__setattr__(agent_ctx, "_compact_depth", agent_ctx._compact_depth + 1)
         try:
-            await agent_ctx.emit_event(CompactStartEvent(event_id=event_id, message_count=len(message_history)))
-            compact_agent = copy.copy(ctx.agent)
-            if hasattr(compact_agent, "_output_validators"):
-                compact_agent._output_validators = []  # pyright: ignore[reportAttributeAccessIssue]
-            async with compact_agent.run_stream(
-                f"{CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{CACHE_FRIENDLY_COMPACT_PROMPT}",
-                message_history=message_history,
+            start_ctx = CompactStartContext(
+                event_id=event_id,
                 deps=agent_ctx,
-                output_type=str,
-                usage_limits=UsageLimits(request_limit=1),
-            ) as result:
-                summary_markdown = str(await result.get_output())
-                usage = result.usage()
-
-            model = ctx.model
-            model_id = model.model_name if model is not None else "unknown"
-            agent_ctx.add_extra_usage(
-                agent=AGENT_NAME,
-                internal_usage=InternalUsage(model_id=model_id, usage=usage),
-                uuid=uuid4().hex,
+                original_messages=list(message_history),
             )
-            logger.info("Recorded cache-friendly compact usage: model_id=%s usage=%r", model_id, usage)
+            await run_extension_method(agent_ctx.lifecycle_extensions, "on_compact_start", start_ctx, logger=logger)
+            await agent_ctx.emit_event(CompactStartEvent(event_id=event_id, message_count=len(message_history)))
 
-            compacted = _build_compacted_messages(
-                summary_markdown,
-                agent_ctx.user_prompts or CACHE_FRIENDLY_COMPACT_PROMPT,
-                agent_ctx.steering_messages or None,
+            trimmed_result = None
+            try:
+                trimmed_result = trim_history_for_summary(
+                    message_history,
+                    TrimHistoryOptions(injected_context_tags=agent_ctx.injected_context_tags),
+                )
+                compact_agent = copy.copy(ctx.agent)
+                if hasattr(compact_agent, "_output_validators"):
+                    compact_agent._output_validators = []  # pyright: ignore[reportAttributeAccessIssue]
+                async with compact_agent.run_stream(
+                    f"{CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{CACHE_FRIENDLY_COMPACT_PROMPT}",
+                    message_history=message_history,
+                    deps=agent_ctx,
+                    output_type=str,
+                    usage_limits=UsageLimits(request_limit=1),
+                ) as result:
+                    summary_markdown = str(await result.get_output())
+                    usage = result.usage()
+
+                model = ctx.model
+                model_id = model.model_name if model is not None else "unknown"
+                agent_ctx.add_extra_usage(
+                    agent=AGENT_NAME,
+                    internal_usage=InternalUsage(model_id=model_id, usage=usage),
+                    uuid=uuid4().hex,
+                )
+                logger.info("Recorded cache-friendly compact usage: model_id=%s usage=%r", model_id, usage)
+
+                compacted = _build_compacted_messages(
+                    summary_markdown,
+                    agent_ctx.user_prompts or CACHE_FRIENDLY_COMPACT_PROMPT,
+                    agent_ctx.steering_messages or None,
+                )
+
+                complete_ctx = CompactCompleteContext(
+                    event_id=event_id,
+                    deps=agent_ctx,
+                    source=ContextHandoffSource.COMPACT,
+                    original_messages=list(message_history),
+                    trimmed_messages=trimmed_result.messages,
+                    handoff_messages=compacted,
+                    summary_markdown=summary_markdown,
+                    usage=usage,
+                    metadata={"trim": trimmed_result},
+                    compacted_messages=compacted,
+                    condense_result=None,
+                )
+            except Exception as e:
+                logger.error(f"Failed to compact history with cache-friendly filter: {e}")
+                failed_ctx = CompactFailedContext(
+                    event_id=event_id,
+                    deps=agent_ctx,
+                    original_messages=list(message_history),
+                    trimmed_messages=trimmed_result.messages if trimmed_result is not None else None,
+                    error=e,
+                )
+                await run_extension_method(
+                    agent_ctx.lifecycle_extensions, "on_compact_failed", failed_ctx, logger=logger
+                )
+                await agent_ctx.emit_event(
+                    CompactFailedEvent(event_id=event_id, error=str(e), message_count=len(message_history))
+                )
+                return message_history
+
+            await run_extension_method(
+                agent_ctx.lifecycle_extensions, "on_context_handoff_complete", complete_ctx, logger=logger
             )
-
+            await run_extension_method(
+                agent_ctx.lifecycle_extensions, "on_compact_complete", complete_ctx, logger=logger
+            )
+            await run_compact_complete_callbacks(callbacks, complete_ctx)
             await agent_ctx.emit_event(
                 CompactCompleteEvent(
                     event_id=event_id,
@@ -848,13 +670,6 @@ def create_cache_friendly_compact_filter(
             logger.info(f"Compacted history from {len(message_history)} messages to {len(compacted)} messages")
             return compacted
 
-        except Exception as e:
-            logger.error(f"Failed to compact history with cache-friendly filter: {e}")
-            await agent_ctx.emit_event(
-                CompactFailedEvent(event_id=event_id, error=str(e), message_count=len(message_history))
-            )
-            return message_history
-
         finally:
             object.__setattr__(agent_ctx, "_compact_depth", max(0, agent_ctx._compact_depth - 1))
 
@@ -867,6 +682,7 @@ def create_compact_filter(
     model_cfg: ModelConfig | None = None,
     main_model: str | Model | None = None,
     main_model_settings: ModelSettings | None = None,
+    callbacks: Sequence[CompactLifecycleCallback] | None = None,
 ) -> Callable[[RunContext[AgentContext], list[ModelMessage]], Awaitable[list[ModelMessage]]]:
     """Create a compact filter for automatic context compaction.
 
@@ -937,54 +753,102 @@ def create_compact_filter(
 
         try:
             # Emit start event
+            start_ctx = CompactStartContext(
+                event_id=event_id,
+                deps=agent_ctx,
+                original_messages=list(message_history),
+            )
+            await run_extension_method(agent_ctx.lifecycle_extensions, "on_compact_start", start_ctx, logger=logger)
             await agent_ctx.emit_event(CompactStartEvent(event_id=event_id, message_count=len(message_history)))
 
-            # Pre-trim history to reduce token count for compact agent
-            trimmed_history = _trim_history_for_compact(
-                message_history,
-                injected_context_tags=agent_ctx.injected_context_tags,
+            trimmed_result = None
+            try:
+                # Pre-trim history to reduce token count for compact agent
+                trimmed_result = trim_history_for_summary(
+                    message_history,
+                    TrimHistoryOptions(injected_context_tags=agent_ctx.injected_context_tags),
+                )
+                trimmed_history = trimmed_result.messages
+
+                # Run compact agent on trimmed message history with AgentContext as deps
+                result = await _run_compact_iter(
+                    agent,
+                    prompt=DEFAULT_COMPACT_INSTRUCTION,
+                    message_history=trimmed_history,
+                    deps=AgentContext(
+                        env=agent_ctx.env,
+                        model_cfg=model_cfg or ModelConfig(),
+                    ),
+                )
+
+                # Record usage in extra_usages
+
+                model_id = cast(Model, agent.model).model_name
+                agent_ctx.add_extra_usage(
+                    agent=AGENT_NAME,
+                    internal_usage=InternalUsage(model_id=model_id, usage=result.usage()),
+                    uuid=uuid4().hex,
+                )
+
+                condense_result: CondenseResult = result.output
+
+                # Append auto_load_files for the auto_load_files filter to process
+                # Use extend instead of assignment to preserve any files set by external callers
+                agent_ctx.auto_load_files.extend(condense_result.auto_load_files)
+
+                # Build summary with condense result and user prompts
+                condense_markdown = condense_result_to_markdown(condense_result)
+
+                # Build compacted messages
+                # Priority: agent_ctx.user_prompts > condense_result.original_prompt
+                # user_prompts is set by main agent from actual user input, while original_prompt
+                # is extracted by LLM from conversation history and may be less accurate
+                compacted = _build_compacted_messages(
+                    condense_markdown,
+                    agent_ctx.user_prompts or condense_result.original_prompt,
+                    agent_ctx.steering_messages or None,
+                )
+
+                # Emit complete event with summary
+                complete_ctx = CompactCompleteContext(
+                    event_id=event_id,
+                    deps=agent_ctx,
+                    source=ContextHandoffSource.COMPACT,
+                    original_messages=list(message_history),
+                    trimmed_messages=trimmed_result.messages,
+                    handoff_messages=compacted,
+                    summary_markdown=condense_markdown,
+                    usage=result.usage(),
+                    metadata={"trim": trimmed_result},
+                    compacted_messages=compacted,
+                    condense_result=condense_result,
+                )
+            except Exception as e:
+                logger.error(f"Failed to compact history: {e}")
+                # Emit failed event so consumers know compact did not succeed
+                failed_ctx = CompactFailedContext(
+                    event_id=event_id,
+                    deps=agent_ctx,
+                    original_messages=list(message_history),
+                    trimmed_messages=trimmed_result.messages if trimmed_result is not None else None,
+                    error=e,
+                )
+                await run_extension_method(
+                    agent_ctx.lifecycle_extensions, "on_compact_failed", failed_ctx, logger=logger
+                )
+                await agent_ctx.emit_event(
+                    CompactFailedEvent(event_id=event_id, error=str(e), message_count=len(message_history))
+                )
+                # On error, return original history
+                return message_history
+
+            await run_extension_method(
+                agent_ctx.lifecycle_extensions, "on_context_handoff_complete", complete_ctx, logger=logger
             )
-
-            # Run compact agent on trimmed message history with AgentContext as deps
-            result = await _run_compact_iter(
-                agent,
-                prompt=DEFAULT_COMPACT_INSTRUCTION,
-                message_history=trimmed_history,
-                deps=AgentContext(
-                    env=agent_ctx.env,
-                    model_cfg=model_cfg or ModelConfig(),
-                ),
+            await run_extension_method(
+                agent_ctx.lifecycle_extensions, "on_compact_complete", complete_ctx, logger=logger
             )
-
-            # Record usage in extra_usages
-
-            model_id = cast(Model, agent.model).model_name
-            agent_ctx.add_extra_usage(
-                agent=AGENT_NAME,
-                internal_usage=InternalUsage(model_id=model_id, usage=result.usage()),
-                uuid=uuid4().hex,
-            )
-
-            condense_result: CondenseResult = result.output
-
-            # Append auto_load_files for the auto_load_files filter to process
-            # Use extend instead of assignment to preserve any files set by external callers
-            agent_ctx.auto_load_files.extend(condense_result.auto_load_files)
-
-            # Build summary with condense result and user prompts
-            condense_markdown = condense_result_to_markdown(condense_result)
-
-            # Build compacted messages
-            # Priority: agent_ctx.user_prompts > condense_result.original_prompt
-            # user_prompts is set by main agent from actual user input, while original_prompt
-            # is extracted by LLM from conversation history and may be less accurate
-            compacted = _build_compacted_messages(
-                condense_markdown,
-                agent_ctx.user_prompts or condense_result.original_prompt,
-                agent_ctx.steering_messages or None,
-            )
-
-            # Emit complete event with summary
+            await run_compact_complete_callbacks(callbacks, complete_ctx)
             await agent_ctx.emit_event(
                 CompactCompleteEvent(
                     event_id=event_id,
@@ -1003,15 +867,6 @@ def create_compact_filter(
 
             logger.info(f"Compacted history from {len(message_history)} messages to {len(compacted)} messages")
             return compacted
-
-        except Exception as e:
-            logger.error(f"Failed to compact history: {e}")
-            # Emit failed event so consumers know compact did not succeed
-            await agent_ctx.emit_event(
-                CompactFailedEvent(event_id=event_id, error=str(e), message_count=len(message_history))
-            )
-            # On error, return original history
-            return message_history
 
         finally:
             # Restore original model to avoid side effects on shared agent

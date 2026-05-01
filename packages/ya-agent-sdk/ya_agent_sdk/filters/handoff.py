@@ -25,6 +25,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import RunContext
 
 from ya_agent_sdk._logger import get_logger
+from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource, run_extension_method
+from ya_agent_sdk.agents.trim import TrimHistoryOptions, trim_history_for_summary
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import (
     HandoffCompleteEvent,
@@ -136,11 +138,16 @@ async def process_handoff_message(
     event_id = uuid4().hex[:8]
     original_message_count = len(message_history)
 
-    try:
-        # Emit start event
-        await agent_ctx.emit_event(HandoffStartEvent(event_id=event_id, message_count=original_message_count))
+    # Emit start event
+    await agent_ctx.emit_event(HandoffStartEvent(event_id=event_id, message_count=original_message_count))
 
-        handoff_content = agent_ctx.handoff_message
+    handoff_content = agent_ctx.handoff_message
+
+    try:
+        trimmed_result = trim_history_for_summary(
+            message_history,
+            TrimHistoryOptions(injected_context_tags=agent_ctx.injected_context_tags),
+        )
 
         # Build restored messages without fabricating assistant/tool-call history.
         result = _build_handoff_messages(
@@ -149,28 +156,16 @@ async def process_handoff_message(
             agent_ctx.steering_messages or None,
         )
 
-        if agent_ctx.steering_messages:
-            logger.debug("Including %d steering messages in handoff", len(agent_ctx.steering_messages))
-
-        # Clear handoff state
-        agent_ctx.handoff_message = None
-        # Clear steering_messages after successful handoff (content is now in summary)
-        agent_ctx.steering_messages.clear()
-
-        # Force downstream filters to inject instructions after history restoration.
-        agent_ctx.force_inject_instructions = True
-
-        # Emit complete event with the actual handoff content
-        await agent_ctx.emit_event(
-            HandoffCompleteEvent(
-                event_id=event_id,
-                handoff_content=handoff_content,
-                original_message_count=original_message_count,
-            )
+        complete_ctx = ContextHandoffCompleteContext(
+            event_id=event_id,
+            deps=agent_ctx,
+            source=ContextHandoffSource.SUMMARIZE_TOOL,
+            original_messages=list(message_history),
+            trimmed_messages=trimmed_result.messages,
+            handoff_messages=result,
+            summary_markdown=handoff_content,
+            metadata={"trim": trimmed_result},
         )
-
-        return result
-
     except Exception as e:
         # Emit failed event so consumers know handoff did not succeed
         await agent_ctx.emit_event(
@@ -178,3 +173,32 @@ async def process_handoff_message(
         )
         # On error, return original history
         return message_history
+
+    await run_extension_method(
+        agent_ctx.lifecycle_extensions,
+        "on_context_handoff_complete",
+        complete_ctx,
+        logger=logger,
+    )
+
+    if agent_ctx.steering_messages:
+        logger.debug("Including %d steering messages in handoff", len(agent_ctx.steering_messages))
+
+    # Clear handoff state
+    agent_ctx.handoff_message = None
+    # Clear steering_messages after successful handoff (content is now in summary)
+    agent_ctx.steering_messages.clear()
+
+    # Force downstream filters to inject instructions after history restoration.
+    agent_ctx.force_inject_instructions = True
+
+    # Emit complete event with the actual handoff content
+    await agent_ctx.emit_event(
+        HandoffCompleteEvent(
+            event_id=event_id,
+            handoff_content=handoff_content,
+            original_message_count=original_message_count,
+        )
+    )
+
+    return result

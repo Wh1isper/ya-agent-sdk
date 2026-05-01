@@ -22,6 +22,10 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
         "YA_CLAW_WORKSPACE_DIR",
         "YA_CLAW_PROFILE_SEED_FILE",
         "YA_CLAW_AUTO_SEED_PROFILES",
+        "YA_CLAW_SERVICE_VERSION",
+        "YA_CLAW_SERVICE_COMMIT",
+        "YA_CLAW_SERVICE_BUILD",
+        "YA_CLAW_SERVICE_IMAGE",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -31,6 +35,10 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local")
     monkeypatch.setenv("YA_CLAW_PROFILE_SEED_FILE", str(tmp_path / "profiles.yaml"))
     monkeypatch.setenv("YA_CLAW_AUTO_SEED_PROFILES", "false")
+    monkeypatch.setenv("YA_CLAW_SERVICE_VERSION", "dev")
+    monkeypatch.setenv("YA_CLAW_SERVICE_COMMIT", "abcdef1234567890")
+    monkeypatch.setenv("YA_CLAW_SERVICE_BUILD", "dev-42-1")
+    monkeypatch.setenv("YA_CLAW_SERVICE_IMAGE", "ghcr.io/example/ya-claw:dev")
 
     get_settings.cache_clear()
     yield
@@ -69,6 +77,12 @@ def test_claw_info_reports_console_capabilities() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["name"] == "YA Claw"
+    assert payload["version"] == "dev+abcdef123456"
+    assert payload["service_version"] == "dev"
+    assert payload["service_commit"] == "abcdef1234567890"
+    assert payload["service_revision"] == "dev+abcdef123456"
+    assert payload["service_build"] == "dev-42-1"
+    assert payload["service_image"] == "ghcr.io/example/ya-claw:dev"
     assert payload["auth"] == "bearer"
     assert payload["features"]["session_events"] is True
     assert payload["features"]["run_events"] is True
@@ -106,7 +120,7 @@ def test_console_notifications_capture_session_run_and_profile_events() -> None:
             "/api/v1/profiles/general",
             headers=_auth_headers(),
             json={
-                "model": "gateway@openai-responses:gpt-5.4",
+                "model": "gateway@openai-responses:gpt-5.5",
                 "builtin_toolsets": ["core"],
                 "enabled": True,
             },
@@ -131,7 +145,7 @@ def test_profile_delete_emits_console_notification() -> None:
             "/api/v1/profiles/custom",
             headers=_auth_headers(),
             json={
-                "model": "gateway@openai-responses:gpt-5.4",
+                "model": "gateway@openai-responses:gpt-5.5",
                 "enabled": True,
             },
         )

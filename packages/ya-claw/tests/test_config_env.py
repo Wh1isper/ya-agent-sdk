@@ -89,6 +89,23 @@ def test_settings_use_official_workspace_image_by_default(monkeypatch) -> None:
     assert settings.workspace_provider_docker_image == "ghcr.io/wh1isper/ya-claw-workspace:latest"
 
 
+def test_settings_service_build_metadata_can_be_configured() -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        service_version="dev",
+        service_commit="abcdef1234567890",
+        service_build="dev-42-1",
+        service_image="ghcr.io/example/ya-claw:dev",
+        _env_file=None,
+    )
+
+    assert settings.resolved_service_version == "dev"
+    assert settings.resolved_service_commit == "abcdef1234567890"
+    assert settings.resolved_service_build == "dev-42-1"
+    assert settings.resolved_service_image == "ghcr.io/example/ya-claw:dev"
+    assert settings.resolved_service_revision == "dev+abcdef123456"
+
+
 def test_settings_session_prune_defaults() -> None:
     settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
 

@@ -5,9 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette.sse import EventSourceResponse
 
 from ya_claw.config import ClawSettings
+from ya_claw.controller.memory import MemoryController
 from ya_claw.controller.models import (
     ControlResponse,
     DispatchMode,
+    MemoryActionRequest,
+    MemoryActionResponse,
     RunDetail,
     SessionCreateRequest,
     SessionCreateResponse,
@@ -28,6 +31,7 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 session_controller = SessionController()
 run_controller = RunController()
+memory_controller = MemoryController()
 
 
 @router.post("", response_model=SessionCreateResponse, status_code=201)
@@ -64,10 +68,10 @@ async def create_session_stream(request: Request, payload: SessionCreateRequest)
 
 
 @router.get("", response_model=list[SessionSummary])
-async def list_sessions(request: Request) -> list[SessionSummary]:
+async def list_sessions(request: Request, include_internal: bool = False) -> list[SessionSummary]:
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
-        return await session_controller.list(db_session)
+        return await session_controller.list(db_session, include_internal=include_internal)
 
 
 @router.get("/{session_id}", response_model=SessionGetResponse)
@@ -91,6 +95,38 @@ async def get_session(
             include_message=include_message,
             include_input_parts=include_input_parts,
         )
+
+
+@router.post("/{session_id}/memory:extract", response_model=MemoryActionResponse, status_code=202)
+async def extract_session_memory(
+    request: Request,
+    session_id: str,
+    payload: MemoryActionRequest,
+) -> MemoryActionResponse:
+    return await memory_controller.enqueue_extract(
+        settings=_get_settings(request),
+        session_factory=_get_session_factory(request),
+        runtime_state=_get_runtime_state(request),
+        source_session_id=session_id,
+        request=payload,
+        submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+    )
+
+
+@router.post("/{session_id}/memory:summarize", response_model=MemoryActionResponse, status_code=202)
+async def summarize_session_memory(
+    request: Request,
+    session_id: str,
+    payload: MemoryActionRequest,
+) -> MemoryActionResponse:
+    return await memory_controller.enqueue_summary(
+        settings=_get_settings(request),
+        session_factory=_get_session_factory(request),
+        runtime_state=_get_runtime_state(request),
+        source_session_id=session_id,
+        request=payload,
+        submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+    )
 
 
 @router.get("/{session_id}/turns", response_model=SessionTurnsResponse)

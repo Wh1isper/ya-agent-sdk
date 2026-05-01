@@ -1,3 +1,8 @@
+YA_CLAW_SERVICE_VERSION ?= $(shell uv run python -c "from importlib.metadata import version; print(version('ya-claw'))")
+YA_CLAW_SERVICE_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || true)
+YA_CLAW_SERVICE_BUILD ?= dev
+YA_CLAW_SERVICE_IMAGE ?= ya-claw:dev
+
 .PHONY: install
 install: ## Install Python, web dependencies, and pre-commit hooks
 	@echo "Creating workspace environment using uv"
@@ -85,7 +90,12 @@ web-build: ## Run TypeScript and Vite build checks for the YA Claw web app
 .PHONY: docker-build-claw
 docker-build-claw: ## Build the YA Claw Docker image
 	@echo "Building ya-claw Docker image"
-	@docker build -f Dockerfile.ya-claw -t ya-claw:dev .
+	@docker build \
+		--build-arg YA_CLAW_SERVICE_VERSION="$(YA_CLAW_SERVICE_VERSION)" \
+		--build-arg YA_CLAW_SERVICE_COMMIT="$(YA_CLAW_SERVICE_COMMIT)" \
+		--build-arg YA_CLAW_SERVICE_BUILD="$(YA_CLAW_SERVICE_BUILD)" \
+		--build-arg YA_CLAW_SERVICE_IMAGE="$(YA_CLAW_SERVICE_IMAGE)" \
+		-f Dockerfile.ya-claw -t "$(YA_CLAW_SERVICE_IMAGE)" .
 
 .PHONY: docker-build-claw-workspace
 docker-build-claw-workspace: ## Build the YA Claw workspace Docker image

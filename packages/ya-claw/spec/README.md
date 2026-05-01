@@ -24,17 +24,18 @@ This spec set defines one execution shape:
 
 ## Section Map
 
-| Section | Document                                                                                 | Topic                                                                   |
-| ------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| 00      | [00-overview.md](00-overview.md)                                                         | runtime definition, top-level architecture, and core runtime objects    |
-| 01      | [01-configuration-and-workspace-provider.md](01-configuration-and-workspace-provider.md) | configuration layers, profiles, workspace binding, and runtime assembly |
-| 02      | [02-execution-and-session.md](02-execution-and-session.md)                               | queued runs, supervisor/coordinator layering, session/run lifecycle     |
-| 03      | [03-storage-and-streaming.md](03-storage-and-streaming.md)                               | relational store, run store, runtime state, and event delivery          |
-| 04      | [04-api.md](04-api.md)                                                                   | HTTP API surface and queued-run API semantics                           |
-| 05      | [05-web-ui-and-operations.md](05-web-ui-and-operations.md)                               | web shell, runtime operations, schedules, and bridge usage              |
-| 06      | [06-runtime-assembly.md](06-runtime-assembly.md)                                         | `WorkspaceBinding -> Environment -> ClawAgentContext -> AgentRuntime`   |
-| 07      | [07-async-subagents.md](07-async-subagents.md)                                           | non-blocking background subagent dispatch, spawn_delegate, steer        |
-| 08      | [08-schedules-and-heartbeat.md](08-schedules-and-heartbeat.md)                           | schedule modes, heartbeat, agent schedule toolset, and timer dispatch   |
+| Section | Document                                                                                 | Topic                                                                        |
+| ------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 00      | [00-overview.md](00-overview.md)                                                         | runtime definition, top-level architecture, and core runtime objects         |
+| 01      | [01-configuration-and-workspace-provider.md](01-configuration-and-workspace-provider.md) | configuration layers, profiles, workspace binding, and runtime assembly      |
+| 02      | [02-execution-and-session.md](02-execution-and-session.md)                               | queued runs, supervisor/coordinator layering, session/run lifecycle          |
+| 03      | [03-storage-and-streaming.md](03-storage-and-streaming.md)                               | relational store, run store, runtime state, and event delivery               |
+| 04      | [04-api.md](04-api.md)                                                                   | HTTP API surface and queued-run API semantics                                |
+| 05      | [05-web-ui-and-operations.md](05-web-ui-and-operations.md)                               | web shell, runtime operations, schedules, and bridge usage                   |
+| 06      | [06-runtime-assembly.md](06-runtime-assembly.md)                                         | `WorkspaceBinding -> Environment -> ClawAgentContext -> AgentRuntime`        |
+| 07      | [07-async-subagents.md](07-async-subagents.md)                                           | non-blocking background subagent dispatch, spawn_delegate, steer             |
+| 08      | [08-schedules-and-heartbeat.md](08-schedules-and-heartbeat.md)                           | schedule modes, heartbeat, agent schedule toolset, and timer dispatch        |
+| 09      | [09-session-memory.md](09-session-memory.md)                                             | workspace memory files, internal memory sessions, extract and summary agents |
 
 ## Out of Scope
 

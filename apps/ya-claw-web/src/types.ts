@@ -16,6 +16,11 @@ export type ClawInfo = {
   name: string
   environment: string
   version: string
+  service_version: string
+  service_commit?: string | null
+  service_revision: string
+  service_build?: string | null
+  service_image?: string | null
   public_base_url: string
   instance_id: string
   auth: 'bearer'
@@ -312,10 +317,29 @@ export type RunDetail = RunSummary & {
   has_message: boolean
 }
 
+export type MemoryStateSummary = {
+  source_session_id: string
+  memory_session_id?: string | null
+  enabled: boolean
+  last_extracted_sequence_no: number
+  turns_since_extract: number
+  extract_count: number
+  extracts_since_summary: number
+  pending_extract: boolean
+  pending_summary: boolean
+  last_extract_run_id?: string | null
+  last_summary_run_id?: string | null
+  metadata: Record<string, unknown>
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export type SessionSummary = {
   id: string
   parent_session_id?: string | null
   profile_name?: string | null
+  session_type: 'conversation' | 'memory'
+  source_session_id?: string | null
   metadata: Record<string, unknown>
   created_at: string
   updated_at: string
@@ -325,6 +349,7 @@ export type SessionSummary = {
   head_success_run_id?: string | null
   active_run_id?: string | null
   latest_run?: RunSummary | null
+  memory_state?: MemoryStateSummary | null
 }
 
 export type SessionDetail = SessionSummary & {

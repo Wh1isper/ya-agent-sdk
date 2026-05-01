@@ -255,6 +255,7 @@ export function ChatPage() {
                   selectedRunId={resolvedRunId}
                   onSelectRun={selectRun}
                 />
+                <MemoryStatusBar session={activeSessionData?.session ?? null} />
                 <RunControlBar run={activeRunData?.run ?? null} />
                 <TimelinePanel
                   timeline={timeline}
@@ -350,9 +351,16 @@ function SessionList({
                 </div>
                 <StatusBadge status={session.status} />
               </div>
-              <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+              <div className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500">
                 <span>{session.profile_name ?? 'default'}</span>
-                <span>{session.run_count} runs</span>
+                <div className="flex items-center gap-2">
+                  <span>{session.run_count} runs</span>
+                  {session.memory_state ? (
+                    <span className="rounded-full bg-violet-50 px-2 py-0.5 font-medium text-violet-700">
+                      {session.memory_state.extract_count} extracts
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </button>
           ))}
@@ -411,6 +419,35 @@ function RunStrip({
             <span className="capitalize">{run.status}</span>
           </button>
         ))}
+      </div>
+    </div>
+  )
+}
+
+function MemoryStatusBar({ session }: { session: SessionSummary | null }) {
+  const memory = session?.memory_state
+  if (!session || !memory) return null
+
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-violet-50/60 px-4 py-2 text-xs text-violet-900">
+      <div className="flex items-center gap-2 font-medium">
+        <ArchiveX className="h-3.5 w-3.5" />
+        <span>Memory</span>
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <span>{memory.extract_count} extracts</span>
+        <span>{memory.turns_since_extract} turns since extract</span>
+        <span>{memory.extracts_since_summary} extracts since summary</span>
+        {memory.pending_extract ? (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">
+            extract pending
+          </span>
+        ) : null}
+        {memory.pending_summary ? (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">
+            summary pending
+          </span>
+        ) : null}
       </div>
     </div>
   )

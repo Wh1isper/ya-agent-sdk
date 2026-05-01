@@ -31,6 +31,17 @@ class TriggerType(StrEnum):
     BRIDGE = "bridge"
     SCHEDULE = "schedule"
     HEARTBEAT = "heartbeat"
+    MEMORY = "memory"
+
+
+class SessionType(StrEnum):
+    CONVERSATION = "conversation"
+    MEMORY = "memory"
+
+
+class MemoryJobKind(StrEnum):
+    EXTRACT = "extract"
+    SUMMARY = "summary"
 
 
 class TerminationReason(StrEnum):
@@ -228,6 +239,8 @@ class SessionSummary(BaseModel):
     id: str
     parent_session_id: str | None = None
     profile_name: str | None = None
+    session_type: SessionType = SessionType.CONVERSATION
+    source_session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -237,6 +250,7 @@ class SessionSummary(BaseModel):
     head_success_run_id: str | None = None
     active_run_id: str | None = None
     latest_run: RunSummary | None = None
+    memory_state: MemoryStateSummary | None = None
 
 
 class SessionDetail(SessionSummary):
@@ -249,6 +263,36 @@ class SessionDetail(SessionSummary):
 class SessionCreateResponse(BaseModel):
     session: SessionSummary
     run: RunDetail | None = None
+
+
+class MemoryStateSummary(BaseModel):
+    source_session_id: str
+    memory_session_id: str | None = None
+    enabled: bool = True
+    last_extracted_sequence_no: int = 0
+    turns_since_extract: int = 0
+    extract_count: int = 0
+    extracts_since_summary: int = 0
+    pending_extract: bool = False
+    pending_summary: bool = False
+    last_extract_run_id: str | None = None
+    last_summary_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class MemoryActionRequest(BaseModel):
+    reason: str = "manual"
+    run_ids: list[str] = Field(default_factory=list)
+
+
+class MemoryActionResponse(BaseModel):
+    accepted: bool = True
+    source_session_id: str
+    run_id: str | None = None
+    kind: MemoryJobKind
+    reason: str | None = None
 
 
 class SessionGetResponse(BaseModel):
@@ -463,16 +507,62 @@ def resolve_session_status(latest_run: RunSummary | None) -> SessionStatus:
     return SessionStatus(latest_run.status)
 
 
+def memory_state_summary_from_record(record: Any) -> MemoryStateSummary:
+    return MemoryStateSummary(
+        source_session_id=record.source_session_id,
+        memory_session_id=record.memory_session_id,
+        enabled=bool(record.enabled),
+        last_extracted_sequence_no=record.last_extracted_sequence_no,
+        turns_since_extract=record.turns_since_extract,
+        extract_count=record.extract_count,
+        extracts_since_summary=record.extracts_since_summary,
+        pending_extract=bool(record.pending_extract),
+        pending_summary=bool(record.pending_summary),
+        last_extract_run_id=record.last_extract_run_id,
+        last_summary_run_id=record.last_summary_run_id,
+        metadata=public_memory_metadata(dict(record.memory_metadata or {})),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def public_memory_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    pending_value = metadata.get("pending_requests")
+    if not isinstance(pending_value, list):
+        return {}
+    pending_requests = []
+    for item in pending_value:
+        if not isinstance(item, dict):
+            continue
+        source_run_ids = item.get("source_run_ids")
+        pending_requests.append({
+            "kind": item.get("kind") if isinstance(item.get("kind"), str) else None,
+            "reason": item.get("reason") if isinstance(item.get("reason"), str) else None,
+            "source_sequence_start": item.get("source_sequence_start")
+            if isinstance(item.get("source_sequence_start"), int)
+            else None,
+            "source_sequence_end": item.get("source_sequence_end")
+            if isinstance(item.get("source_sequence_end"), int)
+            else None,
+            "source_run_count": len(source_run_ids) if isinstance(source_run_ids, list) else 0,
+            "has_context_handoff": isinstance(item.get("context_handoff"), dict),
+        })
+    return {"pending_requests": pending_requests} if pending_requests else {}
+
+
 def session_summary_from_record(
     record: SessionRecord,
     *,
     run_count: int,
     latest_run: RunSummary | None,
+    memory_state: MemoryStateSummary | None = None,
 ) -> SessionSummary:
     return SessionSummary(
         id=record.id,
         parent_session_id=record.parent_session_id,
         profile_name=record.profile_name,
+        session_type=SessionType(record.session_type),
+        source_session_id=record.source_session_id,
         metadata=public_metadata(dict(record.session_metadata)),
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -482,4 +572,5 @@ def session_summary_from_record(
         head_success_run_id=record.head_success_run_id,
         active_run_id=record.active_run_id,
         latest_run=latest_run,
+        memory_state=memory_state,
     )

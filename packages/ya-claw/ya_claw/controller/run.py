@@ -60,6 +60,7 @@ class RunController:
                 id=session_id,
                 profile_name=request.profile_name,
                 session_metadata={},
+                session_type="conversation",
             )
             db_session.add(session_record)
         else:

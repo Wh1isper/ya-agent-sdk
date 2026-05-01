@@ -22,13 +22,14 @@ from ya_claw.controller.models import (
     SessionRunCreateRequest,
     SessionSummary,
     SessionTurnsResponse,
+    memory_state_summary_from_record,
     run_summary_from_record,
     session_summary_from_record,
     session_turn_from_record,
 )
 from ya_claw.controller.run import RunController
 from ya_claw.controller.store import read_run_message_blob_if_exists, read_run_state_blob_if_exists
-from ya_claw.orm.tables import RunRecord, SessionRecord
+from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
 _DEFAULT_SESSION_RUNS_LIMIT = 20
@@ -66,6 +67,7 @@ class SessionController:
             id=session_id,
             profile_name=request.profile_name,
             session_metadata=dict(request.metadata),
+            session_type="conversation",
         )
         db_session.add(record)
         await db_session.commit()
@@ -138,9 +140,12 @@ class SessionController:
             ),
         )
 
-    async def list(self, db_session: AsyncSession) -> list[SessionSummary]:
-        logger.debug("Listing sessions")
-        statement: Select[tuple[SessionRecord]] = select(SessionRecord).order_by(SessionRecord.updated_at.desc())
+    async def list(self, db_session: AsyncSession, *, include_internal: bool = False) -> list[SessionSummary]:
+        logger.debug("Listing sessions include_internal={}", include_internal)
+        statement: Select[tuple[SessionRecord]] = select(SessionRecord)
+        if not include_internal:
+            statement = statement.where(SessionRecord.session_type == "conversation")
+        statement = statement.order_by(SessionRecord.updated_at.desc())
         result = await db_session.execute(statement)
         records = list(result.scalars().all())
         return await self._build_summaries(db_session, records)
@@ -313,6 +318,7 @@ class SessionController:
             parent_session_id=source_record.id,
             profile_name=request.profile_name or source_record.profile_name,
             session_metadata=dict(request.metadata),
+            session_type="conversation",
             head_run_id=restore_record.id,
             head_success_run_id=restore_record.id
             if restore_record.status == RunStatus.COMPLETED
@@ -359,6 +365,13 @@ class SessionController:
         for run_record in run_records:
             grouped_runs.setdefault(run_record.session_id, []).append(run_record)
 
+        memory_result = await db_session.execute(
+            select(SessionMemoryStateRecord).where(SessionMemoryStateRecord.source_session_id.in_(session_ids))
+        )
+        memory_states = {
+            state.source_session_id: memory_state_summary_from_record(state) for state in memory_result.scalars().all()
+        }
+
         summaries: list[SessionSummary] = []
         for record in records:
             runs = grouped_runs.get(record.id, [])
@@ -368,6 +381,7 @@ class SessionController:
                     record,
                     run_count=len(runs),
                     latest_run=latest_run,
+                    memory_state=memory_states.get(record.id),
                 )
             )
 

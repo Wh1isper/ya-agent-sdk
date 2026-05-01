@@ -60,6 +60,7 @@ def test_docs_and_openapi_are_public() -> None:
     assert "Swagger UI" in docs_response.text
     assert openapi_response.status_code == 200
     assert openapi_response.json()["info"]["title"] == "YA Claw"
+    assert openapi_response.json()["info"]["version"] != "0.1.0"
 
 
 def test_root_requires_authorization() -> None:
