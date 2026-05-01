@@ -55,6 +55,31 @@ async def test_create_tui_runtime_uses_custom_config_dir_for_allowed_paths(tmp_p
         assert config_dir.resolve() in runtime.env.file_operator._allowed_paths
 
 
+async def test_create_tui_runtime_orders_skill_paths_by_priority(tmp_path: Path) -> None:
+    """Test skill path priority: global, shared, project, project config."""
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai:gpt-4"),
+    )
+    config_dir = tmp_path / "custom-config"
+    working_dir = tmp_path / "workspace"
+
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=working_dir,
+        config_dir=config_dir,
+    )
+
+    async with runtime:
+        allowed_paths = runtime.env.file_operator._allowed_paths
+        expected_prefix = [
+            config_dir.resolve(),
+            (Path.home() / ".agents").resolve(),
+            working_dir.resolve(),
+            (working_dir / ".yaacli").resolve(),
+        ]
+        assert allowed_paths[:4] == expected_prefix
+
+
 def test_create_tui_runtime_with_model_settings(tmp_path: Path) -> None:
     """Test creating runtime with model settings preset."""
     # Use openai which is more commonly mocked in tests

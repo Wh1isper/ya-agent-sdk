@@ -244,19 +244,19 @@ def create_tui_runtime(
     # Include global config dir in allowed_paths so agent can modify configs directly.
     # Include ~/.agents for shared skills following the Agent Skills open standard.
     # Order matters for skill priority (later = higher priority):
-    #   ~/.agents < ~/.yaacli < project dir
+    #   ~/.yaacli < ~/.agents < project dir < project .yaacli
     global_config_dir = config_dir or ConfigManager.DEFAULT_CONFIG_DIR
     # Ensure .gitignore exists in config dir to keep session data out of file tree context
     ConfigManager(config_dir=global_config_dir).ensure_config_dir()
     shared_agents_dir = Path.home() / ".agents"
     env_kwargs: dict[str, Any] = {}
     if working_dir:
-        env_kwargs["default_path"] = working_dir
-        env_kwargs["allowed_paths"] = [shared_agents_dir, global_config_dir, working_dir]
+        workspace_dir = working_dir
     else:
-        cwd = Path.cwd()
-        env_kwargs["default_path"] = cwd
-        env_kwargs["allowed_paths"] = [shared_agents_dir, global_config_dir, cwd]
+        workspace_dir = Path.cwd()
+    project_config_dir = workspace_dir / ConfigManager.PROJECT_CONFIG_DIR
+    env_kwargs["default_path"] = workspace_dir
+    env_kwargs["allowed_paths"] = [global_config_dir, shared_agents_dir, workspace_dir, project_config_dir]
 
     # Shell environment isolation: configurable via config.toml
     env_kwargs["include_os_env"] = config.include_os_env

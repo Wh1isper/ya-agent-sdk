@@ -267,25 +267,37 @@ class SkillToolset(BaseToolset[AgentContext]):
             logger.debug("Skills directories changed, rescanning all")
             self._last_scan_paths = current_paths
 
-        new_skills: dict[str, SkillConfig] = {}
+        discovered_skills: dict[str, SkillConfig] = {}
 
         for skills_dir in skills_dirs:
             dir_skills = await self._scan_skills_in_dir(file_operator, skills_dir)
 
             for name, config in dir_skills.items():
-                # Check if skill already cached with same hash (hot-reload check)
-                cached = self._skills_cache.get(name)
-                if cached and cached.content_hash == config.content_hash:
-                    # Frontmatter unchanged, reuse cached config
-                    new_skills[name] = cached
-                    logger.debug(f"Skill '{name}' unchanged, using cache")
+                existing = discovered_skills.get(name)
+                if existing:
+                    logger.debug(
+                        "Skill '%s' from %s overrides lower-priority skill from %s",
+                        name,
+                        config.path,
+                        existing.path,
+                    )
+                discovered_skills[name] = config
+
+        new_skills: dict[str, SkillConfig] = {}
+
+        for name, config in discovered_skills.items():
+            cached = self._skills_cache.get(name)
+            if cached and cached.content_hash == config.content_hash and cached.path == config.path:
+                # Effective skill unchanged, reuse cached config
+                new_skills[name] = cached
+                logger.debug(f"Skill '{name}' unchanged, using cache")
+            else:
+                # New or changed effective skill
+                new_skills[name] = config
+                if cached:
+                    logger.info(f"Skill '{name}' changed, reloading")
                 else:
-                    # New or changed skill
-                    new_skills[name] = config
-                    if cached:
-                        logger.info(f"Skill '{name}' frontmatter changed, reloading")
-                    else:
-                        logger.info(f"Discovered new skill: '{name}'")
+                    logger.info(f"Discovered new skill: '{name}'")
 
         # Update cache
         self._skills_cache = new_skills

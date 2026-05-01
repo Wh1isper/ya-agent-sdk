@@ -1,5 +1,6 @@
 """Tests for SkillToolset."""
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -242,6 +243,94 @@ Content.
             instructions_custom = await custom_toolset.get_instructions(mock_ctx)
             assert instructions_custom is not None
             assert "custom-skill" in instructions_custom
+
+
+async def test_skill_toolset_uses_highest_priority_duplicate(tmp_path: Path):
+    """Test that later allowed paths override earlier duplicate skill names."""
+    low_priority_dir = tmp_path / "global"
+    high_priority_dir = tmp_path / "project"
+    low_priority_skill_dir = low_priority_dir / "skills" / "duplicate-skill"
+    high_priority_skill_dir = high_priority_dir / "skills" / "duplicate-skill"
+    low_priority_skill_dir.mkdir(parents=True)
+    high_priority_skill_dir.mkdir(parents=True)
+
+    (low_priority_skill_dir / "SKILL.md").write_text("""---
+name: duplicate-skill
+description: Low priority description.
+---
+
+Low priority content.
+""")
+    (high_priority_skill_dir / "SKILL.md").write_text("""---
+name: duplicate-skill
+description: High priority description.
+---
+
+High priority content.
+""")
+
+    async with LocalEnvironment(
+        default_path=high_priority_dir,
+        allowed_paths=[low_priority_dir, high_priority_dir],
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(env=env) as ctx:
+            mock_ctx = MagicMock(spec=RunContext)
+            mock_ctx.deps = ctx
+
+            toolset = SkillToolset()
+            instructions = await toolset.get_instructions(mock_ctx)
+
+            assert instructions is not None
+            assert "High priority description" in instructions
+            assert "Low priority description" not in instructions
+            assert toolset._skills_cache["duplicate-skill"].path == high_priority_skill_dir
+
+
+async def test_skill_toolset_shadowed_duplicate_does_not_reload_each_scan(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Test that shadowed duplicate skills do not trigger reload logs."""
+    low_priority_dir = tmp_path / "global"
+    high_priority_dir = tmp_path / "project"
+    low_priority_skill_dir = low_priority_dir / "skills" / "duplicate-skill"
+    high_priority_skill_dir = high_priority_dir / "skills" / "duplicate-skill"
+    low_priority_skill_dir.mkdir(parents=True)
+    high_priority_skill_dir.mkdir(parents=True)
+
+    (low_priority_skill_dir / "SKILL.md").write_text("""---
+name: duplicate-skill
+description: Low priority description.
+---
+
+Low priority content.
+""")
+    (high_priority_skill_dir / "SKILL.md").write_text("""---
+name: duplicate-skill
+description: High priority description.
+---
+
+High priority content.
+""")
+
+    async with LocalEnvironment(
+        default_path=high_priority_dir,
+        allowed_paths=[low_priority_dir, high_priority_dir],
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(env=env) as ctx:
+            mock_ctx = MagicMock(spec=RunContext)
+            mock_ctx.deps = ctx
+
+            toolset = SkillToolset()
+            await toolset.get_instructions(mock_ctx)
+
+            caplog.clear()
+            with caplog.at_level(logging.INFO, logger="ya_agent_sdk.toolsets.skills.toolset"):
+                await toolset.get_instructions(mock_ctx)
+
+            assert "changed, reloading" not in caplog.text
 
 
 def test_skill_toolset_tool_defs():
