@@ -357,7 +357,8 @@ def get_available_subagent_names(tool_cls: type[BaseTool]) -> tuple[str, ...]:
     Raises:
         ValueError: If the tool is not a unified subagent tool.
     """
-    if not hasattr(tool_cls, "_available_subagents"):
+    available_subagents = getattr(tool_cls, "_available_subagents", None)
+    if available_subagents is None:
         msg = "Tool class does not appear to be a unified subagent tool"
         raise ValueError(msg)
-    return cast(tuple[str, ...], tool_cls._available_subagents)
+    return cast(tuple[str, ...], available_subagents)
