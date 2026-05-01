@@ -14,7 +14,7 @@ from pydantic_ai._agent_graph import HistoryProcessor
 from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
-from ya_agent_sdk.subagents.builder import build_subagent_agent
+from ya_agent_sdk.subagents.builder import _build_subagent_agent, build_subagent_agent
 from ya_agent_sdk.subagents.config import (
     SubagentConfig,
     load_subagent_from_file,
@@ -50,10 +50,10 @@ def create_subagent_tool_from_config(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings. Used if config.model_settings is 'inherit' or None.
-        history_processors: History processors to use for the subagent.
+        history_processors: Deprecated history processors to use for the subagent.
         model_cfg: Fallback ModelConfig. Used if config.model_cfg is None.
         inherit_hooks: Whether to inherit hooks from parent toolset.
-        capabilities: Parent capabilities to inherit (if config doesn't override).
+        capabilities: Parent user capabilities to inherit (if config doesn't override).
 
     Returns:
         A BaseTool subclass that wraps the subagent.
@@ -68,7 +68,39 @@ def create_subagent_tool_from_config(
         inherit_hooks=inherit_hooks,
         capabilities=capabilities,
     )
+    return _create_tool(config, parent_toolset, agent, resolved_model_cfg)
 
+
+def _create_subagent_tool_from_config(
+    config: SubagentConfig,
+    parent_toolset: Toolset[Any],
+    *,
+    model: str | Model | None = None,
+    model_settings: ModelSettings | dict[str, Any] | str | None = None,
+    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
+    model_cfg: ModelConfig | None = None,
+    inherit_hooks: bool = False,
+    capabilities: list[AbstractCapability[Any]] | None = None,
+    sdk_capabilities: list[AbstractCapability[Any]] | None = None,
+) -> type[BaseTool]:
+    """Create a subagent tool, including SDK internal capabilities."""
+    agent, resolved_model_cfg = _build_subagent_agent(
+        config,
+        parent_toolset,
+        model=model,
+        model_settings=model_settings,
+        history_processors=history_processors,
+        model_cfg=model_cfg,
+        inherit_hooks=inherit_hooks,
+        capabilities=capabilities,
+        sdk_capabilities=sdk_capabilities,
+    )
+    return _create_tool(config, parent_toolset, agent, resolved_model_cfg)
+
+
+def _create_tool(
+    config: SubagentConfig, parent_toolset: Toolset[Any], agent: Any, model_cfg: ModelConfig | None
+) -> type[BaseTool]:
     required_tools = config.tools
 
     def check_tools_available(ctx: RunContext[AgentContext]) -> bool:
@@ -79,7 +111,7 @@ def create_subagent_tool_from_config(
     return create_subagent_tool(
         name=config.name,
         description=config.description,
-        call_func=create_subagent_call_func(agent, model_cfg=resolved_model_cfg),
+        call_func=create_subagent_call_func(agent, model_cfg=model_cfg),
         instruction=config.instruction,
         availability_check=check_tools_available,
     )
@@ -105,9 +137,9 @@ def create_subagent_tool_from_markdown(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings. Used if config.model_settings is 'inherit' or None.
-        history_processors: History processors to use for the subagent.
+        history_processors: Deprecated history processors to use for the subagent.
         model_cfg: Fallback ModelConfig. Used if config.model_cfg is None.
-        capabilities: Parent capabilities to inherit (if config doesn't override).
+        capabilities: Parent user capabilities to inherit (if config doesn't override).
 
     Returns:
         A BaseTool subclass that wraps the subagent.
@@ -171,8 +203,9 @@ def load_subagent_tools_from_dir(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model for all subagents.
         model_settings: Fallback model settings for all subagents.
-        history_processors: History processors to use for all subagents.
+        history_processors: Deprecated history processors to use for all subagents.
         model_cfg: Fallback ModelConfig for all subagents.
+        capabilities: Parent user capabilities to inherit unless a subagent config overrides them.
 
     Returns:
         List of BaseTool subclasses.

@@ -149,6 +149,7 @@ The hook returns `None` on failure, causing fallback to binary content.
 The `create_media_upload_filter` creates a history processor that uploads binary media:
 
 ```python
+from pydantic_ai.capabilities import ProcessHistory
 from ya_agent_sdk.filters import create_media_upload_filter
 from ya_agent_sdk.media import S3MediaUploader, S3MediaConfig
 
@@ -167,9 +168,9 @@ media_filter = create_media_upload_filter(
 agent = Agent(
     "openai:gpt-4o",
     deps_type=AgentContext,
-    history_processors=[
-        drop_extra_images,  # First: limit/compress images
-        media_filter,       # Then: upload to S3
+    capabilities=[
+        ProcessHistory(drop_extra_images),  # First: limit/compress images
+        ProcessHistory(media_filter),       # Then: upload to S3
     ],
 )
 ```
@@ -202,11 +203,11 @@ model_cfg = ModelConfig(
 The media upload filter should run AFTER image processing filters:
 
 ```python
-history_processors=[
-    drop_extra_images,     # 1. Limit number of images
-    drop_gif_images,       # 2. Remove unsupported formats
+capabilities=[
+    ProcessHistory(drop_extra_images),     # 1. Limit number of images
+    ProcessHistory(drop_gif_images),       # 2. Remove unsupported formats
     # ... other image processing ...
-    media_filter,          # 3. Upload processed images
+    ProcessHistory(media_filter),          # 3. Upload processed images
 ]
 ```
 

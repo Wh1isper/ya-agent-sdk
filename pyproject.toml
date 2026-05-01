@@ -45,6 +45,12 @@ exclude = [
     ".venv",
 ]
 pythonVersion = "3.11"
+extraPaths = [
+    "packages/ya-agent-sdk",
+    "packages/yaacli",
+    "packages/ya-claw",
+    "packages/ya-agent-platform",
+]
 typeCheckingMode = "standard"
 reportTypedDictNotRequiredAccess = false
 

@@ -40,7 +40,7 @@ from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext, ModelConfig
-from ya_agent_sdk.subagents.builder import build_subagent_agent
+from ya_agent_sdk.subagents.builder import _build_subagent_agent, build_subagent_agent
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.subagent.factory import (
@@ -75,18 +75,32 @@ def _build_subagent_entry(
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     capabilities: list[AbstractCapability[Any]] | None = None,
+    sdk_capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> SubagentEntry:
     """Build a SubagentEntry from config."""
-    agent, resolved_model_cfg = build_subagent_agent(
-        config,
-        parent_toolset,
-        model=model,
-        model_settings=model_settings,
-        history_processors=history_processors,
-        model_cfg=model_cfg,
-        inherit_hooks=inherit_hooks,
-        capabilities=capabilities,
-    )
+    if sdk_capabilities is None:
+        agent, resolved_model_cfg = build_subagent_agent(
+            config,
+            parent_toolset,
+            model=model,
+            model_settings=model_settings,
+            history_processors=history_processors,
+            model_cfg=model_cfg,
+            inherit_hooks=inherit_hooks,
+            capabilities=capabilities,
+        )
+    else:
+        agent, resolved_model_cfg = _build_subagent_agent(
+            config,
+            parent_toolset,
+            model=model,
+            model_settings=model_settings,
+            history_processors=history_processors,
+            model_cfg=model_cfg,
+            inherit_hooks=inherit_hooks,
+            capabilities=capabilities,
+            sdk_capabilities=sdk_capabilities,
+        )
     call_func = create_subagent_call_func(agent, model_cfg=resolved_model_cfg)
 
     return SubagentEntry(
@@ -153,6 +167,7 @@ def _build_registry(
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     capabilities: list[AbstractCapability[Any]] | None = None,
+    sdk_capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> dict[str, SubagentEntry]:
     """Build registry of subagent entries from configs."""
     registry: dict[str, SubagentEntry] = {}
@@ -166,6 +181,7 @@ def _build_registry(
             model_cfg=model_cfg,
             inherit_hooks=inherit_hooks,
             capabilities=capabilities,
+            sdk_capabilities=sdk_capabilities,
         )
         registry[config.name] = entry
     return registry
@@ -197,30 +213,43 @@ def create_unified_subagent_tool(
         description: Tool description shown to the model.
         model: Fallback model for subagents with model="inherit".
         model_settings: Fallback model settings for subagents.
-        history_processors: History processors for all subagents.
+        history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for subagents.
         inherit_hooks: Whether to inherit hooks from parent toolset.
-        capabilities: Parent capabilities to inherit (if config doesn't override).
+        capabilities: Parent user capabilities to inherit (if config doesn't override).
 
     Returns:
         A BaseTool subclass that delegates to subagents by name.
-
-    Example::
-
-        configs = [
-            SubagentConfig(name="debugger", description="Debug issues", ...),
-            SubagentConfig(name="explorer", description="Explore code", ...),
-        ]
-
-        DelegateTool = create_unified_subagent_tool(
-            configs,
-            parent_toolset,
-            model="anthropic:claude-sonnet-4",
-        )
-
-        # Tool has signature:
-        # async def call(ctx, subagent_name: Literal["debugger", "explorer"], prompt: str, agent_id: str | None = None)
     """
+    return _create_unified_subagent_tool(
+        configs,
+        parent_toolset,
+        name=name,
+        description=description,
+        model=model,
+        model_settings=model_settings,
+        history_processors=history_processors,
+        model_cfg=model_cfg,
+        inherit_hooks=inherit_hooks,
+        capabilities=capabilities,
+    )
+
+
+def _create_unified_subagent_tool(
+    configs: Sequence[SubagentConfig],
+    parent_toolset: Toolset[Any],
+    *,
+    name: str = "delegate",
+    description: str = "Delegate task to a specialized subagent",
+    model: str | Model | None = None,
+    model_settings: ModelSettings | dict[str, Any] | str | None = None,
+    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
+    model_cfg: ModelConfig | None = None,
+    inherit_hooks: bool = False,
+    capabilities: list[AbstractCapability[Any]] | None = None,
+    sdk_capabilities: list[AbstractCapability[Any]] | None = None,
+) -> type[BaseTool]:
+    """Create a unified subagent tool, including SDK internal capabilities."""
     if not configs:
         msg = "At least one SubagentConfig is required"
         raise ValueError(msg)
@@ -235,6 +264,7 @@ def create_unified_subagent_tool(
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         capabilities=capabilities,
+        sdk_capabilities=sdk_capabilities,
     )
 
     # Store references for closure

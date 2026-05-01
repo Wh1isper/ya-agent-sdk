@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
 from pydantic_ai._agent_graph import HistoryProcessor
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 
+from ya_agent_sdk.agents.capabilities import history_processors_to_capabilities
 from ya_agent_sdk.agents.guards import attach_message_bus_guard
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ModelConfig
+from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
 from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import Toolset
@@ -111,16 +113,17 @@ def _build_toolsets(
 def _resolve_capabilities(
     config: SubagentConfig,
     parent_capabilities: list[AbstractCapability[Any]] | None,
-) -> list[AbstractCapability[Any]] | None:
-    """Resolve effective capabilities for a subagent.
-
-    Resolution logic:
-    - config.capabilities is set -> use config's own (override parent)
-    - config.capabilities is None -> use parent_capabilities (inherit)
-    """
-    if config.capabilities is not None:
-        return config.capabilities
-    return parent_capabilities
+    history_processors: Sequence[HistoryProcessor[AgentContext]] | None,
+    sdk_capabilities: list[AbstractCapability[Any]] | None,
+) -> list[AbstractCapability[Any]]:
+    """Resolve effective capabilities for a subagent."""
+    user_capabilities = config.capabilities if config.capabilities is not None else parent_capabilities
+    return [
+        *(user_capabilities or []),
+        *history_processors_to_capabilities(history_processors, stacklevel=4),
+        *(sdk_capabilities or []),
+        ProcessHistory(create_system_prompt_filter(config.system_prompt)),
+    ]
 
 
 def build_subagent_agent(
@@ -136,29 +139,48 @@ def build_subagent_agent(
 ) -> tuple[Agent[AgentContext, str], ModelConfig | None]:
     """Build a pydantic-ai Agent from a SubagentConfig.
 
-    This is the shared builder used by both individual subagent tools
-    (create_subagent_tool_from_config) and unified subagent tools.
-
-    Handles model resolution, toolset construction (including independent toolsets),
-    capability resolution, and message bus guard attachment.
-
     Args:
         config: The parsed subagent configuration.
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings.
-        history_processors: History processors for the subagent.
+        history_processors: Deprecated history processors for the subagent.
         model_cfg: Fallback ModelConfig.
         inherit_hooks: Whether to inherit hooks from parent toolset.
-        capabilities: Parent capabilities to inherit (if config doesn't override).
+        capabilities: Parent user capabilities to inherit (if config doesn't override).
 
     Returns:
         Tuple of (Agent, resolved_model_cfg).
     """
+    return _build_subagent_agent(
+        config,
+        parent_toolset,
+        model=model,
+        model_settings=model_settings,
+        history_processors=history_processors,
+        model_cfg=model_cfg,
+        inherit_hooks=inherit_hooks,
+        capabilities=capabilities,
+    )
+
+
+def _build_subagent_agent(
+    config: SubagentConfig,
+    parent_toolset: Toolset[Any],
+    *,
+    model: str | Model | None = None,
+    model_settings: ModelSettings | dict[str, Any] | str | None = None,
+    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
+    model_cfg: ModelConfig | None = None,
+    inherit_hooks: bool = False,
+    capabilities: list[AbstractCapability[Any]] | None = None,
+    sdk_capabilities: list[AbstractCapability[Any]] | None = None,
+) -> tuple[Agent[AgentContext, str], ModelConfig | None]:
+    """Build a subagent Agent, including SDK internal capabilities."""
     effective_model = _resolve_model(config, model)
     resolved_settings = _resolve_model_settings(config, model_settings)
     resolved_model_cfg = _resolve_model_cfg(config, model_cfg)
-    resolved_capabilities = _resolve_capabilities(config, capabilities)
+    resolved_capabilities = _resolve_capabilities(config, capabilities, history_processors, sdk_capabilities)
     toolsets = _build_toolsets(config, parent_toolset, inherit_hooks=inherit_hooks)
 
     agent: Agent[AgentContext, str] = Agent(
@@ -167,7 +189,6 @@ def build_subagent_agent(
         toolsets=toolsets,
         model_settings=resolved_settings,  # type: ignore[arg-type]
         deps_type=AgentContext,
-        history_processors=history_processors,
         capabilities=resolved_capabilities,
         name=config.name,
     )

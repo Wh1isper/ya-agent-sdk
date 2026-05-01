@@ -13,11 +13,12 @@ from __future__ import annotations
 import functools
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 from pydantic_ai import ApprovalRequired, CallDeferred, RunContext, Tool, UserError
 from pydantic_ai._agent_graph import HistoryProcessor
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import (
     DeferredToolResults,
@@ -305,7 +306,32 @@ class Toolset(BaseToolset[AgentDepsT]):
         model_cfg: ModelConfig | None = None,
         unified: bool = False,
         inherit_hooks: bool = False,
-        capabilities: list[Any] | None = None,
+        capabilities: list[AbstractCapability[Any]] | None = None,
+    ) -> Toolset[AgentDepsT]:
+        """Create a new Toolset that includes subagent tools."""
+        return self._with_subagents(
+            configs,
+            model=model,
+            model_settings=model_settings,
+            history_processors=history_processors,
+            model_cfg=model_cfg,
+            unified=unified,
+            inherit_hooks=inherit_hooks,
+            capabilities=capabilities,
+        )
+
+    def _with_subagents(
+        self,
+        configs: Sequence[SubagentConfig],
+        *,
+        model: str | Model | None = None,
+        model_settings: ModelSettings | dict[str, Any] | str | None = None,
+        history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
+        model_cfg: ModelConfig | None = None,
+        unified: bool = False,
+        inherit_hooks: bool = False,
+        capabilities: list[AbstractCapability[Any]] | None = None,
+        _sdk_capabilities: list[AbstractCapability[Any]] | None = None,
     ) -> Toolset[AgentDepsT]:
         """Create a new Toolset that includes subagent tools.
 
@@ -317,14 +343,16 @@ class Toolset(BaseToolset[AgentDepsT]):
             configs: Sequence of SubagentConfig defining the subagents to create.
             model: Fallback model for subagents with 'inherit' or None model.
             model_settings: Fallback model settings for subagents with 'inherit' or None.
-            history_processors: History processors for subagents.
+            history_processors: Deprecated history processors for subagents. Use
+                capabilities=[ProcessHistory(...)] for new code.
             model_cfg: Fallback ModelConfig for subagents.
             unified: If True, create a single 'delegate' tool that can call any subagent
                 by name parameter. If False (default), create separate tools for each
                 subagent.
             inherit_hooks: Whether to inherit hooks from parent toolset.
-            capabilities: Parent capabilities to pass to subagents. Each subagent
+            capabilities: Parent user capabilities to pass to subagents. Each subagent
                 inherits these unless its config.capabilities overrides them.
+            _sdk_capabilities: SDK internal capabilities that subagents always receive.
 
         Returns:
             A new Toolset instance with subagent tools added.
@@ -353,36 +381,39 @@ class Toolset(BaseToolset[AgentDepsT]):
             )
         """
         # Import here to avoid circular dependency
-        from ya_agent_sdk.subagents import create_subagent_tool_from_config, create_unified_subagent_tool
+        from ya_agent_sdk.subagents.factory import _create_subagent_tool_from_config
+        from ya_agent_sdk.toolsets.core.subagent.unified import _create_unified_subagent_tool
 
         if not configs:
             return self
 
         if unified:
             # Create single unified 'delegate' tool
-            unified_tool = create_unified_subagent_tool(
+            unified_tool = _create_unified_subagent_tool(
                 configs,
-                parent_toolset=self,
+                parent_toolset=cast(Any, self),
                 model=model,
                 model_settings=model_settings,
                 history_processors=history_processors,
                 model_cfg=model_cfg,
                 inherit_hooks=inherit_hooks,
                 capabilities=capabilities,
+                sdk_capabilities=_sdk_capabilities,
             )
             subagent_tools = [unified_tool]
         else:
             # Create individual tool for each subagent
             subagent_tools = [
-                create_subagent_tool_from_config(
+                _create_subagent_tool_from_config(
                     cfg,
-                    parent_toolset=self,
+                    parent_toolset=cast(Any, self),
                     model=model,
                     model_settings=model_settings,
                     history_processors=history_processors,
                     model_cfg=model_cfg,
                     inherit_hooks=inherit_hooks,
                     capabilities=capabilities,
+                    sdk_capabilities=_sdk_capabilities,
                 )
                 for cfg in configs
             ]

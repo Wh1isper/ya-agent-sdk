@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from pydantic_ai import PromptedOutput, ThinkingPart
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
     BinaryContent,
     ImageUrl,
@@ -42,6 +43,15 @@ from ya_agent_sdk.context.agent import PROJECT_GUIDANCE_TAG, USER_RULES_TAG
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.filters.auto_load_files import process_auto_load_files
 from ya_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
+
+
+def _history_processors_from_agent(runtime) -> list:
+    return [
+        capability.processor
+        for capability in runtime.agent.root_capability.capabilities
+        if isinstance(capability, ProcessHistory)
+    ]
+
 
 # Full tag set including application-level tags for testing
 _ALL_TAGS = (*_DEFAULT_INJECTED_TAGS, PROJECT_GUIDANCE_TAG, USER_RULES_TAG)
@@ -802,7 +812,7 @@ async def test_create_agent_runs_auto_load_files_after_compact(tmp_path: Path) -
         model="test",
         env=env,
     ) as runtime:
-        processors = runtime.agent.history_processors
+        processors = _history_processors_from_agent(runtime)
         auto_load_indexes = [i for i, processor in enumerate(processors) if processor is process_auto_load_files]
 
         assert len(auto_load_indexes) == 2
@@ -820,7 +830,7 @@ async def test_create_agent_runs_runtime_instructions_after_compact(tmp_path: Pa
         model="test",
         env=env,
     ) as runtime:
-        processors = runtime.agent.history_processors
+        processors = _history_processors_from_agent(runtime)
         runtime_indexes = [i for i, processor in enumerate(processors) if processor is inject_runtime_instructions]
         compact_indexes = [
             i for i, processor in enumerate(processors) if getattr(processor, "__name__", "") == "compact_filter"
@@ -851,7 +861,7 @@ def test_create_agent_uses_cache_friendly_compact_filter_by_default(tmp_path: Pa
 
     create_cache_friendly.assert_called_once()
     create_legacy.assert_not_called()
-    assert cache_friendly_filter in runtime.agent.history_processors
+    assert cache_friendly_filter in _history_processors_from_agent(runtime)
 
 
 def test_create_agent_can_use_legacy_compact_filter(tmp_path: Path, monkeypatch) -> None:
@@ -885,7 +895,7 @@ def test_create_agent_can_use_legacy_compact_filter(tmp_path: Path, monkeypatch)
         main_model="test",
         main_model_settings=None,
     )
-    assert legacy_filter in runtime.agent.history_processors
+    assert legacy_filter in _history_processors_from_agent(runtime)
 
 
 async def test_agent_context_resets_compact_depth_for_new_run_and_subagent(agent_context: AgentContext) -> None:

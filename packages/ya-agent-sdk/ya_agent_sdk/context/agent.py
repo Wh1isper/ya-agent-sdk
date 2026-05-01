@@ -65,6 +65,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import warnings
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -90,6 +91,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
     UserContent,
 )
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.messages import HandleResponseEvent as PydanticHandleResponseEvent
 from pydantic_ai.messages import (
     ModelMessage,
@@ -1607,24 +1609,8 @@ class AgentContext(BaseModel):
         object.__setattr__(new_ctx, "_compact_depth", 0)
         return new_ctx
 
-    def get_history_processors(self) -> list:
-        """Return a list of history processors for this context.
-
-        Returns a list containing the tool_id_wrapper.wrap_messages method
-        which can be used directly with pydantic-ai's history_processors parameter.
-
-        Returns:
-            List of history processor functions.
-
-        Example::
-
-            async with AgentContext(...) as ctx:
-                agent = Agent(
-                    'openai:gpt-4',
-                    deps_type=AgentContext,
-                    history_processors=ctx.get_history_processors(),
-                )
-        """
+    def _build_history_processors(self) -> list[Callable[..., Any]]:
+        """Build the ordered context history processor callables."""
         # Import filters here to avoid circular imports
         from ya_agent_sdk.filters.auto_load_files import process_auto_load_files
         from ya_agent_sdk.filters.background_shell import inject_background_results
@@ -1662,6 +1648,32 @@ class AgentContext(BaseModel):
             inject_runtime_instructions,
             dynamic_tool_id_wrapper,
         ]
+
+    def get_history_capabilities(self) -> list[AbstractCapability[AgentContext]]:
+        """Return ProcessHistory capabilities for this context.
+
+        Example::
+
+            async with AgentContext(...) as ctx:
+                agent = Agent(
+                    'openai:gpt-4',
+                    deps_type=AgentContext,
+                    capabilities=ctx.get_history_capabilities(),
+                )
+        """
+        return [ProcessHistory(processor) for processor in self._build_history_processors()]
+
+    def get_history_processors(self) -> list[Callable[..., Any]]:
+        """Return context history processor callables.
+
+        Deprecated: use get_history_capabilities() and pass the result to Agent(capabilities=...).
+        """
+        warnings.warn(
+            "AgentContext.get_history_processors() is deprecated; use get_history_capabilities() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._build_history_processors()
 
     def add_extra_usage(
         self,

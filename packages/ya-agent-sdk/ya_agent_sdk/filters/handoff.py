@@ -98,9 +98,9 @@ async def process_handoff_message(
 ) -> list[ModelMessage]:
     """Inject handoff summary into message history after context reset.
 
-    This is a pydantic-ai history_processor that can be passed to Agent's
-    history_processors parameter. When a handoff occurs, the previous context
-    is cleared but a summary message is preserved in ctx.deps.handoff_message.
+    This is a pydantic-ai history processor that can be wrapped in a
+    ProcessHistory capability. When a handoff occurs, the previous context is
+    cleared but a summary message is preserved in ctx.deps.handoff_message.
 
     The restored history is a single request containing the context summary,
     original prompt, user steering, and a system reminder that handoff already
@@ -121,7 +121,7 @@ async def process_handoff_message(
         agent = Agent(
             'openai:gpt-4',
             deps_type=AgentContext,
-            history_processors=[process_handoff_message],
+            capabilities=[ProcessHistory(process_handoff_message)],
         )
     """
     agent_ctx = ctx.deps

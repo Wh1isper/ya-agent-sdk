@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 from pydantic_ai import RunContext
-from pydantic_ai.capabilities import AbstractCapability, Hooks
+from pydantic_ai.capabilities import AbstractCapability, Hooks, ProcessHistory
+from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
@@ -281,3 +282,112 @@ async def test_subagent_no_capabilities_when_parent_has_none(env):
     async with runtime:
         assert runtime.core_toolset is not None
         assert "helper" in runtime.core_toolset._tool_classes
+
+
+class CapturingTestModel(TestModel):
+    """TestModel variant that records request messages."""
+
+    last_messages: list[ModelMessage] | None = None
+
+    async def request(self, messages, model_settings, model_request_parameters):
+        self.last_messages = messages
+        return await super().request(messages, model_settings, model_request_parameters)
+
+
+async def test_process_history_capability_supported(env):
+    """Test ProcessHistory capabilities can be passed directly to create_agent."""
+
+    def add_marker(ctx: RunContext[Any], messages: list[ModelMessage]) -> list[ModelMessage]:
+        for message in messages:
+            if isinstance(message, ModelRequest):
+                message.parts.append(UserPromptPart(content="capability-marker"))
+                break
+        return messages
+
+    model = CapturingTestModel(custom_output_text="ok")
+    runtime = create_agent(
+        model,
+        env=env,
+        capabilities=[ProcessHistory(add_marker)],
+        defer_model_check=True,
+    )
+
+    async with runtime:
+        await runtime.agent.run("Hello", deps=runtime.ctx)
+
+    assert model.last_messages is not None
+    assert any(
+        isinstance(message, ModelRequest)
+        and any(isinstance(part, UserPromptPart) and part.content == "capability-marker" for part in message.parts)
+        for message in model.last_messages
+    )
+
+
+async def test_create_agent_history_processors_deprecated(env):
+    """Test deprecated history_processors are converted to ProcessHistory capabilities."""
+
+    def add_marker(ctx: RunContext[Any], messages: list[ModelMessage]) -> list[ModelMessage]:
+        for message in messages:
+            if isinstance(message, ModelRequest):
+                message.parts.append(UserPromptPart(content="legacy-marker"))
+                break
+        return messages
+
+    model = CapturingTestModel(custom_output_text="ok")
+
+    with pytest.warns(DeprecationWarning, match="history_processors"):
+        runtime = create_agent(
+            model,
+            env=env,
+            history_processors=[add_marker],
+            defer_model_check=True,
+        )
+
+    async with runtime:
+        await runtime.agent.run("Hello", deps=runtime.ctx)
+
+    assert model.last_messages is not None
+    assert any(
+        isinstance(message, ModelRequest)
+        and any(isinstance(part, UserPromptPart) and part.content == "legacy-marker" for part in message.parts)
+        for message in model.last_messages
+    )
+
+
+async def test_deprecated_history_processor_phase_order(env):
+    """Test deprecated pre/post history processor phase ordering is preserved."""
+
+    def marker_processor(marker: str):
+        def process(ctx: RunContext[Any], messages: list[ModelMessage]) -> list[ModelMessage]:
+            for message in messages:
+                if isinstance(message, ModelRequest):
+                    message.parts.append(UserPromptPart(content=marker))
+                    break
+            return messages
+
+        return process
+
+    model = CapturingTestModel(custom_output_text="ok")
+
+    with pytest.warns(DeprecationWarning):
+        runtime = create_agent(
+            model,
+            env=env,
+            pre_history_processors=[marker_processor("pre-marker")],
+            history_processors=[marker_processor("post-marker")],
+            defer_model_check=True,
+        )
+
+    async with runtime:
+        await runtime.agent.run("Hello", deps=runtime.ctx)
+
+    assert model.last_messages is not None
+    parts = [
+        part.content
+        for message in model.last_messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert parts.index("pre-marker") < parts.index("post-marker")
+    assert parts.index("post-marker") == len(parts) - 1

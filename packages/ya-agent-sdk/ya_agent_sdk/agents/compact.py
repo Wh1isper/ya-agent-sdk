@@ -25,6 +25,7 @@ from pydantic_ai import (
     UsageLimits,
     UserContent,
 )
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
     BinaryContent,
     ImageUrl,
@@ -622,9 +623,9 @@ def get_compact_agent(
         output_type=PromptedOutput(CondenseResult),
         deps_type=AgentContext,
         system_prompt=system_prompt,
-        history_processors=[
-            create_system_prompt_filter(system_prompt),  # Ensure system prompt is consistent
-            fix_truncated_tool_args,
+        capabilities=[
+            ProcessHistory(create_system_prompt_filter(system_prompt)),  # Ensure system prompt is consistent
+            ProcessHistory(fix_truncated_tool_args),
         ],
     )
 
@@ -885,7 +886,7 @@ def create_compact_filter(
         3. main_model parameter (inherited from main agent)
 
     Returns:
-        An async filter function compatible with pydantic-ai history_processors.
+        An async filter function compatible with ProcessHistory capabilities.
 
     Example::
 
@@ -893,7 +894,7 @@ def create_compact_filter(
         agent = Agent(
             'openai:gpt-4',
             deps_type=AgentContext,
-            history_processors=[compact_filter],
+            capabilities=[ProcessHistory(compact_filter)],
         )
     """
     agent = get_compact_agent(
