@@ -14,7 +14,7 @@ from pydantic_ai._agent_graph import HistoryProcessor
 from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
-from ya_agent_sdk.subagents.builder import _build_subagent_agent, build_subagent_agent
+from ya_agent_sdk.subagents.builder import _build_subagent_agent
 from ya_agent_sdk.subagents.config import (
     SubagentConfig,
     load_subagent_from_file,
@@ -60,7 +60,7 @@ def create_subagent_tool_from_config(
     Returns:
         A BaseTool subclass that wraps the subagent.
     """
-    agent, resolved_model_cfg = build_subagent_agent(
+    return _create_subagent_tool(
         config,
         parent_toolset,
         model=model,
@@ -71,10 +71,9 @@ def create_subagent_tool_from_config(
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
     )
-    return _create_tool(config, parent_toolset, agent, resolved_model_cfg)
 
 
-def _create_subagent_tool_from_config(
+def _create_subagent_tool(
     config: SubagentConfig,
     parent_toolset: Toolset[Any],
     *,
@@ -87,7 +86,7 @@ def _create_subagent_tool_from_config(
     capabilities: list[AbstractCapability[Any]] | None = None,
     sdk_capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> type[BaseTool]:
-    """Create a subagent tool, including SDK internal capabilities."""
+    """Create a subagent tool from resolved configuration."""
     agent, resolved_model_cfg = _build_subagent_agent(
         config,
         parent_toolset,

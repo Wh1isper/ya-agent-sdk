@@ -610,7 +610,7 @@ def create_agent(
                 inherit_hooks=inherit_hooks,
                 pre_capabilities=subagent_pre_capabilities,
                 capabilities=subagent_capabilities,
-                _sdk_capabilities=cast(list[AbstractCapability[Any]], internal_subagent_capabilities),
+                sdk_capabilities=cast(list[AbstractCapability[Any]], internal_subagent_capabilities),
             )
 
     # Auto-detect context management tools from registered tools

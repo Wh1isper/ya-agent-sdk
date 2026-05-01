@@ -334,7 +334,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         inherit_hooks: bool = False,
         pre_capabilities: list[AbstractCapability[Any]] | None = None,
         capabilities: list[AbstractCapability[Any]] | None = None,
-        _sdk_capabilities: list[AbstractCapability[Any]] | None = None,
+        sdk_capabilities: list[AbstractCapability[Any]] | None = None,
     ) -> Toolset[AgentDepsT]:
         """Create a new Toolset that includes subagent tools.
 
@@ -357,7 +357,7 @@ class Toolset(BaseToolset[AgentDepsT]):
                 inherits these unless its config.pre_capabilities overrides them.
             capabilities: Parent user capabilities to pass to subagents. Each subagent
                 inherits these unless its config.capabilities overrides them.
-            _sdk_capabilities: SDK internal capabilities that subagents always receive.
+            sdk_capabilities: SDK internal capabilities that subagents always receive.
 
         Returns:
             A new Toolset instance with subagent tools added.
@@ -386,7 +386,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             )
         """
         # Import here to avoid circular dependency
-        from ya_agent_sdk.subagents.factory import _create_subagent_tool_from_config
+        from ya_agent_sdk.subagents.factory import _create_subagent_tool
         from ya_agent_sdk.toolsets.core.subagent.unified import _create_unified_subagent_tool
 
         if not configs:
@@ -404,13 +404,13 @@ class Toolset(BaseToolset[AgentDepsT]):
                 inherit_hooks=inherit_hooks,
                 pre_capabilities=pre_capabilities,
                 capabilities=capabilities,
-                sdk_capabilities=_sdk_capabilities,
+                sdk_capabilities=sdk_capabilities,
             )
             subagent_tools = [unified_tool]
         else:
             # Create individual tool for each subagent
             subagent_tools = [
-                _create_subagent_tool_from_config(
+                _create_subagent_tool(
                     cfg,
                     parent_toolset=cast(Any, self),
                     model=model,
@@ -420,7 +420,7 @@ class Toolset(BaseToolset[AgentDepsT]):
                     inherit_hooks=inherit_hooks,
                     pre_capabilities=pre_capabilities,
                     capabilities=capabilities,
-                    sdk_capabilities=_sdk_capabilities,
+                    sdk_capabilities=sdk_capabilities,
                 )
                 for cfg in configs
             ]
