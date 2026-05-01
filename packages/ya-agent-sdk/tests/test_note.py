@@ -112,11 +112,11 @@ async def test_notes_in_context_instructions():
         ctx.note_manager.set("os", "macOS")
 
         instructions = await ctx.get_context_instructions(is_user_prompt=True)
-        assert "<notes>" in instructions
+        assert "<notes " in instructions
         assert 'key="lang"' in instructions
-        assert "Chinese" in instructions
         assert 'key="os"' in instructions
-        assert "macOS" in instructions
+        assert "Chinese" not in instructions
+        assert "macOS" not in instructions
 
 
 async def test_notes_not_in_instructions_when_empty():
