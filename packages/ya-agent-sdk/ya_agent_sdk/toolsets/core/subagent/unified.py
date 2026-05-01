@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, runtime_checkable
 
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
@@ -40,7 +40,7 @@ from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext, ModelConfig
-from ya_agent_sdk.subagents.builder import _build_subagent_agent, build_subagent_agent
+from ya_agent_sdk.subagents.builder import _build_subagent_agent
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.subagent.factory import (
@@ -53,6 +53,13 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
 logger = get_logger(__name__)
+
+
+@runtime_checkable
+class UnifiedSubagentToolClass(Protocol):
+    """Protocol for classes created by create_unified_subagent_tool."""
+
+    _available_subagents: tuple[str, ...]
 
 
 @dataclass
@@ -79,31 +86,18 @@ def _build_subagent_entry(
     sdk_capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> SubagentEntry:
     """Build a SubagentEntry from config."""
-    if sdk_capabilities is None:
-        agent, resolved_model_cfg = build_subagent_agent(
-            config,
-            parent_toolset,
-            model=model,
-            model_settings=model_settings,
-            history_processors=history_processors,
-            model_cfg=model_cfg,
-            inherit_hooks=inherit_hooks,
-            pre_capabilities=pre_capabilities,
-            capabilities=capabilities,
-        )
-    else:
-        agent, resolved_model_cfg = _build_subagent_agent(
-            config,
-            parent_toolset,
-            model=model,
-            model_settings=model_settings,
-            history_processors=history_processors,
-            model_cfg=model_cfg,
-            inherit_hooks=inherit_hooks,
-            pre_capabilities=pre_capabilities,
-            capabilities=capabilities,
-            sdk_capabilities=sdk_capabilities,
-        )
+    agent, resolved_model_cfg = _build_subagent_agent(
+        config,
+        parent_toolset,
+        model=model,
+        model_settings=model_settings,
+        history_processors=history_processors,
+        model_cfg=model_cfg,
+        inherit_hooks=inherit_hooks,
+        pre_capabilities=pre_capabilities,
+        capabilities=capabilities,
+        sdk_capabilities=sdk_capabilities,
+    )
     call_func = create_subagent_call_func(agent, model_cfg=resolved_model_cfg)
 
     return SubagentEntry(
@@ -355,10 +349,9 @@ def get_available_subagent_names(tool_cls: type[BaseTool]) -> tuple[str, ...]:
         Tuple of subagent names.
 
     Raises:
-        ValueError: If the tool is not a unified subagent tool.
+        TypeError: If the tool is not a unified subagent tool.
     """
-    available_subagents = getattr(tool_cls, "_available_subagents", None)
-    if available_subagents is None:
+    if not isinstance(tool_cls, UnifiedSubagentToolClass):
         msg = "Tool class does not appear to be a unified subagent tool"
-        raise ValueError(msg)
-    return cast(tuple[str, ...], available_subagents)
+        raise TypeError(msg)
+    return tool_cls._available_subagents
