@@ -175,12 +175,9 @@ def _synthesize_thinking(provider: str) -> ThinkingPart:
 
 
 def _provider_tag(ctx: RunContext[AgentContext]) -> str:
-    """Return the best-effort provider tag for ``ThinkingPart.provider_name``."""
-    model = ctx.model
-    system = getattr(model, "system", None)
-    if system:
-        return str(system)
-    model_name = getattr(model, "model_name", None)
-    if model_name:
-        return str(model_name)
-    return "unknown"
+    """Return the active provider tag for ``ThinkingPart.provider_name``.
+
+    Pydantic AI models expose ``system`` as the provider identifier, and provider
+    filtering for thinking parts compares against that value.
+    """
+    return ctx.model.system
