@@ -61,6 +61,7 @@ For Anthropic models, `anthropic` now resolves to adaptive thinking by default.
 
 - Use `anthropic` for the default adaptive preset.
 - Use `anthropic_adaptive_xhigh` for Claude Opus 4.7 long-horizon coding and agentic workloads.
+- Use `openai_responses_xhigh` for GPT-5.5 hard asynchronous agentic tasks and evals.
 - Use `anthropic_off` when you want thinking disabled.
 - Use `anthropic_400k` or `claude_400k` for a 400K context window between `claude_200k` and `claude_1m`.
 

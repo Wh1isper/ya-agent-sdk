@@ -9,7 +9,8 @@ Naming Convention:
 - `{provider}_{api}_{level}` - for providers with multiple APIs, e.g., `openai_responses_high`
 
 Thinking Levels:
-- `high`: Maximum reasoning depth, higher latency
+- `xhigh`: Frontier reasoning depth for the hardest agentic workloads
+- `high`: Strong reasoning depth, higher latency
 - `medium`: Balanced reasoning (default)
 - `low`: Minimal reasoning, lower latency
 
@@ -294,12 +295,14 @@ class ModelSettingsPreset(StrEnum):
 
     # OpenAI Chat Completions presets (GPT-4, etc.)
     OPENAI_DEFAULT = "openai_default"
+    OPENAI_XHIGH = "openai_xhigh"
     OPENAI_HIGH = "openai_high"
     OPENAI_MEDIUM = "openai_medium"
     OPENAI_LOW = "openai_low"
 
-    # OpenAI Responses API presets (o1, o3 reasoning models)
+    # OpenAI Responses API presets (o1, o3, GPT-5 reasoning models)
     OPENAI_RESPONSES_DEFAULT = "openai_responses_default"
+    OPENAI_RESPONSES_XHIGH = "openai_responses_xhigh"
     OPENAI_RESPONSES_HIGH = "openai_responses_high"
     OPENAI_RESPONSES_MEDIUM = "openai_responses_medium"
     OPENAI_RESPONSES_LOW = "openai_responses_low"
@@ -629,16 +632,16 @@ ANTHROPIC_1M_CM_OFF_INTERLEAVED_THINKING = ANTHROPIC_1M_CM_OFF
 
 
 def _openai_chat_settings(
-    reasoning_effort: Literal["low", "medium", "high"] | None = None,
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None,
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Create OpenAI Chat Completions settings.
 
-    Note: reasoning_effort is supported for o1/o3 models via Chat Completions API.
-    For non-reasoning models (GPT-4, etc.), reasoning_effort is ignored.
+    Note: reasoning_effort is supported for reasoning-capable OpenAI models via Chat Completions API.
+    GPT-5.5 supports ``none``, ``low``, ``medium``, ``high``, and ``xhigh``.
 
     Args:
-        reasoning_effort: Reasoning intensity for o1/o3 models ('low', 'medium', 'high').
+        reasoning_effort: Reasoning intensity for reasoning-capable OpenAI models.
         max_tokens: Maximum output tokens (None for model default).
 
     Returns:
@@ -658,11 +661,17 @@ OPENAI_DEFAULT: dict[str, Any] = _openai_chat_settings(
 )
 """OpenAI Chat default: Same as medium, balanced reasoning and max_tokens."""
 
+OPENAI_XHIGH: dict[str, Any] = _openai_chat_settings(
+    reasoning_effort="xhigh",
+    max_tokens=32 * K_TOKENS,
+)
+"""OpenAI Chat xhigh: Highest reasoning effort for hard agentic workloads."""
+
 OPENAI_HIGH: dict[str, Any] = _openai_chat_settings(
     reasoning_effort="high",
     max_tokens=16 * K_TOKENS,
 )
-"""OpenAI Chat high: Maximum reasoning effort, higher max_tokens."""
+"""OpenAI Chat high: Strong reasoning effort, higher max_tokens."""
 
 OPENAI_MEDIUM: dict[str, Any] = _openai_chat_settings(
     reasoning_effort="medium",
@@ -678,19 +687,19 @@ OPENAI_LOW: dict[str, Any] = _openai_chat_settings(
 
 
 # =============================================================================
-# OpenAI Responses API Presets (o1, o3 reasoning models)
+# OpenAI Responses API Presets (o1, o3, GPT-5 reasoning models)
 # =============================================================================
 
 
 def _openai_responses_settings(
-    reasoning_effort: Literal["low", "medium", "high"],
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"],
     reasoning_summary: Literal["detailed", "concise", "auto"] = "auto",
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Create OpenAI Responses API settings for reasoning models.
 
     Args:
-        reasoning_effort: Reasoning intensity ('low', 'medium', 'high').
+        reasoning_effort: Reasoning intensity. GPT-5.5 supports 'none', 'low', 'medium', 'high', and 'xhigh'.
         reasoning_summary: Summary level of reasoning process.
         max_tokens: Maximum output tokens (None for model default).
 
@@ -714,12 +723,19 @@ OPENAI_RESPONSES_DEFAULT: dict[str, Any] = _openai_responses_settings(
 )
 """OpenAI Responses default: Same as medium, balanced reasoning effort."""
 
+OPENAI_RESPONSES_XHIGH: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="xhigh",
+    reasoning_summary="detailed",
+    max_tokens=64 * K_TOKENS,
+)
+"""OpenAI Responses xhigh: Highest reasoning effort with detailed summary."""
+
 OPENAI_RESPONSES_HIGH: dict[str, Any] = _openai_responses_settings(
     reasoning_effort="high",
     reasoning_summary="detailed",
     max_tokens=32 * K_TOKENS,
 )
-"""OpenAI Responses high: Maximum reasoning effort with detailed summary."""
+"""OpenAI Responses high: Strong reasoning effort with detailed summary."""
 
 OPENAI_RESPONSES_MEDIUM: dict[str, Any] = _openai_responses_settings(
     reasoning_effort="medium",
@@ -1037,11 +1053,13 @@ _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
     ModelSettingsPreset.ANTHROPIC_1M_CM_OFF_INTERLEAVED_THINKING.value: ANTHROPIC_1M_CM_OFF_INTERLEAVED_THINKING,
     # OpenAI Chat
     ModelSettingsPreset.OPENAI_DEFAULT.value: OPENAI_DEFAULT,
+    ModelSettingsPreset.OPENAI_XHIGH.value: OPENAI_XHIGH,
     ModelSettingsPreset.OPENAI_HIGH.value: OPENAI_HIGH,
     ModelSettingsPreset.OPENAI_MEDIUM.value: OPENAI_MEDIUM,
     ModelSettingsPreset.OPENAI_LOW.value: OPENAI_LOW,
     # OpenAI Responses
     ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT.value: OPENAI_RESPONSES_DEFAULT,
+    ModelSettingsPreset.OPENAI_RESPONSES_XHIGH.value: OPENAI_RESPONSES_XHIGH,
     ModelSettingsPreset.OPENAI_RESPONSES_HIGH.value: OPENAI_RESPONSES_HIGH,
     ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM.value: OPENAI_RESPONSES_MEDIUM,
     ModelSettingsPreset.OPENAI_RESPONSES_LOW.value: OPENAI_RESPONSES_LOW,

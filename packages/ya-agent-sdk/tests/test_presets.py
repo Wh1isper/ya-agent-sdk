@@ -81,6 +81,8 @@ from ya_agent_sdk.presets import (
     OPENAI_RESPONSES_HIGH,
     OPENAI_RESPONSES_LOW,
     OPENAI_RESPONSES_MEDIUM,
+    OPENAI_RESPONSES_XHIGH,
+    OPENAI_XHIGH,
     ModelConfigPreset,
     ModelSettingsPreset,
     build_context_management,
@@ -339,21 +341,28 @@ def test_anthropic_adaptive_max_tokens_ordering() -> None:
 
 def test_openai_chat_presets_structure() -> None:
     """Test that OpenAI Chat presets have expected structure."""
-    for preset in [OPENAI_DEFAULT, OPENAI_HIGH, OPENAI_MEDIUM, OPENAI_LOW]:
+    for preset in [OPENAI_DEFAULT, OPENAI_XHIGH, OPENAI_HIGH, OPENAI_MEDIUM, OPENAI_LOW]:
         assert "openai_reasoning_effort" in preset
         assert "max_tokens" in preset
+
+    assert OPENAI_XHIGH["openai_reasoning_effort"] == "xhigh"
+    assert OPENAI_XHIGH["max_tokens"] > OPENAI_HIGH["max_tokens"]
 
 
 def test_openai_responses_presets_structure() -> None:
     """Test that OpenAI Responses presets have expected structure."""
     for preset in [
         OPENAI_RESPONSES_DEFAULT,
+        OPENAI_RESPONSES_XHIGH,
         OPENAI_RESPONSES_HIGH,
         OPENAI_RESPONSES_MEDIUM,
         OPENAI_RESPONSES_LOW,
     ]:
         assert "openai_reasoning_effort" in preset
         assert "openai_reasoning_summary" in preset
+
+    assert OPENAI_RESPONSES_XHIGH["openai_reasoning_effort"] == "xhigh"
+    assert OPENAI_RESPONSES_XHIGH["max_output_tokens"] > OPENAI_RESPONSES_HIGH["max_output_tokens"]
 
 
 def test_deepseek_v4_presets_structure() -> None:
@@ -396,6 +405,12 @@ def test_get_model_settings_by_enum() -> None:
     settings_1m_interleaved = get_model_settings(ModelSettingsPreset.ANTHROPIC_1M_HIGH_INTERLEAVED_THINKING)
     assert settings_1m_interleaved == ANTHROPIC_1M_HIGH_INTERLEAVED_THINKING
 
+    settings_openai_xhigh = get_model_settings(ModelSettingsPreset.OPENAI_XHIGH)
+    assert settings_openai_xhigh == OPENAI_XHIGH
+
+    settings_openai_responses_xhigh = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_XHIGH)
+    assert settings_openai_responses_xhigh == OPENAI_RESPONSES_XHIGH
+
     settings_deepseek = get_model_settings(ModelSettingsPreset.DEEPSEEK_V4_MAX)
     assert settings_deepseek == DEEPSEEK_V4_MAX
 
@@ -414,6 +429,12 @@ def test_get_model_settings_by_string() -> None:
     # Test 1M preset
     settings_1m = get_model_settings("anthropic_1m_high")
     assert settings_1m == ANTHROPIC_1M_HIGH
+
+    settings_openai_xhigh = get_model_settings("openai_xhigh")
+    assert settings_openai_xhigh == OPENAI_XHIGH
+
+    settings_openai_responses_xhigh = get_model_settings("openai_responses_xhigh")
+    assert settings_openai_responses_xhigh == OPENAI_RESPONSES_XHIGH
 
     settings_deepseek = get_model_settings("deepseek_v4_max")
     assert settings_deepseek == DEEPSEEK_V4_MAX
@@ -622,6 +643,8 @@ def test_list_presets() -> None:
         "openai_responses_high",
         "openai_responses_low",
         "openai_responses_medium",
+        "openai_responses_xhigh",
+        "openai_xhigh",
     ])
 
 
