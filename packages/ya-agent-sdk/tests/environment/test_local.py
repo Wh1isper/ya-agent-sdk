@@ -374,6 +374,18 @@ async def _wait_until_stopped(pid: int, *, timeout: float = 2.0) -> bool:
     return not _process_is_running(pid)
 
 
+async def _wait_for_pidfile(pidfile: Path, *, timeout: float = 2.0) -> int:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        with contextlib.suppress(FileNotFoundError, ValueError):
+            raw_pid = pidfile.read_text().strip()
+            pid = int(raw_pid)
+            if _process_is_running(pid):
+                return pid
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"child PID file was not populated with a running process ID: {pidfile}")
+
+
 def test_shell_default_initialization(tmp_path: Path) -> None:
     """Should initialize with provided default_cwd."""
     shell = LocalShell(default_cwd=tmp_path)
@@ -435,13 +447,7 @@ async def test_shell_background_kill_terminates_child_process(tmp_path: Path) ->
 
     process_id = await shell.start(f"sleep 100 & echo $! > {shlex.quote(str(pidfile))}; wait")
     try:
-        for _ in range(40):
-            if pidfile.exists():
-                break
-            await asyncio.sleep(0.05)
-
-        child_pid = int(pidfile.read_text().strip())
-        assert _process_is_running(child_pid)
+        child_pid = await _wait_for_pidfile(pidfile)
 
         await shell.kill_process(process_id)
 
