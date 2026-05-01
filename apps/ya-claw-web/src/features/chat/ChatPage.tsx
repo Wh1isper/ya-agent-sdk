@@ -1,4 +1,4 @@
-import { fetchEventSource } from '@microsoft/fetch-event-source'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   Activity,
   ArchiveX,
@@ -35,12 +35,17 @@ import {
   useSessionQuery,
   useSessionsQuery,
 } from '../../api/hooks'
-import { queryKeys } from '../../api/queryKeys'
 import { EmptyState } from '../../components/EmptyState'
 import { JsonView } from '../../components/JsonView'
 import { StatusBadge } from '../../components/StatusBadge'
+import {
+  darkPillClass,
+  getStreamStatusTone,
+  lightPillClass,
+  type StreamStatus,
+  toneDotClass,
+} from '../../lib/status'
 import { cn, formatShortId, safeJsonStringify } from '../../lib/utils'
-import { useConnectionStore } from '../../stores/connectionStore'
 import { useLayoutStore } from '../../stores/layoutStore'
 import type {
   AguiEvent,
@@ -50,11 +55,17 @@ import type {
 } from '../../types'
 import { buildTimeline, reduceAguiEvent } from './agui/eventReducer'
 import type { AguiTimelineState, TimelineBlock } from './agui/types'
-import { useQueryClient } from '@tanstack/react-query'
+import {
+  eventKey,
+  eventNameLabel,
+  eventTimestampLabel,
+  eventTone,
+  eventTypeLabel,
+  isTerminalAguiEvent,
+} from './eventUtils'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-
-type StreamStatus = 'idle' | 'connecting' | 'streaming' | 'closed' | 'error'
+import { useRunEventStream } from './useRunEventStream'
 
 export function ChatPage() {
   const selectedSessionId = useLayoutStore((state) => state.selectedSessionId)
@@ -188,41 +199,47 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-slate-100">
-      <div className="border-b border-slate-200 bg-white px-5 py-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-blue-600">AGUI Console</p>
-            <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">
-              Chat Runtime
-            </h1>
-          </div>
-          <div className="flex items-center gap-2 text-xs text-slate-500">
-            <LivePill
-              status={streamStatus}
-              eventCount={effectiveLiveEvents.length}
-            />
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
-              onClick={() => {
-                autoSelectedSessionRef.current = true
-                setIsComposingNew(true)
-                selectSession(null)
-                selectRun(null)
-              }}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              New chat
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
-              onClick={() => sessions.refetch()}
-            >
-              <RefreshCcw className="h-3.5 w-3.5" />
-              Refresh
-            </button>
-          </div>
+      <div className="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-5">
+        <div className="flex min-w-0 items-center gap-3 text-sm text-slate-600">
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 font-medium text-slate-700">
+            {sessions.data?.length ?? 0} sessions
+          </span>
+          {activeRun ? (
+            <span className="mono truncate text-xs text-slate-500">
+              Run {activeRun.sequence_no} · {formatShortId(activeRun.id, 12)}
+            </span>
+          ) : (
+            <span className="text-xs text-slate-500">
+              Select a session or start a new chat
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-xs text-slate-500">
+          <LivePill
+            status={streamStatus}
+            eventCount={effectiveLiveEvents.length}
+          />
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+            onClick={() => {
+              autoSelectedSessionRef.current = true
+              setIsComposingNew(true)
+              selectSession(null)
+              selectRun(null)
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New chat
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+            onClick={() => sessions.refetch()}
+          >
+            <RefreshCcw className="h-3.5 w-3.5" />
+            Refresh
+          </button>
         </div>
       </div>
 
@@ -267,9 +284,8 @@ export function ChatPage() {
                   selectedProfile={
                     activeSessionData?.session.profile_name ?? null
                   }
-                  sessionLocked={
-                    activeSessionData?.session.status === 'queued' ||
-                    activeSessionData?.session.status === 'running'
+                  activeRun={
+                    activeSessionData?.session.active_run_id ? activeRun : null
                   }
                 />
               </div>
@@ -323,47 +339,65 @@ function SessionList({
         {loading ? <SessionSkeleton /> : null}
         {!loading && sessions.length === 0 ? (
           <EmptyState
-            title="No sessions"
-            description="Create a run from the composer to start chatting."
+            icon={MessageSquare}
+            title={search.trim() ? 'No matching sessions' : 'No sessions'}
+            description={
+              search.trim()
+                ? 'Try a session id, profile, status, or prompt keyword.'
+                : 'Use New chat and send the first message to create a session.'
+            }
+            className="min-h-64 bg-slate-50"
           />
         ) : null}
         <div className="space-y-2">
-          {sessions.map((session) => (
-            <button
-              type="button"
-              key={session.id}
-              className={cn(
-                'w-full rounded-2xl border p-3 text-left transition',
-                selectedSessionId === session.id
-                  ? 'border-blue-200 bg-blue-50 shadow-sm'
-                  : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50',
-              )}
-              onClick={() => onSelect(session)}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="mono text-xs text-slate-500">
-                    {formatShortId(session.id, 12)}
-                  </p>
-                  <p className="mt-1 line-clamp-2 text-sm font-medium leading-5 text-slate-900">
-                    {session.latest_run?.input_preview ?? 'Empty session'}
-                  </p>
+          {sessions.map((session) => {
+            const isActive = selectedSessionId === session.id
+            return (
+              <button
+                type="button"
+                key={session.id}
+                className={cn(
+                  'group w-full rounded-2xl border p-3 text-left transition',
+                  isActive
+                    ? 'border-blue-200 bg-blue-50 shadow-sm ring-1 ring-blue-100'
+                    : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50/40',
+                )}
+                onClick={() => onSelect(session)}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="mono text-xs text-slate-500">
+                        {formatShortId(session.id, 12)}
+                      </p>
+                      {session.active_run_id ? (
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                          active
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-sm font-semibold leading-5 text-slate-900">
+                      {session.latest_run?.input_preview ?? 'Empty session'}
+                    </p>
+                  </div>
+                  <StatusBadge status={session.status} />
                 </div>
-                <StatusBadge status={session.status} />
-              </div>
-              <div className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500">
-                <span>{session.profile_name ?? 'default'}</span>
-                <div className="flex items-center gap-2">
-                  <span>{session.run_count} runs</span>
-                  {session.memory_state ? (
-                    <span className="rounded-full bg-violet-50 px-2 py-0.5 font-medium text-violet-700">
-                      {session.memory_state.extract_count} extracts
-                    </span>
-                  ) : null}
+                <div className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-500">
+                  <span className="truncate">
+                    {session.profile_name ?? 'default'}
+                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span>{session.run_count} runs</span>
+                    {session.memory_state ? (
+                      <span className="rounded-full bg-violet-50 px-2 py-0.5 font-medium text-violet-700">
+                        {session.memory_state.extract_count} extracts
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            )
+          })}
         </div>
       </div>
     </aside>
@@ -397,11 +431,19 @@ function RunStrip({
   onSelectRun: (runId: string | null) => void
 }) {
   return (
-    <div className="flex h-14 shrink-0 items-center gap-2 border-b border-slate-200 bg-white px-4">
-      <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-        Runs
-      </span>
+    <div className="flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4">
+      <div className="shrink-0">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Runs
+        </p>
+        <p className="text-[11px] text-slate-500">{runs.length} total</p>
+      </div>
       <div className="scrollbar-thin flex min-w-0 flex-1 gap-2 overflow-x-auto py-2">
+        {runs.length === 0 ? (
+          <span className="rounded-full border border-dashed border-slate-200 px-3 py-1.5 text-xs text-slate-400">
+            No runs yet
+          </span>
+        ) : null}
         {runs.map((run) => (
           <button
             type="button"
@@ -409,8 +451,8 @@ function RunStrip({
             className={cn(
               'inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition',
               selectedRunId === run.id
-                ? 'border-blue-200 bg-blue-50 text-blue-700'
-                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
+                ? 'border-blue-200 bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-100'
+                : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50/60',
             )}
             onClick={() => onSelectRun(run.id)}
           >
@@ -500,6 +542,14 @@ function EventDevToolsPanel({
   loading: boolean
   artifactsPruned: boolean
 }) {
+  const parentRef = useRef<HTMLDivElement | null>(null)
+  const virtualizer = useVirtualizer({
+    count: events.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 38,
+    overscan: 8,
+  })
+
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-slate-200 bg-slate-950 text-slate-100">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-800 px-3">
@@ -514,20 +564,16 @@ function EventDevToolsPanel({
         <span
           className={cn(
             'rounded-full border px-2 py-1 text-[11px] font-medium capitalize',
-            streamStatus === 'streaming' &&
-              'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
-            streamStatus === 'connecting' &&
-              'border-amber-500/40 bg-amber-500/10 text-amber-300',
-            streamStatus === 'error' &&
-              'border-rose-500/40 bg-rose-500/10 text-rose-300',
-            (streamStatus === 'idle' || streamStatus === 'closed') &&
-              'border-slate-700 bg-slate-900 text-slate-400',
+            darkPillClass(getStreamStatusTone(streamStatus)),
           )}
         >
           {streamStatus}
         </span>
       </div>
-      <div className="scrollbar-thin min-h-0 flex-1 overflow-auto p-2">
+      <div
+        ref={parentRef}
+        className="scrollbar-thin min-h-0 flex-1 overflow-auto p-2"
+      >
         {loading ? (
           <div className="space-y-2 p-2">
             {Array.from({ length: 6 }).map((_, index) => (
@@ -550,15 +596,27 @@ function EventDevToolsPanel({
             </div>
           )
         ) : null}
-        <div className="space-y-1">
-          {events.map((event, index) => (
-            <EventRow
-              key={`${index}:${eventKey(event)}`}
-              event={event}
-              index={index}
-            />
-          ))}
-        </div>
+        {events.length > 0 ? (
+          <div
+            className="relative"
+            style={{ height: `${virtualizer.getTotalSize()}px` }}
+          >
+            {virtualizer.getVirtualItems().map((item) => {
+              const event = events[item.index]
+              return (
+                <div
+                  key={`${item.index}:${eventKey(event)}`}
+                  data-index={item.index}
+                  ref={virtualizer.measureElement}
+                  className="absolute left-0 top-0 w-full pb-1"
+                  style={{ transform: `translateY(${item.start}px)` }}
+                >
+                  <EventRow event={event} index={item.index} />
+                </div>
+              )
+            })}
+          </div>
+        ) : null}
       </div>
     </aside>
   )
@@ -588,14 +646,7 @@ function EventRow({ event, index }: { event: AguiEvent; index: number }) {
           {index + 1}
         </span>
         <span
-          className={cn(
-            'h-2 w-2 shrink-0 rounded-full',
-            tone === 'success' && 'bg-emerald-400',
-            tone === 'error' && 'bg-rose-400',
-            tone === 'warning' && 'bg-amber-400',
-            tone === 'running' && 'bg-blue-400',
-            tone === 'info' && 'bg-slate-500',
-          )}
+          className={cn('h-2 w-2 shrink-0 rounded-full', toneDotClass(tone))}
         />
         <span className="mono min-w-0 flex-1 truncate text-[11px] text-slate-200">
           {type}
@@ -625,21 +676,56 @@ function TimelinePanel({
   loading: boolean
   artifactsPruned: boolean
 }) {
+  const scrollRef = useRef<HTMLElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const stickToBottomRef = useRef(true)
+  const toolCallCount = timeline.blocks.filter(
+    (block) => block.kind === 'tool_call',
+  ).length
+  const assistantCount = timeline.blocks.filter(
+    (block) => block.kind === 'assistant_message',
+  ).length
   useEffect(() => {
+    if (!stickToBottomRef.current) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [timeline.blocks.length])
 
   return (
-    <section className="scrollbar-thin min-h-0 flex-1 overflow-auto bg-slate-50 p-5">
+    <section
+      ref={scrollRef}
+      className="scrollbar-thin min-h-0 flex-1 overflow-auto bg-slate-50 p-5"
+      onScroll={() => {
+        const element = scrollRef.current
+        if (!element) return
+        const distanceFromBottom =
+          element.scrollHeight - element.scrollTop - element.clientHeight
+        stickToBottomRef.current = distanceFromBottom < 160
+      }}
+    >
+      <div className="mx-auto mb-4 flex max-w-4xl items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm backdrop-blur">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">
+            Conversation replay
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {timeline.blocks.length} blocks · {assistantCount} assistant
+            messages · {toolCallCount} tool calls
+          </p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
+          Auto-scroll
+        </span>
+      </div>
       {loading ? <TimelineSkeleton /> : null}
       {!loading && timeline.blocks.length === 0 ? (
         artifactsPruned ? (
           <PrunedArtifactsNotice />
         ) : (
           <EmptyState
+            icon={MessageSquare}
             title="No replay yet"
             description="Select a run with committed AGUI messages or start a new turn."
+            className="mx-auto max-w-4xl bg-white"
           />
         )
       ) : null}
@@ -1071,15 +1157,16 @@ function formatMaybeJson(value: string) {
 function Composer({
   selectedSessionId,
   selectedProfile,
-  sessionLocked,
+  activeRun,
 }: {
   selectedSessionId: string | null
   selectedProfile: string | null
-  sessionLocked: boolean
+  activeRun: RunSummary | null
 }) {
   const [text, setText] = useState('')
   const createSession = useCreateSessionMutation()
   const createRun = useCreateSessionRunMutation(selectedSessionId)
+  const runControls = useRunControlMutations(activeRun?.id ?? null)
   const profiles = useProfilesQuery()
   const profileOptions = profiles.data ?? []
   const defaultProfileName = profileOptions[0]?.name ?? ''
@@ -1088,20 +1175,27 @@ function Composer({
   )
   const selectSession = useLayoutStore((store) => store.selectSession)
   const selectRun = useLayoutStore((store) => store.selectRun)
+  const canSteer = activeRun?.status === 'running'
+  const queuedLocked = activeRun?.status === 'queued'
 
   useEffect(() => {
     setProfileName(selectedProfile ?? defaultProfileName)
   }, [defaultProfileName, selectedProfile])
 
-  const isPending = createSession.isPending || createRun.isPending
-  const canSend = text.trim().length > 0 && !isPending
+  const isPending =
+    createSession.isPending ||
+    createRun.isPending ||
+    runControls.steer.isPending
+  const canSend = text.trim().length > 0 && !isPending && !queuedLocked
 
   async function send() {
     const normalizedText = text.trim()
     if (!normalizedText) return
     const inputParts: InputPart[] = [{ type: 'text', text: normalizedText }]
     try {
-      if (selectedSessionId) {
+      if (canSteer && activeRun) {
+        await runControls.steer.mutateAsync(inputParts)
+      } else if (selectedSessionId) {
         const run = await createRun.mutateAsync({ input_parts: inputParts })
         selectRun(run.id)
       } else {
@@ -1128,12 +1222,33 @@ function Composer({
   return (
     <div className="border-t border-slate-200 bg-white p-4">
       <div className="mx-auto max-w-4xl">
-        <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+        {activeRun ? (
+          <div
+            className={cn(
+              'mb-3 rounded-2xl border px-4 py-3 text-sm',
+              canSteer
+                ? 'border-blue-200 bg-blue-50 text-blue-800'
+                : 'border-amber-200 bg-amber-50 text-amber-800',
+            )}
+          >
+            {canSteer
+              ? 'Active run is streaming. New input will steer the current run.'
+              : 'This session is queued. Interrupt or cancel before sending a new turn.'}
+          </div>
+        ) : null}
+        <div className="rounded-3xl border border-slate-200 bg-white p-3 shadow-sm ring-1 ring-slate-100 transition focus-within:border-blue-200 focus-within:ring-blue-100">
           <textarea
-            className="max-h-48 min-h-24 w-full resize-none rounded-xl border-0 p-2 text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400"
+            className="max-h-48 min-h-24 w-full resize-none rounded-2xl border-0 p-2 text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400 disabled:bg-white disabled:text-slate-400"
             value={text}
             onChange={(event) => setText(event.target.value)}
-            placeholder="Send a message to YA Claw..."
+            placeholder={
+              canSteer
+                ? 'Steer the active run...'
+                : queuedLocked
+                  ? 'Run queued. Controls are available above the replay.'
+                  : 'Send a message to YA Claw...'
+            }
+            disabled={queuedLocked}
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                 void send()
@@ -1144,10 +1259,10 @@ function Composer({
             <div className="flex min-w-0 flex-1 items-center gap-2">
               {profileOptions.length > 0 ? (
                 <select
-                  className="max-w-52 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 outline-none ring-blue-600 focus:ring-2"
+                  className="max-w-52 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 outline-none ring-blue-600 focus:ring-2 disabled:text-slate-400"
                   value={profileName}
                   onChange={(event) => setProfileName(event.target.value)}
-                  disabled={Boolean(selectedSessionId) || sessionLocked}
+                  disabled={Boolean(selectedSessionId) || Boolean(activeRun)}
                 >
                   {profileOptions.map((profile) => (
                     <option key={profile.name} value={profile.name}>
@@ -1160,90 +1275,43 @@ function Composer({
                   No profiles
                 </span>
               )}
+              <span className="hidden text-xs text-slate-400 lg:inline">
+                Cmd/Ctrl + Enter to send
+              </span>
             </div>
             <button
               type="button"
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:bg-slate-300"
+              className={cn(
+                'inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-sm transition disabled:bg-slate-300',
+                canSteer
+                  ? 'bg-amber-600 hover:bg-amber-700'
+                  : 'bg-blue-600 hover:bg-blue-700',
+              )}
               disabled={!canSend}
               onClick={() => void send()}
             >
-              {selectedSessionId ? (
+              {canSteer ? (
+                <Wrench className="h-4 w-4" />
+              ) : selectedSessionId ? (
                 <Send className="h-4 w-4" />
               ) : (
                 <Plus className="h-4 w-4" />
               )}
-              {selectedSessionId ? 'Send' : 'New session'}
+              {isPending
+                ? canSteer
+                  ? 'Steering'
+                  : 'Sending'
+                : canSteer
+                  ? 'Steer run'
+                  : selectedSessionId
+                    ? 'Send'
+                    : 'New session'}
             </button>
           </div>
         </div>
       </div>
     </div>
   )
-}
-
-function isTerminalAguiEvent(event: AguiEvent) {
-  const eventType = typeof event.type === 'string' ? event.type : ''
-  return eventType === 'RUN_FINISHED' || eventType === 'RUN_ERROR'
-}
-
-function eventKey(event: AguiEvent) {
-  return [
-    typeof event.type === 'string' ? event.type : 'event',
-    typeof event.name === 'string' ? event.name : '',
-    typeof event.timestamp === 'number' || typeof event.timestamp === 'string'
-      ? String(event.timestamp)
-      : '',
-    typeof event.messageId === 'string' ? event.messageId : '',
-    typeof event.toolCallId === 'string' ? event.toolCallId : '',
-  ].join(':')
-}
-
-function eventTypeLabel(event: AguiEvent) {
-  return typeof event.type === 'string' && event.type.trim()
-    ? event.type
-    : 'UNKNOWN'
-}
-
-function eventNameLabel(event: AguiEvent) {
-  if (typeof event.name === 'string' && event.name.trim()) return event.name
-  const value = event.value
-  if (value && typeof value === 'object') {
-    const payload = value as Record<string, unknown>
-    const nestedName = payload.name
-    if (typeof nestedName === 'string' && nestedName.trim()) return nestedName
-  }
-  if (typeof event.toolCallName === 'string' && event.toolCallName.trim()) {
-    return event.toolCallName
-  }
-  if (typeof event.tool_call_name === 'string' && event.tool_call_name.trim()) {
-    return event.tool_call_name
-  }
-  return ''
-}
-
-function eventTimestampLabel(event: AguiEvent) {
-  const timestamp = event.timestamp as unknown
-  if (typeof timestamp === 'number') {
-    return new Date(timestamp).toLocaleTimeString()
-  }
-  if (typeof timestamp === 'string' && timestamp.trim()) {
-    const parsed = Date.parse(timestamp)
-    if (Number.isFinite(parsed)) return new Date(parsed).toLocaleTimeString()
-    return timestamp
-  }
-  return ''
-}
-
-function eventTone(
-  event: AguiEvent,
-): 'info' | 'running' | 'success' | 'warning' | 'error' {
-  const label =
-    `${eventTypeLabel(event)} ${eventNameLabel(event)}`.toLowerCase()
-  if (label.includes('error') || label.includes('failed')) return 'error'
-  if (label.includes('interrupt') || label.includes('cancel')) return 'warning'
-  if (label.includes('finished') || label.includes('complete')) return 'success'
-  if (label.includes('start') || label.includes('running')) return 'running'
-  return 'info'
 }
 
 function LivePill({
@@ -1266,16 +1334,11 @@ function LivePill({
     <span
       className={cn(
         'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 font-medium capitalize',
-        status === 'streaming' &&
-          'border-emerald-200 bg-emerald-50 text-emerald-700',
-        status === 'connecting' &&
-          'border-amber-200 bg-amber-50 text-amber-700',
-        status === 'error' && 'border-rose-200 bg-rose-50 text-rose-700',
-        (status === 'idle' || status === 'closed') &&
-          'border-slate-200 bg-white text-slate-600',
+        lightPillClass(getStreamStatusTone(status)),
       )}
+      aria-live="polite"
     >
-      <Icon className="h-3.5 w-3.5" />
+      <Icon className="h-3.5 w-3.5" aria-hidden />
       {status} · {eventCount} live
     </span>
   )
@@ -1297,81 +1360,4 @@ function accentFromRuntimeStatus(
   if (status === 'warning') return 'amber'
   if (status === 'error') return 'rose'
   return 'slate'
-}
-
-function useRunEventStream(
-  runId: string | null,
-  status: RunSummary['status'] | null,
-  sessionId: string | null,
-): { status: StreamStatus; events: AguiEvent[] } {
-  const baseUrl = useConnectionStore((state) => state.baseUrl)
-  const apiToken = useConnectionStore((state) => state.apiToken)
-  const queryClient = useQueryClient()
-  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle')
-  const [events, setEvents] = useState<AguiEvent[]>([])
-
-  useEffect(() => {
-    setEvents([])
-  }, [runId])
-
-  useEffect(() => {
-    if (!runId || (status !== 'running' && status !== 'queued')) {
-      setStreamStatus(runId ? 'closed' : 'idle')
-      return
-    }
-    if (!apiToken.trim()) {
-      setStreamStatus('idle')
-      return
-    }
-
-    const controller = new AbortController()
-    setStreamStatus('connecting')
-
-    void fetchEventSource(
-      `${baseUrl.replace(/\/$/, '')}/api/v1/runs/${encodeURIComponent(runId)}/events`,
-      {
-        signal: controller.signal,
-        headers: { Authorization: `Bearer ${apiToken.trim()}` },
-        openWhenHidden: true,
-        async onopen(response) {
-          if (!response.ok) {
-            setStreamStatus('error')
-            throw new Error(`run event stream failed with ${response.status}`)
-          }
-          setStreamStatus('streaming')
-        },
-        onmessage(message) {
-          if (!message.data) return
-          const event = JSON.parse(message.data) as AguiEvent
-          setEvents((previous) => [...previous, event])
-          const eventType = typeof event.type === 'string' ? event.type : ''
-          if (eventType === 'RUN_FINISHED' || eventType === 'RUN_ERROR') {
-            void Promise.all([
-              queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-              sessionId
-                ? queryClient.invalidateQueries({
-                    queryKey: queryKeys.session(sessionId),
-                  })
-                : Promise.resolve(),
-              queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) }),
-            ])
-            setStreamStatus('closed')
-          }
-        },
-        onclose() {
-          setStreamStatus('closed')
-        },
-        onerror(error) {
-          if (!controller.signal.aborted) setStreamStatus('error')
-          throw error
-        },
-      },
-    )
-
-    return () => {
-      controller.abort()
-    }
-  }, [apiToken, baseUrl, queryClient, runId, sessionId, status])
-
-  return { status: streamStatus, events }
 }

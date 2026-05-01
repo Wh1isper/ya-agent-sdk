@@ -7,6 +7,18 @@ const clawProxyTarget =
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          query: ['@tanstack/react-query'],
+          editor: ['@monaco-editor/react'],
+          markdown: ['react-markdown', 'remark-gfm'],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {
