@@ -88,7 +88,7 @@ logger = get_logger(__name__)
 
 
 _PRE_HISTORY_PROCESSORS_DEPRECATION_MESSAGE = (
-    "`pre_history_processors=` is deprecated; use `capabilities=[ProcessHistory(...)]` instead."
+    "`pre_history_processors=` is deprecated; use `pre_capabilities=[ProcessHistory(...)]` instead."
 )
 
 
@@ -360,7 +360,9 @@ def create_agent(
     unified_subagents: bool = False,
     inherit_hooks: bool = True,
     # --- Capabilities ---
+    pre_capabilities: Sequence[AbstractCapability[AgentDepsT]] | None = None,
     capabilities: Sequence[AbstractCapability[AgentDepsT]] | None = None,
+    inherit_pre_capabilities: bool = True,
     inherit_capabilities: bool = True,
     # --- Agent ---
     agent_tools: Sequence[Any] | None = None,
@@ -418,9 +420,15 @@ def create_agent(
         use_cache_friendly_compact_filter: Select the cache-friendly compact filter by default.
             Set to False to use the legacy compact agent implementation.
 
-        capabilities: Pydantic AI capabilities to attach to the agent. Capabilities
-            bundle tools, lifecycle hooks, instructions, and model settings into
-            reusable composable units. See pydantic-ai capabilities documentation.
+        pre_capabilities: Pydantic AI capabilities that run before SDK history
+            capabilities. Use this for ProcessHistory capabilities that must see
+            the raw message history before compact, handoff, auto-load, and runtime
+            instruction filters.
+        capabilities: Pydantic AI capabilities to attach after SDK history capabilities.
+            Capabilities bundle tools, lifecycle hooks, instructions, and model settings
+            into reusable composable units. See pydantic-ai capabilities documentation.
+        inherit_pre_capabilities: If True (default), subagents inherit the parent's
+            pre_capabilities unless overridden by their own config.pre_capabilities.
         inherit_capabilities: If True (default), subagents inherit the parent's
             capabilities unless overridden by their own config.capabilities.
             If False, subagents get no capabilities unless explicitly set in config.
@@ -433,7 +441,7 @@ def create_agent(
         system_prompt_template_vars: Variables for Jinja2 template rendering. Works with
             both custom system_prompt strings and the default template file.
         pre_history_processors: Deprecated sequence of history processors to run BEFORE built-in
-            ProcessHistory capabilities. Use capabilities=[ProcessHistory(...)] for new code.
+            ProcessHistory capabilities. Use pre_capabilities=[ProcessHistory(...)] for new code.
         history_processors: Deprecated sequence of history processors to run AFTER built-in
             ProcessHistory capabilities. Use capabilities=[ProcessHistory(...)] for new code.
         retries: Number of retries for agent run. Defaults to 1.
@@ -533,20 +541,27 @@ def create_agent(
         warnings.warn(HISTORY_PROCESSORS_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
         post_history_capabilities.extend(ProcessHistory(processor) for processor in history_processors)
 
+    user_pre_capabilities = list(pre_capabilities or [])
     user_capabilities = list(capabilities or [])
     sdk_history_capabilities: list[AbstractCapability[AgentDepsT]] = [
-        *pre_history_capabilities,
         *cast(list[AbstractCapability[AgentDepsT]], context_history_capabilities),
         ProcessHistory(compact_filter),
         ProcessHistory(cold_start_trim),
         ProcessHistory(create_environment_instructions_filter(actual_env)),
         ProcessHistory(process_auto_load_files),
         ProcessHistory(inject_runtime_instructions),
+    ]
+    internal_subagent_capabilities: list[AbstractCapability[AgentDepsT]] = [
+        *pre_history_capabilities,
+        *sdk_history_capabilities,
         *post_history_capabilities,
     ]
     all_capabilities: list[AbstractCapability[AgentDepsT]] = [
-        *user_capabilities,
+        *user_pre_capabilities,
+        *pre_history_capabilities,
         *sdk_history_capabilities,
+        *post_history_capabilities,
+        *user_capabilities,
     ]
 
     # --- Toolset Setup ---
@@ -578,11 +593,14 @@ def create_agent(
         if all_subagent_configs:
             logger.debug("Adding %d subagent configs to toolset", len(all_subagent_configs))
             # Resolve user capabilities for subagents. SDK history capabilities are passed
-            # separately so subagent config.capabilities can override parent user capabilities
+            # separately so subagent config capabilities can override parent user capabilities
             # while preserving the internal ProcessHistory pipeline.
-            subagent_capabilities: list[AbstractCapability[Any]] | None = None
-            if inherit_capabilities:
-                subagent_capabilities = list(user_capabilities)
+            subagent_pre_capabilities: list[AbstractCapability[Any]] | None = (
+                list(user_pre_capabilities) if inherit_pre_capabilities else None
+            )
+            subagent_capabilities: list[AbstractCapability[Any]] | None = (
+                list(user_capabilities) if inherit_capabilities else None
+            )
             core_toolset = core_toolset._with_subagents(
                 all_subagent_configs,
                 model=model,
@@ -590,8 +608,9 @@ def create_agent(
                 model_cfg=effective_model_cfg,
                 unified=unified_subagents,
                 inherit_hooks=inherit_hooks,
+                pre_capabilities=subagent_pre_capabilities,
                 capabilities=subagent_capabilities,
-                _sdk_capabilities=cast(list[AbstractCapability[Any]], sdk_history_capabilities),
+                _sdk_capabilities=cast(list[AbstractCapability[Any]], internal_subagent_capabilities),
             )
 
     # Auto-detect context management tools from registered tools

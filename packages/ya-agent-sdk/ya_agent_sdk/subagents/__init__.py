@@ -126,6 +126,7 @@ def load_builtin_subagent_tools(
     history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
+    pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> list[type[BaseTool]]:
     """Load all builtin subagent tools from ya_agent_sdk/subagents/*.md.
@@ -139,6 +140,7 @@ def load_builtin_subagent_tools(
         model_settings: Fallback model settings for all subagents.
         history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for all subagents.
+        pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
         capabilities: Parent capabilities to inherit unless a subagent config overrides them.
 
     Returns:
@@ -164,6 +166,7 @@ def load_builtin_subagent_tools(
         history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
+        pre_capabilities=pre_capabilities,
         capabilities=capabilities,
     )
 
@@ -179,6 +182,7 @@ def load_unified_subagent_tool_from_dir(
     history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
+    pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> type[BaseTool]:
     """Load all subagent configs from a directory and create a unified tool.
@@ -195,6 +199,7 @@ def load_unified_subagent_tool_from_dir(
         model_settings: Fallback model settings for subagents.
         history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for subagents.
+        pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
         capabilities: Parent capabilities to inherit unless a subagent config overrides them.
 
     Returns:
@@ -221,6 +226,7 @@ def load_unified_subagent_tool_from_dir(
         history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
+        pre_capabilities=pre_capabilities,
         capabilities=capabilities,
     )
 
@@ -235,6 +241,7 @@ def load_builtin_unified_subagent_tool(
     history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
+    pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> type[BaseTool]:
     """Load all builtin subagents as a single unified tool.
@@ -250,6 +257,7 @@ def load_builtin_unified_subagent_tool(
         model_settings: Fallback model settings for subagents.
         history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for subagents.
+        pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
         capabilities: Parent capabilities to inherit unless a subagent config overrides them.
 
     Returns:
@@ -275,6 +283,7 @@ def load_builtin_unified_subagent_tool(
         history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
+        pre_capabilities=pre_capabilities,
         capabilities=capabilities,
     )
 

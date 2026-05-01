@@ -306,6 +306,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         model_cfg: ModelConfig | None = None,
         unified: bool = False,
         inherit_hooks: bool = False,
+        pre_capabilities: list[AbstractCapability[Any]] | None = None,
         capabilities: list[AbstractCapability[Any]] | None = None,
     ) -> Toolset[AgentDepsT]:
         """Create a new Toolset that includes subagent tools."""
@@ -317,6 +318,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             model_cfg=model_cfg,
             unified=unified,
             inherit_hooks=inherit_hooks,
+            pre_capabilities=pre_capabilities,
             capabilities=capabilities,
         )
 
@@ -330,6 +332,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         model_cfg: ModelConfig | None = None,
         unified: bool = False,
         inherit_hooks: bool = False,
+        pre_capabilities: list[AbstractCapability[Any]] | None = None,
         capabilities: list[AbstractCapability[Any]] | None = None,
         _sdk_capabilities: list[AbstractCapability[Any]] | None = None,
     ) -> Toolset[AgentDepsT]:
@@ -350,6 +353,8 @@ class Toolset(BaseToolset[AgentDepsT]):
                 by name parameter. If False (default), create separate tools for each
                 subagent.
             inherit_hooks: Whether to inherit hooks from parent toolset.
+            pre_capabilities: Parent pre-capabilities to pass to subagents. Each subagent
+                inherits these unless its config.pre_capabilities overrides them.
             capabilities: Parent user capabilities to pass to subagents. Each subagent
                 inherits these unless its config.capabilities overrides them.
             _sdk_capabilities: SDK internal capabilities that subagents always receive.
@@ -397,6 +402,7 @@ class Toolset(BaseToolset[AgentDepsT]):
                 history_processors=history_processors,
                 model_cfg=model_cfg,
                 inherit_hooks=inherit_hooks,
+                pre_capabilities=pre_capabilities,
                 capabilities=capabilities,
                 sdk_capabilities=_sdk_capabilities,
             )
@@ -412,6 +418,7 @@ class Toolset(BaseToolset[AgentDepsT]):
                     history_processors=history_processors,
                     model_cfg=model_cfg,
                     inherit_hooks=inherit_hooks,
+                    pre_capabilities=pre_capabilities,
                     capabilities=capabilities,
                     sdk_capabilities=_sdk_capabilities,
                 )

@@ -66,6 +66,14 @@ class SubagentConfig(BaseModel):
     model_cfg: str | dict[str, Any] | None = None
     """ModelConfig: 'inherit' (default), preset name (e.g., 'claude_200k'), or dict config."""
 
+    pre_capabilities: list[AbstractCapability[Any]] | None = None
+    """Pydantic AI capabilities that run before SDK history capabilities for this subagent.
+
+    When set, the subagent uses these pre-capabilities instead of inheriting from parent.
+    Only usable via programmatic SubagentConfig construction, not from markdown files
+    (capability instances cannot be serialized in YAML frontmatter).
+    """
+
     capabilities: list[AbstractCapability[Any]] | None = None
     """Pydantic AI capabilities for this subagent.
 

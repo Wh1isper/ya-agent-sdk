@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
@@ -74,6 +74,7 @@ def _build_subagent_entry(
     history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
+    pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
     sdk_capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> SubagentEntry:
@@ -87,6 +88,7 @@ def _build_subagent_entry(
             history_processors=history_processors,
             model_cfg=model_cfg,
             inherit_hooks=inherit_hooks,
+            pre_capabilities=pre_capabilities,
             capabilities=capabilities,
         )
     else:
@@ -98,6 +100,7 @@ def _build_subagent_entry(
             history_processors=history_processors,
             model_cfg=model_cfg,
             inherit_hooks=inherit_hooks,
+            pre_capabilities=pre_capabilities,
             capabilities=capabilities,
             sdk_capabilities=sdk_capabilities,
         )
@@ -166,6 +169,7 @@ def _build_registry(
     history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
+    pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
     sdk_capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> dict[str, SubagentEntry]:
@@ -180,6 +184,7 @@ def _build_registry(
             history_processors=history_processors,
             model_cfg=model_cfg,
             inherit_hooks=inherit_hooks,
+            pre_capabilities=pre_capabilities,
             capabilities=capabilities,
             sdk_capabilities=sdk_capabilities,
         )
@@ -198,6 +203,7 @@ def create_unified_subagent_tool(
     history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
+    pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> type[BaseTool]:
     """Create a unified subagent tool from multiple SubagentConfigs.
@@ -216,6 +222,7 @@ def create_unified_subagent_tool(
         history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for subagents.
         inherit_hooks: Whether to inherit hooks from parent toolset.
+        pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
         capabilities: Parent user capabilities to inherit (if config doesn't override).
 
     Returns:
@@ -231,6 +238,7 @@ def create_unified_subagent_tool(
         history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
+        pre_capabilities=pre_capabilities,
         capabilities=capabilities,
     )
 
@@ -246,6 +254,7 @@ def _create_unified_subagent_tool(
     history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
+    pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
     sdk_capabilities: list[AbstractCapability[Any]] | None = None,
 ) -> type[BaseTool]:
@@ -263,6 +272,7 @@ def _create_unified_subagent_tool(
         history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
+        pre_capabilities=pre_capabilities,
         capabilities=capabilities,
         sdk_capabilities=sdk_capabilities,
     )
@@ -345,11 +355,9 @@ def get_available_subagent_names(tool_cls: type[BaseTool]) -> tuple[str, ...]:
         Tuple of subagent names.
 
     Raises:
-        ValueError: If the tool doesn't have the expected attribute.
+        ValueError: If the tool is not a unified subagent tool.
     """
-    available = getattr(tool_cls, "_available_subagents", None)
-    if available is None:
-        msg = "Tool does not have _available_subagents attribute. Was it created with create_unified_subagent_tool?"
+    if not hasattr(tool_cls, "_available_subagents"):
+        msg = "Tool class does not appear to be a unified subagent tool"
         raise ValueError(msg)
-
-    return available
+    return cast(tuple[str, ...], tool_cls._available_subagents)

@@ -391,3 +391,77 @@ async def test_deprecated_history_processor_phase_order(env):
     ]
     assert parts.index("pre-marker") < parts.index("post-marker")
     assert parts.index("post-marker") == len(parts) - 1
+
+
+async def test_create_agent_capability_phase_order(env):
+    """Test pre_capabilities run before SDK history and capabilities run after it."""
+    events: list[str] = []
+
+    def marker_processor(marker: str):
+        def process(ctx: RunContext[Any], messages: list[ModelMessage]) -> list[ModelMessage]:
+            events.append(marker)
+            for message in messages:
+                if isinstance(message, ModelRequest):
+                    message.parts.append(UserPromptPart(content=marker))
+                    break
+            return messages
+
+        return process
+
+    model = CapturingTestModel(custom_output_text="ok")
+    runtime = create_agent(
+        model,
+        env=env,
+        pre_capabilities=[ProcessHistory(marker_processor("pre-capability-marker"))],
+        capabilities=[ProcessHistory(marker_processor("post-capability-marker"))],
+        defer_model_check=True,
+    )
+
+    async with runtime:
+        await runtime.agent.run("Hello", deps=runtime.ctx)
+
+    assert model.last_messages is not None
+    parts = [
+        part.content
+        for message in model.last_messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert parts.index("pre-capability-marker") < parts.index("post-capability-marker")
+    assert events.index("pre-capability-marker") < events.index("post-capability-marker")
+
+
+async def test_history_processors_migrate_to_capability_phases(env):
+    """Test deprecated history processors match the new capability phase positions."""
+    events: list[str] = []
+
+    def marker_processor(marker: str):
+        def process(ctx: RunContext[Any], messages: list[ModelMessage]) -> list[ModelMessage]:
+            events.append(marker)
+            for message in messages:
+                if isinstance(message, ModelRequest):
+                    message.parts.append(UserPromptPart(content=marker))
+                    break
+            return messages
+
+        return process
+
+    model = CapturingTestModel(custom_output_text="ok")
+    with pytest.warns(DeprecationWarning):
+        runtime = create_agent(
+            model,
+            env=env,
+            pre_history_processors=[marker_processor("pre-history-marker")],
+            history_processors=[marker_processor("post-history-marker")],
+            pre_capabilities=[ProcessHistory(marker_processor("pre-capability-marker"))],
+            capabilities=[ProcessHistory(marker_processor("post-capability-marker"))],
+            defer_model_check=True,
+        )
+
+    async with runtime:
+        await runtime.agent.run("Hello", deps=runtime.ctx)
+
+    assert events.index("pre-capability-marker") < events.index("pre-history-marker")
+    assert events.index("pre-history-marker") < events.index("post-history-marker")
+    assert events.index("post-history-marker") < events.index("post-capability-marker")
