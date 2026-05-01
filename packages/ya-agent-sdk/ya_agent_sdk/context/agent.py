@@ -1203,6 +1203,7 @@ class AgentContext(BaseModel):
     _entered: bool = False
     _enter_lock: asyncio.Lock = None  # type: ignore[assignment]  # Initialized in __init__
     _stream_queue_enabled: bool = False
+    _compact_depth: int = 0
 
     def __init__(self, **data: Any) -> None:
         """Initialize AgentContext."""
@@ -1538,6 +1539,7 @@ class AgentContext(BaseModel):
         object.__setattr__(new_ctx, "_entered", False)
         object.__setattr__(new_ctx, "_enter_lock", asyncio.Lock())
         object.__setattr__(new_ctx, "_stream_queue_enabled", False)
+        object.__setattr__(new_ctx, "_compact_depth", 0)
         return new_ctx
 
     def create_subagent_context(
@@ -1602,6 +1604,7 @@ class AgentContext(BaseModel):
         # Reset re-entry protection for subagent (independent lifecycle)
         object.__setattr__(new_ctx, "_entered", False)
         object.__setattr__(new_ctx, "_enter_lock", asyncio.Lock())
+        object.__setattr__(new_ctx, "_compact_depth", 0)
         return new_ctx
 
     def get_history_processors(self) -> list:

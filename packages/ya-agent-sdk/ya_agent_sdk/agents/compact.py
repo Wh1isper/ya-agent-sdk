@@ -7,6 +7,7 @@ the conversation.
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
@@ -16,7 +17,14 @@ from typing import Any, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, AgentRunResult, ModelSettings, PromptedOutput, UserContent
+from pydantic_ai import (
+    Agent,
+    AgentRunResult,
+    ModelSettings,
+    PromptedOutput,
+    UsageLimits,
+    UserContent,
+)
 from pydantic_ai.messages import (
     BinaryContent,
     ImageUrl,
@@ -38,7 +46,11 @@ from ya_agent_sdk._logger import logger
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.context.agent import ENVIRONMENT_CONTEXT_TAG, RUNTIME_CONTEXT_TAG
-from ya_agent_sdk.events import CompactCompleteEvent, CompactFailedEvent, CompactStartEvent
+from ya_agent_sdk.events import (
+    CompactCompleteEvent,
+    CompactFailedEvent,
+    CompactStartEvent,
+)
 from ya_agent_sdk.filters import (
     create_system_prompt_filter,
     fix_truncated_tool_args,
@@ -67,6 +79,53 @@ You should NOT take any initiative or make any assumptions about continuing with
 Keep this response CONCISE and wrap your analysis in `analysis` and `context` fields to organize your thoughts and ensure you've covered all necessary points.
 
 IMPORTANT: If the message history contains any access to Skills (files in /skills/ directory, such as reading SKILL.md or using skill resources), you MUST include a reminder in the context to re-read the relevant skill documentation when resuming work."""
+
+CACHE_FRIENDLY_COMPACT_INSTRUCTION = """Generate a compact continuation summary for the conversation history.
+Return only the summary text. Do not call tools.
+Use this exact Markdown structure:
+
+## Condensed conversation summary
+
+### Analysis
+
+[Brief analysis of the conversation and what matters for continuation.]
+
+### Context
+
+1. Primary Request and Intent:
+   [User's explicit requests and intent]
+
+2. Key Technical Concepts:
+   - [Concepts, technologies, APIs, and architecture points]
+
+3. Files and Code Sections:
+   - [Files examined, edited, or created, with important details]
+
+4. Problem Solving:
+   [Problems solved and ongoing troubleshooting]
+
+5. Pending Tasks:
+   - [Explicit pending tasks]
+
+6. Current Work:
+   [Precise current work immediately before compaction]
+
+7. Optional Next Step:
+   [Direct next step aligned with the current work]
+
+8. Past Interactions:
+   - [Key interactions already completed, including actions and outcomes]
+
+9. Skills Documentation:
+   [If any /skills/ documentation was accessed, list the relevant skill files and remind the next agent to re-read them]
+
+10. Auto-load Files:
+   [List only file paths that should be auto-loaded when resuming]
+"""
+
+CACHE_FRIENDLY_COMPACT_PROMPT = """Compact the conversation history into the requested continuation summary format.
+Focus on details needed to continue the user's work accurately after older messages are removed.
+Return only the summary text."""
 
 # Settings keys that should NOT be inherited by compact agent.
 # Cache: compact has different prompts/tools/history; inheriting cache settings
@@ -110,7 +169,10 @@ def _strip_beta_headers(result: dict[str, Any]) -> None:
         return
     filtered = [b.strip() for b in beta_str.split(",") if b.strip() not in _INCOMPATIBLE_BETAS]
     if filtered:
-        result["extra_headers"] = {**extra_headers, "anthropic-beta": ",".join(filtered)}
+        result["extra_headers"] = {
+            **extra_headers,
+            "anthropic-beta": ",".join(filtered),
+        }
     else:
         result["extra_headers"] = {k: v for k, v in extra_headers.items() if k != "anthropic-beta"}
         if not result["extra_headers"]:
@@ -132,7 +194,10 @@ def _strip_clear_thinking_edits(result: dict[str, Any]) -> None:
     if filtered_edits == edits:
         return
     if filtered_edits:
-        result["extra_body"] = {**extra_body, "context_management": {**cm, "edits": filtered_edits}}
+        result["extra_body"] = {
+            **extra_body,
+            "context_management": {**cm, "edits": filtered_edits},
+        }
     else:
         new_body = {k: v for k, v in extra_body.items() if k != "context_management"}
         if new_body:
@@ -701,6 +766,98 @@ def _build_compacted_messages(
         ModelResponse(parts=[TextPart(content=summary)], metadata=keep_metadata),
         ModelRequest(parts=final_parts, metadata=keep_metadata),
     ]
+
+
+def create_cache_friendly_compact_filter(
+    model_cfg: ModelConfig | None = None,
+) -> Callable[[RunContext[AgentContext], list[ModelMessage]], Awaitable[list[ModelMessage]]]:
+    """Create a cache-friendly compact filter that reuses the current agent.
+
+    This filter keeps the current agent's system prompt, tool definitions, and
+    model settings intact. It asks the same agent for a plain text compact
+    summary via run-level instructions and then replaces the history with the
+    compacted replay messages.
+    """
+
+    async def compact_filter(
+        ctx: RunContext[AgentContext],
+        message_history: list[ModelMessage],
+    ) -> list[ModelMessage]:
+        agent_ctx = ctx.deps
+
+        if agent_ctx._compact_depth > 0:
+            return message_history
+
+        compact_check_ctx = agent_ctx if model_cfg is None else agent_ctx.model_copy(update={"model_cfg": model_cfg})
+        if not _need_compact(compact_check_ctx, message_history):
+            logger.debug("No need to compact history.")
+            return message_history
+
+        if ctx.agent is None:
+            logger.debug("No current agent in RunContext, skipping cache-friendly compact.")
+            return message_history
+
+        logger.info("Compacting conversation history with cache-friendly compact filter...")
+        event_id = uuid4().hex[:8]
+
+        object.__setattr__(agent_ctx, "_compact_depth", agent_ctx._compact_depth + 1)
+        try:
+            await agent_ctx.emit_event(CompactStartEvent(event_id=event_id, message_count=len(message_history)))
+            compact_agent = copy.copy(ctx.agent)
+            if hasattr(compact_agent, "_output_validators"):
+                compact_agent._output_validators = []  # pyright: ignore[reportAttributeAccessIssue]
+            async with compact_agent.run_stream(
+                f"{CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{CACHE_FRIENDLY_COMPACT_PROMPT}",
+                message_history=message_history,
+                deps=agent_ctx,
+                output_type=str,
+                usage_limits=UsageLimits(request_limit=1),
+            ) as result:
+                summary_markdown = str(await result.get_output())
+                usage = result.usage()
+
+            model = ctx.model
+            model_id = model.model_name if model is not None else "unknown"
+            agent_ctx.add_extra_usage(
+                agent=AGENT_NAME,
+                internal_usage=InternalUsage(model_id=model_id, usage=usage),
+                uuid=uuid4().hex,
+            )
+            logger.info("Recorded cache-friendly compact usage: model_id=%s usage=%r", model_id, usage)
+
+            compacted = _build_compacted_messages(
+                summary_markdown,
+                agent_ctx.user_prompts or CACHE_FRIENDLY_COMPACT_PROMPT,
+                agent_ctx.steering_messages or None,
+            )
+
+            await agent_ctx.emit_event(
+                CompactCompleteEvent(
+                    event_id=event_id,
+                    summary_markdown=summary_markdown,
+                    original_message_count=len(message_history),
+                    compacted_message_count=len(compacted),
+                    condense_result=None,
+                )
+            )
+
+            agent_ctx.steering_messages.clear()
+            agent_ctx.force_inject_instructions = True
+
+            logger.info(f"Compacted history from {len(message_history)} messages to {len(compacted)} messages")
+            return compacted
+
+        except Exception as e:
+            logger.error(f"Failed to compact history with cache-friendly filter: {e}")
+            await agent_ctx.emit_event(
+                CompactFailedEvent(event_id=event_id, error=str(e), message_count=len(message_history))
+            )
+            return message_history
+
+        finally:
+            object.__setattr__(agent_ctx, "_compact_depth", max(0, agent_ctx._compact_depth - 1))
+
+    return compact_filter
 
 
 def create_compact_filter(

@@ -37,7 +37,7 @@ from typing_extensions import TypeVar
 from y_agent_environment import Environment
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.agents.compact import create_compact_filter
+from ya_agent_sdk.agents.compact import create_cache_friendly_compact_filter, create_compact_filter
 from ya_agent_sdk.agents.guards import attach_message_bus_guard
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import (
@@ -345,6 +345,7 @@ def create_agent(
     compact_model: str | Model | None = None,
     compact_model_settings: ModelSettings | None = None,
     compact_model_cfg: ModelConfig | None = None,
+    use_cache_friendly_compact_filter: bool = True,
     # --- Subagent ---
     subagent_configs: Sequence[SubagentConfig] | None = None,
     include_builtin_subagents: bool = False,
@@ -403,9 +404,11 @@ def create_agent(
         toolset_timeout: Default timeout for tool execution.
         skip_unavailable_tools: Skip tools where is_available() returns False.
 
-        compact_model: Model for compact filter. Falls back to AgentSettings.
-        compact_model_settings: Model settings for compact filter.
+        compact_model: Model for legacy compact filter. Falls back to AgentSettings.
+        compact_model_settings: Model settings for legacy compact filter.
         compact_model_cfg: ModelConfig for compact filter. Defaults to main model_cfg.
+        use_cache_friendly_compact_filter: Select the cache-friendly compact filter by default.
+            Set to False to use the legacy compact agent implementation.
 
         capabilities: Pydantic AI capabilities to attach to the agent. Capabilities
             bundle tools, lifecycle hooks, instructions, and model settings into
@@ -497,18 +500,26 @@ def create_agent(
     context_processors = [
         processor for processor in ctx.get_history_processors() if processor is not inject_runtime_instructions
     ]
-    all_processors: list[HistoryProcessor[AgentDepsT]] = []
-    if pre_history_processors:
-        all_processors.extend(pre_history_processors)
-    all_processors.extend([
-        *context_processors,
-        create_compact_filter(
+    compact_filter = (
+        create_cache_friendly_compact_filter(
+            model_cfg=compact_model_cfg or effective_model_cfg,
+        )
+        if use_cache_friendly_compact_filter
+        else create_compact_filter(
             model=compact_model,
             model_settings=compact_model_settings,
             model_cfg=compact_model_cfg or effective_model_cfg,
             main_model=model,
             main_model_settings=model_settings,
-        ),
+        )
+    )
+
+    all_processors: list[HistoryProcessor[AgentDepsT]] = []
+    if pre_history_processors:
+        all_processors.extend(pre_history_processors)
+    all_processors.extend([
+        *context_processors,
+        compact_filter,
         cold_start_trim,
         create_environment_instructions_filter(actual_env),
         process_auto_load_files,

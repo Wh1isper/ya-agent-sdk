@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.agents import compact as compact_module
+from ya_agent_sdk.agents import main as main_module
 from ya_agent_sdk.agents.compact import (
     _COMPACT_STRIP_KEYS,
     _DEFAULT_INJECTED_TAGS,
@@ -31,6 +32,7 @@ from ya_agent_sdk.agents.compact import (
     _strip_injected_context,
     _trim_history_for_compact,
     _truncate_str,
+    create_cache_friendly_compact_filter,
     create_compact_filter,
     get_compact_agent,
 )
@@ -832,6 +834,70 @@ async def test_create_agent_runs_runtime_instructions_after_compact(tmp_path: Pa
         assert runtime_indexes[0] > auto_load_indexes[-1]
 
 
+def test_create_agent_uses_cache_friendly_compact_filter_by_default(tmp_path: Path, monkeypatch) -> None:
+    env = LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    )
+    cache_friendly_filter = MagicMock(__name__="cache_friendly_compact_filter")
+    legacy_filter = MagicMock(__name__="legacy_compact_filter")
+    create_cache_friendly = MagicMock(return_value=cache_friendly_filter)
+    create_legacy = MagicMock(return_value=legacy_filter)
+    monkeypatch.setattr(main_module, "create_cache_friendly_compact_filter", create_cache_friendly)
+    monkeypatch.setattr(main_module, "create_compact_filter", create_legacy)
+
+    runtime = create_agent(model="test", env=env)
+
+    create_cache_friendly.assert_called_once()
+    create_legacy.assert_not_called()
+    assert cache_friendly_filter in runtime.agent.history_processors
+
+
+def test_create_agent_can_use_legacy_compact_filter(tmp_path: Path, monkeypatch) -> None:
+    env = LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    )
+    cache_friendly_filter = MagicMock(__name__="cache_friendly_compact_filter")
+    legacy_filter = MagicMock(__name__="legacy_compact_filter")
+    create_cache_friendly = MagicMock(return_value=cache_friendly_filter)
+    create_legacy = MagicMock(return_value=legacy_filter)
+    compact_cfg = ModelConfig(context_window=123, compact_threshold=0.5)
+    monkeypatch.setattr(main_module, "create_cache_friendly_compact_filter", create_cache_friendly)
+    monkeypatch.setattr(main_module, "create_compact_filter", create_legacy)
+
+    runtime = create_agent(
+        model="test",
+        env=env,
+        compact_model="compact-model",
+        compact_model_settings={"temperature": 0},
+        compact_model_cfg=compact_cfg,
+        use_cache_friendly_compact_filter=False,
+    )
+
+    create_cache_friendly.assert_not_called()
+    create_legacy.assert_called_once_with(
+        model="compact-model",
+        model_settings={"temperature": 0},
+        model_cfg=compact_cfg,
+        main_model="test",
+        main_model_settings=None,
+    )
+    assert legacy_filter in runtime.agent.history_processors
+
+
+async def test_agent_context_resets_compact_depth_for_new_run_and_subagent(agent_context: AgentContext) -> None:
+    agent_context._compact_depth = 2
+
+    new_run_ctx = agent_context.prepare_new_run()
+    subagent_ctx = agent_context.create_subagent_context("worker", agent_id="worker-1")
+
+    assert new_run_ctx._compact_depth == 0
+    assert subagent_ctx._compact_depth == 0
+
+
 # =============================================================================
 # _strip_incompatible_settings tests
 # =============================================================================
@@ -1154,6 +1220,29 @@ class _FakeCompactResult:
         return self._usage
 
 
+class _FakeCompactStreamResult:
+    def __init__(self, output: str, usage: RunUsage) -> None:
+        self.output = output
+        self._usage = usage
+
+    async def get_output(self) -> str:
+        return self.output
+
+    def usage(self) -> RunUsage:
+        return self._usage
+
+
+class _FakeCompactStreamRun:
+    def __init__(self, result: _FakeCompactStreamResult) -> None:
+        self.result = result
+
+    async def __aenter__(self) -> _FakeCompactStreamResult:
+        return self.result
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool | None:
+        return None
+
+
 class _FakeCompactRun:
     def __init__(self, result: _FakeCompactResult) -> None:
         self.result = result
@@ -1173,6 +1262,150 @@ class _FakeCompactRun:
             raise StopAsyncIteration
         self._yielded = True
         return object()
+
+
+@pytest.mark.asyncio
+async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usage(
+    agent_context: AgentContext, monkeypatch
+):
+    message_history = [
+        ModelRequest(parts=[UserPromptPart(content="hello")]),
+        ModelResponse(parts=[TextPart(content="world")]),
+    ]
+    agent_context.model_cfg = ModelConfig(context_window=10, compact_threshold=0.1)
+    agent_context.user_prompts = "hello"
+    object.__setattr__(agent_context, "_stream_queue_enabled", True)
+
+    mock_run_ctx = MagicMock()
+    mock_run_ctx.deps = agent_context
+    mock_run_ctx.model = MagicMock(model_name="main-model")
+    mock_run_ctx.agent = MagicMock()
+    mock_run_ctx.agent._output_validators = [object()]
+
+    stream_result = _FakeCompactStreamResult(
+        output="## Condensed conversation summary\n\n### Analysis\n\nanalysis\n\n### Context\n\ncontext",
+        usage=RunUsage(input_tokens=3, output_tokens=5, requests=1),
+    )
+
+    mock_run_ctx.agent.run.side_effect = AssertionError("parent agent should not run")
+    mock_run_ctx.agent.run_stream.side_effect = AssertionError("parent agent should not run")
+    compact_agent = MagicMock()
+    compact_agent._output_validators = []
+    compact_agent.run_stream.return_value = _FakeCompactStreamRun(stream_result)
+    monkeypatch.setattr(compact_module.copy, "copy", lambda _agent: compact_agent)
+
+    monkeypatch.setattr(compact_module, "_need_compact", lambda *_args, **_kwargs: True)
+
+    compact_filter = create_cache_friendly_compact_filter(model_cfg=agent_context.model_cfg)
+    compacted = await compact_filter(mock_run_ctx, message_history)
+
+    mock_run_ctx.agent.run.assert_not_called()
+    mock_run_ctx.agent.run_stream.assert_not_called()
+    compact_agent.run_stream.assert_called_once()
+    assert len(mock_run_ctx.agent._output_validators) == 1
+    assert compact_agent._output_validators == []
+    call_args = compact_agent.run_stream.call_args
+    assert call_args.args[0] == (
+        f"{compact_module.CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{compact_module.CACHE_FRIENDLY_COMPACT_PROMPT}"
+    )
+    assert call_args.kwargs["message_history"] == message_history
+    assert call_args.kwargs["deps"] is agent_context
+    assert call_args.kwargs["output_type"] is str
+    assert "instructions" not in call_args.kwargs
+
+    assert len(compacted) == 3
+    assert agent_context.force_inject_instructions is True
+    assert agent_context._compact_depth == 0
+    assert len(agent_context.extra_usages) == 1
+    assert agent_context.extra_usages[0].agent == "compact"
+    assert agent_context.extra_usages[0].model_id == "main-model"
+
+    queue = agent_context.agent_stream_queues[agent_context.agent_id]
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert [event.__class__.__name__ for event in events] == ["CompactStartEvent", "CompactCompleteEvent"]
+
+
+@pytest.mark.asyncio
+async def test_cache_friendly_compact_filter_skips_nested_compact(agent_context: AgentContext, monkeypatch):
+    message_history = [ModelRequest(parts=[UserPromptPart(content="hello")])]
+    agent_context._compact_depth = 1
+
+    mock_run_ctx = MagicMock()
+    mock_run_ctx.deps = agent_context
+    mock_run_ctx.agent = MagicMock()
+
+    monkeypatch.setattr(compact_module, "_need_compact", lambda *_args, **_kwargs: True)
+
+    compact_filter = create_cache_friendly_compact_filter(model_cfg=agent_context.model_cfg)
+    result = await compact_filter(mock_run_ctx, message_history)
+
+    assert result is message_history
+    mock_run_ctx.agent.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cache_friendly_compact_filter_uses_model_cfg_for_threshold(agent_context: AgentContext, monkeypatch):
+    message_history = [ModelRequest(parts=[UserPromptPart(content="hello")])]
+    agent_context.model_cfg = ModelConfig(context_window=None)
+    override_cfg = ModelConfig(context_window=10, compact_threshold=0.1)
+    seen_cfgs: list[ModelConfig] = []
+
+    mock_run_ctx = MagicMock()
+    mock_run_ctx.deps = agent_context
+    mock_run_ctx.model = MagicMock(model_name="main-model")
+    mock_run_ctx.agent = MagicMock()
+
+    stream_result = _FakeCompactStreamResult(
+        output="summary",
+        usage=RunUsage(input_tokens=1, output_tokens=1, requests=1),
+    )
+
+    compact_agent = MagicMock()
+    compact_agent.run_stream.return_value = _FakeCompactStreamRun(stream_result)
+    monkeypatch.setattr(compact_module.copy, "copy", lambda _agent: compact_agent)
+
+    def _fake_need_compact(ctx: AgentContext, _messages: list[ModelMessage]) -> bool:
+        seen_cfgs.append(ctx.model_cfg)
+        return True
+
+    monkeypatch.setattr(compact_module, "_need_compact", _fake_need_compact)
+
+    compact_filter = create_cache_friendly_compact_filter(model_cfg=override_cfg)
+    await compact_filter(mock_run_ctx, message_history)
+
+    assert seen_cfgs == [override_cfg]
+    assert agent_context.model_cfg.context_window is None
+
+
+@pytest.mark.asyncio
+async def test_cache_friendly_compact_filter_returns_original_history_when_run_fails(
+    agent_context: AgentContext, monkeypatch
+):
+    message_history = [ModelRequest(parts=[UserPromptPart(content="hello")])]
+    agent_context.model_cfg = ModelConfig(context_window=10, compact_threshold=0.1)
+    object.__setattr__(agent_context, "_stream_queue_enabled", True)
+
+    mock_run_ctx = MagicMock()
+    mock_run_ctx.deps = agent_context
+    mock_run_ctx.agent = MagicMock()
+    compact_agent = MagicMock()
+    compact_agent.run_stream.side_effect = RuntimeError("run failed")
+    monkeypatch.setattr(compact_module.copy, "copy", lambda _agent: compact_agent)
+
+    monkeypatch.setattr(compact_module, "_need_compact", lambda *_args, **_kwargs: True)
+
+    compact_filter = create_cache_friendly_compact_filter(model_cfg=agent_context.model_cfg)
+    result = await compact_filter(mock_run_ctx, message_history)
+
+    assert result == message_history
+    assert agent_context._compact_depth == 0
+    queue = agent_context.agent_stream_queues[agent_context.agent_id]
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert [event.__class__.__name__ for event in events] == ["CompactStartEvent", "CompactFailedEvent"]
 
 
 @pytest.mark.asyncio
