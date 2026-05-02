@@ -25,6 +25,7 @@ from ya_claw.memory.prompts import MEMORY_EXTRACT_SYSTEM_PROMPT, MEMORY_SUMMARY_
 from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.toolsets.background import SpawnDelegateTool, SteerSubagentTool
 from ya_claw.toolsets.schedule import (
+    CreateOnceScheduleTool,
     CreateScheduleTool,
     DeleteScheduleTool,
     ListSchedulesTool,
@@ -59,7 +60,14 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
     "document": list(document_tools),
     "background": [SpawnDelegateTool, SteerSubagentTool],
     "session": [ListSessionTurnsTool, GetRunTraceTool],
-    "schedule": [ListSchedulesTool, CreateScheduleTool, UpdateScheduleTool, DeleteScheduleTool, TriggerScheduleTool],
+    "schedule": [
+        ListSchedulesTool,
+        CreateScheduleTool,
+        CreateOnceScheduleTool,
+        UpdateScheduleTool,
+        DeleteScheduleTool,
+        TriggerScheduleTool,
+    ],
 }
 _BUILTIN_TOOLSET_ALIASES: dict[str, list[str]] = {
     "core": ["filesystem", "shell", "background", "session", "schedule"],

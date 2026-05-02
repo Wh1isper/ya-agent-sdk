@@ -127,7 +127,9 @@ async def _publish_schedule_notification(request: Request, event_type: str, sche
             "schedule_id": schedule.id,
             "status": schedule.status,
             "enabled": schedule.enabled,
-            "next_fire_at": schedule.cron.get("next_fire_at"),
+            "next_fire_at": schedule.trigger.get("next_fire_at"),
+            "trigger_kind": schedule.trigger.get("kind"),
+            "run_at": schedule.trigger.get("run_at"),
             "execution_mode": schedule.execution_mode,
         },
     )

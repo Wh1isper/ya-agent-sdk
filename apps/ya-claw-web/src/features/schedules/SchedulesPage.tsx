@@ -19,7 +19,9 @@ type ScheduleFormValues = {
   name: string
   description: string
   prompt: string
+  trigger_kind: 'cron' | 'once'
   cron: string
+  run_at: string
   timezone: string
   enabled: boolean
   continue_current_session: boolean
@@ -31,7 +33,9 @@ const blankSchedule: ScheduleFormValues = {
   name: '',
   description: '',
   prompt: '',
+  trigger_kind: 'cron',
   cron: '0 9 * * *',
+  run_at: '',
   timezone: 'UTC',
   enabled: true,
   continue_current_session: false,
@@ -69,7 +73,7 @@ export function SchedulesPage() {
         <div className="border-b border-slate-200 p-4">
           <div className="flex items-center justify-between gap-2">
             <div>
-              <p className="text-sm font-medium text-blue-600">Cron jobs</p>
+              <p className="text-sm font-medium text-blue-600">Automation</p>
               <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">
                 Schedules
               </h1>
@@ -90,7 +94,7 @@ export function SchedulesPage() {
           (schedules.data?.schedules ?? []).length === 0 ? (
             <EmptyState
               title="No schedules"
-              description="Create a cron job to run agent work on a schedule."
+              description="Create a schedule to run agent work later or on a recurrence."
             />
           ) : null}
           <div className="space-y-2">
@@ -141,16 +145,16 @@ function ScheduleListItem({
             {schedule.name}
           </p>
           <p className="mt-1 truncate mono text-xs text-slate-500">
-            {schedule.cron.expr} · {schedule.cron.timezone}
+            {formatTrigger(schedule)}
           </p>
         </div>
-        <StatusBadge status={schedule.enabled ? 'completed' : 'cancelled'} />
+        <StatusBadge status={schedule.status} />
       </div>
       <p className="mt-2 line-clamp-2 text-xs text-slate-500">
         {schedule.prompt}
       </p>
       <p className="mt-2 text-xs text-slate-400">
-        Next: {formatDate(schedule.cron.next_fire_at)}
+        Next: {formatDate(schedule.trigger.next_fire_at)}
       </p>
     </button>
   )
@@ -169,6 +173,7 @@ function ScheduleEditor({
   const triggerSchedule = useTriggerScheduleMutation()
   const fires = useScheduleFiresQuery(schedule?.id ?? null)
   const form = useForm<ScheduleFormValues>({ defaultValues: blankSchedule })
+  const triggerKind = form.watch('trigger_kind')
 
   useEffect(() => {
     if (schedule) {
@@ -176,8 +181,14 @@ function ScheduleEditor({
         name: schedule.name,
         description: schedule.description ?? '',
         prompt: schedule.prompt,
-        cron: schedule.cron.expr,
-        timezone: schedule.cron.timezone,
+        trigger_kind: schedule.trigger.kind,
+        cron:
+          schedule.trigger.kind === 'cron' ? (schedule.trigger.cron ?? '') : '',
+        run_at:
+          schedule.trigger.kind === 'once'
+            ? toDatetimeLocalValue(schedule.trigger.run_at)
+            : '',
+        timezone: schedule.trigger.timezone,
         enabled: schedule.enabled,
         continue_current_session: schedule.mode.continue_current_session,
         start_from_current_session: schedule.mode.start_from_current_session,
@@ -193,7 +204,12 @@ function ScheduleEditor({
       name: values.name,
       description: values.description || null,
       prompt: values.prompt,
-      cron: values.cron,
+      trigger_kind: values.trigger_kind,
+      cron: values.trigger_kind === 'cron' ? values.cron : null,
+      run_at:
+        values.trigger_kind === 'once'
+          ? datetimeLocalToIso(values.run_at)
+          : null,
       timezone: values.timezone,
       enabled: values.enabled,
       continue_current_session: values.continue_current_session,
@@ -212,7 +228,7 @@ function ScheduleEditor({
     return (
       <EmptyState
         title="Select a schedule"
-        description="Choose a cron job or create a new one."
+        description="Choose a schedule or create a new one."
       />
     )
   }
@@ -222,7 +238,7 @@ function ScheduleEditor({
       <div className="flex items-center justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-blue-600">
-            {creating ? 'New cron job' : 'Cron job'}
+            {creating ? 'New schedule' : 'Schedule'}
           </p>
           <h2 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950">
             {creating ? 'Create schedule' : schedule?.name}
@@ -265,12 +281,30 @@ function ScheduleEditor({
               {...form.register('name', { required: true })}
             />
           </Field>
-          <Field label="Cron">
-            <input
-              className={`${inputClass} mono`}
-              {...form.register('cron', { required: true })}
-            />
+          <Field label="Trigger">
+            <select className={inputClass} {...form.register('trigger_kind')}>
+              <option value="cron">Recurring cron</option>
+              <option value="once">One-time</option>
+            </select>
           </Field>
+          {triggerKind === 'cron' ? (
+            <Field label="Cron">
+              <input
+                className={`${inputClass} mono`}
+                {...form.register('cron', { required: triggerKind === 'cron' })}
+              />
+            </Field>
+          ) : (
+            <Field label="Run at">
+              <input
+                type="datetime-local"
+                className={inputClass}
+                {...form.register('run_at', {
+                  required: triggerKind === 'once',
+                })}
+              />
+            </Field>
+          )}
           <Field label="Timezone">
             <input
               className={inputClass}
@@ -393,6 +427,25 @@ function ScheduleListSkeleton() {
 function formatDate(value?: string | null) {
   if (!value) return 'not scheduled'
   return new Date(value).toLocaleString()
+}
+
+function formatTrigger(schedule: ScheduleSummary) {
+  if (schedule.trigger.kind === 'once') {
+    return `once · ${formatDate(schedule.trigger.run_at)} · ${schedule.trigger.timezone}`
+  }
+  return `${schedule.trigger.cron ?? schedule.cron.expr ?? 'cron'} · ${schedule.trigger.timezone}`
+}
+
+function toDatetimeLocalValue(value?: string | null) {
+  if (!value) return ''
+  const date = new Date(value)
+  const offset = date.getTimezoneOffset() * 60_000
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
+}
+
+function datetimeLocalToIso(value: string) {
+  if (!value) return null
+  return new Date(value).toISOString()
 }
 
 function mapFireStatus(status: string, runStatus?: string | null) {

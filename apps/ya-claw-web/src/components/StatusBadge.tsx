@@ -8,6 +8,9 @@ const statusClass: Record<string, string> = {
   completed: 'border-emerald-200 bg-emerald-50 text-emerald-700',
   failed: 'border-rose-200 bg-rose-50 text-rose-700',
   cancelled: 'border-slate-200 bg-slate-100 text-slate-600',
+  active: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  paused: 'border-slate-200 bg-slate-100 text-slate-600',
+  deleted: 'border-slate-200 bg-slate-100 text-slate-600',
   enabled: 'border-emerald-200 bg-emerald-50 text-emerald-700',
   disabled: 'border-slate-200 bg-slate-100 text-slate-600',
 }

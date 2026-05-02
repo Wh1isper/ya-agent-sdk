@@ -102,17 +102,19 @@ Behavior:
 
 ## Trigger Model
 
-Schedules use cron triggers.
+Schedules support cron and one-time triggers.
 
-| Field          | Meaning                                        |
-| -------------- | ---------------------------------------------- |
-| `cron_expr`    | cron expression used to compute fire times     |
-| `timezone`     | timezone used to interpret the cron expression |
-| `next_fire_at` | absolute timestamp used by dispatcher scans    |
+| Field          | Meaning                                                       |
+| -------------- | ------------------------------------------------------------- |
+| `trigger_kind` | trigger type: `cron` or `once`                                |
+| `cron_expr`    | cron expression used to compute recurring fire times          |
+| `run_at`       | absolute timestamp used by one-time schedules                 |
+| `timezone`     | timezone used to interpret cron expressions and display times |
+| `next_fire_at` | absolute timestamp used by dispatcher scans                   |
 
 Manual fire is an action created through `trigger_schedule` or `/api/v1/schedules/{schedule_id}:trigger`. It records a fire immediately and uses the stored schedule prompt or a prompt override.
 
-The runtime stores `next_fire_at` as an absolute timestamp. Cron and timezone parsing happens in the schedule controller. Dispatcher scans use `next_fire_at` only.
+The runtime stores `next_fire_at` as an absolute timestamp. Cron and one-time parsing happens in the schedule controller. Dispatcher scans use `next_fire_at` only. A one-time schedule moves to `completed` after terminal delivery and preserves its fire history.
 
 ## Schedule Data Model
 
@@ -123,12 +125,14 @@ Suggested fields:
 - `id`
 - `name`
 - `description`
-- `status`: `active | paused | deleted`
+- `status`: `active | paused | completed | deleted`
 - `owner_kind`: `user | agent | api`
 - `owner_session_id`
 - `owner_run_id`
 - `profile_name`
+- `trigger_kind`: `cron | once`
 - `cron_expr`
+- `run_at`
 - `timezone`
 - `next_fire_at`
 - `execution_mode`: `continue_session | fork_session | isolate_session`
@@ -152,7 +156,9 @@ Suggested fields:
 - `fork_session` requires `source_session_id`
 - `isolate_session` creates a fresh session for each fire and leaves target/source session fields empty
 - `on_active` applies to `continue_session`
-- `cron_expr` is required for active schedules
+- `cron` schedules require `cron_expr`
+- `once` schedules require `run_at`
+- `once` schedules complete after a terminal fire status and keep `pending` while queued for an active target session
 - `timezone` defaults to runtime timezone or `UTC`
 - `input_parts_template` uses the same JSON-compatible input part model as run creation
 - schedule-owned metadata must be queryable and safe to return to the console
@@ -405,13 +411,14 @@ Agent mutation scope:
 
 ### Tools
 
-| Tool               | Purpose                                                             |
-| ------------------ | ------------------------------------------------------------------- |
-| `list_schedules`   | list agent-visible schedules, optionally with recent fire summaries |
-| `create_schedule`  | create a schedule owned by the current agent session                |
-| `update_schedule`  | update mutable facade fields, including `enabled`                   |
-| `delete_schedule`  | soft-delete a schedule                                              |
-| `trigger_schedule` | create a manual fire for an owned schedule                          |
+| Tool                   | Purpose                                                             |
+| ---------------------- | ------------------------------------------------------------------- |
+| `list_schedules`       | list agent-visible schedules, optionally with recent fire summaries |
+| `create_schedule`      | create a recurring cron schedule owned by the current agent session |
+| `create_once_schedule` | create a one-time schedule owned by the current agent session       |
+| `update_schedule`      | update mutable facade fields, including `enabled`                   |
+| `delete_schedule`      | soft-delete a schedule                                              |
+| `trigger_schedule`     | create a manual fire for an owned schedule                          |
 
 ### Tool argument shapes
 
@@ -441,11 +448,28 @@ Agent mutation scope:
 }
 ```
 
+`create_once_schedule` suggested arguments:
+
+```json
+{
+  "name": "One-time follow-up",
+  "prompt": "Review current progress and suggest the next concrete action.",
+  "run_at": "2026-05-02T09:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "enabled": true,
+  "continue_current_session": true,
+  "start_from_current_session": false,
+  "steer_when_running": true
+}
+```
+
 `update_schedule` accepts a patch over:
 
 - `name`
 - `prompt`
+- `trigger_kind`
 - `cron`
+- `run_at`
 - `timezone`
 - `enabled`
 - `continue_current_session`

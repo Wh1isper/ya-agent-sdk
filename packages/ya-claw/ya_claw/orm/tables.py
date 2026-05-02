@@ -22,7 +22,8 @@ from ya_claw.orm.base import Base
 _ALLOWED_RUN_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
 _ALLOWED_SESSION_TYPES = ("conversation", "memory")
 _ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", "duplicate", "failed")
-_ALLOWED_SCHEDULE_STATUSES = ("active", "paused", "deleted")
+_ALLOWED_SCHEDULE_STATUSES = ("active", "paused", "completed", "deleted")
+_ALLOWED_SCHEDULE_TRIGGER_KINDS = ("cron", "once")
 _ALLOWED_SCHEDULE_EXECUTION_MODES = ("continue_session", "fork_session", "isolate_session")
 _ALLOWED_SCHEDULE_ACTIVE_POLICIES = ("steer", "queue")
 _ALLOWED_SCHEDULE_FIRE_STATUSES = ("pending", "submitted", "steered", "skipped", "failed")
@@ -155,6 +156,10 @@ class ScheduleRecord(Base):
             name="ck_schedules_status",
         ),
         CheckConstraint(
+            f"trigger_kind IN {_ALLOWED_SCHEDULE_TRIGGER_KINDS!s}",
+            name="ck_schedules_trigger_kind",
+        ),
+        CheckConstraint(
             f"execution_mode IN {_ALLOWED_SCHEDULE_EXECUTION_MODES!s}",
             name="ck_schedules_execution_mode",
         ),
@@ -163,6 +168,7 @@ class ScheduleRecord(Base):
             name="ck_schedules_on_active",
         ),
         Index("ix_schedules_due", "status", "next_fire_at"),
+        Index("ix_schedules_trigger_kind", "trigger_kind"),
         Index("ix_schedules_owner_session", "owner_session_id"),
         Index("ix_schedules_target_session", "target_session_id"),
         Index("ix_schedules_source_session", "source_session_id"),
@@ -176,7 +182,9 @@ class ScheduleRecord(Base):
     owner_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     owner_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     profile_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    cron_expr: Mapped[str] = mapped_column(String(255), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(32), default="cron")
+    cron_expr: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
     next_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     execution_mode: Mapped[str] = mapped_column(String(32), default="isolate_session")

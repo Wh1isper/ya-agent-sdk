@@ -26,7 +26,8 @@ from ya_claw.execution.dispatcher import RunDispatcher
 from ya_claw.orm.tables import RunRecord, ScheduleFireRecord, ScheduleRecord, SessionRecord, utc_now
 from ya_claw.runtime_state import InMemoryRuntimeState
 
-ScheduleStatus = Literal["active", "paused", "deleted"]
+ScheduleStatus = Literal["active", "paused", "completed", "deleted"]
+ScheduleTriggerKind = Literal["cron", "once"]
 ScheduleExecutionMode = Literal["continue_session", "fork_session", "isolate_session"]
 ScheduleActivePolicy = Literal["steer", "queue"]
 ScheduleFireStatus = Literal["pending", "submitted", "steered", "skipped", "failed"]
@@ -37,7 +38,9 @@ class ScheduleCreateRequest(BaseModel):
     name: str
     description: str | None = None
     prompt: str
-    cron: str
+    trigger_kind: ScheduleTriggerKind | None = None
+    cron: str | None = None
+    run_at: datetime | None = None
     timezone: str = "UTC"
     enabled: bool = True
     continue_current_session: bool = False
@@ -50,13 +53,17 @@ class ScheduleCreateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_prompt_and_cron(self) -> ScheduleCreateRequest:
+    def validate_prompt_and_trigger(self) -> ScheduleCreateRequest:
         if self.name.strip() == "":
             raise ValueError("name is required")
         if self.prompt.strip() == "":
             raise ValueError("prompt is required")
-        if self.cron.strip() == "":
-            raise ValueError("cron is required")
+        trigger_kind = infer_trigger_kind(self.trigger_kind, self.cron, self.run_at)
+        if trigger_kind == "cron" and (not isinstance(self.cron, str) or self.cron.strip() == ""):
+            raise ValueError("cron is required for cron schedules")
+        if trigger_kind == "once" and self.run_at is None:
+            raise ValueError("run_at is required for one-time schedules")
+        self.trigger_kind = trigger_kind
         return self
 
 
@@ -64,7 +71,9 @@ class ScheduleUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     prompt: str | None = None
+    trigger_kind: ScheduleTriggerKind | None = None
     cron: str | None = None
+    run_at: datetime | None = None
     timezone: str | None = None
     enabled: bool | None = None
     continue_current_session: bool | None = None
@@ -102,6 +111,7 @@ class ScheduleSummary(BaseModel):
     enabled: bool
     status: ScheduleStatus
     prompt: str
+    trigger: dict[str, Any]
     cron: dict[str, Any]
     mode: dict[str, bool]
     execution_mode: ScheduleExecutionMode
@@ -175,7 +185,8 @@ class ScheduleController:
             session_id = target_session_id if execution_mode == "continue_session" else source_session_id
             await self._require_session(db_session, session_id)
 
-        next_fire_at = compute_next_fire_at(request.cron, request.timezone, now=now)
+        trigger_kind = infer_trigger_kind(request.trigger_kind, request.cron, request.run_at)
+        timezone = normalize_timezone(request.timezone)
         record = ScheduleRecord(
             id=uuid4().hex,
             name=request.name.strip(),
@@ -185,9 +196,11 @@ class ScheduleController:
             owner_session_id=request.owner_session_id,
             owner_run_id=request.owner_run_id,
             profile_name=_clean_optional(request.profile_name),
-            cron_expr=request.cron.strip(),
-            timezone=normalize_timezone(request.timezone),
-            next_fire_at=next_fire_at if request.enabled else None,
+            trigger_kind=trigger_kind,
+            cron_expr=_clean_optional(request.cron) if trigger_kind == "cron" else None,
+            run_at=_as_utc_aware(request.run_at) if trigger_kind == "once" and request.run_at is not None else None,
+            timezone=timezone,
+            next_fire_at=None,
             execution_mode=execution_mode,
             target_session_id=target_session_id,
             source_session_id=source_session_id,
@@ -195,6 +208,8 @@ class ScheduleController:
             input_parts_template=[TextPart(type="text", text=request.prompt).model_dump(mode="json")],
             schedule_metadata=dict(request.metadata),
         )
+        if request.enabled:
+            record.next_fire_at = compute_schedule_next_fire_at(record, now=now)
         db_session.add(record)
         await db_session.commit()
         await db_session.refresh(record)
@@ -218,10 +233,22 @@ class ScheduleController:
             if request.prompt.strip() == "":
                 raise HTTPException(status_code=422, detail="prompt is required.")
             record.input_parts_template = [TextPart(type="text", text=request.prompt).model_dump(mode="json")]
+        if request.trigger_kind is not None:
+            record.trigger_kind = request.trigger_kind
+            if record.trigger_kind == "cron":
+                record.run_at = None
+            else:
+                record.cron_expr = None
         if isinstance(request.cron, str):
             if request.cron.strip() == "":
                 raise HTTPException(status_code=422, detail="cron is required.")
             record.cron_expr = request.cron.strip()
+            if request.trigger_kind is None and request.run_at is None:
+                record.trigger_kind = "cron"
+        if request.run_at is not None:
+            record.run_at = _as_utc_aware(request.run_at)
+            if request.trigger_kind is None and request.cron is None:
+                record.trigger_kind = "once"
         if isinstance(request.timezone, str):
             record.timezone = normalize_timezone(request.timezone)
         if request.metadata is not None:
@@ -249,10 +276,13 @@ class ScheduleController:
             record.target_session_id = target_session_id
             record.source_session_id = source_session_id
             record.on_active = on_active
+        validate_schedule_trigger(record)
         if request.enabled is not None:
             record.status = "active" if request.enabled else "paused"
+        elif record.status == "completed" and record.trigger_kind == "once":
+            record.status = "active"
         if record.status == "active":
-            record.next_fire_at = compute_next_fire_at(record.cron_expr, record.timezone, now=utc_now())
+            record.next_fire_at = compute_schedule_next_fire_at(record, now=utc_now())
         else:
             record.next_fire_at = None
         record.updated_at = utc_now()
@@ -345,7 +375,7 @@ class ScheduleController:
             scheduled_at = next_fire_at
             fire_record = await self._create_fire(db_session, record, scheduled_at=scheduled_at, manual=False)
             await self.dispatch_fire(db_session, settings, runtime_state, dispatcher, record, fire_record)
-            record.next_fire_at = compute_next_fire_at(record.cron_expr, record.timezone, now=effective_now)
+            self._advance_schedule_after_fire(record, fire_record, now=effective_now)
             record.updated_at = utc_now()
             fired.append(fire_summary_from_record(fire_record))
         await db_session.commit()
@@ -379,6 +409,10 @@ class ScheduleController:
                 fire_record.error_message = "Schedule is no longer available."
                 continue
             await self.dispatch_fire(db_session, settings, runtime_state, dispatcher, record, fire_record)
+            if record.trigger_kind == "once" and fire_record.status != "pending":
+                record.status = "completed"
+                record.next_fire_at = None
+                record.updated_at = utc_now()
             fired.append(fire_summary_from_record(fire_record))
         await db_session.commit()
         return fired
@@ -580,6 +614,22 @@ class ScheduleController:
             raise
         return fire_record
 
+    def _advance_schedule_after_fire(
+        self,
+        record: ScheduleRecord,
+        fire_record: ScheduleFireRecord,
+        *,
+        now: datetime,
+    ) -> None:
+        if record.trigger_kind == "cron":
+            record.next_fire_at = compute_schedule_next_fire_at(record, now=now)
+            return
+        if record.trigger_kind == "once" and fire_record.status == "pending":
+            record.next_fire_at = _as_utc_aware(fire_record.scheduled_at)
+            return
+        record.status = "completed"
+        record.next_fire_at = None
+
     async def _summary_from_record(
         self,
         db_session: AsyncSession,
@@ -600,6 +650,7 @@ class ScheduleController:
             last_fire = fire_summary_from_record(fire_record) if isinstance(fire_record, ScheduleFireRecord) else None
         prompt = _prompt_from_input_parts(record.input_parts_template)
         continue_current_session, start_from_current_session, steer_when_running = _facade_flags_from_record(record)
+        trigger = trigger_summary_from_record(record)
         return ScheduleSummary(
             id=record.id,
             name=record.name,
@@ -607,6 +658,7 @@ class ScheduleController:
             enabled=record.status == "active",
             status=cast(ScheduleStatus, record.status),
             prompt=prompt,
+            trigger=trigger,
             cron={"expr": record.cron_expr, "timezone": record.timezone, "next_fire_at": record.next_fire_at},
             mode={
                 "continue_current_session": continue_current_session,
@@ -671,6 +723,57 @@ def fire_summary_from_record(
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
+
+
+def infer_trigger_kind(
+    trigger_kind: ScheduleTriggerKind | None,
+    cron_expr: str | None,
+    run_at: datetime | None,
+) -> ScheduleTriggerKind:
+    if trigger_kind is not None:
+        return trigger_kind
+    if run_at is not None and (cron_expr is None or cron_expr.strip() == ""):
+        return "once"
+    return "cron"
+
+
+def validate_schedule_trigger(record: ScheduleRecord) -> None:
+    if record.trigger_kind == "cron":
+        if not isinstance(record.cron_expr, str) or record.cron_expr.strip() == "":
+            raise HTTPException(status_code=422, detail="cron is required for cron schedules.")
+        return
+    if record.trigger_kind == "once":
+        if record.run_at is None:
+            raise HTTPException(status_code=422, detail="run_at is required for one-time schedules.")
+        return
+    raise HTTPException(status_code=422, detail=f"Unknown schedule trigger kind '{record.trigger_kind}'.")
+
+
+def compute_schedule_next_fire_at(record: ScheduleRecord, *, now: datetime | None = None) -> datetime:
+    validate_schedule_trigger(record)
+    if record.trigger_kind == "cron":
+        if not isinstance(record.cron_expr, str):
+            raise HTTPException(status_code=422, detail="cron is required for cron schedules.")
+        return compute_next_fire_at(record.cron_expr, record.timezone, now=now)
+    if record.run_at is None:
+        raise HTTPException(status_code=422, detail="run_at is required for one-time schedules.")
+    return _as_utc_aware(record.run_at)
+
+
+def trigger_summary_from_record(record: ScheduleRecord) -> dict[str, Any]:
+    if record.trigger_kind == "once":
+        return {
+            "kind": "once",
+            "run_at": record.run_at,
+            "timezone": record.timezone,
+            "next_fire_at": record.next_fire_at,
+        }
+    return {
+        "kind": "cron",
+        "cron": record.cron_expr,
+        "timezone": record.timezone,
+        "next_fire_at": record.next_fire_at,
+    }
 
 
 def compute_next_fire_at(cron_expr: str, timezone: str, *, now: datetime | None = None) -> datetime:

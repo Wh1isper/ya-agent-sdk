@@ -62,15 +62,30 @@ export type ScheduleFireSummary = {
   updated_at: string
 }
 
+export type ScheduleTriggerSummary =
+  | {
+      kind: 'cron'
+      cron?: string | null
+      timezone: string
+      next_fire_at?: string | null
+    }
+  | {
+      kind: 'once'
+      run_at?: string | null
+      timezone: string
+      next_fire_at?: string | null
+    }
+
 export type ScheduleSummary = {
   id: string
   name: string
   description?: string | null
   enabled: boolean
-  status: 'active' | 'paused' | 'deleted'
+  status: 'active' | 'paused' | 'completed' | 'deleted'
   prompt: string
+  trigger: ScheduleTriggerSummary
   cron: {
-    expr: string
+    expr?: string | null
     timezone: string
     next_fire_at?: string | null
   }
@@ -106,7 +121,9 @@ export type ScheduleCreateRequest = {
   name: string
   description?: string | null
   prompt: string
-  cron: string
+  trigger_kind?: 'cron' | 'once'
+  cron?: string | null
+  run_at?: string | null
   timezone: string
   enabled: boolean
   continue_current_session: boolean
@@ -123,7 +140,9 @@ export type ScheduleUpdateRequest = Partial<{
   name: string
   description: string | null
   prompt: string
-  cron: string
+  trigger_kind: 'cron' | 'once'
+  cron: string | null
+  run_at: string | null
   timezone: string
   enabled: boolean
   continue_current_session: boolean

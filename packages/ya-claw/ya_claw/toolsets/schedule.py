@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Protocol, runtime_checkable
 
 from pydantic import Field
@@ -37,7 +38,7 @@ class ScheduleClient(SelfSessionClient, Protocol):
 
 class ListSchedulesTool(BaseTool):
     name = "list_schedules"
-    description = "List cron schedules owned by or related to the current YA Claw session."
+    description = "List schedules owned by or related to the current YA Claw session."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_schedule_client(ctx) is not None
@@ -45,7 +46,9 @@ class ListSchedulesTool(BaseTool):
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         if _get_schedule_client(ctx) is None:
             return None
-        return "List schedules you own in the current YA Claw session. Use this before creating duplicate cron jobs."
+        return (
+            "List schedules you own in the current YA Claw session. Use this before creating duplicate scheduled jobs."
+        )
 
     async def call(
         self,
@@ -72,7 +75,7 @@ class ListSchedulesTool(BaseTool):
 
 class CreateScheduleTool(BaseTool):
     name = "create_schedule"
-    description = "Create a cron schedule owned by the current YA Claw session."
+    description = "Create a recurring cron schedule owned by the current YA Claw session."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_schedule_client(ctx) is not None
@@ -81,7 +84,7 @@ class CreateScheduleTool(BaseTool):
         if _get_schedule_client(ctx) is None:
             return None
         return (
-            "Create cron schedules with a plain text prompt. "
+            "Create recurring cron schedules with a plain text prompt. "
             "The schedule inherits the current profile. "
             "Use continue_current_session for timed messages in this conversation, "
             "start_from_current_session for recurring branches, and enabled=false to create a paused schedule."
@@ -115,7 +118,70 @@ class CreateScheduleTool(BaseTool):
                 "name": name,
                 "description": description,
                 "prompt": prompt,
+                "trigger_kind": "cron",
                 "cron": cron,
+                "timezone": timezone,
+                "enabled": enabled,
+                "continue_current_session": continue_current_session,
+                "start_from_current_session": start_from_current_session,
+                "steer_when_running": steer_when_running,
+                "owner_kind": "agent",
+                "owner_session_id": client.session_id,
+                "owner_run_id": client.run_id,
+                "profile_name": client.profile_name,
+            }
+            return _dump_json(await client.create_schedule(payload))
+        except Exception as exc:
+            return f"Error: {exc}"
+
+
+class CreateOnceScheduleTool(BaseTool):
+    name = "create_once_schedule"
+    description = "Create a one-time schedule owned by the current YA Claw session."
+
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        return _get_schedule_client(ctx) is not None
+
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        if _get_schedule_client(ctx) is None:
+            return None
+        return (
+            "Create one-time schedules with a plain text prompt and an absolute run_at datetime. "
+            "The schedule inherits the current profile. "
+            "Use continue_current_session for timed messages in this conversation, "
+            "start_from_current_session for one-time branches, and enabled=false to create a paused schedule."
+        )
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        name: Annotated[str, Field(description="Schedule name")],
+        prompt: Annotated[str, Field(description="Plain text prompt to run once")],
+        run_at: Annotated[datetime, Field(description="Absolute datetime to run at, with timezone if possible")],
+        timezone: Annotated[str, Field(description="IANA timezone for display, e.g. UTC or Asia/Shanghai")] = "UTC",
+        enabled: Annotated[bool, Field(description="Whether the schedule is active")] = True,
+        continue_current_session: Annotated[
+            bool, Field(description="Continue the current session when the one-time schedule fires")
+        ] = False,
+        start_from_current_session: Annotated[
+            bool,
+            Field(description="Create a new session from current session's latest committed state when it fires"),
+        ] = False,
+        steer_when_running: Annotated[
+            bool, Field(description="Steer the active run when current session is running")
+        ] = False,
+        description: Annotated[str | None, Field(description="Optional schedule description")] = None,
+    ) -> str:
+        client = _get_schedule_client(ctx)
+        if client is None:
+            return "Error: YA Claw schedule client is unavailable."
+        try:
+            payload = {
+                "name": name,
+                "description": description,
+                "prompt": prompt,
+                "trigger_kind": "once",
+                "run_at": run_at.isoformat(),
                 "timezone": timezone,
                 "enabled": enabled,
                 "continue_current_session": continue_current_session,
@@ -133,7 +199,7 @@ class CreateScheduleTool(BaseTool):
 
 class UpdateScheduleTool(BaseTool):
     name = "update_schedule"
-    description = "Update a cron schedule owned by the current YA Claw session."
+    description = "Update a schedule owned by the current YA Claw session."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_schedule_client(ctx) is not None
@@ -144,7 +210,9 @@ class UpdateScheduleTool(BaseTool):
         schedule_id: Annotated[str, Field(description="Schedule ID")],
         name: Annotated[str | None, Field(description="Updated schedule name")] = None,
         prompt: Annotated[str | None, Field(description="Updated plain text prompt")] = None,
+        trigger_kind: Annotated[str | None, Field(description="Updated trigger kind: cron or once")] = None,
         cron: Annotated[str | None, Field(description="Updated five-field cron expression")] = None,
+        run_at: Annotated[datetime | None, Field(description="Updated one-time run datetime")] = None,
         timezone: Annotated[str | None, Field(description="Updated IANA timezone")] = None,
         enabled: Annotated[bool | None, Field(description="Set active or paused state")] = None,
         continue_current_session: Annotated[
@@ -161,7 +229,9 @@ class UpdateScheduleTool(BaseTool):
             "name": name,
             "description": description,
             "prompt": prompt,
+            "trigger_kind": trigger_kind,
             "cron": cron,
+            "run_at": run_at.isoformat() if run_at is not None else None,
             "timezone": timezone,
             "enabled": enabled,
             "continue_current_session": continue_current_session,
@@ -176,7 +246,7 @@ class UpdateScheduleTool(BaseTool):
 
 class DeleteScheduleTool(BaseTool):
     name = "delete_schedule"
-    description = "Delete a cron schedule owned by the current YA Claw session."
+    description = "Delete a schedule owned by the current YA Claw session."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_schedule_client(ctx) is not None
@@ -195,7 +265,7 @@ class DeleteScheduleTool(BaseTool):
 
 class TriggerScheduleTool(BaseTool):
     name = "trigger_schedule"
-    description = "Manually trigger a cron schedule owned by the current YA Claw session."
+    description = "Manually trigger a schedule owned by the current YA Claw session."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_schedule_client(ctx) is not None

@@ -273,6 +273,146 @@ async def test_schedule_fire_stays_pending_when_dispatch_skips(
     assert supervisor.submitted_run_ids == []
 
 
+async def test_once_schedule_create_sets_next_fire_at_to_run_at(
+    db_session: AsyncSession,
+) -> None:
+    controller = ScheduleController()
+    run_at = datetime(2026, 4, 26, 6, 30, tzinfo=UTC)
+
+    schedule = await controller.create(
+        db_session,
+        ScheduleCreateRequest(
+            name="One-time reminder",
+            prompt="Run once.",
+            trigger_kind="once",
+            run_at=run_at,
+            timezone="UTC",
+            profile_name="default",
+        ),
+    )
+
+    assert schedule.status == "active"
+    assert schedule.trigger["kind"] == "once"
+    assert schedule.trigger["run_at"] == run_at.replace(tzinfo=None)
+    assert schedule.trigger["next_fire_at"] == run_at.replace(tzinfo=None)
+    assert schedule.cron["expr"] is None
+    record = await db_session.get(ScheduleRecord, schedule.id)
+    assert isinstance(record, ScheduleRecord)
+    assert record.trigger_kind == "once"
+    assert record.run_at == run_at.replace(tzinfo=None)
+    assert record.cron_expr is None
+    assert record.next_fire_at == run_at.replace(tzinfo=None)
+
+
+async def test_once_schedule_dispatch_submits_run_and_completes_schedule(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    controller = ScheduleController()
+    runtime_state = InMemoryRuntimeState()
+    supervisor = RecordingSupervisor()
+    dispatcher = RunDispatcher(supervisor)  # type: ignore[arg-type]
+    run_at = datetime(2026, 4, 26, 6, 30, tzinfo=UTC)
+
+    schedule = await controller.create(
+        db_session,
+        ScheduleCreateRequest(
+            name="One-time report",
+            prompt="Run one-time report.",
+            trigger_kind="once",
+            run_at=run_at,
+            timezone="UTC",
+            profile_name="default",
+        ),
+    )
+
+    fired = await controller.dispatch_due(
+        db_session,
+        settings,
+        runtime_state,
+        dispatcher,
+        now=run_at + timedelta(seconds=1),
+    )
+
+    assert len(fired) == 1
+    fire = fired[0]
+    assert fire.status == "submitted"
+    assert fire.run_id in supervisor.submitted_run_ids
+    record = await db_session.get(ScheduleRecord, schedule.id)
+    assert isinstance(record, ScheduleRecord)
+    assert record.status == "completed"
+    assert record.next_fire_at is None
+    assert record.fire_count == 1
+    run = await db_session.get(RunRecord, fire.run_id)
+    assert isinstance(run, RunRecord)
+    assert run.trigger_type == "schedule"
+    assert run.run_metadata["execution_mode"] == "isolate_session"
+
+
+async def test_once_schedule_pending_queue_stays_active_until_delivered(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    controller = ScheduleController()
+    runtime_state = InMemoryRuntimeState()
+    supervisor = RecordingSupervisor(accepting_submissions=False)
+    dispatcher = RunDispatcher(supervisor)  # type: ignore[arg-type]
+    run_at = datetime(2026, 4, 26, 6, 30, tzinfo=UTC)
+
+    schedule = await controller.create(
+        db_session,
+        ScheduleCreateRequest(
+            name="One-time queued report",
+            prompt="Run one-time report.",
+            trigger_kind="once",
+            run_at=run_at,
+            timezone="UTC",
+            profile_name="default",
+        ),
+    )
+
+    fired = await controller.dispatch_due(
+        db_session,
+        settings,
+        runtime_state,
+        dispatcher,
+        now=run_at + timedelta(seconds=1),
+    )
+
+    assert len(fired) == 1
+    assert fired[0].status == "pending"
+    record = await db_session.get(ScheduleRecord, schedule.id)
+    assert isinstance(record, ScheduleRecord)
+    assert record.status == "active"
+    assert record.next_fire_at == run_at.replace(tzinfo=None)
+
+    supervisor.accepting_submissions = True
+    fired = await controller.dispatch_pending(
+        db_session,
+        settings,
+        runtime_state,
+        dispatcher,
+        now=run_at + timedelta(seconds=2),
+    )
+
+    assert len(fired) == 1
+    assert fired[0].status == "submitted"
+    record = await db_session.get(ScheduleRecord, schedule.id)
+    assert isinstance(record, ScheduleRecord)
+    assert record.status == "completed"
+    assert record.next_fire_at is None
+
+
+def test_once_schedule_requires_run_at() -> None:
+    with pytest.raises(ValueError, match="run_at is required"):
+        ScheduleCreateRequest(
+            name="One-time missing run_at",
+            prompt="Run once.",
+            trigger_kind="once",
+            timezone="UTC",
+        )
+
+
 async def test_heartbeat_dispatch_due_handles_sqlite_naive_datetimes(
     db_session: AsyncSession,
     settings: ClawSettings,
@@ -533,7 +673,26 @@ def test_timer_api_routes_expose_config_create_trigger_and_fire_history() -> Non
         )
         assert create_schedule.status_code == 201
         schedule_id = create_schedule.json()["id"]
+        assert create_schedule.json()["trigger"]["kind"] == "cron"
         assert create_schedule.json()["cron"]["next_fire_at"] is not None
+
+        create_once_schedule = client.post(
+            "/api/v1/schedules",
+            headers=_auth_headers(),
+            json={
+                "name": "API one-time smoke test",
+                "prompt": "Report API one-time status.",
+                "trigger_kind": "once",
+                "run_at": "2026-04-26T06:30:00Z",
+                "timezone": "UTC",
+                "enabled": True,
+                "owner_kind": "user",
+            },
+        )
+        assert create_once_schedule.status_code == 201
+        assert create_once_schedule.json()["trigger"]["kind"] == "once"
+        assert create_once_schedule.json()["trigger"]["run_at"] == "2026-04-26T06:30:00"
+        assert create_once_schedule.json()["cron"]["expr"] is None
 
         manual_fire = client.post(
             f"/api/v1/schedules/{schedule_id}:trigger",
