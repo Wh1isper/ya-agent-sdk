@@ -30,6 +30,9 @@ class BridgeInboundMessage(BaseModel):
     tenant_key: str = "default"
     event_id: str
     message_id: str
+    root_id: str | None = None
+    parent_id: str | None = None
+    thread_id: str | None = None
     chat_id: str
     event_type: str = "im.message.receive_v1"
     sender_id: str | None = None

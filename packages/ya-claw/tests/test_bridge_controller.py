@@ -46,6 +46,9 @@ async def test_bridge_controller_maps_chat_to_session_and_dedupes(db_session: As
         tenant_key="tenant-1",
         event_id="event-1",
         message_id="om_1",
+        root_id="om_root",
+        parent_id="om_parent",
+        thread_id="omt_1",
         chat_id="oc_1",
         sender_id="ou_1",
         content_text="hello",
@@ -84,9 +87,15 @@ async def test_bridge_controller_maps_chat_to_session_and_dedupes(db_session: As
     assert event_record.conversation_id == conversation.id
     assert event_record.session_id == result.session_id
     assert event_record.run_id == result.run_id
+    assert event_record.normalized_event["root_id"] == "om_root"
+    assert event_record.normalized_event["parent_id"] == "om_parent"
+    assert event_record.normalized_event["thread_id"] == "omt_1"
     assert result.run_id is not None
     run_record = await db_session.get(RunRecord, result.run_id)
     assert isinstance(run_record, RunRecord)
+    assert run_record.run_metadata["bridge"]["root_id"] == "om_root"
+    assert run_record.run_metadata["bridge"]["parent_id"] == "om_parent"
+    assert run_record.run_metadata["bridge"]["thread_id"] == "omt_1"
     assert len(run_record.input_parts) == 1
     prompt = run_record.input_parts[0]["text"]
     assert prompt.startswith("<lark_bridge_event>")
@@ -94,12 +103,20 @@ async def test_bridge_controller_maps_chat_to_session_and_dedupes(db_session: As
     assert "<tenant_key>tenant-1</tenant_key>" in prompt
     assert "<chat_id>oc_1</chat_id>" in prompt
     assert "<message_id>om_1</message_id>" in prompt
+    assert "<root_id>om_root</root_id>" in prompt
+    assert "<parent_id>om_parent</parent_id>" in prompt
+    assert "<thread_id>omt_1</thread_id>" in prompt
     assert "<sender_id>ou_1</sender_id>" in prompt
     assert "<message>" in prompt
     assert "<content>hello</content>" in prompt
     assert "<output>" in prompt
+    assert prompt.count("<message_id>om_1</message_id>") == 2
+    assert prompt.count("<root_id>om_root</root_id>") == 2
+    assert prompt.count("<parent_id>om_parent</parent_id>") == 2
+    assert prompt.count("<thread_id>omt_1</thread_id>") == 2
     assert "<idempotency_key>bridge-lark-event-1</idempotency_key>" in prompt
     assert "<recommended_command>" in prompt
+    assert "--reply-in-thread" in prompt
     assert "&lt;reply&gt;" in prompt
 
     duplicate = await controller.handle_inbound_message(
@@ -123,6 +140,9 @@ async def test_bridge_controller_escapes_xml_prompt_values(db_session: AsyncSess
         tenant_key="tenant<&1",
         event_id="event'1",
         message_id='om_"1',
+        root_id="om_<root>",
+        parent_id="om_&parent",
+        thread_id="omt_'1",
         chat_id="oc_1",
         sender_id="ou_1",
         content_text="hello <world> & friends",
@@ -132,6 +152,9 @@ async def test_bridge_controller_escapes_xml_prompt_values(db_session: AsyncSess
 
     assert "<tenant_key>tenant&lt;&amp;1</tenant_key>" in prompt
     assert "<message_id>om_&quot;1</message_id>" in prompt
+    assert "<root_id>om_&lt;root&gt;</root_id>" in prompt
+    assert "<parent_id>om_&amp;parent</parent_id>" in prompt
+    assert "<thread_id>omt_&apos;1</thread_id>" in prompt
     assert "<event_id>event&apos;1</event_id>" in prompt
     assert "<content>hello &lt;world&gt; &amp; friends</content>" in prompt
     assert "&lt;reply&gt;" in prompt

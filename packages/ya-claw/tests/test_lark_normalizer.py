@@ -14,6 +14,9 @@ def test_normalize_lark_message_receive_event() -> None:
             "sender": {"sender_id": {"open_id": "ou_1"}, "sender_type": "user"},
             "message": {
                 "message_id": "om_1",
+                "root_id": "om_root",
+                "parent_id": "om_parent",
+                "thread_id": "omt_1",
                 "chat_id": "oc_1",
                 "chat_type": "group",
                 "message_type": "text",
@@ -25,6 +28,9 @@ def test_normalize_lark_message_receive_event() -> None:
     assert message is not None
     assert message.event_id == "event-1"
     assert message.message_id == "om_1"
+    assert message.root_id == "om_root"
+    assert message.parent_id == "om_parent"
+    assert message.thread_id == "omt_1"
     assert message.chat_id == "oc_1"
     assert message.content_text == "hello"
 

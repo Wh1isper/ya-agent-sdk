@@ -232,6 +232,9 @@ class BridgeController:
             "tenant_key": message.tenant_key,
             "event_id": message.event_id,
             "message_id": message.message_id,
+            "root_id": message.root_id,
+            "parent_id": message.parent_id,
+            "thread_id": message.thread_id,
             "chat_id": message.chat_id,
             "sender_id": message.sender_id,
             "sender_type": message.sender_type,
@@ -243,12 +246,14 @@ class BridgeController:
     def _build_agent_prompt(self, message: BridgeInboundMessage) -> str:
         content = _xml_text(message.content_text)
         idempotency_key = f"bridge-{message.adapter}-{message.event_id}"
+        reply_in_thread_flag = " --reply-in-thread" if message.thread_id is not None else ""
         command = (
             "lark-cli im +messages-reply "
             f"--message-id {message.message_id} "
             "--as bot "
             "--text '<reply>' "
             f"--idempotency-key {idempotency_key}"
+            f"{reply_in_thread_flag}"
         )
         return "\n".join([
             "<lark_bridge_event>",
@@ -261,6 +266,9 @@ class BridgeController:
             f"    <tenant_key>{_xml_text(message.tenant_key)}</tenant_key>",
             f"    <chat_id>{_xml_text(message.chat_id)}</chat_id>",
             f"    <message_id>{_xml_text(message.message_id)}</message_id>",
+            f"    <root_id>{_xml_text(message.root_id)}</root_id>",
+            f"    <parent_id>{_xml_text(message.parent_id)}</parent_id>",
+            f"    <thread_id>{_xml_text(message.thread_id)}</thread_id>",
             f"    <sender_id>{_xml_text(message.sender_id)}</sender_id>",
             f"    <sender_type>{_xml_text(message.sender_type)}</sender_type>",
             f"    <chat_type>{_xml_text(message.chat_type)}</chat_type>",
@@ -275,6 +283,9 @@ class BridgeController:
             "  <output>",
             "    <instruction>Reply to the source message with lark-cli after completing the requested work.</instruction>",
             f"    <message_id>{_xml_text(message.message_id)}</message_id>",
+            f"    <root_id>{_xml_text(message.root_id)}</root_id>",
+            f"    <parent_id>{_xml_text(message.parent_id)}</parent_id>",
+            f"    <thread_id>{_xml_text(message.thread_id)}</thread_id>",
             f"    <idempotency_key>{_xml_text(idempotency_key)}</idempotency_key>",
             f"    <recommended_command>{_xml_text(command)}</recommended_command>",
             "  </output>",
