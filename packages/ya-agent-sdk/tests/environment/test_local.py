@@ -505,6 +505,36 @@ async def test_shell_uses_bash_by_default_on_posix() -> None:
         assert shell._shell_executable is None
 
 
+async def test_shell_get_context_instructions_with_custom_shell() -> None:
+    """Should describe custom shell executable by basename."""
+    shell = LocalShell(
+        default_cwd=Path("/workspace"),
+        allowed_paths=[Path("/workspace")],
+        default_timeout=30.0,
+        shell_executable="/bin/zsh",
+    )
+    shell._platform_name = "linux"
+    instructions = await shell.get_context_instructions()
+
+    assert instructions is not None
+    assert "<shell-type>zsh</shell-type>" in instructions
+    assert "<shell-executable>/bin/zsh</shell-executable>" in instructions
+
+
+async def test_environment_get_context_instructions_with_custom_shell(tmp_path: Path) -> None:
+    """Should pass custom shell executable through LocalEnvironment context."""
+    async with LocalEnvironment(
+        default_path=tmp_path,
+        allowed_paths=[tmp_path],
+        shell_executable="/bin/zsh",
+    ) as env:
+        instructions = await env.shell.get_context_instructions()
+
+    assert instructions is not None
+    assert "<shell-type>zsh</shell-type>" in instructions
+    assert "<shell-executable>/bin/zsh</shell-executable>" in instructions
+
+
 async def test_shell_get_context_instructions() -> None:
     """Should return context instructions in XML format."""
     shell = LocalShell(

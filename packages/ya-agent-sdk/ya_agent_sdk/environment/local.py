@@ -69,6 +69,17 @@ def _resolve_shell_executable(shell_executable: str | None) -> str | None:
     return shell_executable
 
 
+def _shell_type_from_executable(shell_executable: str | None) -> str:
+    """Return a shell type label for context instructions."""
+    if shell_executable is None:
+        return "platform-default"
+
+    shell_name = Path(shell_executable).name
+    if shell_name.endswith(".exe"):
+        shell_name = shell_name[:-4]
+    return shell_name or "custom"
+
+
 def _send_process_tree_signal(process: asyncio.subprocess.Process, sig: int) -> None:
     """Send a signal to the whole process tree when process groups are available."""
     if process.pid is None:
@@ -1006,11 +1017,7 @@ class LocalShell(Shell):
         return env
 
     def _shell_environment_instruction(self) -> str:
-        shell_type = (
-            "bash"
-            if self._shell_executable is not None and Path(self._shell_executable).name == "bash"
-            else "platform-default"
-        )
+        shell_type = _shell_type_from_executable(self._shell_executable)
         parts = [
             "  <shell-environment>",
             f"    <platform>{self._platform_name}</platform>",

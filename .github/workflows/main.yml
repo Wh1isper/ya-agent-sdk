@@ -91,7 +91,7 @@ jobs:
           packages/ya-agent-sdk/tests
           packages/yaacli/tests
           packages/ya-claw/tests
-          -n auto -vv --inline-snapshot=disable
+          -n 4 -vv --inline-snapshot=disable
           ${{ matrix.coverage && '--cov --cov-config=pyproject.toml --cov-report term-missing' || '' }}
 
       - name: Check typing
