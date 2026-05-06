@@ -43,13 +43,32 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
-        extras: ["all"]
         include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+            extras: "all"
+            coverage: false
+            type_check: false
+          - os: ubuntu-latest
+            python-version: "3.12"
+            extras: "all"
+            coverage: false
+            type_check: false
+          - os: ubuntu-latest
+            python-version: "3.13"
+            extras: "all"
+            coverage: true
+            type_check: true
           - os: ubuntu-latest
             python-version: "3.13"
             extras: ""
+            coverage: false
+            type_check: false
+          - os: macos-latest
+            python-version: "3.13"
+            extras: "all"
+            coverage: false
+            type_check: false
       fail-fast: false
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -72,9 +91,11 @@ jobs:
           packages/ya-agent-sdk/tests
           packages/yaacli/tests
           packages/ya-claw/tests
-          -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
+          -n auto -vv --inline-snapshot=disable
+          ${{ matrix.coverage && '--cov --cov-config=pyproject.toml --cov-report term-missing' || '' }}
 
       - name: Check typing
+        if: ${{ matrix.type_check }}
         run: uv run python -m pyright
 
       - name: Upload coverage reports to Codecov
@@ -82,4 +103,4 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: wh1isper/ya-mono
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && matrix.extras == 'all' }}
+        if: ${{ matrix.coverage }}
