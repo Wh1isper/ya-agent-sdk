@@ -41,6 +41,7 @@ dependencies = [
     "click>=8.0",
     "fastapi>=0.116.0",
     "aiosqlite>=0.21.0",
+    "greenlet>=3.0.0",
     "lark-oapi>=1.5.5",
     "loguru>=0.7.3",
     "pydantic>=2.12.0",
@@ -76,5 +77,5 @@ dev = [
 
 [tool.deptry]
 ignore = ["DEP001"]
-package_module_name_map = { "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-sdk" = "ya_agent_sdk" }
-per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_sdk", "ya_claw"], DEP004 = ["pytest"] }
+package_module_name_map = { "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-sdk" = "ya_agent_sdk" }
+per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "greenlet", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_sdk", "ya_claw"], DEP004 = ["pytest"] }
