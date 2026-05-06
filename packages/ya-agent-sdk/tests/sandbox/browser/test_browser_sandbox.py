@@ -3,7 +3,30 @@
 from uuid import uuid4
 
 import httpx
-from ya_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox, get_port
+import pytest
+
+docker = pytest.importorskip("docker")
+
+from ya_agent_sdk.sandbox.browser.docker_ import DockerBrowserSandbox, get_port  # noqa: E402
+
+
+def _docker_daemon_available() -> bool:
+    """Return whether the Docker daemon is reachable from the test runner."""
+    try:
+        client = docker.from_env()
+        try:
+            client.ping()
+        finally:
+            client.close()
+    except docker.errors.DockerException:
+        return False
+    return True
+
+
+pytestmark = pytest.mark.skipif(
+    not _docker_daemon_available(),
+    reason="Docker daemon is required for Docker browser sandbox tests",
+)
 
 
 async def test_browser_sandbox_context_manager():
