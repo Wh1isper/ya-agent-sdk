@@ -1,0 +1,31 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>YA Claw</title>
+  <defs>
+    <linearGradient id="bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB" />
+      <stop offset="0.58" stop-color="#4F46E5" />
+      <stop offset="1" stop-color="#7C3AED" />
+    </linearGradient>
+    <linearGradient id="cut" x1="21" y1="12" x2="46" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" />
+      <stop offset="1" stop-color="#DDEBFF" />
+    </linearGradient>
+    <filter id="shadow" x="2" y="2" width="60" height="62" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#1E1B4B" flood-opacity="0.28" />
+    </filter>
+  </defs>
+
+  <rect x="6" y="5" width="52" height="54" rx="15" fill="url(#bg)" filter="url(#shadow)" />
+  <path d="M18 15L31 7H47L55 19V35L47 52H29L17 43L11 29L18 15Z" fill="#0F172A" fill-opacity="0.16" />
+
+  <path d="M24 16C30 22 31 34 26 49" stroke="url(#cut)" stroke-width="6" stroke-linecap="round" />
+  <path d="M34 14C39 23 39 35 34 51" stroke="url(#cut)" stroke-width="6" stroke-linecap="round" />
+  <path d="M44 17C47 26 46 37 40 49" stroke="url(#cut)" stroke-width="6" stroke-linecap="round" />
+
+  <path d="M21 16C27 23 27 34 22 47" stroke="#93C5FD" stroke-width="1.5" stroke-linecap="round" opacity="0.55" />
+  <path d="M31 14C36 23 36 35 30 49" stroke="#93C5FD" stroke-width="1.5" stroke-linecap="round" opacity="0.5" />
+  <path d="M41 17C44 26 43 36 37 47" stroke="#93C5FD" stroke-width="1.5" stroke-linecap="round" opacity="0.45" />
+
+  <circle cx="48" cy="17" r="5" fill="#22D3EE" />
+  <circle cx="48" cy="17" r="2" fill="#ECFEFF" />
+</svg>

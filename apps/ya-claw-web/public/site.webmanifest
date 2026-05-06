@@ -1,0 +1,15 @@
+{
+  "name": "YA Claw",
+  "short_name": "YA Claw",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#2563EB",
+  "background_color": "#F8FAFC",
+  "display": "standalone"
+}
