@@ -40,17 +40,15 @@ jobs:
         run: make check
 
   tests-and-type-check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        extras: ["all"]
         include:
-          - python-version: "3.11"
-            extras: "all"
-          - python-version: "3.12"
-            extras: "all"
-          - python-version: "3.13"
-            extras: "all"
-          - python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.13"
             extras: ""
       fail-fast: false
     env:
@@ -69,7 +67,12 @@ jobs:
           extras: ${{ matrix.extras }}
 
       - name: Run tests
-        run: make test
+        run: >-
+          uv run python -m pytest
+          packages/ya-agent-sdk/tests
+          packages/yaacli/tests
+          packages/ya-claw/tests
+          -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
 
       - name: Check typing
         run: uv run python -m pyright
@@ -79,4 +82,4 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: wh1isper/ya-mono
-        if: ${{ matrix.python-version == '3.13' && matrix.extras == 'all' }}
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && matrix.extras == 'all' }}

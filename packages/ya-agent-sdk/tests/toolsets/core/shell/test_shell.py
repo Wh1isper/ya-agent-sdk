@@ -1,9 +1,11 @@
 """Tests for shell tools."""
 
+import os
 from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
@@ -32,6 +34,22 @@ async def test_shell_tool_empty_command(tmp_path: Path) -> None:
         assert "empty" in result.get("error", "").lower()
 
 
+async def test_shell_tool_accepts_default_shell_executable(tmp_path: Path) -> None:
+    """Should execute commands with LocalShell's default shell executable."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, shell_executable=None)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = ShellTool()
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, "echo hello")
+        assert result["return_code"] == 0
+        assert "hello" in result["stdout"]
+
+
 async def test_shell_tool_execute_success(tmp_path: Path) -> None:
     """Should execute command and return results."""
     async with AsyncExitStack() as stack:
@@ -44,6 +62,25 @@ async def test_shell_tool_execute_success(tmp_path: Path) -> None:
         result = await tool.call(mock_run_ctx, "echo hello")
         assert result["return_code"] == 0
         assert "hello" in result["stdout"]
+
+
+@pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")
+async def test_shell_tool_supports_bash_syntax(tmp_path: Path) -> None:
+    """Should execute local POSIX shell commands with Bash by default."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = ShellTool()
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        quoted = await tool.call(mock_run_ctx, "printf %s $'a\\nb'")
+        assert quoted["return_code"] == 0
+        assert quoted["stdout"] == "a\nb"
+
+        conditional = await tool.call(mock_run_ctx, "[[ -n hello ]] && echo ok")
+        assert conditional["return_code"] == 0
+        assert conditional["stdout"].strip() == "ok"
 
 
 async def test_shell_tool_execute_with_timeout(tmp_path: Path) -> None:
@@ -138,6 +175,27 @@ async def test_shell_tool_stdout_truncation(tmp_path: Path) -> None:
         assert "stdout_file_path" in result
         # Verify file exists
         assert Path(result["stdout_file_path"]).exists()
+
+
+@pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")
+async def test_shell_tool_background_supports_bash_syntax(tmp_path: Path) -> None:
+    """Should execute background local POSIX shell commands with Bash by default."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = ShellTool()
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, "[[ -n hello ]] && echo ok", background=True)
+        assert result["return_code"] == -1
+        process_id = result["process_id"]
+        stdout, stderr, is_running, exit_code = await ctx.shell.wait_process(process_id, timeout=5.0)
+
+        assert stderr == ""
+        assert is_running is False
+        assert exit_code == 0
+        assert stdout.strip() == "ok"
 
 
 async def test_shell_tool_get_instruction(agent_context: AgentContext) -> None:

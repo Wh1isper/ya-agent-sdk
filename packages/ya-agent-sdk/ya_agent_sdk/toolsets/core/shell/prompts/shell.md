@@ -1,5 +1,5 @@
 <shell-tool>
-Execute shell commands via `shell_exec`. Commands are executed via `/bin/sh -c` (or `/bin/bash -c` depending on environment).
+Execute shell commands via `shell_exec`. Check the runtime `<shell-environment>` context for the active shell dialect. Local POSIX environments use `/bin/bash` by default when available; other environments may use the platform default shell or a sandbox-specific shell.
 
 Parameters:
 - command (required): The shell command string to execute

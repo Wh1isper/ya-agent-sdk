@@ -10,6 +10,7 @@ import glob as glob_module
 import os
 import shutil
 import signal
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,31 @@ def _process_group_kwargs() -> dict[str, Any]:
     if os.name == "posix":
         return {"start_new_session": True}
     return {}
+
+
+def _default_shell_executable() -> str | None:
+    """Return the default local shell executable for create_subprocess_shell."""
+    if os.name != "posix":
+        return None
+
+    bash_path = Path("/bin/bash")
+    if bash_path.exists():
+        return str(bash_path)
+
+    return shutil.which("bash")
+
+
+def _resolve_shell_executable(shell_executable: str | None) -> str | None:
+    """Resolve the configured shell executable.
+
+    None selects the YA Agent SDK platform default. An empty string delegates
+    shell selection to Python's platform default.
+    """
+    if shell_executable == "":
+        return None
+    if shell_executable is None:
+        return _default_shell_executable()
+    return shell_executable
 
 
 def _send_process_tree_signal(process: asyncio.subprocess.Process, sig: int) -> None:
@@ -901,6 +927,7 @@ class LocalShell(Shell):
         allowed_paths: list[Path] | None = None,
         default_timeout: float = 30.0,
         include_os_env: bool = True,
+        shell_executable: str | None = None,
     ):
         """Initialize LocalShell.
 
@@ -916,6 +943,9 @@ class LocalShell(Shell):
                 When False, only the explicitly provided env dict is used.
                 Note: when env=None, subprocess always inherits os.environ
                 regardless of this setting (Python subprocess behavior).
+            shell_executable: Shell executable used by create_subprocess_shell.
+                Defaults to /bin/bash on POSIX systems when available and
+                Python's platform default shell otherwise.
         """
         # Fallback: use first allowed_path as default when only allowed_paths is provided
         if default_cwd is None and allowed_paths:
@@ -927,6 +957,8 @@ class LocalShell(Shell):
             default_timeout=default_timeout,
         )
         self._include_os_env = include_os_env
+        self._shell_executable = _resolve_shell_executable(shell_executable)
+        self._platform_name = sys.platform
 
     def _resolve_cwd(self, cwd: str | None) -> Path:
         """Resolve and validate working directory."""
@@ -973,6 +1005,31 @@ class LocalShell(Shell):
             return {}
         return env
 
+    def _shell_environment_instruction(self) -> str:
+        shell_type = (
+            "bash"
+            if self._shell_executable is not None and Path(self._shell_executable).name == "bash"
+            else "platform-default"
+        )
+        parts = [
+            "  <shell-environment>",
+            f"    <platform>{self._platform_name}</platform>",
+            f"    <shell-type>{shell_type}</shell-type>",
+        ]
+        if self._shell_executable is not None:
+            parts.append(f"    <shell-executable>{self._shell_executable}</shell-executable>")
+        parts.append("  </shell-environment>")
+        return "\n".join(parts)
+
+    async def get_context_instructions(self) -> str | None:
+        """Return instructions for the agent about local shell capabilities."""
+        instructions = await super().get_context_instructions()
+        if instructions is None:
+            return None
+        return instructions.replace(
+            "\n  <default-timeout>", f"\n{self._shell_environment_instruction()}\n  <default-timeout>"
+        )
+
     async def execute(
         self,
         command: str,
@@ -1008,6 +1065,7 @@ class LocalShell(Shell):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=resolved_cwd,
                 env=effective_env,
+                executable=self._shell_executable,
                 **_process_group_kwargs(),
             )
 
@@ -1067,6 +1125,7 @@ class LocalShell(Shell):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=resolved_cwd,
                 env=effective_env,
+                executable=self._shell_executable,
                 **_process_group_kwargs(),
             )
         except Exception as e:
@@ -1132,6 +1191,7 @@ class LocalEnvironment(Environment):
         resource_state: ResourceRegistryState | None = None,
         resource_factories: dict[str, ResourceFactory] | None = None,
         include_os_env: bool = True,
+        shell_executable: str | None = None,
     ):
         """Initialize LocalEnvironment.
 
@@ -1150,6 +1210,9 @@ class LocalEnvironment(Environment):
             include_os_env: Whether shell subprocesses include parent process
                 environment variables when explicit env is provided.
                 Passed through to LocalShell. See LocalShell for details.
+            shell_executable: Shell executable used by LocalShell.
+                Defaults to /bin/bash on POSIX systems when available and
+                Python's platform default shell otherwise.
         """
         super().__init__(
             resource_state=resource_state,
@@ -1161,6 +1224,7 @@ class LocalEnvironment(Environment):
         self._tmp_base_dir = tmp_base_dir
         self._enable_tmp_dir = enable_tmp_dir
         self._include_os_env = include_os_env
+        self._shell_executable = shell_executable
         self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
 
     @property
@@ -1211,6 +1275,7 @@ class LocalEnvironment(Environment):
                 allowed_paths=allowed or None,
                 default_timeout=self._shell_timeout,
                 include_os_env=self._include_os_env,
+                shell_executable=self._shell_executable,
             )
 
     async def _teardown(self) -> None:

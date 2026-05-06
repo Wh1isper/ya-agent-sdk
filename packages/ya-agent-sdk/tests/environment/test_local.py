@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import os
 import shlex
+import shutil
 import signal
+import sys
 from pathlib import Path
 
 import pytest
@@ -475,13 +477,43 @@ async def test_shell_execute_returns_stderr(tmp_path: Path) -> None:
     assert stderr
 
 
+async def test_shell_get_context_instructions_with_platform_default_shell() -> None:
+    """Should describe platform default shell execution when no executable is configured."""
+    shell = LocalShell(
+        default_cwd=Path("/workspace"),
+        allowed_paths=[Path("/workspace")],
+        default_timeout=30.0,
+        shell_executable="",
+    )
+    instructions = await shell.get_context_instructions()
+
+    assert instructions is not None
+    assert "<shell-environment>" in instructions
+    assert f"<platform>{sys.platform}</platform>" in instructions
+    assert "<shell-type>platform-default</shell-type>" in instructions
+    assert "<shell-executable>" not in instructions
+
+
+async def test_shell_uses_bash_by_default_on_posix() -> None:
+    """Should use Bash as the default shell executable on POSIX when available."""
+    shell = LocalShell(default_cwd=Path("/workspace"), allowed_paths=[Path("/workspace")])
+    if os.name == "posix" and Path("/bin/bash").exists():
+        assert shell._shell_executable == "/bin/bash"
+    elif os.name == "posix":
+        assert shell._shell_executable == shutil.which("bash")
+    else:
+        assert shell._shell_executable is None
+
+
 async def test_shell_get_context_instructions() -> None:
     """Should return context instructions in XML format."""
     shell = LocalShell(
         default_cwd=Path("/workspace"),
         allowed_paths=[Path("/workspace")],
         default_timeout=30.0,
+        shell_executable="/bin/bash",
     )
+    shell._platform_name = "linux"
     instructions = await shell.get_context_instructions()
     assert instructions == snapshot(
         """\
@@ -490,6 +522,11 @@ async def test_shell_get_context_instructions() -> None:
     <path>/workspace</path>
   </allowed-working-directories>
   <default-working-directory>/workspace</default-working-directory>
+  <shell-environment>
+    <platform>linux</platform>
+    <shell-type>bash</shell-type>
+    <shell-executable>/bin/bash</shell-executable>
+  </shell-environment>
   <default-timeout>30.0s</default-timeout>
   <note>Commands will be executed with the working directory validated.</note>
 </shell-execution>"""
