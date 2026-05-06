@@ -549,16 +549,18 @@ async def _build_memory_prompt(db_session: AsyncSession, request: MemoryRunReque
         instruction = (
             "Run workspace memory extraction. Use context_handoff trimmed messages when present. "
             "For threshold or manual extracts, inspect the referenced source session with session tools. "
-            "Update memory/MEMORY.md, memory/CHANGELOG.md, and event notes named memory/YYYYMMDD-event.md."
+            "Keep memory/MEMORY.md as a compact durable brief. Write details to event notes named memory/YYYYMMDD-event.md. "
+            "Update memory/CHANGELOG.md after changing memory files."
         )
     else:
         instruction = (
             "Run workspace memory summary. Review memory/MEMORY.md, memory/CHANGELOG.md, and event notes matching memory/YYYYMMDD-event.md. "
-            "Reorganize, merge, and rewrite memory files while preserving useful provenance. Keep MEMORY.md and CHANGELOG.md current."
+            "Reorganize, merge, and rewrite memory files while preserving useful provenance. "
+            "Keep MEMORY.md compact and move detailed chronology into event notes or CHANGELOG.md."
         )
     return "\n\n".join([
         instruction,
-        "Memory file protocol: memory/MEMORY.md is the main index loaded for the primary agent. memory/CHANGELOG.md records memory updates. Event files use memory/YYYYMMDD-event.md filenames with YAML frontmatter containing name and description.",
+        "Memory file protocol: memory/MEMORY.md is the compact durable brief loaded for the primary agent. memory/CHANGELOG.md records memory updates. Event files use memory/YYYYMMDD-event.md filenames with YAML frontmatter containing name and description, and their frontmatter is the discovery surface for detailed memory.",
         "Memory job payload:",
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
     ])

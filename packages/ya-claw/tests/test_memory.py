@@ -13,6 +13,7 @@ from ya_claw.config import ClawSettings
 from ya_claw.controller.memory import MemoryController
 from ya_claw.controller.models import MemoryActionRequest, MemoryJobKind, TriggerType, memory_state_summary_from_record
 from ya_claw.db.engine import create_engine, create_session_factory
+from ya_claw.memory.extract_prompt import MEMORY_EXTRACT_SYSTEM_PROMPT
 from ya_claw.memory.lifecycle import (
     AUTO_TASK_CONTEXT_TAGS,
     MEMORY_CONTEXT_TAG,
@@ -22,6 +23,7 @@ from ya_claw.memory.lifecycle import (
     MemoryLifecycle,
 )
 from ya_claw.memory.store import WorkspaceMemoryStore
+from ya_claw.memory.summary_prompt import MEMORY_SUMMARY_SYSTEM_PROMPT
 from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import create_runtime_state
@@ -522,6 +524,20 @@ async def test_memory_controller_enqueues_extract(
 
     assert response.run_id in submitted
     assert response.kind == MemoryJobKind.EXTRACT
+
+
+async def test_memory_agent_prompts_keep_memory_md_compact() -> None:
+    combined_prompt = "\n".join([MEMORY_EXTRACT_SYSTEM_PROMPT, MEMORY_SUMMARY_SYSTEM_PROMPT])
+
+    normalized_prompt = combined_prompt.lower()
+
+    assert "compact durable memory brief" in normalized_prompt
+    assert "keep memory.md short, stable" in normalized_prompt
+    assert "file catalogs, event lists, transcript details, and chronological narration" in combined_prompt
+    assert "event file frontmatter as the discovery surface" in combined_prompt
+    assert "Primary memory index" not in combined_prompt
+    assert "main index" not in combined_prompt
+    assert '<index path="memory/MEMORY.md">' not in combined_prompt
 
 
 async def test_workspace_memory_store_rejects_symlinked_memory_files(settings: ClawSettings, tmp_path: Path) -> None:

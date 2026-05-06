@@ -88,6 +88,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - session memory is workspace-native: paired internal `session_type="memory"` sessions run background extract/summary jobs with trigger type `memory`, share the source workspace sandbox, and use the same profile tool surface as the primary agent
 - memory agents use fixed XML-style prompts from `ya_claw/memory/extract_prompt.py` and `ya_claw/memory/summary_prompt.py`
 - memory content lives in workspace files: `memory/MEMORY.md`, `memory/CHANGELOG.md`, and `memory/YYYYMMDD-event.md` files with YAML frontmatter (`name`, `description`)
+- `memory/MEMORY.md` is a compact durable brief for stable facts loaded into the main agent system prompt; detailed chronology, file catalogs, and event lists belong in event files and `memory/CHANGELOG.md`
 - primary conversation runs load `AGENTS.md` through workspace guidance and load memory in the system prompt via `WorkspaceMemoryStore` from `memory/MEMORY.md` plus event file frontmatter
 - `memory-context` is registered in `injected_context_tags` so SDK trim-mode handoff strips historical memory context from user prompt history
 - memory orchestration state lives in `session_memory_states`; memory content lives in workspace files; session list/detail responses expose `memory_state`; file browsing uses workspace filetree APIs and agent filesystem tools; manual endpoints are `memory:extract` and `memory:summarize`
