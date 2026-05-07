@@ -12,6 +12,15 @@ import {
 } from '../../api/hooks'
 import { EmptyState } from '../../components/EmptyState'
 import { StatusBadge } from '../../components/StatusBadge'
+import {
+  describeScheduledAndLocalDateTime,
+  describeBrowserDateTime,
+  formatDateTimeInTimeZone,
+  getBrowserTimeZone,
+  getSupportedTimeZones,
+  toZonedDatetimeLocalValue,
+  zonedDatetimeLocalToIso,
+} from '../../lib/timezone'
 import { cn } from '../../lib/utils'
 import type { ScheduleCreateRequest, ScheduleSummary } from '../../types'
 
@@ -29,18 +38,20 @@ type ScheduleFormValues = {
   steer_when_running: boolean
 }
 
-const blankSchedule: ScheduleFormValues = {
-  name: '',
-  description: '',
-  prompt: '',
-  trigger_kind: 'cron',
-  cron: '0 9 * * *',
-  run_at: '',
-  timezone: 'UTC',
-  enabled: true,
-  continue_current_session: false,
-  start_from_current_session: false,
-  steer_when_running: false,
+function createBlankSchedule(): ScheduleFormValues {
+  return {
+    name: '',
+    description: '',
+    prompt: '',
+    trigger_kind: 'cron',
+    cron: '0 9 * * *',
+    run_at: '',
+    timezone: getBrowserTimeZone(),
+    enabled: true,
+    continue_current_session: false,
+    start_from_current_session: false,
+    steer_when_running: false,
+  }
 }
 
 const inputClass =
@@ -153,8 +164,12 @@ function ScheduleListItem({
       <p className="mt-2 line-clamp-2 text-xs text-slate-500">
         {schedule.prompt}
       </p>
-      <p className="mt-2 text-xs text-slate-400">
-        Next: {formatDate(schedule.trigger.next_fire_at)}
+      <p className="mt-2 line-clamp-2 text-xs text-slate-400">
+        Next:{' '}
+        {describeScheduledAndLocalDateTime(
+          schedule.trigger.next_fire_at,
+          schedule.trigger.timezone,
+        )}
       </p>
     </button>
   )
@@ -172,8 +187,12 @@ function ScheduleEditor({
   const deleteSchedule = useDeleteScheduleMutation()
   const triggerSchedule = useTriggerScheduleMutation()
   const fires = useScheduleFiresQuery(schedule?.id ?? null)
-  const form = useForm<ScheduleFormValues>({ defaultValues: blankSchedule })
+  const form = useForm<ScheduleFormValues>({
+    defaultValues: createBlankSchedule(),
+  })
   const triggerKind = form.watch('trigger_kind')
+  const timezone = form.watch('timezone')
+  const supportedTimeZones = useMemo(() => getSupportedTimeZones(), [])
 
   useEffect(() => {
     if (schedule) {
@@ -186,7 +205,10 @@ function ScheduleEditor({
           schedule.trigger.kind === 'cron' ? (schedule.trigger.cron ?? '') : '',
         run_at:
           schedule.trigger.kind === 'once'
-            ? toDatetimeLocalValue(schedule.trigger.run_at)
+            ? toZonedDatetimeLocalValue(
+                schedule.trigger.run_at,
+                schedule.trigger.timezone,
+              )
             : '',
         timezone: schedule.trigger.timezone,
         enabled: schedule.enabled,
@@ -195,7 +217,7 @@ function ScheduleEditor({
         steer_when_running: schedule.mode.steer_when_running,
       })
     } else {
-      form.reset(blankSchedule)
+      form.reset(createBlankSchedule())
     }
   }, [form, schedule])
 
@@ -208,7 +230,7 @@ function ScheduleEditor({
       cron: values.trigger_kind === 'cron' ? values.cron : null,
       run_at:
         values.trigger_kind === 'once'
-          ? datetimeLocalToIso(values.run_at)
+          ? zonedDatetimeLocalToIso(values.run_at, values.timezone)
           : null,
       timezone: values.timezone,
       enabled: values.enabled,
@@ -288,14 +310,20 @@ function ScheduleEditor({
             </select>
           </Field>
           {triggerKind === 'cron' ? (
-            <Field label="Cron">
+            <Field
+              label="Cron"
+              hint={`Evaluated in ${timezone || getBrowserTimeZone()}. Example: 0 9 * * * runs at 09:00 in that timezone.`}
+            >
               <input
                 className={`${inputClass} mono`}
                 {...form.register('cron', { required: triggerKind === 'cron' })}
               />
             </Field>
           ) : (
-            <Field label="Run at">
+            <Field
+              label="Run at"
+              hint={`Interpreted as wall-clock time in ${timezone || getBrowserTimeZone()}.`}
+            >
               <input
                 type="datetime-local"
                 className={inputClass}
@@ -305,11 +333,27 @@ function ScheduleEditor({
               />
             </Field>
           )}
-          <Field label="Timezone">
-            <input
-              className={inputClass}
-              {...form.register('timezone', { required: true })}
-            />
+          <Field
+            label={triggerKind === 'cron' ? 'Cron timezone' : 'Run timezone'}
+            hint="Changing this timezone keeps the same wall-clock input and updates the stored fire time."
+          >
+            {supportedTimeZones.length > 0 ? (
+              <select
+                className={inputClass}
+                {...form.register('timezone', { required: true })}
+              >
+                {supportedTimeZones.map((timeZone) => (
+                  <option key={timeZone} value={timeZone}>
+                    {timeZone}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className={inputClass}
+                {...form.register('timezone', { required: true })}
+              />
+            )}
           </Field>
           <Field label="Description">
             <input className={inputClass} {...form.register('description')} />
@@ -380,7 +424,7 @@ function ScheduleEditor({
                 <p className="mt-2 text-slate-600">{fire.input_preview}</p>
                 <p className="mt-1 text-xs text-slate-400">
                   Run {fire.run_id?.slice(0, 10) ?? 'none'} ·{' '}
-                  {formatDate(fire.created_at)}
+                  {describeBrowserDateTime(fire.created_at)}
                 </p>
                 {fire.error_message ? (
                   <p className="mt-1 text-xs text-rose-600">
@@ -398,15 +442,22 @@ function ScheduleEditor({
 
 function Field({
   label,
+  hint,
   children,
 }: {
   label: string
+  hint?: string
   children: React.ReactNode
 }) {
   return (
     <label className="block text-sm font-medium text-slate-700">
       {label}
       {children}
+      {hint ? (
+        <span className="mt-1 block text-xs font-normal text-slate-400">
+          {hint}
+        </span>
+      ) : null}
     </label>
   )
 }
@@ -424,28 +475,14 @@ function ScheduleListSkeleton() {
   )
 }
 
-function formatDate(value?: string | null) {
-  if (!value) return 'not scheduled'
-  return new Date(value).toLocaleString()
-}
-
 function formatTrigger(schedule: ScheduleSummary) {
   if (schedule.trigger.kind === 'once') {
-    return `once · ${formatDate(schedule.trigger.run_at)} · ${schedule.trigger.timezone}`
+    return `once · ${formatDateTimeInTimeZone(
+      schedule.trigger.run_at,
+      schedule.trigger.timezone,
+    )} ${schedule.trigger.timezone}`
   }
-  return `${schedule.trigger.cron ?? schedule.cron.expr ?? 'cron'} · ${schedule.trigger.timezone}`
-}
-
-function toDatetimeLocalValue(value?: string | null) {
-  if (!value) return ''
-  const date = new Date(value)
-  const offset = date.getTimezoneOffset() * 60_000
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
-}
-
-function datetimeLocalToIso(value: string) {
-  if (!value) return null
-  return new Date(value).toISOString()
+  return `${schedule.trigger.cron ?? schedule.cron.expr ?? 'cron'} · runs in ${schedule.trigger.timezone}`
 }
 
 function mapFireStatus(status: string, runStatus?: string | null) {
