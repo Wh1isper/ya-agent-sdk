@@ -38,6 +38,10 @@ type ScheduleFormValues = {
   steer_when_running: boolean
 }
 
+type ScheduleStatusFilter = ScheduleSummary['status'] | 'all'
+type ScheduleEnabledFilter = 'all' | 'enabled' | 'disabled'
+type ScheduleTriggerFilter = ScheduleSummary['trigger']['kind'] | 'all'
+
 function createBlankSchedule(): ScheduleFormValues {
   return {
     name: '',
@@ -64,19 +68,58 @@ const checkClass =
 export function SchedulesPage() {
   const schedules = useSchedulesQuery()
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<ScheduleStatusFilter>('all')
+  const [enabledFilter, setEnabledFilter] =
+    useState<ScheduleEnabledFilter>('all')
+  const [triggerFilter, setTriggerFilter] =
+    useState<ScheduleTriggerFilter>('all')
+  const scheduleRows = useMemo(
+    () => schedules.data?.schedules ?? [],
+    [schedules.data?.schedules],
+  )
+  const filteredSchedules = useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    return scheduleRows.filter((schedule) => {
+      if (statusFilter !== 'all' && schedule.status !== statusFilter) {
+        return false
+      }
+      if (enabledFilter === 'enabled' && !schedule.enabled) return false
+      if (enabledFilter === 'disabled' && schedule.enabled) return false
+      if (triggerFilter !== 'all' && schedule.trigger.kind !== triggerFilter) {
+        return false
+      }
+      if (!needle) return true
+      return [
+        schedule.id,
+        schedule.name,
+        schedule.description,
+        schedule.prompt,
+        schedule.status,
+        schedule.enabled ? 'enabled' : 'disabled',
+        schedule.trigger.kind,
+        schedule.trigger.timezone,
+        schedule.trigger.kind === 'cron' ? schedule.trigger.cron : null,
+        schedule.trigger.kind === 'once' ? schedule.trigger.run_at : null,
+        schedule.profile_name,
+        schedule.owner_session_id,
+        schedule.target_session_id,
+        schedule.source_session_id,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(needle))
+    })
+  }, [enabledFilter, scheduleRows, search, statusFilter, triggerFilter])
   const selectedSchedule = useMemo(
-    () =>
-      (schedules.data?.schedules ?? []).find(
-        (schedule) => schedule.id === selectedId,
-      ) ?? null,
-    [schedules.data?.schedules, selectedId],
+    () => scheduleRows.find((schedule) => schedule.id === selectedId) ?? null,
+    [scheduleRows, selectedId],
   )
 
   useEffect(() => {
-    if (!selectedId && schedules.data?.schedules?.[0]) {
-      setSelectedId(schedules.data.schedules[0].id)
+    if (!selectedId && scheduleRows[0]) {
+      setSelectedId(scheduleRows[0].id)
     }
-  }, [schedules.data?.schedules, selectedId])
+  }, [scheduleRows, selectedId])
 
   return (
     <div className="flex h-full min-h-0 bg-slate-100">
@@ -98,18 +141,73 @@ export function SchedulesPage() {
               New
             </button>
           </div>
+          <div className="mt-4 space-y-2">
+            <input
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none ring-blue-600 transition placeholder:text-slate-400 focus:bg-white focus:ring-2"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search schedules"
+            />
+            <div className="grid grid-cols-3 gap-2">
+              <select
+                className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-700 outline-none ring-blue-600 focus:ring-2"
+                value={statusFilter}
+                onChange={(event) =>
+                  setStatusFilter(event.target.value as ScheduleStatusFilter)
+                }
+              >
+                <option value="all">All status</option>
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+                <option value="deleted">Deleted</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-700 outline-none ring-blue-600 focus:ring-2"
+                value={enabledFilter}
+                onChange={(event) =>
+                  setEnabledFilter(event.target.value as ScheduleEnabledFilter)
+                }
+              >
+                <option value="all">All state</option>
+                <option value="enabled">Enabled</option>
+                <option value="disabled">Disabled</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-700 outline-none ring-blue-600 focus:ring-2"
+                value={triggerFilter}
+                onChange={(event) =>
+                  setTriggerFilter(event.target.value as ScheduleTriggerFilter)
+                }
+              >
+                <option value="all">All trigger</option>
+                <option value="cron">Cron</option>
+                <option value="once">Once</option>
+              </select>
+            </div>
+            <p className="text-xs text-slate-400">
+              Showing {filteredSchedules.length} of {scheduleRows.length}
+            </p>
+          </div>
         </div>
         <div className="scrollbar-thin min-h-0 flex-1 overflow-auto p-3">
           {schedules.isLoading ? <ScheduleListSkeleton /> : null}
-          {!schedules.isLoading &&
-          (schedules.data?.schedules ?? []).length === 0 ? (
+          {!schedules.isLoading && scheduleRows.length === 0 ? (
             <EmptyState
               title="No schedules"
               description="Create a schedule to run agent work later or on a recurrence."
             />
           ) : null}
+          {!schedules.isLoading &&
+          scheduleRows.length > 0 &&
+          filteredSchedules.length === 0 ? (
+            <EmptyState
+              title="No matching schedules"
+              description="Adjust the search or filters to find a schedule."
+            />
+          ) : null}
           <div className="space-y-2">
-            {(schedules.data?.schedules ?? []).map((schedule) => (
+            {filteredSchedules.map((schedule) => (
               <ScheduleListItem
                 key={schedule.id}
                 schedule={schedule}
