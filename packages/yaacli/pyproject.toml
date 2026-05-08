@@ -42,7 +42,7 @@ dependencies = [
     "pillow>=10.0.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
-    "pydantic-ai>=1.88",
+    "pydantic-ai>=1.92.0",
     "pyobjc-framework-Cocoa>=10.0; platform_system == 'Darwin'",
     "python-dotenv>=1.0.0",
     "y-agent-environment>=0.1.0",
