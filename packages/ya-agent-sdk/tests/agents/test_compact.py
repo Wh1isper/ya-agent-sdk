@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import PromptedOutput, ThinkingPart
+from pydantic_ai import ThinkingPart, ToolOutput
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
     BinaryContent,
@@ -1086,12 +1086,12 @@ def test_strip_incompatible_settings_known_betas() -> None:
     assert "interleaved-thinking-2025-05-14" in _INCOMPATIBLE_BETAS
 
 
-def test_get_compact_agent_uses_prompted_output() -> None:
-    """Compact should use prompted structured output to avoid output tool_choice issues."""
+def test_get_compact_agent_uses_tool_output_by_default() -> None:
+    """Compact should prefer tool output for models that can force output tools."""
     agent = get_compact_agent(model="test")
 
-    assert isinstance(agent.output_type, PromptedOutput)
-    assert agent.output_type.outputs is CondenseResult
+    assert isinstance(agent.output_type, ToolOutput)
+    assert agent.output_type.output is CondenseResult
 
 
 # =============================================================================

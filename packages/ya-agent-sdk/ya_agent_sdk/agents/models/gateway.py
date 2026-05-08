@@ -7,9 +7,18 @@ from typing import Any
 import httpx
 from pydantic_ai.models import Model
 from pydantic_ai.models import infer_model as legacy_infer_model
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers import Provider
 
 from ya_agent_sdk.agents.models.utils import create_async_http_client
+
+REQUIRED_TOOL_CHOICE_UNSUPPORTED_MODEL_KEYWORDS: tuple[str, ...] = ("deepseek",)
+
+
+def _supports_required_tool_choice(model_name: str) -> bool:
+    """Return whether an OpenAI-compatible model supports tool_choice=required."""
+    lower = model_name.lower()
+    return not any(keyword in lower for keyword in REQUIRED_TOOL_CHOICE_UNSUPPORTED_MODEL_KEYWORDS)
 
 
 def _request_hook(api_key: str) -> Callable[[httpx.Request], Awaitable[httpx.Request]]:
@@ -30,8 +39,8 @@ def _request_hook(api_key: str) -> Callable[[httpx.Request], Awaitable[httpx.Req
 # DeepSeek V4 and MiMo V2.5 thinking models return reasoning tokens through the
 # OpenAI-compatible `reasoning_content` field. The chat alias routes to the
 # current DeepSeek chat model family, so it receives the same profile patch.
-# R1/deepseek-reasoner use a different strict input contract and are
-# intentionally handled by pydantic-ai's built-in DeepSeek profile.
+# R1/deepseek-reasoner use a different strict input contract and remain on
+# pydantic-ai's built-in DeepSeek profile unless another gateway patch applies.
 _DEEPSEEK_V4_MODEL_KEYWORDS: tuple[str, ...] = (
     "deepseek-v4",
     "deepseek_v4",
@@ -70,8 +79,8 @@ def _requires_reasoning_content_profile(model_name: str) -> bool:
     return _is_deepseek_model(model_name) or _is_mimo_model(model_name)
 
 
-def _build_reasoning_content_profile():
-    """Build the OpenAI profile required by reasoning_content thinking mode.
+def _build_openai_chat_profile(model_name: str) -> OpenAIModelProfile | None:
+    """Build OpenAI profile patches needed by OpenAI-compatible gateways.
 
     DeepSeek V4 and MiMo V2.5 thinking modes emit reasoning through the
     OpenAI-compatible ``reasoning_content`` field, and assistant messages that
@@ -82,24 +91,32 @@ def _build_reasoning_content_profile():
     ``openai_chat_send_back_thinking_parts='field'`` sends historical
     ``ThinkingPart`` values back through the same field instead of embedding them
     in ``content`` as ``<think>`` tags.
+
+    DeepSeek's OpenAI-compatible chat endpoint also rejects
+    ``tool_choice=required``. Pydantic AI consults
+    ``openai_supports_tool_choice_required`` before emitting that value for tool
+    output.
     """
-    from pydantic_ai.profiles.openai import OpenAIModelProfile
+    requires_reasoning_content = _requires_reasoning_content_profile(model_name)
+    supports_required_tool_choice = _supports_required_tool_choice(model_name)
+    if not requires_reasoning_content and supports_required_tool_choice:
+        return None
 
     return OpenAIModelProfile(
-        supports_thinking=True,
-        thinking_always_enabled=True,
-        ignore_streamed_leading_whitespace=True,
-        openai_chat_thinking_field="reasoning_content",
-        openai_chat_send_back_thinking_parts="field",
+        supports_thinking=requires_reasoning_content,
+        thinking_always_enabled=requires_reasoning_content,
+        ignore_streamed_leading_whitespace=requires_reasoning_content,
+        openai_chat_thinking_field="reasoning_content" if requires_reasoning_content else None,
+        openai_chat_send_back_thinking_parts="field" if requires_reasoning_content else "auto",
+        openai_supports_tool_choice_required=supports_required_tool_choice,
     )
 
 
 def _build_openai_chat_model(model_name: str, provider: Provider[Any]) -> Model:
-    """Construct an OpenAIChatModel with reasoning profile patches when needed."""
+    """Construct an OpenAIChatModel with profile patches when needed."""
     from pydantic_ai.models.openai import OpenAIChatModel
 
-    profile = _build_reasoning_content_profile() if _requires_reasoning_content_profile(model_name) else None
-    return OpenAIChatModel(model_name=model_name, provider=provider, profile=profile)
+    return OpenAIChatModel(model_name=model_name, provider=provider, profile=_build_openai_chat_profile(model_name))
 
 
 def make_gateway_provider(
@@ -214,8 +231,10 @@ def infer_model(gateway_name: str, model: str, extra_headers: dict[str, str] | N
     provider_factory = make_gateway_provider(gateway_name, extra_headers)
 
     provider_prefix, model_name = _split_provider_and_model(model)
-    if provider_prefix in ("openai", "openai-chat", "chat") and _requires_reasoning_content_profile(model_name):
-        provider = provider_factory(provider_prefix)
-        return _build_openai_chat_model(model_name, provider)
+    if provider_prefix in ("openai", "openai-chat", "chat"):
+        profile = _build_openai_chat_profile(model_name)
+        if profile is not None:
+            provider = provider_factory(provider_prefix)
+            return _build_openai_chat_model(model_name, provider)
 
     return legacy_infer_model(model, provider_factory)

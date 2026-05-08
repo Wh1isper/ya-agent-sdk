@@ -19,7 +19,7 @@ from pydantic_ai import (
     Agent,
     AgentRunResult,
     ModelSettings,
-    PromptedOutput,
+    ToolOutput,
     UsageLimits,
     UserContent,
 )
@@ -391,7 +391,7 @@ def get_compact_agent(
     return Agent[AgentContext, CondenseResult](
         model=infer_model(effective_model),
         model_settings=effective_settings,
-        output_type=PromptedOutput(CondenseResult),
+        output_type=ToolOutput(CondenseResult),
         deps_type=AgentContext,
         system_prompt=system_prompt,
         capabilities=[
