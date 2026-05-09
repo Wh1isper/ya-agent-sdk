@@ -177,11 +177,17 @@ def _resolve_shell_review(model_config_override: dict[str, Any] | None) -> Shell
         return None
     raw_security = model_config_override.get("security")
     if isinstance(raw_security, dict) and isinstance(raw_security.get("shell_review"), dict):
-        return ShellReviewConfig.model_validate(raw_security["shell_review"])
+        return _resolve_claw_shell_review_config(raw_security["shell_review"])
     raw_legacy = model_config_override.get("shell_review")
     if isinstance(raw_legacy, dict):
-        return ShellReviewConfig.model_validate(raw_legacy)
+        return _resolve_claw_shell_review_config(raw_legacy)
     return None
+
+
+def _resolve_claw_shell_review_config(raw: dict[str, Any]) -> ShellReviewConfig:
+    config = dict(raw)
+    config.setdefault("risk_threshold", "extra_high")
+    return ShellReviewConfig.model_validate(config)
 
 
 def _resolve_inheritable_model_settings(preset_or_dict: str | dict[str, Any] | None) -> dict[str, Any] | None:

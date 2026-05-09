@@ -68,7 +68,7 @@ enabled = false
 # model = "gateway@openai-responses:gpt-5.4-mini"
 # model_settings = "openai_responses_low"
 # on_needs_approval = "defer"
-# deny_risk_level = "high"
+# risk_threshold = "high"
 
 [browser]
 # CDP URL for browser automation

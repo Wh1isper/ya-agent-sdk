@@ -78,7 +78,7 @@ type ProfileFormValues = {
   shell_review_model: string
   shell_review_model_settings: string
   shell_review_on_needs_approval: 'deny' | 'defer'
-  shell_review_deny_risk_level: 'low' | 'medium' | 'high' | 'extra_high'
+  shell_review_risk_threshold: 'low' | 'medium' | 'high' | 'extra_high'
   shell_review_system_prompt: string
   subagents: ProfileFormSubagent[]
 }
@@ -108,7 +108,7 @@ const blankProfile: ProfileFormValues = {
   shell_review_model: '',
   shell_review_model_settings: 'openai_responses_low',
   shell_review_on_needs_approval: 'deny',
-  shell_review_deny_risk_level: 'high',
+  shell_review_risk_threshold: 'extra_high',
   shell_review_system_prompt: '',
   subagents: [],
 }
@@ -620,8 +620,8 @@ function ProfileEditor({
                   ]}
                 />
                 <SelectField
-                  label="Deny risk level"
-                  registration={form.register('shell_review_deny_risk_level')}
+                  label="Risk threshold"
+                  registration={form.register('shell_review_risk_threshold')}
                   options={[
                     { value: 'low', label: 'Low' },
                     { value: 'medium', label: 'Medium' },
@@ -1036,7 +1036,7 @@ function shellReviewFormValues(
   | 'shell_review_model'
   | 'shell_review_model_settings'
   | 'shell_review_on_needs_approval'
-  | 'shell_review_deny_risk_level'
+  | 'shell_review_risk_threshold'
   | 'shell_review_system_prompt'
 > {
   const config = extractShellReviewConfig(value)
@@ -1051,7 +1051,7 @@ function shellReviewFormValues(
           : 'openai_responses_low',
     shell_review_on_needs_approval:
       config?.on_needs_approval === 'defer' ? 'defer' : 'deny',
-    shell_review_deny_risk_level: shellReviewRiskLevel(config?.deny_risk_level),
+    shell_review_risk_threshold: shellReviewRiskLevel(config?.risk_threshold),
     shell_review_system_prompt:
       typeof config?.system_prompt === 'string' ? config.system_prompt : '',
   }
@@ -1071,7 +1071,7 @@ function buildModelConfigOverride(
       values.shell_review_model_settings,
     ),
     on_needs_approval: values.shell_review_on_needs_approval,
-    deny_risk_level: values.shell_review_deny_risk_level,
+    risk_threshold: values.shell_review_risk_threshold,
     system_prompt: nullableText(values.shell_review_system_prompt),
   }
   return {
@@ -1146,7 +1146,7 @@ function shellReviewRiskLevel(
   ) {
     return value
   }
-  return 'high'
+  return 'extra_high'
 }
 
 function removeNullish<T extends Record<string, unknown>>(value: T) {

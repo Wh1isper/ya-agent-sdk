@@ -129,7 +129,7 @@ enabled = true
 model = "gateway@openai-responses:gpt-5.4-mini"
 model_settings = "openai_responses_low"
 on_needs_approval = "defer"
-deny_risk_level = "high"
+risk_threshold = "extra_high"
 """)
 
     config = config_manager.load()
@@ -138,7 +138,7 @@ deny_risk_level = "high"
     assert config.security.shell_review.model == "gateway@openai-responses:gpt-5.4-mini"
     assert config.security.shell_review.model_settings == "openai_responses_low"
     assert config.security.shell_review.on_needs_approval == "defer"
-    assert config.security.shell_review.deny_risk_level == "high"
+    assert config.security.shell_review.risk_threshold == "extra_high"
 
 
 def test_load_project_tools_config(

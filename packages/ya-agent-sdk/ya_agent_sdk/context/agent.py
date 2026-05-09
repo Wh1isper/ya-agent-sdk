@@ -511,7 +511,7 @@ class ShellReviewConfig(BaseModel):
     model: str | None = None
     model_settings: dict[str, Any] | None = None
     on_needs_approval: ShellReviewAction = ShellReviewAction.DEFER
-    deny_risk_level: ShellReviewRiskLevel = ShellReviewRiskLevel.HIGH
+    risk_threshold: ShellReviewRiskLevel = ShellReviewRiskLevel.HIGH
     system_prompt: str | None = None
 
     @field_validator("model_settings", mode="before")

@@ -85,7 +85,7 @@ def _load_yaacli_env_fallback() -> None:
     mapping = {
         "model": "SHELL_REVIEW_MODEL",
         "model_settings": "SHELL_REVIEW_MODEL_SETTINGS",
-        "deny_risk_level": "SHELL_REVIEW_DENY_RISK_LEVEL",
+        "risk_threshold": "SHELL_REVIEW_RISK_THRESHOLD",
     }
     for config_key, env_key in mapping.items():
         value = shell_review.get(config_key)
@@ -181,7 +181,7 @@ def _build_config(args: argparse.Namespace) -> ShellReviewConfig:
         "model": args.model or os.getenv("SHELL_REVIEW_MODEL"),
         "model_settings": _parse_model_settings(args.model_settings or os.getenv("SHELL_REVIEW_MODEL_SETTINGS")),
         "on_needs_approval": "deny",
-        "deny_risk_level": args.deny_risk_level or os.getenv("SHELL_REVIEW_DENY_RISK_LEVEL", "high"),
+        "risk_threshold": args.risk_threshold or os.getenv("SHELL_REVIEW_RISK_THRESHOLD", "high"),
     })
 
 
@@ -207,7 +207,7 @@ async def _run_case(
         denied=decision.requires_deny(ctx),
     )
     row["model"] = config.model
-    row["deny_risk_level"] = str(config.deny_risk_level)
+    row["risk_threshold"] = str(config.risk_threshold)
     return row
 
 
@@ -296,7 +296,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-settings", help="Model settings preset or JSON object. Defaults to SHELL_REVIEW_MODEL_SETTINGS."
     )
-    parser.add_argument("--deny-risk-level", choices=sorted(RISK_ORDER), help="Deny threshold. Defaults to high.")
+    parser.add_argument("--risk-threshold", choices=sorted(RISK_ORDER), help="Action threshold. Defaults to high.")
     parser.add_argument("--cases", help="Optional YAML file with eval cases. Defaults to cases.yaml.")
     parser.add_argument("--only", help="Comma-separated case IDs to run.")
     parser.add_argument("--output", help="Output JSONL path. Defaults to SHELL_REVIEW_OUTPUT_JSONL.")

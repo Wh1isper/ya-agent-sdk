@@ -20,8 +20,8 @@ logger = get_logger(__name__)
 
 DEFAULT_SHELL_REVIEW_PROMPT = """You review shell commands before execution.
 
-Return a risk_level and concise reason. Low risk commands execute directly. Medium,
-high, and extra_high commands enter the configured approval or deny policy.
+Return a risk_level and concise reason. Commands below the configured risk threshold
+execute directly. Commands at or above the threshold enter the configured approval or deny policy.
 
 Risk heuristics:
 - low: read-only inspection or local developer verification such as tests, lint, type checks,
@@ -36,8 +36,8 @@ Risk heuristics:
 Reserve extra_high for visible catastrophic or hostile intent. Remote script execution is high by default.
 Classify Python and uv commands by the script's visible effect; `uv run python` alone is a runner. Python compileall writes __pycache__/bytecode and is medium risk. Explicit cache/bytecode generation and outbound network access need approval.
 Use workspace context for path scope. Source/package-tree wildcard deletion is broad destructive workspace change.
-Use previous shell reviews as consistency hints. Previously approved similar commands can remain low when the visible command effect is unchanged.
-When a command combines safe and risky operations, classify by the riskiest operation.
+Use previous shell reviews as consistency hints. When an identical or equivalent command was previously approved and the current visible effect has not expanded, lower the risk by at least one level. Repeated approved commands that remain bounded and workspace-local can be low risk.
+When a command combines safe and risky operations, classify by the riskiest operation after applying relevant previous approval context.
 Return a concise reason.
 """
 
@@ -56,12 +56,12 @@ class ShellReviewDecision(BaseModel):
     reason: str = ""
 
     def requires_approval(self, ctx: AgentContext) -> bool:
-        """Return whether this decision should enter approval policy."""
+        """Return whether this decision should enter the configured approval policy."""
         config = ctx.security.shell_review
         return (
             config is not None
             and config.enabled
-            and RISK_RANK[ShellReviewRiskLevel(self.risk_level)] > RISK_RANK[ShellReviewRiskLevel.LOW]
+            and RISK_RANK[ShellReviewRiskLevel(self.risk_level)] >= RISK_RANK[config.risk_threshold]
         )
 
     def requires_defer(self, ctx: AgentContext) -> bool:
@@ -76,9 +76,7 @@ class ShellReviewDecision(BaseModel):
         config = ctx.security.shell_review
         if not self.requires_approval(ctx) or config is None:
             return False
-        if config.on_needs_approval != ShellReviewAction.DENY:
-            return False
-        return RISK_RANK[ShellReviewRiskLevel(self.risk_level)] >= RISK_RANK[config.deny_risk_level]
+        return config.on_needs_approval == ShellReviewAction.DENY
 
 
 class ShellReviewPreviousDecision(BaseModel):

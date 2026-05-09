@@ -16,7 +16,7 @@ Default local model config:
 ```env
 SHELL_REVIEW_MODEL="gateway@openai-responses:gpt-5.4-mini"
 SHELL_REVIEW_MODEL_SETTINGS="openai_responses_low"
-SHELL_REVIEW_DENY_RISK_LEVEL="high"
+SHELL_REVIEW_RISK_THRESHOLD="high"
 SHELL_REVIEW_CONCURRENCY="1"
 ```
 

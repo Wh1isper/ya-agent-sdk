@@ -72,7 +72,7 @@ runtime = create_agent(
                 model="gateway@openai-responses:gpt-5.4-mini",
                 model_settings="openai_responses_low",
                 on_needs_approval="defer",
-                deny_risk_level="high",
+                risk_threshold="high",
             )
         )
     },
@@ -83,7 +83,7 @@ async with stream_agent(runtime, "Run the test suite") as streamer:
         print(event)
 ```
 
-`model` is required when shell review is enabled. `model_settings` accepts SDK preset names or an inline settings dictionary. `on_needs_approval` supports `defer` for HITL-capable runtimes and `deny` for autopilot runtimes. `deny_risk_level` defaults to `high`.
+`model` is required when shell review is enabled. `model_settings` accepts SDK preset names or an inline settings dictionary. `on_needs_approval` supports `defer` for HITL-capable runtimes and `deny` for autopilot runtimes. `risk_threshold` defaults to `high` and controls when the configured action triggers.
 
 ## Model Preset Tips
 

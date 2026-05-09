@@ -390,6 +390,7 @@ def test_runtime_builder_forces_claw_shell_review_to_deny_mode(tmp_path: Path) -
             model="test:model",
             model_settings={"openai_reasoning_effort": "low"},
             on_needs_approval="defer",
+            risk_threshold="extra_high",
         ),
     )
 
@@ -409,5 +410,5 @@ def test_runtime_builder_forces_claw_shell_review_to_deny_mode(tmp_path: Path) -
 
     assert runtime.ctx.security.shell_review is not None
     assert runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
-    assert runtime.ctx.security.shell_review.deny_risk_level == "high"
+    assert runtime.ctx.security.shell_review.risk_threshold == "extra_high"
     assert runtime.ctx.security.shell_review.model_settings == {"openai_reasoning_effort": "low"}

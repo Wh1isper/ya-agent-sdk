@@ -205,7 +205,12 @@ async def test_shell_tool_passes_previous_reviews_to_reviewer(tmp_path: Path, mo
 
 async def test_shell_review_denies_at_configured_threshold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = await _ctx(tmp_path)
-    ctx.security.shell_review = ShellReviewConfig(enabled=True, model="test:model", on_needs_approval="deny")
+    ctx.security.shell_review = ShellReviewConfig(
+        enabled=True,
+        model="test:model",
+        on_needs_approval="deny",
+        risk_threshold="extra_high",
+    )
 
     async def fake_review(*args, **kwargs):
         return ShellReviewDecision(risk_level="extra_high", reason="risky")
@@ -222,9 +227,14 @@ async def test_shell_review_denies_at_configured_threshold(tmp_path: Path, monke
     assert result["shell_review"]["reason"] == "risky"
 
 
-async def test_shell_review_allows_below_deny_threshold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_shell_review_allows_below_threshold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = await _ctx(tmp_path)
-    ctx.security.shell_review = ShellReviewConfig(enabled=True, model="test:model", on_needs_approval="deny")
+    ctx.security.shell_review = ShellReviewConfig(
+        enabled=True,
+        model="test:model",
+        on_needs_approval="deny",
+        risk_threshold="high",
+    )
 
     async def fake_review(*args, **kwargs):
         return ShellReviewDecision(risk_level="medium", reason="review only")
@@ -242,10 +252,15 @@ async def test_shell_review_allows_below_deny_threshold(tmp_path: Path, monkeypa
 
 async def test_shell_review_defers_when_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = await _ctx(tmp_path)
-    ctx.security.shell_review = ShellReviewConfig(enabled=True, model="test:model", on_needs_approval="defer")
+    ctx.security.shell_review = ShellReviewConfig(
+        enabled=True,
+        model="test:model",
+        on_needs_approval="defer",
+        risk_threshold="extra_high",
+    )
 
     async def fake_review(*args, **kwargs):
-        return ShellReviewDecision(risk_level="high", reason="risky")
+        return ShellReviewDecision(risk_level="extra_high", reason="risky")
 
     import ya_agent_sdk.toolsets.core.shell.shell as shell_module
 

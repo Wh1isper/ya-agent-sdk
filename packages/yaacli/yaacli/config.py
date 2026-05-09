@@ -135,7 +135,7 @@ class ShellReviewConfig(BaseModel):
     model: str | None = None
     model_settings: str | dict[str, Any] | None = None
     on_needs_approval: str = "defer"
-    deny_risk_level: str = "high"
+    risk_threshold: str = "high"
 
     @model_validator(mode="after")
     def validate_model_when_enabled(self) -> Self:

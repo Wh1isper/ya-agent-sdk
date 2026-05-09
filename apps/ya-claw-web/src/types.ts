@@ -448,7 +448,7 @@ export type ProfileShellReviewConfig = {
   model?: string | null
   model_settings?: string | Record<string, unknown> | null
   on_needs_approval?: 'defer' | 'deny'
-  deny_risk_level?: 'low' | 'medium' | 'high' | 'extra_high'
+  risk_threshold?: 'low' | 'medium' | 'high' | 'extra_high'
   system_prompt?: string | null
 }
 
