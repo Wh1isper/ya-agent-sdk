@@ -199,10 +199,8 @@ async def test_shell_tool_background_supports_bash_syntax(tmp_path: Path) -> Non
 
 
 async def test_shell_tool_get_instruction(agent_context: AgentContext) -> None:
-    """Should load instruction from prompts/shell.md."""
+    """Should not inject extra shell tool instructions."""
     tool = ShellTool()
     mock_run_ctx = MagicMock(spec=RunContext)
     mock_run_ctx.deps = agent_context
-    instruction = await tool.get_instruction(mock_run_ctx)
-    assert "shell" in instruction.lower()
-    assert "command" in instruction.lower()
+    assert await tool.get_instruction(mock_run_ctx) is None

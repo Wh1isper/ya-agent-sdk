@@ -237,6 +237,33 @@ def test_approval_ui_render_approval_panel():
     assert "Approval Required" in result
 
 
+def test_approval_ui_render_approval_panel_shell_review_reason():
+    """Test rendering shell review reason in approval panel."""
+    renderer = RichRenderer(width=100)
+    ui = ApprovalUI(renderer)
+
+    tool = ToolCallPart(
+        tool_name="shell_exec",
+        args={"command": "rm -rf build"},
+        tool_call_id="call-1",
+    )
+
+    result = ui.render_approval_panel(
+        tool,
+        index=1,
+        total=1,
+        metadata={
+            "reviewer": "shell_command_reviewer",
+            "risk_level": "high",
+            "reason": "Deletes files under build.",
+        },
+    )
+
+    assert "Shell review" in result
+    assert "high" in result
+    assert "Deletes files under build." in result
+
+
 def test_approval_ui_render_approval_result_approved():
     """Test rendering approved result."""
     renderer = RichRenderer(width=100)

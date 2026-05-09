@@ -576,8 +576,8 @@ async def test_create_subagent_call_func_resume_with_agent_id():
     assert "<id>analyze-abcd</id>" in output
 
 
-async def test_usage_not_recorded_without_tool_call_id():
-    """Test that usage is not recorded when tool_call_id is None."""
+async def test_usage_recorded_without_tool_call_id():
+    """Test that subagent usage is recorded even when tool_call_id is None."""
     mock_agent = MagicMock(spec=Agent)
     mock_agent.model.model_name = "test-model"
     mock_agent.name = "search"
@@ -608,8 +608,9 @@ async def test_usage_not_recorded_without_tool_call_id():
 
     await call_func(mock_self, run_ctx, prompt="test")
 
-    # No usage should be recorded
-    assert len(ctx.extra_usages) == 0
+    assert len(ctx.extra_usages) == 1
+    assert ctx.extra_usages[0].agent.startswith("search-")
+    assert ctx.extra_usages[0].model_id == "test-model"
 
 
 # Tests for generate_unique_id function

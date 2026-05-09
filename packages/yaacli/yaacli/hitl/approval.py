@@ -154,7 +154,7 @@ class ApprovalManager:
     async def collect_approvals(
         self,
         deferred: DeferredToolRequests,
-        on_display: Callable[[ToolCallPart, int, int], None] | None = None,
+        on_display: Callable[[ToolCallPart, int, int, dict | None], None] | None = None,
         on_result: Callable[[ToolCallPart, ApprovalResult], None] | None = None,
     ) -> DeferredToolResults:
         """Collect all approval decisions for deferred tool requests.
@@ -180,7 +180,12 @@ class ApprovalManager:
 
                 # Display the approval UI
                 if on_display:
-                    on_display(tool_call, idx + 1, len(deferred.approvals))
+                    on_display(
+                        tool_call,
+                        idx + 1,
+                        len(deferred.approvals),
+                        deferred.metadata.get(tool_call.tool_call_id),
+                    )
 
                 # Wait for decision
                 decision = await self.wait_for_decision()

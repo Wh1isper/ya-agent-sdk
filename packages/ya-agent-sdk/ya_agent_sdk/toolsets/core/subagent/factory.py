@@ -293,13 +293,12 @@ def create_subagent_call_func(
                     deps.subagent_history[agent_id] = result.all_messages()
 
                     # Record usage in extra_usages
-                    if ctx.tool_call_id:
-                        model_id = cast(Model, agent.model).model_name
-                        deps.add_extra_usage(
-                            agent=agent_id,
-                            internal_usage=InternalUsage(model_id=model_id, usage=result.usage()),
-                            uuid=ctx.tool_call_id,
-                        )
+                    model_id = cast(Model, agent.model).model_name
+                    deps.add_extra_usage(
+                        agent=agent_id,
+                        internal_usage=InternalUsage(model_id=model_id, usage=result.usage()),
+                        uuid=ctx.tool_call_id or uuid4().hex,
+                    )
 
             except Exception as e:
                 success = False

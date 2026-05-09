@@ -1290,7 +1290,11 @@ def test_tool_id_wrapper_wrap_deferred_tool_requests() -> None:
     approvals = [
         ToolCallPart(tool_name="tool1", tool_call_id="call-1", args={}),
     ]
-    deferred = DeferredToolRequests(calls=calls, approvals=approvals)
+    deferred = DeferredToolRequests(
+        calls=calls,
+        approvals=approvals,
+        metadata={"call-1": {"reviewer": "shell_command_reviewer", "reason": "Deletes files"}},
+    )
 
     result = wrapper.wrap_deferred_tool_requests(deferred)
 
@@ -1299,6 +1303,10 @@ def test_tool_id_wrapper_wrap_deferred_tool_requests() -> None:
     assert result.approvals[0].tool_call_id.startswith("ya-")
     # call-1 should map to same ID in both calls and approvals
     assert result.calls[0].tool_call_id == result.approvals[0].tool_call_id
+    assert result.metadata[result.approvals[0].tool_call_id] == {
+        "reviewer": "shell_command_reviewer",
+        "reason": "Deletes files",
+    }
 
 
 def test_tool_id_wrapper_wrap_messages() -> None:

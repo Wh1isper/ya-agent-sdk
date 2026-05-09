@@ -5,8 +5,6 @@ using the shell provided by AgentContext, including
 background process management (start, wait, kill).
 """
 
-from functools import cache
-from pathlib import Path
 from typing import Annotated, cast
 
 from pydantic import Field
@@ -16,29 +14,24 @@ from y_agent_environment import Shell
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalFileOperator, LocalShell
+from ya_agent_sdk.environment.sandbox import DockerShell
 from ya_agent_sdk.events import BackgroundShellKilledEvent, BackgroundShellStartEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.shell.review import (
     ShellReviewBlockedResult,
-    build_shell_review_metadata,
+    ShellReviewContextSnapshot,
+    ShellReviewRecord,
+    ShellReviewRequest,
+    get_previous_shell_reviews,
     review_shell_command,
-    shell_review_requires_defer,
-    shell_review_requires_deny,
 )
 
 logger = get_logger(__name__)
 
-_PROMPTS_DIR = Path(__file__).parent / "prompts"
-
 OUTPUT_TRUNCATE_LIMIT = 20000
 DEFAULT_TIMEOUT_SECONDS = 180
-
-
-@cache
-def _load_instruction() -> str:
-    """Load shell instruction from prompts/shell.md."""
-    prompt_file = _PROMPTS_DIR / "shell.md"
-    return prompt_file.read_text()
+SHELL_REVIEW_HISTORY_LIMIT = 10
 
 
 class ShellResult(TypedDict, total=False):
@@ -65,6 +58,59 @@ def _merge_shell_environment(
     return environment
 
 
+def _shell_context(shell: Shell | None) -> tuple[str | None, list[str], str | None, str | None]:
+    """Return shell cwd, allowed paths, platform, and executable for review context."""
+    if isinstance(shell, LocalShell):
+        return (
+            str(shell._default_cwd) if shell._default_cwd is not None else None,
+            [str(path) for path in shell._allowed_paths],
+            shell._platform_name,
+            shell._shell_executable,
+        )
+    if isinstance(shell, DockerShell):
+        return (shell._container_workdir, [shell._container_workdir], "docker", None)
+    if isinstance(shell, Shell):
+        return (
+            str(shell._default_cwd) if shell._default_cwd is not None else None,
+            [str(path) for path in shell._allowed_paths],
+            None,
+            None,
+        )
+    return None, [], None, None
+
+
+def _file_operator_context(file_operator: object) -> tuple[str | None, list[str]]:
+    """Return file operator default path and allowed paths for review context."""
+    if isinstance(file_operator, LocalFileOperator):
+        return (
+            str(file_operator._default_path) if file_operator._default_path is not None else None,
+            [str(path) for path in file_operator._allowed_paths],
+        )
+    return None, []
+
+
+def _build_shell_review_context(
+    run_ctx: RunContext[AgentContext],
+    *,
+    timeout_seconds: int,
+    tool_call_id: str | None,
+) -> ShellReviewContextSnapshot:
+    """Build compact execution context for shell review."""
+    shell_default_cwd, shell_allowed_paths, shell_platform, shell_executable = _shell_context(run_ctx.deps.shell)
+    file_default_path, file_allowed_paths = _file_operator_context(run_ctx.deps.file_operator)
+    tool_call_approved = run_ctx.tool_call_approved if isinstance(run_ctx.tool_call_approved, bool) else False
+
+    return ShellReviewContextSnapshot(
+        timeout_seconds=timeout_seconds,
+        tool_call_id=tool_call_id,
+        tool_call_approved=tool_call_approved,
+        default_cwd=shell_default_cwd or file_default_path,
+        allowed_paths=shell_allowed_paths or file_allowed_paths,
+        shell_platform=shell_platform,
+        shell_executable=shell_executable,
+    )
+
+
 async def _review_shell_command_or_block(
     run_ctx: RunContext[AgentContext],
     *,
@@ -72,17 +118,44 @@ async def _review_shell_command_or_block(
     cwd: str | None,
     background: bool,
     environment_keys: list[str],
+    timeout_seconds: int,
 ) -> ShellResult | None:
     """Review a shell command and return a blocked result when policy denies execution."""
     ctx = run_ctx.deps
-    review = await review_shell_command(
-        ctx,
+    tool_call_id = run_ctx.tool_call_id if isinstance(run_ctx.tool_call_id, str) else None
+    request = ShellReviewRequest(
         command=command,
         cwd=cwd,
         background=background,
         environment_keys=environment_keys,
+        context_snapshot=_build_shell_review_context(
+            run_ctx,
+            timeout_seconds=timeout_seconds,
+            tool_call_id=tool_call_id,
+        ),
     )
-    if review.action != "needs_approval":
+    tool_call_approved = run_ctx.tool_call_approved if isinstance(run_ctx.tool_call_approved, bool) else False
+    if tool_call_approved:
+        records = [record for record in ctx.shell_review_records if isinstance(record, ShellReviewRecord)]
+        fingerprint = request.command_fingerprint()
+        for record in reversed(records):
+            if tool_call_id is not None and record.tool_call_id == tool_call_id:
+                record.approved = True
+                break
+        else:
+            for record in reversed(records):
+                if record.request.command_fingerprint() == fingerprint:
+                    record.approved = True
+                    break
+        logger.info("Shell review approval replay bypassed reviewer")
+        return None
+
+    request.previous_reviews = get_previous_shell_reviews(ctx, request, tool_call_id=tool_call_id)
+    review = await review_shell_command(ctx, request=request, usage_uuid=tool_call_id)
+    review_record = ShellReviewRecord(request=request, decision=review, tool_call_id=tool_call_id)
+    ctx.shell_review_records.append(review_record)
+    if not review.requires_approval(ctx):
+        review_record.approved = True
         return None
 
     logger.info(
@@ -91,25 +164,18 @@ async def _review_shell_command_or_block(
         review.risk_level,
         review.reason,
     )
-    metadata = build_shell_review_metadata(
-        decision=review,
-        command=command,
-        cwd=cwd,
-        background=background,
-    )
-    if shell_review_requires_defer(ctx):
-        if run_ctx.tool_call_approved:
-            logger.info("Shell review approval replay accepted risk_level=%s", review.risk_level)
-            return None
+    metadata = request.to_approval_metadata(review)
+    if review.requires_defer(ctx):
         logger.info("Shell review deferring command for approval risk_level=%s", review.risk_level)
         raise ApprovalRequired(metadata=metadata)
-    if shell_review_requires_deny(ctx, review):
+    if review.requires_deny(ctx):
         logger.warning("Shell review blocked command risk_level=%s reason=%s", review.risk_level, review.reason)
         blocked = ShellReviewBlockedResult(
             error=f"Shell command blocked by review: {review.reason}",
             shell_review=review,
         )
         return cast(ShellResult, blocked.model_dump(mode="json"))
+    review_record.approved = True
     return None
 
 
@@ -223,10 +289,6 @@ class ShellTool(BaseTool):
             return False
         return True
 
-    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
-        """Load instruction from prompts/shell.md."""
-        return _load_instruction()
-
     async def call(
         self,
         ctx: RunContext[AgentContext],
@@ -272,6 +334,7 @@ class ShellTool(BaseTool):
             cwd=cwd,
             background=background,
             environment_keys=sorted((environment or {}).keys()),
+            timeout_seconds=timeout_seconds,
         )
         if blocked_result is not None:
             return blocked_result

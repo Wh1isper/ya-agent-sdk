@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import asyncio
 import warnings
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -433,10 +433,20 @@ class ToolIdWrapper:
         return event
 
     def wrap_deferred_tool_requests(self, deferred_tool_requests: DeferredToolRequests) -> DeferredToolRequests:
+        metadata = deferred_tool_requests.metadata or {}
+        wrapped_metadata: dict[str, dict[str, Any]] = {}
         for call in deferred_tool_requests.calls or []:
+            original_tool_call_id = call.tool_call_id
             call.tool_call_id = self.upsert_tool_call_id(call.tool_call_id)
+            if original_tool_call_id in metadata:
+                wrapped_metadata[call.tool_call_id] = metadata[original_tool_call_id]
         for approval in deferred_tool_requests.approvals or []:
+            original_tool_call_id = approval.tool_call_id
             approval.tool_call_id = self.upsert_tool_call_id(approval.tool_call_id)
+            if original_tool_call_id in metadata:
+                wrapped_metadata[approval.tool_call_id] = metadata[original_tool_call_id]
+        if wrapped_metadata:
+            deferred_tool_requests.metadata = wrapped_metadata
         return deferred_tool_requests
 
     def wrap_messages(
@@ -1042,6 +1052,9 @@ class AgentContext(BaseModel):
     extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
     """Extra usage records from tool calls and filters."""
 
+    shell_review_records: deque[Any] = Field(default_factory=lambda: deque(maxlen=10), exclude=True)
+    """Recent shell review records for current-run safety context."""
+
     user_prompts: str | Sequence[UserContent] | None = None
     """User prompts collected during the session for compact."""
 
@@ -1574,7 +1587,7 @@ class AgentContext(BaseModel):
         Per-run state (fresh for each run):
             - run_id, start_at, end_at
             - tool_id_wrapper, agent_stream_queues
-            - extra_usages, deferred_tool_metadata
+            - extra_usages, shell_review_records, deferred_tool_metadata
             - force_inject_instructions
 
         Shared state (same reference as original):
@@ -1595,6 +1608,7 @@ class AgentContext(BaseModel):
             "tool_id_wrapper": ToolIdWrapper(),
             "agent_stream_queues": _create_stream_queue_factory(),
             "extra_usages": [],
+            "shell_review_records": deque(maxlen=10),
             "deferred_tool_metadata": {},
             "force_inject_instructions": False,
         }
@@ -1660,6 +1674,7 @@ class AgentContext(BaseModel):
             "steering_messages": [],  # Subagent has its own steering queue
             "tool_id_wrapper": ToolIdWrapper(),  # Fresh wrapper for subagent
             "tool_tags": set(),  # Fresh tags for subagent (recomputed by its own Toolset)
+            "shell_review_records": deque(maxlen=10),
             "security": self.security.model_copy(deep=True),
             # env is inherited via model_copy (shares parent's env reference)
             **override,

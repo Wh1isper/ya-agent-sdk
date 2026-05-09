@@ -1589,7 +1589,12 @@ class TUIApp:
         for idx, tool_call in enumerate(deferred.approvals):
             self._current_approval_index = idx
             # Display approval panel
-            self._display_approval_panel(tool_call, idx + 1, len(deferred.approvals))
+            self._display_approval_panel(
+                tool_call,
+                idx + 1,
+                len(deferred.approvals),
+                deferred.metadata.get(tool_call.tool_call_id),
+            )
 
             # Wait for user decision (blocking with asyncio.Event)
             approved, reason = await self._wait_for_approval_input()
@@ -1690,6 +1695,7 @@ class TUIApp:
         tool_call: ToolCallPart,
         index: int,
         total: int,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Display approval panel for a tool call."""
         from rich.console import Group
@@ -1701,6 +1707,17 @@ class TUIApp:
             Text(""),
             Text(f"Tool: {tool_call.tool_name}", style="bold yellow"),
         ]
+
+        if metadata and metadata.get("reviewer") == "shell_command_reviewer":
+            reason = metadata.get("reason")
+            risk_level = metadata.get("risk_level")
+            if reason or risk_level:
+                content_parts.append(Text(""))
+                content_parts.append(Text("Shell review:", style="bold cyan"))
+                if risk_level:
+                    content_parts.append(Text(f"Risk: {risk_level}", style="yellow"))
+                if reason:
+                    content_parts.append(Text(f"Reason: {reason}", style="yellow"))
 
         if tool_call.args:
             content_parts.append(Text(""))
