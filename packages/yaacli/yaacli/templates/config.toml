@@ -61,6 +61,15 @@ show_token_usage = true
 # Show elapsed time
 show_elapsed_time = true
 
+[security.shell_review]
+# Enable small-model shell command review before execution.
+# When enabled, model is required. model_settings accepts a preset name or a TOML table.
+enabled = false
+# model = "gateway@openai-responses:gpt-5.4-mini"
+# model_settings = "openai_responses_low"
+# on_needs_approval = "defer"
+# deny_risk_level = "high"
+
 [browser]
 # CDP URL for browser automation
 # Options: null (disabled), "auto" (Docker), or explicit URL

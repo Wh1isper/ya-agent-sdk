@@ -37,6 +37,7 @@ import { useLayoutStore } from '../../stores/layoutStore'
 import type {
   ProfileDetail,
   ProfileMCPServer,
+  ProfileShellReviewConfig,
   ProfileSummary,
   ProfileUpsertRequest,
 } from '../../types'
@@ -73,6 +74,12 @@ type ProfileFormValues = {
   model_settings_override: string
   model_config_preset: string
   model_config_override: string
+  shell_review_enabled: boolean
+  shell_review_model: string
+  shell_review_model_settings: string
+  shell_review_on_needs_approval: 'deny' | 'defer'
+  shell_review_deny_risk_level: 'low' | 'medium' | 'high' | 'extra_high'
+  shell_review_system_prompt: string
   subagents: ProfileFormSubagent[]
 }
 
@@ -97,6 +104,12 @@ const blankProfile: ProfileFormValues = {
   model_settings_override: '',
   model_config_preset: '',
   model_config_override: '',
+  shell_review_enabled: false,
+  shell_review_model: '',
+  shell_review_model_settings: 'openai_responses_low',
+  shell_review_on_needs_approval: 'deny',
+  shell_review_deny_risk_level: 'high',
+  shell_review_system_prompt: '',
   subagents: [],
 }
 
@@ -569,6 +582,68 @@ function ProfileEditor({
               </div>
             </Section>
 
+            <Section title="Shell review" icon={SlidersHorizontal}>
+              <div className="grid grid-cols-2 gap-4">
+                <SwitchField
+                  label="Enable shell review"
+                  control={
+                    <Controller
+                      control={form.control}
+                      name="shell_review_enabled"
+                      render={({ field }) => (
+                        <input
+                          type="checkbox"
+                          checked={field.value}
+                          onChange={field.onChange}
+                        />
+                      )}
+                    />
+                  }
+                />
+                <TextField
+                  label="Reviewer model"
+                  registration={form.register('shell_review_model')}
+                  placeholder="gateway@openai-responses:gpt-5.4-mini"
+                />
+                <TextField
+                  label="Reviewer model settings"
+                  registration={form.register('shell_review_model_settings')}
+                  helper="Preset name or JSON object"
+                />
+                <SelectField
+                  label="Needs approval action"
+                  registration={form.register('shell_review_on_needs_approval')}
+                  helper="Claw coerces defer to deny at runtime"
+                  options={[
+                    { value: 'deny', label: 'Deny' },
+                    { value: 'defer', label: 'Defer' },
+                  ]}
+                />
+                <SelectField
+                  label="Deny risk level"
+                  registration={form.register('shell_review_deny_risk_level')}
+                  options={[
+                    { value: 'low', label: 'Low' },
+                    { value: 'medium', label: 'Medium' },
+                    { value: 'high', label: 'High' },
+                    { value: 'extra_high', label: 'Extra high' },
+                  ]}
+                />
+                <div className="col-span-2">
+                  <label className="block min-w-0">
+                    <span className="text-sm font-medium text-slate-700">
+                      Reviewer system prompt override
+                    </span>
+                    <textarea
+                      className="mt-2 min-h-28 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-900 outline-none ring-blue-600 transition focus:bg-white focus:ring-2"
+                      {...form.register('shell_review_system_prompt')}
+                      placeholder="Optional"
+                    />
+                  </label>
+                </div>
+              </div>
+            </Section>
+
             <Section title="Subagents" icon={Bot}>
               <div className="space-y-4">
                 {subagents.fields.map((field, index) => {
@@ -806,6 +881,37 @@ function JsonField({
   )
 }
 
+function SelectField({
+  label,
+  registration,
+  options,
+  helper,
+}: {
+  label: string
+  registration: UseFormRegisterReturn
+  options: Array<{ value: string; label: string }>
+  helper?: string
+}) {
+  return (
+    <label className="block min-w-0">
+      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <select
+        className="mt-2 w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none ring-blue-600 transition focus:bg-white focus:ring-2"
+        {...registration}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {helper ? (
+        <span className="mt-1 block text-xs text-slate-400">{helper}</span>
+      ) : null}
+    </label>
+  )
+}
+
 function SwitchField({
   label,
   control,
@@ -858,9 +964,10 @@ function formValuesFromProfile(profile: ProfileDetail): ProfileFormValues {
       ? safeJsonStringify(profile.model_settings_override)
       : '',
     model_config_preset: profile.model_config_preset ?? '',
-    model_config_override: profile.model_config_override
-      ? safeJsonStringify(profile.model_config_override)
-      : '',
+    model_config_override: modelConfigOverrideText(
+      profile.model_config_override,
+    ),
+    ...shellReviewFormValues(profile.model_config_override),
     subagents: profile.subagents.map((subagent) => ({
       name: subagent.name,
       description: subagent.description,
@@ -884,7 +991,7 @@ function payloadFromForm(values: ProfileFormValues): ProfileUpsertRequest {
     model_settings_preset: nullableText(values.model_settings_preset),
     model_settings_override: parseJsonObject(values.model_settings_override),
     model_config_preset: nullableText(values.model_config_preset),
-    model_config_override: parseJsonObject(values.model_config_override),
+    model_config_override: buildModelConfigOverride(values),
     system_prompt: nullableText(values.system_prompt),
     builtin_toolsets: splitCsv(values.builtin_toolsets),
     subagents: values.subagents.map((subagent) => ({
@@ -912,6 +1019,140 @@ function payloadFromForm(values: ProfileFormValues): ProfileUpsertRequest {
     source_version: nullableText(values.source_version),
     source_checksum: nullableText(values.source_checksum),
   }
+}
+
+function modelConfigOverrideText(
+  value: Record<string, unknown> | null | undefined,
+): string {
+  const cleaned = withoutShellReviewConfig(value)
+  return cleaned ? safeJsonStringify(cleaned) : ''
+}
+
+function shellReviewFormValues(
+  value: Record<string, unknown> | null | undefined,
+): Pick<
+  ProfileFormValues,
+  | 'shell_review_enabled'
+  | 'shell_review_model'
+  | 'shell_review_model_settings'
+  | 'shell_review_on_needs_approval'
+  | 'shell_review_deny_risk_level'
+  | 'shell_review_system_prompt'
+> {
+  const config = extractShellReviewConfig(value)
+  return {
+    shell_review_enabled: Boolean(config?.enabled),
+    shell_review_model: typeof config?.model === 'string' ? config.model : '',
+    shell_review_model_settings:
+      typeof config?.model_settings === 'string'
+        ? config.model_settings
+        : config?.model_settings && typeof config.model_settings === 'object'
+          ? safeJsonStringify(config.model_settings)
+          : 'openai_responses_low',
+    shell_review_on_needs_approval:
+      config?.on_needs_approval === 'defer' ? 'defer' : 'deny',
+    shell_review_deny_risk_level: shellReviewRiskLevel(config?.deny_risk_level),
+    shell_review_system_prompt:
+      typeof config?.system_prompt === 'string' ? config.system_prompt : '',
+  }
+}
+
+function buildModelConfigOverride(
+  values: ProfileFormValues,
+): Record<string, unknown> | null {
+  const override = withoutShellReviewConfig(
+    parseJsonObject(values.model_config_override),
+  )
+  if (!values.shell_review_enabled) return override
+  const shellReview: ProfileShellReviewConfig = {
+    enabled: true,
+    model: nullableText(values.shell_review_model),
+    model_settings: parseShellReviewModelSettings(
+      values.shell_review_model_settings,
+    ),
+    on_needs_approval: values.shell_review_on_needs_approval,
+    deny_risk_level: values.shell_review_deny_risk_level,
+    system_prompt: nullableText(values.shell_review_system_prompt),
+  }
+  return {
+    ...(override ?? {}),
+    security: {
+      ...securityObject(override),
+      shell_review: removeNullish(shellReview),
+    },
+  }
+}
+
+function parseShellReviewModelSettings(
+  value: string,
+): string | Record<string, unknown> | null {
+  const normalized = value.trim()
+  if (!normalized) return null
+  if (!normalized.startsWith('{')) return normalized
+  return parseJsonObject(normalized)
+}
+
+function extractShellReviewConfig(
+  value: Record<string, unknown> | null | undefined,
+): ProfileShellReviewConfig | null {
+  const security = securityObject(value)
+  const shellReview = security.shell_review
+  if (
+    !shellReview ||
+    typeof shellReview !== 'object' ||
+    Array.isArray(shellReview)
+  ) {
+    return null
+  }
+  return shellReview as ProfileShellReviewConfig
+}
+
+function withoutShellReviewConfig(
+  value: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!value) return null
+  const next = { ...value }
+  const security = securityObject(value)
+  if ('shell_review' in security) {
+    const nextSecurity = { ...security }
+    delete nextSecurity.shell_review
+    if (Object.keys(nextSecurity).length > 0) {
+      next.security = nextSecurity
+    } else {
+      delete next.security
+    }
+  }
+  return Object.keys(next).length > 0 ? next : null
+}
+
+function securityObject(
+  value: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const security = value?.security
+  if (!security || typeof security !== 'object' || Array.isArray(security)) {
+    return {}
+  }
+  return security as Record<string, unknown>
+}
+
+function shellReviewRiskLevel(
+  value: unknown,
+): 'low' | 'medium' | 'high' | 'extra_high' {
+  if (
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'extra_high'
+  ) {
+    return value
+  }
+  return 'high'
+}
+
+function removeNullish<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== null && item !== ''),
+  )
 }
 
 function parseMcpServers(value: string): Record<string, ProfileMCPServer> {

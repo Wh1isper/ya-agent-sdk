@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from y_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
-from ya_agent_sdk.context import ModelConfig, ResumableState
+from ya_agent_sdk.context import ModelConfig, ResumableState, SecurityConfig, ShellReviewAction, ShellReviewConfig
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps, filter_mcp_config
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.document import tools as document_tools
@@ -112,6 +112,9 @@ class ClawRuntimeBuilder:
             "source_metadata": dict(source_metadata or {}),
             "claw_metadata": dict(claw_metadata or {}),
         }
+        shell_review = self._resolve_shell_review(profile)
+        if shell_review is not None:
+            extra_context_kwargs["security"] = SecurityConfig(shell_review=shell_review)
         return create_agent(
             model=profile.model,
             model_settings=cast(Any, profile.model_settings),
@@ -138,6 +141,14 @@ class ClawRuntimeBuilder:
 
     def _build_model_config(self, profile: ResolvedProfile) -> ModelConfig:
         return ModelConfig.model_validate(dict(profile.model_config or {}))
+
+    def _resolve_shell_review(self, profile: ResolvedProfile) -> ShellReviewConfig | None:
+        if profile.shell_review is None:
+            return None
+        review = profile.shell_review.model_copy(deep=True)
+        if review.enabled and review.on_needs_approval == ShellReviewAction.DEFER:
+            review.on_needs_approval = ShellReviewAction.DENY
+        return review
 
     def _resolve_builtin_tools(
         self,

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from ya_agent_sdk.context import AgentContext, ModelConfig, TaskStatus
+from ya_agent_sdk.context import AgentContext, ModelConfig, ShellReviewConfig, TaskStatus
 from ya_agent_sdk.environment.local import LocalEnvironment
 
 
@@ -102,6 +102,27 @@ async def test_agent_context_create_subagent_context_with_override(env: LocalEnv
 
     async with parent.create_subagent_context("reasoning", deferred_tool_metadata={"key": {}}) as child:
         assert child.deferred_tool_metadata == {"key": {}}
+
+
+async def test_agent_context_create_subagent_context_inherits_security(env: LocalEnvironment) -> None:
+    """Subagent context should inherit runtime security policy without sharing mutable config."""
+    parent = AgentContext(env=env)
+    parent.security.shell_review = ShellReviewConfig(
+        enabled=True,
+        model="test:model",
+        on_needs_approval="defer",
+    )
+
+    async with parent.create_subagent_context("search") as child:
+        assert child.security.shell_review is not None
+        assert child.security.shell_review.enabled is True
+        assert child.security.shell_review.model == "test:model"
+        assert child.security.shell_review.on_needs_approval == "defer"
+
+        child.security.shell_review.on_needs_approval = "deny"
+
+    assert parent.security.shell_review is not None
+    assert parent.security.shell_review.on_needs_approval == "defer"
 
 
 async def test_agent_context_create_subagent_context_resets_prompts(env: LocalEnvironment) -> None:
@@ -735,6 +756,29 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         assert new_ctx.steering_messages == ["Steering 1", "Steering 2"]
         assert new_ctx.handoff_message == "Handoff summary"
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
+
+
+async def test_with_state_preserves_runtime_security(env: LocalEnvironment) -> None:
+    """Runtime security policy should come from the current context when restoring state."""
+    async with AgentContext(env=env) as old_ctx:
+        old_ctx.security.shell_review = ShellReviewConfig(
+            enabled=True,
+            model="old:model",
+            on_needs_approval="defer",
+        )
+        state = old_ctx.export_state()
+
+    async with AgentContext(env=env) as new_ctx:
+        new_ctx.security.shell_review = ShellReviewConfig(
+            enabled=True,
+            model="current:model",
+            on_needs_approval="deny",
+        )
+        new_ctx.with_state(state)
+
+        assert new_ctx.security.shell_review is not None
+        assert new_ctx.security.shell_review.model == "current:model"
+        assert new_ctx.security.shell_review.on_needs_approval == "deny"
 
 
 async def test_export_state_include_subagent_false(env: LocalEnvironment) -> None:

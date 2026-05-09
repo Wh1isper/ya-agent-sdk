@@ -31,6 +31,12 @@ profiles:
     model: gateway@openai-responses:gpt-5.5
     model_settings_preset: openai_responses_high
     model_config_preset: gpt5_270k
+    security:
+      shell_review:
+        enabled: true
+        model: gateway@openai-responses:gpt-5.5-mini
+        model_settings: openai_responses_low
+        on_needs_approval: deny
     system_prompt: |
       You are the profile-scoped execution agent.
     builtin_toolsets: [filesystem, shell]
@@ -84,6 +90,11 @@ profiles:
 
     assert seeded_names == ["default"]
     assert resolved_profile.model == "gateway@openai-responses:gpt-5.5"
+    assert resolved_profile.shell_review is not None
+    assert resolved_profile.shell_review.enabled is True
+    assert resolved_profile.shell_review.model == "gateway@openai-responses:gpt-5.5-mini"
+    assert isinstance(resolved_profile.shell_review.model_settings, dict)
+    assert resolved_profile.shell_review.model_settings["openai_reasoning_effort"] == "low"
     assert resolved_profile.system_prompt == "You are the profile-scoped execution agent."
     assert resolved_profile.builtin_toolsets == ["filesystem", "shell"]
     assert resolved_profile.need_user_approve_mcps == ["context7"]
@@ -124,6 +135,8 @@ profiles:
         record = await db_session.get(ProfileRecord, "default")
         assert isinstance(record, ProfileRecord)
         assert record.source_checksum is not None
+        assert record.model_config_override is not None
+        assert record.model_config_override["security"]["shell_review"]["model_settings"] == "openai_responses_low"
         assert record.builtin_toolsets == ["filesystem", "shell"]
         assert record.need_user_approve_mcps == ["context7"]
         assert record.enabled_mcps == ["context7", "github"]

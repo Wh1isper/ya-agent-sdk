@@ -73,12 +73,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Self
 from uuid import uuid4
 from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_ai import (
     DeferredToolRequests,
     FunctionToolCallEvent,
@@ -115,10 +115,6 @@ from .note import NoteManager
 from .tasks import TaskManager, TaskStatus
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-
-if TYPE_CHECKING:
-    from typing import Self
-
 
 # =============================================================================
 # Injected Context Tag Names
@@ -480,6 +476,59 @@ MediaToUrlHook = Callable[[RunContext["AgentContext"], bytes, str], Awaitable[st
 # =============================================================================
 
 
+class ShellReviewAction(StrEnum):
+    """Action when shell command review requires approval."""
+
+    DEFER = "defer"
+    DENY = "deny"
+
+
+class ShellReviewRiskLevel(StrEnum):
+    """Shell command review risk levels."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    EXTRA_HIGH = "extra_high"
+
+
+class ShellReviewConfig(BaseModel):
+    """Configuration for shell command safety review."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    enabled: bool = False
+    model: str | None = None
+    model_settings: dict[str, Any] | None = None
+    on_needs_approval: ShellReviewAction = ShellReviewAction.DEFER
+    deny_risk_level: ShellReviewRiskLevel = ShellReviewRiskLevel.HIGH
+    system_prompt: str | None = None
+
+    @field_validator("model_settings", mode="before")
+    @classmethod
+    def resolve_model_settings_preset(cls, value: Any) -> dict[str, Any] | None:
+        """Resolve model settings preset names at the SDK config boundary."""
+        if value is None:
+            return None
+        from ya_agent_sdk.presets import resolve_model_settings
+
+        return resolve_model_settings(value)
+
+    @model_validator(mode="after")
+    def validate_model_when_enabled(self) -> Self:
+        if self.enabled and (self.model is None or self.model.strip() == ""):
+            msg = "shell_review.model is required when shell review is enabled."
+            raise ValueError(msg)
+        return self
+
+
+class SecurityConfig(BaseModel):
+    """Security-related runtime configuration."""
+
+    shell_review: ShellReviewConfig | None = None
+    """Optional shell command safety review configuration."""
+
+
 class ToolConfig(BaseModel):
     """Tool-level configuration for fine-grained control.
 
@@ -812,6 +861,9 @@ class ResumableState(BaseModel):
     need_user_approve_mcps: list[str] = Field(default_factory=list)
     """List of MCP server names that require user approval for all tools."""
 
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    """Security-related runtime configuration."""
+
     auto_load_files: list[str] = Field(default_factory=list)
     """Files to auto-load on next request. Set by handoff/compact, consumed by auto_load_files filter."""
 
@@ -866,6 +918,9 @@ class ResumableState(BaseModel):
         ctx.agent_registry = {agent_id: AgentInfo(**info) for agent_id, info in self.agent_registry.items()}
         ctx.need_user_approve_tools = list(self.need_user_approve_tools)
         ctx.need_user_approve_mcps = list(self.need_user_approve_mcps)
+        # Security is a runtime policy supplied by the current profile/config.
+        # Keep the freshly constructed context security instead of restoring
+        # stale or default policy from persisted conversation state.
         ctx.auto_load_files = list(self.auto_load_files)
         # Restore task_manager from serialized tasks (always reset to avoid stale state)
         ctx.task_manager = TaskManager.from_exported(self.tasks) if self.tasks else TaskManager()
@@ -1031,6 +1086,9 @@ class AgentContext(BaseModel):
         ctx.need_user_approve_mcps = ["filesystem", "github"]
         # All tools from these servers will require approval
     """
+
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    """Security-related runtime configuration."""
 
     subagent_history: dict[str, list[ModelMessage]] = Field(default_factory=dict)
     """Subagent history for resuming sessions."""
@@ -1602,6 +1660,7 @@ class AgentContext(BaseModel):
             "steering_messages": [],  # Subagent has its own steering queue
             "tool_id_wrapper": ToolIdWrapper(),  # Fresh wrapper for subagent
             "tool_tags": set(),  # Fresh tags for subagent (recomputed by its own Toolset)
+            "security": self.security.model_copy(deep=True),
             # env is inherited via model_copy (shares parent's env reference)
             **override,
         }
@@ -1886,6 +1945,7 @@ class AgentContext(BaseModel):
             agent_registry=serialized_registry,
             need_user_approve_tools=list(self.need_user_approve_tools),
             need_user_approve_mcps=list(self.need_user_approve_mcps),
+            security=self.security.model_copy(deep=True),
             auto_load_files=list(self.auto_load_files),
             tasks=self.task_manager.export_tasks(),
             notes=self.note_manager.export_notes(),

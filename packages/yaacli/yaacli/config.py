@@ -2,15 +2,15 @@
 
 Configuration files are loaded with project-level priority (no merging):
 
-1. **config.toml** (model + TUI settings):
+1. **config.toml** (model + TUI settings + security runtime settings):
    - Global: ~/.yaacli/config.toml
    - Project: .yaacli/config.toml (overrides global entirely)
-   - Contains: model, model_settings, display, steering, session, browser, subagents, env
+   - Contains: model, model_settings, display, steering, session, browser, subagents, env, security.shell_review
 
-2. **tools.toml** (tool permissions):
+2. **tools.toml** (tool permissions and project tool overrides):
    - Global: ~/.yaacli/tools.toml
    - Project: .yaacli/tools.toml (overrides global entirely)
-   - Contains: need_approval list
+   - Contains: need_approval list and optional tool overrides
 
 3. **mcp.json** (MCP server configurations):
    - Global: ~/.yaacli/mcp.json
@@ -26,9 +26,9 @@ from __future__ import annotations
 import tomllib
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, Self, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig, load_mcp_config_file
 
@@ -128,14 +128,38 @@ class BrowserConfig(BaseModel):
     """Browser startup timeout in seconds."""
 
 
+class ShellReviewConfig(BaseModel):
+    """Shell command safety review configuration."""
+
+    enabled: bool = False
+    model: str | None = None
+    model_settings: str | dict[str, Any] | None = None
+    on_needs_approval: str = "defer"
+    deny_risk_level: str = "high"
+
+    @model_validator(mode="after")
+    def validate_model_when_enabled(self) -> Self:
+        if self.enabled and (self.model is None or self.model.strip() == ""):
+            msg = "security.shell_review.model is required when shell review is enabled."
+            raise ValueError(msg)
+        return self
+
+
 class ToolsConfig(BaseModel):
-    """Tool permission configuration (project only)."""
+    """Tool permission configuration."""
 
     need_approval: list[str] = Field(default_factory=list)
     """Tools requiring user approval before execution."""
 
     need_approval_mcps: list[str] = Field(default_factory=list)
     """MCP servers requiring user approval for all tools."""
+
+
+class SecurityConfig(BaseModel):
+    """Security runtime configuration."""
+
+    shell_review: ShellReviewConfig = Field(default_factory=ShellReviewConfig)
+    """Shell command safety review configuration."""
 
 
 class SubagentOverride(BaseModel):
@@ -260,6 +284,9 @@ class YaacliConfig(BaseModel):
     Set to False to prevent CLI process env vars (API keys, etc.)
     from leaking into shell subprocesses.
     """
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    """Security runtime configuration."""
+
     # From project config
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     # Custom slash commands
@@ -383,16 +410,12 @@ class ConfigManager:
         if project_config_file.exists():
             with open(project_config_file, "rb") as f:
                 config = tomllib.load(f)
-            for key in config:
-                if key != "tools":
-                    merged[key] = config[key]
+            merged.update(config)
             self._loaded_sources.append(str(project_config_file))
         elif global_config_file.exists():
             with open(global_config_file, "rb") as f:
                 config = tomllib.load(f)
-            for key in config:
-                if key != "tools":
-                    merged[key] = config[key]
+            merged.update(config)
             self._loaded_sources.append(str(global_config_file))
 
         # Layer 2: Environment overrides (TUI only, merged)

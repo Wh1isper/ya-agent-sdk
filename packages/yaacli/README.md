@@ -60,6 +60,19 @@ Provider API keys can live in that `.env` file or in `~/.yaacli/config.toml` und
 SDK and tool variables such as `YA_AGENT_*`, `YA_AGENT_BROWSER_USE_*`, and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) as the reference list for SDK and tool variables.
 
+Shell command review is configured in `~/.yaacli/config.toml` under `security.shell_review`:
+
+```toml
+[security.shell_review]
+enabled = true
+model = "gateway@openai-responses:gpt-5.4-mini"
+model_settings = "openai_responses_low"
+on_needs_approval = "defer"
+deny_risk_level = "high"
+```
+
+When enabled, `model` is required. `model_settings` accepts SDK preset names or an inline TOML table. The default deny threshold is `high`.
+
 Run CLI tests from the workspace root:
 
 ```bash

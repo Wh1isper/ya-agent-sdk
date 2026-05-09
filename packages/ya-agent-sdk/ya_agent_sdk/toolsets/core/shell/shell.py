@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from pydantic import Field
-from pydantic_ai import RunContext
+from pydantic_ai import ApprovalRequired, RunContext
 from typing_extensions import TypedDict
 from y_agent_environment import Shell
 
@@ -18,6 +18,13 @@ from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import BackgroundShellKilledEvent, BackgroundShellStartEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.shell.review import (
+    ShellReviewBlockedResult,
+    build_shell_review_metadata,
+    review_shell_command,
+    shell_review_requires_defer,
+    shell_review_requires_deny,
+)
 
 logger = get_logger(__name__)
 
@@ -45,6 +52,161 @@ class ShellResult(TypedDict, total=False):
     stderr_file_path: str  # Present when stderr exceeds limit
     error: str  # Present on execution error
     hint: str  # Guidance on next available actions
+
+
+def _merge_shell_environment(
+    ctx: AgentContext,
+    environment: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Merge context shell env with per-call shell env."""
+    shell_env = ctx.shell_env
+    if shell_env or environment:
+        return {**shell_env, **(environment or {})}
+    return environment
+
+
+async def _review_shell_command_or_block(
+    run_ctx: RunContext[AgentContext],
+    *,
+    command: str,
+    cwd: str | None,
+    background: bool,
+    environment_keys: list[str],
+) -> ShellResult | None:
+    """Review a shell command and return a blocked result when policy denies execution."""
+    ctx = run_ctx.deps
+    review = await review_shell_command(
+        ctx,
+        command=command,
+        cwd=cwd,
+        background=background,
+        environment_keys=environment_keys,
+    )
+    if review.action != "needs_approval":
+        return None
+
+    logger.info(
+        "Shell review requested approval command_chars=%d risk_level=%s reason=%s",
+        len(command),
+        review.risk_level,
+        review.reason,
+    )
+    metadata = build_shell_review_metadata(
+        decision=review,
+        command=command,
+        cwd=cwd,
+        background=background,
+    )
+    if shell_review_requires_defer(ctx):
+        if run_ctx.tool_call_approved:
+            logger.info("Shell review approval replay accepted risk_level=%s", review.risk_level)
+            return None
+        logger.info("Shell review deferring command for approval risk_level=%s", review.risk_level)
+        raise ApprovalRequired(metadata=metadata)
+    if shell_review_requires_deny(ctx, review):
+        logger.warning("Shell review blocked command risk_level=%s reason=%s", review.risk_level, review.reason)
+        blocked = ShellReviewBlockedResult(
+            error=f"Shell command blocked by review: {review.reason}",
+            shell_review=review,
+        )
+        return cast(ShellResult, blocked.model_dump(mode="json"))
+    return None
+
+
+async def _start_background_shell_command(
+    ctx: AgentContext,
+    shell: Shell,
+    *,
+    command: str,
+    cwd: str | None,
+    environment: dict[str, str] | None,
+) -> ShellResult:
+    """Start a background shell command."""
+    try:
+        process_id = await shell.start(command, env=environment, cwd=cwd)
+        await ctx.emit_event(
+            BackgroundShellStartEvent(
+                event_id=f"bg-{process_id}",
+                process_id=process_id,
+                command=command,
+            )
+        )
+        return ShellResult(
+            stdout="",
+            stderr="",
+            return_code=-1,
+            process_id=process_id,
+            hint=(
+                f"Background process started (id={process_id}). "
+                "Use shell_wait to poll/wait for output, "
+                "shell_input to send stdin, "
+                "shell_kill to terminate."
+            ),
+        )
+    except Exception as e:
+        return ShellResult(
+            stdout="",
+            stderr="",
+            return_code=1,
+            error=f"Failed to start background command: {e}",
+        )
+
+
+async def _execute_foreground_shell_command(
+    ctx: AgentContext,
+    shell: Shell,
+    *,
+    command: str,
+    timeout_seconds: int,
+    cwd: str | None,
+    environment: dict[str, str] | None,
+) -> ShellResult:
+    """Execute a foreground shell command."""
+    try:
+        exit_code, stdout, stderr = await shell.execute(
+            command,
+            timeout=float(timeout_seconds),
+            env=environment,
+            cwd=cwd,
+        )
+
+        result = ShellResult(
+            stdout=stdout,
+            stderr=stderr,
+            return_code=exit_code,
+        )
+        file_op = ctx.file_operator
+        if len(stdout) > OUTPUT_TRUNCATE_LIMIT:
+            if file_op is not None:
+                stdout_file = f"stdout-{ctx.run_id[:8]}.log"
+                stdout_path = await file_op.write_tmp_file(stdout_file, stdout)
+                result["stdout"] = (
+                    stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stdout_file_path`)"
+                )
+                result["stdout_file_path"] = stdout_path
+            else:
+                result["stdout"] = stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
+
+        if len(stderr) > OUTPUT_TRUNCATE_LIMIT:
+            if file_op is not None:
+                stderr_file = f"stderr-{ctx.run_id[:8]}.log"
+                stderr_path = await file_op.write_tmp_file(stderr_file, stderr)
+                result["stderr"] = (
+                    stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stderr_file_path`)"
+                )
+                result["stderr_file_path"] = stderr_path
+            else:
+                result["stderr"] = stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
+
+        return result
+
+    except Exception as e:
+        return ShellResult(
+            stdout="",
+            stderr="",
+            return_code=1,
+            error=f"Failed to execute command: {e}",
+        )
 
 
 class ShellTool(BaseTool):
@@ -102,93 +264,37 @@ class ShellTool(BaseTool):
             )
 
         shell = cast(Shell, ctx.deps.shell)
-        file_op = ctx.deps.file_operator
+        environment = _merge_shell_environment(ctx.deps, environment)
 
-        # Merge environment: ctx.shell_env (base) + per-call env (overrides)
-        shell_env = ctx.deps.shell_env
-        if shell_env or environment:
-            merged_env = {**shell_env, **(environment or {})}
-            environment = merged_env
+        blocked_result = await _review_shell_command_or_block(
+            ctx,
+            command=command,
+            cwd=cwd,
+            background=background,
+            environment_keys=sorted((environment or {}).keys()),
+        )
+        if blocked_result is not None:
+            return blocked_result
 
         # Background mode: start and return immediately
         if background:
-            try:
-                process_id = await shell.start(command, env=environment, cwd=cwd)
-                await ctx.deps.emit_event(
-                    BackgroundShellStartEvent(
-                        event_id=f"bg-{process_id}",
-                        process_id=process_id,
-                        command=command,
-                    )
-                )
-                return ShellResult(
-                    stdout="",
-                    stderr="",
-                    return_code=-1,
-                    process_id=process_id,
-                    hint=(
-                        f"Background process started (id={process_id}). "
-                        "Use shell_wait to poll/wait for output, "
-                        "shell_input to send stdin, "
-                        "shell_kill to terminate."
-                    ),
-                )
-            except Exception as e:
-                return ShellResult(
-                    stdout="",
-                    stderr="",
-                    return_code=1,
-                    error=f"Failed to start background command: {e}",
-                )
+            return await _start_background_shell_command(
+                ctx.deps,
+                shell,
+                command=command,
+                cwd=cwd,
+                environment=environment,
+            )
 
         # Foreground mode: execute and wait
-        try:
-            exit_code, stdout, stderr = await shell.execute(
-                command,
-                timeout=float(timeout_seconds),
-                env=environment,
-                cwd=cwd,
-            )
-
-            result = ShellResult(
-                stdout=stdout,
-                stderr=stderr,
-                return_code=exit_code,
-            )
-
-            # Handle stdout truncation (only save to file if file_operator is available)
-            if len(stdout) > OUTPUT_TRUNCATE_LIMIT:
-                if file_op is not None:
-                    stdout_file = f"stdout-{ctx.deps.run_id[:8]}.log"
-                    stdout_path = await file_op.write_tmp_file(stdout_file, stdout)
-                    result["stdout"] = (
-                        stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stdout_file_path`)"
-                    )
-                    result["stdout_file_path"] = stdout_path
-                else:
-                    result["stdout"] = stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
-
-            # Handle stderr truncation (only save to file if file_operator is available)
-            if len(stderr) > OUTPUT_TRUNCATE_LIMIT:
-                if file_op is not None:
-                    stderr_file = f"stderr-{ctx.deps.run_id[:8]}.log"
-                    stderr_path = await file_op.write_tmp_file(stderr_file, stderr)
-                    result["stderr"] = (
-                        stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stderr_file_path`)"
-                    )
-                    result["stderr_file_path"] = stderr_path
-                else:
-                    result["stderr"] = stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
-
-            return result
-
-        except Exception as e:
-            return ShellResult(
-                stdout="",
-                stderr="",
-                return_code=1,
-                error=f"Failed to execute command: {e}",
-            )
+        return await _execute_foreground_shell_command(
+            ctx.deps,
+            shell,
+            command=command,
+            timeout_seconds=timeout_seconds,
+            cwd=cwd,
+            environment=environment,
+        )
 
 
 class ShellWaitResult(TypedDict, total=False):

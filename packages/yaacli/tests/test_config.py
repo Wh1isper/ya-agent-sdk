@@ -39,8 +39,9 @@ def test_default_config() -> None:
     # Browser
     assert config.browser.cdp_url is None
 
-    # Tools
+    # Tools and security
     assert config.tools.need_approval == []
+    assert config.security.shell_review.enabled is False
 
 
 def test_general_config_with_preset() -> None:
@@ -109,6 +110,35 @@ code_theme = "light"
     assert config.general.model_settings == "openai_high"
     assert config.display.code_theme == "light"
     assert config.tools.need_approval == []
+    assert config.security.shell_review.enabled is False
+
+
+def test_load_global_security_shell_review_config(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    clean_env: None,
+) -> None:
+    """Test loading security.shell_review from global config.toml."""
+    config_file = temp_config_dir / "config.toml"
+    config_file.write_text("""
+[general]
+model = "openai:gpt-4o"
+
+[security.shell_review]
+enabled = true
+model = "gateway@openai-responses:gpt-5.4-mini"
+model_settings = "openai_responses_low"
+on_needs_approval = "defer"
+deny_risk_level = "high"
+""")
+
+    config = config_manager.load()
+
+    assert config.security.shell_review.enabled is True
+    assert config.security.shell_review.model == "gateway@openai-responses:gpt-5.4-mini"
+    assert config.security.shell_review.model_settings == "openai_responses_low"
+    assert config.security.shell_review.on_needs_approval == "defer"
+    assert config.security.shell_review.deny_risk_level == "high"
 
 
 def test_load_project_tools_config(

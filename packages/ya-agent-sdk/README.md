@@ -55,6 +55,36 @@ async with stream_agent(runtime, "Hello") as streamer:
         print(event)
 ```
 
+## Shell Command Review
+
+Configure shell command review on `AgentContext.security.shell_review` to run a small reviewer model before shell execution:
+
+```python
+from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig
+
+runtime = create_agent(
+    "gateway@openai-responses:gpt-5.5",
+    extra_context_kwargs={
+        "security": SecurityConfig(
+            shell_review=ShellReviewConfig(
+                enabled=True,
+                model="gateway@openai-responses:gpt-5.4-mini",
+                model_settings="openai_responses_low",
+                on_needs_approval="defer",
+                deny_risk_level="high",
+            )
+        )
+    },
+)
+
+async with stream_agent(runtime, "Run the test suite") as streamer:
+    async for event in streamer:
+        print(event)
+```
+
+`model` is required when shell review is enabled. `model_settings` accepts SDK preset names or an inline settings dictionary. `on_needs_approval` supports `defer` for HITL-capable runtimes and `deny` for autopilot runtimes. `deny_risk_level` defaults to `high`.
+
 ## Model Preset Tips
 
 For Anthropic models, `anthropic` now resolves to adaptive thinking by default.

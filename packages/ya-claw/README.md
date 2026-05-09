@@ -177,7 +177,24 @@ Profile, MCP, and coordinator settings:
 - `LARKSUITE_CLI_DEFAULT_AS=bot`
 - `LARKSUITE_CLI_STRICT_MODE=bot`
 
-Profiles store model, prompt, model context config, builtin tool groups, subagents, approval policy, MCP server definitions, and MCP namespace filters. YA Claw accepts profile MCP servers with `streamable_http` transport. Every YA Claw agent runtime receives the profile MCP configuration through `ToolProxyToolset`, and each profile can narrow that surface with `enabled_mcps` and `disabled_mcps`.
+Profiles store model, prompt, model context config, builtin tool groups, subagents, approval policy, security policy, MCP server definitions, and MCP namespace filters. YA Claw accepts profile MCP servers with `streamable_http` transport. Every YA Claw agent runtime receives the profile MCP configuration through `ToolProxyToolset`, and each profile can narrow that surface with `enabled_mcps` and `disabled_mcps`.
+
+Shell command review is configured per profile under `security.shell_review`. The review model is explicit when enabled, and `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object. YA Claw runs shell review in auto-pilot deny mode: commands that need approval are denied, and commands are blocked when the reviewer risk level reaches `deny_risk_level`. Profile values of `on_needs_approval: defer` are coerced to deny at runtime. The default deny threshold is `high`.
+
+```yaml
+profiles:
+  - name: default
+    model: gateway@openai-responses:gpt-5.5
+    model_settings_preset: openai_responses_high
+    model_config_preset: gpt5_270k
+    security:
+      shell_review:
+        enabled: true
+        model: gateway@openai-responses:gpt-5.4-mini
+        model_settings: openai_responses_low
+        on_needs_approval: deny
+        deny_risk_level: high
+```
 
 Session and run requests use the shared workspace configured by `YA_CLAW_WORKSPACE_DIR`. YA Claw maps that host directory to `/workspace` for file operations and shell execution. Workspace guidance loads from `/workspace/AGENTS.md`, and workspace skills are discovered from `/workspace/.agents/skills/`.
 

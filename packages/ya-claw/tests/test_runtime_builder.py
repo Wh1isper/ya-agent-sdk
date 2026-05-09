@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 from ya_agent_sdk.agents.main import stream_agent
+from ya_agent_sdk.context import ShellReviewAction, ShellReviewConfig
 from ya_agent_sdk.environment import SandboxEnvironment, VirtualMount
+from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.skills.toolset import SkillToolset
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 from ya_claw.config import ClawSettings
@@ -366,3 +368,46 @@ def test_runtime_builder_system_prompt_loads_memory_context(tmp_path: Path) -> N
         '<memory-file path="/workspace/memory/20260501-event.md" name="Project Facts" description="Stable project facts" />'
         in system_prompt
     )
+
+
+def test_runtime_builder_forces_claw_shell_review_to_deny_mode(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    binding = _build_workspace_binding(tmp_path / "workspace")
+    environment = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+        shell_review=ShellReviewConfig(
+            enabled=True,
+            model="test:model",
+            model_settings={"openai_reasoning_effort": "low"},
+            on_needs_approval="defer",
+        ),
+    )
+
+    runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=None,
+        session_id="session-1",
+        run_id="run-1",
+        restore_from_run_id=None,
+        dispatch_mode="async",
+        source_kind="api",
+        source_metadata={},
+        claw_metadata={},
+    )
+
+    assert runtime.ctx.security.shell_review is not None
+    assert runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
+    assert runtime.ctx.security.shell_review.deny_risk_level == "high"
+    assert runtime.ctx.security.shell_review.model_settings == {"openai_reasoning_effort": "low"}

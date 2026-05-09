@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from ya_agent_sdk.context import ShellReviewConfig
 from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
 from ya_agent_sdk.subagents.config import SubagentConfig
 
@@ -44,6 +45,7 @@ class ResolvedProfile:
     unified_subagents: bool = False
     need_user_approve_tools: list[str] = field(default_factory=list)
     need_user_approve_mcps: list[str] = field(default_factory=list)
+    shell_review: ShellReviewConfig | None = None
     enabled_mcps: list[str] = field(default_factory=list)
     disabled_mcps: list[str] = field(default_factory=list)
     mcp_servers: dict[str, Any] = field(default_factory=dict)
@@ -129,6 +131,7 @@ class ProfileResolver:
             unified_subagents=bool(record.unified_subagents),
             need_user_approve_tools=list(record.need_user_approve_tools or []),
             need_user_approve_mcps=list(record.need_user_approve_mcps or []),
+            shell_review=_resolve_shell_review(record.model_config_override),
             enabled_mcps=list(record.enabled_mcps or []),
             disabled_mcps=list(record.disabled_mcps or []),
             mcp_servers=normalize_profile_mcp_servers(record.mcp_servers),
@@ -167,6 +170,18 @@ class ProfileResolver:
                 )
             )
         return resolved_configs
+
+
+def _resolve_shell_review(model_config_override: dict[str, Any] | None) -> ShellReviewConfig | None:
+    if not isinstance(model_config_override, dict):
+        return None
+    raw_security = model_config_override.get("security")
+    if isinstance(raw_security, dict) and isinstance(raw_security.get("shell_review"), dict):
+        return ShellReviewConfig.model_validate(raw_security["shell_review"])
+    raw_legacy = model_config_override.get("shell_review")
+    if isinstance(raw_legacy, dict):
+        return ShellReviewConfig.model_validate(raw_legacy)
+    return None
 
 
 def _resolve_inheritable_model_settings(preset_or_dict: str | dict[str, Any] | None) -> dict[str, Any] | None:
@@ -211,7 +226,7 @@ def _apply_seed_row(record: ProfileRecord, row: dict[str, Any], *, source_checks
     record.model_settings_preset = _normalize_optional_str(row.get("model_settings_preset"))
     record.model_settings_override = _normalize_optional_dict(row.get("model_settings_override"))
     record.model_config_preset = _normalize_optional_str(row.get("model_config_preset"))
-    record.model_config_override = _normalize_optional_dict(row.get("model_config_override"))
+    record.model_config_override = _resolve_seed_model_config_override(row)
     record.system_prompt = _normalize_optional_str(row.get("system_prompt"))
     record.builtin_toolsets = _resolve_seed_builtin_toolsets(row)
     record.subagents = _normalize_optional_dict_list(row.get("subagents")) or []
@@ -233,6 +248,16 @@ def _resolve_builtin_toolsets(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip() != ""]
     return list(_DEFAULT_BUILTIN_TOOLSETS)
+
+
+def _resolve_seed_model_config_override(row: dict[str, Any]) -> dict[str, Any] | None:
+    override = _normalize_optional_dict(row.get("model_config_override")) or {}
+    security = _normalize_optional_dict(row.get("security"))
+    if security is not None:
+        merged_security = dict(override.get("security") or {}) if isinstance(override.get("security"), dict) else {}
+        merged_security.update(security)
+        override["security"] = merged_security
+    return override or None
 
 
 def _resolve_seed_builtin_toolsets(row: dict[str, Any]) -> list[str]:

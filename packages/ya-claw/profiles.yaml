@@ -4,6 +4,13 @@ profiles:
   model: gateway@openai-responses:gpt-5.5
   model_settings_preset: openai_responses_high
   model_config_preset: gpt5_270k
+  security:
+    shell_review:
+      enabled: false
+      model: gateway@openai-responses:gpt-5.4-mini
+      model_settings: openai_responses_low
+      on_needs_approval: deny
+      deny_risk_level: high
   system_prompt: |-
     <agent_behavior>
 

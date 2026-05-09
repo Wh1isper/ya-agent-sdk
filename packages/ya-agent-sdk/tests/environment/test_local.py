@@ -360,7 +360,10 @@ def _process_is_running(pid: int) -> bool:
 
     proc_stat = Path(f"/proc/{pid}/stat")
     if proc_stat.exists():
-        parts = proc_stat.read_text().split()
+        try:
+            parts = proc_stat.read_text().split()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
         if len(parts) >= 3 and parts[2] == "Z":
             return False
 
