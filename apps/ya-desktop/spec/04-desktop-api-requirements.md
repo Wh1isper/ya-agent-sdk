@@ -49,6 +49,9 @@ Example response:
     "workspace_shell": true,
     "memory": true,
     "bridges": true,
+    "notifications": true,
+    "notification_websocket": true,
+    "hitl": true,
     "sandboxed_shell": true,
     "remote_rpc_environment": false
   },
@@ -133,17 +136,80 @@ GET /api/v1/runs/{run_id}/trace
 
 Desktop depends on AGUI-aligned replay events for stream rendering and run replay.
 
-## Run Control
+## Global Notifications
 
-Desktop needs cancellation and retry-oriented lifecycle controls.
+Desktop needs a connection-level realtime channel for session and run state movement outside the currently streamed run. Claw already exposes a global SSE notification stream:
+
+```http
+GET /api/v1/claw/notifications
+```
+
+Desktop should prefer a WebSocket surface when the server advertises `notification_websocket=true`:
+
+```http
+GET /api/v1/claw/ws
+```
+
+The WebSocket should carry the same notification payloads as SSE, plus subscription commands, heartbeat, and HITL responses. Desktop uses notifications to update session lists, tray state, pending interaction badges, and active run cards immediately.
+
+Key notification payloads:
+
+```json
+{
+  "id": "42",
+  "type": "run.updated",
+  "created_at": "2026-05-09T15:00:00Z",
+  "payload": {
+    "session_id": "session_123",
+    "run_id": "run_456",
+    "status": "running",
+    "sequence_no": 4
+  }
+}
+```
+
+Desktop should track `Last-Event-ID` or `last_notification_id` per connection and refresh HTTP read models when replay gaps occur.
+
+Detailed design lives in [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md).
+
+## Run Control and HITL
+
+Desktop needs cancellation, retry-oriented lifecycle controls, steering, and approval response endpoints.
 
 ```http
 POST /api/v1/runs/{run_id}:cancel
 POST /api/v1/runs/{run_id}:pause
 POST /api/v1/runs/{run_id}:resume
+POST /api/v1/runs/{run_id}/interactions/{interaction_id}:respond
 ```
 
-Approval endpoints can be added later as a runtime policy feature. The desktop MVP should use path-bounded file operations plus sandboxed shell execution as the main safety model.
+Existing Claw control routes use slash-style actions for run and session control:
+
+```http
+POST /api/v1/runs/{run_id}/cancel
+POST /api/v1/runs/{run_id}/interrupt
+POST /api/v1/runs/{run_id}/steer
+POST /api/v1/sessions/{session_id}/cancel
+POST /api/v1/sessions/{session_id}/interrupt
+POST /api/v1/sessions/{session_id}/steer
+```
+
+Desktop should support `waiting_for_user` as a visible run/session state when Claw exposes it, and an `active_interactions` overlay when the server keeps status as `running`.
+
+HITL response shape should align with the SDK `UserInteraction` model:
+
+```json
+{
+  "responses": [
+    {
+      "tool_call_id": "call_abc",
+      "approved": true,
+      "reason": null,
+      "user_input": null
+    }
+  ]
+}
+```
 
 ## Input Context
 

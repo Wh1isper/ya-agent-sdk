@@ -17,9 +17,14 @@ apps/ya-desktop/
       App.tsx
     claw/
       ClawClient.ts
+      ClawRealtimeClient.ts
       ConnectionRegistry.ts
       LocalDaemonManager.ts
       RemoteConnectionManager.ts
+    hitl/
+      ApprovalCenter.tsx
+      ApprovalCard.tsx
+      approvalStore.ts
     launcher/
       QuickLauncher.tsx
     chat/
@@ -49,6 +54,7 @@ apps/ya-desktop/
     04-desktop-api-requirements.md
     05-desktop-app-structure.md
     06-sandboxed-workspace-provider.md
+    07-websocket-notifications-and-hitl.md
 ```
 
 ## Frontend Modules
@@ -63,6 +69,7 @@ Responsibilities:
 - active workspace provider
 - theme and settings provider
 - global run notification state
+- pending interaction state and routing
 - window mode routing between launcher and full chat
 
 ### `claw/`
@@ -72,11 +79,26 @@ Owns API clients and connection orchestration.
 Responsibilities:
 
 - `ClawClient` HTTP/SSE client
+- `ClawRealtimeClient` WebSocket client for notifications, subscriptions, heartbeat, and HITL responses
 - connection registry
 - local daemon lifecycle state
 - remote connection health checks
 - cloud auth context
 - capability caching
+- per-connection notification cursor storage
+
+### `hitl/`
+
+Owns human-in-the-loop approval surfaces.
+
+Responsibilities:
+
+- pending approval queue
+- tool approval cards
+- command, diff, and workspace context previews
+- approve, reject, and user-input response actions
+- tray notification click routing
+- audit metadata display
 
 ### `launcher/`
 
@@ -90,6 +112,7 @@ Responsibilities:
 - command suggestions
 - create or continue session
 - submit normal run `input_parts`
+- show compact approval prompts when a pending interaction targets the active connection
 
 ### `chat/`
 
@@ -105,6 +128,7 @@ Responsibilities:
 - file diff viewer
 - artifact cards
 - shell status cards
+- HITL approval cards inline with run context
 
 ### `settings/`
 
@@ -196,6 +220,7 @@ type DesktopContextDraft = {
 6. Add tray status and local daemon lifecycle controls.
 7. Add local workspace selection.
 8. Add sandboxed shell status and setup guidance for local workspaces.
+9. Connect to global notifications through SSE or WebSocket and update the session read model.
 
 ### Phase 2: Multi-Connection Desktop
 
@@ -206,6 +231,7 @@ type DesktopContextDraft = {
 5. Gate UI features by capabilities.
 6. Add OS keychain storage for tokens.
 7. Add remote session and workspace browsing.
+8. Add WebSocket notification support when `notification_websocket=true`.
 
 ### Phase 3: Packaged Local Sidecar
 
@@ -232,3 +258,11 @@ type DesktopContextDraft = {
 4. Add stdout/stderr streaming over WebSocket.
 5. Add cancellation and reconnect semantics.
 6. Add local and remote audit logs.
+
+### Phase 6: Desktop HITL
+
+1. Add pending interaction storage and notification handling to Claw.
+2. Add `run.waiting_for_user` and `interaction.requested` notifications.
+3. Add WebSocket and HTTP response paths for approvals.
+4. Add Desktop approval center, approval cards, and native notifications.
+5. Record decision audit metadata in Claw and Desktop diagnostics.

@@ -17,24 +17,26 @@ The same desktop client can use:
 - A single Claw API client powers local, remote, and cloud connections.
 - Desktop keeps multiple saved connection profiles and manages the local sidecar lifecycle.
 - Local execution uses controlled file operations plus a sandboxed shell by default.
+- Desktop should own the richest HITL interaction surface through Claw notifications and approval response APIs.
 
 ## Section Map
 
-| Section | Document                                                                 | Topic                                                                        |
-| ------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| 00      | [00-overview.md](00-overview.md)                                         | product surfaces, high-level architecture, and design principles             |
-| 01      | [01-local-sidecar-packaging.md](01-local-sidecar-packaging.md)           | local `ya-clawd` sidecar lifecycle, user data layout, and packaging strategy |
-| 02      | [02-connection-model.md](02-connection-model.md)                         | local, remote, and cloud connection registry plus unified Claw client        |
-| 03      | [03-cloud-and-rpc-workspaces.md](03-cloud-and-rpc-workspaces.md)         | cloud workspace mode and remote agent with local RPC tools                   |
-| 04      | [04-desktop-api-requirements.md](04-desktop-api-requirements.md)         | Claw API additions needed by desktop clients                                 |
-| 05      | [05-desktop-app-structure.md](05-desktop-app-structure.md)               | Tauri app structure, system integrations, and implementation phases          |
-| 06      | [06-sandboxed-workspace-provider.md](06-sandboxed-workspace-provider.md) | local workspace provider with sandboxed shell for Linux and macOS            |
+| Section | Document                                                                         | Topic                                                                        |
+| ------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 00      | [00-overview.md](00-overview.md)                                                 | product surfaces, high-level architecture, and design principles             |
+| 01      | [01-local-sidecar-packaging.md](01-local-sidecar-packaging.md)                   | local `ya-clawd` sidecar lifecycle, user data layout, and packaging strategy |
+| 02      | [02-connection-model.md](02-connection-model.md)                                 | local, remote, and cloud connection registry plus unified Claw client        |
+| 03      | [03-cloud-and-rpc-workspaces.md](03-cloud-and-rpc-workspaces.md)                 | cloud workspace mode and remote agent with local RPC tools                   |
+| 04      | [04-desktop-api-requirements.md](04-desktop-api-requirements.md)                 | Claw API additions needed by desktop clients                                 |
+| 05      | [05-desktop-app-structure.md](05-desktop-app-structure.md)                       | Tauri app structure, system integrations, and implementation phases          |
+| 06      | [06-sandboxed-workspace-provider.md](06-sandboxed-workspace-provider.md)         | local workspace provider with sandboxed shell for Linux and macOS            |
+| 07      | [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md) | websocket notifications, session state transfer, and desktop HITL            |
 
 ## Near-Term Decisions
 
 - Use Tauri + React for YA Desktop.
 - Use local `ya-clawd` sidecar for default runtime.
-- Use Claw HTTP/SSE APIs as the UI runtime contract.
+- Use Claw HTTP/SSE/WebSocket APIs as the UI runtime contract.
 - Add connection registry from the beginning.
 - Make remote Claw and cloud Claw first-class connection types.
 - Treat remote agent with local RPC tools as a future workspace provider.
