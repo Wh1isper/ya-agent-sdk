@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import http
 import json
 from collections.abc import Coroutine
 from concurrent.futures import Future
@@ -18,6 +20,8 @@ from ya_claw.config import ClawSettings
 from ya_claw.controller.hitl import HitlController
 from ya_claw.controller.models import ActiveInteraction
 from ya_claw.notifications import NotificationHub
+
+_LARK_CARD_ACTION_ACK = {"toast": {"type": "info", "content": "YA Claw is processing your response."}}
 
 
 class LarkBridgeAdapter(BridgeAdapter):
@@ -277,22 +281,7 @@ class LarkBridgeAdapter(BridgeAdapter):
         from lark_oapi.ws import Client
 
         def handle_event(data: object) -> None:
-            raw_event = _marshal_lark_payload(lark, data)
-            action = normalize_lark_action(raw_event)
-            if action is not None:
-                logger.debug("Accepted Lark HITL action event_id={}", action.event_id)
-                self._submit_from_sdk_thread(self._handler.handle_action(action))
-                return
-            message = normalize_lark_event(raw_event)
-            if message is None:
-                return
-            logger.debug(
-                "Accepted Lark bridge event event_id={} chat_id={} message_id={}",
-                message.event_id,
-                message.chat_id,
-                message.message_id,
-            )
-            self._submit_from_sdk_thread(self._handler.handle_message(message))
+            self._handle_lark_payload(lark, data)
 
         event_handler_builder = lark.EventDispatcherHandler.builder("", "", lark.LogLevel.INFO)
         for event_type in self._settings.resolved_bridge_lark_event_types:
@@ -307,8 +296,61 @@ class LarkBridgeAdapter(BridgeAdapter):
             auto_reconnect=True,
         )
         self._client = client
+        self._install_card_action_handler(client, lark)
         with contextlib.suppress(RuntimeError):
             client.start()
+
+    def _handle_lark_payload(self, lark_module: Any, data: object) -> None:
+        raw_event = _marshal_lark_payload(lark_module, data)
+        action = normalize_lark_action(raw_event)
+        if action is not None:
+            logger.debug("Accepted Lark HITL action event_id={}", action.event_id)
+            self._submit_from_sdk_thread(self._handler.handle_action(action))
+            return
+        message = normalize_lark_event(raw_event)
+        if message is None:
+            return
+        logger.debug(
+            "Accepted Lark bridge event event_id={} chat_id={} message_id={}",
+            message.event_id,
+            message.chat_id,
+            message.message_id,
+        )
+        self._submit_from_sdk_thread(self._handler.handle_message(message))
+
+    def _install_card_action_handler(self, client: Any, lark_module: Any) -> None:
+        async def handle_card_action_frame(frame: Any, headers: Any, payload: bytes) -> None:
+            self._handle_lark_payload(lark_module, payload)
+            frame.payload = _marshal_lark_ws_response(lark_module, _LARK_CARD_ACTION_ACK)
+            await client._write_message(frame.SerializeToString())
+
+        client._handle_card_action_frame = handle_card_action_frame
+        original_handle_message = client._handle_message
+
+        async def handle_message_with_card_actions(message: bytes) -> None:
+            from lark_oapi.ws.enum import MessageType
+            from lark_oapi.ws.exception import HeaderNotFoundException
+            from lark_oapi.ws.pb.pbbp2_pb2 import Frame
+
+            frame = Frame()
+            try:
+                frame.ParseFromString(message)
+                header_map = {header.key: header.value for header in frame.headers}
+                if header_map.get("type") == MessageType.CARD.value:
+                    await client._handle_card_action_frame(frame, frame.headers, frame.payload)
+                    return
+            except HeaderNotFoundException:
+                raise
+            except Exception:
+                logger.exception("Failed to handle Lark card action frame.")
+                frame.payload = _marshal_lark_ws_response(
+                    lark_module, None, status_code=http.HTTPStatus.INTERNAL_SERVER_ERROR
+                )
+                await client._write_message(frame.SerializeToString())
+                return
+            await original_handle_message(message)
+
+        client._handle_message = handle_message_with_card_actions
 
     def _submit_from_sdk_thread(self, coroutine: Coroutine[Any, Any, object]) -> None:
         if self._stopping:
@@ -371,9 +413,26 @@ def _chat_id_from_payload(payload: dict[str, Any]) -> str | None:
 
 
 def _marshal_lark_payload(lark_module: Any, payload: Any) -> dict[str, Any]:
+    if isinstance(payload, bytes | bytearray):
+        parsed_bytes = lark_module.JSON.unmarshal(bytes(payload), dict)
+        return parsed_bytes if isinstance(parsed_bytes, dict) else {}
     raw_json = lark_module.JSON.marshal(payload)
     parsed = lark_module.JSON.unmarshal(raw_json, dict)
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _marshal_lark_ws_response(
+    lark_module: Any,
+    data: dict[str, Any] | None,
+    *,
+    status_code: int = http.HTTPStatus.OK,
+) -> bytes:
+    from lark_oapi.ws.model import Response
+
+    response = Response(code=int(status_code))
+    if data is not None:
+        response.data = base64.b64encode(lark_module.JSON.marshal(data).encode("utf-8"))
+    return lark_module.JSON.marshal(response).encode("utf-8")
 
 
 def _stop_lark_ws_loop() -> None:
