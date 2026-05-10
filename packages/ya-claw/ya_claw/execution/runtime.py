@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from pydantic_ai import DeferredToolRequests
 from y_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.context import (
@@ -126,6 +127,7 @@ class ClawRuntimeBuilder:
         return create_agent(
             model=profile.model,
             model_settings=cast(Any, profile.model_settings),
+            output_type=[str, DeferredToolRequests],
             context_type=ClawAgentContext,
             model_cfg=self._build_model_config(profile),
             env=environment,

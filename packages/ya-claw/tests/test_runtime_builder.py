@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic_ai import DeferredToolRequests
 from ya_agent_sdk.agents.main import stream_agent
 from ya_agent_sdk.context import ShellReviewAction, ShellReviewConfig
 from ya_agent_sdk.environment import SandboxEnvironment, VirtualMount
@@ -412,6 +413,8 @@ def test_runtime_builder_preserves_claw_shell_review_defer_mode_for_api_runs(tmp
     assert runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DEFER
     assert runtime.ctx.security.shell_review.risk_threshold == "extra_high"
     assert runtime.ctx.security.shell_review.model_settings == {"openai_reasoning_effort": "low"}
+    assert runtime.agent.output_type == [str, DeferredToolRequests]
+    assert runtime.agent._output_schema.allows_deferred_tools is True
 
 
 def test_runtime_builder_uses_deny_policy_for_unattended_shell_review(tmp_path: Path) -> None:
