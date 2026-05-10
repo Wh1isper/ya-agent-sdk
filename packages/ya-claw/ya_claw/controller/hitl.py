@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -203,10 +204,11 @@ class HitlController:
         batch = await self.get_pending_batch_for_run(db_session, run_id)
         if batch is None:
             return
+        now = datetime.now(UTC)
         batch.status = "completed"
         batch.current_interaction_id = None
-        batch.completed_at = datetime.now(UTC)
-        batch.updated_at = batch.completed_at
+        batch.completed_at = now
+        batch.updated_at = now
         await db_session.flush()
 
     async def enqueue_deferred_input(
@@ -443,7 +445,7 @@ def _interaction_model_from_record(record: HitlInteractionRecord) -> ActiveInter
         description=record.description,
         arguments_preview=record.arguments_preview,
         metadata=dict(record.interaction_metadata),
-        status=record.status,
+        status=_interaction_status(record.status),
         sequence_no=record.sequence_no,
         total_count=record.total_count,
         created_at=record.created_at,
@@ -458,14 +460,20 @@ def _current_interaction(interactions: list[ActiveInteraction]) -> ActiveInterac
     return None
 
 
+def _interaction_status(value: str) -> Literal["pending", "approved", "denied"]:
+    if value == "approved" or value == "denied":
+        return value
+    return "pending"
+
+
 def _serialize_deferred_requests(value: DeferredToolRequests | dict[str, Any] | None) -> dict[str, Any] | None:
     if value is None:
         return None
     if isinstance(value, dict):
         return dict(value)
-    if hasattr(value, "model_dump"):
-        dumped = value.model_dump(mode="json")
-        return dumped if isinstance(dumped, dict) else {"value": dumped}
+    if is_dataclass(value) and not isinstance(value, type):
+        dumped = asdict(value)
+        return cast(dict[str, Any], dumped) if isinstance(dumped, dict) else {"value": dumped}
     return {"repr": repr(value)}
 
 

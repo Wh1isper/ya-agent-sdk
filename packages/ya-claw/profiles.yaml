@@ -11,6 +11,7 @@ profiles:
       model_settings: openai_responses_low
       on_needs_approval: deny
       risk_threshold: extra_high
+      unattended_risk_threshold: high
   system_prompt: |-
     <agent_behavior>
 

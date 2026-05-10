@@ -9,7 +9,7 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from ya_agent_sdk.context import ShellReviewConfig
+from ya_agent_sdk.context import ShellReviewConfig, ShellReviewRiskLevel
 from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
 from ya_agent_sdk.subagents.config import SubagentConfig
 
@@ -19,6 +19,10 @@ from ya_claw.orm.tables import ProfileRecord
 
 _DEFAULT_BUILTIN_TOOLSETS = ["core"]
 _DEFAULT_PROFILE_NAME = "default"
+
+
+class ClawShellReviewConfig(ShellReviewConfig):
+    unattended_risk_threshold: ShellReviewRiskLevel | None = None
 
 
 class InlineSubagentDefinition(BaseModel):
@@ -45,7 +49,7 @@ class ResolvedProfile:
     unified_subagents: bool = False
     need_user_approve_tools: list[str] = field(default_factory=list)
     need_user_approve_mcps: list[str] = field(default_factory=list)
-    shell_review: ShellReviewConfig | None = None
+    shell_review: ClawShellReviewConfig | None = None
     enabled_mcps: list[str] = field(default_factory=list)
     disabled_mcps: list[str] = field(default_factory=list)
     mcp_servers: dict[str, Any] = field(default_factory=dict)
@@ -172,7 +176,7 @@ class ProfileResolver:
         return resolved_configs
 
 
-def _resolve_shell_review(model_config_override: dict[str, Any] | None) -> ShellReviewConfig | None:
+def _resolve_shell_review(model_config_override: dict[str, Any] | None) -> ClawShellReviewConfig | None:
     if not isinstance(model_config_override, dict):
         return None
     raw_security = model_config_override.get("security")
@@ -184,10 +188,10 @@ def _resolve_shell_review(model_config_override: dict[str, Any] | None) -> Shell
     return None
 
 
-def _resolve_claw_shell_review_config(raw: dict[str, Any]) -> ShellReviewConfig:
+def _resolve_claw_shell_review_config(raw: dict[str, Any]) -> ClawShellReviewConfig:
     config = dict(raw)
     config.setdefault("risk_threshold", "extra_high")
-    return ShellReviewConfig.model_validate(config)
+    return ClawShellReviewConfig.model_validate(config)
 
 
 def _resolve_inheritable_model_settings(preset_or_dict: str | dict[str, Any] | None) -> dict[str, Any] | None:

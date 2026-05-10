@@ -38,6 +38,7 @@ profiles:
         model_settings: openai_responses_low
         on_needs_approval: deny
         risk_threshold: extra_high
+        unattended_risk_threshold: high
     system_prompt: |
       You are the profile-scoped execution agent.
     builtin_toolsets: [filesystem, shell]
@@ -97,6 +98,7 @@ profiles:
     assert isinstance(resolved_profile.shell_review.model_settings, dict)
     assert resolved_profile.shell_review.model_settings["openai_reasoning_effort"] == "low"
     assert resolved_profile.shell_review.risk_threshold == "extra_high"
+    assert resolved_profile.shell_review.unattended_risk_threshold == "high"
     assert resolved_profile.system_prompt == "You are the profile-scoped execution agent."
     assert resolved_profile.builtin_toolsets == ["filesystem", "shell"]
     assert resolved_profile.need_user_approve_mcps == ["context7"]
@@ -140,6 +142,7 @@ profiles:
         assert record.model_config_override is not None
         assert record.model_config_override["security"]["shell_review"]["model_settings"] == "openai_responses_low"
         assert record.model_config_override["security"]["shell_review"]["risk_threshold"] == "extra_high"
+        assert record.model_config_override["security"]["shell_review"]["unattended_risk_threshold"] == "high"
         assert record.builtin_toolsets == ["filesystem", "shell"]
         assert record.need_user_approve_mcps == ["context7"]
         assert record.enabled_mcps == ["context7", "github"]

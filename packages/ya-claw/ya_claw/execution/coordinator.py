@@ -18,6 +18,7 @@ from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, stream_agen
 from ya_agent_sdk.context import BusMessage, ResumableState
 from ya_agent_sdk.environment import SandboxEnvironment
 from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent
+from ya_agent_sdk.toolsets.core.base import UserInteraction as SdkUserInteraction
 
 from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
@@ -642,7 +643,18 @@ class RunCoordinator:
         )
         try:
             user_interactions = await self._runtime_state.wait_hitl_batch(run_id)
-            results = await runtime.core_toolset.process_hitl_call(runtime.ctx, user_interactions, message_history)
+            if runtime.core_toolset is None:
+                raise RuntimeError("Core toolset is unavailable for HITL processing.")
+            sdk_user_interactions = [
+                SdkUserInteraction(
+                    tool_call_id=interaction.tool_call_id,
+                    approved=interaction.approved,
+                    reason=interaction.reason,
+                    user_input=interaction.user_input,
+                )
+                for interaction in user_interactions
+            ]
+            results = await runtime.core_toolset.process_hitl_call(runtime.ctx, sdk_user_interactions, message_history)
             await self._forward_deferred_hitl_inputs(run_id=run_id, batch_id=batch_id, runtime=runtime)
             return results
         finally:

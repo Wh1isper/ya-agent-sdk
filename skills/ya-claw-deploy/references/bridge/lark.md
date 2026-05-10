@@ -12,7 +12,7 @@ YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark
 YA_CLAW_BRIDGE_LARK_APP_ID=cli_xxx
 YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE=default
-YA_CLAW_BRIDGE_LARK_EVENT_TYPES=im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,drive.notice.comment_add_v1
+YA_CLAW_BRIDGE_LARK_EVENT_TYPES=im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,drive.notice.comment_add_v1,card.action.trigger
 YA_CLAW_BRIDGE_LARK_REPLY_IDENTITY=bot
 YA_CLAW_BRIDGE_LARK_DOMAIN=https://open.feishu.cn
 ```
@@ -27,8 +27,9 @@ Configure the Lark/Feishu app for websocket event delivery and subscribe to the 
 - `im.chat.member.user.added_v1`
 - `im.message.receive_v1`
 - `drive.notice.comment_add_v1`
+- `card.action.trigger`
 
-Grant the app permissions needed for the selected event subscriptions and for replies/actions performed by `lark-cli` from the agent workspace.
+Grant the app permissions needed for the selected event subscriptions and for replies/actions performed by `lark-cli` from the agent workspace. `card.action.trigger` is required for Lark approval card buttons.
 
 ## Conversation Mapping
 
@@ -99,6 +100,21 @@ rm -f /var/lib/ya-claw/data/docker-workspace-containers/workspace.json
 
 The official Docker workspace image includes `lark-cli` and copies Lark-related skills into `/workspace/.agents/skills/` at container startup.
 
+## HITL Approval Cards
+
+When a bridge-triggered run enters HITL, the Lark adapter sends one interactive approval card to the same `chat_id` that produced the inbound event. Private chat events receive the card in the private chat; group chat events receive the card in the group. The adapter stores the Lark card message ID in `bridge_hitl_messages` and patches that same card as the current interaction advances.
+
+Card behavior:
+
+- one active approval card per run
+- shell review renders command, risk, cwd, and reason fields
+- generic tool/MCP approval renders tool name and arguments
+- command and arguments use plain text blocks for reliable Lark rendering
+- approve/deny buttons emit `card.action.trigger` with an interaction token
+- when the batch completes, the card is patched to the completed state
+
+Messages sent to the chat while an approval card is pending are stored in `hitl_deferred_inputs`. After the user approves or denies every pending interaction, YA Claw injects the queued messages back into the same running agent in receive order.
+
 ## Agent Reply Contract
 
 The bridge-created run prompt includes the source message ID and an idempotency key. The recommended reply shape is:
@@ -113,9 +129,16 @@ lark-cli im +messages-reply \
 
 Set `YA_CLAW_BRIDGE_LARK_REPLY_IDENTITY=bot` for the default bot reply identity. Use app permissions and workspace credentials that match the reply identity and action surface.
 
-## Manual Mode Status
+## Manual Mode
 
-`YA_CLAW_BRIDGE_DISPATCH_MODE=manual` starts the HTTP server and leaves `BridgeSupervisor` outside the server lifespan. Current CLI bridge commands print requested actions as placeholders for the separated worker model:
+`YA_CLAW_BRIDGE_DISPATCH_MODE=manual` starts the HTTP server and leaves `BridgeSupervisor` outside the server lifespan. External bridge workers can post normalized payloads to the service:
+
+```bash
+POST /api/v1/bridges/inbound/messages
+POST /api/v1/bridges/inbound/actions
+```
+
+These endpoints route through the same controller used by embedded mode, so dedupe, conversation mapping, HITL approval responses, and deferred bridge input behavior stay consistent. Current CLI bridge commands remain operator-facing placeholders:
 
 ```bash
 uv run --package ya-claw ya-claw bridge ls
@@ -123,7 +146,7 @@ uv run --package ya-claw ya-claw bridge run lark
 uv run --package ya-claw ya-claw bridge serve lark
 ```
 
-Use embedded mode for active Lark websocket ingestion in current deployments.
+Embedded mode owns active Lark websocket ingestion inside the YA Claw service process.
 
 ## References
 

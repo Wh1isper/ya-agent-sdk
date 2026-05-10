@@ -59,7 +59,7 @@ rm -f /var/lib/ya-claw/data/docker-workspace-containers/workspace.json
 Confirm the Lark/Feishu app subscribes to the event types configured in YA Claw:
 
 ```env
-YA_CLAW_BRIDGE_LARK_EVENT_TYPES=im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,drive.notice.comment_add_v1
+YA_CLAW_BRIDGE_LARK_EVENT_TYPES=im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,drive.notice.comment_add_v1,card.action.trigger
 ```
 
 Align the Lark app subscription list with the YA Claw allowlist so each intended event type reaches the adapter handler.
@@ -87,13 +87,13 @@ Bridge dedupe uses these keys:
 1. `(adapter, tenant_key, event_id)`
 2. `(adapter, tenant_key, external_message_id)`
 
-Repeated Lark delivery should reuse the existing bridge event result. Inspect logs and database rows for `duplicate`, `submitted`, `queued`, and `failed` statuses.
+Repeated Lark delivery should reuse the existing bridge event result. Inspect logs and database rows for `duplicate`, `submitted`, `queued`, `steered`, `deferred`, and `failed` statuses.
 
 ## Conversation Checks
 
 Lark message events map chat conversations to YA Claw sessions by `(adapter, tenant_key, chat_id)`. Drive and generic events use stable fallback keys for payloads that carry Drive tokens or event IDs.
 
-A new chat creates one bridge conversation row and one YA Claw session. Later events with the same conversation key create runs under the same session.
+A new chat creates one bridge conversation row and one YA Claw session. Later events with the same conversation key create runs under the same session, steer an active run, or defer input when the active run is waiting on HITL.
 
 ## Troubleshooting
 
@@ -131,9 +131,25 @@ Check profile configuration, model provider credentials, execution supervisor st
 
 Check `lark-cli` availability and credentials in the workspace container or local workspace environment. Confirm the Lark app has reply permissions for the chat/message type and that the agent uses the message ID and idempotency key provided in the bridge prompt.
 
+### HITL Card Does Not Appear
+
+Confirm `card.action.trigger` is included in `YA_CLAW_BRIDGE_LARK_EVENT_TYPES` and subscribed in the Lark app. Check that the run notification has `session_status_reason=hitl_pending` and `active_interactions` in status detail. Shell review cards require profile shell review `on_needs_approval=defer`; generic tool/MCP approval cards require profile `need_user_approve_tools` or `need_user_approve_mcps` on an interactive run.
+
+### HITL Card Button Does Not Resolve
+
+Confirm Lark card action events reach the adapter and normalize to a `BridgeInboundAction`. Embedded bridge calls the shared controller directly; manual bridge workers should post normalized actions to `POST /api/v1/bridges/inbound/actions`. Successful responses publish `run.hitl.responded` and patch the existing card to the next interaction or completed state.
+
+### Messages During HITL
+
+Bridge messages received while a run is HITL pending should create `bridge_events.status=deferred` and rows in `hitl_deferred_inputs`. After all interactions resolve, the coordinator consumes pending deferred input rows in sequence order and sends them to the agent message bus.
+
+### Unattended Schedule and Heartbeat Runs
+
+Schedule and heartbeat runs use unattended approval behavior. Shell review `defer` becomes `deny`, and generic tool/MCP approval lists are cleared for that run. Configure profile-level `unattended_risk_threshold` for agent-specific background behavior. Use reduced built-in toolsets and limited MCP access for background profiles.
+
 ### Manual Command Status
 
-The current manual bridge CLI commands are placeholders for separated worker flows. Embedded dispatch is the active Lark websocket ingestion path.
+Manual bridge CLI commands are placeholders for separated worker flows. Use the bridge inbound HTTP endpoints for normalized external events in manual mode.
 
 ## References
 

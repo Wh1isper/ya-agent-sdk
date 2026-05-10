@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ya_claw.controller.models import ActiveInteraction
@@ -13,42 +14,49 @@ def build_hitl_card(interaction: ActiveInteraction | None, *, completed: bool = 
                 "template": "green",
                 "title": {"tag": "plain_text", "content": "YA Claw approval completed"},
             },
-            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "All pending approvals were handled."}}],
+            "elements": [
+                {"tag": "div", "text": {"tag": "plain_text", "content": "All pending approvals were handled."}}
+            ],
         }
 
     metadata = interaction.metadata
     template = _template_for_interaction(interaction)
     detail_lines = [
-        f"**Progress**: {interaction.sequence_no} / {interaction.total_count}",
-        f"**Tool**: `{interaction.tool_name or 'unknown'}`",
+        f"**Progress:** {interaction.sequence_no} / {interaction.total_count}",
+        f"**Tool:** {interaction.tool_name or 'unknown'}",
     ]
     risk_level = metadata.get("risk_level")
     if isinstance(risk_level, str) and risk_level.strip():
-        detail_lines.append(f"**Risk**: `{risk_level.strip()}`")
+        detail_lines.append(f"**Risk:** {risk_level.strip()}")
     reason = interaction.description or metadata.get("reason")
     if isinstance(reason, str) and reason.strip():
-        detail_lines.append(f"**Reason**: {reason.strip()}")
+        detail_lines.append(f"**Reason:** {reason.strip()}")
     cwd = metadata.get("cwd")
     if isinstance(cwd, str) and cwd.strip():
-        detail_lines.append(f"**cwd**: `{cwd.strip()}`")
+        detail_lines.append(f"**cwd:** {cwd.strip()}")
 
     elements: list[dict[str, Any]] = [
         {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(detail_lines)}},
     ]
     command = metadata.get("command")
     if isinstance(command, str) and command.strip():
-        elements.append({
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": f"**Command**\n```bash\n{_truncate(command.strip(), 1800)}\n```"},
-        })
+        elements.extend([
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**Command**"}},
+            {"tag": "div", "text": {"tag": "plain_text", "content": _truncate(command.strip(), 1800)}},
+        ])
     elif interaction.arguments_preview is not None:
-        elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"**Arguments**\n```json\n{_truncate(str(interaction.arguments_preview), 1800)}\n```",
+        elements.extend([
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**Arguments**"}},
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "plain_text",
+                    "content": _truncate(_format_arguments(interaction.arguments_preview), 1800),
+                },
             },
-        })
+        ])
 
     elements.append({
         "tag": "action",
@@ -89,6 +97,13 @@ def _template_for_interaction(interaction: ActiveInteraction) -> str:
     if interaction.kind == "shell_review":
         return "orange"
     return "blue"
+
+
+def _format_arguments(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    except TypeError:
+        return str(value)
 
 
 def _truncate(value: str, limit: int) -> str:

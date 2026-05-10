@@ -74,16 +74,17 @@ Use the same values for systemd or custom container deployments when memory resi
 
 ## Schedule and Heartbeat Settings
 
-| Variable                             | Default                                    | Purpose                                                                  |
-| ------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------ |
-| `YA_CLAW_SCHEDULE_DISPATCH_ENABLED`  | `true`                                     | Enables cron schedule dispatch                                           |
-| `YA_CLAW_SCHEDULE_TICK_SECONDS`      | `5`                                        | Dispatcher scan interval in seconds                                      |
-| `YA_CLAW_SCHEDULE_MAX_DUE_PER_TICK`  | `20`                                       | Maximum due schedule fires processed per scan                            |
-| `YA_CLAW_HEARTBEAT_ENABLED`          | `false`                                    | Enables the heartbeat dispatcher                                         |
-| `YA_CLAW_HEARTBEAT_INTERVAL_SECONDS` | `300`                                      | Seconds between heartbeat fires                                          |
-| `YA_CLAW_HEARTBEAT_PROFILE`          | unset                                      | Profile used for heartbeat runs; falls back to `YA_CLAW_DEFAULT_PROFILE` |
-| `YA_CLAW_HEARTBEAT_PROMPT`           | `Run heartbeat according to HEARTBEAT.md.` | Prompt submitted for heartbeat runs                                      |
-| `YA_CLAW_HEARTBEAT_ON_ACTIVE`        | `skip`                                     | Active-run policy for heartbeat dispatch                                 |
+| Variable                                         | Default                                    | Purpose                                                                  |
+| ------------------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------ |
+| `YA_CLAW_SCHEDULE_DISPATCH_ENABLED`              | `true`                                     | Enables cron schedule dispatch                                           |
+| `YA_CLAW_SCHEDULE_TICK_SECONDS`                  | `5`                                        | Dispatcher scan interval in seconds                                      |
+| `YA_CLAW_SCHEDULE_MAX_DUE_PER_TICK`              | `20`                                       | Maximum due schedule fires processed per scan                            |
+| `YA_CLAW_HEARTBEAT_ENABLED`                      | `false`                                    | Enables the heartbeat dispatcher                                         |
+| `YA_CLAW_HEARTBEAT_INTERVAL_SECONDS`             | `300`                                      | Seconds between heartbeat fires                                          |
+| `YA_CLAW_HEARTBEAT_PROFILE`                      | unset                                      | Profile used for heartbeat runs; falls back to `YA_CLAW_DEFAULT_PROFILE` |
+| `YA_CLAW_HEARTBEAT_PROMPT`                       | `Run heartbeat according to HEARTBEAT.md.` | Prompt submitted for heartbeat runs                                      |
+| `YA_CLAW_HEARTBEAT_ON_ACTIVE`                    | `skip`                                     | Active-run policy for heartbeat dispatch                                 |
+| `YA_CLAW_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD` | unset                                      | Fallback shell review risk threshold for schedule/heartbeat runs         |
 
 Heartbeat guidance lives at `<YA_CLAW_WORKSPACE_DIR>/HEARTBEAT.md`. See [`schedules-heartbeat.md`](schedules-heartbeat.md) for deployment steps, API checks, and backup notes.
 
@@ -128,7 +129,7 @@ This mode deletes old `run-store/{run_id}` directories and keeps `sessions`, `ru
 | `YA_CLAW_BRIDGE_LARK_APP_ID`          | Lark/Feishu app ID for bridge websocket ingress                               |
 | `YA_CLAW_BRIDGE_LARK_APP_SECRET`      | Lark/Feishu app secret for bridge websocket ingress                           |
 | `YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE` | Profile used for Lark-triggered runs; falls back to `YA_CLAW_DEFAULT_PROFILE` |
-| `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`     | Accepted Lark event allowlist                                                 |
+| `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`     | Accepted Lark event allowlist; include `card.action.trigger` for HITL buttons |
 | `YA_CLAW_BRIDGE_LARK_REPLY_IDENTITY`  | `bot` or `user`                                                               |
 | `YA_CLAW_BRIDGE_LARK_DOMAIN`          | Lark/Feishu OpenAPI domain                                                    |
 | `LARK_APP_ID`                         | Workspace `lark-cli` app ID; overrides bridge-derived workspace value         |
@@ -182,6 +183,7 @@ YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark
 YA_CLAW_BRIDGE_LARK_APP_ID=cli_xxx
 YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE=default
+YA_CLAW_BRIDGE_LARK_EVENT_TYPES=im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,drive.notice.comment_add_v1,card.action.trigger
 MALLOC_ARENA_MAX=2
 MALLOC_TRIM_THRESHOLD_=131072
 PYTHONMALLOC=malloc

@@ -162,6 +162,7 @@ class ClawSettings(BaseSettings):
     heartbeat_profile: str | None = None
     heartbeat_prompt: str = "Run heartbeat according to HEARTBEAT.md."
     heartbeat_on_active: Literal["skip", "queue"] = "skip"
+    unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = None
     memory_enabled: bool = True
     memory_extract_every_turns: int = 5
     memory_summary_every_extracts: int = 4
