@@ -140,7 +140,8 @@ class ClawSettings(BaseSettings):
     bridge_lark_app_secret: SecretStr | None = None
     bridge_lark_default_profile: str | None = None
     bridge_lark_event_types: str = (
-        "im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,drive.notice.comment_add_v1"
+        "im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,"
+        "drive.notice.comment_add_v1,card.action.trigger"
     )
     bridge_lark_reply_identity: Literal["bot", "user"] = "bot"
     bridge_lark_domain: str = "https://open.feishu.cn"

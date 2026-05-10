@@ -8,6 +8,8 @@ from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (
     ControlResponse,
     DispatchMode,
+    InteractionRespondRequest,
+    InteractionRespondResponse,
     RunCreateRequest,
     RunDetail,
     RunGetResponse,
@@ -94,6 +96,34 @@ async def steer_run(request: Request, run_id: str, payload: SteerRequest) -> Con
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
         return await controller.steer(db_session, runtime_state, run_id, payload)
+
+
+@router.post("/{run_id}/interactions/{interaction_id}:respond", response_model=InteractionRespondResponse)
+async def respond_run_interaction(
+    request: Request,
+    run_id: str,
+    interaction_id: str,
+    payload: InteractionRespondRequest,
+) -> InteractionRespondResponse:
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        response = await controller.respond_interaction(db_session, runtime_state, run_id, interaction_id, payload)
+    notification_hub = _get_notification_hub(request)
+    await notification_hub.publish(
+        "run.hitl.responded",
+        {
+            "session_id": response.session_id,
+            "run_id": response.run_id,
+            "interaction_id": response.interaction_id,
+            "status": response.status,
+            "remaining_interaction_count": response.remaining_interaction_count,
+            "current_interaction": response.current_interaction.model_dump(mode="json")
+            if response.current_interaction is not None
+            else None,
+        },
+    )
+    return response
 
 
 @router.post("/{run_id}/interrupt", response_model=RunDetail)

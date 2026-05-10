@@ -11,8 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
+from ya_claw.controller.hitl import HitlController
 from ya_claw.controller.models import (
     ControlResponse,
+    InteractionRespondRequest,
+    InteractionRespondResponse,
     RunCreateRequest,
     RunDetail,
     RunGetResponse,
@@ -41,6 +44,9 @@ _ACTIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
 
 
 class RunController:
+    def __init__(self) -> None:
+        self._hitl_controller = HitlController()
+
     async def create(
         self,
         db_session: AsyncSession,
@@ -296,6 +302,24 @@ class RunController:
             run_id=run_id,
             status=RunStatus(run_record.status),
         )
+
+    async def respond_interaction(
+        self,
+        db_session: AsyncSession,
+        runtime_state: InMemoryRuntimeState,
+        run_id: str,
+        interaction_id: str,
+        request: InteractionRespondRequest,
+    ) -> InteractionRespondResponse:
+        response = await self._hitl_controller.respond_interaction(
+            db_session,
+            runtime_state,
+            run_id,
+            interaction_id,
+            request,
+        )
+        await db_session.commit()
+        return response
 
     async def _stop_run(
         self,

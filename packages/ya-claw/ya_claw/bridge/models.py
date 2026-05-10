@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ya_claw.controller.models import ActiveInteraction
+
 
 class BridgeAdapterType(StrEnum):
     LARK = "lark"
@@ -21,8 +23,22 @@ class BridgeEventStatus(StrEnum):
     QUEUED = "queued"
     SUBMITTED = "submitted"
     STEERED = "steered"
+    DEFERRED = "deferred"
     DUPLICATE = "duplicate"
     FAILED = "failed"
+
+
+class BridgeInboundAction(BaseModel):
+    adapter: BridgeAdapterType
+    tenant_key: str = "default"
+    event_id: str
+    action_id: str = "hitl_respond"
+    action_type: str = "hitl_respond"
+    token: str | None = None
+    approved: bool
+    reason: str | None = None
+    raw_event: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class BridgeInboundMessage(BaseModel):
@@ -55,6 +71,9 @@ class BridgeDispatchResult(BaseModel):
     session_id: str | None = None
     run_id: str | None = None
     duplicate: bool = False
+    queued_count: int | None = None
+    remaining_interaction_count: int | None = None
+    current_interaction: ActiveInteraction | None = None
     error_message: str | None = None
 
 

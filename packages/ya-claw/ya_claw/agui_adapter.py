@@ -182,6 +182,12 @@ class AguiEventAdapter:
     def build_run_steered_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._custom_run_event("run_steered", payload)
 
+    def build_hitl_pending_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._custom_run_event("hitl_pending", payload)
+
+    def build_hitl_resolved_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._custom_run_event("hitl_resolved", payload)
+
     def adapt_stream_event(self, stream_event: StreamEvent) -> list[dict[str, Any]]:
         cursor = self._agents.setdefault(stream_event.agent_id, AgentCursor())
         event = stream_event.event

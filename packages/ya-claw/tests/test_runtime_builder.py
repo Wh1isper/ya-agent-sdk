@@ -370,7 +370,7 @@ def test_runtime_builder_system_prompt_loads_memory_context(tmp_path: Path) -> N
     )
 
 
-def test_runtime_builder_forces_claw_shell_review_to_deny_mode(tmp_path: Path) -> None:
+def test_runtime_builder_preserves_claw_shell_review_defer_mode(tmp_path: Path) -> None:
     settings = ClawSettings(
         api_token="test-token",  # noqa: S106
         data_dir=tmp_path / "runtime-data",
@@ -409,6 +409,6 @@ def test_runtime_builder_forces_claw_shell_review_to_deny_mode(tmp_path: Path) -
     )
 
     assert runtime.ctx.security.shell_review is not None
-    assert runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
+    assert runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DEFER
     assert runtime.ctx.security.shell_review.risk_threshold == "extra_high"
     assert runtime.ctx.security.shell_review.model_settings == {"openai_reasoning_effort": "low"}

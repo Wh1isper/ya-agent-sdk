@@ -4,9 +4,11 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from ya_claw.agui_adapter import AguiReplayBuffer
+from ya_claw.controller.models import ActiveInteraction, UserInteraction
 
 
 @dataclass(slots=True)
@@ -31,10 +33,31 @@ class ActiveRunHandle:
 
 
 @dataclass(slots=True)
+class HitlRunState:
+    run_id: str
+    session_id: str
+    interactions: list[ActiveInteraction]
+    resolved: dict[str, UserInteraction] = field(default_factory=dict)
+    condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+
+    @property
+    def current_interaction(self) -> ActiveInteraction | None:
+        for interaction in self.interactions:
+            if interaction.interaction_id not in self.resolved:
+                return interaction
+        return None
+
+    @property
+    def remaining_count(self) -> int:
+        return sum(1 for interaction in self.interactions if interaction.interaction_id not in self.resolved)
+
+
+@dataclass(slots=True)
 class InMemoryRuntimeState:
     run_handles: dict[str, ActiveRunHandle] = field(default_factory=dict)
     session_latest_run_ids: dict[str, str] = field(default_factory=dict)
     background_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    hitl_states: dict[str, HitlRunState] = field(default_factory=dict)
     subscribers: int = 0
 
     def register_run(self, session_id: str, run_id: str, *, dispatch_mode: str = "async") -> ActiveRunHandle:
@@ -66,6 +89,60 @@ class InMemoryRuntimeState:
 
     def clear_background_task(self, run_id: str) -> None:
         self.background_tasks.pop(run_id, None)
+
+    def set_hitl_pending(self, run_id: str, session_id: str, interactions: list[ActiveInteraction]) -> HitlRunState:
+        state = HitlRunState(run_id=run_id, session_id=session_id, interactions=list(interactions))
+        self.hitl_states[run_id] = state
+        return state
+
+    def get_hitl_state(self, run_id: str) -> HitlRunState | None:
+        return self.hitl_states.get(run_id)
+
+    def get_hitl_state_by_session(self, session_id: str) -> HitlRunState | None:
+        run_id = self.session_latest_run_ids.get(session_id)
+        if run_id is None:
+            return None
+        return self.hitl_states.get(run_id)
+
+    async def resolve_hitl_interaction(
+        self,
+        run_id: str,
+        interaction_id: str,
+        *,
+        approved: bool,
+        reason: str | None = None,
+        user_input: Any | None = None,
+    ) -> tuple[ActiveInteraction, ActiveInteraction | None, int]:
+        state = self.hitl_states.get(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        target = next((item for item in state.interactions if item.interaction_id == interaction_id), None)
+        if target is None:
+            raise KeyError(interaction_id)
+        async with state.condition:
+            if interaction_id not in state.resolved:
+                state.resolved[interaction_id] = UserInteraction(
+                    tool_call_id=target.tool_call_id,
+                    approved=approved,
+                    reason=reason,
+                    user_input=user_input,
+                )
+                target.status = "approved" if approved else "denied"
+                target.resolved_at = datetime.now(UTC)
+                state.condition.notify_all()
+            return target, state.current_interaction, state.remaining_count
+
+    async def wait_hitl_batch(self, run_id: str) -> list[UserInteraction]:
+        state = self.hitl_states.get(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        async with state.condition:
+            while state.remaining_count > 0:
+                await state.condition.wait()
+            return [state.resolved[item.interaction_id] for item in state.interactions]
+
+    def clear_hitl(self, run_id: str) -> None:
+        self.hitl_states.pop(run_id, None)
 
     async def append_run_event(
         self,
@@ -120,6 +197,10 @@ class InMemoryRuntimeState:
         handle.termination_requested = termination_reason
         async with handle.condition:
             handle.condition.notify_all()
+        hitl_state = self.hitl_states.get(run_id)
+        if hitl_state is not None:
+            async with hitl_state.condition:
+                hitl_state.condition.notify_all()
 
     async def close_run(self, run_id: str) -> None:
         handle = self.get_run_handle(run_id)
@@ -178,6 +259,9 @@ class InMemoryRuntimeState:
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
 
+        for hitl_state in self.hitl_states.values():
+            async with hitl_state.condition:
+                hitl_state.condition.notify_all()
         for handle in self.run_handles.values():
             handle.closed = True
             async with handle.condition:
@@ -185,6 +269,7 @@ class InMemoryRuntimeState:
         self.run_handles.clear()
         self.session_latest_run_ids.clear()
         self.background_tasks.clear()
+        self.hitl_states.clear()
         self.subscribers = 0
 
 

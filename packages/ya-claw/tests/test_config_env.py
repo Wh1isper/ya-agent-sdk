@@ -228,6 +228,7 @@ def test_settings_resolves_bridge_and_lark_cli_environment(monkeypatch) -> None:
         "im.chat.member.user.added_v1",
         "im.message.receive_v1",
         "drive.notice.comment_add_v1",
+        "card.action.trigger",
     ]
     assert settings.resolved_bridge_lark_profile == "lark-profile"
     assert settings.resolved_lark_cli_environment == {

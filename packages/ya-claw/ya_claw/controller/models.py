@@ -131,6 +131,41 @@ class UserInteraction(BaseModel):
     user_input: Any | None = None
 
 
+class ActiveInteraction(BaseModel):
+    interaction_id: str
+    run_id: str
+    session_id: str
+    tool_call_id: str
+    tool_name: str | None = None
+    kind: str = "approval"
+    title: str
+    description: str | None = None
+    arguments_preview: Any | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["pending", "approved", "denied"] = "pending"
+    sequence_no: int = 1
+    total_count: int = 1
+    created_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class InteractionRespondRequest(BaseModel):
+    approved: bool
+    reason: str | None = None
+    user_input: Any | None = None
+    client_token: str | None = None
+
+
+class InteractionRespondResponse(BaseModel):
+    session_id: str
+    run_id: str
+    interaction_id: str
+    tool_call_id: str
+    status: Literal["pending", "approved", "denied"]
+    remaining_interaction_count: int
+    current_interaction: ActiveInteraction | None = None
+
+
 class ToolResult(BaseModel):
     tool_call_id: str
     content: Any

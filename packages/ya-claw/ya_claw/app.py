@@ -211,6 +211,7 @@ class ClawApplication:
                     session_factory=app.state.db_session_factory,
                     runtime_state=app.state.runtime_state,
                     run_dispatcher=RunDispatcher(supervisor),
+                    notification_hub=app.state.notification_hub,
                 )
                 app.state.bridge_supervisor = bridge_supervisor
                 await bridge_supervisor.startup()

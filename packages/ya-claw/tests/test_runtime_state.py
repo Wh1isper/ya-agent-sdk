@@ -56,3 +56,56 @@ async def test_runtime_state_aclose_releases_waiting_subscribers() -> None:
 
     assert events == []
     assert state.subscribers == 0
+
+
+async def test_runtime_state_hitl_waits_until_all_interactions_resolve() -> None:
+    from datetime import UTC, datetime
+
+    from ya_claw.controller.models import ActiveInteraction
+
+    state = create_runtime_state()
+    state.register_run("session-1", "run-1")
+    interactions = [
+        ActiveInteraction(
+            interaction_id="hitl-1",
+            run_id="run-1",
+            session_id="session-1",
+            tool_call_id="tool-1",
+            tool_name="shell_exec",
+            title="Approve shell",
+            sequence_no=1,
+            total_count=2,
+            created_at=datetime.now(UTC),
+        ),
+        ActiveInteraction(
+            interaction_id="hitl-2",
+            run_id="run-1",
+            session_id="session-1",
+            tool_call_id="tool-2",
+            tool_name="file_write",
+            title="Approve write",
+            sequence_no=2,
+            total_count=2,
+            created_at=datetime.now(UTC),
+        ),
+    ]
+    state.set_hitl_pending("run-1", "session-1", interactions)
+
+    waiter = asyncio.create_task(state.wait_hitl_batch("run-1"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    resolved, current, remaining = await state.resolve_hitl_interaction("run-1", "hitl-1", approved=True)
+    assert resolved.status == "approved"
+    assert current is not None
+    assert current.interaction_id == "hitl-2"
+    assert remaining == 1
+    assert not waiter.done()
+
+    await state.resolve_hitl_interaction("run-1", "hitl-2", approved=False, reason="no")
+    results = await asyncio.wait_for(waiter, timeout=1)
+
+    assert [item.tool_call_id for item in results] == ["tool-1", "tool-2"]
+    assert results[0].approved is True
+    assert results[1].approved is False
+    assert results[1].reason == "no"

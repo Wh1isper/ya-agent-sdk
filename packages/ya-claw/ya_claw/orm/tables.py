@@ -21,7 +21,11 @@ from ya_claw.orm.base import Base
 
 _ALLOWED_RUN_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
 _ALLOWED_SESSION_TYPES = ("conversation", "memory")
-_ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", "duplicate", "failed")
+_ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", "deferred", "duplicate", "failed")
+_ALLOWED_HITL_BATCH_STATUSES = ("pending", "completed", "cancelled")
+_ALLOWED_HITL_INTERACTION_STATUSES = ("pending", "approved", "denied")
+_ALLOWED_HITL_DEFERRED_INPUT_STATUSES = ("pending", "consumed", "discarded")
+_ALLOWED_BRIDGE_HITL_MESSAGE_STATUSES = ("active", "completed", "failed")
 _ALLOWED_SCHEDULE_STATUSES = ("active", "paused", "completed", "deleted")
 _ALLOWED_SCHEDULE_TRIGGER_KINDS = ("cron", "once")
 _ALLOWED_SCHEDULE_EXECUTION_MODES = ("continue_session", "fork_session", "isolate_session")
@@ -308,6 +312,121 @@ class BridgeEventRecord(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class HitlBatchRecord(Base):
+    __tablename__ = "hitl_batches"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_HITL_BATCH_STATUSES!s}",
+            name="ck_hitl_batches_status",
+        ),
+        Index("ix_hitl_batches_run_status", "run_id", "status"),
+        Index("ix_hitl_batches_session_status", "session_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    current_interaction_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    deferred_requests: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class HitlInteractionRecord(Base):
+    __tablename__ = "hitl_interactions"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_HITL_INTERACTION_STATUSES!s}",
+            name="ck_hitl_interactions_status",
+        ),
+        UniqueConstraint("batch_id", "interaction_id", name="uq_hitl_interactions_batch_interaction"),
+        Index("ix_hitl_interactions_run_status", "run_id", "status"),
+        Index("ix_hitl_interactions_batch_sequence", "batch_id", "sequence_no"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("hitl_batches.id", ondelete="CASCADE"), nullable=False)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    interaction_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_call_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kind: Mapped[str] = mapped_column(String(64), default="approval")
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    arguments_preview: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    interaction_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    response: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class HitlDeferredInputRecord(Base):
+    __tablename__ = "hitl_deferred_inputs"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_HITL_DEFERRED_INPUT_STATUSES!s}",
+            name="ck_hitl_deferred_inputs_status",
+        ),
+        UniqueConstraint("adapter", "tenant_key", "external_event_id", name="uq_hitl_deferred_inputs_event"),
+        UniqueConstraint("adapter", "tenant_key", "external_message_id", name="uq_hitl_deferred_inputs_message"),
+        Index("ix_hitl_deferred_inputs_batch_sequence", "batch_id", "sequence_no"),
+        Index("ix_hitl_deferred_inputs_run_status", "run_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("hitl_batches.id", ondelete="CASCADE"), nullable=False)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    adapter: Mapped[str] = mapped_column(String(32), nullable=False)
+    tenant_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    external_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_chat_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BridgeHitlMessageRecord(Base):
+    __tablename__ = "bridge_hitl_messages"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_BRIDGE_HITL_MESSAGE_STATUSES!s}",
+            name="ck_bridge_hitl_messages_status",
+        ),
+        UniqueConstraint("adapter", "tenant_key", "external_message_id", name="uq_bridge_hitl_messages_message"),
+        Index("ix_bridge_hitl_messages_run", "run_id"),
+        Index("ix_bridge_hitl_messages_batch", "batch_id"),
+        Index("ix_bridge_hitl_messages_chat_status", "adapter", "tenant_key", "external_chat_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    adapter: Mapped[str] = mapped_column(String(32), nullable=False)
+    tenant_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    external_chat_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(ForeignKey("hitl_batches.id", ondelete="SET NULL"), nullable=True)
+    interaction_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RuntimeInstanceRecord(Base):

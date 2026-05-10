@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 from xml.sax.saxutils import escape
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,12 +12,15 @@ from ya_claw.bridge.models import (
     BridgeAdapterType,
     BridgeDispatchResult,
     BridgeEventStatus,
+    BridgeInboundAction,
     BridgeInboundMessage,
 )
 from ya_claw.config import ClawSettings
+from ya_claw.controller.hitl import HitlController
 from ya_claw.controller.models import (
     DispatchMode,
     InputPart,
+    InteractionRespondRequest,
     SessionCreateRequest,
     SessionRunCreateRequest,
     SteerRequest,
@@ -34,6 +38,7 @@ class BridgeController:
     def __init__(self) -> None:
         self._run_controller = RunController()
         self._session_controller = SessionController()
+        self._hitl_controller = HitlController()
 
     async def handle_inbound_message(
         self,
@@ -79,6 +84,36 @@ class BridgeController:
                 raise TypeError(f"Bridge conversation session '{conversation.session_id}' was not found.")
             input_parts: list[InputPart] = [TextPart(type="text", text=self._build_agent_prompt(message))]
             if isinstance(session_record.active_run_id, str):
+                pending_batch = await self._hitl_controller.get_pending_batch_for_run(
+                    db_session,
+                    session_record.active_run_id,
+                )
+                if pending_batch is not None:
+                    queued_count = await self._hitl_controller.enqueue_deferred_input(
+                        db_session,
+                        batch=pending_batch,
+                        message=message,
+                        conversation_id=conversation.id,
+                        input_parts=[part.model_dump(mode="json") for part in input_parts],
+                        source_metadata={"bridge": self._bridge_metadata(message)},
+                    )
+                    event_record.conversation_id = conversation.id
+                    event_record.session_id = conversation.session_id
+                    event_record.run_id = session_record.active_run_id
+                    event_record.status = BridgeEventStatus.DEFERRED
+                    conversation.last_event_at = datetime.now(UTC)
+                    conversation.updated_at = datetime.now(UTC)
+                    await db_session.commit()
+                    return BridgeDispatchResult(
+                        status=BridgeEventStatus.DEFERRED,
+                        adapter=message.adapter,
+                        event_id=message.event_id,
+                        message_id=message.message_id,
+                        chat_id=message.chat_id,
+                        session_id=conversation.session_id,
+                        run_id=session_record.active_run_id,
+                        queued_count=queued_count,
+                    )
                 await self._run_controller.steer(
                     db_session,
                     runtime_state,
@@ -144,6 +179,50 @@ class BridgeController:
                 chat_id=message.chat_id,
                 error_message=str(exc),
             )
+
+    async def handle_inbound_action(
+        self,
+        db_session: AsyncSession,
+        runtime_state: InMemoryRuntimeState,
+        action: BridgeInboundAction,
+    ) -> BridgeDispatchResult:
+        token = action.token or ""
+        parts = token.split(":")
+        if len(parts) < 4:
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                error_message="Invalid HITL action token.",
+            )
+        session_id, run_id, interaction_id = parts[0], parts[1], parts[2]
+        try:
+            response = await self._hitl_controller.respond_interaction(
+                db_session,
+                runtime_state,
+                run_id,
+                interaction_id,
+                InteractionRespondRequest(approved=action.approved, reason=action.reason),
+            )
+            await db_session.commit()
+        except HTTPException as exc:
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                session_id=session_id,
+                run_id=run_id,
+                error_message=str(exc.detail),
+            )
+        return BridgeDispatchResult(
+            status=BridgeEventStatus.STEERED,
+            adapter=action.adapter,
+            event_id=action.event_id,
+            session_id=session_id,
+            run_id=run_id,
+            remaining_interaction_count=response.remaining_interaction_count,
+            current_interaction=response.current_interaction,
+        )
 
     async def _find_existing_event(
         self,

@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from loguru import logger
 from pydantic import BaseModel
+from pydantic_ai import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -21,7 +22,8 @@ from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEven
 from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
-from ya_claw.controller.models import InputPart, RunStatus, SessionStatusReason, parse_input_parts
+from ya_claw.controller.hitl import HitlController
+from ya_claw.controller.models import ActiveInteraction, InputPart, RunStatus, SessionStatusReason, parse_input_parts
 from ya_claw.execution.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
 from ya_claw.execution.checkpoint import build_message_checkpoint, commit_run_artifacts, write_message_checkpoint
 from ya_claw.execution.input import InputMappingResult, map_input_parts
@@ -30,6 +32,7 @@ from ya_claw.execution.restore import ResolvedRestorePoint, load_restore_point
 from ya_claw.execution.runtime import ClawRuntimeBuilder
 from ya_claw.execution.state_machine import complete_run, fail_run, interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
+from ya_claw.hitl import build_active_interactions
 from ya_claw.memory.lifecycle import MemoryLifecycle
 from ya_claw.notifications import NotificationHub
 from ya_claw.orm.tables import RunRecord, SessionRecord
@@ -239,6 +242,7 @@ class RunCoordinator:
         self._runtime_builder = runtime_builder
         self._notification_hub = notification_hub
         self._run_store = run_store or RunStore(settings)
+        self._hitl_controller = HitlController()
 
     async def execute(self, run_id: str) -> None:  # noqa: C901
         buffers = ExecutionBuffers()
@@ -438,7 +442,7 @@ class RunCoordinator:
                     "Run runtime state closed run_id={} terminal_event_emitted={}", run_id, terminal_event_emitted
                 )
 
-    async def _execute_agent_run(
+    async def _execute_agent_run(  # noqa: C901
         self,
         *,
         run_id: str,
@@ -501,8 +505,10 @@ class RunCoordinator:
                 "run_metadata": run_metadata,
             },
         )
-        restored_messages = self._extract_message_history(restore_point)
+        message_history = self._extract_message_history(restore_point)
         agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id)
+        deferred_tool_results: DeferredToolResults | None = None
+        use_initial_prompt = True
 
         async with runtime:
             background_monitor.set_core_toolset(runtime.core_toolset)
@@ -516,81 +522,217 @@ class RunCoordinator:
                 session_id,
                 runtime.ctx.container_id,
             )
-            async with stream_agent(
-                runtime,
-                user_prompt_factory=lambda runtime_obj: self._build_initial_prompt(runtime_obj, input_parts),
-                message_history=restored_messages,
-                resume_on_error=self._settings.agent_stream_resume_on_error,
-                resume_max_attempts=self._settings.agent_stream_resume_max_attempts,
-                resume_prompt=self._settings.agent_stream_resume_prompt,
-            ) as streamer:
-                steering_task = asyncio.create_task(
-                    self._forward_runtime_signals(
-                        run_id=run_id,
-                        runtime=runtime,
-                        streamer=streamer,
+            while True:
+                async with stream_agent(
+                    runtime,
+                    user_prompt_factory=(
+                        (lambda runtime_obj: self._build_initial_prompt(runtime_obj, input_parts))
+                        if use_initial_prompt
+                        else None
                     ),
-                    name=f"ya-claw-run-{run_id}-signals",
-                )
-                try:
-                    async for stream_event in streamer:
-                        for agui_event in agui_adapter.adapt_stream_event(stream_event):
-                            await self._runtime_state.append_run_event(run_id, agui_event)
-                        if streamer.run is not None:
-                            buffers.latest_message_payload = self._build_message_payload(
-                                streamer.run,
-                                replay_events=self._runtime_state.get_replay_events(run_id),
-                            )
-                            output = streamer.run.result.output if streamer.run.result else None
-                            buffers.output_text = self._stringify_output(output)
-                            buffers.output_summary = self._summarize_output(output)
-                            if isinstance(stream_event.event, (ModelRequestStartEvent, ModelRequestCompleteEvent)):
-                                checkpoint = build_message_checkpoint(
-                                    run_id=run_id,
-                                    session_id=session_id,
-                                    checkpoint_kind=type(stream_event.event).__name__,
-                                    message=self._runtime_state.get_replay_events(run_id),
+                    message_history=message_history,
+                    deferred_tool_results=deferred_tool_results,
+                    resume_on_error=self._settings.agent_stream_resume_on_error,
+                    resume_max_attempts=self._settings.agent_stream_resume_max_attempts,
+                    resume_prompt=self._settings.agent_stream_resume_prompt,
+                ) as streamer:
+                    steering_task = asyncio.create_task(
+                        self._forward_runtime_signals(
+                            run_id=run_id,
+                            runtime=runtime,
+                            streamer=streamer,
+                        ),
+                        name=f"ya-claw-run-{run_id}-signals",
+                    )
+                    try:
+                        async for stream_event in streamer:
+                            for agui_event in agui_adapter.adapt_stream_event(stream_event):
+                                await self._runtime_state.append_run_event(run_id, agui_event)
+                            if streamer.run is not None:
+                                buffers.latest_message_payload = self._build_message_payload(
+                                    streamer.run,
+                                    replay_events=self._runtime_state.get_replay_events(run_id),
                                 )
-                                write_message_checkpoint(self._run_store, checkpoint)
-                    streamer.raise_if_exception()
-                    logger.debug("Agent stream completed run_id={} session_id={}", run_id, session_id)
-                finally:
-                    steering_task.cancel()
-                    await asyncio.gather(steering_task, return_exceptions=True)
+                                output = streamer.run.result.output if streamer.run.result else None
+                                buffers.output_text = self._stringify_output(output)
+                                buffers.output_summary = self._summarize_output(output)
+                                if isinstance(stream_event.event, (ModelRequestStartEvent, ModelRequestCompleteEvent)):
+                                    checkpoint = build_message_checkpoint(
+                                        run_id=run_id,
+                                        session_id=session_id,
+                                        checkpoint_kind=type(stream_event.event).__name__,
+                                        message=self._runtime_state.get_replay_events(run_id),
+                                    )
+                                    write_message_checkpoint(self._run_store, checkpoint)
+                        streamer.raise_if_exception()
+                        logger.debug("Agent stream completed run_id={} session_id={}", run_id, session_id)
+                    finally:
+                        steering_task.cancel()
+                        await asyncio.gather(steering_task, return_exceptions=True)
 
-                drained_background = await background_monitor.drain_or_cancel(timeout=10.0)
-                if not drained_background:
-                    logger.warning("YA Claw background subagents cancelled after drain timeout run_id={}", run_id)
+                    if streamer.run is None:
+                        if self._runtime_state.get_termination_requested(run_id) is not None:
+                            raise AgentInterrupted()
+                        raise RuntimeError("Stream agent completed without run context.")
 
-                if streamer.run is None:
-                    if self._runtime_state.get_termination_requested(run_id) is not None:
-                        raise AgentInterrupted()
-                    raise RuntimeError("Stream agent completed without run context.")
+                    buffers.latest_message_payload = self._build_message_payload(
+                        streamer.run,
+                        replay_events=self._runtime_state.get_replay_events(run_id),
+                    )
+                    buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
+                    buffers.latest_state_payload = self._build_state_payload(
+                        runtime.ctx,
+                        workspace_binding=workspace_binding,
+                        restore_point=restore_point,
+                        profile=profile,
+                        trigger_type=trigger_type,
+                        message_payload=buffers.latest_message_payload,
+                    )
+                    output = streamer.run.result.output if streamer.run.result else None
+                    if isinstance(output, DeferredToolRequests):
+                        message_history = list(streamer.run.all_messages())
+                        deferred_tool_results = await self._handle_deferred_tool_requests(
+                            run_id=run_id,
+                            session_id=session_id,
+                            deferred_requests=output,
+                            message_history=message_history,
+                            runtime=runtime,
+                            agui_adapter=agui_adapter,
+                            run_metadata=run_metadata,
+                        )
+                        use_initial_prompt = False
+                        continue
 
-                buffers.latest_message_payload = self._build_message_payload(
-                    streamer.run,
-                    replay_events=self._runtime_state.get_replay_events(run_id),
-                )
-                buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
-                buffers.latest_state_payload = self._build_state_payload(
-                    runtime.ctx,
-                    workspace_binding=workspace_binding,
-                    restore_point=restore_point,
-                    profile=profile,
-                    trigger_type=trigger_type,
-                    message_payload=buffers.latest_message_payload,
-                )
-                output = streamer.run.result.output if streamer.run.result else None
-                buffers.output_text = self._stringify_output(output)
-                buffers.output_summary = self._summarize_output(output)
-                logger.debug(
-                    "Agent run artifacts prepared run_id={} message_count={} output_summary_chars={}",
-                    run_id,
-                    buffers.latest_message_payload.get("message_count")
-                    if isinstance(buffers.latest_message_payload, dict)
-                    else None,
-                    len(buffers.output_summary or ""),
-                )
+                    buffers.output_text = self._stringify_output(output)
+                    buffers.output_summary = self._summarize_output(output)
+                    logger.debug(
+                        "Agent run artifacts prepared run_id={} message_count={} output_summary_chars={}",
+                        run_id,
+                        buffers.latest_message_payload.get("message_count")
+                        if isinstance(buffers.latest_message_payload, dict)
+                        else None,
+                        len(buffers.output_summary or ""),
+                    )
+                    break
+
+            drained_background = await background_monitor.drain_or_cancel(timeout=10.0)
+            if not drained_background:
+                logger.warning("YA Claw background subagents cancelled after drain timeout run_id={}", run_id)
+
+    async def _handle_deferred_tool_requests(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        deferred_requests: DeferredToolRequests,
+        message_history: list[ModelMessage],
+        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
+        agui_adapter: AguiEventAdapter,
+        run_metadata: dict[str, Any],
+    ) -> DeferredToolResults | None:
+        interactions = build_active_interactions(deferred_requests, run_id=run_id, session_id=session_id)
+        bridge_metadata = run_metadata.get("bridge") if isinstance(run_metadata.get("bridge"), dict) else None
+        if bridge_metadata is not None:
+            for interaction in interactions:
+                interaction.metadata = {**interaction.metadata, "bridge": dict(bridge_metadata)}
+        if not interactions:
+            return DeferredToolResults()
+        batch_id = await self._enter_hitl_pending(
+            run_id, interactions, agui_adapter, deferred_requests=deferred_requests
+        )
+        try:
+            user_interactions = await self._runtime_state.wait_hitl_batch(run_id)
+            results = await runtime.core_toolset.process_hitl_call(runtime.ctx, user_interactions, message_history)
+            await self._forward_deferred_hitl_inputs(run_id=run_id, batch_id=batch_id, runtime=runtime)
+            return results
+        finally:
+            await self._exit_hitl_pending(run_id, agui_adapter)
+
+    async def _enter_hitl_pending(
+        self,
+        run_id: str,
+        interactions: list[ActiveInteraction],
+        agui_adapter: AguiEventAdapter,
+        *,
+        deferred_requests: DeferredToolRequests,
+    ) -> str:
+        if not interactions:
+            raise ValueError("interactions must not be empty")
+        session_id = interactions[0].session_id
+        async with self._session_factory() as db_session:
+            _, run_record = await _load_run_scope(db_session, run_id)
+            batch = await self._hitl_controller.create_batch(
+                db_session,
+                session_id=session_id,
+                run_id=run_id,
+                interactions=interactions,
+                deferred_requests=deferred_requests,
+            )
+            active_payload = [interaction.model_dump(mode="json") for interaction in batch.active_interactions]
+            metadata = dict(run_record.run_metadata)
+            metadata["active_interactions"] = active_payload
+            metadata["active_hitl_batch_id"] = batch.batch_id
+            run_record.run_metadata = metadata
+            self._runtime_state.set_hitl_pending(run_id, session_id, interactions)
+            await db_session.commit()
+            await db_session.refresh(run_record)
+            await _publish_run_status_notification(self._notification_hub, "run.updated", run_record)
+        await self._runtime_state.append_run_event(
+            run_id,
+            agui_adapter.build_hitl_pending_event({
+                "run_id": run_id,
+                "session_id": session_id,
+                "batch_id": batch.batch_id,
+                "active_interactions": active_payload,
+                "active_interaction_count": len(active_payload),
+            }),
+        )
+        return batch.batch_id
+
+    async def _exit_hitl_pending(self, run_id: str, agui_adapter: AguiEventAdapter) -> None:
+        self._runtime_state.clear_hitl(run_id)
+        async with self._session_factory() as db_session:
+            session_record, run_record = await _load_run_scope(db_session, run_id)
+            await self._hitl_controller.mark_batch_completed(db_session, run_id=run_id)
+            metadata = dict(run_record.run_metadata)
+            metadata.pop("active_interactions", None)
+            metadata.pop("active_hitl_batch_id", None)
+            run_record.run_metadata = metadata
+            await db_session.commit()
+            await db_session.refresh(run_record)
+            await _publish_run_status_notification(self._notification_hub, "run.updated", run_record)
+        await self._runtime_state.append_run_event(
+            run_id,
+            agui_adapter.build_hitl_resolved_event({
+                "run_id": run_id,
+                "session_id": session_record.id,
+            }),
+        )
+
+    async def _forward_deferred_hitl_inputs(
+        self,
+        *,
+        run_id: str,
+        batch_id: str,
+        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
+    ) -> None:
+        async with self._session_factory() as db_session:
+            deferred_inputs = await self._hitl_controller.consume_deferred_inputs(
+                db_session,
+                run_id=run_id,
+                batch_id=batch_id,
+            )
+            await db_session.commit()
+        for deferred_input in deferred_inputs:
+            parts = parse_input_parts(list(deferred_input.input_parts))
+            mapping = await map_input_parts(parts, file_operator=runtime.ctx.file_operator)
+            runtime.ctx.send_message(BusMessage(content=self._build_user_prompt(mapping), source="user", target="main"))
+            logger.debug(
+                "Forwarded deferred HITL input run_id={} batch_id={} sequence_no={}",
+                run_id,
+                batch_id,
+                deferred_input.sequence_no,
+            )
 
     async def _build_initial_prompt(
         self,

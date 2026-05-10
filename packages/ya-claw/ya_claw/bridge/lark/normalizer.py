@@ -3,10 +3,32 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ya_claw.bridge.models import BridgeAdapterType, BridgeInboundMessage
+from ya_claw.bridge.models import BridgeAdapterType, BridgeInboundAction, BridgeInboundMessage
 
 _MESSAGE_RECEIVE_EVENT = "im.message.receive_v1"
 _DRIVE_EVENT_PREFIX = "drive."
+
+
+def normalize_lark_action(raw_event: dict[str, Any]) -> BridgeInboundAction | None:
+    header = _dict_value(raw_event.get("header"))
+    event = _dict_value(raw_event.get("event")) or raw_event
+    action = _dict_value(event.get("action"))
+    value = _dict_value(action.get("value")) or _dict_value(event.get("value"))
+    token = _string_value(value.get("interaction_token") or event.get("interaction_token"))
+    raw_action = _string_value(value.get("action") or action.get("action") or event.get("action"))
+    if token is None or raw_action not in {"approve", "deny"}:
+        return None
+    event_id = _string_value(header.get("event_id") or raw_event.get("event_id") or raw_event.get("uuid")) or token
+    return BridgeInboundAction(
+        adapter=BridgeAdapterType.LARK,
+        tenant_key=_string_value(header.get("tenant_key") or raw_event.get("tenant_key")) or "default",
+        event_id=event_id,
+        action_id=_string_value(action.get("tag") or action.get("name")) or "hitl_respond",
+        token=token,
+        approved=raw_action == "approve",
+        raw_event=raw_event,
+        metadata={"action": raw_action},
+    )
 
 
 def normalize_lark_event(raw_event: dict[str, Any]) -> BridgeInboundMessage | None:
