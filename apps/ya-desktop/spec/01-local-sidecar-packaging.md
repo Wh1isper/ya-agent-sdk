@@ -2,7 +2,7 @@
 
 ## Direction
 
-YA Desktop should bundle a `ya-clawd` executable as a sidecar daemon. Tauri manages daemon lifecycle and the React UI talks to it through HTTP/SSE/WebSocket.
+YA Desktop should bundle a `ya-clawd` executable as a sidecar daemon. Tauri manages daemon lifecycle and the React UI talks to it through HTTP/SSE for the desktop MVP.
 
 Local embedded Claw gives users an out-of-the-box agent runtime with local workspaces, local SQLite storage, session memory, and local tool execution.
 

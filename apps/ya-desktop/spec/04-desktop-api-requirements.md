@@ -50,8 +50,10 @@ Example response:
     "memory": true,
     "bridges": true,
     "notifications": true,
-    "notification_websocket": true,
+    "notification_replay": true,
+    "session_status_reasons": true,
     "hitl": true,
+    "hitl_status_reason": true,
     "sandboxed_shell": true,
     "remote_rpc_environment": false
   },
@@ -144,31 +146,32 @@ Desktop needs a connection-level realtime channel for session and run state move
 GET /api/v1/claw/notifications
 ```
 
-Desktop should prefer a WebSocket surface when the server advertises `notification_websocket=true`:
+Desktop should use SSE as the primary connection-level realtime channel. Future WebSocket support belongs to remote RPC workspace transport and richer bidirectional control-plane features.
 
-```http
-GET /api/v1/claw/ws
-```
-
-The WebSocket should carry the same notification payloads as SSE, plus subscription commands, heartbeat, and HITL responses. Desktop uses notifications to update session lists, tray state, pending interaction badges, and active run cards immediately.
+Desktop uses notifications to update session lists, tray state, pending interaction badges, and active run cards immediately.
 
 Key notification payloads:
 
 ```json
 {
   "id": "42",
-  "type": "run.updated",
+  "type": "session.updated",
   "created_at": "2026-05-09T15:00:00Z",
   "payload": {
     "session_id": "session_123",
-    "run_id": "run_456",
     "status": "running",
-    "sequence_no": 4
+    "status_reason": "hitl_pending",
+    "status_detail": {
+      "run_id": "run_456",
+      "sequence_no": 4,
+      "active_interaction_count": 1
+    },
+    "active_run_id": "run_456"
   }
 }
 ```
 
-Desktop should track `Last-Event-ID` or `last_notification_id` per connection and refresh HTTP read models when replay gaps occur.
+Desktop should track `Last-Event-ID` per connection and refresh HTTP read models when replay gaps occur.
 
 Detailed design lives in [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md).
 
@@ -194,7 +197,7 @@ POST /api/v1/sessions/{session_id}/interrupt
 POST /api/v1/sessions/{session_id}/steer
 ```
 
-Desktop should support `waiting_for_user` as a visible run/session state when Claw exposes it, and an `active_interactions` overlay when the server keeps status as `running`.
+Desktop should render HITL through session status reasons: `status="running"` plus `status_reason="hitl_pending"`. `status_detail.active_interactions` provides compact prompt metadata for badges and approval cards.
 
 HITL response shape should align with the SDK `UserInteraction` model:
 

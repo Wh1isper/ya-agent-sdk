@@ -176,6 +176,11 @@ Profile, MCP, and coordinator settings:
 - `LARKSUITE_CLI_BRAND=feishu`
 - `LARKSUITE_CLI_DEFAULT_AS=bot`
 - `LARKSUITE_CLI_STRICT_MODE=bot`
+- `MALLOC_ARENA_MAX=2`
+- `MALLOC_TRIM_THRESHOLD_=131072`
+- `PYTHONMALLOC=malloc`
+
+The official YA Claw service and workspace Docker images set `MALLOC_ARENA_MAX=2`, `MALLOC_TRIM_THRESHOLD_=131072`, and `PYTHONMALLOC=malloc` for long-lived Python workloads. Use the same allocator values for systemd or custom container deployments when memory residency matters.
 
 Profiles store model, prompt, model context config, builtin tool groups, subagents, approval policy, security policy, MCP server definitions, and MCP namespace filters. YA Claw accepts profile MCP servers with `streamable_http` transport. Every YA Claw agent runtime receives the profile MCP configuration through `ToolProxyToolset`, and each profile can narrow that surface with `enabled_mcps` and `disabled_mcps`.
 

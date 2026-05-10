@@ -1,4 +1,4 @@
-# 07. WebSocket Notifications and Desktop HITL
+# 07. SSE Notifications and Desktop HITL
 
 ## Goal
 
@@ -13,209 +13,140 @@ Claw already has the right foundation:
 - SDK-level `DeferredToolRequests` and `UserInteraction` models for tool approval
 - profile fields for `need_user_approve_tools` and `need_user_approve_mcps`
 
-The desktop direction is to keep the existing SSE surfaces and add a WebSocket control surface that can carry lifecycle notifications, subscription commands, heartbeats, and HITL decisions over one long-lived connection.
+The desktop direction is to use SSE plus HTTP as the primary runtime contract. WebSocket remains a future control-plane expansion for device registration, RPC workspace transport, or high-volume bidirectional control.
 
 ## Transport Layers
 
-Desktop should use three complementary runtime channels.
+Desktop should use three runtime channels.
 
 ```mermaid
 flowchart TB
     Desktop[YA Desktop] --> HTTP[HTTP API]
-    Desktop --> GlobalWS[Global WebSocket<br/>notifications + control + HITL]
-    Desktop --> RunStream[Run Event Stream<br/>AGUI SSE or WS]
+    Desktop --> GlobalSSE[Global SSE Notifications]
+    Desktop --> RunStream[Run Event Stream<br/>AGUI SSE]
 
     HTTP --> Claw[YA Claw]
-    GlobalWS --> NotificationHub[NotificationHub]
-    GlobalWS --> InteractionHub[Pending Interaction Hub]
+    GlobalSSE --> NotificationHub[NotificationHub]
     RunStream --> RuntimeState[Run Event Buffers]
 
     Claw --> DB[(Sessions + Runs DB)]
     RuntimeState --> RunStore[(run-store message.json)]
 ```
 
-| Channel          | Direction        | Primary use                                                                                                  |
-| ---------------- | ---------------- | ------------------------------------------------------------------------------------------------------------ |
-| HTTP             | request/response | create sessions, create runs, inspect state, list resources, cancel, rerun                                   |
-| Global WebSocket | bidirectional    | session state notifications, desktop tray updates, reconnect replay, HITL decisions, future RPC registration |
-| Run event stream | server to client | detailed AGUI replay, assistant deltas, tool timeline, shell output, committed run replay                    |
+| Channel          | Direction        | Primary use                                                                               |
+| ---------------- | ---------------- | ----------------------------------------------------------------------------------------- |
+| HTTP             | request/response | create sessions, create runs, inspect state, cancel, rerun, respond to HITL interactions  |
+| Global SSE       | server to client | session state notifications, tray updates, reconnect replay, pending HITL indicators      |
+| Run event stream | server to client | detailed AGUI replay, assistant deltas, tool timeline, shell output, committed run replay |
 
-The global WebSocket is the desktop app's always-on runtime connection. Per-run AGUI streams remain the focused chat rendering channel.
+The global SSE stream is the desktop app's always-on runtime connection. Per-run AGUI streams remain the focused chat rendering channel.
 
-## WebSocket Endpoint
+## Capability Discovery
 
-Recommended endpoint:
-
-```http
-GET /api/v1/claw/ws
-```
-
-Authentication should match the active Claw connection:
-
-- local embedded Claw: bearer token generated during setup and stored in the OS keychain
-- self-hosted Claw: bearer token or future scoped token
-- cloud Claw: OAuth-derived runtime token
-
-Desktop can send `Authorization: Bearer <token>` from the Tauri backend. Browser-oriented clients can use a short-lived WebSocket ticket minted by HTTP when header support is limited.
-
-```http
-POST /api/v1/claw/ws-ticket
-GET /api/v1/claw/ws?ticket=...
-```
-
-The ticket should be single-use, short-lived, scoped to the authenticated principal, and logged as a derived credential.
-
-## Protocol Envelope
-
-Every WebSocket message should use a typed JSON envelope.
-
-```ts
-type ClawWsMessage =
-  | ClientHello
-  | ServerHello
-  | SubscribeMessage
-  | SubscribeAckMessage
-  | NotificationMessage
-  | RunEventMessage
-  | HitlRespondMessage
-  | ControlMessage
-  | PingMessage
-  | PongMessage
-  | ErrorMessage;
-```
-
-Shared fields:
+`GET /api/v1/claw/info` exposes the realtime and HITL surface.
 
 ```json
 {
-  "type": "notification",
-  "id": "42",
-  "created_at": "2026-05-09T15:00:00Z",
-  "payload": {}
-}
-```
-
-The outer `id` is transport-level and monotonic within the WebSocket notification log. Domain IDs such as `session_id`, `run_id`, `interaction_id`, and `tool_call_id` live in `payload`.
-
-## Handshake
-
-Client hello:
-
-```json
-{
-  "type": "hello",
-  "client": {
-    "name": "ya-desktop",
-    "version": "0.1.0",
-    "device_id": "dev_123",
-    "connection_id": "local"
-  },
-  "resume": {
-    "last_notification_id": "41"
-  },
-  "capabilities": {
-    "hitl": true,
-    "run_event_stream": true,
-    "desktop_notifications": true
-  }
-}
-```
-
-Server hello:
-
-```json
-{
-  "type": "hello.ack",
-  "server": {
-    "name": "ya-claw",
-    "version": "0.4.0",
-    "instance_id": "rt_abc"
-  },
   "features": {
     "notifications": true,
     "notification_replay": true,
-    "hitl": true,
-    "run_event_stream": true
-  },
-  "replay": {
-    "from_notification_id": "42",
-    "gap": false
+    "session_status_reasons": true,
+    "hitl_status_reason": true,
+    "session_events": true,
+    "run_events": true
   }
 }
 ```
 
-If replay data has fallen out of the in-memory buffer, Claw should send `gap=true`. Desktop then refreshes `GET /api/v1/sessions`, active session details, and active run streams.
+Desktop uses these flags to choose the notification strategy and status rendering rules.
 
-## Subscriptions
+## Global Notifications
 
-Desktop starts with a global subscription and can add scoped subscriptions as the UI focuses a session or run.
+Desktop connects to the global notification stream after connection health and capability discovery.
 
-Subscribe request:
-
-```json
-{
-  "type": "subscribe",
-  "request_id": "sub_1",
-  "scopes": [
-    {"kind": "global"},
-    {"kind": "session", "session_id": "session_123"},
-    {"kind": "run", "run_id": "run_456"}
-  ],
-  "last_notification_id": "41",
-  "last_run_event_ids": {
-    "run_456": "9"
-  }
-}
+```http
+GET /api/v1/claw/notifications
+Last-Event-ID: 41
+Authorization: Bearer <token>
 ```
 
-Subscribe response:
-
-```json
-{
-  "type": "subscribe.ack",
-  "request_id": "sub_1",
-  "accepted_scopes": [
-    {"kind": "global"},
-    {"kind": "session", "session_id": "session_123"},
-    {"kind": "run", "run_id": "run_456"}
-  ]
-}
-```
-
-Scope filtering should happen server-side so Desktop can keep one socket open while avoiding unrelated high-volume run events.
-
-## Notification Events
-
-The existing `NotificationEvent` shape should become the canonical lifecycle event payload for SSE and WebSocket.
+Each SSE event carries the canonical `NotificationEvent` shape.
 
 ```json
 {
   "id": "42",
-  "type": "run.updated",
+  "type": "session.updated",
   "created_at": "2026-05-09T15:00:00Z",
   "payload": {
     "session_id": "session_123",
-    "run_id": "run_456",
     "status": "running",
-    "sequence_no": 4,
-    "profile_name": "default",
-    "termination_reason": null,
-    "error_message": null
+    "status_reason": "hitl_pending",
+    "status_detail": {
+      "run_id": "run_456",
+      "sequence_no": 4,
+      "trigger_type": "bridge",
+      "active_interaction_count": 1,
+      "active_interactions": [
+        {
+          "interaction_id": "int_123",
+          "kind": "tool_approval"
+        }
+      ]
+    },
+    "active_run_id": "run_456",
+    "latest_run_id": "run_456"
   }
 }
 ```
 
-Recommended desktop-facing lifecycle event set:
+The outer `id` is the notification replay cursor. Domain IDs such as `session_id`, `run_id`, `interaction_id`, and `tool_call_id` live in `payload`.
+
+## Session Status and Reasons
+
+Desktop should render stable session states with explicit transition reasons.
+
+```ts
+type SessionStatus =
+  | "idle"
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+type SessionStatusReason =
+  | "idle"
+  | "run_queued"
+  | "run_running"
+  | "hitl_pending"
+  | "run_completed"
+  | "run_failed"
+  | "run_cancelled";
+
+type SessionStatusDetail = {
+  run_id?: string;
+  sequence_no?: number;
+  trigger_type?: "api" | "bridge" | "schedule" | "heartbeat" | "memory";
+  termination_reason?: "completed" | "error" | "cancel" | "interrupt";
+  error_message?: string;
+  active_interaction_count?: number;
+  active_interactions?: PendingInteractionSummary[];
+};
+```
+
+HITL uses `status="running"` with `status_reason="hitl_pending"`. The run remains active while Claw waits for the user's decision, and Desktop uses `status_reason` to show approval UI, tray badges, and native notifications.
+
+This keeps API status enums stable while giving Desktop enough context to distinguish normal execution from user-waiting execution.
+
+## Recommended Notification Events
+
+The lifecycle stream should include these desktop-facing events:
 
 - `session.created`
 - `session.updated`
 - `session.deleted`
 - `run.created`
 - `run.updated`
-- `run.waiting_for_user`
-- `run.resumed`
-- `run.cancelled`
-- `run.interrupted`
 - `interaction.requested`
 - `interaction.updated`
 - `interaction.resolved`
@@ -230,9 +161,32 @@ Recommended desktop-facing lifecycle event set:
 - `bridge.event.accepted`
 - `bridge.event.deduped`
 
-`session.updated` should be published whenever the derived session status or pointers change: active run, head run, head success run, run count, memory state, or latest run summary.
+`session.updated` should be published whenever the derived session state changes: active run, head run, head success run, run count, memory state, latest run summary, or `status_reason`.
 
-## Session State Transfer
+Run events should also carry session status context for clients that process run notifications directly.
+
+```json
+{
+  "type": "run.updated",
+  "payload": {
+    "session_id": "session_123",
+    "run_id": "run_456",
+    "status": "running",
+    "sequence_no": 4,
+    "profile_name": "default",
+    "session_status": "running",
+    "session_status_reason": "hitl_pending",
+    "session_status_detail": {
+      "run_id": "run_456",
+      "sequence_no": 4,
+      "trigger_type": "api",
+      "active_interaction_count": 1
+    }
+  }
+}
+```
+
+## Session Read Model
 
 Desktop should maintain a local read model keyed by connection ID.
 
@@ -240,7 +194,9 @@ Desktop should maintain a local read model keyed by connection ID.
 type DesktopSessionReadModel = {
   connectionId: string;
   sessionId: string;
-  status: "idle" | "queued" | "running" | "waiting_for_user" | "completed" | "failed" | "cancelled";
+  status: SessionStatus;
+  statusReason: SessionStatusReason;
+  statusDetail: SessionStatusDetail;
   activeRunId?: string | null;
   headRunId?: string | null;
   headSuccessRunId?: string | null;
@@ -254,19 +210,20 @@ Update rules:
 
 1. `session.created` inserts the session row and selects it when the user created it from this desktop window.
 2. `run.created` attaches the run to its session and sets queued status.
-3. `run.updated` updates the latest run status and derived session status.
-4. `run.waiting_for_user` shows an interaction prompt and marks the session as waiting.
-5. `interaction.resolved` removes the prompt and marks the run as resumable.
-6. terminal `run.updated` refreshes the run detail and committed message replay when the chat window is open.
+3. `run.updated` updates the latest run status and session status context.
+4. `session.updated` is the authoritative list-row update for status, status reason, pointers, and pending interaction indicators.
+5. `status_reason="hitl_pending"` shows an approval prompt and marks the session as waiting for the user in UI copy.
+6. `interaction.resolved` removes the prompt and refreshes the session row.
+7. Terminal `run.updated` refreshes the run detail and committed message replay when the chat window is open.
 
 Reconnect rules:
 
-1. Reconnect the WebSocket with `last_notification_id`.
+1. Reconnect SSE with `Last-Event-ID`.
 2. Apply replayed notifications in order.
-3. When Claw reports a replay gap, refresh `GET /api/v1/sessions` and the currently selected `GET /api/v1/sessions/{session_id}?include_message=true&include_input_parts=true`.
-4. Reattach active run event streams with `Last-Event-ID` or the WebSocket run-event cursor.
+3. When Desktop detects a replay gap, refresh `GET /api/v1/sessions` and the selected `GET /api/v1/sessions/{session_id}?include_message=true&include_input_parts=true`.
+4. Reattach active run event streams with `Last-Event-ID`.
 
-This gives Desktop immediate state movement between queued, running, waiting, and terminal UI states while preserving a simple HTTP refresh fallback.
+This gives Desktop immediate movement between queued, running, HITL, and terminal UI states while preserving a simple HTTP refresh path.
 
 ## HITL Runtime Model
 
@@ -282,14 +239,15 @@ sequenceDiagram
 
     Agent->>Claw: DeferredToolRequests
     Claw->>Hub: create pending interaction
-    Hub->>Desktop: interaction.requested
+    Hub->>Claw: session.updated status_reason=hitl_pending
+    Claw->>Desktop: SSE session.updated
     Desktop->>User: approval UI
     User->>Desktop: approve or reject
-    Desktop->>Claw: hitl.respond
+    Desktop->>Claw: HTTP interaction response
     Claw->>Hub: resolve interaction
     Claw->>Agent: DeferredToolResults
     Agent->>Claw: continue run
-    Claw->>Desktop: run.resumed + run.updated
+    Claw->>Desktop: SSE session.updated status_reason=run_running
 ```
 
 A pending interaction groups one or more deferred tool calls from the same agent turn.
@@ -352,26 +310,7 @@ Interaction requested notification:
 }
 ```
 
-Desktop response over WebSocket:
-
-```json
-{
-  "type": "hitl.respond",
-  "request_id": "resp_1",
-  "interaction_id": "int_123",
-  "run_id": "run_456",
-  "responses": [
-    {
-      "tool_call_id": "call_abc",
-      "approved": true,
-      "reason": null,
-      "user_input": null
-    }
-  ]
-}
-```
-
-HTTP fallback:
+HTTP response endpoint:
 
 ```http
 POST /api/v1/runs/{run_id}/interactions/{interaction_id}:respond
@@ -392,37 +331,17 @@ POST /api/v1/runs/{run_id}/interactions/{interaction_id}:respond
 
 The response shape should map directly to the SDK `UserInteraction` model so Claw can construct `DeferredToolResults` through the shared runtime approval model.
 
-## Run Status Semantics
-
-Desktop needs a visible interactive state. The runtime can represent this in one of two compatible ways:
-
-1. add `waiting_for_user` to `RunStatus` and `SessionStatus`
-2. keep run status as `running` and expose `active_interactions` as an overlay field
-
-The recommended long-term API shape is an explicit `waiting_for_user` status because tray notifications, session filters, and bridge status messages can use it directly.
-
-```ts
-type RunStatus =
-  | "queued"
-  | "running"
-  | "waiting_for_user"
-  | "completed"
-  | "failed"
-  | "cancelled";
-```
-
-`waiting_for_user` still has an active run task or resumable execution handle. The run returns to `running` after all pending interactions are resolved.
-
 ## Bridge-Triggered Runs
 
-Bridge-triggered runs should publish the same notifications as API-triggered runs. When a Lark event creates a run and that run reaches HITL, Desktop receives `interaction.requested` and can present a native approval prompt.
+Bridge-triggered runs should publish the same session and run notifications as API-triggered runs. When a Lark event creates a run and that run reaches HITL, Desktop receives `session.updated` with `status_reason="hitl_pending"` and presents a native approval prompt.
 
 Recommended behavior:
 
-- Lark bridge posts a short status message when a run reaches `waiting_for_user`.
+- Lark bridge posts a short status message when a run reaches HITL.
 - Desktop shows a native notification and opens the relevant session on click.
 - The user's decision is recorded in Claw with the desktop device ID and principal.
-- Claw resumes the run and the bridge can post the final outcome through the agent's normal Lark tools.
+- Claw resumes the run and publishes `session.updated` with `status_reason="run_running"`.
+- The agent posts the final outcome through its normal Lark tools.
 
 This keeps bridge adapters lightweight and lets Desktop provide a richer approval experience.
 
@@ -446,68 +365,44 @@ HITL decisions should be explicit, scoped, and auditable.
 - The decision payload includes the addressed `interaction_id` and `tool_call_id` values.
 - Claw validates that the interaction belongs to the addressed active run.
 - Responses are idempotent by `interaction_id` plus `tool_call_id`.
-- A resolved or expired interaction rejects duplicate responses with a stable conflict response.
-- Remote and cloud runtimes should record the authenticated principal.
-- Local embedded runtimes should record the desktop device ID and OS user label.
-- Approval UI should show workspace, execution location, tool name, command or diff preview, and profile.
+- A resolved or expired interaction returns a stable conflict response for duplicate responses.
+- Remote and cloud runtimes record the authenticated principal.
+- Local embedded runtimes record the desktop device ID and OS user label.
+- Approval UI shows workspace, execution location, tool name, command or diff preview, and profile.
 - Future policy can add approve-once, approve-for-session, and trust-rule creation.
-
-## Capability Discovery
-
-`GET /api/v1/claw/info` or the future `GET /api/v1/capabilities` should expose the WebSocket and HITL surface.
-
-```json
-{
-  "features": {
-    "notifications": true,
-    "notification_websocket": true,
-    "notification_replay": true,
-    "hitl": true,
-    "hitl_websocket": true,
-    "hitl_http_fallback": true,
-    "waiting_for_user_status": true
-  },
-  "limits": {
-    "notification_buffer_size": 1000,
-    "interaction_timeout_seconds": 3600
-  }
-}
-```
-
-Desktop can use these flags to choose WebSocket, SSE fallback, or polling.
 
 ## Implementation Plan
 
 ### Claw
 
-1. Keep `NotificationHub` as the event source for both SSE and WebSocket.
-2. Add `GET /api/v1/claw/ws` with explicit WebSocket bearer or ticket authentication.
-3. Add subscription filtering and replay cursors on top of `NotificationHub`.
-4. Publish `session.updated` after run lifecycle transitions and memory state changes.
-5. Add interaction state to runtime state and durable storage.
+1. Keep `NotificationHub` as the event source for SSE.
+2. Publish `session.updated` after run lifecycle transitions, memory state changes, and HITL interaction state changes.
+3. Add `status_reason` and `status_detail` to session summaries and notification payloads.
+4. Use `status="running"` plus `status_reason="hitl_pending"` for pending HITL interactions.
+5. Add durable interaction state and response records.
 6. Teach `RunCoordinator` to catch SDK deferred tool requests, publish `interaction.requested`, wait for response, then resume with `DeferredToolResults`.
-7. Add HTTP fallback for interaction responses.
-8. Add tests for replay, reconnect gap handling, HITL approval, rejection, timeout, duplicate response, and bridge-triggered waiting state.
+7. Add HTTP response endpoint for interaction decisions.
+8. Add tests for replay, reconnect refresh, HITL approval, rejection, timeout, duplicate response, and bridge-triggered HITL status reason.
 
 ### Desktop
 
-1. Add `ClawRealtimeClient` under `src/claw/`.
-2. Connect the WebSocket after connection health and capability discovery.
+1. Add `ClawRealtimeClient` under `src/claw/` for global SSE notifications.
+2. Connect SSE after connection health and capability discovery.
 3. Store `last_notification_id` per connection profile.
-4. Maintain a session read model from notifications and refresh HTTP details on replay gaps.
-5. Add tray notifications for terminal runs and pending interactions.
+4. Maintain a session read model from `session.updated` notifications and refresh HTTP details on replay gaps.
+5. Add tray notifications for terminal runs and pending HITL interactions.
 6. Add HITL approval cards in the chat window and compact launcher window.
 7. Route notification clicks to the relevant session and run.
 8. Reattach active run streams after reconnect.
 
-### Compatibility
+### Future WebSocket Control Plane
 
-Existing clients can continue using SSE:
+WebSocket becomes useful when Desktop needs bidirectional runtime control beyond approval POSTs, including:
 
-```http
-GET /api/v1/claw/notifications
-GET /api/v1/sessions/{session_id}/events
-GET /api/v1/runs/{run_id}/events
-```
+- remote RPC workspace registration
+- local device presence and capability registration
+- multiplexed high-volume run streams
+- cloud edge gateway transport
+- long-lived control messages that need client-to-server push
 
-Desktop should prefer WebSocket when `notification_websocket=true` and fall back to SSE plus HTTP response endpoints when needed.
+The future WebSocket surface should carry the same notification payloads and reuse `status_reason` semantics from the SSE contract.

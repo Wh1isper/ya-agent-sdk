@@ -30,13 +30,13 @@ The same desktop client can use:
 | 04      | [04-desktop-api-requirements.md](04-desktop-api-requirements.md)                 | Claw API additions needed by desktop clients                                 |
 | 05      | [05-desktop-app-structure.md](05-desktop-app-structure.md)                       | Tauri app structure, system integrations, and implementation phases          |
 | 06      | [06-sandboxed-workspace-provider.md](06-sandboxed-workspace-provider.md)         | local workspace provider with sandboxed shell for Linux and macOS            |
-| 07      | [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md) | websocket notifications, session state transfer, and desktop HITL            |
+| 07      | [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md) | SSE notifications, session state transfer, and desktop HITL                  |
 
 ## Near-Term Decisions
 
 - Use Tauri + React for YA Desktop.
 - Use local `ya-clawd` sidecar for default runtime.
-- Use Claw HTTP/SSE/WebSocket APIs as the UI runtime contract.
+- Use Claw HTTP/SSE APIs as the desktop MVP runtime contract, with WebSocket reserved for future RPC workspace transport.
 - Add connection registry from the beginning.
 - Make remote Claw and cloud Claw first-class connection types.
 - Treat remote agent with local RPC tools as a future workspace provider.

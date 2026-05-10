@@ -26,6 +26,16 @@ class SessionStatus(StrEnum):
     CANCELLED = RunStatus.CANCELLED
 
 
+class SessionStatusReason(StrEnum):
+    IDLE = "idle"
+    RUN_QUEUED = "run_queued"
+    RUN_RUNNING = "run_running"
+    HITL_PENDING = "hitl_pending"
+    RUN_COMPLETED = "run_completed"
+    RUN_FAILED = "run_failed"
+    RUN_CANCELLED = "run_cancelled"
+
+
 class TriggerType(StrEnum):
     API = "api"
     BRIDGE = "bridge"
@@ -245,6 +255,8 @@ class SessionSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     status: SessionStatus = SessionStatus.IDLE
+    status_reason: SessionStatusReason = SessionStatusReason.IDLE
+    status_detail: dict[str, Any] = Field(default_factory=dict)
     run_count: int = 0
     head_run_id: str | None = None
     head_success_run_id: str | None = None
@@ -501,10 +513,64 @@ def session_turn_from_record(record: RunRecord) -> SessionTurn:
     )
 
 
+def active_interactions_from_run_record(record: RunRecord) -> list[dict[str, Any]]:
+    if not isinstance(record.run_metadata, dict):
+        return []
+    interactions = record.run_metadata.get("active_interactions")
+    if not isinstance(interactions, list):
+        return []
+    return [interaction for interaction in interactions if isinstance(interaction, dict)]
+
+
 def resolve_session_status(latest_run: RunSummary | None) -> SessionStatus:
     if latest_run is None:
         return SessionStatus.IDLE
     return SessionStatus(latest_run.status)
+
+
+def resolve_session_status_reason(
+    latest_run: RunSummary | None,
+    *,
+    active_interactions: list[dict[str, Any]] | None = None,
+) -> SessionStatusReason:
+    if latest_run is None:
+        return SessionStatusReason.IDLE
+    if latest_run.status == RunStatus.QUEUED:
+        return SessionStatusReason.RUN_QUEUED
+    if latest_run.status == RunStatus.RUNNING:
+        if active_interactions:
+            return SessionStatusReason.HITL_PENDING
+        return SessionStatusReason.RUN_RUNNING
+    if latest_run.status == RunStatus.COMPLETED:
+        return SessionStatusReason.RUN_COMPLETED
+    if latest_run.status == RunStatus.FAILED:
+        return SessionStatusReason.RUN_FAILED
+    if latest_run.status == RunStatus.CANCELLED:
+        return SessionStatusReason.RUN_CANCELLED
+    return SessionStatusReason.IDLE
+
+
+def resolve_session_status_detail(
+    latest_run: RunSummary | None,
+    *,
+    active_interactions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if latest_run is None:
+        return {}
+
+    detail: dict[str, Any] = {
+        "run_id": latest_run.id,
+        "sequence_no": latest_run.sequence_no,
+        "trigger_type": latest_run.trigger_type,
+    }
+    if latest_run.termination_reason is not None:
+        detail["termination_reason"] = latest_run.termination_reason
+    if latest_run.error_message is not None:
+        detail["error_message"] = latest_run.error_message
+    if active_interactions:
+        detail["active_interactions"] = active_interactions
+        detail["active_interaction_count"] = len(active_interactions)
+    return detail
 
 
 def memory_state_summary_from_record(record: Any) -> MemoryStateSummary:
@@ -556,6 +622,7 @@ def session_summary_from_record(
     run_count: int,
     latest_run: RunSummary | None,
     memory_state: MemoryStateSummary | None = None,
+    active_interactions: list[dict[str, Any]] | None = None,
 ) -> SessionSummary:
     return SessionSummary(
         id=record.id,
@@ -567,6 +634,8 @@ def session_summary_from_record(
         created_at=record.created_at,
         updated_at=record.updated_at,
         status=resolve_session_status(latest_run),
+        status_reason=resolve_session_status_reason(latest_run, active_interactions=active_interactions),
+        status_detail=resolve_session_status_detail(latest_run, active_interactions=active_interactions),
         run_count=run_count,
         head_run_id=record.head_run_id,
         head_success_run_id=record.head_success_run_id,

@@ -22,6 +22,7 @@ from ya_claw.controller.models import (
     SessionRunCreateRequest,
     SessionSummary,
     SessionTurnsResponse,
+    active_interactions_from_run_record,
     memory_state_summary_from_record,
     run_summary_from_record,
     session_summary_from_record,
@@ -375,13 +376,18 @@ class SessionController:
         summaries: list[SessionSummary] = []
         for record in records:
             runs = grouped_runs.get(record.id, [])
-            latest_run = run_summary_from_record(runs[0]) if runs else None
+            latest_run_record = runs[0] if runs else None
+            latest_run = run_summary_from_record(latest_run_record) if latest_run_record is not None else None
+            active_interactions = (
+                active_interactions_from_run_record(latest_run_record) if latest_run_record is not None else None
+            )
             summaries.append(
                 session_summary_from_record(
                     record,
                     run_count=len(runs),
                     latest_run=latest_run,
                     memory_state=memory_states.get(record.id),
+                    active_interactions=active_interactions,
                 )
             )
 

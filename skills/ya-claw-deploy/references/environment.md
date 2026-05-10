@@ -45,6 +45,18 @@ YA Claw loads settings from process environment and `.env` files. `YA_CLAW_*` va
 | `YA_CLAW_PROFILE_SEED_FILE`  | YAML seed file path, commonly `packages/ya-claw/profiles.yaml` in development |
 | `YA_CLAW_AUTO_SEED_PROFILES` | Upsert seeded profiles on startup                                             |
 
+## Allocator Tuning
+
+The official YA Claw service and workspace Docker images set these allocator defaults for long-lived Python workloads:
+
+| Variable                 | Default  | Purpose                                                         |
+| ------------------------ | -------- | --------------------------------------------------------------- |
+| `MALLOC_ARENA_MAX`       | `2`      | Limits glibc malloc arena growth across threads                 |
+| `MALLOC_TRIM_THRESHOLD_` | `131072` | Encourages glibc heap trimming after freed blocks reach 128 KiB |
+| `PYTHONMALLOC`           | `malloc` | Routes Python allocations through libc malloc                   |
+
+Use the same values for systemd or custom container deployments when memory residency matters.
+
 ## Workspace Provider Settings
 
 | Variable                                                | Purpose                                                                   |
@@ -170,6 +182,9 @@ YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark
 YA_CLAW_BRIDGE_LARK_APP_ID=cli_xxx
 YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE=default
+MALLOC_ARENA_MAX=2
+MALLOC_TRIM_THRESHOLD_=131072
+PYTHONMALLOC=malloc
 LARK_APP_ID=cli_xxx
 LARK_APP_SECRET=replace-with-workspace-lark-secret
 MY_TOOL_API_KEY=replace-with-tool-key

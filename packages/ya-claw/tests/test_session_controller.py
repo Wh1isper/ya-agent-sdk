@@ -69,6 +69,8 @@ async def test_session_controller_creates_session_and_initial_run(
     assert response.run is not None
     assert response.session.id == response.run.session_id
     assert response.session.status == "queued"
+    assert response.session.status_reason == "run_queued"
+    assert response.session.status_detail["run_id"] == response.run.id
     assert response.session.head_run_id == response.run.id
     assert response.session.head_success_run_id is None
     assert response.run.input_preview == "hello from api"

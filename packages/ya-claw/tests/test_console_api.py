@@ -87,6 +87,9 @@ def test_claw_info_reports_console_capabilities() -> None:
     assert payload["features"]["session_events"] is True
     assert payload["features"]["run_events"] is True
     assert payload["features"]["notifications"] is True
+    assert payload["features"]["notification_replay"] is True
+    assert payload["features"]["session_status_reasons"] is True
+    assert payload["features"]["hitl_status_reason"] is True
     assert "notifications" in payload["surfaces"]
 
 
@@ -133,7 +136,12 @@ def test_console_notifications_capture_session_run_and_profile_events() -> None:
         assert event_types[1] == "run.created"
         profile_event_index = event_types.index("profile.created")
         assert events[0].payload["session_id"] == session_payload["id"]
+        assert events[0].payload["status_reason"] == "run_queued"
         assert events[1].payload["run_id"] == run_payload["id"]
+        assert events[1].payload["session_status_reason"] == "run_queued"
+        assert events[2].type == "session.updated"
+        assert events[2].payload["status_reason"] == "run_queued"
+        assert events[2].payload["status_detail"]["run_id"] == run_payload["id"]
         assert events[profile_event_index].payload["profile_name"] == "general"
 
 

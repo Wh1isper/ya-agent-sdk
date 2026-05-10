@@ -33,7 +33,7 @@ Choose the deployment path:
 - Service local + Docker shell: read [`references/systemd.md`](references/systemd.md) and [`references/workspace-provider/service-local-docker-shell.md`](references/workspace-provider/service-local-docker-shell.md)
 - Service local + local shell: read [`references/workspace-provider/service-local-local-shell.md`](references/workspace-provider/service-local-local-shell.md)
 - SQLite or PostgreSQL storage: read [`references/database.md`](references/database.md)
-- Profile seeding: read [`references/profiles.md`](references/profiles.md)
+- Profile seeding and shell review policy: read [`references/profiles.md`](references/profiles.md)
 - Bridge deployment: read [`references/bridge/overview.md`](references/bridge/overview.md) and [`references/bridge/lark.md`](references/bridge/lark.md)
 - Schedules and heartbeat: read [`references/schedules-heartbeat.md`](references/schedules-heartbeat.md)
 - Session/run pruning: read [`references/operations.md#session-and-run-pruning`](references/operations.md#session-and-run-pruning)
@@ -61,6 +61,7 @@ Every deployment needs:
 - workspace dir: `~/.ya-claw/data/workspace`
 - session prune: disabled by default; safe disk-only mode keeps latest 10 runs per session when enabled
 - default profile: `default`
+- profile shell review threshold default: `extra_high`
 - Docker workspace image: `ghcr.io/wh1isper/ya-claw-workspace:latest`
 - Docker service host bind: `0.0.0.0`
 - service build metadata: `YA_CLAW_SERVICE_VERSION`, `YA_CLAW_SERVICE_COMMIT`, `YA_CLAW_SERVICE_BUILD`, and `YA_CLAW_SERVICE_IMAGE`, exposed through `/api/v1/claw/info` and the web Overview page
@@ -88,7 +89,7 @@ Every deployment needs:
 | Docker workspace provider | [`references/workspace-provider/docker.md`](references/workspace-provider/docker.md)     | You configure Docker Engine access, path mapping, workspace mounts, and container reuse                         |
 | Host service              | [`references/systemd.md`](references/systemd.md)                                         | You run YA Claw as a supervised host service                                                                    |
 | Database                  | [`references/database.md`](references/database.md)                                       | You choose SQLite or PostgreSQL, migrate, backup, or restore storage                                            |
-| Profiles                  | [`references/profiles.md`](references/profiles.md)                                       | You seed profiles or manage AgentProfile configuration                                                          |
+| Profiles                  | [`references/profiles.md`](references/profiles.md)                                       | You seed profiles, manage AgentProfile configuration, or tune shell review `risk_threshold`                     |
 | Bridge overview           | [`references/bridge/overview.md`](references/bridge/overview.md)                         | You configure bridge dispatch, adapter enablement, and event-to-run routing                                     |
 | Lark bridge               | [`references/bridge/lark.md`](references/bridge/lark.md)                                 | You connect Lark/Feishu events to YA Claw                                                                       |
 | Bridge operations         | [`references/bridge/operations.md`](references/bridge/operations.md)                     | You verify embedded bridge startup, Lark ingress, dedupe, profiles, and workspace replies                       |

@@ -78,8 +78,8 @@ Owns API clients and connection orchestration.
 
 Responsibilities:
 
-- `ClawClient` HTTP/SSE client
-- `ClawRealtimeClient` WebSocket client for notifications, subscriptions, heartbeat, and HITL responses
+- `ClawClient` HTTP client and run-stream SSE client
+- `ClawRealtimeClient` global SSE client for notifications, reconnect replay, and session read-model updates
 - connection registry
 - local daemon lifecycle state
 - remote connection health checks
@@ -220,7 +220,7 @@ type DesktopContextDraft = {
 6. Add tray status and local daemon lifecycle controls.
 7. Add local workspace selection.
 8. Add sandboxed shell status and setup guidance for local workspaces.
-9. Connect to global notifications through SSE or WebSocket and update the session read model.
+9. Connect to global notifications through SSE and update the session read model.
 
 ### Phase 2: Multi-Connection Desktop
 
@@ -231,7 +231,7 @@ type DesktopContextDraft = {
 5. Gate UI features by capabilities.
 6. Add OS keychain storage for tokens.
 7. Add remote session and workspace browsing.
-8. Add WebSocket notification support when `notification_websocket=true`.
+8. Add reconnect replay and replay-gap refresh handling for global SSE notifications.
 
 ### Phase 3: Packaged Local Sidecar
 
@@ -262,7 +262,7 @@ type DesktopContextDraft = {
 ### Phase 6: Desktop HITL
 
 1. Add pending interaction storage and notification handling to Claw.
-2. Add `run.waiting_for_user` and `interaction.requested` notifications.
-3. Add WebSocket and HTTP response paths for approvals.
+2. Add `session.updated` notifications with `status_reason="hitl_pending"` and `interaction.requested` notifications.
+3. Add HTTP response paths for approvals.
 4. Add Desktop approval center, approval cards, and native notifications.
 5. Record decision audit metadata in Claw and Desktop diagnostics.

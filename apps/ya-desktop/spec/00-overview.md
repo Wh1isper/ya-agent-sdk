@@ -43,9 +43,9 @@ Desktop owns user interaction and OS integration.
 
 Claw owns agent execution and durable runtime state.
 
-The boundary is the Claw HTTP/SSE/WebSocket API surface. Desktop should use this same boundary for local embedded Claw, self-hosted Claw, and cloud Claw.
+The boundary is the Claw HTTP/SSE API surface for the desktop MVP, with WebSocket reserved for future remote RPC workspace transport and richer bidirectional control. Desktop should use this same boundary for local embedded Claw, self-hosted Claw, and cloud Claw.
 
-Desktop should keep a long-lived realtime connection per active Claw connection. Lifecycle notifications move sessions between queued, running, waiting-for-user, and terminal states immediately, including runs created by bridges, schedules, heartbeat, and other clients. Detailed AGUI run streams still power chat rendering and replay.
+Desktop should keep a long-lived SSE notification connection per active Claw connection. Lifecycle notifications move sessions between queued, running, HITL-pending, and terminal UI states through `status` plus `status_reason`, including runs created by bridges, schedules, heartbeat, and other clients. Detailed AGUI run streams still power chat rendering and replay.
 
 Desktop is the preferred HITL surface for approvals because it can show native notifications, focused approval cards, workspace context, command previews, and secure local identity details.
 

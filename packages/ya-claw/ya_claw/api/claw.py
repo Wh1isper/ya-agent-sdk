@@ -15,6 +15,9 @@ class ClawFeatures(BaseModel):
     session_events: bool = True
     run_events: bool = True
     notifications: bool = True
+    notification_replay: bool = True
+    session_status_reasons: bool = True
+    hitl_status_reason: bool = True
     profiles: bool = True
     schedules: bool = True
     heartbeat: bool = True

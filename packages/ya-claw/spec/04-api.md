@@ -299,6 +299,9 @@ Suggested response shape:
     "session_events": true,
     "run_events": true,
     "notifications": true,
+    "notification_replay": true,
+    "session_status_reasons": true,
+    "hitl_status_reason": true,
     "profiles": true,
     "schedules": true,
     "heartbeat": true
@@ -311,21 +314,32 @@ The notification stream at `/api/v1/claw/notifications` is a global SSE stream f
 ```json
 {
   "id": "1",
-  "type": "run.updated",
+  "type": "session.updated",
   "created_at": "2026-04-25T13:00:00Z",
   "payload": {
     "session_id": "session_123",
-    "run_id": "run_456",
-    "status": "running"
+    "status": "running",
+    "status_reason": "hitl_pending",
+    "status_detail": {
+      "run_id": "run_456",
+      "sequence_no": 4,
+      "active_interaction_count": 1
+    },
+    "active_run_id": "run_456"
   }
 }
 ```
+
+Session summaries expose stable `status` values plus `status_reason` and `status_detail` for UI-specific transition context. HITL uses `status="running"` with `status_reason="hitl_pending"` so clients can show approval prompts while the run remains active.
+
+Run notifications also include `session_status`, `session_status_reason`, and `session_status_detail` for clients that process run events directly.
 
 Notification events are buffered in process memory and support `Last-Event-ID` replay. The web console should still use session and run event streams for detailed AGUI output.
 
 Initial notification types:
 
 - `session.created`
+- `session.updated`
 - `run.created`
 - `run.updated`
 - `profile.created`

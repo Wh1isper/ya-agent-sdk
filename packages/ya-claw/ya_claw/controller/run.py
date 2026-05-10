@@ -23,6 +23,7 @@ from ya_claw.controller.models import (
     SessionSummary,
     SteerRequest,
     TerminationReason,
+    active_interactions_from_run_record,
     run_detail_from_record,
     run_summary_from_record,
     session_summary_from_record,
@@ -412,10 +413,14 @@ class RunController:
         latest_run_result = await db_session.execute(latest_run_statement)
         latest_run_record = latest_run_result.scalar_one_or_none()
         latest_run = run_summary_from_record(latest_run_record) if isinstance(latest_run_record, RunRecord) else None
+        active_interactions = (
+            active_interactions_from_run_record(latest_run_record) if isinstance(latest_run_record, RunRecord) else None
+        )
         return session_summary_from_record(
             session_record,
             run_count=run_count,
             latest_run=latest_run,
+            active_interactions=active_interactions,
         )
 
     async def _next_sequence_no(self, db_session: AsyncSession, session_id: str) -> int:

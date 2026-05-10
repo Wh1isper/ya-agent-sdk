@@ -21,7 +21,7 @@ from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEven
 from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
-from ya_claw.controller.models import InputPart, parse_input_parts
+from ya_claw.controller.models import InputPart, RunStatus, SessionStatusReason, parse_input_parts
 from ya_claw.execution.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
 from ya_claw.execution.checkpoint import build_message_checkpoint, commit_run_artifacts, write_message_checkpoint
 from ya_claw.execution.input import InputMappingResult, map_input_parts
@@ -892,20 +892,90 @@ async def _publish_run_status_notification(
         return
     memory_metadata = run_record.run_metadata.get("memory") if isinstance(run_record.run_metadata, dict) else None
     source_session_id = _memory_source_session_id(memory_metadata)
-    await notification_hub.publish(
-        event_type,
-        {
-            "session_id": run_record.session_id,
-            "source_session_id": source_session_id,
-            "run_id": run_record.id,
-            "status": run_record.status,
-            "sequence_no": run_record.sequence_no,
-            "profile_name": run_record.profile_name,
-            "termination_reason": run_record.termination_reason,
-            "error_message": run_record.error_message,
-            "output_summary": run_record.output_summary,
-        },
-    )
+    active_interactions = _active_interactions_from_run(run_record)
+    session_status_reason = _session_status_reason_from_run(run_record, active_interactions=active_interactions)
+    session_status_detail = _session_status_detail_from_run(run_record, active_interactions=active_interactions)
+    payload = {
+        "session_id": run_record.session_id,
+        "source_session_id": source_session_id,
+        "run_id": run_record.id,
+        "status": run_record.status,
+        "sequence_no": run_record.sequence_no,
+        "profile_name": run_record.profile_name,
+        "termination_reason": run_record.termination_reason,
+        "error_message": run_record.error_message,
+        "output_summary": run_record.output_summary,
+        "session_status": run_record.status,
+        "session_status_reason": session_status_reason,
+        "session_status_detail": session_status_detail,
+    }
+    await notification_hub.publish(event_type, payload)
+    if event_type != "session.updated":
+        await notification_hub.publish(
+            "session.updated",
+            {
+                "session_id": run_record.session_id,
+                "source_session_id": source_session_id,
+                "status": run_record.status,
+                "status_reason": session_status_reason,
+                "status_detail": session_status_detail,
+                "profile_name": run_record.profile_name,
+                "head_run_id": run_record.id,
+                "active_run_id": run_record.id if run_record.status in {RunStatus.QUEUED, RunStatus.RUNNING} else None,
+                "latest_run_id": run_record.id,
+                "latest_run_sequence_no": run_record.sequence_no,
+                "latest_run_status": run_record.status,
+            },
+        )
+
+
+def _active_interactions_from_run(run_record: RunRecord) -> list[dict[str, Any]]:
+    if not isinstance(run_record.run_metadata, dict):
+        return []
+    interactions = run_record.run_metadata.get("active_interactions")
+    if not isinstance(interactions, list):
+        return []
+    return [interaction for interaction in interactions if isinstance(interaction, dict)]
+
+
+def _session_status_reason_from_run(
+    run_record: RunRecord,
+    *,
+    active_interactions: list[dict[str, Any]] | None = None,
+) -> str:
+    if run_record.status == RunStatus.QUEUED:
+        return SessionStatusReason.RUN_QUEUED
+    if run_record.status == RunStatus.RUNNING:
+        if active_interactions:
+            return SessionStatusReason.HITL_PENDING
+        return SessionStatusReason.RUN_RUNNING
+    if run_record.status == RunStatus.COMPLETED:
+        return SessionStatusReason.RUN_COMPLETED
+    if run_record.status == RunStatus.FAILED:
+        return SessionStatusReason.RUN_FAILED
+    if run_record.status == RunStatus.CANCELLED:
+        return SessionStatusReason.RUN_CANCELLED
+    return SessionStatusReason.IDLE
+
+
+def _session_status_detail_from_run(
+    run_record: RunRecord,
+    *,
+    active_interactions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "run_id": run_record.id,
+        "sequence_no": run_record.sequence_no,
+        "trigger_type": run_record.trigger_type,
+    }
+    if isinstance(run_record.termination_reason, str):
+        detail["termination_reason"] = run_record.termination_reason
+    if isinstance(run_record.error_message, str):
+        detail["error_message"] = run_record.error_message
+    if active_interactions:
+        detail["active_interactions"] = active_interactions
+        detail["active_interaction_count"] = len(active_interactions)
+    return detail
 
 
 async def _load_run_scope(db_session: AsyncSession, run_id: str) -> tuple[SessionRecord, RunRecord]:
