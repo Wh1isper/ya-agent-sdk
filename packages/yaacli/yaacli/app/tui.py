@@ -88,7 +88,6 @@ from ya_agent_sdk.utils import get_latest_request_usage
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
 from yaacli.app.state import TUIMode
 from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, BackgroundTaskInfo
-from yaacli.browser import BrowserManager
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display import EventRenderer, RichRenderer, ToolMessage
@@ -202,7 +201,6 @@ class TUIApp:
     """Main TUI application class.
 
     Manages the lifecycle of:
-    - BrowserManager (optional)
     - AgentRuntime (env + ctx + agent)
     - prompt_toolkit Application
 
@@ -223,7 +221,6 @@ class TUIApp:
 
     # Resources (initialized in __aenter__)
     _exit_stack: AsyncExitStack | None = field(default=None, init=False, repr=False)
-    _browser: BrowserManager | None = field(default=None, init=False)
     _runtime: AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment] | None = field(
         default=None, init=False
     )
@@ -496,10 +493,6 @@ class TUIApp:
         # Configure TUI logging (queue for internal use, file for verbose mode)
         log_queue: asyncio.Queue[object] = asyncio.Queue()
 
-        # Start browser manager (optional)
-        self._browser = BrowserManager(self.config.browser)
-        await self._exit_stack.enter_async_context(self._browser)
-
         # Load MCP config
         mcp_config = self.config_manager.load_mcp_config()
 
@@ -507,7 +500,6 @@ class TUIApp:
         self._runtime = create_tui_runtime(
             config=self.config,
             mcp_config=mcp_config,
-            browser_manager=self._browser,
             working_dir=self.working_dir,
             config_dir=self.config_manager.config_dir,
         )

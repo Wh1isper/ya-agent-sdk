@@ -21,7 +21,6 @@ Yet Another Agent SDK for building AI agents with [Pydantic AI](https://ai.pydan
 - Human-in-the-loop approval workflows
 - Event system and streaming support
 - Message bus for agent coordination and user steering
-- Browser automation with Docker sandbox support
 
 ## Installation
 
@@ -110,7 +109,6 @@ This package lives in the [`ya-mono`](https://github.com/wh1isper/ya-mono) works
 | --- | --- |
 | [`general.py`](https://github.com/wh1isper/ya-mono/tree/main/examples/general.py) | Production pattern with streaming, HITL approval, and session persistence |
 | [`deepresearch.py`](https://github.com/wh1isper/ya-mono/tree/main/examples/deepresearch.py) | Autonomous research agent with web search and content extraction |
-| [`browser_use.py`](https://github.com/wh1isper/ya-mono/tree/main/examples/browser_use.py) | Browser automation with Docker-based headless Chrome sandbox |
 
 ## Reference Files
 

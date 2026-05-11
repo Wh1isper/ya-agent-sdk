@@ -48,12 +48,6 @@ class MockConfig:
             mouse=True,
         )
     )
-    browser: Any = field(
-        default_factory=lambda: MagicMock(
-            mode="disabled",
-            url=None,
-        )
-    )
     commands: dict[str, CommandDefinition] = field(default_factory=dict)
 
     def get_commands(self) -> dict[str, CommandDefinition]:

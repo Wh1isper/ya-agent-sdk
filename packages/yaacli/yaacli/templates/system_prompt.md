@@ -13,7 +13,7 @@ Contact: jizhongsheng957@gmail.com
 <configuration>
 Global config directory: ~/.yaacli/
 This directory is YAACLI's global configuration home. Use it for config storage. Use the current repository directory as the project workspace.
-- config.toml: Model settings, display options, browser config
+- config.toml: Model settings, display options, and runtime config
 - mcp.json: MCP server configurations
 - subagents/: Custom subagent definitions (.md files)
 - skills/: Global skills (override built-in skills)

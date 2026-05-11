@@ -22,7 +22,7 @@ flowchart LR
     DOCKER --> WSC["Reusable Workspace Container"]
 ```
 
-The Docker shell shapes give agents an isolated workspace container with Python, Node.js, Chromium, `agent-browser`, `lark-cli`, and bundled workspace skills.
+The Docker shell shapes give agents an isolated workspace container with Python, Node.js, `lark-cli`, and bundled workspace skills.
 
 ## Start Here
 

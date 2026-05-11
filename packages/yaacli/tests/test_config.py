@@ -36,9 +36,6 @@ def test_default_config() -> None:
     # Display
     assert config.display.code_theme == "dark"
 
-    # Browser
-    assert config.browser.cdp_url is None
-
     # Tools and security
     assert config.tools.need_approval == []
     assert config.security.shell_review.enabled is False
@@ -256,13 +253,11 @@ code_theme = "dark"
 """)
 
     os.environ["YAACLI_CODE_THEME"] = "light"
-    os.environ["YAACLI_CDP_URL"] = "auto"
     os.environ["YAACLI_AGENT_STREAM_RESUME_MAX_ATTEMPTS"] = "3"
 
     config = config_manager.load()
 
     assert config.display.code_theme == "light"
-    assert config.browser.cdp_url == "auto"
     assert config.general.model == "openai:gpt-4o"
     assert config.general.agent_stream_resume_max_attempts == 3
 

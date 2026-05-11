@@ -125,7 +125,7 @@ def add_toolset_instructions(
     """Add instructions from toolsets to the agent.
 
     Works with any toolset that implements InstructableToolset protocol
-    (has get_instructions method), including Toolset and BrowserUseToolset.
+    (has get_instructions method).
 
     Since pydantic-ai v1.74.0, AbstractToolset.get_instructions() is natively
     supported and the agent graph collects toolset instructions automatically.

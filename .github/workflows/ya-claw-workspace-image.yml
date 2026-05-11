@@ -60,5 +60,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Intentionally no Buildx cache: this daily image should resolve the
-          # current Debian stable packages, Chromium, Node.js, agent-browser,
-          # lark-cli, and bundled skill content on every scheduled rebuild.
+          # current Debian stable packages, Node.js, lark-cli, and bundled
+          # skill content on every scheduled rebuild.

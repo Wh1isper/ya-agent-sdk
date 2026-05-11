@@ -13,7 +13,7 @@ Configuration:
 
     Examples:
     - YA_AGENT_LOG_LEVEL=INFO                     # All SDK logs at INFO level
-    - YA_AGENT_LOG_LEVEL_BROWSER_USE=DEBUG        # browser_use module at DEBUG
+    - YA_AGENT_LOG_LEVEL_TOOLSETS_CORE=DEBUG      # core toolsets at DEBUG
     - YA_AGENT_LOG_LEVEL_TOOLSETS=ERROR           # toolsets module at ERROR
 """
 
@@ -74,13 +74,14 @@ def _get_module_log_level(module_path: str) -> int | None:
     """Get module-specific log level from environment variable.
 
     Checks for module-specific overrides by walking up the module hierarchy.
-    For example, for "toolsets.browser_use.tools", checks:
-    - YA_AGENT_LOG_LEVEL_TOOLSETS_BROWSER_USE_TOOLS
-    - YA_AGENT_LOG_LEVEL_TOOLSETS_BROWSER_USE
+    For example, for "toolsets.core.shell.tools", checks:
+    - YA_AGENT_LOG_LEVEL_TOOLSETS_CORE_SHELL_TOOLS
+    - YA_AGENT_LOG_LEVEL_TOOLSETS_CORE_SHELL
+    - YA_AGENT_LOG_LEVEL_TOOLSETS_CORE
     - YA_AGENT_LOG_LEVEL_TOOLSETS
 
     Args:
-        module_path: Dotted module path relative to ya_agent_sdk (e.g., "toolsets.browser_use")
+        module_path: Dotted module path relative to ya_agent_sdk (e.g., "toolsets.core")
 
     Returns:
         Log level if found, None otherwise.
@@ -133,17 +134,17 @@ def get_logger(name: str | None = None) -> logging.Logger:
     """Get a logger instance for the given module.
 
     Args:
-        name: Full module name (e.g., "ya_agent_sdk.toolsets.browser_use")
-              or relative name (e.g., "toolsets.browser_use").
+        name: Full module name (e.g., "ya_agent_sdk.toolsets.core")
+              or relative name (e.g., "toolsets.core").
               If None, returns the SDK root logger.
 
     Returns:
         A configured logger instance.
 
     Example:
-        # In ya_agent_sdk/toolsets/browser_use/toolset.py
+        # In ya_agent_sdk/toolsets/core/shell/tools.py
         from ya_agent_sdk._logger import get_logger
-        logger = get_logger(__name__)  # "ya_agent_sdk.toolsets.browser_use.toolset"
+        logger = get_logger(__name__)  # "ya_agent_sdk.toolsets.core.shell.tools"
     """
     # Ensure root logger is set up
     _setup_sdk_logger()

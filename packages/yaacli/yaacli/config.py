@@ -5,7 +5,7 @@ Configuration files are loaded with project-level priority (no merging):
 1. **config.toml** (model + TUI settings + security runtime settings):
    - Global: ~/.yaacli/config.toml
    - Project: .yaacli/config.toml (overrides global entirely)
-   - Contains: model, model_settings, display, steering, session, browser, subagents, env, security.shell_review
+   - Contains: model, model_settings, display, steering, session, subagents, env, security.shell_review
 
 2. **tools.toml** (tool permissions and project tool overrides):
    - Global: ~/.yaacli/tools.toml
@@ -113,19 +113,6 @@ class DisplayConfig(BaseModel):
 
     show_elapsed_time: bool = True
     """Show elapsed time."""
-
-
-class BrowserConfig(BaseModel):
-    """Browser automation configuration."""
-
-    cdp_url: str | None = None
-    """CDP URL for browser automation."""
-
-    browser_image: str = "zenika/alpine-chrome:latest"
-    """Docker image for auto-start browser."""
-
-    browser_timeout: int = 30
-    """Browser startup timeout in seconds."""
 
 
 class ShellReviewConfig(BaseModel):
@@ -263,7 +250,6 @@ class YaacliConfig(BaseModel):
     # From global config
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
-    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     """Media handling configuration (S3 upload, etc.)."""
@@ -328,11 +314,6 @@ class EnvSettings(BaseSettings):
     code_theme: Literal["dark", "light"] | None = None
     show_token_usage: bool | None = None
     show_elapsed_time: bool | None = None
-
-    # Browser
-    cdp_url: str | None = None
-    browser_image: str | None = None
-    browser_timeout: int | None = None
 
     # Steering
     steering_enabled: bool | None = None
@@ -464,17 +445,6 @@ class ConfigManager:
             display["show_elapsed_time"] = env.show_elapsed_time
         if display:
             overrides["display"] = display
-
-        # Browser
-        browser: dict[str, Any] = {}
-        if env.cdp_url is not None:
-            browser["cdp_url"] = env.cdp_url
-        if env.browser_image is not None:
-            browser["browser_image"] = env.browser_image
-        if env.browser_timeout is not None:
-            browser["browser_timeout"] = env.browser_timeout
-        if browser:
-            overrides["browser"] = browser
 
         # Steering
         steering: dict[str, Any] = {}

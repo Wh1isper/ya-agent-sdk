@@ -2,26 +2,23 @@
 
 This module provides factory functions to create AgentRuntime configured
 for TUI usage. It wraps the SDK's create_agent() with TUI-specific
-configuration and integrates Browser and MCP toolsets.
+configuration and integrates MCP toolsets.
 
 Example:
     from yaacli.runtime import create_tui_runtime
-    from yaacli.browser import BrowserManager
     from yaacli.config import ConfigManager
 
     config_manager = ConfigManager()
     config = config_manager.load_config()
     mcp_config = config_manager.load_mcp_config()
 
-    async with BrowserManager(config.browser) as browser:
-        runtime = create_tui_runtime(
-            config=config,
-            mcp_config=mcp_config,
-            browser_manager=browser,
-        )
-        async with runtime:
-            # Use runtime.agent, runtime.ctx, runtime.env
-            pass
+    runtime = create_tui_runtime(
+        config=config,
+        mcp_config=mcp_config,
+    )
+    async with runtime:
+        # Use runtime.agent, runtime.ctx, runtime.env
+        pass
 """
 
 from __future__ import annotations
@@ -51,7 +48,6 @@ from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillTo
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
-from yaacli.browser import BrowserManager
 from yaacli.config import ConfigManager, MCPConfig, SubagentsConfig, YaacliConfig
 from yaacli.environment import TUIEnvironment
 from yaacli.guards import attach_loop_guard
@@ -169,7 +165,6 @@ def _load_subagent_configs(
 def create_tui_runtime(
     config: YaacliConfig,
     mcp_config: MCPConfig | None = None,
-    browser_manager: BrowserManager | None = None,
     *,
     working_dir: Path | None = None,
     system_prompt: str | None = None,
@@ -182,14 +177,11 @@ def create_tui_runtime(
     - TUIEnvironment with Shell ABC background process management
     - TUIContext with SteeringManager
     - MCP servers from configuration
-    - Browser toolset if available
     - Steering guard for output validation
 
     Args:
         config: YAACLI CLI configuration.
         mcp_config: MCP server configuration. If None, no MCP servers are added.
-        browser_manager: Optional browser manager. If available and started,
-            its toolset will be included.
         working_dir: Working directory for the environment. Defaults to cwd.
         system_prompt: Custom system prompt. If None, uses default.
         config_dir: Global config directory used for subagents and allowed paths.
@@ -198,7 +190,7 @@ def create_tui_runtime(
         AgentRuntime configured for TUI usage. Use as async context manager.
 
     Example:
-        runtime = create_tui_runtime(config, mcp_config, browser)
+        runtime = create_tui_runtime(config, mcp_config)
         async with runtime:
             async with stream_agent(runtime, "Hello") as stream:
                 async for event in stream:
@@ -211,13 +203,6 @@ def create_tui_runtime(
     toolsets: list[AbstractToolset[Any]] = [
         SkillToolset(toolset_id="skills", extra_dir_names=[SHARED_SKILLS_DIR_NAME]),
     ]
-
-    # Add browser toolset if available (before ToolProxyToolset)
-    if browser_manager and browser_manager.is_available:
-        browser_toolset = browser_manager.get_browser_toolset()
-        if browser_toolset:
-            toolsets.append(browser_toolset)
-            logger.info("Added browser toolset (cdp_url=%s)", browser_manager.cdp_url)
 
     # Add MCP servers wrapped in ToolProxyToolset for on-demand invocation.
     # This is intentionally last: proxy tools occupy stable positions at

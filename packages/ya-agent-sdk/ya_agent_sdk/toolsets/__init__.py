@@ -5,7 +5,6 @@ This module provides:
 - BaseToolset: Abstract base class for toolsets with instruction support
 - Toolset: Container for tools with hooks and HITL support
 - InstructableToolset: Protocol for toolsets that provide instructions
-- BrowserUseToolset: Browser automation via Chrome DevTools Protocol
 """
 
 from ya_agent_sdk.toolsets.base import (
@@ -15,7 +14,6 @@ from ya_agent_sdk.toolsets.base import (
     Instruction,
     UserInputPreprocessResult,
 )
-from ya_agent_sdk.toolsets.browser_use import BrowserUseSettings, BrowserUseToolset
 from ya_agent_sdk.toolsets.core.base import (
     CallMetadata,
     GlobalHooks,
@@ -31,8 +29,6 @@ from ya_agent_sdk.toolsets.core.base import (
 __all__ = [
     "BaseTool",
     "BaseToolset",
-    "BrowserUseSettings",
-    "BrowserUseToolset",
     "CallMetadata",
     "GlobalHooks",
     "GlobalPostHookFunc",

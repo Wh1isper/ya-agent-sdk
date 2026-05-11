@@ -24,30 +24,27 @@ Where `<MODULE_PATH>` is the module path with dots replaced by underscores and c
 **Examples:**
 
 ```bash
-# Enable debug logging for browser_use module only
-export YA_AGENT_LOG_LEVEL_TOOLSETS_BROWSER_USE=DEBUG
-
 # Enable debug logging for all toolsets
 export YA_AGENT_LOG_LEVEL_TOOLSETS=DEBUG
 
-# Enable info logging for sandbox module
-export YA_AGENT_LOG_LEVEL_SANDBOX=INFO
+# Enable info logging for environment modules
+export YA_AGENT_LOG_LEVEL_ENVIRONMENT=INFO
 
 # Combine global and module-specific settings
-export YA_AGENT_LOG_LEVEL=WARNING           # Default to WARNING
-export YA_AGENT_LOG_LEVEL_TOOLSETS_BROWSER_USE=DEBUG  # But DEBUG for browser_use
+export YA_AGENT_LOG_LEVEL=WARNING
+export YA_AGENT_LOG_LEVEL_TOOLSETS_CORE_SHELL=DEBUG
 ```
 
 ## Module Hierarchy
 
 Module-specific settings are checked from most specific to least specific:
 
-| Module Path                        | Environment Variable                                  |
-| ---------------------------------- | ----------------------------------------------------- |
-| `toolsets.browser_use.tools.query` | `YA_AGENT_LOG_LEVEL_TOOLSETS_BROWSER_USE_TOOLS_QUERY` |
-| `toolsets.browser_use.tools`       | `YA_AGENT_LOG_LEVEL_TOOLSETS_BROWSER_USE_TOOLS`       |
-| `toolsets.browser_use`             | `YA_AGENT_LOG_LEVEL_TOOLSETS_BROWSER_USE`             |
-| `toolsets`                         | `YA_AGENT_LOG_LEVEL_TOOLSETS`                         |
+| Module Path                 | Environment Variable                           |
+| --------------------------- | ---------------------------------------------- |
+| `toolsets.core.shell.tools` | `YA_AGENT_LOG_LEVEL_TOOLSETS_CORE_SHELL_TOOLS` |
+| `toolsets.core.shell`       | `YA_AGENT_LOG_LEVEL_TOOLSETS_CORE_SHELL`       |
+| `toolsets.core`             | `YA_AGENT_LOG_LEVEL_TOOLSETS_CORE`             |
+| `toolsets`                  | `YA_AGENT_LOG_LEVEL_TOOLSETS`                  |
 
 ## Programmatic Usage
 
@@ -75,28 +72,23 @@ Logs are written to stderr with the following format:
 **Terminal (with color support):**
 
 ```
-2026-01-05 22:00:00 | DEBUG    | toolsets.browser_use:function_name:42 - Message
+2026-01-05 22:00:00 | DEBUG    | toolsets.core.shell:function_name:42 - Message
 ```
 
 **Non-terminal (plain text):**
 
 ```
-2026-01-05 22:00:00 | DEBUG    | ya_agent_sdk.toolsets.browser_use:function_name:42 - Message
+2026-01-05 22:00:00 | DEBUG    | ya_agent_sdk.toolsets.core.shell:function_name:42 - Message
 ```
 
 ## Best Practices
 
 1. **Use `get_logger(__name__)`** in each module to get a properly namespaced logger
 2. **Use `logger.exception()`** in except blocks - it automatically includes the traceback
-3. **Don't include the exception in the message** when using `logger.exception()`:
+3. **Use concise exception messages** when using `logger.exception()`:
    ```python
-   # Good
    except Exception:
        logger.exception("Failed to process request")
-
-   # Bad (redundant)
-   except Exception as e:
-       logger.exception(f"Failed to process request: {e}")
    ```
 4. **Use appropriate log levels**:
    - `DEBUG`: Detailed diagnostic information

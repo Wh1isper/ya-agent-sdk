@@ -1,7 +1,6 @@
 FROM debian:stable-slim
 
 ARG NODE_MAJOR=22
-ARG AGENT_BROWSER_VERSION=latest
 ARG TARGETARCH
 ARG WORKSPACE_UID=1000
 ARG WORKSPACE_GID=1000
@@ -13,10 +12,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MALLOC_ARENA_MAX=2 \
     MALLOC_TRIM_THRESHOLD_=131072 \
     PYTHONMALLOC=malloc \
-    AGENT_BROWSER_CONFIG=/etc/agent-browser/config.json \
-    AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
-    AGENT_BROWSER_ARGS=--no-sandbox,--disable-gpu,--disable-dev-shm-usage \
-    AGENT_BROWSER_IDLE_TIMEOUT_MS=300000 \
     YA_CLAW_WORKSPACE_STARTUP_DIR=/workspace \
     PATH=/home/claw/.bin:${PATH}
 
@@ -25,7 +20,6 @@ RUN apt-get update \
         apt-transport-https \
         bash \
         ca-certificates \
-        chromium \
         curl \
         file \
         fonts-freefont-ttf \
@@ -56,19 +50,10 @@ RUN apt-get update \
     && curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh \
     && UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh \
     && uv --version \
-    && npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
-    && mkdir -p /etc/agent-browser /opt/ya-claw/skills/agent-browser /workspace /home/claw /home/claw/.bin \
+    && mkdir -p /opt/ya-claw/skills /workspace /home/claw /home/claw/.bin \
     && if ! getent group "${WORKSPACE_GID}" >/dev/null; then groupadd --gid "${WORKSPACE_GID}" "claw-g${WORKSPACE_GID}"; fi \
     && if ! getent passwd "${WORKSPACE_UID}" >/dev/null; then useradd --uid "${WORKSPACE_UID}" --gid "${WORKSPACE_GID}" --home-dir /home/claw --create-home --shell /bin/bash "claw-u${WORKSPACE_UID}"; fi \
     && chown "${WORKSPACE_UID}:${WORKSPACE_GID}" /workspace /home/claw /home/claw/.bin \
-    && printf '%s\n' \
-        '{' \
-        '  "executablePath": "/usr/bin/chromium",' \
-        '  "args": "--no-sandbox,--disable-gpu,--disable-dev-shm-usage",' \
-        '  "ignoreHttpsErrors": true' \
-        '}' > /etc/agent-browser/config.json \
-    && agent-browser skills get agent-browser > /opt/ya-claw/skills/agent-browser/SKILL.md \
-    && test -s /opt/ya-claw/skills/agent-browser/SKILL.md \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 RUN set -eu; \

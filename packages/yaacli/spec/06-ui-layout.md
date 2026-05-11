@@ -41,7 +41,6 @@ graph TB
     StatusBar --> ModeIndicator[Mode: ACT/PLAN/FIX]
     StatusBar --> TokenUsage[Token Counter]
     StatusBar --> Timer[Elapsed Time]
-    StatusBar --> BrowserStatus[Browser Icon]
 
     OutputPane --> TextStream[Streaming Text]
     OutputPane --> ToolCalls[Tool Call Display]
@@ -61,11 +60,10 @@ graph TB
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ yaacli │ claude-4 │ ACT │ 12.5k/200k (6.3%) │ 2m 34s │ [B] [S2] │
+│ yaacli │ claude-4 │ ACT │ 12.5k/200k (6.3%) │ 2m 34s │ [S2] │
 └─────────────────────────────────────────────────────────────────────┘
-     │           │        │           │              │        │    │
-     │           │        │           │              │        │    └── Steering queue
-     │           │        │           │              │        └── Browser status
+     │           │        │           │              │        │
+     │           │        │           │              │        └── Steering queue
      │           │        │           │              └── Elapsed time
      │           │        │           └── Token usage (current/max)
      │           │        └── Current mode
@@ -108,12 +106,6 @@ class StatusBarRenderer:
         # Elapsed time
         if ctx.elapsed_time:
             parts.append(self._format_duration(ctx.elapsed_time))
-
-        # Browser status
-        if ctx.env and ctx.env.cdp_url:
-            parts.append(self._style("[B]", "browser_active"))
-        elif ctx.config.browser.cdp_url:
-            parts.append(self._style("[!]", "browser_error"))
 
         # Steering queue
         if ctx.steering_manager and ctx.steering_manager.has_pending():
@@ -339,8 +331,6 @@ TUI_STYLES = {
     "usage_medium": "yellow",  # 50-80%
     "usage_high": "red",       # > 80%
     "timer": "dim",
-    "browser_active": "green",
-    "browser_error": "red",
     "steering_pending": "magenta",
 
     # Output

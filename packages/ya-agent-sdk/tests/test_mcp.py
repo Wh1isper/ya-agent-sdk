@@ -88,11 +88,11 @@ def test_filter_mcp_config_enabled_and_disabled() -> None:
         servers={
             "github": MCPServerConfig(transport="stdio", command="npx"),
             "context7": MCPServerConfig(transport="streamable_http", url="https://mcp.context7.com/mcp"),
-            "browser": MCPServerConfig(transport="stdio", command="uvx"),
+            "filesystem": MCPServerConfig(transport="stdio", command="uvx"),
         }
     )
 
-    filtered = filter_mcp_config(config, enabled_mcps=["github", "browser"], disabled_mcps=["browser"])
+    filtered = filter_mcp_config(config, enabled_mcps=["github", "filesystem"], disabled_mcps=["filesystem"])
 
     assert list(filtered.servers) == ["github"]
 

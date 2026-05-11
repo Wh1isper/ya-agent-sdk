@@ -119,10 +119,8 @@ The official workspace image contains:
 - Python, `pip`, and `venv`
 - Node.js and Corepack
 - Git, OpenSSH, curl, wget, jq, unzip, zip, and shell utilities
-- Debian Chromium
-- `agent-browser` configured for `/usr/bin/chromium`
 - `lark-cli`
-- bundled `agent-browser` and Lark skills copied into `/workspace/.agents/skills/`
+- bundled Lark and skill-creator skills copied into `/workspace/.agents/skills/`
 
 ## Verification
 
@@ -131,7 +129,6 @@ docker ps --filter 'name=ya-claw-workspace'
 docker inspect ya-claw-workspace-<fingerprint> --format '{{ json .Mounts }}'
 docker exec -it ya-claw-workspace-<fingerprint> pwd
 docker exec -it ya-claw-workspace-<fingerprint> ls -la /workspace
-docker exec -it ya-claw-workspace-<fingerprint> agent-browser --help
 docker exec -it ya-claw-workspace-<fingerprint> lark-cli --version
 ```
 

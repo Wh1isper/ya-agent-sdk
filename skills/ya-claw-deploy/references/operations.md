@@ -67,7 +67,6 @@ docker ps --filter 'name=ya-claw-workspace'
 docker logs ya-claw-workspace-<fingerprint>
 docker exec -it ya-claw-workspace-<fingerprint> pwd
 docker exec -it ya-claw-workspace-<fingerprint> ls -la /workspace
-docker exec -it ya-claw-workspace-<fingerprint> agent-browser --help
 docker exec -it ya-claw-workspace-<fingerprint> lark-cli --version
 ```
 

@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
-from yaacli.browser import BrowserManager
 from yaacli.config import (
-    BrowserConfig,
     GeneralConfig,
     MCPConfig,
     MCPServerConfig,
@@ -118,29 +115,6 @@ def test_create_tui_runtime_with_mcp_servers(tmp_path: Path) -> None:
         mcp_config=mcp_config,
         working_dir=tmp_path,
     )
-
-    assert runtime is not None
-
-
-def test_create_tui_runtime_with_browser_manager(tmp_path: Path) -> None:
-    """Test creating runtime with browser manager."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
-    )
-
-    # Create a mock browser manager
-    browser_config = BrowserConfig(cdp_url="ws://localhost:9222")
-    browser_manager = BrowserManager(browser_config)
-    # Manually set cdp_url to simulate started state
-    browser_manager._cdp_url = "ws://localhost:9222"
-
-    # Mock get_browser_toolset to avoid importing actual toolset
-    with patch.object(browser_manager, "get_browser_toolset", return_value=None):
-        runtime = create_tui_runtime(
-            config=config,
-            browser_manager=browser_manager,
-            working_dir=tmp_path,
-        )
 
     assert runtime is not None
 

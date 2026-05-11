@@ -57,7 +57,7 @@ cp packages/yaacli/.env.example packages/yaacli/.env
 
 YAACLI loads `.env` from `packages/yaacli/.env` and the current working directory.
 Provider API keys can live in that `.env` file or in `~/.yaacli/config.toml` under `[env]`.
-SDK and tool variables such as `YA_AGENT_*`, `YA_AGENT_BROWSER_USE_*`, and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup.
+SDK and tool variables such as `YA_AGENT_*` and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) as the reference list for SDK and tool variables.
 
 Shell command review is configured in `~/.yaacli/config.toml` under `security.shell_review`:

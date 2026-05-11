@@ -70,15 +70,6 @@ enabled = false
 # on_needs_approval = "defer"
 # risk_threshold = "high"
 
-[browser]
-# CDP URL for browser automation
-# Options: null (disabled), "auto" (Docker), or explicit URL
-# cdp_url = "auto"
-# Docker image for auto-start browser
-browser_image = "zenika/alpine-chrome:latest"
-# Browser startup timeout in seconds
-browser_timeout = 30
-
 [subagents]
 # Subagents are loaded from ~/.yaacli/subagents/
 # Run `yaacli setup` to initialize default subagents

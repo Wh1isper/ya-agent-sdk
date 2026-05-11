@@ -199,9 +199,8 @@ The image provides a ready-to-use agent workspace on Debian stable with:
 - Python and `pip`/`venv`
 - Node.js and Corepack
 - Git, OpenSSH, curl, wget, jq, unzip, zip, and common shell utilities
-- Debian Chromium and browser system dependencies
-- `agent-browser` installed through npm and configured to use `/usr/bin/chromium`
-- an `agent-browser` discovery skill copied into mounted workspace `.agents/skills/` directories at container start
+- `lark-cli`
+- bundled Lark and skill-creator skills copied into mounted workspace `.agents/skills/` directories at container start
 
 The workspace provider treats the image as an implementation detail carried by `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE`. Deployments can override the image while keeping the same binding and environment factory contracts.
 

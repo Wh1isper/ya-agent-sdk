@@ -31,7 +31,7 @@ YA_CLAW_WORKSPACE_DIR=/var/lib/ya-claw/workspace
 
 ## Host Requirements
 
-The host must provide the tools agents need through the service user environment, such as Python, Node.js, Git, browser tooling, and any CLIs referenced by profiles or MCP servers.
+The host must provide the tools agents need through the service user environment, such as Python, Node.js, Git, and any CLIs referenced by profiles or MCP servers.
 
 Workspace permissions should allow the service user to read and write:
 

@@ -1,6 +1,6 @@
 ---
 name: agent-builder
-description: Build and configure AI agents with ya-agent-sdk and Pydantic AI. Covers create_agent(), stream_agent(), AgentContext, ResumableState session persistence, toolsets, subagents, environments, HITL approval, and browser automation. Use when implementing agent applications, wiring tools into an agent, restoring multi-turn sessions, configuring subagent hierarchies, adding approval flows, or working with ya-agent-sdk APIs such as create_agent, export_state, stream_agent, and SubagentConfig.
+description: Build and configure AI agents with ya-agent-sdk and Pydantic AI. Covers create_agent(), stream_agent(), AgentContext, ResumableState session persistence, toolsets, subagents, environments, and HITL approval. Use when implementing agent applications, wiring tools into an agent, restoring multi-turn sessions, configuring subagent hierarchies, adding approval flows, or working with ya-agent-sdk APIs such as create_agent, export_state, stream_agent, and SubagentConfig.
 ---
 
 # Building Agents with ya-agent-sdk
@@ -16,7 +16,7 @@ Choose the workflow that matches the task:
 - Use `runtime.ctx.export_state()` and `create_agent(..., state=state)` for multi-turn persistence.
 - Use tool classes, toolsets, hooks, and approval settings for tool-enabled agents.
 - Use `SubagentConfig` and delegation settings for hierarchical agents.
-- Use custom environments, sandbox resources, and browser-backed execution for richer runtime behavior.
+- Use custom environments and sandbox resources for richer runtime behavior.
 
 Start with these local references:
 
@@ -24,7 +24,7 @@ Start with these local references:
 - Streaming and event handling: [`./streaming.md`](./streaming.md), [`./events.md`](./events.md)
 - Tools, hooks, and toolsets: [`./toolset.md`](./toolset.md), [`./tool-search.md`](./tool-search.md)
 - Subagents and delegation: [`./subagent.md`](./subagent.md)
-- Environments and browser-backed execution: [`./environment.md`](./environment.md), [`./resumable-resources.md`](./resumable-resources.md)
+- Environments and resumable resources: [`./environment.md`](./environment.md), [`./resumable-resources.md`](./resumable-resources.md)
 
 ## Installation
 
@@ -35,7 +35,7 @@ pip install ya-agent-sdk
 uv add ya-agent-sdk
 ```
 
-Install the full toolkit when you want examples, browser automation, document tools, tool search, and common integrations:
+Install the full toolkit when you want examples, document tools, tool search, and common integrations:
 
 ```bash
 pip install ya-agent-sdk[all]
@@ -150,16 +150,6 @@ async with create_agent(
 
 Read [`./subagent.md`](./subagent.md) for subagent loading, unified delegation, and builtin subagent behavior.
 
-### Use browser automation
-
-Start from the browser example and environment references:
-
-- Repository source example: `../../examples/browser_use.py`
-- Bundled CLI skill example: `./examples/browser_use.py`
-- Environment guide: [`./environment.md`](./environment.md)
-- Long-lived resource guide: [`./resumable-resources.md`](./resumable-resources.md)
-- Tool proxy guide: [`./tool-proxy.md`](./tool-proxy.md)
-
 ## Reference Routing
 
 All paths below are local paths relative to this file.
@@ -173,7 +163,7 @@ All paths below are local paths relative to this file.
 | Tool search          | [`./tool-search.md`](./tool-search.md)                 | You need discovery across a large or dynamic tool library          |
 | Subagents            | [`./subagent.md`](./subagent.md)                       | You need delegation, subagent configs, or unified subagent tools   |
 | Environment          | [`./environment.md`](./environment.md)                 | You need custom environments or sandbox-backed execution           |
-| Resumable resources  | [`./resumable-resources.md`](./resumable-resources.md) | You need long-lived browser or external resource state             |
+| Resumable resources  | [`./resumable-resources.md`](./resumable-resources.md) | You need long-lived external resource state                        |
 | Skills system        | [`./skills.md`](./skills.md)                           | You need SDK skill loading, reload, or skill integration details   |
 | Message bus          | [`./message-bus.md`](./message-bus.md)                 | You need agent coordination or user steering through messages      |
 | Model configuration  | [`./model.md`](./model.md)                             | You need model selection, model settings, or configuration details |
@@ -189,7 +179,6 @@ Use these examples when you need a full application flow:
 | -------------------------- | -------------------------------- | ---------------------------- |
 | General production pattern | `../../examples/general.py`      | `./examples/general.py`      |
 | Autonomous research agent  | `../../examples/deepresearch.py` | `./examples/deepresearch.py` |
-| Browser automation         | `../../examples/browser_use.py`  | `./examples/browser_use.py`  |
 
 ## Workspace Context
 

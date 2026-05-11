@@ -62,8 +62,7 @@ class Instruction(BaseModel):
 class InstructableToolset(Protocol):
     """Protocol for toolsets that provide instructions.
 
-    This enables duck typing for any toolset that has a get_instructions method,
-    allowing add_toolset_instructions() to work with both Toolset and BrowserUseToolset.
+    This enables duck typing for any toolset that has a get_instructions method.
     """
 
     async def get_instructions(
