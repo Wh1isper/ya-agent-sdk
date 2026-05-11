@@ -299,6 +299,8 @@ class ViewTool(BaseTool):
                 media_type=media_type,
                 model=model,
                 model_settings=model_settings,
+                model_wrapper=ctx.deps.model_wrapper,
+                wrapper_metadata=ctx.deps.get_wrapper_metadata(),
             )
 
             if ctx.tool_call_id:

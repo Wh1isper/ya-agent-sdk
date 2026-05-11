@@ -2,10 +2,13 @@
 
 from contextlib import AsyncExitStack
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from inline_snapshot import snapshot
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
+from pydantic_ai.models import Model
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.filesystem.view import (
@@ -433,6 +436,54 @@ async def test_view_video_file_fallback_to_image_understanding(tmp_path: Path) -
             result = await tool.call(mock_run_ctx, file_path="test.mp4")
             assert "Video description" in result
             assert "test scene" in result
+
+
+async def test_view_video_fallback_passes_model_wrapper(tmp_path: Path) -> None:
+    """Should pass model wrapper metadata to video fallback analysis."""
+    from ya_agent_sdk.context import ToolConfig
+
+    captured_kwargs: dict[str, Any] = {}
+
+    async def mock_get_video_description(**kwargs: Any):
+        captured_kwargs.update(kwargs)
+        return "This video shows a test scene.", "test-model", RunUsage()
+
+    def model_wrapper(model: Model, agent_name: str, metadata: dict[str, Any]) -> Model:
+        return model
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(video_understanding_model="openai:gpt-4o"),
+                model_wrapper=model_wrapper,
+                wrapper_metadata={"trace_id": "trace-1"},
+            )
+        )
+        tool = ViewTool()
+
+        test_file = tmp_path / "test.mp4"
+        test_file.write_bytes(b"fake video data")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+        mock_run_ctx.tool_call_id = "test-id"
+
+        with patch(
+            "ya_agent_sdk.agents.video_understanding.get_video_description",
+            side_effect=mock_get_video_description,
+        ):
+            result = await tool.call(mock_run_ctx, file_path="test.mp4")
+
+    assert "This video shows a test scene" in result
+    assert captured_kwargs["model"] == "openai:gpt-4o"
+    assert captured_kwargs["model_wrapper"] is model_wrapper
+    assert captured_kwargs["wrapper_metadata"]["run_id"] == ctx.run_id
+    assert captured_kwargs["wrapper_metadata"]["agent_id"] == "main"
+    assert captured_kwargs["wrapper_metadata"]["trace_id"] == "trace-1"
 
 
 async def test_view_video_fallback_failure(tmp_path: Path) -> None:
