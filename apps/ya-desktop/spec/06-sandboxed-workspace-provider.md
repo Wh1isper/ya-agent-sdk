@@ -2,7 +2,7 @@
 
 ## Direction
 
-YA Desktop local execution should use a workspace provider that combines controlled file operations with a sandboxed shell. The host workspace remains the source of truth. File operations use Claw's existing path-bounded `FileOperator`; shell execution runs in a sandbox that exposes the workspace as the only project filesystem scope.
+YA Desktop local execution should use a workspace provider that combines controlled file operations with a sandboxed shell. The host workspace remains the source of truth. File operations use Claw's existing path-bounded `FileOperator`; shell execution runs in a sandbox that exposes the selected workspace mount set as the project filesystem scope.
 
 The default local provider should be `LocalWorkspaceProvider` with `SandboxedShell`.
 
@@ -51,7 +51,8 @@ type LocalWorkspaceProvider = {
 type SandboxedShell = {
   kind: "sandboxed_shell";
   runtime: SandboxRuntime;
-  workspaceMount: WorkspaceMount;
+  workspaceMounts: WorkspaceMount[];
+  cwd: string;
   policy: ShellSandboxPolicy;
 };
 
@@ -60,9 +61,10 @@ type SandboxRuntime =
   | "macos_seatbelt";
 
 type WorkspaceMount = {
+  id: string;
   hostPath: string;
-  sandboxPath: "/workspace";
-  writable: boolean;
+  sandboxPath: string;
+  mode: "rw" | "ro";
 };
 
 type ShellSandboxPolicy = {
@@ -78,11 +80,11 @@ type ShellSandboxPolicy = {
 
 The provider should use the real local workspace for file operations and shell execution.
 
-- FileOps operate on `hostWorkspaceRoot` through path-bounded APIs.
-- Shell commands see the workspace at `/workspace`.
-- Linux uses bind mounts to map `hostWorkspaceRoot` to `/workspace`.
-- macOS uses a sandbox profile that allowlists `hostWorkspaceRoot` and sets the command cwd to that path or a normalized workspace path.
-- Host paths outside the workspace stay outside the shell sandbox policy.
+- FileOps operate on declared host workspace roots through path-bounded APIs.
+- Shell commands see declared virtual paths such as `/workspace/main` and `/workspace/docs`.
+- Linux uses bind mounts to map each selected host folder to its virtual path.
+- macOS uses a sandbox profile that allowlists each selected host folder and sets command cwd from the default mount.
+- Host paths are exposed through the declared mount set and per-mount mode.
 
 This keeps runtime behavior simple: changes made by fileops and shell commands are visible to each other immediately.
 
@@ -94,7 +96,7 @@ Capabilities:
 
 - user namespace isolation
 - mount namespace isolation
-- workspace bind-mounted at `/workspace`
+- workspace folders bind-mounted under `/workspace`
 - tmpfs home and temp directories
 - minimal `/proc` and `/dev`
 - configurable network access
@@ -112,8 +114,9 @@ bwrap \
   --dev /dev \
   --tmpfs /tmp \
   --tmpfs /home/agent \
-  --bind "$WORKSPACE" /workspace \
-  --chdir /workspace \
+  --bind "$WORKSPACE_MAIN" /workspace/main \
+  --ro-bind "$WORKSPACE_DOCS" /workspace/docs \
+  --chdir /workspace/main \
   /bin/bash -lc "$COMMAND"
 ```
 
@@ -127,12 +130,13 @@ bwrap \
   --dev /dev \
   --tmpfs /tmp \
   --tmpfs /home/agent \
-  --bind "$WORKSPACE" /workspace \
-  --chdir /workspace \
+  --bind "$WORKSPACE_MAIN" /workspace/main \
+  --ro-bind "$WORKSPACE_DOCS" /workspace/docs \
+  --chdir /workspace/main \
   /bin/bash -lc "$COMMAND"
 ```
 
-The workspace bind can be writable by default for trusted local workspaces. Read-only mode can use a read-only bind when the workspace policy requires it.
+The default mount can be writable for trusted local workspaces. Reference mounts can use read-only binds when the workspace policy marks them `ro`.
 
 ## macOS Runtime: `macos_seatbelt`
 
@@ -140,7 +144,7 @@ macOS should use a seatbelt profile as the local shell sandbox runtime. YA Deskt
 
 Capabilities:
 
-- path allowlist for the selected workspace
+- path allowlist for selected workspace mounts
 - path allowlist for runtime temp directories
 - deny access to common home, SSH, cloud, and credential paths through default-deny profile shape
 - sanitized environment
@@ -153,7 +157,7 @@ Example shape:
 sandbox-exec -f "$PROFILE" /bin/bash -lc "$COMMAND"
 ```
 
-The profile should allow read/write access to the selected workspace and runtime temp directories. The command should run with cwd set to the workspace. Claw should generate the profile per workspace so the allowlist is explicit.
+The profile should allow access to selected workspace mounts and runtime temp directories. The command should run with cwd set to the selected default mount. Claw should generate the profile per mount set so the allowlist is explicit.
 
 YA Desktop should declare a minimum macOS version and run a startup self-check for the generated seatbelt profile. The app can show setup diagnostics when the required profile execution is unavailable.
 
@@ -167,19 +171,33 @@ file_operator: local_file_operator
 shell: sandboxed_shell
 linux:
   sandbox_runtime: linux_bubblewrap
-  workspace_mount:
-    host_path: selected_workspace
-    sandbox_path: /workspace
-    writable: true
+  workspace_mounts:
+    - id: main
+      host_path: selected_workspace
+      sandbox_path: /workspace/main
+      mode: rw
 macos:
   sandbox_runtime: macos_seatbelt
   workspace_allowlist:
     - selected_workspace
+  cwd: /workspace/main
 network: allow
 home: tmpfs
 timeout_seconds: 120
 output_limit_bytes: 1048576
 ```
+
+## Desktop Folder Selection
+
+Desktop owns the user-facing folder registry:
+
+- global default workspace directory
+- recent and pinned folders
+- per-folder trust state
+- mount-set presets for chats
+- per-chat selected folders and default mount
+
+Desktop sends the selected mount set to Claw as `workspace` on session creation. Claw validates and resolves the binding into local or Docker environment mounts.
 
 ## Workspace Changes
 
@@ -203,7 +221,8 @@ Capability discovery should expose sandboxed shell support:
   "workspace_providers": ["local", "docker", "cloud"],
   "local_shell_runtimes": ["linux_bubblewrap"],
   "local_file_operator": true,
-  "workspace_mount_modes": ["bind_mount"],
+  "workspace_mount_modes": ["rw", "ro"],
+  "multi_mount_workspaces": true,
   "workspace_change_views": ["git_status", "git_diff"]
 }
 ```
@@ -215,7 +234,8 @@ macOS example:
   "workspace_providers": ["local", "docker", "cloud"],
   "local_shell_runtimes": ["macos_seatbelt"],
   "local_file_operator": true,
-  "workspace_mount_modes": ["path_allowlist"],
+  "workspace_mount_modes": ["rw", "ro"],
+  "multi_mount_workspaces": true,
   "workspace_change_views": ["git_status", "git_diff"]
 }
 ```

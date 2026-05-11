@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from pydantic_ai import DeferredToolResults
     from pydantic_ai.messages import UserContent
 
+    from ya_agent_sdk.usage import UsageSnapshot
+
 
 @dataclass
 class AgentEvent:
@@ -170,6 +172,28 @@ class SubagentCompleteEvent(AgentEvent):
     result_preview: str = ""
     error: str = ""
     duration_seconds: float = 0.0
+
+
+# =============================================================================
+# Usage Events
+# =============================================================================
+
+
+@dataclass
+class UsageSnapshotEvent(AgentEvent):
+    """Emitted when cumulative run usage changes.
+
+    Consumers can treat each event as the latest usage state for the run.
+    The snapshot includes the main agent and internal model calls such as
+    subagents, compaction, and safety reviews when they report usage.
+
+    Attributes:
+        snapshot: Cumulative usage snapshot for the current run.
+        source: Component that triggered the snapshot.
+    """
+
+    snapshot: UsageSnapshot | None = None
+    source: str = "model_request"
 
 
 # =============================================================================

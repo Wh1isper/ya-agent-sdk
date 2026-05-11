@@ -45,6 +45,9 @@ apps/ya-desktop/
       SpacesPage.tsx
       SpaceCard.tsx
       SpaceSwitcher.tsx
+      FolderRegistry.tsx
+      MountSetEditor.tsx
+      DefaultWorkspacePicker.tsx
       SpaceTrustCard.tsx
       RuntimeLocationCard.tsx
     inbox/
@@ -55,6 +58,7 @@ apps/ya-desktop/
     settings/
       SettingsPage.tsx
       DesktopSettings.tsx
+      DefaultWorkspaceSettings.tsx
       HotkeySettings.tsx
       VoiceSettings.tsx
       AdvancedRuntime.tsx
@@ -95,6 +99,7 @@ Responsibilities:
 
 - active connection provider
 - active space provider
+- active workspace mount-set provider
 - theme and settings provider
 - global run notification state
 - pending interaction state and routing
@@ -125,6 +130,7 @@ Responsibilities:
 - selected text and clipboard preview
 - screenshot and active app context preview
 - current space summary
+- default workspace and selected mount-set preview
 - recent chats and active runs
 - pending approval summary
 - shortcuts into Chats, Board, Spaces, Inbox, and diagnostics
@@ -137,6 +143,7 @@ Responsibilities:
 
 - chat list grouped by space and status
 - selected chat detail surface
+- per-chat workspace mount-set display and edit flow before creating the next run
 - message stream and AGUI replay
 - run timeline and run controls
 - tool-call timeline
@@ -164,6 +171,9 @@ Responsibilities:
 
 - local workspace folder cards
 - remote and cloud workspace cards
+- folder registry for recent, trusted, and pinned folders
+- global default workspace picker
+- mount-set editor for one default folder plus optional extra folders
 - active connection and runtime location
 - workspace trust level
 - default profile and model
@@ -193,6 +203,7 @@ Owns desktop preferences and advanced runtime controls.
 Responsibilities:
 
 - desktop appearance and behavior
+- global default workspace directory
 - hotkey settings
 - notification preferences
 - voice preferences
@@ -218,6 +229,7 @@ capture_active_window_context()
 read_clipboard()
 write_clipboard()
 capture_screenshot()
+select_workspace_folder()
 show_tray_notification()
 export_diagnostics()
 ```

@@ -19,7 +19,7 @@ The same desktop client can use:
 - Local execution uses controlled file operations plus a sandboxed shell by default.
 - Desktop owns the richest HITL interaction surface through native notifications, approval cards, command previews, and Claw approval response APIs.
 - Chats are the primary work objects in Desktop; Claw sessions and runs remain the runtime backing.
-- Spaces represent workspace folders or cloud workspaces plus runtime connection, trust, and execution location.
+- Spaces represent workspace folders or cloud workspaces plus runtime connection, trust, execution location, and folder mount sets.
 - Board is the kanban view over chats, grouped by status, priority, or workspace.
 - Advanced runtime management remains available under Settings for profiles, schedules, bridges, heartbeat, logs, diagnostics, and connection internals.
 
@@ -44,9 +44,11 @@ The same desktop client can use:
 - Treat Desktop as a Native Agent Workspace with Home, Chats, Board, Spaces, Inbox, and Settings surfaces.
 - Manage user work by conversations first; Claw sessions and runs are runtime backing objects.
 - Use Board as the kanban view over conversations.
-- Use Spaces for workspace folders, cloud workspaces, runtime location, trust, and sidecar status.
+- Use Spaces for workspace folders, cloud workspaces, runtime location, trust, sidecar status, and mount-set presets.
 - Use Claw HTTP/SSE APIs as the desktop MVP runtime contract, with WebSocket reserved for future RPC workspace transport.
-- Add connection registry from the beginning.
+- Add connection registry and folder registry from the beginning.
+- Add a global default workspace directory for new chats.
+- Bind each chat/session to a workspace mount set with one default folder and optional extra folders.
 - Make remote Claw and cloud Claw first-class connection types.
 - Treat remote agent with local RPC tools as a future workspace provider.
 - Keep voice in the desktop interaction layer.

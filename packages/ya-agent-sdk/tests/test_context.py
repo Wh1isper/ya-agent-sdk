@@ -690,7 +690,7 @@ async def test_export_and_with_state_empty(env: LocalEnvironment) -> None:
         state = ctx.export_state()
 
         assert state.subagent_history == {}
-        assert state.extra_usages == []
+        assert state.usage_snapshot_entries == {}
         assert state.user_prompts is None
         assert state.steering_messages == []
         assert state.handoff_message is None
@@ -701,7 +701,7 @@ async def test_export_and_with_state_empty(env: LocalEnvironment) -> None:
         new_ctx.with_state(state)
 
         assert new_ctx.subagent_history == {}
-        assert new_ctx.extra_usages == []
+        assert new_ctx.usage_snapshot_entries == {}
         assert new_ctx.steering_messages == []
 
 
@@ -709,7 +709,6 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
     """Should export and restore state with data correctly."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RunUsage
-    from ya_agent_sdk.context import ExtraUsageRecord
 
     async with AgentContext(env=env) as ctx:
         # Set up some state
@@ -717,29 +716,29 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
             ModelRequest(parts=[UserPromptPart(content="Hello")]),
             ModelResponse(parts=[TextPart(content="Hi there")]),
         ]
-        ctx.extra_usages.append(
-            ExtraUsageRecord(
-                uuid="test-uuid",
-                agent="search",
-                model_id="openai:gpt-4o",
-                usage=RunUsage(input_tokens=50, output_tokens=50),
-            )
+        ctx.update_usage_snapshot_entry(
+            agent_id="search",
+            agent_name="search",
+            model_id="openai:gpt-4o",
+            usage=RunUsage(input_tokens=50, output_tokens=50),
+            usage_id="test-uuid",
+            ledger_key="test-uuid",
         )
         ctx.user_prompts = "Test prompt"
         ctx.steering_messages = ["Steering 1", "Steering 2"]
         ctx.handoff_message = "Handoff summary"
         ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
 
-        # Default export does NOT include extra_usages
+        # Default export does NOT include usage_snapshot_entries
         state = ctx.export_state()
-        assert state.extra_usages == []
+        assert state.usage_snapshot_entries == {}
 
-        # Export with include_extra_usages=True includes extra_usages
-        state_with_usages = ctx.export_state(include_extra_usages=True)
-        assert len(state_with_usages.extra_usages) == 1
-        assert state_with_usages.extra_usages[0].uuid == "test-uuid"
+        # Export with include_usage_ledger=True includes usage_snapshot_entries
+        state_with_usages = ctx.export_state(include_usage_ledger=True)
+        assert len(state_with_usages.usage_snapshot_entries) == 1
+        assert state_with_usages.usage_snapshot_entries["test-uuid"].usage_id == "test-uuid"
 
-    # Restore to new context (default state without extra_usages)
+    # Restore to new context (default state without usage_snapshot_entries)
     async with AgentContext(env=env) as new_ctx:
         new_ctx.with_state(state)
 
@@ -750,8 +749,8 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         assert isinstance(request_msg, ModelRequest)
         assert request_msg.parts[0].content == "Hello"
 
-        # Verify extra_usages is empty (not restored by default)
-        assert new_ctx.extra_usages == []
+        # Verify usage_snapshot_entries is empty (not restored by default)
+        assert new_ctx.usage_snapshot_entries == {}
         assert new_ctx.user_prompts == "Test prompt"
         assert new_ctx.steering_messages == ["Steering 1", "Steering 2"]
         assert new_ctx.handoff_message == "Handoff summary"
@@ -785,7 +784,6 @@ async def test_export_state_include_subagent_false(env: LocalEnvironment) -> Non
     """Should exclude subagent_history and agent_registry when include_subagent=False."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
     from pydantic_ai.usage import RunUsage
-    from ya_agent_sdk.context import ExtraUsageRecord
 
     async with AgentContext(env=env) as ctx:
         # Set up subagent-related state
@@ -801,13 +799,13 @@ async def test_export_state_include_subagent_false(env: LocalEnvironment) -> Non
             ]
 
         # Set up non-subagent state
-        ctx.extra_usages.append(
-            ExtraUsageRecord(
-                uuid="test-uuid",
-                agent="search",
-                model_id="openai:gpt-4o",
-                usage=RunUsage(input_tokens=50, output_tokens=50),
-            )
+        ctx.update_usage_snapshot_entry(
+            agent_id="search",
+            agent_name="search",
+            model_id="openai:gpt-4o",
+            usage=RunUsage(input_tokens=50, output_tokens=50),
+            usage_id="test-uuid",
+            ledger_key="test-uuid",
         )
         ctx.user_prompts = "Test prompt"
         ctx.handoff_message = "Handoff summary"
@@ -821,17 +819,17 @@ async def test_export_state_include_subagent_false(env: LocalEnvironment) -> Non
         assert state.subagent_history == {}
         assert state.agent_registry == {}
 
-        # Verify non-subagent fields are preserved (except extra_usages which defaults to not included)
-        assert state.extra_usages == []  # Default: not included
+        # Verify non-subagent fields are preserved (except usage_snapshot_entries which defaults to not included)
+        assert state.usage_snapshot_entries == {}  # Default: not included
         assert state.user_prompts == "Test prompt"
         assert state.handoff_message == "Handoff summary"
         assert state.deferred_tool_metadata == {"tool-1": {"key": "value"}}
         assert state.need_user_approve_tools == ["shell", "edit"]
 
-        # Export with include_extra_usages=True
-        state_with_usages = ctx.export_state(include_subagent=False, include_extra_usages=True)
-        assert len(state_with_usages.extra_usages) == 1
-        assert state_with_usages.extra_usages[0].uuid == "test-uuid"
+        # Export with include_usage_ledger=True
+        state_with_usages = ctx.export_state(include_subagent=False, include_usage_ledger=True)
+        assert len(state_with_usages.usage_snapshot_entries) == 1
+        assert state_with_usages.usage_snapshot_entries["test-uuid"].usage_id == "test-uuid"
 
 
 async def test_export_state_include_subagent_true_default(env: LocalEnvironment) -> None:
@@ -888,32 +886,32 @@ async def test_resumable_state_json_serialization(env: LocalEnvironment) -> None
         assert history["agent-1"][0].parts[0].content == "Hello"
 
 
-async def test_resumable_state_json_serialization_with_extra_usages(env: LocalEnvironment) -> None:
-    """Should serialize and deserialize ResumableState with extra_usages (RunUsage dataclass) to/from JSON."""
+async def test_resumable_state_json_serialization_with_usage_ledger(env: LocalEnvironment) -> None:
+    """Should serialize and deserialize ResumableState with usage ledger entries to/from JSON."""
     from pydantic_ai.usage import RunUsage
-    from ya_agent_sdk.context import ExtraUsageRecord, ResumableState
+    from ya_agent_sdk.context import ResumableState
 
     async with AgentContext(env=env) as ctx:
-        # Add extra_usages with RunUsage dataclass
-        ctx.extra_usages.append(
-            ExtraUsageRecord(
-                uuid="usage-1",
-                agent="search",
-                model_id="openai:gpt-4o",
-                usage=RunUsage(input_tokens=100, output_tokens=200),
-            )
+        # Add usage ledger entries with RunUsage dataclass
+        ctx.update_usage_snapshot_entry(
+            agent_id="search",
+            agent_name="search",
+            model_id="openai:gpt-4o",
+            usage=RunUsage(input_tokens=100, output_tokens=200),
+            usage_id="usage-1",
+            ledger_key="usage-1",
         )
-        ctx.extra_usages.append(
-            ExtraUsageRecord(
-                uuid="usage-2",
-                agent="compact",
-                model_id="anthropic:claude-sonnet-4",
-                usage=RunUsage(input_tokens=50, output_tokens=75, requests=1, tool_calls=2),
-            )
+        ctx.update_usage_snapshot_entry(
+            agent_id="compact",
+            agent_name="compact",
+            model_id="anthropic:claude-sonnet-4",
+            usage=RunUsage(input_tokens=50, output_tokens=75, requests=1, tool_calls=2),
+            usage_id="usage-2",
+            ledger_key="usage-2",
         )
 
-        # Must use include_extra_usages=True to include extra_usages in state
-        state = ctx.export_state(include_extra_usages=True)
+        # Must use include_usage_ledger=True to include usage ledger entries in state
+        state = ctx.export_state(include_usage_ledger=True)
 
         # Serialize to JSON string
         json_str = state.model_dump_json()
@@ -924,21 +922,21 @@ async def test_resumable_state_json_serialization_with_extra_usages(env: LocalEn
         # Deserialize from JSON string
         restored_state = ResumableState.model_validate_json(json_str)
 
-        # Verify extra_usages restored correctly
-        assert len(restored_state.extra_usages) == 2
+        # Verify usage ledger entries restored correctly
+        assert len(restored_state.usage_snapshot_entries) == 2
 
         # Verify first record
-        rec1 = restored_state.extra_usages[0]
-        assert rec1.uuid == "usage-1"
-        assert rec1.agent == "search"
+        rec1 = restored_state.usage_snapshot_entries["usage-1"]
+        assert rec1.usage_id == "usage-1"
+        assert rec1.agent_id == "search"
         assert isinstance(rec1.usage, RunUsage)
         assert rec1.usage.input_tokens == 100
         assert rec1.usage.output_tokens == 200
 
         # Verify second record with additional fields
-        rec2 = restored_state.extra_usages[1]
-        assert rec2.uuid == "usage-2"
-        assert rec2.agent == "compact"
+        rec2 = restored_state.usage_snapshot_entries["usage-2"]
+        assert rec2.usage_id == "usage-2"
+        assert rec2.agent_id == "compact"
         assert rec2.usage.input_tokens == 50
         assert rec2.usage.output_tokens == 75
         assert rec2.usage.requests == 1
@@ -1616,16 +1614,22 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
     """prepare_new_run should return a fresh copy with isolated per-run state."""
     async with AgentContext(env=env) as ctx:
         from pydantic_ai.usage import RunUsage
-        from ya_agent_sdk.usage import ExtraUsageRecord
 
-        ctx.extra_usages.append(ExtraUsageRecord(uuid="old", agent="test", model_id="m", usage=RunUsage()))
+        ctx.update_usage_snapshot_entry(
+            agent_id="test",
+            agent_name="test",
+            model_id="m",
+            usage=RunUsage(),
+            usage_id="old",
+            ledger_key="old",
+        )
         ctx.deferred_tool_metadata["key"] = {"val": 1}
 
         new = ctx.prepare_new_run()
 
         # Per-run state is fresh
         assert new.run_id != ctx.run_id
-        assert new.extra_usages == []
+        assert new.usage_snapshot_entries == {}
         assert new.deferred_tool_metadata == {}
         assert new.force_inject_instructions is False
         assert new.end_at is None

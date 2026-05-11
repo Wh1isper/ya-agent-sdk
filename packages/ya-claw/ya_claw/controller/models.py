@@ -255,6 +255,7 @@ class SessionTurnsResponse(BaseModel):
     session_id: str
     limit: int
     has_more: bool = False
+    next_cursor: str | None = None
     next_before_sequence_no: int | None = None
     turns: list[SessionTurn] = Field(default_factory=list)
 

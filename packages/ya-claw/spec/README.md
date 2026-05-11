@@ -15,7 +15,7 @@ This spec set defines one execution shape:
 ## Design Principles
 
 - **Single-node first**: one machine, one runtime, one operational context
-- **Single-workspace based**: one configured workspace directory bounds runtime file and shell access
+- **Workspace-binding based**: a configured default workspace and optional session mount sets bind runtime file and shell access
 - **SDK-aligned**: `ya-agent-sdk` stays responsible for agent execution primitives
 - **Queued-run execution model**: API ingress, schedules, heartbeat, and bridges all create durable queued runs before execution starts
 - **Explicit runtime assembly**: workspace resolution, environment construction, context construction, and agent runtime construction each have their own boundary
@@ -36,6 +36,7 @@ This spec set defines one execution shape:
 | 07      | [07-async-subagents.md](07-async-subagents.md)                                           | non-blocking background subagent dispatch, spawn_delegate, steer             |
 | 08      | [08-schedules-and-heartbeat.md](08-schedules-and-heartbeat.md)                           | schedule modes, heartbeat, agent schedule toolset, and timer dispatch        |
 | 09      | [09-session-memory.md](09-session-memory.md)                                             | workspace memory files, internal memory sessions, extract and summary agents |
+| 10      | [10-workspace-mount-sets.md](10-workspace-mount-sets.md)                                 | session-scoped workspace mount sets and multi-folder execution               |
 
 ## Out of Scope
 

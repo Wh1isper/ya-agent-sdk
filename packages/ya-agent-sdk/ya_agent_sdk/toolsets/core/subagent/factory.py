@@ -20,7 +20,6 @@ from pydantic_ai.models import Model
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.usage import InternalUsage
 
 # Type alias for instruction functions
 InstructionFunc = Callable[[RunContext[AgentContext]], str | None]
@@ -130,6 +129,9 @@ async def _run_subagent_iter(
     sub_ctx: AgentContext,
     prompt: str,
     message_history: list[Any] | None,
+    *,
+    model_id: str,
+    agent_name: str,
 ) -> AgentRunResult:
     """Run subagent iteration and stream events to subagent's queue.
 
@@ -159,6 +161,14 @@ async def _run_subagent_iter(
                 async with node.stream(run.ctx) as request_stream:
                     async for event in request_stream:
                         await sub_ctx.emit_event(event)
+                if Agent.is_model_request_node(node):
+                    await sub_ctx.emit_usage_snapshot(
+                        agent_id=sub_ctx.agent_id,
+                        agent_name=agent_name,
+                        model_id=model_id,
+                        usage=run.usage(),
+                        source="subagent_model_request",
+                    )
 
     return cast(AgentRunResult, run.result)
 
@@ -200,7 +210,7 @@ def create_subagent_call_func(
     - Generates stable agent_id in format {agent.name}-{short_id}
     - Registers the agent in parent's agent_registry
     - Manages subagent_history for conversation continuity
-    - Records usage in extra_usages
+    - Records usage in the unified usage ledger
     - Streams events to parent context
 
     Args:
@@ -285,19 +295,31 @@ def create_subagent_call_func(
                         wrapped = deps.model_wrapper(cast(Model, original_model), agent_name, wrapper_metadata)
                         agent.model = await wrapped if isawaitable(wrapped) else wrapped
 
-                    result = await _run_subagent_iter(agent, sub_ctx, prompt, deps.subagent_history.get(agent_id))
+                    model_id = cast(Model, agent.model).model_name
+                    result = await _run_subagent_iter(
+                        agent,
+                        sub_ctx,
+                        prompt,
+                        deps.subagent_history.get(agent_id),
+                        model_id=model_id,
+                        agent_name=agent_name,
+                    )
                     result_output = result.output
                     request_count = result.usage().requests
 
                     # Store message history for future resume
                     deps.subagent_history[agent_id] = result.all_messages()
 
-                    # Record usage in extra_usages
-                    model_id = cast(Model, agent.model).model_name
-                    deps.add_extra_usage(
-                        agent=agent_id,
-                        internal_usage=InternalUsage(model_id=model_id, usage=result.usage()),
-                        uuid=ctx.tool_call_id or uuid4().hex,
+                    # Ensure non-streaming or final provider usage is reflected in the unified ledger.
+                    usage_id = ctx.tool_call_id or uuid4().hex
+                    await deps.emit_usage_snapshot(
+                        ledger_key=agent_id,
+                        agent_id=agent_id,
+                        agent_name=agent_name,
+                        model_id=model_id,
+                        usage=result.usage(),
+                        usage_id=usage_id,
+                        source="subagent",
                     )
 
             except Exception as e:

@@ -170,6 +170,25 @@ if isinstance(event, SubagentStartEvent):
     print(f"Delegating to {event.agent_name}: {event.prompt_preview}")
 ```
 
+### Usage Snapshot Events
+
+`UsageSnapshotEvent` is emitted whenever the unified per-run usage ledger changes. It is the realtime usage surface for clients and includes main-agent usage plus reported internal model usage such as subagents, compaction, and shell review.
+
+| Field                   | Description                             |
+| ----------------------- | --------------------------------------- |
+| `snapshot.run_id`       | Current run ID                          |
+| `snapshot.total_usage`  | Cumulative `RunUsage` across all agents |
+| `snapshot.agent_usages` | Usage grouped by agent ID               |
+| `snapshot.model_usages` | Usage grouped by model ID               |
+| `source`                | Component that triggered the snapshot   |
+
+```python
+from ya_agent_sdk.events import UsageSnapshotEvent
+
+if isinstance(event, UsageSnapshotEvent) and event.snapshot:
+    print(event.snapshot.total_usage)
+```
+
 ### Tool Search Events
 
 Emitted during `ToolSearchToolSet` initialization to report namespace (wrapped toolset) connection status. This event fires once on the first `get_tools()` call after all wrapped toolsets have been initialized.

@@ -9,7 +9,7 @@ The core product shape combines:
 - Home for command-first invocation and recent conversation overview
 - Chats as the primary work management model
 - Board as the kanban view over chats and runs
-- Spaces for workspace folders, cloud workspaces, runtime connections, trust, and execution location
+- Spaces for workspace folders, cloud workspaces, runtime connections, trust, execution location, and mount-set presets
 - Inbox for HITL decisions, alerts, failed background work, and user actions
 - Settings for preferences, hotkeys, secrets, advanced runtime, logs, and diagnostics
 - tray or menu bar presence
@@ -64,7 +64,7 @@ The Desktop product model is conversation-first:
 - A chat is backed by one or more Claw sessions and runs.
 - A run is the runtime execution record for a chat turn or background continuation.
 - Board columns group chats by status, priority, or workspace.
-- Spaces bind chats to workspace folders, runtime connection, trust level, and execution location.
+- Spaces bind chats to workspace folders, runtime connection, trust level, execution location, and workspace mount sets.
 
 The boundary is the Claw HTTP/SSE API surface for the desktop MVP, with WebSocket reserved for future remote RPC workspace transport and richer bidirectional control. Desktop should use this same boundary for local embedded Claw, self-hosted Claw, and cloud Claw.
 
@@ -118,11 +118,26 @@ Capabilities:
 
 - Local workspace folder cards.
 - Remote and cloud workspace cards.
+- Folder registry with recent, trusted, and pinned folders.
+- Mount-set presets with one default folder and optional extra folders.
 - Active connection and runtime location.
 - Workspace trust level.
 - Default profile and model.
 - Local sidecar status, logs, and diagnostics.
 - File browsing entry points and memory summary.
+
+### Workspace Mount Sets
+
+Desktop maintains a folder registry and uses Claw workspace bindings for execution. New chats start from the global default workspace directory and can add extra mounted folders before or during setup.
+
+A chat carries one mount set:
+
+- one default folder used as cwd and primary guidance root
+- optional extra folders for references, docs, generated output, or adjacent repositories
+- per-folder access mode such as read/write or read-only
+- virtual paths exposed to Claw, such as `/workspace/main` and `/workspace/docs`
+
+Desktop sends this mount set through Claw session and run creation APIs as the `workspace` field. Claw stores the session binding in session metadata and resolves it into the runtime `WorkspaceBinding`.
 
 ### Inbox
 

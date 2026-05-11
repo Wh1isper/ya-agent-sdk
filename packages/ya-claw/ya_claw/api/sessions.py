@@ -135,6 +135,7 @@ async def list_session_turns(
     session_id: str,
     limit: int = 20,
     before_sequence_no: int | None = None,
+    cursor: str | None = None,
 ) -> SessionTurnsResponse:
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
@@ -143,6 +144,7 @@ async def list_session_turns(
             session_id,
             limit=limit,
             before_sequence_no=before_sequence_no,
+            cursor=cursor,
         )
 
 

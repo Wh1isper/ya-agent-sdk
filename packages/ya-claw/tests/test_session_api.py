@@ -522,11 +522,16 @@ def test_session_turns_return_completed_runs_with_raw_input_and_output() -> None
             f"/api/v1/sessions/{session_id}/turns?limit=1&before_sequence_no=3",
             headers=_auth_headers(),
         )
+        page_2_cursor_response = client.get(
+            f"/api/v1/sessions/{session_id}/turns?limit=1&cursor={second_run_id}",
+            headers=_auth_headers(),
+        )
 
     assert page_1_response.status_code == 200
     page_1_payload = page_1_response.json()
     assert page_1_payload["session_id"] == session_id
     assert page_1_payload["has_more"] is True
+    assert page_1_payload["next_cursor"] == second_run_id
     assert page_1_payload["next_before_sequence_no"] == 3
     assert len(page_1_payload["turns"]) == 1
     assert page_1_payload["turns"][0]["run_id"] == second_run_id
@@ -537,8 +542,16 @@ def test_session_turns_return_completed_runs_with_raw_input_and_output() -> None
     assert page_2_response.status_code == 200
     page_2_payload = page_2_response.json()
     assert page_2_payload["has_more"] is False
+    assert page_2_payload["next_cursor"] is None
     assert [turn["run_id"] for turn in page_2_payload["turns"]] == [first_run_id]
     assert page_2_payload["turns"][0]["output_text"] == "answer-1"
+
+    assert page_2_cursor_response.status_code == 200
+    page_2_cursor_payload = page_2_cursor_response.json()
+    assert page_2_cursor_payload["has_more"] is False
+    assert page_2_cursor_payload["next_cursor"] is None
+    assert [turn["run_id"] for turn in page_2_cursor_payload["turns"]] == [first_run_id]
+    assert page_2_cursor_payload["turns"][0]["output_text"] == "answer-1"
 
 
 def test_list_sessions_hides_memory_sessions_by_default() -> None:

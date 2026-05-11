@@ -15,12 +15,12 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, BinaryContent, ModelSettings, VideoUrl
 from pydantic_ai.models import Model
+from pydantic_ai.usage import RunUsage
 
 from ya_agent_sdk._config import AgentSettings
 from ya_agent_sdk._logger import logger
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.presets import resolve_model_settings
-from ya_agent_sdk.usage import InternalUsage
 
 
 class VideoError(Exception):
@@ -232,7 +232,7 @@ async def get_video_description(
     max_video_size: int = DEFAULT_MAX_VIDEO_SIZE,
     model_wrapper: Callable[[Model, str, dict[str, Any]], Model | Awaitable[Model]] | None = None,
     wrapper_metadata: dict[str, Any] | None = None,
-) -> tuple[str, InternalUsage]:
+) -> tuple[str, str, RunUsage]:
     """Analyze a video and get a structured description.
 
     Args:
@@ -247,7 +247,7 @@ async def get_video_description(
         wrapper_metadata: Context dict passed to model_wrapper (e.g., from ctx.get_wrapper_metadata()).
 
     Returns:
-        Tuple of (description string, InternalUsage with model_id and usage).
+        Tuple of (description string, model_id, usage).
 
     Raises:
         VideoInputError: If video input is invalid.
@@ -284,4 +284,4 @@ async def get_video_description(
     # Get model_id from agent's model
     model_id = cast(Model, agent.model).model_name
 
-    return result.output.description, InternalUsage(model_id=model_id, usage=result.usage())
+    return result.output.description, model_id, result.usage()

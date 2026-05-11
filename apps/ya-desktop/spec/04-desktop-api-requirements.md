@@ -55,6 +55,9 @@ Example response:
     "hitl": true,
     "hitl_status_reason": true,
     "sandboxed_shell": true,
+    "session_workspace_binding": true,
+    "run_workspace_override": true,
+    "multi_mount_workspaces": true,
     "remote_rpc_environment": false
   },
   "auth": {
@@ -62,11 +65,12 @@ Example response:
   },
   "workspace_providers": ["local", "docker", "cloud"],
   "local_shell_runtimes": ["linux_bubblewrap"],
-  "workspace_mount_modes": ["bind_mount"],
+  "workspace_mount_modes": ["rw", "ro"],
   "profiles": ["default", "code", "research"],
   "limits": {
     "max_upload_bytes": 104857600,
-    "max_sse_duration_seconds": 3600
+    "max_sse_duration_seconds": 3600,
+    "max_workspace_mounts_per_session": 8
   }
 }
 ```
@@ -74,6 +78,8 @@ Example response:
 ## Workspace Registry
 
 YA Desktop should keep its own connection registry. Claw can expose a workspace registry for runtime-owned workspaces, especially remote and cloud runtimes.
+
+YA Desktop also keeps a local folder registry for user-selected folders, trust state, pinned spaces, recent folders, and the global default workspace directory. The Desktop folder registry is local desktop state. Claw receives the selected folders through the session/run `workspace` field at execution time.
 
 ```http
 GET /api/v1/workspaces
@@ -97,11 +103,15 @@ Example local workspace:
   "shell": {
     "kind": "sandboxed_shell",
     "runtime": "linux_bubblewrap",
-    "workspace_mount": {
-      "host_path": "/home/wh1isper/code/oss/ya-mono",
-      "sandbox_path": "/workspace",
-      "writable": true
-    }
+    "workspace_mounts": [
+      {
+        "id": "main",
+        "host_path": "/home/wh1isper/code/oss/ya-mono",
+        "virtual_path": "/workspace/main",
+        "mode": "rw"
+      }
+    ],
+    "cwd": "/workspace/main"
   },
   "trust_level": "trusted",
   "profiles": ["default", "code", "research"]
@@ -121,6 +131,77 @@ Example cloud workspace:
   "profiles": ["coding-prod"]
 }
 ```
+
+## Session Workspace Binding
+
+Desktop creates each chat with a workspace binding. This binding maps user-selected folders into Claw virtual workspace paths.
+
+Type shape:
+
+```ts
+type WorkspaceMount = {
+  id: string;
+  name?: string;
+  host_path: string;
+  virtual_path: string;
+  mode: "rw" | "ro";
+  docker_host_path?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type WorkspaceBinding = {
+  mounts: WorkspaceMount[];
+  default_mount_id: string;
+  cwd: string;
+  metadata?: Record<string, unknown>;
+};
+```
+
+Session create example:
+
+```json
+{
+  "profile_name": "default",
+  "input_parts": [
+    {"type": "text", "text": "Review this repository and propose next steps."}
+  ],
+  "workspace": {
+    "mounts": [
+      {
+        "id": "main",
+        "name": "ya-mono",
+        "host_path": "/Users/jizhongsheng/code/yet-another-agents/ya-mono",
+        "virtual_path": "/workspace/main",
+        "mode": "rw"
+      },
+      {
+        "id": "docs",
+        "name": "product-docs",
+        "host_path": "/Users/jizhongsheng/docs/product",
+        "virtual_path": "/workspace/docs",
+        "mode": "ro"
+      }
+    ],
+    "default_mount_id": "main",
+    "cwd": "/workspace/main"
+  }
+}
+```
+
+Desktop behavior:
+
+- New chats use the global default workspace directory as the first mount.
+- Users can add extra folders to the chat before creating the session.
+- A chat can show and edit its mount set before the next run.
+- Session runs inherit the session workspace binding.
+- Advanced run creation can send a workspace override for one run.
+
+Claw behavior:
+
+- Session create stores `workspace` in session metadata.
+- Session run create inherits the session workspace by default.
+- Run-level `workspace` replaces the session binding for that run.
+- Claw validates host paths, virtual paths, cwd, and read/write modes before execution.
 
 ## Session and Run Streaming
 
@@ -227,8 +308,19 @@ Example MVP input:
   "input_parts": [
     {"type": "text", "text": "Explain this selected code:\n\n..."}
   ],
-  "workspace_id": "local:ya-mono",
-  "profile": "default"
+  "workspace": {
+    "mounts": [
+      {
+        "id": "main",
+        "host_path": "/Users/jizhongsheng/code/yet-another-agents/ya-mono",
+        "virtual_path": "/workspace/main",
+        "mode": "rw"
+      }
+    ],
+    "default_mount_id": "main",
+    "cwd": "/workspace/main"
+  },
+  "profile_name": "default"
 }
 ```
 

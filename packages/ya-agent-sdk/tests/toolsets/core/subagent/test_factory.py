@@ -8,6 +8,7 @@ import pytest
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.subagent import (
     create_subagent_call_func,
@@ -255,10 +256,10 @@ async def test_create_subagent_call_func_basic():
     assert "<id>search-" in output
 
     # Usage should be recorded
-    assert len(ctx.extra_usages) == 1
-    assert ctx.extra_usages[0].uuid == "test-call-123"
-    # agent field uses agent_id (e.g., "search-xxxx")
-    assert ctx.extra_usages[0].agent.startswith("search-")
+    assert len(ctx.usage_snapshot_entries) == 1
+    entry = next(iter(ctx.usage_snapshot_entries.values()))
+    assert entry.usage_id == "test-call-123"
+    assert entry.agent_id.startswith("search-")
 
 
 async def test_create_subagent_call_func_registers_agent():
@@ -341,6 +342,47 @@ async def test_create_subagent_call_func_stores_history():
     assert ctx.subagent_history[agent_id] == mock_messages
 
 
+async def _assert_streaming_subagent_events(queue, *, mock_event: dict[str, str], subagent_id: str) -> None:
+    """Assert streamed subagent events and usage snapshot payload."""
+    start_event = await queue.get()
+    assert isinstance(start_event, SubagentStartEvent)
+    assert start_event.agent_name == "streamer"
+    assert start_event.prompt_preview == "test streaming"
+    assert start_event.agent_id.startswith("streamer-")
+
+    event = await queue.get()
+    assert event == mock_event
+
+    usage_event = None
+    while not queue.empty():
+        e = await queue.get()
+        if isinstance(e, UsageSnapshotEvent):
+            usage_event = e
+            break
+    assert usage_event is not None
+    assert usage_event.snapshot is not None
+    assert usage_event.snapshot.total_usage.requests == 2
+    assert usage_event.snapshot.total_usage.input_tokens == 20
+    assert usage_event.snapshot.total_usage.output_tokens == 30
+    assert usage_event.snapshot.entries[0].agent_id == subagent_id
+    assert usage_event.snapshot.entries[0].model_id == "test-model"
+    assert usage_event.snapshot.agent_usages[subagent_id].usage == usage_event.snapshot.entries[0].usage
+    assert usage_event.snapshot.model_usages["test-model"].requests == 2
+
+    complete_event = None
+    while not queue.empty():
+        e = await queue.get()
+        if isinstance(e, SubagentCompleteEvent):
+            complete_event = e
+            break
+
+    assert complete_event is not None
+    assert complete_event.agent_name == "streamer"
+    assert complete_event.success is True
+    assert complete_event.event_id == start_event.event_id
+    assert complete_event.event_id == start_event.agent_id
+
+
 async def test_create_subagent_call_func_with_streaming_nodes():
     """Test create_subagent_call_func handles model request and call tools nodes."""
     mock_agent = MagicMock(spec=Agent)
@@ -352,6 +394,7 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     mock_run.result.output = "result with streaming"
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=2, input_tokens=20, output_tokens=30))
+    mock_run.usage = MagicMock(return_value=RunUsage(requests=2, input_tokens=20, output_tokens=30))
     mock_run.ctx = MagicMock()
 
     # Create mock nodes
@@ -419,34 +462,7 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     queue = ctx.agent_stream_queues[subagent_id]
     assert not queue.empty()
 
-    # First event should be SubagentStartEvent
-    from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
-
-    start_event = await queue.get()
-    assert isinstance(start_event, SubagentStartEvent)
-    assert start_event.agent_name == "streamer"
-    assert start_event.prompt_preview == "test streaming"
-    assert start_event.agent_id.startswith("streamer-")
-
-    # Then the streamed events
-    event = await queue.get()
-    assert event == mock_event
-
-    # After all streaming, there should be SubagentCompleteEvent
-    # (need to drain any remaining mock_events first)
-    complete_event = None
-    while not queue.empty():
-        e = await queue.get()
-        if isinstance(e, SubagentCompleteEvent):
-            complete_event = e
-            break
-
-    assert complete_event is not None
-    assert complete_event.agent_name == "streamer"
-    assert complete_event.success is True
-    # Start and Complete should share the same event_id (= agent_id)
-    assert complete_event.event_id == start_event.event_id
-    assert complete_event.event_id == start_event.agent_id
+    await _assert_streaming_subagent_events(queue, mock_event=mock_event, subagent_id=subagent_id)
 
 
 # Tests for agent_id generation
@@ -608,9 +624,10 @@ async def test_usage_recorded_without_tool_call_id():
 
     await call_func(mock_self, run_ctx, prompt="test")
 
-    assert len(ctx.extra_usages) == 1
-    assert ctx.extra_usages[0].agent.startswith("search-")
-    assert ctx.extra_usages[0].model_id == "test-model"
+    assert len(ctx.usage_snapshot_entries) == 1
+    entry = next(iter(ctx.usage_snapshot_entries.values()))
+    assert entry.agent_id.startswith("search-")
+    assert entry.model_id == "test-model"
 
 
 # Tests for generate_unique_id function

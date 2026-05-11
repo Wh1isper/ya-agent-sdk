@@ -102,12 +102,13 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models import Model
+from pydantic_ai.usage import RunUsage
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from y_agent_environment import Environment, FileOperator, ResourceRegistry, Shell
 
 from ya_agent_sdk.agents.lifecycle import LifecycleExtension
 from ya_agent_sdk.events import AgentEvent
-from ya_agent_sdk.usage import ExtraUsageRecord, InternalUsage
+from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot, UsageSnapshotEntry
 from ya_agent_sdk.utils import get_latest_request_usage
 
 from .bus import BusMessage, MessageBus
@@ -847,8 +848,8 @@ class ResumableState(BaseModel):
     subagent_history: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     """Serialized subagent history, keyed by agent_id. Values are list[dict] from ModelMessagesTypeAdapter.dump_python()."""
 
-    extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
-    """Extra usage records from tool calls and filters."""
+    usage_snapshot_entries: dict[str, UsageSnapshotEntry] = Field(default_factory=dict)
+    """Serialized usage ledger entries, keyed by agent/source ID."""
 
     user_prompts: str | Sequence[UserContent] | None = None
     """User prompts collected during the session."""
@@ -919,7 +920,7 @@ class ResumableState(BaseModel):
                     ctx.custom_field = self.custom_field
         """
         ctx.subagent_history = self.to_subagent_history()
-        ctx.extra_usages = list(self.extra_usages)
+        ctx.usage_snapshot_entries = dict(self.usage_snapshot_entries)
         ctx.user_prompts = self.user_prompts
         ctx.steering_messages = list(self.steering_messages)
         ctx.handoff_message = self.handoff_message
@@ -1049,8 +1050,8 @@ class AgentContext(BaseModel):
     tool_config: ToolConfig = Field(default_factory=ToolConfig)
     """Tool-level configuration for API keys and tool-specific settings."""
 
-    extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
-    """Extra usage records from tool calls and filters."""
+    usage_snapshot_entries: dict[str, UsageSnapshotEntry] = Field(default_factory=dict)
+    """Unified per-run usage ledger, keyed by agent/source ID."""
 
     shell_review_records: deque[Any] = Field(default_factory=lambda: deque(maxlen=10), exclude=True)
     """Recent shell review records for current-run safety context."""
@@ -1587,7 +1588,7 @@ class AgentContext(BaseModel):
         Per-run state (fresh for each run):
             - run_id, start_at, end_at
             - tool_id_wrapper, agent_stream_queues
-            - extra_usages, shell_review_records, deferred_tool_metadata
+            - usage_snapshot_entries, shell_review_records, deferred_tool_metadata
             - force_inject_instructions
 
         Shared state (same reference as original):
@@ -1607,7 +1608,7 @@ class AgentContext(BaseModel):
             "end_at": None,
             "tool_id_wrapper": ToolIdWrapper(),
             "agent_stream_queues": _create_stream_queue_factory(),
-            "extra_usages": [],
+            "usage_snapshot_entries": {},
             "shell_review_records": deque(maxlen=10),
             "deferred_tool_metadata": {},
             "force_inject_instructions": False,
@@ -1753,26 +1754,87 @@ class AgentContext(BaseModel):
         )
         return self._build_history_processors()
 
-    def add_extra_usage(
+    def update_usage_snapshot_entry(
         self,
-        agent: str,
-        internal_usage: InternalUsage,
-        uuid: str | None = None,
-    ) -> None:
-        """Add an extra usage record.
+        *,
+        agent_id: str,
+        agent_name: str,
+        model_id: str,
+        usage: RunUsage,
+        usage_id: str | None = None,
+        source: str = "model_request",
+        ledger_key: str | None = None,
+    ) -> UsageSnapshot:
+        """Update one cumulative usage ledger entry and return the latest run snapshot."""
+        self.usage_snapshot_entries[ledger_key or agent_id] = UsageSnapshotEntry(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            model_id=model_id,
+            usage=usage,
+            usage_id=usage_id,
+            source=source,
+        )
+        return self.build_usage_snapshot()
 
-        Args:
-            agent: Agent name that generated this usage.
-            internal_usage: Internal usage record containing model_id and token usage.
-            uuid: Unique identifier (defaults to generated UUID if not provided).
-        """
-        record_uuid = uuid or uuid4().hex
-        self.extra_usages.append(
-            ExtraUsageRecord(
-                uuid=record_uuid,
-                agent=agent,
-                model_id=internal_usage.model_id,
-                usage=internal_usage.usage,
+    def build_usage_snapshot(self) -> UsageSnapshot:
+        """Build a cumulative usage snapshot for this run."""
+        total_usage = RunUsage()
+        agent_usages: dict[str, UsageAgentTotal] = {}
+        model_usages: dict[str, RunUsage] = {}
+        entries = sorted(self.usage_snapshot_entries.values(), key=lambda entry: entry.agent_id)
+        for entry in entries:
+            total_usage += entry.usage
+            current_agent_usage = agent_usages.get(entry.agent_id)
+            if current_agent_usage is None:
+                agent_usages[entry.agent_id] = UsageAgentTotal(
+                    agent_name=entry.agent_name,
+                    model_id=entry.model_id,
+                    usage=entry.usage,
+                    usage_id=entry.usage_id,
+                    source=entry.source,
+                )
+            else:
+                current_agent_usage.usage = current_agent_usage.usage + entry.usage
+                if current_agent_usage.model_id != entry.model_id:
+                    current_agent_usage.model_id = "multiple"
+            current_model_usage = model_usages.get(entry.model_id, RunUsage())
+            model_usages[entry.model_id] = current_model_usage + entry.usage
+        return UsageSnapshot(
+            run_id=self.parent_run_id or self.run_id,
+            total_usage=total_usage,
+            entries=list(entries),
+            agent_usages=agent_usages,
+            model_usages=model_usages,
+        )
+
+    async def emit_usage_snapshot(
+        self,
+        *,
+        agent_id: str,
+        agent_name: str,
+        model_id: str,
+        usage: RunUsage,
+        source: str = "model_request",
+        usage_id: str | None = None,
+        ledger_key: str | None = None,
+    ) -> None:
+        """Update cumulative usage and emit a usage snapshot event."""
+        from ya_agent_sdk.events import UsageSnapshotEvent
+
+        snapshot = self.update_usage_snapshot_entry(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            model_id=model_id,
+            usage=usage,
+            usage_id=usage_id,
+            source=source,
+            ledger_key=ledger_key,
+        )
+        await self.emit_event(
+            UsageSnapshotEvent(
+                event_id=f"{snapshot.run_id}:usage_snapshot",
+                snapshot=snapshot,
+                source=source,
             )
         )
 
@@ -1898,7 +1960,7 @@ class AgentContext(BaseModel):
         self,
         *,
         include_subagent: bool = True,
-        include_extra_usages: bool = False,
+        include_usage_ledger: bool = False,
     ) -> ResumableState:
         """Export resumable session state.
 
@@ -1909,24 +1971,24 @@ class AgentContext(BaseModel):
             include_subagent: Whether to include subagent history and registry.
                 Defaults to True. Set to False to exclude subagent data,
                 which can reduce state size for main agent-only persistence.
-            include_extra_usages: Whether to include extra_usages in the state.
-                Defaults to False. extra_usages is per-run data for billing tracking.
-                Set to True only for crash recovery scenarios where you need to
-                preserve usage data from an interrupted run.
+            include_usage_ledger: Whether to include usage ledger entries in the state.
+                Defaults to False. Usage ledger data is per-run billing data.
+                Set to True for crash recovery scenarios where interrupted-run
+                usage should be preserved.
 
         Returns:
             ResumableState instance ready for serialization.
 
         Example::
 
-            # Save full state including subagent history (default, no extra_usages)
+            # Save full state including subagent history (default, no usage ledger records)
             state = ctx.export_state()
 
             # Save state without subagent data
             state = ctx.export_state(include_subagent=False)
 
-            # Save state with extra_usages for crash recovery
-            state = ctx.export_state(include_extra_usages=True)
+            # Save state with usage ledger records for crash recovery
+            state = ctx.export_state(include_usage_ledger=True)
 
             with open("session.json", "w") as f:
                 f.write(state.model_dump_json(indent=2))
@@ -1952,7 +2014,7 @@ class AgentContext(BaseModel):
 
         return ResumableState(
             subagent_history=serialized_history,
-            extra_usages=list(self.extra_usages) if include_extra_usages else [],
+            usage_snapshot_entries=dict(self.usage_snapshot_entries) if include_usage_ledger else {},
             user_prompts=self.user_prompts,
             steering_messages=list(self.steering_messages),
             handoff_message=self.handoff_message,

@@ -58,7 +58,7 @@ class ReadImageTool(BaseTool):
             model = tool_config.image_understanding_model
             model_settings = tool_config.image_understanding_model_settings
 
-        description, internal_usage = await get_image_description(
+        description, model_id, usage = await get_image_description(
             image_url=url,
             model=model,
             model_settings=model_settings,
@@ -66,8 +66,15 @@ class ReadImageTool(BaseTool):
             wrapper_metadata=agent_ctx.get_wrapper_metadata(),
         )
 
-        # Store usage in extra_usages with tool_call_id
         if ctx.tool_call_id:
-            agent_ctx.add_extra_usage(agent="image_understanding", internal_usage=internal_usage, uuid=ctx.tool_call_id)
+            await agent_ctx.emit_usage_snapshot(
+                agent_id="image_understanding",
+                agent_name="image_understanding",
+                model_id=model_id,
+                usage=usage,
+                source="image_understanding",
+                usage_id=ctx.tool_call_id,
+                ledger_key=ctx.tool_call_id,
+            )
 
         return description

@@ -36,7 +36,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import RetryPromptPart, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart
 from ya_agent_sdk.context.agent import StreamEvent
-from ya_agent_sdk.events import ModelRequestStartEvent
+from ya_agent_sdk.events import ModelRequestStartEvent, UsageSnapshotEvent
 
 _RUN_CUSTOM_EVENT_PREFIX = "ya_claw"
 _AGENT_CUSTOM_EVENT_PREFIX = "ya_agent"
@@ -212,6 +212,14 @@ class AguiEventAdapter:
                         "tool_name": event.tool_name,
                         "tool_call_id": event.tool_call_id,
                     },
+                )
+            ]
+        if isinstance(event, UsageSnapshotEvent):
+            return [
+                self._custom_agent_event(
+                    event_name="usage_snapshot",
+                    stream_event=stream_event,
+                    payload=_serialize_value(event.snapshot) if event.snapshot is not None else None,
                 )
             ]
         return [

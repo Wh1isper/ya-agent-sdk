@@ -41,10 +41,11 @@ async def test_shell_review_records_usage(tmp_path: Path) -> None:
     decision = await review_shell_command(ctx, request=ShellReviewRequest(command="echo hi"), usage_uuid="review-1")
 
     assert decision.risk_level == "low"
-    assert len(ctx.extra_usages) == 1
-    assert ctx.extra_usages[0].uuid == "review-1"
-    assert ctx.extra_usages[0].agent == "shell_review"
-    assert ctx.extra_usages[0].model_id == "test"
+    assert len(ctx.usage_snapshot_entries) == 1
+    entry = ctx.usage_snapshot_entries["review-1"]
+    assert entry.usage_id == "review-1"
+    assert entry.agent_id == "shell_review"
+    assert entry.model_id == "test"
 
 
 async def test_shell_review_request_builds_prompt_and_metadata() -> None:

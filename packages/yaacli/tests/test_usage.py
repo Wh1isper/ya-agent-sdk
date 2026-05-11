@@ -156,3 +156,50 @@ class TestSessionUsage:
         model_usage = session.model_usages["openai:gpt-4o"]
         assert model_usage.cache_read_tokens == 20
         assert model_usage.cache_write_tokens == 10
+
+
+def test_session_usage_replaces_uncommitted_run_snapshot() -> None:
+    """Realtime usage snapshots should replace the current run totals."""
+    from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
+
+    session = SessionUsage()
+    session.add("previous", "model-a", RunUsage(requests=1, input_tokens=1, output_tokens=2))
+
+    first = UsageSnapshot(
+        run_id="run-1",
+        total_usage=RunUsage(requests=1, input_tokens=10, output_tokens=20),
+        agent_usages={
+            "main": UsageAgentTotal(
+                agent_name="main",
+                model_id="model-b",
+                usage=RunUsage(requests=1, input_tokens=10, output_tokens=20),
+            )
+        },
+        model_usages={"model-b": RunUsage(requests=1, input_tokens=10, output_tokens=20)},
+    )
+    session.set_run_snapshot(first)
+
+    assert session.total_requests == 2
+    assert session.model_usages["model-b"].input_tokens == 10
+
+    second = UsageSnapshot(
+        run_id="run-1",
+        total_usage=RunUsage(requests=2, input_tokens=30, output_tokens=40),
+        agent_usages={
+            "main": UsageAgentTotal(
+                agent_name="main",
+                model_id="model-b",
+                usage=RunUsage(requests=2, input_tokens=30, output_tokens=40),
+            )
+        },
+        model_usages={"model-b": RunUsage(requests=2, input_tokens=30, output_tokens=40)},
+    )
+    session.set_run_snapshot(second)
+
+    assert session.total_requests == 3
+    assert session.total_input_tokens == 31
+    assert session.total_output_tokens == 42
+
+    session.commit_run_snapshot()
+    assert not session.has_run_snapshot
+    assert session.total_requests == 3

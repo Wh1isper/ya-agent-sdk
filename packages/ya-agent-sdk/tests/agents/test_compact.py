@@ -1326,15 +1326,20 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
     assert len(compacted) == 3
     assert agent_context.force_inject_instructions is True
     assert agent_context._compact_depth == 0
-    assert len(agent_context.extra_usages) == 1
-    assert agent_context.extra_usages[0].agent == "compact"
-    assert agent_context.extra_usages[0].model_id == "main-model"
+    snapshot = agent_context.build_usage_snapshot()
+    compact_entries = [entry for entry in snapshot.entries if entry.agent_id == "compact"]
+    assert len(compact_entries) == 1
+    assert compact_entries[0].model_id == "main-model"
 
     queue = agent_context.agent_stream_queues[agent_context.agent_id]
     events = []
     while not queue.empty():
         events.append(queue.get_nowait())
-    assert [event.__class__.__name__ for event in events] == ["CompactStartEvent", "CompactCompleteEvent"]
+    assert [event.__class__.__name__ for event in events] == [
+        "CompactStartEvent",
+        "UsageSnapshotEvent",
+        "CompactCompleteEvent",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1464,15 +1469,20 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
     assert len(compacted) == 3
     assert agent_context.auto_load_files == ["packages/ya-agent-sdk/README.md"]
     assert agent_context.force_inject_instructions is True
-    assert len(agent_context.extra_usages) == 1
-    assert agent_context.extra_usages[0].agent == "compact"
-    assert agent_context.extra_usages[0].model_id == "test-model"
+    snapshot = agent_context.build_usage_snapshot()
+    compact_entries = [entry for entry in snapshot.entries if entry.agent_id == "compact"]
+    assert len(compact_entries) == 1
+    assert compact_entries[0].model_id == "test-model"
 
     queue = agent_context.agent_stream_queues[agent_context.agent_id]
     events = []
     while not queue.empty():
         events.append(queue.get_nowait())
-    assert [event.__class__.__name__ for event in events] == ["CompactStartEvent", "CompactCompleteEvent"]
+    assert [event.__class__.__name__ for event in events] == [
+        "CompactStartEvent",
+        "UsageSnapshotEvent",
+        "CompactCompleteEvent",
+    ]
 
 
 @pytest.mark.asyncio

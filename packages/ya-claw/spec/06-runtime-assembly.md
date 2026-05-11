@@ -37,13 +37,14 @@ Suggested fields:
 
 ### WorkspaceBinding
 
-`WorkspaceBinding` is a declarative single-workspace value object.
+`WorkspaceBinding` is a declarative workspace value object with a default mount and optional additional mounts.
 
 Suggested fields:
 
 - `host_path`
 - `virtual_path`
 - `cwd`
+- `mounts`
 - `readable_paths`
 - `writable_paths`
 - `environment_overrides`
@@ -58,6 +59,7 @@ Suggested fields:
 
 - `virtual_path`
 - `cwd`
+- `mounts`
 - `readable_paths`
 - `writable_paths`
 - `metadata`
@@ -109,7 +111,7 @@ sequenceDiagram
 
     COORD->>PROF: resolve(profile_name)
     PROF-->>COORD: ResolvedProfile
-    COORD->>WP: resolve(metadata)
+    COORD->>WP: resolve(session metadata + run metadata)
     WP-->>COORD: WorkspaceBinding
     COORD->>EF: build(binding, profile)
     EF-->>COORD: Environment
@@ -163,15 +165,15 @@ Recommended context construction inputs:
 
 YA Claw has two workspace guidance files:
 
-| File                      | Loaded for                                              | Purpose                              |
-| ------------------------- | ------------------------------------------------------- | ------------------------------------ |
-| `/workspace/AGENTS.md`    | normal runs, schedule runs, heartbeat runs, bridge runs | general workspace guidance           |
-| `/workspace/HEARTBEAT.md` | heartbeat runs only                                     | runtime-owned heartbeat instructions |
+| File                           | Loaded for                                              | Purpose                              |
+| ------------------------------ | ------------------------------------------------------- | ------------------------------------ |
+| `<default_mount>/AGENTS.md`    | normal runs, schedule runs, heartbeat runs, bridge runs | general workspace guidance           |
+| `<default_mount>/HEARTBEAT.md` | heartbeat runs only                                     | runtime-owned heartbeat instructions |
 
 Heartbeat guidance should be injected as a tagged block:
 
 ```xml
-<heartbeat-guidance path="/workspace/HEARTBEAT.md">
+<heartbeat-guidance path="/workspace/main/HEARTBEAT.md">
 ...
 </heartbeat-guidance>
 ```
@@ -207,6 +209,7 @@ runtime = runtime_builder.build(
     run_id=run.id,
     source_kind=run.trigger_type,
     source_metadata=run.metadata.get("source", {}),
+    workspace_metadata=resolved_workspace_metadata,
 )
 ```
 

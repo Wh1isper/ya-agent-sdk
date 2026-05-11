@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ya_claw.config import ClawSettings
@@ -260,9 +260,14 @@ class SessionController:
         *,
         limit: int = _DEFAULT_SESSION_RUNS_LIMIT,
         before_sequence_no: int | None = None,
+        cursor: str | None = None,
     ) -> SessionTurnsResponse:
         logger.debug(
-            "Listing session turns session_id={} limit={} before_sequence_no={}", session_id, limit, before_sequence_no
+            "Listing session turns session_id={} limit={} before_sequence_no={} cursor={}",
+            session_id,
+            limit,
+            before_sequence_no,
+            cursor,
         )
         record = await db_session.get(SessionRecord, session_id)
         if not isinstance(record, SessionRecord):
@@ -273,7 +278,20 @@ class SessionController:
             RunRecord.session_id == session_id,
             RunRecord.status == RunStatus.COMPLETED,
         )
-        if isinstance(before_sequence_no, int):
+        cursor_record: RunRecord | None = None
+        if isinstance(cursor, str) and cursor.strip() != "":
+            cursor_record = await db_session.get(RunRecord, cursor.strip())
+            if not isinstance(cursor_record, RunRecord) or cursor_record.session_id != session_id:
+                raise HTTPException(
+                    status_code=404, detail=f"Run cursor '{cursor}' was not found in session '{session_id}'."
+                )
+            statement = statement.where(
+                or_(
+                    RunRecord.sequence_no < cursor_record.sequence_no,
+                    (RunRecord.sequence_no == cursor_record.sequence_no) & (RunRecord.id < cursor_record.id),
+                )
+            )
+        elif isinstance(before_sequence_no, int):
             statement = statement.where(RunRecord.sequence_no < before_sequence_no)
         statement = statement.order_by(RunRecord.sequence_no.desc(), RunRecord.id.desc()).limit(normalized_limit + 1)
 
@@ -281,12 +299,13 @@ class SessionController:
         run_records = list(result.scalars().all())
         has_more = len(run_records) > normalized_limit
         page_records = run_records[:normalized_limit]
-        next_before_sequence_no = page_records[-1].sequence_no if has_more and page_records else None
+        next_page_anchor = page_records[-1] if has_more and page_records else None
         return SessionTurnsResponse(
             session_id=session_id,
             limit=normalized_limit,
             has_more=has_more,
-            next_before_sequence_no=next_before_sequence_no,
+            next_cursor=next_page_anchor.id if isinstance(next_page_anchor, RunRecord) else None,
+            next_before_sequence_no=next_page_anchor.sequence_no if isinstance(next_page_anchor, RunRecord) else None,
             turns=[session_turn_from_record(run_record) for run_record in page_records],
         )
 

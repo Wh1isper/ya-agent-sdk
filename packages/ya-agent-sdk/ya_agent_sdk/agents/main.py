@@ -1196,6 +1196,15 @@ async def stream_agent(  # noqa: C901
 
         await process_node(node, run)
 
+        base_model = cast(Model, agent.model)
+        await ctx.emit_usage_snapshot(
+            agent_id=main_agent_info.agent_id,
+            agent_name=main_agent_info.agent_name,
+            model_id=base_model.model_name,
+            usage=run.usage(),
+            source="main_model_request",
+        )
+
         await emit_lifecycle_event(
             ModelRequestCompleteEvent(
                 event_id=ctx.run_id,
@@ -1567,7 +1576,11 @@ async def stream_agent(  # noqa: C901
                 for agent_id, queue in list(ctx.agent_stream_queues.items()):
                     try:
                         event = queue.get_nowait()
-                        agent_info = ctx.agent_registry.get(agent_id)
+                        agent_info = (
+                            main_agent_info
+                            if agent_id == main_agent_info.agent_id
+                            else ctx.agent_registry.get(agent_id)
+                        )
                         await output_queue.put(
                             StreamEvent(
                                 agent_id=agent_id,

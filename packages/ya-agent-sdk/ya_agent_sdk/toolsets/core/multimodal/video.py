@@ -58,7 +58,7 @@ class ReadVideoTool(BaseTool):
             model = tool_config.video_understanding_model
             model_settings = tool_config.video_understanding_model_settings
 
-        description, internal_usage = await get_video_description(
+        description, model_id, usage = await get_video_description(
             video_url=url,
             model=model,
             model_settings=model_settings,
@@ -66,8 +66,15 @@ class ReadVideoTool(BaseTool):
             wrapper_metadata=agent_ctx.get_wrapper_metadata(),
         )
 
-        # Store usage in extra_usages with tool_call_id
         if ctx.tool_call_id:
-            agent_ctx.add_extra_usage(agent="video_understanding", internal_usage=internal_usage, uuid=ctx.tool_call_id)
+            await agent_ctx.emit_usage_snapshot(
+                agent_id="video_understanding",
+                agent_name="video_understanding",
+                model_id=model_id,
+                usage=usage,
+                source="video_understanding",
+                usage_id=ctx.tool_call_id,
+                ledger_key=ctx.tool_call_id,
+            )
 
         return description

@@ -14,7 +14,6 @@ from pydantic_ai.output import ToolOutput
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ShellReviewAction, ShellReviewRiskLevel
-from ya_agent_sdk.usage import InternalUsage
 
 logger = get_logger(__name__)
 
@@ -277,10 +276,15 @@ async def review_shell_command(
     result = await _run_shell_review_agent(agent, request.to_prompt())
 
     model_id = cast(Model, agent.model).model_name
-    ctx.add_extra_usage(
-        agent="shell_review",
-        internal_usage=InternalUsage(model_id=model_id, usage=result.usage()),
-        uuid=usage_uuid or uuid4().hex,
+    usage_id = usage_uuid or uuid4().hex
+    await ctx.emit_usage_snapshot(
+        agent_id="shell_review",
+        agent_name="shell_review",
+        model_id=model_id,
+        usage=result.usage(),
+        source="shell_review",
+        usage_id=usage_id,
+        ledger_key=usage_id,
     )
     logger.info(
         "Shell review completed run_id=%s risk_level=%s reason=%s",

@@ -23,7 +23,13 @@ _DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
 class SelfSessionClient(Protocol):
     session_id: str
 
-    async def list_session_turns(self, *, limit: int, before_sequence_no: int | None) -> dict[str, Any]: ...
+    async def list_session_turns(
+        self,
+        *,
+        limit: int,
+        before_sequence_no: int | None,
+        cursor: str | None,
+    ) -> dict[str, Any]: ...
 
     async def get_run_trace(self, *, run_id: str, max_item_chars: int, max_total_chars: int) -> dict[str, Any]: ...
 
@@ -57,9 +63,17 @@ class ClawSelfClient:
     def get_toolsets(self) -> list[Any]:
         return []
 
-    async def list_session_turns(self, *, limit: int, before_sequence_no: int | None) -> dict[str, Any]:
+    async def list_session_turns(
+        self,
+        *,
+        limit: int,
+        before_sequence_no: int | None,
+        cursor: str | None,
+    ) -> dict[str, Any]:
         params: dict[str, str] = {"limit": str(limit)}
-        if isinstance(before_sequence_no, int):
+        if isinstance(cursor, str) and cursor.strip() != "":
+            params["cursor"] = cursor.strip()
+        elif isinstance(before_sequence_no, int):
             params["before_sequence_no"] = str(before_sequence_no)
         path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/turns"
         return await self._get_json(path, params=params)
@@ -199,6 +213,10 @@ class ListSessionTurnsTool(BaseTool):
             int | None,
             Field(description="Fetch completed turns with sequence_no lower than this value"),
         ] = None,
+        cursor: Annotated[
+            str | None,
+            Field(description="Fetch completed turns older than this run ID cursor"),
+        ] = None,
         max_input_chars: Annotated[int, Field(description="Maximum characters per turn input payload")] = 2000,
         max_output_chars: Annotated[int, Field(description="Maximum characters per turn output_text")] = 4000,
         include_binary_data: Annotated[bool, Field(description="Include trimmed binary base64 data when true")] = False,
@@ -213,6 +231,7 @@ class ListSessionTurnsTool(BaseTool):
             payload = await client.list_session_turns(
                 limit=normalized_limit,
                 before_sequence_no=before_sequence_no,
+                cursor=cursor,
             )
             if payload.get("session_id") != client.session_id:
                 return "Error: YA Claw self API returned a different session."
@@ -303,6 +322,7 @@ def _compact_turns_payload(
         "session_id": payload.get("session_id"),
         "limit": payload.get("limit"),
         "has_more": payload.get("has_more"),
+        "next_cursor": payload.get("next_cursor"),
         "next_before_sequence_no": payload.get("next_before_sequence_no"),
         "turns": compact_turns,
     }

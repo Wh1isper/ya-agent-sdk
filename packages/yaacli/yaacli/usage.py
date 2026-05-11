@@ -1,22 +1,18 @@
 """Session-level usage tracking for yaacli.
 
 This module provides usage tracking across multiple agent runs in a CLI session.
-It aggregates token usage from:
-- Main agent runs (via stream.run.usage())
-- Extra usage from subagents, image/video understanding, compact filter, etc.
-  (via ctx.extra_usages)
+It consumes the SDK's realtime UsageSnapshotEvent as the primary usage surface.
 
 Uses pydantic-ai's RunUsage directly for accurate tracking including details field.
 
 Example:
     session_usage = SessionUsage()
 
-    # After each run - main agent
-    session_usage.add("main", "openai:gpt-4o", run.usage())
+    # During streaming
+    session_usage.set_run_snapshot(usage_snapshot)
 
-    # Extra usages from subagents, etc.
-    for record in ctx.extra_usages:
-        session_usage.add(record.agent, record.model_id, record.usage)
+    # After run completion
+    session_usage.commit_run_snapshot()
 
     # Show summary
     print(session_usage.format_summary())
@@ -27,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from pydantic_ai.usage import RunUsage
+from ya_agent_sdk.usage import UsageSnapshot
 
 
 @dataclass
@@ -47,6 +44,8 @@ class SessionUsage:
 
     agent_usages: dict[str, RunUsage] = field(default_factory=dict)
     model_usages: dict[str, RunUsage] = field(default_factory=dict)
+    _run_snapshot_agent_keys: set[str] = field(default_factory=set)
+    _run_snapshot_model_keys: set[str] = field(default_factory=set)
 
     def add(self, agent: str, model_id: str, usage: RunUsage) -> None:
         """Add usage for a specific agent and model.
@@ -66,10 +65,44 @@ class SessionUsage:
             self.model_usages[model_id] = RunUsage()
         self.model_usages[model_id].incr(usage)
 
+    def set_run_snapshot(self, snapshot: UsageSnapshot) -> None:
+        """Replace the current run usage with a realtime SDK snapshot."""
+        for agent in self._run_snapshot_agent_keys:
+            self.agent_usages.pop(agent, None)
+        for model_id in self._run_snapshot_model_keys:
+            self.model_usages.pop(model_id, None)
+
+        self._run_snapshot_agent_keys = set(snapshot.agent_usages)
+        self._run_snapshot_model_keys = set(snapshot.model_usages)
+
+        for agent, entry in snapshot.agent_usages.items():
+            self.agent_usages[agent] = RunUsage() + entry.usage
+        for model_id, usage in snapshot.model_usages.items():
+            self.model_usages[model_id] = RunUsage() + usage
+
+    @property
+    def has_run_snapshot(self) -> bool:
+        """Whether current session totals include an uncommitted run snapshot."""
+        return bool(self._run_snapshot_agent_keys or self._run_snapshot_model_keys)
+
+    def commit_run_snapshot(self) -> None:
+        """Mark current realtime snapshot as committed session usage."""
+        self._run_snapshot_agent_keys.clear()
+        self._run_snapshot_model_keys.clear()
+
+    def clear_run_snapshot(self) -> None:
+        """Remove the current realtime run snapshot from session totals."""
+        for agent in self._run_snapshot_agent_keys:
+            self.agent_usages.pop(agent, None)
+        for model_id in self._run_snapshot_model_keys:
+            self.model_usages.pop(model_id, None)
+        self.commit_run_snapshot()
+
     def clear(self) -> None:
         """Clear all accumulated usage."""
         self.agent_usages.clear()
         self.model_usages.clear()
+        self.commit_run_snapshot()
 
     @property
     def total_input_tokens(self) -> int:

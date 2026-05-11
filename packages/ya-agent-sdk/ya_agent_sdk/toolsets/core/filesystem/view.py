@@ -248,7 +248,7 @@ class ViewTool(BaseTool):
                 model = tool_config.image_understanding_model
                 model_settings = tool_config.image_understanding_model_settings
 
-            description, internal_usage = await get_image_description(
+            description, model_id, usage = await get_image_description(
                 image_url=image_url,
                 image_data=None if image_url else image_data,
                 media_type=media_type,
@@ -259,8 +259,14 @@ class ViewTool(BaseTool):
             )
 
             if ctx.tool_call_id:
-                ctx.deps.add_extra_usage(
-                    agent="image_understanding", internal_usage=internal_usage, uuid=ctx.tool_call_id
+                await ctx.deps.emit_usage_snapshot(
+                    agent_id="image_understanding",
+                    agent_name="image_understanding",
+                    model_id=model_id,
+                    usage=usage,
+                    source="image_understanding",
+                    usage_id=ctx.tool_call_id,
+                    ledger_key=ctx.tool_call_id,
                 )
 
             return f"Image description (via image analysis):\n{description}"
@@ -287,7 +293,7 @@ class ViewTool(BaseTool):
                 model = tool_config.video_understanding_model
                 model_settings = tool_config.video_understanding_model_settings
 
-            description, internal_usage = await get_video_description(
+            description, model_id, usage = await get_video_description(
                 video_url=video_url,
                 video_data=None if video_url else video_data,
                 media_type=media_type,
@@ -296,8 +302,14 @@ class ViewTool(BaseTool):
             )
 
             if ctx.tool_call_id:
-                ctx.deps.add_extra_usage(
-                    agent="video_understanding", internal_usage=internal_usage, uuid=ctx.tool_call_id
+                await ctx.deps.emit_usage_snapshot(
+                    agent_id="video_understanding",
+                    agent_name="video_understanding",
+                    model_id=model_id,
+                    usage=usage,
+                    source="video_understanding",
+                    usage_id=ctx.tool_call_id,
+                    ledger_key=ctx.tool_call_id,
                 )
 
             return f"Video description (via video understanding agent):\n{description}"
@@ -324,7 +336,7 @@ class ViewTool(BaseTool):
                 model = tool_config.audio_understanding_model
                 model_settings = tool_config.audio_understanding_model_settings
 
-            description, internal_usage = await get_audio_description(
+            description, model_id, usage = await get_audio_description(
                 audio_url=audio_url,
                 audio_data=None if audio_url else audio_data,
                 media_type=media_type,
@@ -335,8 +347,14 @@ class ViewTool(BaseTool):
             )
 
             if ctx.tool_call_id:
-                ctx.deps.add_extra_usage(
-                    agent="audio_understanding", internal_usage=internal_usage, uuid=ctx.tool_call_id
+                await ctx.deps.emit_usage_snapshot(
+                    agent_id="audio_understanding",
+                    agent_name="audio_understanding",
+                    model_id=model_id,
+                    usage=usage,
+                    source="audio_understanding",
+                    usage_id=ctx.tool_call_id,
+                    ledger_key=ctx.tool_call_id,
                 )
 
             return f"Audio description (via audio understanding agent):\n{description}"

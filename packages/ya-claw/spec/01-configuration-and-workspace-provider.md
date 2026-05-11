@@ -35,7 +35,7 @@ flowchart TB
 | `YA_CLAW_AUTO_MIGRATE`                                 | startup schema migration switch                                             |
 | `YA_CLAW_WEB_DIST_DIR`                                 | bundled web shell directory                                                 |
 | `YA_CLAW_DATA_DIR`                                     | runtime data root for run store and runtime records                         |
-| `YA_CLAW_WORKSPACE_DIR`                                | single workspace directory exposed to agent environments                    |
+| `YA_CLAW_WORKSPACE_DIR`                                | default workspace directory used when requests omit workspace binding       |
 | `YA_CLAW_WORKSPACE_ENV_VARS`                           | comma-separated process environment variable names forwarded to workspaces  |
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS`       | comma-separated Docker extra mounts using host_path:container_path[:mode]   |
 | `YA_CLAW_DATABASE_ECHO`                                | SQL logging                                                                 |
@@ -122,7 +122,7 @@ YA Claw loads MCP server definitions from a dedicated JSON file layer.
 
 Resolution order:
 
-1. workspace file at `<workspace>/.ya-claw/mcp.json`
+1. workspace file at `<default_mount>/.ya-claw/mcp.json`
 2. global file at `~/.ya-claw/mcp.json`
 
 The runtime builder injects the resolved MCP servers into every agent through one `ToolProxyToolset`.
@@ -140,16 +140,18 @@ Recommended behavior:
 - explicit prune mode removes seeded rows no longer present in YAML
 - manually created rows remain first-class records
 
-## Single Workspace
+## Workspace Binding and Mount Sets
 
-YA Claw uses one configured workspace directory.
+YA Claw has one configured default workspace directory and supports request-level workspace bindings for session-scoped multi-folder execution.
+
+The configured default workspace is used when API clients omit `workspace` on session and run creation. Desktop and other clients can provide a workspace binding with multiple mounts and one default cwd.
 
 Workspace mapping has two path modes:
 
-- local backend: service path, file-ops path, shell cwd, readable paths, and writable paths all use the real `YA_CLAW_WORKSPACE_DIR` path
-- Docker backend: service-side file operations use `YA_CLAW_WORKSPACE_DIR`, Docker shell sees `/workspace`, and Docker daemon mounts `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` when configured
+- local backend: file operations and local shell use host paths derived from the selected mount set
+- Docker backend: service-side file operations map host paths into virtual paths, Docker shell sees the declared virtual paths, and Docker binds daemon-visible host paths into those virtual paths
 
-Docker workspace defaults:
+Default Docker workspace values for requests that omit `workspace`:
 
 - service workspace path: `YA_CLAW_WORKSPACE_DIR` or the default runtime workspace directory
 - daemon-visible host mount: `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` or the service workspace path
@@ -159,7 +161,34 @@ Docker workspace defaults:
 - workspace guidance: `/workspace/AGENTS.md`
 - heartbeat guidance: `/workspace/HEARTBEAT.md`
 
-Sessions, runs, schedules, heartbeat, and bridges all resolve to this same workspace binding. Per-session or per-bridge separation belongs in session metadata, bridge metadata, run metadata, and workspace files chosen by the agent.
+Request-level workspace binding example:
+
+```json
+{
+  "workspace": {
+    "mounts": [
+      {
+        "id": "main",
+        "name": "ya-mono",
+        "host_path": "/Users/jizhongsheng/code/yet-another-agents/ya-mono",
+        "virtual_path": "/workspace/main",
+        "mode": "rw"
+      },
+      {
+        "id": "docs",
+        "name": "product-docs",
+        "host_path": "/Users/jizhongsheng/docs/product",
+        "virtual_path": "/workspace/docs",
+        "mode": "ro"
+      }
+    ],
+    "default_mount_id": "main",
+    "cwd": "/workspace/main"
+  }
+}
+```
+
+Sessions, runs, schedules, heartbeat, bridges, and memory jobs resolve workspace binding through session metadata, run metadata, and provider defaults. The full mount-set contract lives in [10-workspace-mount-sets.md](10-workspace-mount-sets.md).
 
 ## Official Docker Workspace Image
 
@@ -186,9 +215,10 @@ Workspace environments receive built-in `LARK_APP_ID` and `LARK_APP_SECRET` alia
 
 A provider should return:
 
-- one host workspace path
-- one virtual workspace path exposed to the agent
+- one default host workspace path
+- one default virtual workspace path exposed to the agent
 - one default cwd
+- a mount list with host path, virtual path, and read/write mode
 - readable and writable virtual paths
 - environment overrides
 - provider metadata useful for logs and UI
@@ -200,16 +230,16 @@ A provider should return:
 It describes execution boundaries and path policy.
 Concrete SDK `Environment` construction belongs to `EnvironmentFactory`.
 
-The configured workspace path defines `cwd`, readable paths, and writable paths.
+The selected workspace binding defines `cwd`, readable paths, writable paths, and concrete environment mounts.
 
 ### LocalWorkspaceProvider
 
 Shape:
 
-- host path from the configured workspace directory
-- virtual path equal to the real workspace path
-- cwd equal to the real workspace path
-- path policy restricted to the workspace root
+- host paths from the selected workspace binding
+- virtual paths from the selected workspace binding
+- cwd resolved from the selected default mount
+- path policy restricted to declared mounts
 - backend hint `local`
 
 `LocalEnvironmentFactory` builds local file operations and a local shell over the same real path space.
@@ -218,9 +248,9 @@ Shape:
 
 Shape:
 
-- service workspace path from `YA_CLAW_WORKSPACE_DIR`
-- daemon-visible host workspace path from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` or the service workspace path
-- virtual/container path `/workspace` shared by Docker shell and file operations
+- service workspace paths from the selected workspace binding
+- daemon-visible host workspace paths from each mount's `docker_host_path`, `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR`, or the service path
+- virtual/container paths from declared mounts
 - backend hint `docker`
 - optional image hint from profile or service bootstrap config
 
@@ -244,11 +274,11 @@ Responsibilities:
 
 ### Supported Workspace Combinations
 
-| Service placement        | Shell backend | File operations                                                                            | Shell cwd           | Docker mount source                                    |
-| ------------------------ | ------------- | ------------------------------------------------------------------------------------------ | ------------------- | ------------------------------------------------------ |
-| Host/local process       | local shell   | `LocalFileOperator` over `YA_CLAW_WORKSPACE_DIR`                                           | real workspace path | n/a                                                    |
-| Host/local process       | Docker shell  | `VirtualLocalFileOperator` mapping `YA_CLAW_WORKSPACE_DIR` to `/workspace`                 | `/workspace`        | `YA_CLAW_WORKSPACE_DIR`                                |
-| Docker service container | Docker shell  | `VirtualLocalFileOperator` mapping service-visible `YA_CLAW_WORKSPACE_DIR` to `/workspace` | `/workspace`        | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` |
+| Service placement        | Shell backend | File operations                                                                     | Shell cwd                          | Docker mount source                         |
+| ------------------------ | ------------- | ----------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------- |
+| Host/local process       | local shell   | `LocalFileOperator` over declared host mounts                                       | host cwd resolved from virtual cwd | n/a                                         |
+| Host/local process       | Docker shell  | `VirtualLocalFileOperator` mapping declared host mounts to virtual paths            | declared virtual cwd               | mount host path or `docker_host_path`       |
+| Docker service container | Docker shell  | `VirtualLocalFileOperator` mapping service-visible declared mounts to virtual paths | declared virtual cwd               | `docker_host_path` or daemon-visible source |
 
 ## ClawAgentContext
 

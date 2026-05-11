@@ -8,6 +8,7 @@ The API has four layers:
 - **run API** for explicit low-level orchestration
 - **schedule API** for timer-managed work
 - **heartbeat API** for runtime-owned operational timer visibility
+- **workspace binding fields** on session and run creation for multi-folder execution
 
 ## API Principle
 
@@ -90,6 +91,7 @@ Suggested fields:
 
 - `profile_name`
 - `metadata`
+- `workspace`
 - `input_parts`
 - `dispatch_mode`
 - `trigger_type`
@@ -101,6 +103,7 @@ Suggested fields:
 - `restore_from_run_id`
 - `input_parts`
 - `metadata`
+- `workspace`
 - `dispatch_mode`
 - `trigger_type`
 
@@ -113,8 +116,40 @@ Suggested fields:
 - `profile_name`
 - `input_parts`
 - `metadata`
+- `workspace`
 - `dispatch_mode`
 - `trigger_type`
+
+### Workspace Binding Request Field
+
+`workspace` is an optional first-class field for session and run creation. It lets clients bind a session or run to one or more host folders.
+
+```json
+{
+  "workspace": {
+    "mounts": [
+      {
+        "id": "main",
+        "name": "ya-mono",
+        "host_path": "/Users/jizhongsheng/code/yet-another-agents/ya-mono",
+        "virtual_path": "/workspace/main",
+        "mode": "rw"
+      },
+      {
+        "id": "docs",
+        "name": "product-docs",
+        "host_path": "/Users/jizhongsheng/docs/product",
+        "virtual_path": "/workspace/docs",
+        "mode": "ro"
+      }
+    ],
+    "default_mount_id": "main",
+    "cwd": "/workspace/main"
+  }
+}
+```
+
+Session create stores `workspace` in session metadata. Session continuation inherits the session workspace. Run create and session-run create can provide a workspace override for that execution. Workspace mount-set semantics live in [10-workspace-mount-sets.md](10-workspace-mount-sets.md).
 
 ## Creation Semantics
 
@@ -185,10 +220,21 @@ Session and run GET endpoints should return the structured record plus committed
 
 ### Session Turns
 
-`GET /api/v1/sessions/{session_id}/turns?limit=20`
+`GET /api/v1/sessions/{session_id}/turns?limit=20&cursor=run_2`
 
 Returns completed runs only. Each turn includes the original `input_parts`, `output_text`, and `output_summary`.
-The endpoint paginates by descending `sequence_no` with `before_sequence_no`.
+The endpoint paginates newest-first by descending `(sequence_no, run_id)`. Use `next_cursor` as the next request's `cursor` to load older turns for chatbox history. `before_sequence_no` remains available for sequence-number based callers.
+
+```json
+{
+  "session_id": "session_123",
+  "limit": 20,
+  "has_more": true,
+  "next_cursor": "run_2",
+  "next_before_sequence_no": 2,
+  "turns": []
+}
+```
 
 ### Run GET
 
@@ -304,7 +350,14 @@ Suggested response shape:
     "hitl_status_reason": true,
     "profiles": true,
     "schedules": true,
-    "heartbeat": true
+    "heartbeat": true,
+    "session_workspace_binding": true,
+    "run_workspace_override": true,
+    "multi_mount_workspaces": true
+  },
+  "workspace_mount_modes": ["rw", "ro"],
+  "limits": {
+    "max_workspace_mounts_per_session": 8
   }
 }
 ```
