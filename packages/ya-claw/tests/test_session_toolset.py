@@ -41,8 +41,14 @@ class FakeSelfClient:
     def get_toolsets(self) -> list[Any]:
         return []
 
-    async def list_session_turns(self, *, limit: int, before_sequence_no: int | None) -> dict[str, Any]:
-        self.turn_calls.append({"limit": limit, "before_sequence_no": before_sequence_no})
+    async def list_session_turns(
+        self,
+        *,
+        limit: int,
+        before_sequence_no: int | None,
+        cursor: str | None,
+    ) -> dict[str, Any]:
+        self.turn_calls.append({"limit": limit, "before_sequence_no": before_sequence_no, "cursor": cursor})
         return {
             "session_id": self.session_id,
             "limit": limit,
@@ -127,7 +133,7 @@ async def test_list_session_turns_trims_output_and_omits_binary_data() -> None:
     )
 
     payload = json.loads(result)
-    assert client.turn_calls == [{"limit": 50, "before_sequence_no": 4}]
+    assert client.turn_calls == [{"limit": 50, "before_sequence_no": 4, "cursor": None}]
     assert payload["session_id"] == "session-1"
     turn = payload["turns"][0]
     assert turn["run_id"] == "run-1"

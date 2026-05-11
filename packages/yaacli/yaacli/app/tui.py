@@ -2933,8 +2933,9 @@ class TUIApp:
     def _save_session_snapshot(
         self,
         *,
-        include_usage_ledger: bool,
+        include_usage_ledger: bool | None = None,
         save_reason: str,
+        include_extra_usages: bool | None = None,
     ) -> bool:
         """Persist the current session to disk.
 
@@ -2942,10 +2943,14 @@ class TUIApp:
             include_usage_ledger: Whether to include the usage ledger in exported state.
                 Use True for error recovery snapshots.
             save_reason: Metadata tag describing why the snapshot was saved.
+            include_extra_usages: Backward-compatible alias for include_usage_ledger.
 
         Returns:
             True when a snapshot was written, False when there is no message history.
         """
+        if include_usage_ledger is None:
+            include_usage_ledger = bool(include_extra_usages)
+
         if not self._message_history:
             return False
 
@@ -2961,7 +2966,10 @@ class TUIApp:
 
         # Save context state
         state_file = save_dir / "context_state.json"
-        state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
+        if include_extra_usages is None:
+            state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
+        else:
+            state = self.runtime.ctx.export_state(include_extra_usages=include_extra_usages)
         state_file.write_text(state.model_dump_json(indent=2))
 
         # Save/update metadata

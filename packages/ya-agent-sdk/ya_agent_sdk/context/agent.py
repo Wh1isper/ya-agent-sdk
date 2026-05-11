@@ -1947,11 +1947,9 @@ class AgentContext(BaseModel):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and record end time."""
         self.end_at = datetime.now(UTC)
-        # For main agent: clear message bus on exit
-        # For subagents: unsubscribe to free cursor
-        if self._agent_id == "main":
-            self.message_bus.clear()
-        else:
+        # Keep the main agent subscribed across turns so background tasks can
+        # deliver results after a run exits. Subagents unsubscribe to free cursors.
+        if self._agent_id != "main":
             self.message_bus.unsubscribe(self._agent_id)
         async with self._enter_lock:
             object.__setattr__(self, "_entered", False)
@@ -1961,6 +1959,7 @@ class AgentContext(BaseModel):
         *,
         include_subagent: bool = True,
         include_usage_ledger: bool = False,
+        include_extra_usages: bool | None = None,
     ) -> ResumableState:
         """Export resumable session state.
 
@@ -1975,6 +1974,7 @@ class AgentContext(BaseModel):
                 Defaults to False. Usage ledger data is per-run billing data.
                 Set to True for crash recovery scenarios where interrupted-run
                 usage should be preserved.
+            include_extra_usages: Backward-compatible alias for include_usage_ledger.
 
         Returns:
             ResumableState instance ready for serialization.
@@ -1993,6 +1993,9 @@ class AgentContext(BaseModel):
             with open("session.json", "w") as f:
                 f.write(state.model_dump_json(indent=2))
         """
+        if include_extra_usages is not None:
+            include_usage_ledger = include_extra_usages
+
         serialized_history: dict[str, list[dict[str, Any]]] = {}
         serialized_registry: dict[str, dict[str, Any]] = {}
 
