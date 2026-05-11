@@ -8,6 +8,7 @@ Workspace members:
 - `packages/yaacli` — TUI reference implementation built on top of the SDK
 - `packages/ya-claw` — workspace-native single-node runtime web service with `WorkspaceProvider`, in-process runtime state, schedules, bridges, and SQLite-first storage
 - `packages/ya-agent-platform` — WIP stateless agent service with TBD scope
+- `packages/ya-relay` — spec-only for now; provider-neutral relay protocol and SDK Environment mapping for external fileops, shell, resources, custom tools, artifacts, and computer use
 
 Shared repository areas:
 

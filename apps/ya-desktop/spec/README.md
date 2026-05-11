@@ -36,6 +36,8 @@ The same desktop client can use:
 | 06      | [06-sandboxed-workspace-provider.md](06-sandboxed-workspace-provider.md)         | local workspace provider with sandboxed shell for Linux and macOS            |
 | 07      | [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md) | SSE notifications, session state transfer, and desktop HITL                  |
 | 08      | [08-ui-technology-decision.md](08-ui-technology-decision.md)                     | desktop UI technology decision                                               |
+| 09      | [09-desktop-relay.md](09-desktop-relay.md)                                       | YA Relay client integration for Desktop local capabilities                   |
+| CU      | [computer-use/README.md](computer-use/README.md)                                 | first-party Host Computer Use architecture, protocol, safety, and UX         |
 
 ## Near-Term Decisions
 
