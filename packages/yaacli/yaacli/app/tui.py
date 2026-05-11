@@ -1299,22 +1299,20 @@ class TUIApp:
         """Callback invoked when a background task completes.
 
         This is called synchronously from the asyncio event loop when
-        SpawnDelegateTool finishes. If the agent is idle and there
-        are pending bus messages, we schedule a new agent turn.
+        SpawnDelegateTool finishes. If the agent is idle, queued background
+        results are redelivered and a new agent turn is scheduled.
 
         Args:
             agent_id: The ID of the completed background agent.
         """
-        # Only trigger if agent is idle - if running, we set a flag to check
+        # Only trigger if agent is idle - if running, we set a flag to redeliver
         # after the current turn completes (see _check_pending_bus_messages)
         if self._state != TUIState.IDLE:
             logger.debug("Background task %s completed while agent running, will check after turn", agent_id)
             self._pending_bus_check_needed = True
             return
 
-        # Check if there are actually pending bus messages
-        ctx = self.runtime.ctx
-        if not ctx.message_bus.has_pending(ctx.agent_id):
+        if not self._deliver_background_messages():
             logger.debug("Background task %s completed but no pending messages", agent_id)
             return
 
@@ -1348,12 +1346,20 @@ class TUIApp:
                 self._app.invalidate()
             return
 
+    def _deliver_background_messages(self) -> bool:
+        """Redeliver queued background notifications into the current main-agent bus."""
+        monitor = self._get_background_monitor()
+        ctx = self.runtime.ctx
+        delivered = 0
+        if monitor is not None:
+            delivered = monitor.deliver_pending_messages(ctx.message_bus, ctx.agent_id)
+        return delivered > 0 or ctx.message_bus.has_pending(ctx.agent_id)
+
     def _check_pending_bus_messages(self) -> None:
         """Check for pending bus messages and trigger agent turn if needed.
 
-        Called after agent execution completes to handle messages that
-        arrived after the last LLM request (e.g., from background tasks
-        that completed while we were still running).
+        Called after agent execution completes to redeliver messages that
+        arrived while the main agent was still running.
         """
         # Only proceed if flag was set (background task completed during run)
         if not self._pending_bus_check_needed:
@@ -1364,9 +1370,7 @@ class TUIApp:
         if self._state != TUIState.IDLE:
             return
 
-        # Check if there are actually pending bus messages
-        ctx = self.runtime.ctx
-        if not ctx.message_bus.has_pending(ctx.agent_id):
+        if not self._deliver_background_messages():
             return
 
         logger.info("Pending bus messages detected after agent turn, triggering new turn")

@@ -38,12 +38,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from y_agent_environment import BaseResource
+from ya_agent_sdk.context.bus import BusMessage, MessageBus
 
 from yaacli.logging import get_logger
 
 if TYPE_CHECKING:
     from y_agent_environment.shell import Shell
-    from ya_agent_sdk.context.bus import MessageBus
     from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 logger = get_logger(__name__)
@@ -106,6 +106,9 @@ class BackgroundMonitor(BaseResource):
         self._monitored_processes: set[str] = set()
         self._notified_pending: set[str] = set()
 
+        # --- Wake-up message redelivery ---
+        self._pending_messages: list[BusMessage] = []
+
     # =========================================================================
     # Subagent task management
     # =========================================================================
@@ -147,6 +150,36 @@ class BackgroundMonitor(BaseResource):
                 self._completion_callback(agent_id)
             except Exception:
                 logger.exception("Error in completion callback for %s", agent_id)
+
+    def enqueue_message(self, message: BusMessage) -> None:
+        """Queue a background notification for delivery when the TUI can wake the main agent."""
+        self._pending_messages.append(message)
+
+    def deliver_pending_messages(self, bus: MessageBus, agent_id: str) -> int:
+        """Deliver queued background notifications to the message bus.
+
+        The TUI calls this immediately before starting the wake-up turn. This
+        avoids losing messages when the main SDK context exits and clears bus state.
+        """
+        if not self._pending_messages:
+            return 0
+        bus.subscribe(agent_id)
+        delivered = 0
+        remaining: list[BusMessage] = []
+        for message in self._pending_messages:
+            target = message.target
+            if target is None or target == agent_id:
+                bus.send(message)
+                delivered += 1
+            else:
+                remaining.append(message)
+        self._pending_messages = remaining
+        return delivered
+
+    @property
+    def has_pending_messages(self) -> bool:
+        """Whether queued background notifications are waiting for TUI delivery."""
+        return bool(self._pending_messages)
 
     def get_delegate_tool(self) -> BaseTool | None:
         """Get the delegate tool instance from the core toolset.
@@ -305,7 +338,7 @@ class BackgroundMonitor(BaseResource):
                 content += f" ({command})"
             content += ". Use shell_wait(process_id, timeout_seconds=0) to read it."
 
-            self._bus.send(
+            self.enqueue_message(
                 BusMessage(
                     content=content,
                     source="shell-monitor",
@@ -420,7 +453,7 @@ class BackgroundMonitor(BaseResource):
             if command:
                 content += f" ({command})"
 
-            self._bus.send(
+            self.enqueue_message(
                 BusMessage(
                     content=content,
                     source="shell-monitor",
@@ -492,3 +525,4 @@ class BackgroundMonitor(BaseResource):
         self._known_active.clear()
         self._monitored_processes.clear()
         self._notified_pending.clear()
+        self._pending_messages.clear()

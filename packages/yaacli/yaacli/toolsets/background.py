@@ -126,8 +126,10 @@ class SpawnDelegateTool(BaseTool):
                     prompt=prompt,
                     agent_id=agent_id,
                 )
-                # Post result to message bus for the main agent
-                deps.send_message(
+                # Queue result for TUI-managed redelivery. The main SDK context
+                # clears bus state on exit, so direct send can be lost when a
+                # background task completes while the main agent is still running.
+                monitor.enqueue_message(
                     BusMessage(
                         content=result,
                         source=agent_id,
@@ -137,7 +139,7 @@ class SpawnDelegateTool(BaseTool):
                 logger.info("Spawned delegate '%s' (%s) completed", subagent_name, agent_id)
             except Exception as e:
                 logger.warning("Spawned delegate '%s' (%s) failed: %s", subagent_name, agent_id, e)
-                deps.send_message(
+                monitor.enqueue_message(
                     BusMessage(
                         content=f"Spawned delegate '{subagent_name}' (id: {agent_id}) failed: {e}",
                         source=agent_id,

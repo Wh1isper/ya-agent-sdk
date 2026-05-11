@@ -1947,9 +1947,11 @@ class AgentContext(BaseModel):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and record end time."""
         self.end_at = datetime.now(UTC)
-        # Keep the main agent subscribed across turns so background tasks can
-        # deliver results after a run exits. Subagents unsubscribe to free cursors.
-        if self._agent_id != "main":
+        # For main agent: clear message bus on exit
+        # For subagents: unsubscribe to free cursor
+        if self._agent_id == "main":
+            self.message_bus.clear()
+        else:
             self.message_bus.unsubscribe(self._agent_id)
         async with self._enter_lock:
             object.__setattr__(self, "_entered", False)

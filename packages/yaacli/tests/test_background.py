@@ -10,8 +10,9 @@ import pytest
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.context.agent import AgentInfo
-from ya_agent_sdk.context.bus import MessageBus
+from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.toolsets.core.base import BaseTool
+from yaacli.app.tui import TUIApp, TUIState
 from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
 from yaacli.environment import TUIEnvironment
 from yaacli.toolsets.background import SpawnDelegateTool, SteerSubagentTool
@@ -238,13 +239,40 @@ async def test_shell_monitor_detects_completion() -> None:
     # Callback should have been invoked
     assert "pid-1" in callback_calls
 
-    # Bus message should have been sent
+    # Notification should be queued for TUI redelivery.
+    assert monitor.has_pending_messages is True
+    assert monitor.deliver_pending_messages(bus, "main") == 1
     messages = bus.consume("main")
     assert len(messages) >= 1
     shell_msg = [m for m in messages if m.source == "shell-monitor"]
     assert len(shell_msg) == 1
     assert "pid-1" in shell_msg[0].content
     assert "npm run dev" in shell_msg[0].content
+
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_shell_monitor_queues_completion_for_redelivery() -> None:
+    """Shell completion notifications should be queued until the TUI redelivers them."""
+    monitor = BackgroundMonitor()
+    shell = _make_mock_shell({"pid-1": "npm run dev"})
+    bus = MessageBus()
+    monitor.start_shell_monitor(shell, bus, "main", poll_interval=0.05)
+
+    await asyncio.sleep(0.1)
+    shell.active_background_processes = {}
+    await asyncio.sleep(0.15)
+
+    assert bus.has_pending("main") is False
+    assert monitor.has_pending_messages is True
+    assert monitor.deliver_pending_messages(bus, "main") == 1
+    assert bus.has_pending("main") is True
+    messages = bus.consume("main")
+    assert len(messages) == 1
+    assert messages[0].target == "main"
+    assert messages[0].source == "shell-monitor"
+    assert "pid-1" in messages[0].content
 
     await monitor.close()
 
@@ -365,6 +393,7 @@ async def test_shell_monitor_bus_message_target() -> None:
     await asyncio.sleep(0.15)
 
     # Message should target "custom-agent"
+    assert monitor.deliver_pending_messages(bus, "custom-agent") == 1
     messages = bus.consume("custom-agent")
     assert len(messages) >= 1
     assert messages[0].target == "custom-agent"
@@ -491,10 +520,51 @@ async def test_tool_call_launches_background_task() -> None:
     # We don't have a callback set, but the task should complete
     assert not monitor.has_active_tasks
 
-    # Message should be sent to bus
-    mock_deps.send_message.assert_called_once()
-    sent_msg = mock_deps.send_message.call_args[0][0]
-    assert sent_msg.target == "main"
+    # Message should be queued for TUI redelivery.
+    assert mock_deps.send_message.call_count == 0
+    assert monitor.has_pending_messages is True
+
+
+@pytest.mark.asyncio
+async def test_tool_call_queues_result_for_redelivery() -> None:
+    """Background delegate results should be queued until the TUI redelivers them."""
+    monitor = BackgroundMonitor()
+
+    mock_delegate = AsyncMock(spec=BaseTool)
+    mock_delegate.call = AsyncMock(return_value="Subagent result")
+
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = mock_delegate
+    monitor.set_core_toolset(mock_toolset)
+
+    bus = MessageBus()
+    mock_deps = MagicMock()
+    mock_deps.resources = MagicMock()
+    mock_deps.resources.get.return_value = monitor
+    mock_deps.subagent_history = {}
+    mock_deps.agent_id = "main"
+    mock_deps.message_bus = bus
+    mock_deps.send_message.side_effect = bus.send
+
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = mock_deps
+
+    result = await SpawnDelegateTool().call(run_ctx, subagent_name="explorer", prompt="Find stuff")
+
+    assert "Spawned delegate" in result
+    tasks = list(monitor.active_tasks.values())
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert bus.has_pending("main") is False
+    assert monitor.has_pending_messages is True
+    assert monitor.deliver_pending_messages(bus, "main") == 1
+    assert bus.has_pending("main") is True
+    messages = bus.consume("main")
+    assert len(messages) == 1
+    assert messages[0].source.startswith("explorer-bg-")
+    assert messages[0].target == "main"
+    assert messages[0].content == "Subagent result"
 
 
 @pytest.mark.asyncio
@@ -514,6 +584,59 @@ async def test_tool_call_no_delegate() -> None:
     ctx = _make_run_ctx(monitor=monitor)
     result = await tool.call(ctx, subagent_name="explorer", prompt="Find stuff")
     assert "Error" in result
+
+
+@pytest.mark.asyncio
+async def test_tui_redelivers_background_message_after_running_turn_exits() -> None:
+    """TUI should redeliver queued background results after an active main-agent turn exits."""
+    monitor = BackgroundMonitor()
+    bus = MessageBus()
+
+    env = MagicMock()
+    env.resources = MagicMock()
+    env.resources.get.return_value = monitor
+
+    ctx = MagicMock()
+    ctx.agent_id = "main"
+    ctx.message_bus = bus
+
+    runtime = MagicMock()
+    runtime.env = env
+    runtime.ctx = ctx
+
+    config = MagicMock()
+    config.general.max_requests = 10
+    config.display.max_output_lines = 500
+    config.display.mouse_support = True
+    config_manager = MagicMock()
+
+    app = TUIApp(config=config, config_manager=config_manager)
+    app._runtime = runtime
+    app._state = TUIState.RUNNING
+    app._pending_bus_check_needed = False
+    app._append_system_output = MagicMock()
+
+    async def noop_run_agent(user_input: str) -> None:
+        return None
+
+    app._run_agent = noop_run_agent  # type: ignore[method-assign]
+
+    monitor.enqueue_message(BusMessage(content="Subagent result", source="executor-bg-123", target="main"))
+    app._on_background_task_complete("executor-bg-123")
+
+    assert app._pending_bus_check_needed is True
+    assert bus.has_pending("main") is False
+
+    app._state = TUIState.IDLE
+    app._check_pending_bus_messages()
+
+    assert bus.has_pending("main") is True
+    messages = bus.consume("main")
+    assert len(messages) == 1
+    assert messages[0].content == "Subagent result"
+    assert app._state == TUIState.RUNNING
+    assert app._agent_task is not None
+    await app._agent_task
 
 
 # =============================================================================
@@ -925,6 +1048,7 @@ async def test_output_monitoring_notifies_on_new_output() -> None:
     # Wait for poll cycle
     await asyncio.sleep(0.1)
 
+    assert monitor.deliver_pending_messages(bus, "main") >= 1
     messages = bus.consume("main")
     # Should have at least one output notification
     output_msgs = [m for m in messages if "new output" in m.content]
@@ -952,6 +1076,7 @@ async def test_output_monitoring_no_duplicate_notifications() -> None:
     # Wait for multiple poll cycles
     await asyncio.sleep(0.2)
 
+    assert monitor.deliver_pending_messages(bus, "main") >= 1
     messages = bus.consume("main")
     output_msgs = [m for m in messages if "new output" in m.content]
     # Only one notification despite multiple polls (output not drained)
@@ -978,6 +1103,7 @@ async def test_output_monitoring_re_notifies_after_drain() -> None:
 
     # Wait for first notification
     await asyncio.sleep(0.1)
+    monitor.deliver_pending_messages(bus, "main")
     bus.consume("main")  # drain bus
 
     # Simulate drain: clear the output buffer (as shell_wait would)
@@ -989,6 +1115,7 @@ async def test_output_monitoring_re_notifies_after_drain() -> None:
     shell._output_buffers["pid-1"].stdout = deque(["new output"])
     await asyncio.sleep(0.1)
 
+    assert monitor.deliver_pending_messages(bus, "main") >= 1
     messages = bus.consume("main")
     output_msgs = [m for m in messages if "new output" in m.content]
     assert len(output_msgs) >= 1
@@ -1012,6 +1139,7 @@ async def test_output_monitoring_stderr_triggers_notification() -> None:
 
     await asyncio.sleep(0.1)
 
+    assert monitor.deliver_pending_messages(bus, "main") >= 1
     messages = bus.consume("main")
     output_msgs = [m for m in messages if "new output" in m.content]
     assert len(output_msgs) >= 1
