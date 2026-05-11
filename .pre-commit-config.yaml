@@ -9,9 +9,10 @@ repos:
       - id: check-json
         exclude: ^.devcontainer/devcontainer.json
       - id: pretty-format-json
-        exclude: ^.devcontainer/devcontainer.json
+        exclude: ^(.devcontainer/devcontainer\.json|apps/ya-desktop/src-tauri/gen/schemas/.*\.json)$
         args: [--autofix]
       - id: end-of-file-fixer
+        exclude: ^apps/ya-desktop/src-tauri/gen/schemas/.*\.json$
       - id: trailing-whitespace
   - repo: https://github.com/executablebooks/mdformat
     rev: 1.0.0
