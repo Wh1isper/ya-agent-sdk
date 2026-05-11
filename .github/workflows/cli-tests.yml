@@ -1,4 +1,4 @@
-name: CLI Tests
+name: YAACLI Tests
 
 on:
   push:
@@ -31,6 +31,7 @@ on:
 
 jobs:
   cli-tests:
+    name: YAACLI Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:

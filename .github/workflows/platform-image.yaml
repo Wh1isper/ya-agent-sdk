@@ -1,4 +1,4 @@
-name: Platform Image
+name: YA Agent Platform Image
 
 on:
   push:
@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   validate:
+    name: Validate YA Agent Platform Image
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +37,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ya-agent-platform
 
   publish-dev:
+    name: Publish YA Agent Platform Dev Image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -79,6 +81,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ya-agent-platform
 
   publish-release:
+    name: Publish YA Agent Platform Release Image
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:

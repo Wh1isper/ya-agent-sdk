@@ -1,4 +1,4 @@
-name: ya-claw-workspace-image
+name: YA Claw Workspace Image
 
 on:
   schedule:
@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   build-and-publish:
+    name: Build and Publish Workspace Image
     runs-on: ubuntu-latest
     steps:
       - name: Check out

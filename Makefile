@@ -102,6 +102,11 @@ desktop-build: ## Run TypeScript and Vite build checks for the YA Desktop app
 	@echo "Running ya-desktop build"
 	@corepack pnpm --dir apps/ya-desktop build
 
+.PHONY: desktop-test
+desktop-test: ## Run YA Desktop frontend tests
+	@echo "Running ya-desktop tests"
+	@corepack pnpm --dir apps/ya-desktop test
+
 .PHONY: desktop-rust-fmt
 desktop-rust-fmt: ## Check YA Desktop Rust formatting
 	@echo "Checking ya-desktop Rust formatting"
@@ -157,7 +162,7 @@ check: ## Run code quality tools for all active packages
 	@echo "Checking lock file consistency with pyproject.toml"
 	@uv lock --locked
 	@echo "Running pre-commit"
-	@uv run pre-commit run -a
+	@SKIP=cargo-fmt-desktop,cargo-clippy-desktop uv run pre-commit run -a
 	@echo "Checking bundled skills sync"
 	@./scripts/check-skills-sync.sh
 	@echo "Checking release skill zip build"
@@ -186,9 +191,11 @@ check: ## Run code quality tools for all active packages
 	@(cd packages/ya-claw && uvx deptry ya_claw)
 
 .PHONY: test
-test: ## Run SDK, CLI, and YA Claw tests
+test: ## Run SDK, CLI, YA Claw, and YA Desktop tests
 	@echo "Running pytest for workspace packages"
 	@uv run python -m pytest packages/ya-agent-sdk/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
+	@echo "Running YA Desktop tests"
+	@$(MAKE) desktop-test
 
 .PHONY: test-sdk
 test-sdk: ## Run SDK tests

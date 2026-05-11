@@ -9,7 +9,7 @@ on:
 
 jobs:
   quality:
-    name: Quality checks
+    name: Quality Checks
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -50,8 +50,32 @@ jobs:
       - name: Run checks
         run: make check
 
+  desktop-tests:
+    name: YA Desktop Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install web dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run YA Desktop tests
+        run: make desktop-test
+
   tests-and-type-check:
-    name: Tests and type checks (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Tests and Type Checks (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
