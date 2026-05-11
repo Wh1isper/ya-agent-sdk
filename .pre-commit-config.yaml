@@ -29,6 +29,20 @@ repos:
         language: node
         additional_dependencies: [prettier@3.6.2]
         files: ^apps/ya-claw-web/.*\.(ts|tsx|css|html|md)$
+      - id: cargo-fmt-desktop
+        name: cargo fmt ya-desktop
+        entry: bash -c 'cd apps/ya-desktop/src-tauri && cargo fmt --all -- --check'
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^apps/ya-desktop/src-tauri/.*\.rs$
+      - id: cargo-clippy-desktop
+        name: cargo clippy ya-desktop
+        entry: bash -c 'cd apps/ya-desktop/src-tauri && cargo clippy --locked --all-targets --all-features -- -D warnings'
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^apps/ya-desktop/src-tauri/.*\.(rs|toml)$
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: "v0.15.12"
     hooks:

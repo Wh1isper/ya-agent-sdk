@@ -1,6 +1,6 @@
 # YA Desktop Spec
 
-YA Desktop is a desktop entry point for Claw-based agent runtimes. It gives users a Raycast-style quick launcher, a full chat window, tray presence, local workspace access, multi-connection runtime selection, and future voice interactions.
+YA Desktop is a native agent workspace for Claw-based runtimes. It gives users an OS-native command home, conversation-first work management, a kanban board, workspace folders, approval inbox, tray presence, local workspace access, multi-connection runtime selection, and future voice interactions.
 
 The same desktop client can use:
 
@@ -11,13 +11,17 @@ The same desktop client can use:
 
 ## Design Direction
 
-- Desktop is the interaction shell: launcher, chat UI, tray, hotkeys, clipboard, screenshots, voice, notifications, and connection management.
-- Claw is the runtime: sessions, runs, profiles, workspace providers, memory, event replay, shell execution, bridges, and durable storage.
+- Desktop is an independent product surface optimized for daily agent work, OS context, notifications, and local runtime control.
+- Claw is the runtime: sessions, runs, profiles, workspace providers, memory, event replay, shell execution, bridges, schedules, and durable storage.
 - `WorkspaceProvider` remains the core execution boundary for local, Docker, cloud, and remote RPC environments.
 - A single Claw API client powers local, remote, and cloud connections.
 - Desktop keeps multiple saved connection profiles and manages the local sidecar lifecycle.
 - Local execution uses controlled file operations plus a sandboxed shell by default.
-- Desktop should own the richest HITL interaction surface through Claw notifications and approval response APIs.
+- Desktop owns the richest HITL interaction surface through native notifications, approval cards, command previews, and Claw approval response APIs.
+- Chats are the primary work objects in Desktop; Claw sessions and runs remain the runtime backing.
+- Spaces represent workspace folders or cloud workspaces plus runtime connection, trust, and execution location.
+- Board is the kanban view over chats, grouped by status, priority, or workspace.
+- Advanced runtime management remains available under Settings for profiles, schedules, bridges, heartbeat, logs, diagnostics, and connection internals.
 
 ## Section Map
 
@@ -31,11 +35,16 @@ The same desktop client can use:
 | 05      | [05-desktop-app-structure.md](05-desktop-app-structure.md)                       | Tauri app structure, system integrations, and implementation phases          |
 | 06      | [06-sandboxed-workspace-provider.md](06-sandboxed-workspace-provider.md)         | local workspace provider with sandboxed shell for Linux and macOS            |
 | 07      | [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md) | SSE notifications, session state transfer, and desktop HITL                  |
+| 08      | [08-ui-technology-decision.md](08-ui-technology-decision.md)                     | desktop UI technology decision                                               |
 
 ## Near-Term Decisions
 
-- Use Tauri + React for YA Desktop.
+- Use Tauri 2 + TypeScript UI + Rust Core for YA Desktop.
 - Use local `ya-clawd` sidecar for default runtime.
+- Treat Desktop as a Native Agent Workspace with Home, Chats, Board, Spaces, Inbox, and Settings surfaces.
+- Manage user work by conversations first; Claw sessions and runs are runtime backing objects.
+- Use Board as the kanban view over conversations.
+- Use Spaces for workspace folders, cloud workspaces, runtime location, trust, and sidecar status.
 - Use Claw HTTP/SSE APIs as the desktop MVP runtime contract, with WebSocket reserved for future RPC workspace transport.
 - Add connection registry from the beginning.
 - Make remote Claw and cloud Claw first-class connection types.

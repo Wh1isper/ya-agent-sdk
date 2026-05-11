@@ -1,0 +1,22 @@
+[package]
+name = "ya-desktop"
+version = "0.0.0"
+description = "YA Desktop"
+authors = ["wh1isper"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/wh1isper/ya-mono"
+
+[lib]
+name = "ya_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.1", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2.3.1"
+tauri-plugin-opener = "2.5.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

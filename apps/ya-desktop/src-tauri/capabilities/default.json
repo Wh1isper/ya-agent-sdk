@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "description": "Default desktop window permissions",
+  "identifier": "default",
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "global-shortcut:default"
+  ],
+  "windows": [
+    "main"
+  ]
+}

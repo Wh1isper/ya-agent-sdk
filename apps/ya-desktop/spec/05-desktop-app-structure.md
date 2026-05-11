@@ -15,36 +15,63 @@ apps/ya-desktop/
   src/
     app/
       App.tsx
+      routes.ts
+      stores.ts
     claw/
       ClawClient.ts
       ClawRealtimeClient.ts
       ConnectionRegistry.ts
-      LocalDaemonManager.ts
-      RemoteConnectionManager.ts
-    hitl/
-      ApprovalCenter.tsx
-      ApprovalCard.tsx
-      approvalStore.ts
-    launcher/
-      QuickLauncher.tsx
-    chat/
-      ChatWindow.tsx
+      types.ts
+    home/
+      HomePage.tsx
+      CommandBox.tsx
+      RecentChats.tsx
+      CurrentSpaceCard.tsx
+    chats/
+      ChatsPage.tsx
+      ChatList.tsx
+      ChatSurface.tsx
+      MessageStream.tsx
       RunTimeline.tsx
-      ShellStatusCard.tsx
+      ToolTimeline.tsx
+      ShellOutput.tsx
+      DiffViewer.tsx
+      ArtifactCards.tsx
+    board/
+      BoardPage.tsx
+      BoardColumn.tsx
+      BoardCard.tsx
+    spaces/
+      SpacesPage.tsx
+      SpaceCard.tsx
+      SpaceSwitcher.tsx
+      SpaceTrustCard.tsx
+      RuntimeLocationCard.tsx
+    inbox/
+      InboxPage.tsx
+      ApprovalCard.tsx
+      AlertCard.tsx
+      inboxStore.ts
     settings/
-      ConnectionsSettings.tsx
-      LocalDaemonSettings.tsx
-      ProfilesSettings.tsx
+      SettingsPage.tsx
+      DesktopSettings.tsx
+      HotkeySettings.tsx
+      VoiceSettings.tsx
+      AdvancedRuntime.tsx
+      DiagnosticsPanel.tsx
   src-tauri/
     tauri.conf.json
     Cargo.toml
     src/
       main.rs
+      lib.rs
       daemon.rs
       keychain.rs
       hotkey.rs
       tray.rs
       system_context.rs
+      notifications.rs
+      diagnostics.rs
   spec/
     README.md
     00-overview.md
@@ -55,6 +82,7 @@ apps/ya-desktop/
     05-desktop-app-structure.md
     06-sandboxed-workspace-provider.md
     07-websocket-notifications-and-hitl.md
+    08-ui-technology-decision.md
 ```
 
 ## Frontend Modules
@@ -66,11 +94,11 @@ Owns root routing, layout, and shared providers.
 Responsibilities:
 
 - active connection provider
-- active workspace provider
+- active space provider
 - theme and settings provider
 - global run notification state
 - pending interaction state and routing
-- window mode routing between launcher and full chat
+- top-level navigation between Home, Chats, Board, Spaces, Inbox, and Settings
 
 ### `claw/`
 
@@ -79,69 +107,98 @@ Owns API clients and connection orchestration.
 Responsibilities:
 
 - `ClawClient` HTTP client and run-stream SSE client
-- `ClawRealtimeClient` global SSE client for notifications, reconnect replay, and session read-model updates
-- connection registry
+- `ClawRealtimeClient` global SSE client for notifications, reconnect replay, and chat read-model updates
+- connection registry integration
 - local daemon lifecycle state
 - remote connection health checks
 - cloud auth context
 - capability caching
 - per-connection notification cursor storage
 
-### `hitl/`
+### `home/`
 
-Owns human-in-the-loop approval surfaces.
-
-Responsibilities:
-
-- pending approval queue
-- tool approval cards
-- command, diff, and workspace context previews
-- approve, reject, and user-input response actions
-- tray notification click routing
-- audit metadata display
-
-### `launcher/`
-
-Owns quick prompt UI.
+Owns the command-first default surface.
 
 Responsibilities:
 
-- compact prompt
+- central command input for starting conversations
 - selected text and clipboard preview
-- active workspace selection
-- command suggestions
-- create or continue session
-- submit normal run `input_parts`
-- show compact approval prompts when a pending interaction targets the active connection
+- screenshot and active app context preview
+- current space summary
+- recent chats and active runs
+- pending approval summary
+- shortcuts into Chats, Board, Spaces, Inbox, and diagnostics
 
-### `chat/`
+### `chats/`
 
-Owns full chat and run inspection.
+Owns conversation-first work management.
 
 Responsibilities:
 
-- session list
-- run stream display
-- AGUI event replay
+- chat list grouped by space and status
+- selected chat detail surface
+- message stream and AGUI replay
+- run timeline and run controls
 - tool-call timeline
 - shell output viewer
 - file diff viewer
 - artifact cards
-- shell status cards
-- HITL approval cards inline with run context
+- HITL approval cards inline with chat context
 
-### `settings/`
+### `board/`
 
-Owns desktop and runtime settings.
+Owns kanban-style organization over chats.
 
 Responsibilities:
 
-- connection settings
-- local daemon settings
+- columns for Active, Waiting, Done, Failed, Scheduled, or custom views
+- board cards backed by chat/session/run state
+- filters by space, profile, status, trigger type, and runtime location
+- card metadata for latest output summary, approvals, artifacts, and active run
+
+### `spaces/`
+
+Owns workspace folders and runtime locations.
+
+Responsibilities:
+
+- local workspace folder cards
+- remote and cloud workspace cards
+- active connection and runtime location
+- workspace trust level
+- default profile and model
+- local sidecar status, logs, and diagnostics shortcuts
+- file browsing entry points and memory summary
+
+### `inbox/`
+
+Owns human-in-the-loop and alert surfaces.
+
+Responsibilities:
+
+- pending approval queue
+- command approval cards
+- file diff approval cards
+- workspace trust approval cards
+- failed background run alerts
+- bridge and schedule event alerts
+- approve, reject, and user-input response actions
+- tray notification click routing
+- audit metadata display
+
+### `settings/`
+
+Owns desktop preferences and advanced runtime controls.
+
+Responsibilities:
+
+- desktop appearance and behavior
 - hotkey settings
-- profile and model settings
+- notification preferences
+- voice preferences
 - keychain-backed token setup
-- log and diagnostics export
+- autostart and always-on behavior
+- advanced runtime: profiles, schedules, bridges, heartbeat, runtime instances, storage, logs, and diagnostics
 
 ## Tauri Commands
 
@@ -160,7 +217,9 @@ unregister_global_hotkey()
 capture_active_window_context()
 read_clipboard()
 write_clipboard()
+capture_screenshot()
 show_tray_notification()
+export_diagnostics()
 ```
 
 ## Sidecar Manager
@@ -182,13 +241,13 @@ Responsibilities:
 
 ## System Context Capture
 
-`system_context.rs` should collect context for quick launcher input.
+`system_context.rs` should collect context for Home command input and global hotkey input.
 
 Initial context fields:
 
 ```ts
 type DesktopContextDraft = {
-  source: "global_hotkey" | "chat_window" | "tray_action";
+  source: "global_hotkey" | "home" | "chat" | "tray_action";
   activeApp?: {
     name?: string;
     windowTitle?: string;
@@ -204,34 +263,37 @@ type DesktopContextDraft = {
     mime: string;
     dataRef: string;
   }>;
-  workspaceHint?: string;
+  spaceHint?: string;
 };
 ```
 
 ## Implementation Phases
 
-### Phase 1: Local Desktop MVP
+### Phase 1: Conversation-First Desktop Shell
 
-1. Add `ya-clawd` CLI entrypoint to `packages/ya-claw`.
-2. Add `GET /health` to Claw.
-3. Build a Tauri dev app that starts local Claw through `uv run`.
-4. Add `ClawClient` and stream a session run from the desktop UI.
-5. Add quick launcher with global hotkey.
-6. Add tray status and local daemon lifecycle controls.
-7. Add local workspace selection.
-8. Add sandboxed shell status and setup guidance for local workspaces.
-9. Connect to global notifications through SSE and update the session read model.
+01. Add `ya-clawd` CLI entrypoint to `packages/ya-claw`.
+02. Add `GET /health` to Claw.
+03. Build a Tauri dev app that starts local Claw through `uv run`.
+04. Add connection registry and local sidecar status.
+05. Add Home with command input and recent chat placeholders.
+06. Add Chats with conversation list and selected chat detail shell.
+07. Add Board with kanban columns over chats.
+08. Add Spaces with workspace folder cards, runtime location, trust, and sidecar status.
+09. Add Inbox with approval and alert placeholders.
+10. Add Settings with preferences and advanced runtime entry.
+11. Add tray status and local daemon lifecycle controls.
+12. Add sandboxed shell status and setup guidance for local spaces.
+13. Connect to global notifications through SSE and update chat/board/inbox read models.
 
 ### Phase 2: Multi-Connection Desktop
 
-1. Add connection registry.
-2. Add remote Claw URL + token setup.
-3. Add active connection switcher.
-4. Add `GET /api/v1/capabilities` to Claw.
-5. Gate UI features by capabilities.
-6. Add OS keychain storage for tokens.
-7. Add remote session and workspace browsing.
-8. Add reconnect replay and replay-gap refresh handling for global SSE notifications.
+1. Add remote Claw URL + token setup.
+2. Add active connection switcher through Spaces.
+3. Add `GET /api/v1/capabilities` to Claw.
+4. Gate UI features by capabilities.
+5. Add OS keychain storage for tokens.
+6. Add remote session and workspace browsing.
+7. Add reconnect replay and replay-gap refresh handling for global SSE notifications.
 
 ### Phase 3: Packaged Local Sidecar
 
@@ -264,5 +326,5 @@ type DesktopContextDraft = {
 1. Add pending interaction storage and notification handling to Claw.
 2. Add `session.updated` notifications with `status_reason="hitl_pending"` and `interaction.requested` notifications.
 3. Add HTTP response paths for approvals.
-4. Add Desktop approval center, approval cards, and native notifications.
+4. Add Desktop Inbox approval cards and native notifications.
 5. Record decision audit metadata in Claw and Desktop diagnostics.

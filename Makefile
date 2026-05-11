@@ -87,6 +87,41 @@ web-build: ## Run TypeScript and Vite build checks for the YA Claw web app
 	@echo "Running ya-claw-web build"
 	@corepack pnpm --dir apps/ya-claw-web build
 
+.PHONY: desktop-dev
+desktop-dev: ## Run the YA Desktop Tauri app locally
+	@echo "Running ya-desktop"
+	@corepack pnpm --dir apps/ya-desktop tauri:dev
+
+.PHONY: desktop-lint
+desktop-lint: ## Run ESLint for the YA Desktop app
+	@echo "Running ya-desktop lint"
+	@corepack pnpm --dir apps/ya-desktop exec eslint .
+
+.PHONY: desktop-build
+desktop-build: ## Run TypeScript and Vite build checks for the YA Desktop app
+	@echo "Running ya-desktop build"
+	@corepack pnpm --dir apps/ya-desktop build
+
+.PHONY: desktop-rust-fmt
+desktop-rust-fmt: ## Check YA Desktop Rust formatting
+	@echo "Checking ya-desktop Rust formatting"
+	@(cd apps/ya-desktop/src-tauri && cargo fmt --all -- --check)
+
+.PHONY: desktop-rust-check
+desktop-rust-check: ## Run cargo check for the YA Desktop Tauri app
+	@echo "Running ya-desktop Rust check"
+	@(cd apps/ya-desktop/src-tauri && cargo check --locked --all-targets)
+
+.PHONY: desktop-rust-clippy
+desktop-rust-clippy: ## Run clippy for the YA Desktop Tauri app
+	@echo "Running ya-desktop Rust clippy"
+	@(cd apps/ya-desktop/src-tauri && cargo clippy --locked --all-targets --all-features -- -D warnings)
+
+.PHONY: desktop-tauri-build
+desktop-tauri-build: ## Build the YA Desktop Tauri bundle
+	@echo "Building ya-desktop Tauri bundle"
+	@corepack pnpm --dir apps/ya-desktop tauri:build
+
 .PHONY: docker-build-claw
 docker-build-claw: ## Build the YA Claw Docker image
 	@echo "Building ya-claw Docker image"
@@ -131,6 +166,16 @@ check: ## Run code quality tools for all active packages
 	@$(MAKE) web-lint
 	@echo "Running web build"
 	@$(MAKE) web-build
+	@echo "Running desktop lint"
+	@$(MAKE) desktop-lint
+	@echo "Running desktop build"
+	@$(MAKE) desktop-build
+	@echo "Checking desktop Rust formatting"
+	@$(MAKE) desktop-rust-fmt
+	@echo "Running desktop Rust check"
+	@$(MAKE) desktop-rust-check
+	@echo "Running desktop Rust clippy"
+	@$(MAKE) desktop-rust-clippy
 	@echo "Running pyright"
 	@uv run python -m pyright
 	@echo "Running deptry for ya-agent-sdk"

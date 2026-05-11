@@ -1,0 +1,15 @@
+{
+  "default": {
+    "description": "Default desktop window permissions",
+    "identifier": "default",
+    "local": true,
+    "permissions": [
+      "core:default",
+      "opener:default",
+      "global-shortcut:default"
+    ],
+    "windows": [
+      "main"
+    ]
+  }
+}
