@@ -105,19 +105,50 @@ class ExecutionSupervisor:
 
     async def shutdown(self) -> None:
         self._accepting_submissions = False
-        while True:
-            active_tasks = {
-                run_id: task for run_id, task in self._runtime_state.background_tasks.items() if not task.done()
-            }
-            if not active_tasks:
-                logger.info("Execution supervisor stopped")
-                return
-            logger.info(
-                "Waiting for active run tasks before shutdown count={} run_ids={}",
-                len(active_tasks),
-                sorted(active_tasks),
-            )
-            await asyncio.gather(*active_tasks.values(), return_exceptions=True)
+        active_tasks = self._active_background_tasks()
+        if not active_tasks:
+            logger.info("Execution supervisor stopped")
+            return
+
+        logger.info(
+            "Waiting for active run tasks before shutdown count={} run_ids={}",
+            len(active_tasks),
+            sorted(active_tasks),
+        )
+        timeout_seconds = self._settings.shutdown_timeout_seconds
+        try:
+            if timeout_seconds is None:
+                await asyncio.gather(*active_tasks.values(), return_exceptions=True)
+            else:
+                done, pending = await asyncio.wait(set(active_tasks.values()), timeout=timeout_seconds)
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+                if pending:
+                    stale_tasks = self._active_background_tasks()
+                    logger.warning(
+                        "Cancelling active run tasks after shutdown timeout timeout_seconds={} count={} run_ids={}",
+                        timeout_seconds,
+                        len(stale_tasks),
+                        sorted(stale_tasks),
+                    )
+                    for task in pending:
+                        task.cancel()
+                    cancelled_done, still_pending = await asyncio.wait(pending, timeout=1)
+                    if cancelled_done:
+                        await asyncio.gather(*cancelled_done, return_exceptions=True)
+                    if still_pending:
+                        logger.warning(
+                            "Run tasks remained pending after cancellation count={} task_names={}",
+                            len(still_pending),
+                            sorted(task.get_name() for task in still_pending),
+                        )
+        finally:
+            for run_id in list(self._runtime_state.background_tasks):
+                self._runtime_state.clear_background_task(run_id)
+            logger.info("Execution supervisor stopped")
+
+    def _active_background_tasks(self) -> dict[str, asyncio.Task[None]]:
+        return {run_id: task for run_id, task in self._runtime_state.background_tasks.items() if not task.done()}
 
     async def recover_queued_runs(self) -> list[str]:
         async with self._session_factory() as db_session:

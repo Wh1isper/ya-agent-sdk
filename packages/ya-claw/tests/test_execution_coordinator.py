@@ -337,6 +337,41 @@ async def test_execution_supervisor_shutdown_waits_for_active_tasks(
     assert task.done() is True
 
 
+async def test_execution_supervisor_shutdown_cancels_tasks_after_timeout(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    settings.shutdown_timeout_seconds = 1
+    supervisor = ExecutionSupervisor(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=StubRuntimeBuilder(),
+    )
+    cancelled = False
+
+    async def hanging_run() -> None:
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    task = asyncio.create_task(hanging_run())
+    runtime_state.register_background_task("run-hanging", task)
+
+    await supervisor.shutdown()
+
+    assert cancelled is True
+    assert task.cancelled() is True
+    assert runtime_state.get_background_task("run-hanging") is None
+
+
 async def test_execution_supervisor_claims_queued_run(
     db_session: AsyncSession,
     db_engine: AsyncEngine,

@@ -193,7 +193,7 @@ class ClawSettings(BaseSettings):
     session_prune_heartbeat_older_than_days: int = 7
     session_prune_fire_records_older_than_days: int = 0
     session_prune_orphans_enabled: bool = True
-    shutdown_timeout_seconds: PositiveInt | None = None
+    shutdown_timeout_seconds: PositiveInt | None = 30
 
     auto_migrate: bool = True
 

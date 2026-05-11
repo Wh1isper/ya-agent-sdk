@@ -106,7 +106,7 @@ def test_serve_skips_auto_migrate_when_disabled(monkeypatch, tmp_path) -> None:
                 "port": 9042,
                 "reload": False,
                 "log_level": "info",
-                "timeout_graceful_shutdown": None,
+                "timeout_graceful_shutdown": 30,
             },
         )
     ]
