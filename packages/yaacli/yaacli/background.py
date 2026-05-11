@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from y_agent_environment import BaseResource
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
+from ya_agent_sdk.usage import UsageSnapshot
 
 from yaacli.logging import get_logger
 
@@ -106,8 +107,9 @@ class BackgroundMonitor(BaseResource):
         self._monitored_processes: set[str] = set()
         self._notified_pending: set[str] = set()
 
-        # --- Wake-up message redelivery ---
+        # --- Wake-up redelivery ---
         self._pending_messages: list[BusMessage] = []
+        self._pending_usage_snapshots: list[UsageSnapshot] = []
 
     # =========================================================================
     # Subagent task management
@@ -176,10 +178,25 @@ class BackgroundMonitor(BaseResource):
         self._pending_messages = remaining
         return delivered
 
+    def enqueue_usage_snapshot(self, snapshot: UsageSnapshot) -> None:
+        """Queue a usage snapshot for delivery when the TUI wakes the main agent."""
+        self._pending_usage_snapshots.append(snapshot)
+
+    def drain_usage_snapshots(self) -> list[UsageSnapshot]:
+        """Return and clear queued usage snapshots."""
+        snapshots = list(self._pending_usage_snapshots)
+        self._pending_usage_snapshots.clear()
+        return snapshots
+
     @property
     def has_pending_messages(self) -> bool:
         """Whether queued background notifications are waiting for TUI delivery."""
         return bool(self._pending_messages)
+
+    @property
+    def has_pending_usage_snapshots(self) -> bool:
+        """Whether queued usage snapshots are waiting for TUI delivery."""
+        return bool(self._pending_usage_snapshots)
 
     def get_delegate_tool(self) -> BaseTool | None:
         """Get the delegate tool instance from the core toolset.
@@ -526,3 +543,4 @@ class BackgroundMonitor(BaseResource):
         self._monitored_processes.clear()
         self._notified_pending.clear()
         self._pending_messages.clear()
+        self._pending_usage_snapshots.clear()

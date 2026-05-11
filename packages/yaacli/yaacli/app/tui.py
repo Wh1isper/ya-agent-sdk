@@ -1352,6 +1352,9 @@ class TUIApp:
         ctx = self.runtime.ctx
         delivered = 0
         if monitor is not None:
+            for snapshot in monitor.drain_usage_snapshots():
+                self._session_usage.set_run_snapshot(snapshot)
+                self._session_usage.commit_run_snapshot(snapshot.run_id)
             delivered = monitor.deliver_pending_messages(ctx.message_bus, ctx.agent_id)
         return delivered > 0 or ctx.message_bus.has_pending(ctx.agent_id)
 

@@ -44,8 +44,10 @@ class SessionUsage:
 
     agent_usages: dict[str, RunUsage] = field(default_factory=dict)
     model_usages: dict[str, RunUsage] = field(default_factory=dict)
-    _run_snapshot_agent_keys: set[str] = field(default_factory=set)
-    _run_snapshot_model_keys: set[str] = field(default_factory=set)
+    _manual_agent_usages: dict[str, RunUsage] = field(default_factory=dict)
+    _manual_model_usages: dict[str, RunUsage] = field(default_factory=dict)
+    _run_snapshots: dict[str, UsageSnapshot] = field(default_factory=dict)
+    _uncommitted_run_ids: set[str] = field(default_factory=set)
 
     def add(self, agent: str, model_id: str, usage: RunUsage) -> None:
         """Add usage for a specific agent and model.
@@ -56,53 +58,64 @@ class SessionUsage:
             usage: The RunUsage to accumulate.
         """
         # Accumulate by agent
-        if agent not in self.agent_usages:
-            self.agent_usages[agent] = RunUsage()
-        self.agent_usages[agent].incr(usage)
+        if agent not in self._manual_agent_usages:
+            self._manual_agent_usages[agent] = RunUsage()
+        self._manual_agent_usages[agent].incr(usage)
 
         # Accumulate by model
-        if model_id not in self.model_usages:
-            self.model_usages[model_id] = RunUsage()
-        self.model_usages[model_id].incr(usage)
+        if model_id not in self._manual_model_usages:
+            self._manual_model_usages[model_id] = RunUsage()
+        self._manual_model_usages[model_id].incr(usage)
+        self._rebuild_totals()
+
+    def _rebuild_totals(self) -> None:
+        """Rebuild public totals from manual fallback usage and per-run snapshots."""
+        self.agent_usages = {agent: RunUsage() + usage for agent, usage in self._manual_agent_usages.items()}
+        self.model_usages = {model_id: RunUsage() + usage for model_id, usage in self._manual_model_usages.items()}
+
+        for snapshot in self._run_snapshots.values():
+            for agent, entry in snapshot.agent_usages.items():
+                if agent not in self.agent_usages:
+                    self.agent_usages[agent] = RunUsage()
+                self.agent_usages[agent].incr(entry.usage)
+            for model_id, usage in snapshot.model_usages.items():
+                if model_id not in self.model_usages:
+                    self.model_usages[model_id] = RunUsage()
+                self.model_usages[model_id].incr(usage)
 
     def set_run_snapshot(self, snapshot: UsageSnapshot) -> None:
-        """Replace the current run usage with a realtime SDK snapshot."""
-        for agent in self._run_snapshot_agent_keys:
-            self.agent_usages.pop(agent, None)
-        for model_id in self._run_snapshot_model_keys:
-            self.model_usages.pop(model_id, None)
-
-        self._run_snapshot_agent_keys = set(snapshot.agent_usages)
-        self._run_snapshot_model_keys = set(snapshot.model_usages)
-
-        for agent, entry in snapshot.agent_usages.items():
-            self.agent_usages[agent] = RunUsage() + entry.usage
-        for model_id, usage in snapshot.model_usages.items():
-            self.model_usages[model_id] = RunUsage() + usage
+        """Replace usage for one run with a realtime SDK snapshot."""
+        self._run_snapshots[snapshot.run_id] = snapshot
+        self._uncommitted_run_ids.add(snapshot.run_id)
+        self._rebuild_totals()
 
     @property
     def has_run_snapshot(self) -> bool:
         """Whether current session totals include an uncommitted run snapshot."""
-        return bool(self._run_snapshot_agent_keys or self._run_snapshot_model_keys)
+        return bool(self._uncommitted_run_ids)
 
-    def commit_run_snapshot(self) -> None:
-        """Mark current realtime snapshot as committed session usage."""
-        self._run_snapshot_agent_keys.clear()
-        self._run_snapshot_model_keys.clear()
+    def commit_run_snapshot(self, run_id: str | None = None) -> None:
+        """Mark realtime snapshot usage as committed session usage."""
+        if run_id is None:
+            self._uncommitted_run_ids.clear()
+        else:
+            self._uncommitted_run_ids.discard(run_id)
 
     def clear_run_snapshot(self) -> None:
-        """Remove the current realtime run snapshot from session totals."""
-        for agent in self._run_snapshot_agent_keys:
-            self.agent_usages.pop(agent, None)
-        for model_id in self._run_snapshot_model_keys:
-            self.model_usages.pop(model_id, None)
-        self.commit_run_snapshot()
+        """Remove uncommitted realtime run snapshots from session totals."""
+        for run_id in list(self._uncommitted_run_ids):
+            self._run_snapshots.pop(run_id, None)
+        self._uncommitted_run_ids.clear()
+        self._rebuild_totals()
 
     def clear(self) -> None:
         """Clear all accumulated usage."""
         self.agent_usages.clear()
         self.model_usages.clear()
-        self.commit_run_snapshot()
+        self._manual_agent_usages.clear()
+        self._manual_model_usages.clear()
+        self._run_snapshots.clear()
+        self._uncommitted_run_ids.clear()
 
     @property
     def total_input_tokens(self) -> int:

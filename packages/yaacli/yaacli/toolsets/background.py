@@ -126,6 +126,7 @@ class SpawnDelegateTool(BaseTool):
                     prompt=prompt,
                     agent_id=agent_id,
                 )
+                monitor.enqueue_usage_snapshot(deps.build_usage_snapshot())
                 # Queue result for TUI-managed redelivery. The main SDK context
                 # clears bus state on exit, so direct send can be lost when a
                 # background task completes while the main agent is still running.
