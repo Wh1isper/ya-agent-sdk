@@ -17,6 +17,7 @@ from ya_agent_sdk.environment.local import (
 # Sandbox environment is optional (requires docker package)
 try:
     from ya_agent_sdk.environment.sandbox import (  # noqa: F401
+        DeferredDockerShell,
         DockerShell,
         SandboxEnvironment,
     )
@@ -39,4 +40,4 @@ __all__ = [
 
 # Add Sandbox exports if available
 if _DOCKER_AVAILABLE:
-    __all__.extend(["DockerShell", "SandboxEnvironment"])
+    __all__.extend(["DeferredDockerShell", "DockerShell", "SandboxEnvironment"])

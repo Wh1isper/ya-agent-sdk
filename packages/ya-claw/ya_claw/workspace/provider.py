@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from loguru import logger
-from ya_agent_environment import Environment, FileOperationError, ResourceFactory, ResourceRegistryState
+from ya_agent_environment import (
+    DeferredShell,
+    Environment,
+    FileOperationError,
+    ResourceFactory,
+    ResourceRegistryState,
+    Shell,
+)
 from ya_agent_sdk.environment import (
     LocalShell,
     SandboxEnvironment,
@@ -196,6 +203,32 @@ class WorkspaceLocalShell(LocalShell):
         return super()._build_effective_env(merged_env)
 
 
+class DockerWorkspaceDeferredShell(DeferredShell):
+    """Deferred shell for reusable YA Claw Docker workspaces."""
+
+    def __init__(self, environment: ReusableSandboxEnvironment) -> None:
+        super().__init__(default_cwd=Path(environment._work_dir), default_timeout=environment._shell_timeout)
+        self._environment = environment
+
+    async def _resolve_shell(self) -> Shell:
+        return await self._environment.ensure_ready_shell()
+
+    async def get_deferred_context_instructions(self) -> str | None:
+        exec_user_line = (
+            f"\n  <exec-user>{self._environment._docker_exec_user}</exec-user>"
+            if self._environment._docker_exec_user is not None
+            else ""
+        )
+        return f"""<shell-execution>
+  <type>docker-exec</type>
+  <container-ref>{self._environment.container_ref}</container-ref>
+  <container-workdir>{self._environment._work_dir}</container-workdir>{exec_user_line}
+  <status>{self.ready_state.value}</status>
+  <default-timeout>{self._environment._shell_timeout}s</default-timeout>
+  <note>The Docker workspace container is prepared on first shell command.</note>
+</shell-execution>"""
+
+
 class ReusableSandboxEnvironment(SandboxEnvironment):
     def __init__(
         self,
@@ -225,6 +258,7 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
             image=image,
             cleanup_on_exit=cleanup_on_exit,
             shell_timeout=shell_timeout,
+            lazy_shell=True,
         )
         self._container_ref = container_ref
         self._workspace_uid = workspace_uid
@@ -269,7 +303,7 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
             mount.host_path.resolve().mkdir(parents=True, exist_ok=True)
 
         logger.debug(
-            "Setting up Docker workspace environment ref={} image={} work_dir={} mounts={} docker_host_paths={} cache={}",
+            "Setting up lazy Docker workspace environment ref={} image={} work_dir={} mounts={} docker_host_paths={} cache={}",
             self._container_ref,
             self._image,
             self._work_dir,
@@ -277,37 +311,51 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
             [str(path) for path in self._docker_host_paths],
             self._container_cache_path,
         )
-        if self._custom_shell is None:
-            lock = get_docker_container_lock(
-                cache_path=self._container_cache_path,
-                container_ref=self._container_ref,
-            )
-            async with lock:
-                self._sandbox_metadata["last_used_at"] = _utc_now_iso()
-                await self._ensure_container()
-
         self._file_operator = PolicyVirtualLocalFileOperator(
             mounts=self._mounts,
             default_virtual_path=Path(self._work_dir),
             read_only_virtual_paths=self._read_only_virtual_paths,
             tmp_dir=tmp_dir_path,
         )
-        logger.info(
-            "Docker workspace environment ready ref={} container_id={}", self._container_ref, self._container_id
-        )
 
         if self._custom_shell is not None:
             self._shell = self._custom_shell
         else:
+            self._shell = DockerWorkspaceDeferredShell(self)
+
+        logger.info(
+            "Docker workspace environment mounted ref={} container_id={}", self._container_ref, self._container_id
+        )
+
+    async def ensure_ready_shell(self) -> DockerShell:
+        if self._ready_shell is not None:
+            return self._ready_shell
+        async with self._ready_lock:
+            if self._ready_shell is not None:
+                return self._ready_shell
+            lock = get_docker_container_lock(
+                cache_path=self._container_cache_path,
+                container_ref=self._container_ref,
+            )
+            async with lock:
+                await self._ensure_container()
+                ready_at = _utc_now_iso()
+                self._sandbox_metadata["last_used_at"] = ready_at
+                self._sandbox_metadata.setdefault("last_started_at", ready_at)
             if self._container_id is None:
                 raise RuntimeError("container_id must be set when no custom shell is provided")
-            self._shell = DockerShell(
+            self._sandbox_metadata["container_id"] = self._container_id
+            self._sandbox_metadata["status"] = "running"
+            self._ready_shell = DockerShell(
                 container_id=self._container_id,
                 container_workdir=self._work_dir,
                 default_timeout=self._shell_timeout,
                 exec_user=self._docker_exec_user,
                 default_env=self._docker_exec_default_env,
             )
+            self._ready_shell._client = self._client
+            logger.info("Docker workspace shell ready ref={} container_id={}", self._container_ref, self._container_id)
+            return self._ready_shell
 
     async def _ensure_container(self) -> None:
         await self._refresh_current_image_digest()
@@ -353,13 +401,31 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
         await self._write_cached_container_id(self._container_id)
 
     async def _teardown(self) -> None:
+        removed_container = False
         if self._cleanup_on_exit and self._container_id is not None:
             await self._clear_cached_container_id(self._container_id)
             await self._stop_container()
+            removed_container = True
+
+        await self._close_ready_shell_if_unowned()
+        self._ready_shell = None
+        if removed_container:
+            self._container_id = None
+            self._created_container = False
 
         if self._tmp_dir_obj is not None:
             self._tmp_dir_obj.cleanup()
             self._tmp_dir_obj = None
+
+    async def _close_ready_shell_if_unowned(self) -> None:
+        ready_shell = self._ready_shell
+        if ready_shell is None:
+            return
+        if self._shell is ready_shell:
+            return
+        if isinstance(self._shell, DeferredShell) and self._shell.resolved_shell is ready_shell:
+            return
+        await ready_shell.close()
 
     async def _create_container(self) -> str:
         if self._image is None:
@@ -1162,6 +1228,10 @@ def build_workspace_sandbox_metadata(*, binding: WorkspaceBinding, environment: 
     image_digest = _normalize_optional_str(existing.get("image_digest")) or _normalize_optional_str(
         environment_sandbox.get("image_digest")
     )
+    shell_ready_state = _sandbox_shell_ready_state(environment) or "not_started"
+    verified_container_id = environment.ready_container_id
+    candidate_container_id = _normalize_optional_str(environment.container_id)
+    status = "running" if verified_container_id is not None else existing.get("status", "created")
 
     return {
         **existing,
@@ -1169,12 +1239,14 @@ def build_workspace_sandbox_metadata(*, binding: WorkspaceBinding, environment: 
         "scope": scope,
         "generation": _first_optional_int(existing.get("generation"), binding.generation),
         "workspace_fingerprint": _normalize_optional_str(existing.get("workspace_fingerprint")) or binding.fingerprint,
-        "container_ref": container_ref or environment.container_id,
-        "container_id": environment.container_id,
+        "container_ref": container_ref or candidate_container_id,
+        "container_id": candidate_container_id,
+        "verified_container_id": verified_container_id,
         "image": _normalize_optional_str(existing.get("image"))
         or _normalize_optional_str(binding.metadata.get("docker_image")),
         "image_digest": image_digest,
-        "status": "running" if environment.container_id is not None else existing.get("status", "created"),
+        "status": status,
+        "ready_state": shell_ready_state,
         "workspace_uid": _first_optional_int(existing.get("workspace_uid"), binding.metadata.get("workspace_uid")),
         "workspace_gid": _first_optional_int(existing.get("workspace_gid"), binding.metadata.get("workspace_gid")),
         "cache_path": cache_path,
@@ -1202,6 +1274,14 @@ def remove_workspace_sandbox_metadata(metadata: dict[str, Any] | None) -> dict[s
     normalized = dict(metadata or {})
     normalized.pop(_DOCKER_SANDBOX_METADATA_KEY, None)
     return normalized
+
+
+def _sandbox_shell_ready_state(environment: SandboxEnvironment) -> str | None:
+    if environment._ready_shell is not None:
+        return environment._ready_shell.ready_state.value
+    if environment._entered and environment.shell is not None:
+        return environment.shell.ready_state.value
+    return None
 
 
 def _inspect_container_health_status(client: Any, container_id: str) -> str | None:

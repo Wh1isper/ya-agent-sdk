@@ -107,7 +107,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from ya_agent_environment import Environment, FileOperator, ResourceRegistry, Shell
 
 from ya_agent_sdk.agents.lifecycle import LifecycleExtension
-from ya_agent_sdk.events import AgentEvent
+from ya_agent_sdk.events import AgentEvent, UsageSnapshotEvent
 from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot, UsageSnapshotEntry
 from ya_agent_sdk.utils import get_latest_request_usage
 
@@ -1807,6 +1807,20 @@ class AgentContext(BaseModel):
             model_usages=model_usages,
         )
 
+    async def emit_usage_snapshot_event(self, *, source: str = "usage_snapshot") -> None:
+        """Emit the current cumulative usage snapshot without mutating the ledger."""
+        if not self.usage_snapshot_entries:
+            return
+
+        snapshot = self.build_usage_snapshot()
+        await self.emit_event(
+            UsageSnapshotEvent(
+                event_id=f"{snapshot.run_id}:usage_snapshot:{source}",
+                snapshot=snapshot,
+                source=source,
+            )
+        )
+
     async def emit_usage_snapshot(
         self,
         *,
@@ -1818,10 +1832,12 @@ class AgentContext(BaseModel):
         usage_id: str | None = None,
         ledger_key: str | None = None,
     ) -> None:
-        """Update cumulative usage and emit a usage snapshot event."""
-        from ya_agent_sdk.events import UsageSnapshotEvent
+        """Update cumulative usage and emit a usage snapshot event.
 
-        snapshot = self.update_usage_snapshot_entry(
+        Deprecated: use update_usage_snapshot_entry() for ledger updates and
+        emit_usage_snapshot_event() at stream/session boundaries.
+        """
+        self.update_usage_snapshot_entry(
             agent_id=agent_id,
             agent_name=agent_name,
             model_id=model_id,
@@ -1830,13 +1846,7 @@ class AgentContext(BaseModel):
             source=source,
             ledger_key=ledger_key,
         )
-        await self.emit_event(
-            UsageSnapshotEvent(
-                event_id=f"{snapshot.run_id}:usage_snapshot",
-                snapshot=snapshot,
-                source=source,
-            )
-        )
+        await self.emit_usage_snapshot_event(source=source)
 
     async def emit_event(self, event: AgentStreamEvent) -> None:
         """Emit a custom event to the sideband stream queue.

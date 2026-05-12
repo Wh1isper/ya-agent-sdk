@@ -4,7 +4,15 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from ya_agent_environment import BackgroundProcess, CompletedProcess, ExecutionHandle, OutputBuffer, Shell
+from ya_agent_environment import (
+    BackgroundProcess,
+    CompletedProcess,
+    DeferredShell,
+    ExecutionHandle,
+    OutputBuffer,
+    ReadyState,
+    Shell,
+)
 from ya_agent_environment.shell import (
     _MAX_BUFFER_LINES,
     _MAX_COMPLETED_OUTPUT_BYTES,
@@ -90,6 +98,26 @@ class ConcreteShell(Shell):
             wait=_wait,
             kill=_kill,
         )
+
+
+class DeferredShellFixture(DeferredShell):
+    """Deferred shell for testing lazy resolution."""
+
+    def __init__(self, concrete: Shell | None = None, *, fail: bool = False) -> None:
+        super().__init__(default_cwd=None)
+        self.concrete = concrete or ConcreteShell(default_cwd=None)
+        self.fail = fail
+        self.resolve_count = 0
+
+    async def _resolve_shell(self) -> Shell:
+        self.resolve_count += 1
+        await asyncio.sleep(0)
+        if self.fail:
+            raise RuntimeError("resolve failed")
+        return self.concrete
+
+    async def get_deferred_context_instructions(self) -> str | None:
+        return "<shell-execution><status>deferred</status></shell-execution>"
 
 
 # =============================================================================
@@ -1351,3 +1379,71 @@ async def test_kill_process_cleanup_guaranteed() -> None:
     assert pid not in shell._output_buffers
     assert pid not in shell._stdin_streams
     await shell.close()
+
+
+# =============================================================================
+# DeferredShell tests
+# =============================================================================
+
+
+async def test_deferred_shell_context_instructions_do_not_resolve() -> None:
+    """DeferredShell context instructions should be pure read before resolution."""
+    shell = DeferredShellFixture()
+
+    instructions = await shell.get_context_instructions()
+
+    assert instructions == "<shell-execution><status>deferred</status></shell-execution>"
+    assert shell.resolve_count == 0
+    assert shell.ready_state == ReadyState.NOT_STARTED
+
+
+async def test_deferred_shell_execute_resolves_once() -> None:
+    """DeferredShell execute resolves the concrete shell once."""
+    shell = DeferredShellFixture()
+
+    result = await shell.execute("echo hello")
+    result2 = await shell.execute("echo again")
+
+    assert result == (0, "output of echo hello", "")
+    assert result2 == (0, "output of echo again", "")
+    assert shell.resolve_count == 1
+    assert shell.ready_state == ReadyState.READY
+    assert shell.resolved_shell is shell.concrete
+
+
+async def test_deferred_shell_concurrent_execute_shares_resolution() -> None:
+    """Concurrent commands share one resolution."""
+    shell = DeferredShellFixture()
+
+    results = await asyncio.gather(
+        shell.execute("echo one"),
+        shell.execute("echo two"),
+    )
+
+    assert results == [(0, "output of echo one", ""), (0, "output of echo two", "")]
+    assert shell.resolve_count == 1
+
+
+async def test_deferred_shell_start_delegates_to_resolved_shell() -> None:
+    """DeferredShell background start delegates through _create_process."""
+    shell = DeferredShellFixture()
+
+    pid = await shell.start("echo hello")
+    stdout, stderr, running, exit_code = await shell.wait_process(pid, timeout=1)
+
+    assert stdout == "output of echo hello"
+    assert stderr == ""
+    assert running is False
+    assert exit_code == 0
+    assert shell.resolve_count == 1
+
+
+async def test_deferred_shell_failed_resolution_sets_state() -> None:
+    """DeferredShell records failed readiness state."""
+    shell = DeferredShellFixture(fail=True)
+
+    with pytest.raises(RuntimeError, match="resolve failed"):
+        await shell.execute("echo hello")
+
+    assert shell.ready_state == ReadyState.FAILED
+    assert isinstance(shell.ready_error, RuntimeError)

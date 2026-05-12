@@ -67,7 +67,7 @@ class ReadAudioTool(BaseTool):
         )
 
         if ctx.tool_call_id:
-            await agent_ctx.emit_usage_snapshot(
+            agent_ctx.update_usage_snapshot_entry(
                 agent_id="audio_understanding",
                 agent_name="audio_understanding",
                 model_id=model_id,

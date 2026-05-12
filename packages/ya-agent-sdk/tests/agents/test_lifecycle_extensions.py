@@ -237,7 +237,7 @@ async def test_compact_hook_failure_propagates(agent_context: AgentContext, monk
     queue = agent_context.agent_stream_queues[agent_context.agent_id]
     while not queue.empty():
         events.append(queue.get_nowait())
-    assert [event.__class__.__name__ for event in events] == ["CompactStartEvent", "UsageSnapshotEvent"]
+    assert [event.__class__.__name__ for event in events] == ["CompactStartEvent"]
 
 
 @pytest.mark.asyncio

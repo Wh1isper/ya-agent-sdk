@@ -604,7 +604,7 @@ def create_cache_friendly_compact_filter(
                 model = ctx.model
                 model_id = model.model_name if model is not None else "unknown"
                 usage_id = uuid4().hex
-                await agent_ctx.emit_usage_snapshot(
+                agent_ctx.update_usage_snapshot_entry(
                     agent_id=AGENT_NAME,
                     agent_name=AGENT_NAME,
                     model_id=model_id,
@@ -787,7 +787,7 @@ def create_compact_filter(
 
                 model_id = cast(Model, agent.model).model_name
                 usage_id = uuid4().hex
-                await agent_ctx.emit_usage_snapshot(
+                agent_ctx.update_usage_snapshot_entry(
                     agent_id=AGENT_NAME,
                     agent_name=AGENT_NAME,
                     model_id=model_id,

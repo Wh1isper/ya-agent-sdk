@@ -20,6 +20,7 @@ from ya_claw.workspace import (
     format_workspace_guidance,
     load_workspace_guidance,
 )
+from ya_claw.workspace.provider import DockerWorkspaceDeferredShell
 
 
 class FakeImage:
@@ -243,9 +244,13 @@ async def test_reusable_sandbox_environment_creates_shell_with_exec_user_and_hom
 
     await environment._setup()
 
-    assert isinstance(environment._shell, DockerShell)
-    assert environment._shell._exec_user == "1234:2345"
-    assert environment._shell._default_env == {"HOME": "/home/claw", "USER": "claw"}
+    assert isinstance(environment._shell, DockerWorkspaceDeferredShell)
+    assert environment.container_id == "container-123"
+    assert environment._ready_shell is None
+    shell = await environment.ensure_ready_shell()
+    assert isinstance(shell, DockerShell)
+    assert shell._exec_user == "1234:2345"
+    assert shell._default_env == {"HOME": "/home/claw", "USER": "claw"}
 
 
 def test_workspace_sandbox_metadata_preserves_workspace_identity(tmp_path: Path) -> None:
@@ -260,6 +265,9 @@ def test_workspace_sandbox_metadata_preserves_workspace_identity(tmp_path: Path)
     assert metadata is not None
     assert metadata["provider"] == "docker"
     assert metadata["container_id"] == "container-123"
+    assert metadata["verified_container_id"] is None
+    assert metadata["status"] == "created"
+    assert metadata["ready_state"] == "not_started"
     assert metadata["container_ref"] == build_workspace_container_ref(
         image="python:3.11",
         workspace_dir=tmp_path / "workspace",
@@ -664,3 +672,90 @@ def test_load_workspace_guidance_reads_full_large_agents_file(tmp_path: Path) ->
 
     assert guidance is not None
     assert guidance.content == content
+
+
+async def test_reusable_sandbox_environment_setup_defers_container_verification(tmp_path: Path) -> None:
+    class FakeContainers:
+        def __init__(self) -> None:
+            self.get_calls = 0
+
+        def get(self, container_id: str) -> object:
+            self.get_calls += 1
+            raise AssertionError(f"unexpected docker get during setup: {container_id}")
+
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self) -> None:
+            super().__init__()
+            self.containers = FakeContainers()
+
+    environment = ReusableSandboxEnvironment(
+        mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
+        work_dir="/workspace",
+        image="python:3.11",
+        container_ref="workspace-container",
+        preferred_container_id="container-123",
+    )
+    environment._client = FakeDockerClient()
+
+    await environment._setup()
+
+    assert isinstance(environment._shell, DockerWorkspaceDeferredShell)
+    assert environment._client.containers.get_calls == 0
+    instructions = await environment.get_context_instructions()
+    assert "workspace-container" in instructions
+    assert "not_started" in instructions
+    assert environment._client.containers.get_calls == 0
+
+
+async def test_reusable_sandbox_environment_shell_use_ensures_container_once(tmp_path: Path) -> None:
+    class FakeContainer:
+        id = "container-123"
+        status = "running"
+
+        def __init__(self) -> None:
+            self.attrs = {"State": {}}
+
+        def reload(self) -> None:
+            return None
+
+    class FakeContainers:
+        def __init__(self) -> None:
+            self.get_calls = 0
+
+        def get(self, container_id: str) -> FakeContainer:
+            assert container_id == "container-123"
+            self.get_calls += 1
+            return FakeContainer()
+
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self) -> None:
+            super().__init__()
+            self.containers = FakeContainers()
+
+    environment = ReusableSandboxEnvironment(
+        mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
+        work_dir="/workspace",
+        image="python:3.11",
+        container_ref="workspace-container",
+        preferred_container_id="container-123",
+    )
+    environment._client = FakeDockerClient()
+    await environment._setup()
+
+    shell = await environment.ensure_ready_shell()
+    first_ready_get_calls = environment._client.containers.get_calls
+    shell2 = await environment.ensure_ready_shell()
+
+    assert shell is shell2
+    assert isinstance(shell, DockerShell)
+    assert first_ready_get_calls == 2
+    assert environment._client.containers.get_calls == first_ready_get_calls
+    metadata = build_workspace_sandbox_metadata(
+        binding=DockerWorkspaceProvider(tmp_path / "workspace", image="python:3.11").resolve(),
+        environment=environment,
+    )
+    assert metadata is not None
+    assert metadata["container_id"] == "container-123"
+    assert metadata["verified_container_id"] == "container-123"
+    assert metadata["status"] == "running"
+    assert metadata["ready_state"] == "ready"

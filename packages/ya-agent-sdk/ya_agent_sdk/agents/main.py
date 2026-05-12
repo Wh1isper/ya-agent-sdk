@@ -1190,6 +1190,8 @@ async def stream_agent(  # noqa: C901
         current_loop = tracker.loop_index
         tracker.loop_index += 1  # Increment for next loop
 
+        await ctx.emit_usage_snapshot_event(source="before_model_request")
+
         await emit_lifecycle_event(
             ModelRequestStartEvent(event_id=ctx.run_id, loop_index=current_loop, message_count=len(run.all_messages()))
         )
@@ -1197,7 +1199,7 @@ async def stream_agent(  # noqa: C901
         await process_node(node, run)
 
         base_model = cast(Model, agent.model)
-        await ctx.emit_usage_snapshot(
+        ctx.update_usage_snapshot_entry(
             agent_id=main_agent_info.agent_id,
             agent_name=main_agent_info.agent_name,
             model_id=base_model.model_name,
@@ -1226,6 +1228,7 @@ async def stream_agent(  # noqa: C901
         current_loop = tracker.loop_index - 1
         has_tool_calls = _has_tool_call_parts(node.model_response.parts)
         if has_tool_calls:
+            await ctx.emit_usage_snapshot_event(source="before_tool_calls")
             await emit_lifecycle_event(ToolCallsStartEvent(event_id=ctx.run_id, loop_index=current_loop))
 
         await process_node(node, run)
@@ -1297,6 +1300,8 @@ async def stream_agent(  # noqa: C901
             await run_extension_method(extensions, "on_agent_complete", complete_ctx, logger=logger)
             if on_agent_complete:
                 await on_agent_complete(complete_ctx)
+
+            await ctx.emit_usage_snapshot_event(source="session_end")
 
             await emit_lifecycle_event(
                 AgentExecutionCompleteEvent(
@@ -1409,6 +1414,7 @@ async def stream_agent(  # noqa: C901
     ) -> str:
         nonlocal failure_event_emitted
         error_str = stringify_exception(exc)
+        await ctx.emit_usage_snapshot_event(source="session_end")
         await emit_lifecycle_event(
             AgentExecutionFailedEvent(
                 event_id=ctx.run_id,

@@ -14,7 +14,7 @@ from ya_agent_environment import ShellExecutionError
 docker = pytest.importorskip("docker")
 
 from ya_agent_sdk.environment.local import VirtualMount  # noqa: E402
-from ya_agent_sdk.environment.sandbox import DockerShell, SandboxEnvironment  # noqa: E402
+from ya_agent_sdk.environment.sandbox import DeferredDockerShell, DockerShell, SandboxEnvironment  # noqa: E402
 
 # --- DockerShell Tests ---
 
@@ -638,3 +638,65 @@ async def test_sandbox_environment_unrecoverable_container_state(tmp_path: Path)
     with pytest.raises(RuntimeError, match="unrecoverable state"):
         async with env:
             pass
+
+
+async def test_sandbox_environment_lazy_shell_does_not_verify_container_on_enter(tmp_path: Path) -> None:
+    """lazy_shell should defer Docker verification until shell use."""
+    env = SandboxEnvironment(
+        mounts=[VirtualMount(tmp_path, Path("/workspace"))],
+        container_id="existing123",
+        cleanup_on_exit=False,
+        lazy_shell=True,
+    )
+
+    mock_container = MagicMock()
+    mock_container.status = "running"
+    mock_container.exec_run.return_value = MagicMock(exit_code=0, output=(b"ok", b""))
+
+    mock_client = MagicMock()
+    mock_client.containers.get.return_value = mock_container
+    env._client = mock_client
+
+    async with env:
+        assert isinstance(env.shell, DeferredDockerShell)
+        assert env.container_id == "existing123"
+        assert mock_client.containers.get.call_count == 0
+
+        instructions = await env.get_context_instructions()
+        assert "status>not_started" in instructions
+        assert mock_client.containers.get.call_count == 0
+
+        code, stdout, stderr = await env.shell.execute("echo ok")
+        assert (code, stdout, stderr) == (0, "ok", "")
+        assert mock_client.containers.get.call_count >= 1
+
+
+async def test_sandbox_environment_lazy_shell_creates_container_on_first_command(tmp_path: Path) -> None:
+    """lazy_shell should create image-backed containers on first command."""
+    env = SandboxEnvironment(
+        mounts=[VirtualMount(tmp_path, Path("/workspace"))],
+        image="python:3.11",
+        cleanup_on_exit=True,
+        lazy_shell=True,
+    )
+
+    mock_container = MagicMock()
+    mock_container.id = "new123"
+    mock_container.status = "running"
+    mock_container.exec_run.return_value = MagicMock(exit_code=0, output=(b"ok", b""))
+
+    mock_client = MagicMock()
+    mock_client.containers.run.return_value = mock_container
+    mock_client.containers.get.return_value = mock_container
+    env._client = mock_client
+
+    async with env:
+        assert env.container_id is None
+        assert mock_client.containers.run.call_count == 0
+        code, stdout, stderr = await env.shell.execute("echo ok")
+        assert (code, stdout, stderr) == (0, "ok", "")
+        assert env.container_id == "new123"
+        mock_client.containers.run.assert_called_once()
+
+    mock_container.stop.assert_called_once()
+    mock_container.remove.assert_called_once()

@@ -162,7 +162,7 @@ async def _run_subagent_iter(
                     async for event in request_stream:
                         await sub_ctx.emit_event(event)
                 if Agent.is_model_request_node(node):
-                    await sub_ctx.emit_usage_snapshot(
+                    sub_ctx.update_usage_snapshot_entry(
                         agent_id=sub_ctx.agent_id,
                         agent_name=agent_name,
                         model_id=model_id,
@@ -312,7 +312,7 @@ def create_subagent_call_func(
 
                     # Ensure non-streaming or final provider usage is reflected in the unified ledger.
                     usage_id = ctx.tool_call_id or uuid4().hex
-                    await deps.emit_usage_snapshot(
+                    deps.update_usage_snapshot_entry(
                         ledger_key=agent_id,
                         agent_id=agent_id,
                         agent_name=agent_name,

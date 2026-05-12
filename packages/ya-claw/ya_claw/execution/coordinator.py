@@ -638,6 +638,7 @@ class RunCoordinator:
                                 streamer.run,
                                 replay_events=self._runtime_state.get_replay_events(run_id),
                             )
+                            runtime.ctx.container_id = self._extract_environment_container_id(environment)
                             buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
                             buffers.latest_state_payload = self._build_state_payload(
                                 runtime.ctx,
@@ -682,6 +683,7 @@ class RunCoordinator:
                         refresh_task.cancel()
                         await asyncio.gather(refresh_task, return_exceptions=True)
         finally:
+            runtime.ctx.container_id = self._extract_environment_container_id(environment)
             await self._persist_workspace_sandbox(session_id, workspace_binding, environment, final=True)
 
     async def _handle_deferred_tool_requests(
@@ -940,9 +942,7 @@ class RunCoordinator:
 
     def _extract_environment_container_id(self, environment: Environment) -> str | None:
         if isinstance(environment, SandboxEnvironment):
-            value = environment.container_id
-            if isinstance(value, str) and value.strip() != "":
-                return value.strip()
+            return environment.ready_container_id
         return None
 
     def _start_workspace_sandbox_refresh(
@@ -997,7 +997,8 @@ class RunCoordinator:
             return
         now = _utc_now_iso()
         sandbox_metadata["last_used_at"] = now
-        sandbox_metadata.setdefault("last_started_at", now)
+        if sandbox_metadata.get("status") == "running" and sandbox_metadata.get("container_id") is not None:
+            sandbox_metadata.setdefault("last_started_at", now)
         scope = str(sandbox_metadata.get("scope") or workspace_binding.sandbox_scope or SANDBOX_SCOPE_SESSION)
         if final and scope == SANDBOX_SCOPE_RUN:
             sandbox_metadata["status"] = "stopped"

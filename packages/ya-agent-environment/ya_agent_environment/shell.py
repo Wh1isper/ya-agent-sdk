@@ -12,6 +12,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from html import escape as _xml_escape
 from pathlib import Path
 from typing import Protocol
@@ -184,6 +185,15 @@ class CompletedProcess:
     completed_at: datetime = field(default_factory=datetime.now)
 
 
+class ReadyState(StrEnum):
+    """Readiness state for deferred environment capabilities."""
+
+    NOT_STARTED = "not_started"
+    STARTING = "starting"
+    READY = "ready"
+    FAILED = "failed"
+
+
 class Shell(ABC):
     """Abstract base class for shell command execution.
 
@@ -234,6 +244,15 @@ class Shell(ABC):
         self._output_buffers: dict[str, OutputBuffer] = {}
         self._stdin_streams: dict[str, WritableStream] = {}
         self._signal_handlers: dict[str, Callable[[int], Awaitable[None]]] = {}
+
+    @property
+    def ready_state(self) -> ReadyState:
+        """Return readiness state for shells with deferred setup."""
+        return ReadyState.READY
+
+    async def ensure_ready(self) -> None:
+        """Ensure the shell backend is ready for command execution."""
+        return None
 
     # ------------------------------------------------------------------
     # Abstract interface
@@ -824,3 +843,225 @@ class Shell(ABC):
         parts.append("  <note>Commands will be executed with the working directory validated.</note>")
         parts.append("</shell-execution>")
         return "\n".join(parts)
+
+
+class DeferredShell(Shell):
+    """Shell proxy that resolves a concrete shell on first command use.
+
+    DeferredShell keeps environment setup lightweight while preserving the
+    regular Shell API. Context instructions are pure-read and should not trigger
+    heavy backend setup; command execution and background process creation call
+    ensure_ready() and delegate to the resolved shell.
+    """
+
+    def __init__(
+        self,
+        *,
+        default_cwd: Path | None = None,
+        allowed_paths: list[Path] | None = None,
+        default_timeout: float = 30.0,
+        skip_instructions: bool = False,
+    ) -> None:
+        super().__init__(
+            default_cwd=default_cwd,
+            allowed_paths=allowed_paths,
+            default_timeout=default_timeout,
+            skip_instructions=skip_instructions,
+        )
+        self._resolved_shell: Shell | None = None
+        self._resolve_lock: asyncio.Lock = asyncio.Lock()
+        self._ready_state: ReadyState = ReadyState.NOT_STARTED
+        self._ready_error: BaseException | None = None
+
+    @property
+    def ready_state(self) -> ReadyState:
+        """Return readiness state for the deferred shell backend."""
+        return self._ready_state
+
+    @property
+    def resolved_shell(self) -> Shell | None:
+        """Return the resolved concrete shell when ready."""
+        return self._resolved_shell
+
+    @property
+    def ready_error(self) -> BaseException | None:
+        """Return the last readiness error, if any."""
+        return self._ready_error
+
+    async def ensure_ready(self) -> None:
+        """Resolve the concrete shell if needed."""
+        await self.resolve_shell()
+
+    async def resolve_shell(self) -> Shell:
+        """Return the concrete shell, resolving it once with concurrency safety."""
+        if self._resolved_shell is not None:
+            return self._resolved_shell
+
+        async with self._resolve_lock:
+            if self._resolved_shell is not None:
+                return self._resolved_shell
+            self._ready_state = ReadyState.STARTING
+            self._ready_error = None
+            try:
+                shell = await self._resolve_shell()
+            except BaseException as exc:
+                self._ready_state = ReadyState.FAILED
+                self._ready_error = exc
+                raise
+            self._resolved_shell = shell
+            self._ready_state = ReadyState.READY
+            return shell
+
+    @abstractmethod
+    async def _resolve_shell(self) -> Shell:
+        """Create or return the concrete shell backend."""
+        ...
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[int, str, str]:
+        """Execute a command with the resolved shell."""
+        shell = await self.resolve_shell()
+        return await shell.execute(command, timeout=timeout, env=env, cwd=cwd)
+
+    async def start(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> str:
+        """Start a background command with the resolved shell."""
+        shell = await self.resolve_shell()
+        return await shell.start(command, env=env, cwd=cwd)
+
+    async def _create_process(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ExecutionHandle:
+        """Create a background process with the resolved shell."""
+        shell = await self.resolve_shell()
+        return await shell._create_process(command, env=env, cwd=cwd)
+
+    def drain_output(self, process_id: str) -> tuple[str, str, bool, int | None]:
+        """Drain output from proxy-owned or resolved-shell background processes."""
+        try:
+            return super().drain_output(process_id)
+        except KeyError:
+            if self._resolved_shell is not None:
+                return self._resolved_shell.drain_output(process_id)
+            raise
+
+    async def wait_process(
+        self,
+        process_id: str,
+        *,
+        timeout: float,
+    ) -> tuple[str, str, bool, int | None]:
+        """Wait for proxy-owned or resolved-shell background processes."""
+        try:
+            return await super().wait_process(process_id, timeout=timeout)
+        except KeyError:
+            if self._resolved_shell is not None:
+                return await self._resolved_shell.wait_process(process_id, timeout=timeout)
+            raise
+
+    async def kill_process(self, process_id: str) -> tuple[str, str]:
+        """Kill proxy-owned or resolved-shell background processes."""
+        try:
+            return await super().kill_process(process_id)
+        except KeyError:
+            if self._resolved_shell is not None:
+                return await self._resolved_shell.kill_process(process_id)
+            raise
+
+    async def write_stdin(self, process_id: str, data: str) -> None:
+        """Write stdin to proxy-owned or resolved-shell background processes."""
+        try:
+            await super().write_stdin(process_id, data)
+        except KeyError:
+            if self._resolved_shell is not None:
+                await self._resolved_shell.write_stdin(process_id, data)
+                return
+            raise
+
+    async def close_stdin(self, process_id: str) -> None:
+        """Close stdin for proxy-owned or resolved-shell background processes."""
+        try:
+            await super().close_stdin(process_id)
+        except KeyError:
+            if self._resolved_shell is not None:
+                await self._resolved_shell.close_stdin(process_id)
+                return
+            raise
+
+    async def send_signal(self, process_id: str, sig: int) -> None:
+        """Send signal to proxy-owned or resolved-shell background processes."""
+        try:
+            await super().send_signal(process_id, sig)
+        except KeyError:
+            if self._resolved_shell is not None:
+                await self._resolved_shell.send_signal(process_id, sig)
+                return
+            raise
+
+    def consume_completed_results(self) -> list[CompletedProcess]:
+        """Consume completed results from proxy and resolved shell."""
+        results = super().consume_completed_results()
+        if self._resolved_shell is not None:
+            results.extend(self._resolved_shell.consume_completed_results())
+        return results
+
+    @property
+    def active_background_processes(self) -> dict[str, BackgroundProcess]:
+        """Return active background processes from proxy and resolved shell."""
+        active = dict(super().active_background_processes)
+        if self._resolved_shell is not None:
+            active.update(self._resolved_shell.active_background_processes)
+        return active
+
+    @property
+    def has_active_background_processes(self) -> bool:
+        """Return whether proxy or resolved shell has active background processes."""
+        return super().has_active_background_processes or (
+            self._resolved_shell.has_active_background_processes if self._resolved_shell is not None else False
+        )
+
+    @property
+    def has_background_activity(self) -> bool:
+        """Return whether proxy or resolved shell has background activity."""
+        return super().has_background_activity or (
+            self._resolved_shell.has_background_activity if self._resolved_shell is not None else False
+        )
+
+    def background_status_summary(self) -> str | None:
+        """Return background status for proxy and resolved shell."""
+        own = super().background_status_summary()
+        delegated = self._resolved_shell.background_status_summary() if self._resolved_shell is not None else None
+        if own and delegated:
+            return f"{own}\n{delegated}"
+        return own or delegated
+
+    async def close(self) -> None:
+        """Close proxy and resolved shell resources."""
+        await super().close()
+        if self._resolved_shell is not None:
+            await self._resolved_shell.close()
+
+    async def get_context_instructions(self) -> str | None:
+        """Return concrete instructions when ready, otherwise deferred instructions."""
+        if self._resolved_shell is not None:
+            return await self._resolved_shell.get_context_instructions()
+        return await self.get_deferred_context_instructions()
+
+    async def get_deferred_context_instructions(self) -> str | None:
+        """Return pure-read instructions before backend resolution."""
+        return await super().get_context_instructions()

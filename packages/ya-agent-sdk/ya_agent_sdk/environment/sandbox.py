@@ -17,11 +17,13 @@ import asyncio
 import contextlib
 import os
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ya_agent_environment import (
+    DeferredShell,
     Environment,
     EnvironmentNotEnteredError,
     ExecutionHandle,
@@ -265,6 +267,35 @@ class DockerShell(Shell):
         )
 
 
+class DeferredDockerShell(DeferredShell):
+    """Docker shell that creates or verifies its container on first command use."""
+
+    def __init__(self, environment: SandboxEnvironment) -> None:
+        super().__init__(
+            default_cwd=Path(environment._work_dir),
+            default_timeout=environment._shell_timeout,
+        )
+        self._environment = environment
+
+    async def _resolve_shell(self) -> Shell:
+        return await self._environment.ensure_ready_shell()
+
+    async def get_deferred_context_instructions(self) -> str | None:
+        exec_user_line = (
+            f"\n  <exec-user>{self._environment._docker_exec_user}</exec-user>"
+            if self._environment._docker_exec_user is not None
+            else ""
+        )
+        status = self.ready_state.value
+        return f"""<shell-execution>
+  <type>docker-exec</type>
+  <container-workdir>{self._environment._work_dir}</container-workdir>{exec_user_line}
+  <status>{status}</status>
+  <default-timeout>{self._environment._shell_timeout}s</default-timeout>
+  <note>The Docker container is prepared on first shell command.</note>
+</shell-execution>"""
+
+
 class SandboxEnvironment(Environment):
     """Sandboxed environment with virtual file operations and containerized shell.
 
@@ -329,6 +360,7 @@ class SandboxEnvironment(Environment):
         docker_exec_default_env: dict[str, str] | None = None,
         enable_tmp_dir: bool = True,
         tmp_base_dir: Path | None = None,
+        lazy_shell: bool = False,
         resource_state: ResourceRegistryState | None = None,
         resource_factories: dict[str, ResourceFactory] | None = None,
     ):
@@ -355,6 +387,7 @@ class SandboxEnvironment(Environment):
             docker_exec_default_env: Default environment variables for DockerShell.
             enable_tmp_dir: Whether to create a session temporary directory.
             tmp_base_dir: Base directory for creating session temporary directory.
+            lazy_shell: Whether Docker container readiness is deferred until shell use.
             resource_state: Optional state to restore resources from.
             resource_factories: Optional dictionary of resource factories.
 
@@ -392,11 +425,14 @@ class SandboxEnvironment(Environment):
         self._docker_exec_default_env = dict(docker_exec_default_env or {})
         self._enable_tmp_dir = enable_tmp_dir
         self._tmp_base_dir = tmp_base_dir
+        self._lazy_shell = lazy_shell
 
         # Runtime state
         self._created_container: bool = False
         self._client: docker.DockerClient | None = None
         self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
+        self._ready_shell: DockerShell | None = None
+        self._ready_lock: asyncio.Lock = asyncio.Lock()
 
     @staticmethod
     def _is_path_under(path: Path, root: Path) -> bool:
@@ -416,8 +452,17 @@ class SandboxEnvironment(Environment):
 
     @property
     def container_id(self) -> str | None:
-        """Return the container ID (available after entering context)."""
+        """Return the configured or discovered container ID."""
         return self._container_id
+
+    @property
+    def ready_container_id(self) -> str | None:
+        """Return the verified ready container ID after shell readiness succeeds."""
+        if self._ready_shell is None:
+            return None
+        if isinstance(self._container_id, str) and self._container_id.strip() != "":
+            return self._container_id.strip()
+        return None
 
     @property
     def tmp_dir(self) -> Path | None:
@@ -441,16 +486,6 @@ class SandboxEnvironment(Environment):
         for mount in self._mounts:
             mount.host_path.resolve().mkdir(parents=True, exist_ok=True)
 
-        # Create or verify Docker container (unless custom shell provided)
-        if self._custom_shell is None:
-            if self._container_id is None:
-                # Create new container
-                self._container_id = await self._create_container()
-                self._created_container = True
-            else:
-                # Verify existing container is running
-                await self._verify_container()
-
         # Create file operator (virtual paths mapped to host filesystem)
         self._file_operator = VirtualLocalFileOperator(
             mounts=self._mounts,
@@ -461,16 +496,72 @@ class SandboxEnvironment(Environment):
         # Create shell
         if self._custom_shell is not None:
             self._shell = self._custom_shell
+        elif self._lazy_shell:
+            self._shell = DeferredDockerShell(self)
         else:
+            self._shell = await self.ensure_ready_shell()
+
+    async def _ensure_container(self) -> None:
+        if self._container_id is None:
+            self._container_id = await self._create_container()
+            self._created_container = True
+        else:
+            await self._verify_container()
+
+    async def ensure_ready_shell(self) -> DockerShell:
+        """Ensure Docker container readiness and return a concrete DockerShell."""
+        if self._ready_shell is not None:
+            return self._ready_shell
+
+        async with self._ready_lock:
+            if self._ready_shell is not None:
+                return self._ready_shell
+            await self._ensure_container()
             if self._container_id is None:
                 raise RuntimeError("container_id must be set when no custom shell is provided")
-            self._shell = DockerShell(
+            await self._wait_for_container_ready(self._container_id)
+            self._ready_shell = DockerShell(
                 container_id=self._container_id,
                 container_workdir=self._work_dir,
                 default_timeout=self._shell_timeout,
                 exec_user=self._docker_exec_user,
                 default_env=self._docker_exec_default_env,
             )
+            self._ready_shell._client = self._client
+            return self._ready_shell
+
+    async def _wait_for_container_ready(self, container_id: str) -> None:
+        """Wait for Docker health checks to report readiness, when configured."""
+        timeout_seconds = 60.0
+        poll_interval_seconds = 0.25
+
+        def _wait() -> None:
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    container = self.client.containers.get(container_id)
+                    container.reload()
+                except docker.errors.NotFound as e:
+                    raise RuntimeError(f"Container not found: {container_id}") from e
+                except docker.errors.APIError as e:
+                    raise RuntimeError(f"Failed to inspect container health: {e}") from e
+
+                attrs = container.attrs
+                state = attrs.get("State") if isinstance(attrs, dict) else None
+                health = state.get("Health") if isinstance(state, dict) else None
+                health_status = health.get("Status") if isinstance(health, dict) else None
+                if health_status is None or health_status == "healthy":
+                    return
+                if health_status == "unhealthy":
+                    raise RuntimeError(f"Container {container_id} is unhealthy")
+                if health_status != "starting":
+                    raise RuntimeError(f"Container {container_id} has unexpected health status: {health_status}")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"Container {container_id} did not become healthy within {timeout_seconds}s")
+                time.sleep(poll_interval_seconds)
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _wait)
 
     async def _teardown(self) -> None:
         """Clean up container and tmp directory.
@@ -480,14 +571,33 @@ class SandboxEnvironment(Environment):
         _teardown returns.  Nulling here would skip close() and
         leak background processes.
         """
+        removed_created_container = False
+
         # Cleanup container if we created it and cleanup_on_exit is True
         if self._cleanup_on_exit and self._created_container and self._container_id is not None:
             await self._stop_container()
+            removed_created_container = True
+
+        await self._close_ready_shell_if_unowned()
+        self._ready_shell = None
+        if removed_created_container:
+            self._container_id = None
+            self._created_container = False
 
         # Cleanup tmp directory
         if self._tmp_dir_obj is not None:
             self._tmp_dir_obj.cleanup()
             self._tmp_dir_obj = None
+
+    async def _close_ready_shell_if_unowned(self) -> None:
+        ready_shell = self._ready_shell
+        if ready_shell is None:
+            return
+        if self._shell is ready_shell:
+            return
+        if isinstance(self._shell, DeferredShell) and self._shell.resolved_shell is ready_shell:
+            return
+        await ready_shell.close()
 
     async def _create_container(self) -> str:
         """Create and start a new container with all mounts and tmp_dir."""

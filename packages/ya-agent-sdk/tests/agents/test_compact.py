@@ -1337,7 +1337,6 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
         events.append(queue.get_nowait())
     assert [event.__class__.__name__ for event in events] == [
         "CompactStartEvent",
-        "UsageSnapshotEvent",
         "CompactCompleteEvent",
     ]
 
@@ -1480,7 +1479,6 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
         events.append(queue.get_nowait())
     assert [event.__class__.__name__ for event in events] == [
         "CompactStartEvent",
-        "UsageSnapshotEvent",
         "CompactCompleteEvent",
     ]
 

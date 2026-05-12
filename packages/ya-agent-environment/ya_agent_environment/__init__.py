@@ -39,8 +39,10 @@ from ya_agent_environment.resources import (
 from ya_agent_environment.shell import (
     BackgroundProcess,
     CompletedProcess,
+    DeferredShell,
     ExecutionHandle,
     OutputBuffer,
+    ReadyState,
     Shell,
     StdinAdapter,
 )
@@ -54,6 +56,7 @@ __all__ = [
     "BackgroundProcess",
     "BaseResource",
     "CompletedProcess",
+    "DeferredShell",
     "Environment",
     "EnvironmentError",
     "EnvironmentNotEnteredError",
@@ -65,6 +68,7 @@ __all__ = [
     "LocalTmpFileOperator",
     "OutputBuffer",
     "PathNotAllowedError",
+    "ReadyState",
     "Resource",
     "ResourceEntry",
     "ResourceFactory",

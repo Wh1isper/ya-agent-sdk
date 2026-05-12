@@ -277,7 +277,7 @@ async def review_shell_command(
 
     model_id = cast(Model, agent.model).model_name
     usage_id = usage_uuid or uuid4().hex
-    await ctx.emit_usage_snapshot(
+    ctx.update_usage_snapshot_entry(
         agent_id="shell_review",
         agent_name="shell_review",
         model_id=model_id,

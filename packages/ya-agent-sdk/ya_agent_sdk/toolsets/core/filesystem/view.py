@@ -259,7 +259,7 @@ class ViewTool(BaseTool):
             )
 
             if ctx.tool_call_id:
-                await ctx.deps.emit_usage_snapshot(
+                ctx.deps.update_usage_snapshot_entry(
                     agent_id="image_understanding",
                     agent_name="image_understanding",
                     model_id=model_id,
@@ -304,7 +304,7 @@ class ViewTool(BaseTool):
             )
 
             if ctx.tool_call_id:
-                await ctx.deps.emit_usage_snapshot(
+                ctx.deps.update_usage_snapshot_entry(
                     agent_id="video_understanding",
                     agent_name="video_understanding",
                     model_id=model_id,
@@ -349,7 +349,7 @@ class ViewTool(BaseTool):
             )
 
             if ctx.tool_call_id:
-                await ctx.deps.emit_usage_snapshot(
+                ctx.deps.update_usage_snapshot_entry(
                     agent_id="audio_understanding",
                     agent_name="audio_understanding",
                     model_id=model_id,

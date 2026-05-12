@@ -67,7 +67,7 @@ class ReadVideoTool(BaseTool):
         )
 
         if ctx.tool_call_id:
-            await agent_ctx.emit_usage_snapshot(
+            agent_ctx.update_usage_snapshot_entry(
                 agent_id="video_understanding",
                 agent_name="video_understanding",
                 model_id=model_id,
