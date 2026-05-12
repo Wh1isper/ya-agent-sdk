@@ -29,7 +29,8 @@ from y_agent_environment.shell import BackgroundProcess
 from yaacli.app import TUIApp, TUIMode, TUIState
 from yaacli.app.tui import PendingAttachment, _is_benign_contextvar_cleanup_error
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
-from yaacli.config import CommandDefinition
+from yaacli.config import CommandDefinition, GeneralConfig, ModelProfileConfig, YaacliConfig
+from yaacli.model_profiles import build_model_profiles
 
 
 @dataclass
@@ -1255,3 +1256,68 @@ async def test_tui_app_run_agent_reports_saved_recovery_session():
     assert "Session state saved." in joined_output
     assert f"/session {app.session_id}" in joined_output
     assert app.state == TUIState.IDLE
+
+
+@pytest.mark.asyncio
+async def test_tui_app_model_command_opens_in_tui_selector() -> None:
+    """/model should open the embedded TUI selector without terminal dialogs."""
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai:gpt-4o"),
+        model_profiles={
+            "sonnet": ModelProfileConfig(label="Sonnet", model="anthropic:claude-sonnet-4-5"),
+        },
+    )
+    config_manager = MockConfigManager()
+    app = TUIApp(config=config, config_manager=config_manager)
+
+    await app._handle_command_inner("/model")
+
+    assert app._model_selector_open is True
+    assert [profile.id for profile in app._model_selector_profiles] == ["default", "sonnet"]
+    assert app._model_selector_index == 0
+    assert any("/model" in line for line in app._output_lines)
+
+
+def test_tui_app_model_selector_movement_wraps() -> None:
+    """Embedded model selector movement should stay inside TUI state."""
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai:gpt-4o"),
+        model_profiles={
+            "sonnet": ModelProfileConfig(label="Sonnet", model="anthropic:claude-sonnet-4-5"),
+            "gemini": ModelProfileConfig(label="Gemini", model="google-gla:gemini-2.5-pro"),
+        },
+    )
+    config_manager = MockConfigManager()
+    app = TUIApp(config=config, config_manager=config_manager)
+    app._model_selector_open = True
+    app._model_selector_profiles = build_model_profiles(config)
+    app._model_selector_index = 0
+
+    app._move_model_selector(-1)
+    assert app._model_selector_index == 2
+
+    app._move_model_selector(1)
+    assert app._model_selector_index == 0
+
+
+def test_tui_app_model_selector_text_marks_current_and_highlighted_profiles() -> None:
+    """Embedded model selector output should mark active and highlighted profiles."""
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai:gpt-4o"),
+        model_profiles={
+            "sonnet": ModelProfileConfig(label="Sonnet", model="anthropic:claude-sonnet-4-5"),
+        },
+    )
+    config_manager = MockConfigManager()
+    app = TUIApp(config=config, config_manager=config_manager)
+    profiles = build_model_profiles(config)
+    app._active_model_profile = profiles[1]
+    app._model_selector_open = True
+    app._model_selector_profiles = profiles
+    app._model_selector_index = 1
+
+    rendered = app._get_model_selector_text().value
+
+    assert "Select model profile" in rendered
+    assert "> * Sonnet: anthropic:claude-sonnet-4-5" in rendered
+    assert "Enter: use" in rendered

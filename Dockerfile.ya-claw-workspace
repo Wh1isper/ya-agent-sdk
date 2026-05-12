@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM debian:stable-slim
 
 ARG NODE_MAJOR=22
@@ -8,14 +10,16 @@ ARG WORKSPACE_GID=1000
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     MALLOC_ARENA_MAX=2 \
     MALLOC_TRIM_THRESHOLD_=131072 \
     PYTHONMALLOC=malloc \
     YA_CLAW_WORKSPACE_STARTUP_DIR=/workspace \
     PATH=/home/claw/.bin:${PATH}
 
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends \
         apt-transport-https \
         bash \
@@ -54,7 +58,7 @@ RUN apt-get update \
     && if ! getent group "${WORKSPACE_GID}" >/dev/null; then groupadd --gid "${WORKSPACE_GID}" "claw-g${WORKSPACE_GID}"; fi \
     && if ! getent passwd "${WORKSPACE_UID}" >/dev/null; then useradd --uid "${WORKSPACE_UID}" --gid "${WORKSPACE_GID}" --home-dir /home/claw --create-home --shell /bin/bash "claw-u${WORKSPACE_UID}"; fi \
     && chown "${WORKSPACE_UID}:${WORKSPACE_GID}" /workspace /home/claw /home/claw/.bin \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    && rm -rf /tmp/* /var/tmp/*
 
 RUN set -eu; \
     arch="${TARGETARCH:-}"; \

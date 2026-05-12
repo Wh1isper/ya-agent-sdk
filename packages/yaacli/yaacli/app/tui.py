@@ -39,14 +39,13 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit import Application
-from prompt_toolkit.application import in_terminal
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
-from prompt_toolkit.shortcuts import radiolist_dialog
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import (
@@ -318,6 +317,9 @@ class TUIApp:
 
     # Model profile state
     _active_model_profile: ResolvedModelProfile | None = field(default=None, init=False)
+    _model_selector_open: bool = field(default=False, init=False)
+    _model_selector_profiles: list[ResolvedModelProfile] = field(default_factory=list, init=False)
+    _model_selector_index: int = field(default=0, init=False)
 
     # UI refresh throttling
     _last_invalidate_time: float = field(default=0.0, init=False)
@@ -1189,7 +1191,7 @@ class TUIApp:
         return f"[{mouse_mode}] {state_indicator} "
 
     async def _show_model_selector(self) -> None:
-        """Show the model profile selector and switch to the selected profile."""
+        """Open the in-TUI model profile selector."""
         if self._state == TUIState.RUNNING:
             self._append_system_output("Model selection is available after the current run finishes.")
             return
@@ -1200,27 +1202,78 @@ class TUIApp:
             return
 
         current_id = self._active_model_profile.id if self._active_model_profile else profiles[0].id
-        values = [(profile.id, format_model_profile_choice(profile)) for profile in profiles]
+        current_index = next((idx for idx, profile in enumerate(profiles) if profile.id == current_id), 0)
+        self._model_selector_profiles = profiles
+        self._model_selector_index = current_index
+        self._model_selector_open = True
+        if self._app:
+            self._app.invalidate()
 
-        async with in_terminal(render_cli_done=True):
-            selected_id = await radiolist_dialog(
-                title="Select model",
-                text="Choose the model profile for this session:",
-                values=values,
-                default=current_id,
-                ok_text="Use",
-                cancel_text="Cancel",
-            ).run_async()
+    def _close_model_selector(self) -> None:
+        """Close the in-TUI model selector."""
+        self._model_selector_open = False
+        self._model_selector_profiles = []
+        self._model_selector_index = 0
+        if self._app:
+            self._app.invalidate()
 
-        if selected_id is None:
+    def _move_model_selector(self, delta: int) -> None:
+        """Move the active selection in the model selector."""
+        if not self._model_selector_open or not self._model_selector_profiles:
+            return
+        count = len(self._model_selector_profiles)
+        self._model_selector_index = (self._model_selector_index + delta) % count
+        if self._app:
+            self._app.invalidate()
+
+    async def _apply_model_selector_selection(self) -> None:
+        """Apply the currently highlighted model profile."""
+        if not self._model_selector_open or not self._model_selector_profiles:
             return
 
-        selected_profile = next((profile for profile in profiles if profile.id == selected_id), None)
-        if selected_profile is None:
-            self._append_system_output(f"Model profile not found: {selected_id}")
-            return
-
+        index = max(0, min(self._model_selector_index, len(self._model_selector_profiles) - 1))
+        selected_profile = self._model_selector_profiles[index]
+        self._close_model_selector()
         await self._switch_model_profile(selected_profile)
+
+    def _get_model_selector_text(self) -> ANSI:
+        """Render the in-TUI model selector."""
+        if not self._model_selector_open or not self._model_selector_profiles:
+            return ANSI("")
+
+        max_visible = 8
+        total = len(self._model_selector_profiles)
+        start = max(0, min(self._model_selector_index - max_visible // 2, total - max_visible))
+        end = min(total, start + max_visible)
+
+        lines = [
+            " Select model profile",
+            " Up/Down: move | Enter: use | Esc: cancel",
+            "",
+        ]
+        for idx in range(start, end):
+            profile = self._model_selector_profiles[idx]
+            cursor = ">" if idx == self._model_selector_index else " "
+            active = "*" if self._active_model_profile and profile.id == self._active_model_profile.id else " "
+            lines.append(f" {cursor} {active} {format_model_profile_choice(profile)}")
+
+        if start > 0:
+            lines.insert(3, "     ...")
+        if end < total:
+            lines.append("     ...")
+
+        return ANSI("\n".join(lines))
+
+    def _get_model_selector_height(self) -> int:
+        """Return the model selector window height."""
+        if not self._model_selector_open or not self._model_selector_profiles:
+            return 1
+        max_visible = 8
+        total = len(self._model_selector_profiles)
+        visible_items = min(total, max_visible)
+        overflow_lines = int(total > max_visible and self._model_selector_index >= max_visible // 2)
+        overflow_lines += int(total > max_visible and self._model_selector_index < total - max_visible // 2 - 1)
+        return visible_items + 3 + overflow_lines
 
     async def _switch_model_profile(self, profile: ResolvedModelProfile) -> None:
         """Switch the current runtime to a model profile."""
@@ -2270,6 +2323,9 @@ class TUIApp:
         kb = KeyBindings()
 
         def previous_history() -> None:
+            if self._model_selector_open:
+                self._move_model_selector(-1)
+                return
             if not self._prompt_history:
                 return
             # First time pressing up: backup current input
@@ -2283,6 +2339,9 @@ class TUIApp:
                 input_area.buffer.cursor_position = len(input_area.buffer.text)
 
         def next_history() -> None:
+            if self._model_selector_open:
+                self._move_model_selector(1)
+                return
             if self._history_index == -1:
                 return
             # Move to next item
@@ -2316,6 +2375,13 @@ class TUIApp:
             next_history()
 
         def submit_or_newline() -> None:
+            if self._model_selector_open:
+                if self._app:
+                    self._app.create_background_task(self._apply_model_selector_selection())
+                else:
+                    self._track_managed_task(asyncio.create_task(self._apply_model_selector_selection()))
+                return
+
             if self._input_mode == "send":
                 text = input_area.buffer.text.strip()
 
@@ -2354,6 +2420,10 @@ class TUIApp:
         def handle_ctrl_c(event: KeyPressEvent) -> None:
             """Handle Ctrl+C - cancel running task or double-press to exit."""
             current_time = time.time()
+
+            if self._model_selector_open:
+                self._close_model_selector()
+                return
 
             if self._state == TUIState.RUNNING:
                 # Running: request cancellation (state change handled by _run_agent finally)
@@ -2418,7 +2488,11 @@ class TUIApp:
 
         @kb.add("escape")
         def handle_escape(event: KeyPressEvent) -> None:
-            """Toggle mouse support mode."""
+            """Close model selector or toggle mouse support mode."""
+            if self._model_selector_open:
+                self._close_model_selector()
+                return
+
             self._mouse_enabled = not self._mouse_enabled
             if self._app and self._app.output:
                 if self._mouse_enabled:
@@ -2448,6 +2522,8 @@ class TUIApp:
         @kb.add("tab")
         def handle_tab(event: KeyPressEvent) -> None:
             """Toggle input mode between send and edit."""
+            if self._model_selector_open:
+                return
             if self._input_mode == "send":
                 self._input_mode = "edit"
             else:
@@ -2486,6 +2562,7 @@ class TUIApp:
             "status-bar.mode-act": "bg:ansigreen fg:black bold",
             "status-bar.mode-plan": "bg:ansiblue fg:white bold",
             "steering-pane": "bg:ansibrightblack fg:ansicyan",
+            "model-selector": "bg:ansibrightblack fg:ansiwhite",
             "input-area": "",
         })
 
@@ -3304,6 +3381,18 @@ class TUIApp:
             wrap_lines=True,
         )
 
+        # In-TUI model selector
+        model_selector_control = FormattedTextControl(self._get_model_selector_text)
+        model_selector_window = ConditionalContainer(
+            Window(
+                content=model_selector_control,
+                height=self._get_model_selector_height,
+                style="class:model-selector",
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: self._model_selector_open),
+        )
+
         # Status bar
         status_bar = Window(
             content=FormattedTextControl(self._get_status_text),
@@ -3358,11 +3447,12 @@ class TUIApp:
         input_area.window.content = scrollable_control
         input_area.control = scrollable_control
 
-        # Layout: Output | Steering | Status | Input
+        # Layout: Output | Steering | Model Selector | Status | Input
         layout = Layout(
             HSplit([
                 output_window,
                 steering_window,
+                model_selector_window,
                 status_bar,
                 input_area,
             ]),

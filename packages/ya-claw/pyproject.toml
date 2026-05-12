@@ -37,6 +37,7 @@ bump = true
 
 [tool.hatch.metadata.hooks.uv-dynamic-versioning]
 dependencies = [
+    "ag-ui-protocol>=0.1.18",
     "alembic>=1.16.0",
     "click>=8.0",
     "fastapi>=0.116.0",
@@ -77,5 +78,5 @@ dev = [
 
 [tool.deptry]
 ignore = ["DEP001"]
-package_module_name_map = { "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-sdk" = "ya_agent_sdk" }
+package_module_name_map = { "ag-ui-protocol" = "ag_ui", "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-sdk" = "ya_agent_sdk" }
 per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "greenlet", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_sdk", "ya_claw"], DEP004 = ["pytest"] }
