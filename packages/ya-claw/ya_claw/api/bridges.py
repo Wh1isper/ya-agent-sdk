@@ -41,24 +41,44 @@ async def ingest_bridge_message(request: Request, payload: BridgeInboundMessage)
 
 @router.post("/inbound/actions", response_model=BridgeDispatchResult)
 async def ingest_bridge_action(request: Request, payload: BridgeInboundAction) -> BridgeDispatchResult:
+    settings = _get_settings(request)
     runtime_state = _get_runtime_state(request)
     session_factory = _get_session_factory(request)
+    dispatcher = RunDispatcher(request.app.state.execution_supervisor)
     async with session_factory() as db_session:
-        result = await inbound_controller.handle_inbound_action(db_session, runtime_state, payload)
+        result = await inbound_controller.handle_inbound_action(
+            db_session,
+            settings,
+            runtime_state,
+            dispatcher,
+            payload,
+        )
     notification_hub = getattr(request.app.state, "notification_hub", None)
     if notification_hub is not None and result.run_id is not None:
-        await notification_hub.publish(
-            "run.hitl.responded",
-            {
-                "session_id": result.session_id,
-                "run_id": result.run_id,
-                "status": "responded",
-                "remaining_interaction_count": result.remaining_interaction_count,
-                "current_interaction": result.current_interaction.model_dump(mode="json")
-                if result.current_interaction is not None
-                else None,
-            },
-        )
+        if payload.action_type == "hitl_respond":
+            await notification_hub.publish(
+                "run.hitl.responded",
+                {
+                    "session_id": result.session_id,
+                    "run_id": result.run_id,
+                    "status": "responded",
+                    "remaining_interaction_count": result.remaining_interaction_count,
+                    "current_interaction": result.current_interaction.model_dump(mode="json")
+                    if result.current_interaction is not None
+                    else None,
+                },
+            )
+        elif payload.action_type == "session_recovery":
+            await notification_hub.publish(
+                "run.recovery.submitted",
+                {
+                    "session_id": result.session_id,
+                    "run_id": result.run_id,
+                    "source_run_id": _source_run_id_from_recovery_token(payload.token),
+                    "status": result.status,
+                    "action": payload.metadata.get("action"),
+                },
+            )
     return result
 
 
@@ -108,6 +128,15 @@ async def list_bridge_events(
             status=status,
             limit=limit,
         )
+
+
+def _source_run_id_from_recovery_token(token: str | None) -> str | None:
+    if not isinstance(token, str):
+        return None
+    parts = token.split(":")
+    if len(parts) < 3 or parts[0] != "recovery":
+        return None
+    return parts[2]
 
 
 def _get_settings(request: Request) -> ClawSettings:
