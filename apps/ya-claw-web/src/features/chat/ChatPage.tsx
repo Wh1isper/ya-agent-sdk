@@ -33,7 +33,10 @@ import {
   useRunControlMutations,
   useRunQuery,
   useSessionQuery,
+  useSessionSandboxMutations,
+  useSessionWorkspaceQuery,
   useSessionsQuery,
+  useWorkspaceRuntimeQuery,
 } from '../../api/hooks'
 import { EmptyState } from '../../components/EmptyState'
 import { JsonView } from '../../components/JsonView'
@@ -51,7 +54,10 @@ import type {
   AguiEvent,
   InputPart,
   RunSummary,
+  SessionSandboxState,
   SessionSummary,
+  SessionWorkspaceState,
+  WorkspaceRuntimeStatus,
 } from '../../types'
 import { buildTimeline, reduceAguiEvent } from './agui/eventReducer'
 import type { AguiTimelineState, TimelineBlock } from './agui/types'
@@ -66,6 +72,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useRunEventStream } from './useRunEventStream'
+import { sandboxLabel, sandboxTone, ttlLabel } from '../workspaceDisplay'
 
 export function ChatPage() {
   const selectedSessionId = useLayoutStore((state) => state.selectedSessionId)
@@ -76,6 +83,8 @@ export function ChatPage() {
   const [isComposingNew, setIsComposingNew] = useState(false)
   const autoSelectedSessionRef = useRef(false)
   const sessions = useSessionsQuery()
+  const workspaceRuntime = useWorkspaceRuntimeQuery()
+  const selectedSessionWorkspace = useSessionWorkspaceQuery(selectedSessionId)
   const selectedSession = useSessionQuery(selectedSessionId)
   const activeSessionData = selectedSessionId ? selectedSession.data : undefined
   const resolvedRunId =
@@ -272,6 +281,15 @@ export function ChatPage() {
                   selectedRunId={resolvedRunId}
                   onSelectRun={selectRun}
                 />
+                <WorkspaceStatusBar
+                  runtime={workspaceRuntime.data ?? null}
+                  sessionId={selectedSessionId}
+                  state={
+                    selectedSessionWorkspace.data ??
+                    activeSessionData?.session.workspace_state ??
+                    null
+                  }
+                />
                 <MemoryStatusBar session={activeSessionData?.session ?? null} />
                 <RunControlBar run={activeRunData?.run ?? null} />
                 <TimelinePanel
@@ -393,6 +411,9 @@ function SessionList({
                         {session.memory_state.extract_count} extracts
                       </span>
                     ) : null}
+                    <SessionSandboxPill
+                      sandbox={session.workspace_state?.sandbox_state ?? null}
+                    />
                   </div>
                 </div>
               </button>
@@ -463,6 +484,99 @@ function RunStrip({
         ))}
       </div>
     </div>
+  )
+}
+
+function WorkspaceStatusBar({
+  runtime,
+  sessionId,
+  state,
+}: {
+  runtime: WorkspaceRuntimeStatus | null
+  sessionId: string | null
+  state: SessionWorkspaceState | null
+}) {
+  const sandbox = state?.sandbox_state ?? null
+  const controls = useSessionSandboxMutations(sessionId)
+  const canPrepare = Boolean(
+    sessionId &&
+      runtime?.capabilities.sandbox_prepare &&
+      sandbox?.ready_state !== 'ready',
+  )
+  const canStop = Boolean(
+    sessionId && runtime?.capabilities.sandbox_stop && sandbox?.container_id,
+  )
+
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-blue-50/60 px-4 py-2 text-xs text-blue-950">
+      <div className="flex min-w-0 items-center gap-2 font-medium">
+        <TerminalSquare className="h-3.5 w-3.5" />
+        <span>Workspace</span>
+        <span className="rounded-full bg-white/80 px-2 py-0.5 text-blue-700">
+          {runtime?.backend ?? sandbox?.backend ?? 'unknown'}
+        </span>
+        <span className="truncate text-blue-700">
+          {state?.binding?.cwd ??
+            sandbox?.work_dir ??
+            runtime?.workspace.virtual_path ??
+            'workspace'}
+        </span>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <SessionSandboxPill sandbox={sandbox} />
+        {sandbox?.container_id ? (
+          <span className="mono rounded-full bg-white/80 px-2 py-0.5 text-blue-700">
+            {formatShortId(sandbox.container_id, 12)}
+          </span>
+        ) : null}
+        {canPrepare ? (
+          <button
+            type="button"
+            className="rounded-full border border-blue-200 bg-white px-2 py-0.5 font-medium text-blue-700 transition hover:bg-blue-50 disabled:opacity-60"
+            onClick={() => controls.prepare.mutate()}
+            disabled={controls.prepare.isPending}
+          >
+            Prepare
+          </button>
+        ) : null}
+        {canStop ? (
+          <button
+            type="button"
+            className="rounded-full border border-slate-200 bg-white px-2 py-0.5 font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+            onClick={() => controls.stop.mutate()}
+            disabled={controls.stop.isPending}
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function SessionSandboxPill({
+  sandbox,
+}: {
+  sandbox: SessionSandboxState | null
+}) {
+  const tone = sandboxTone(sandbox)
+  return (
+    <span
+      className={cn(
+        'rounded-full px-2 py-0.5 text-[11px] font-medium capitalize',
+        tone === 'success' && 'bg-emerald-50 text-emerald-700',
+        tone === 'warning' && 'bg-amber-50 text-amber-700',
+        tone === 'error' && 'bg-rose-50 text-rose-700',
+        tone === 'info' && 'bg-blue-50 text-blue-700',
+        tone === 'muted' && 'bg-slate-100 text-slate-500',
+      )}
+      title={sandbox?.container_ref ?? undefined}
+    >
+      {sandboxLabel(sandbox)}
+      {sandbox?.ttl_seconds_remaining != null
+        ? ` · ${ttlLabel(sandbox.ttl_seconds_remaining)}`
+        : ''}
+    </span>
   )
 }
 

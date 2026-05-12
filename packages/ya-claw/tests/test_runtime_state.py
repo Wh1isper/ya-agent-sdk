@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ya_claw.runtime_state import ActiveRunHandle, InMemoryRuntimeState, create_runtime_state
+from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
 
 
 async def _collect_events(state: InMemoryRuntimeState, run_id: str) -> list[dict[str, str]]:
@@ -24,9 +24,7 @@ async def test_stream_run_events_closes_after_terminal_event() -> None:
     events = await asyncio.wait_for(consumer, timeout=1)
 
     assert [event["event"] for event in events] == ["run.created", "run.cancelled"]
-    handle = state.get_run_handle("run-1")
-    assert isinstance(handle, ActiveRunHandle)
-    assert handle.closed is True
+    assert state.get_run_handle("run-1") is None
 
 
 async def test_stream_run_events_replays_from_last_event_id() -> None:
@@ -56,6 +54,33 @@ async def test_runtime_state_aclose_releases_waiting_subscribers() -> None:
 
     assert events == []
     assert state.subscribers == 0
+
+
+async def test_runtime_state_prunes_terminal_stream_run_after_consumer_finishes() -> None:
+    state = create_runtime_state()
+    state.register_run("session-1", "run-1")
+    await state.append_run_event("run-1", {"type": "run.created"})
+    await state.append_run_event("run-1", {"type": "run.completed"}, terminal=True)
+
+    events: list[dict[str, str]] = []
+    async for event in state.stream_run_events("run-1"):
+        events.append(event)
+
+    assert [event["event"] for event in events] == ["run.created", "run.completed"]
+    assert state.get_run_handle("run-1") is None
+    assert state.session_latest_run_ids == {}
+
+
+async def test_runtime_state_scheduled_cleanup_clears_unconsumed_closed_run() -> None:
+    state = create_runtime_state()
+    state.register_run("session-1", "run-1")
+    await state.append_run_event("run-1", {"type": "run.completed"}, terminal=True)
+
+    state.schedule_run_cleanup("run-1", delay_seconds=0)
+    await asyncio.sleep(0.05)
+
+    assert state.get_run_handle("run-1") is None
+    assert state.cleanup_tasks == {}
 
 
 async def test_runtime_state_hitl_waits_until_all_interactions_resolve() -> None:

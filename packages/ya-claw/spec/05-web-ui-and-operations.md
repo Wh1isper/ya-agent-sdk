@@ -15,6 +15,7 @@ It should let a user:
 - read compacted conversation history for completed rounds
 - inspect bridge endpoints and relay activity
 - inspect run summaries
+- inspect workspace runtime health and session sandbox state
 - manage execution profiles
 
 The web shell acts as an application on top of YA Claw. It uses the single configured workspace exposed by the runtime.
@@ -34,11 +35,11 @@ flowchart LR
 
 ### Overview
 
-Shows runtime health, active sessions, active schedules, next schedule fire, heartbeat status, bridge activity, and recent runs.
+Shows runtime health, workspace backend health, active sessions, ready sandbox count, active schedules, next schedule fire, heartbeat status, bridge activity, and recent runs. Workspace details include backend, runtime status, execution location, service path, virtual path, Docker image, and idle TTL when available.
 
 ### Sessions
 
-Shows session lineage, latest state, continuation entry points, and compacted conversation history loaded from `message.json` in the run store.
+Shows session lineage, latest state, workspace/sandbox state, continuation entry points, and compacted conversation history loaded from `message.json` in the run store. Docker-backed sessions can expose sandbox prepare and stop controls when the runtime advertises those capabilities.
 
 ### Schedules
 
@@ -95,6 +96,8 @@ The web shell uses these API layers:
 
 - `/api/v1/claw/info` for startup handshake, capability flags, storage model, workspace backend, and auth mode
 - `/api/v1/claw/notifications` for global SSE notifications that refresh overview lists and selected session metadata
+- `/api/v1/workspace/runtime` for workspace backend checks, execution location, Docker status, and sandbox capabilities
+- `/api/v1/sessions/{session_id}/workspace` and sandbox lifecycle routes for selected-session workspace display and Docker sandbox control
 - `/api/v1/sessions` and nested run routes for chat creation, continuation, lineage, turns, and committed replay
 - `/api/v1/runs/{run_id}/events` and `/api/v1/sessions/{session_id}/events` for detailed AGUI-aligned live output
 - `/api/v1/profiles` for AgentProfile management
@@ -107,6 +110,8 @@ The web shell should implement SSE through `fetch` and `ReadableStream` parsing 
 flowchart LR
     INFO[/claw/info/] --> SHELL[Console Shell]
     NOTIFY[/claw/notifications/] --> OVERVIEW[Overview and Lists]
+    WORKSPACE[/workspace/runtime/] --> OVERVIEW
+    WORKSPACE --> CHAT
     SESSIONS[/sessions/] --> CHAT[Chat Console]
     RUN_EVENTS[/runs/:id/events/] --> CHAT
     PROFILES[/profiles/] --> ADMIN[Profile Admin]

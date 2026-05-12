@@ -48,6 +48,66 @@ export function useClawInfoQuery() {
   })
 }
 
+export function useWorkspaceRuntimeQuery() {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: queryKeys.workspaceRuntime,
+    queryFn: () => api.getWorkspaceRuntime(),
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+    retry: 1,
+  })
+}
+
+export function useSessionWorkspaceQuery(sessionId: string | null) {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: sessionId
+      ? queryKeys.sessionWorkspace(sessionId)
+      : ['session-workspace', 'none'],
+    queryFn: () => api.getSessionWorkspace(sessionId ?? ''),
+    enabled: Boolean(sessionId),
+    placeholderData: keepPreviousData,
+    staleTime: 10_000,
+  })
+}
+
+export function useSessionSandboxMutations(sessionId: string | null) {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceRuntime }),
+      sessionId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.session(sessionId),
+          })
+        : Promise.resolve(),
+      sessionId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.sessionWorkspace(sessionId),
+          })
+        : Promise.resolve(),
+      sessionId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.sessionSandbox(sessionId),
+          })
+        : Promise.resolve(),
+    ])
+  }
+  return {
+    prepare: useMutation({
+      mutationFn: () => api.prepareSessionSandbox(sessionId ?? ''),
+      onSuccess: refresh,
+    }),
+    stop: useMutation({
+      mutationFn: () => api.stopSessionSandbox(sessionId ?? ''),
+      onSuccess: refresh,
+    }),
+  }
+}
+
 export function useBridgeConversationsQuery() {
   const api = useApiClient()
   return useQuery({

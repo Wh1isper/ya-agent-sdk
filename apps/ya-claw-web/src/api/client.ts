@@ -25,7 +25,11 @@ import type {
   SessionCreateResponse,
   SessionGetResponse,
   SessionRunCreateRequest,
+  SessionSandboxState,
   SessionSummary,
+  SessionWorkspaceState,
+  WorkspaceResolveResponse,
+  WorkspaceRuntimeStatus,
 } from '../types'
 
 export class ApiError extends Error {
@@ -99,6 +103,43 @@ export class ClawApiClient {
 
   clawInfo() {
     return this.request<ClawInfo>('/api/v1/claw/info')
+  }
+
+  getWorkspaceRuntime() {
+    return this.request<WorkspaceRuntimeStatus>('/api/v1/workspace/runtime')
+  }
+
+  resolveWorkspace(metadata: Record<string, unknown>) {
+    return this.request<WorkspaceResolveResponse>('/api/v1/workspace:resolve', {
+      method: 'POST',
+      body: JSON.stringify({ metadata }),
+    })
+  }
+
+  getSessionWorkspace(sessionId: string) {
+    return this.request<SessionWorkspaceState>(
+      `/api/v1/sessions/${sessionId}/workspace`,
+    )
+  }
+
+  getSessionSandbox(sessionId: string) {
+    return this.request<SessionSandboxState>(
+      `/api/v1/sessions/${sessionId}/sandbox`,
+    )
+  }
+
+  prepareSessionSandbox(sessionId: string) {
+    return this.request<SessionSandboxState>(
+      `/api/v1/sessions/${sessionId}/sandbox:prepare`,
+      { method: 'POST' },
+    )
+  }
+
+  stopSessionSandbox(sessionId: string) {
+    return this.request<SessionSandboxState>(
+      `/api/v1/sessions/${sessionId}/sandbox:stop`,
+      { method: 'POST' },
+    )
   }
 
   listBridgeConversations() {

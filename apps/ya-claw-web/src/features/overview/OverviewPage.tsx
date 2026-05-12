@@ -19,11 +19,18 @@ import {
   useProfilesQuery,
   useSchedulesQuery,
   useSessionsQuery,
+  useWorkspaceRuntimeQuery,
 } from '../../api/hooks'
 import { StatusBadge } from '../../components/StatusBadge'
 import { cn, formatShortId } from '../../lib/utils'
 import { useLayoutStore } from '../../stores/layoutStore'
-import type { SessionSummary } from '../../types'
+import type { SessionSandboxState, SessionSummary } from '../../types'
+import {
+  runtimeHeroTone,
+  sandboxLabel,
+  sandboxTone,
+  ttlLabel,
+} from '../workspaceDisplay'
 
 export function OverviewPage() {
   const health = useHealthQuery()
@@ -32,6 +39,7 @@ export function OverviewPage() {
   const profiles = useProfilesQuery()
   const schedules = useSchedulesQuery()
   const heartbeat = useHeartbeatStatusQuery()
+  const workspaceRuntime = useWorkspaceRuntimeQuery()
   const setRoute = useLayoutStore((state) => state.setRoute)
   const selectSession = useLayoutStore((state) => state.selectSession)
   const rows = sessions.data ?? []
@@ -45,6 +53,10 @@ export function OverviewPage() {
     (count, session) => count + (session.memory_state?.extract_count ?? 0),
     0,
   )
+  const readySandboxCount = rows.filter(
+    (session) =>
+      session.workspace_state?.sandbox_state?.ready_state === 'ready',
+  ).length
   const enabledSchedules =
     schedules.data?.schedules.filter((item) => item.enabled).length ?? 0
 
@@ -81,6 +93,12 @@ export function OverviewPage() {
                 label="Heartbeat"
                 value={heartbeat.data?.enabled ? 'enabled' : 'disabled'}
                 tone={heartbeat.data?.enabled ? 'success' : 'muted'}
+              />
+              <HeroPill
+                icon={Server}
+                label="Workspace"
+                value={workspaceRuntime.data?.status ?? 'checking'}
+                tone={runtimeHeroTone(workspaceRuntime.data?.status)}
               />
             </div>
           </div>
@@ -130,10 +148,10 @@ export function OverviewPage() {
           accent="violet"
         />
         <MetricCard
-          icon={CalendarClock}
-          label="Schedules"
-          value={String(enabledSchedules)}
-          detail={`${schedules.data?.schedules.length ?? 0} configured`}
+          icon={Server}
+          label="Ready sandboxes"
+          value={String(readySandboxCount)}
+          detail={`${rows.length} session workspace states`}
           accent="blue"
         />
       </div>
@@ -209,6 +227,36 @@ export function OverviewPage() {
               label="Workspace"
               value={info.data?.workspace_provider_backend ?? 'unknown'}
             />
+            <Detail
+              label="Workspace status"
+              value={workspaceRuntime.data?.status ?? 'checking'}
+            />
+            <Detail
+              label="Execution location"
+              value={workspaceRuntime.data?.execution_location ?? 'unknown'}
+            />
+            <Detail
+              label="Service path"
+              value={workspaceRuntime.data?.workspace.service_path ?? 'unknown'}
+            />
+            <Detail
+              label="Virtual path"
+              value={workspaceRuntime.data?.workspace.virtual_path ?? 'unknown'}
+            />
+            {workspaceRuntime.data?.docker ? (
+              <>
+                <Detail
+                  label="Docker image"
+                  value={workspaceRuntime.data.docker.image.ref}
+                />
+                <Detail
+                  label="Idle TTL"
+                  value={ttlLabel(
+                    workspaceRuntime.data.docker.idle_ttl_seconds,
+                  )}
+                />
+              </>
+            ) : null}
             <Detail
               label="Base URL"
               value={info.data?.public_base_url ?? 'unknown'}
@@ -359,9 +407,34 @@ function SessionRow({
             {session.memory_state.extract_count} extracts
           </span>
         ) : null}
+        <SandboxBadge
+          sandbox={session.workspace_state?.sandbox_state ?? null}
+        />
         <StatusBadge status={session.status} />
       </div>
     </button>
+  )
+}
+
+function SandboxBadge({ sandbox }: { sandbox: SessionSandboxState | null }) {
+  const tone = sandboxTone(sandbox)
+  return (
+    <span
+      className={cn(
+        'rounded-full px-2 py-1 text-xs font-medium capitalize',
+        tone === 'success' && 'bg-emerald-50 text-emerald-700',
+        tone === 'warning' && 'bg-amber-50 text-amber-700',
+        tone === 'error' && 'bg-rose-50 text-rose-700',
+        tone === 'info' && 'bg-blue-50 text-blue-700',
+        tone === 'muted' && 'bg-slate-100 text-slate-500',
+      )}
+      title={sandbox?.container_ref ?? undefined}
+    >
+      {sandboxLabel(sandbox)}
+      {sandbox?.ttl_seconds_remaining != null
+        ? ` · ${ttlLabel(sandbox.ttl_seconds_remaining)}`
+        : ''}
+    </span>
   )
 }
 

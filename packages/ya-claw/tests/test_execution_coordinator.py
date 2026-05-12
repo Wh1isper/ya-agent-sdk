@@ -487,9 +487,7 @@ async def test_run_coordinator_completes_run_and_commits_artifacts(
     assert message_payload is not None
     assert message_payload[0]["content"] == "completed run-1"
 
-    handle = runtime_state.get_run_handle("run-1")
-    assert handle is not None
-    assert handle.events[-1].payload["type"] == "RUN_FINISHED"
+    assert runtime_state.get_run_handle("run-1") is None
 
 
 async def test_run_coordinator_loads_restore_point_from_previous_run(
@@ -654,9 +652,7 @@ async def test_run_coordinator_marks_run_failed_on_exception(
     assert refreshed_run.status == "failed"
     assert refreshed_run.error_message == "boom"
     assert refreshed_session.head_success_run_id is None
-    handle = runtime_state.get_run_handle("run-1")
-    assert handle is not None
-    assert handle.events[-1].payload["type"] == "RUN_ERROR"
+    assert runtime_state.get_run_handle("run-1") is None
 
 
 async def test_run_coordinator_preserves_interrupt_when_failure_races_with_stop(
@@ -698,6 +694,4 @@ async def test_run_coordinator_preserves_interrupt_when_failure_races_with_stop(
     assert refreshed_run.status == "cancelled"
     assert refreshed_run.termination_reason == "interrupt"
 
-    handle = runtime_state.get_run_handle("run-1")
-    assert handle is not None
-    assert all(event.payload["type"] != "RUN_ERROR" for event in handle.events)
+    assert runtime_state.get_run_handle("run-1") is None

@@ -91,6 +91,15 @@ def test_agui_replay_buffer_merges_tool_call_chunks() -> None:
     assert compacted[1]["type"] == "TOOL_CALL_RESULT"
 
 
+def test_agui_replay_buffer_stores_chunk_fragments_until_snapshot() -> None:
+    replay = AguiReplayBuffer()
+    for index in range(5):
+        replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "message-1", "delta": str(index)})
+
+    assert replay.events == [{"type": "TEXT_MESSAGE_CHUNK", "messageId": "message-1", "delta": ""}]
+    assert replay.snapshot()[0]["delta"] == "01234"
+
+
 def test_agui_adapter_maps_run_lifecycle_events() -> None:
     adapter = AguiEventAdapter(session_id="session-1", run_id="run-1")
 

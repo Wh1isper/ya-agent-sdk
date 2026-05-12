@@ -26,6 +26,7 @@ flowchart TB
     ROOT --> PROFILES[/profiles and seed operations]
     ROOT --> SCHEDULES[/schedules]
     ROOT --> HEARTBEAT[/heartbeat]
+    ROOT --> WORKSPACE[/workspace runtime and sandbox state]
     ROOT --> CLAW[/claw info and notifications]
 ```
 
@@ -36,6 +37,21 @@ flowchart TB
 | `GET`  | `/healthz`                   | service, storage, and runtime health         |
 | `GET`  | `/api/v1/claw/info`          | web console startup handshake and capability |
 | `GET`  | `/api/v1/claw/notifications` | global console notification SSE stream       |
+
+## Workspace Runtime
+
+| Method | Path                                            | Purpose                                                 |
+| ------ | ----------------------------------------------- | ------------------------------------------------------- |
+| `GET`  | `/api/v1/workspace/runtime`                     | inspect configured workspace backend and runtime checks |
+| `POST` | `/api/v1/workspace:resolve`                     | resolve provider binding for supplied metadata          |
+| `GET`  | `/api/v1/sessions/{session_id}/workspace`       | inspect a session's resolved workspace and sandbox      |
+| `GET`  | `/api/v1/sessions/{session_id}/sandbox`         | inspect a session's sandbox state                       |
+| `POST` | `/api/v1/sessions/{session_id}/sandbox:prepare` | prepare a Docker-backed session sandbox                 |
+| `POST` | `/api/v1/sessions/{session_id}/sandbox:stop`    | stop a Docker-backed session sandbox                    |
+
+`workspace.runtime` exposes backend, execution location, workspace service path, virtual path, checks, Docker daemon/image/cache status, sandbox lifecycle capabilities, and update time. Session summaries and session detail responses include `workspace_state` with the persisted sandbox state when sandbox metadata exists.
+
+Sandbox state uses `status` for lifecycle (`created`, `preparing`, `ready`, `failed`, `stopped`) and `ready_state` for client display (`not_started`, `starting`, `ready`, `failed`). Docker session sandboxes expose container reference, container id, verified container id, image, work dir, retention policy, idle TTL, computed expiry, and TTL seconds remaining.
 
 ## Sessions
 
@@ -209,6 +225,14 @@ Session and run GET endpoints should return the structured record plus committed
     "head_run_id": "run_3",
     "head_success_run_id": "run_2",
     "active_run_id": "run_3",
+    "workspace_state": {
+      "sandbox_state": {
+        "backend": "docker",
+        "ready_state": "ready",
+        "container_id": "container_123",
+        "ttl_seconds_remaining": 1800
+      }
+    },
     "recent_runs": []
   },
   "state": {},

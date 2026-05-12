@@ -37,6 +37,133 @@ export type ClawInfo = {
   }
 }
 
+export type RuntimeCheckStatus =
+  | 'ready'
+  | 'warning'
+  | 'error'
+  | 'checking'
+  | 'skipped'
+
+export type WorkspaceRuntimeStatusValue =
+  | 'ready'
+  | 'degraded'
+  | 'unavailable'
+  | 'checking'
+
+export type RuntimeCheck = {
+  id: string
+  status: RuntimeCheckStatus
+  message: string
+  details: Record<string, unknown>
+}
+
+export type WorkspacePathStatus = {
+  service_path?: string | null
+  docker_host_path?: string | null
+  virtual_path?: string | null
+  exists: boolean
+  writable: boolean
+}
+
+export type WorkspaceRuntimeCapabilities = {
+  file_browse: boolean
+  shell: boolean
+  sandbox_prepare: boolean
+  sandbox_stop: boolean
+}
+
+export type DockerRuntimeStatus = {
+  daemon: {
+    status: RuntimeCheckStatus
+    server_version?: string | null
+    error_message?: string | null
+  }
+  image: {
+    ref: string
+    present: boolean
+    digest?: string | null
+    error_message?: string | null
+  }
+  workspace_user: {
+    uid?: number | null
+    gid?: number | null
+    exec_user?: string | null
+  }
+  container_cache: {
+    enabled: boolean
+    cache_dir?: string | null
+  }
+  retention_policy?: string | null
+  idle_ttl_seconds?: number | null
+}
+
+export type WorkspaceRuntimeStatus = {
+  backend: 'local' | 'docker' | 'remote' | 'cloud' | 'unknown'
+  status: WorkspaceRuntimeStatusValue
+  execution_location: string
+  workspace: WorkspacePathStatus
+  capabilities: WorkspaceRuntimeCapabilities
+  checks: RuntimeCheck[]
+  docker?: DockerRuntimeStatus | null
+  updated_at: string
+}
+
+export type WorkspaceMountView = {
+  id?: string | null
+  name?: string | null
+  host_path: string
+  docker_host_path?: string | null
+  virtual_path: string
+  mode: string
+}
+
+export type WorkspaceBindingView = {
+  provider: string
+  backend_hint?: string | null
+  host_path: string
+  docker_host_path?: string | null
+  virtual_path: string
+  cwd: string
+  readable_paths: string[]
+  writable_paths: string[]
+  fingerprint: string
+  generation?: number | null
+  sandbox_scope?: string | null
+  mounts: WorkspaceMountView[]
+  metadata: Record<string, unknown>
+}
+
+export type SessionSandboxState = {
+  backend?: string | null
+  scope?: string | null
+  status: 'created' | 'mounted' | 'preparing' | 'ready' | 'failed' | 'stopped'
+  ready_state: 'not_started' | 'starting' | 'ready' | 'failed'
+  container_ref?: string | null
+  container_id?: string | null
+  verified_container_id?: string | null
+  image?: string | null
+  image_digest?: string | null
+  work_dir?: string | null
+  retention_policy?: string | null
+  idle_ttl_seconds?: number | null
+  ttl_seconds_remaining?: number | null
+  expires_at?: string | null
+  last_used_at?: string | null
+  last_started_at?: string | null
+  error_message?: string | null
+  updated_at: string
+}
+
+export type SessionWorkspaceState = {
+  binding?: WorkspaceBindingView | null
+  sandbox_state?: SessionSandboxState | null
+}
+
+export type WorkspaceResolveResponse = {
+  binding: WorkspaceBindingView
+  sandbox_state?: SessionSandboxState | null
+}
+
 export type FireRunStatus =
   | 'queued'
   | 'running'
@@ -369,6 +496,7 @@ export type SessionSummary = {
   active_run_id?: string | null
   latest_run?: RunSummary | null
   memory_state?: MemoryStateSummary | null
+  workspace_state?: SessionWorkspaceState | null
 }
 
 export type SessionDetail = SessionSummary & {

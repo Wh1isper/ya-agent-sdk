@@ -217,6 +217,7 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
         "status_detail",
         "status_reason",
         "updated_at",
+        "workspace_state",
     ])
     assert sorted(payload["run"]) == snapshot([
         "committed_at",

@@ -294,6 +294,7 @@ class RunCoordinator:
     async def execute(self, run_id: str) -> None:  # noqa: C901
         buffers = ExecutionBuffers()
         terminal_event_emitted = False
+        clear_runtime_handle = False
 
         logger.info("Executing run run_id={}", run_id)
         try:
@@ -397,6 +398,9 @@ class RunCoordinator:
                     terminal=True,
                 )
                 terminal_event_emitted = True
+                clear_runtime_handle = dispatch_mode != "stream"
+                if not clear_runtime_handle:
+                    self._runtime_state.schedule_run_cleanup(run_id)
                 lifecycle = MemoryLifecycle(
                     settings=self._settings,
                     session_factory=self._session_factory,
@@ -484,12 +488,20 @@ class RunCoordinator:
                     terminal=True,
                 )
                 terminal_event_emitted = True
+                clear_runtime_handle = self._resolve_dispatch_mode(run_id) != "stream"
+                if not clear_runtime_handle:
+                    self._runtime_state.schedule_run_cleanup(run_id)
         finally:
             if not terminal_event_emitted:
                 await self._runtime_state.close_run(run_id)
+                clear_runtime_handle = self._resolve_dispatch_mode(run_id) != "stream"
+                if not clear_runtime_handle:
+                    self._runtime_state.schedule_run_cleanup(run_id)
                 logger.debug(
                     "Run runtime state closed run_id={} terminal_event_emitted={}", run_id, terminal_event_emitted
                 )
+            if clear_runtime_handle:
+                self._runtime_state.clear_run(run_id)
 
     async def _execute_agent_run(  # noqa: C901
         self,
@@ -605,10 +617,6 @@ class RunCoordinator:
                                     for agui_event in agui_adapter.adapt_stream_event(stream_event):
                                         await self._runtime_state.append_run_event(run_id, agui_event)
                                     if streamer.run is not None:
-                                        buffers.latest_message_payload = self._build_message_payload(
-                                            streamer.run,
-                                            replay_events=self._runtime_state.get_replay_events(run_id),
-                                        )
                                         output = streamer.run.result.output if streamer.run.result else None
                                         buffers.output_text = self._stringify_output(output)
                                         buffers.output_summary = self._summarize_output(output)
@@ -1136,10 +1144,11 @@ class RunCoordinator:
 
     def _build_message_payload(self, run: Any, *, replay_events: list[dict[str, Any]]) -> dict[str, Any]:
         messages = ModelMessagesTypeAdapter.dump_python(run.all_messages(), mode="json")
+        events = list(replay_events)
         return {
-            "events": list(replay_events),
+            "events": events,
             "message_history": messages,
-            "messages": list(replay_events),
+            "messages": events,
             "message_count": len(messages) if isinstance(messages, list) else None,
         }
 

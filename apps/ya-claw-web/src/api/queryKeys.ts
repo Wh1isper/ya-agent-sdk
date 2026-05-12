@@ -1,6 +1,11 @@
 export const queryKeys = {
   health: ['health'] as const,
   clawInfo: ['claw-info'] as const,
+  workspaceRuntime: ['workspace-runtime'] as const,
+  sessionWorkspace: (sessionId: string) =>
+    ['session-workspace', sessionId] as const,
+  sessionSandbox: (sessionId: string) =>
+    ['session-sandbox', sessionId] as const,
   bridgeConversations: ['bridge-conversations'] as const,
   bridgeEvents: (conversationId?: string | null, status?: string | null) =>
     ['bridge-events', conversationId ?? 'all', status ?? 'all'] as const,

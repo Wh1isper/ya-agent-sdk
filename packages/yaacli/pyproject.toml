@@ -42,10 +42,7 @@ dependencies = [
     "pillow>=10.0.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
-    # Use explicit `pydantic-ai-slim` extras so YAACLI only installs
-    # providers used in this repository. The `pydantic-ai` meta-package
-    # currently pulls in quarantined `mistralai` via the `mistral` extra.
-    "pydantic-ai-slim[anthropic,cli,google,mcp,openai,retries,vertexai]>=1.92.0",
+    "pydantic-ai>=1.94.0",
     "pyobjc-framework-Cocoa>=10.0; platform_system == 'Darwin'",
     "python-dotenv>=1.0.0",
     "ya-agent-environment=={{ version }}",

@@ -212,6 +212,8 @@ Workspace environments receive built-in `LARK_APP_ID` and `LARK_APP_SECRET` alia
 
 Docker session sandboxes use `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY=stop_on_idle` by default and `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS=3600` by default. `keep_warm` keeps the current session sandbox running until explicit cleanup. `stop_on_idle` stops the current session sandbox after the TTL and starts it again for the next run when the workspace fingerprint still matches. The Docker container cache root remains `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR` or `<data_dir>/docker-workspace-containers`; session cache files live under `sessions/{session_id}/workspace.json`, and run-scoped automatic task cache files live under `runs/{run_id}/workspace.json`.
 
+Workspace runtime APIs expose the configured backend, workspace path mapping, Docker daemon and image status, cache directory, retention policy, idle TTL, and sandbox lifecycle capabilities. Session responses expose `workspace_state` when persisted sandbox metadata exists, and dedicated session workspace endpoints resolve the current provider binding for UI and Desktop clients.
+
 ## WorkspaceProvider
 
 `WorkspaceProvider` is the runtime boundary that returns one declarative `WorkspaceBinding` for a run.

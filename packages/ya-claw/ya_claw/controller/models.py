@@ -8,6 +8,7 @@ from pydantic import AliasChoices, BaseModel, Field
 
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.workspace.models import WorkspaceBindingSpec
+from ya_claw.workspace.runtime_models import SessionWorkspaceState, build_session_workspace_state
 
 
 class RunStatus(StrEnum):
@@ -304,6 +305,7 @@ class SessionSummary(BaseModel):
     active_run_id: str | None = None
     latest_run: RunSummary | None = None
     memory_state: MemoryStateSummary | None = None
+    workspace_state: SessionWorkspaceState | None = None
 
 
 class SessionDetail(SessionSummary):
@@ -664,6 +666,7 @@ def session_summary_from_record(
     latest_run: RunSummary | None,
     memory_state: MemoryStateSummary | None = None,
     active_interactions: list[dict[str, Any]] | None = None,
+    workspace_state: SessionWorkspaceState | None = None,
 ) -> SessionSummary:
     return SessionSummary(
         id=record.id,
@@ -683,4 +686,7 @@ def session_summary_from_record(
         active_run_id=record.active_run_id,
         latest_run=latest_run,
         memory_state=memory_state,
+        workspace_state=workspace_state
+        if workspace_state is not None
+        else build_session_workspace_state(record.session_metadata),
     )

@@ -156,17 +156,33 @@ function invalidateForNotification(
   const runId = stringPayloadField(event.payload, 'run_id', 'id')
   const profileName = stringPayloadField(event.payload, 'profile_name', 'name')
 
-  if (event.type.startsWith('session.') || event.type.startsWith('run.')) {
+  if (
+    event.type.startsWith('session.') ||
+    event.type.startsWith('run.') ||
+    event.type.startsWith('workspace.')
+  ) {
     patchSessionStatusFromNotification(queryClient, event, sessionId, runId)
     void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-    if (sessionId)
+    if (sessionId) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.session(sessionId),
       })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessionWorkspace(sessionId),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessionSandbox(sessionId),
+      })
+    }
     if (sourceSessionId && sourceSessionId !== sessionId)
       void queryClient.invalidateQueries({
         queryKey: queryKeys.session(sourceSessionId),
       })
+    if (event.type.startsWith('workspace.')) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workspaceRuntime,
+      })
+    }
     if (runId) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) })
       void queryClient.invalidateQueries({

@@ -19,6 +19,7 @@ from ya_claw.api.profiles import router as profiles_router
 from ya_claw.api.runs import router as runs_router
 from ya_claw.api.schedules import router as schedules_router
 from ya_claw.api.sessions import router as sessions_router
+from ya_claw.api.workspace import router as workspace_router
 from ya_claw.bridge import BridgeDispatchMode
 from ya_claw.bridge.service import BridgeSupervisor, build_bridge_supervisor
 from ya_claw.config import ClawSettings, get_settings
@@ -96,6 +97,7 @@ class ClawApplication:
         app.include_router(schedules_router, prefix="/api/v1")
         app.include_router(heartbeat_router, prefix="/api/v1")
         app.include_router(bridges_router, prefix="/api/v1")
+        app.include_router(workspace_router, prefix="/api/v1")
 
         frontend_registered = self.register_frontend(app)
         if not frontend_registered:

@@ -71,6 +71,7 @@ class AguiReplayBuffer:
     _text_chunk_index: dict[str, int] = field(default_factory=dict)
     _reasoning_chunk_index: dict[str, int] = field(default_factory=dict)
     _tool_chunk_index: dict[str, int] = field(default_factory=dict)
+    _chunk_fragments: dict[int, list[str]] = field(default_factory=dict)
 
     def append(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type", "")).strip()
@@ -90,7 +91,14 @@ class AguiReplayBuffer:
         self.events.append(dict(event))
 
     def snapshot(self) -> list[dict[str, Any]]:
-        return [dict(event) for event in self.events]
+        snapshot: list[dict[str, Any]] = []
+        for index, event in enumerate(self.events):
+            event_copy = dict(event)
+            fragments = self._chunk_fragments.get(index)
+            if fragments:
+                event_copy["delta"] = "".join(fragments)
+            snapshot.append(event_copy)
+        return snapshot
 
     def _merge_text_chunk(self, event: dict[str, Any]) -> None:
         message_id = _normalized_identifier(_event_field(event, "messageId", "message_id"))
@@ -99,11 +107,10 @@ class AguiReplayBuffer:
             return
         existing_index = self._text_chunk_index.get(message_id)
         if existing_index is None:
-            self._text_chunk_index[message_id] = len(self.events)
-            self.events.append(dict(event))
+            self._text_chunk_index[message_id] = self._append_chunk_event(event)
             return
+        self._append_delta_fragment(existing_index, event.get("delta"))
         existing = self.events[existing_index]
-        existing["delta"] = f"{existing.get('delta', '')}{event.get('delta', '')}"
         if existing.get("role") is None and event.get("role") is not None:
             existing["role"] = event.get("role")
         if existing.get("name") is None and event.get("name") is not None:
@@ -116,11 +123,9 @@ class AguiReplayBuffer:
             return
         existing_index = self._reasoning_chunk_index.get(message_id)
         if existing_index is None:
-            self._reasoning_chunk_index[message_id] = len(self.events)
-            self.events.append(dict(event))
+            self._reasoning_chunk_index[message_id] = self._append_chunk_event(event)
             return
-        existing = self.events[existing_index]
-        existing["delta"] = f"{existing.get('delta', '')}{event.get('delta', '')}"
+        self._append_delta_fragment(existing_index, event.get("delta"))
 
     def _merge_tool_call_chunk(self, event: dict[str, Any]) -> None:
         tool_call_id = _normalized_identifier(_event_field(event, "toolCallId", "tool_call_id"))
@@ -129,11 +134,10 @@ class AguiReplayBuffer:
             return
         existing_index = self._tool_chunk_index.get(tool_call_id)
         if existing_index is None:
-            self._tool_chunk_index[tool_call_id] = len(self.events)
-            self.events.append(dict(event))
+            self._tool_chunk_index[tool_call_id] = self._append_chunk_event(event)
             return
+        self._append_delta_fragment(existing_index, event.get("delta"))
         existing = self.events[existing_index]
-        existing["delta"] = f"{existing.get('delta', '')}{event.get('delta', '')}"
         if existing.get("toolCallName") is None and _event_field(event, "toolCallName", "tool_call_name") is not None:
             existing["toolCallName"] = _event_field(event, "toolCallName", "tool_call_name")
         if (
@@ -141,6 +145,23 @@ class AguiReplayBuffer:
             and _event_field(event, "parentMessageId", "parent_message_id") is not None
         ):
             existing["parentMessageId"] = _event_field(event, "parentMessageId", "parent_message_id")
+
+    def _append_chunk_event(self, event: dict[str, Any]) -> int:
+        event_copy = dict(event)
+        fragment = _delta_fragment(event_copy.get("delta"))
+        if fragment is not None:
+            event_copy["delta"] = ""
+        index = len(self.events)
+        self.events.append(event_copy)
+        if fragment is not None:
+            self._chunk_fragments[index] = [fragment]
+        return index
+
+    def _append_delta_fragment(self, index: int, value: Any) -> None:
+        fragment = _delta_fragment(value)
+        if fragment is None:
+            return
+        self._chunk_fragments.setdefault(index, []).append(fragment)
 
 
 class AguiEventAdapter:
@@ -525,6 +546,14 @@ def _normalized_identifier(value: Any) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _delta_fragment(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
 
 
 def _stringify_tool_call_args(value: Any) -> str | None:
