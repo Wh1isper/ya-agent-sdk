@@ -37,6 +37,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
+COPY packages/ya-agent-environment/pyproject.toml packages/ya-agent-environment/pyproject.toml
+COPY packages/ya-environment-relay/pyproject.toml packages/ya-environment-relay/pyproject.toml
 COPY packages/ya-agent-sdk/pyproject.toml packages/ya-agent-sdk/pyproject.toml
 COPY packages/yaacli/pyproject.toml packages/yaacli/pyproject.toml
 COPY packages/ya-claw/pyproject.toml packages/ya-claw/pyproject.toml

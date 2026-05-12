@@ -282,7 +282,7 @@ publish: ## Publish built distributions to PyPI
 	@uv publish dist/*
 
 .PHONY: build-and-publish
-build-and-publish: build publish ## Build and publish.
+build-and-publish: build-all publish ## Build and publish all workspace packages.
 
 .PHONY: help
 help:

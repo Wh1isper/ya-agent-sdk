@@ -42,9 +42,17 @@ vcs = "git"
 style = "pep440"
 bump = true
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "README.md",
+    "pyproject.toml",
+    "spec",
+    "ya_environment_relay",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["ya_environment_relay"]
-artifacts = ["spec/**/*.md"]
+force-include = { "spec" = "spec" }
 
 [tool.deptry]
 ignore = ["DEP001", "DEP002"]
