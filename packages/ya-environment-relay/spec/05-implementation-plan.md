@@ -13,9 +13,9 @@ Deliverables:
 Suggested Python package layout:
 
 ```text
-packages/ya-relay/
+packages/ya-environment-relay/
   pyproject.toml
-  ya_relay/
+  ya_environment_relay/
     __init__.py
     protocol.py
     errors.py
@@ -65,7 +65,7 @@ Deliverables:
 - request timeout handling.
 - connection registry.
 
-The server transport can first live in Claw, then move common pieces into `ya-relay` after the API stabilizes.
+The server transport can first live in Claw, then move common pieces into `ya-environment-relay` after the API stabilizes.
 
 ## Phase 5: Claw Integration
 
@@ -118,7 +118,7 @@ Deliverables:
 
 Recommended first production slice:
 
-1. `ya-relay.v1` protocol models.
+1. `ya-environment-relay.v1` protocol models.
 2. Claw WebSocket endpoint.
 3. Desktop relay client.
 4. file read/list/stat.

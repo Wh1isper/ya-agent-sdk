@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 from ya_agent_sdk.context import AgentContext
 from ya_claw.toolsets.session import (
     CLAW_SELF_CLIENT_KEY,

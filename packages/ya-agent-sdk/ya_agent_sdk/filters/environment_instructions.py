@@ -32,7 +32,7 @@ from collections.abc import Awaitable, Callable
 from pydantic_ai import RetryPromptPart
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.tools import RunContext
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 
 from ya_agent_sdk.context import AgentContext
 

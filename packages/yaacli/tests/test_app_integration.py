@@ -23,7 +23,7 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import BinaryContent
-from y_agent_environment.shell import BackgroundProcess
+from ya_agent_environment.shell import BackgroundProcess
 
 # Import the components we're testing
 from yaacli.app import TUIApp, TUIMode, TUIState

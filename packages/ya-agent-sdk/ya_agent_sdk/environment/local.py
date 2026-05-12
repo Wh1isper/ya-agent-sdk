@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from y_agent_environment import (
+from ya_agent_environment import (
     Environment,
     ExecutionHandle,
     FileOperationError,

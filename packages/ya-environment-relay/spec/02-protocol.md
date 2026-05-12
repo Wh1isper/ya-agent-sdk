@@ -1,8 +1,8 @@
-# 02. ya-relay.v1 Protocol
+# 02. ya-environment-relay.v1 Protocol
 
 ## Transport
 
-`ya-relay.v1` uses WebSocket as its primary transport. The protocol requires bidirectional request/response, streaming output, cancellation, heartbeat, provider events, and artifact coordination.
+`ya-environment-relay.v1` uses WebSocket as its primary transport. The protocol requires bidirectional request/response, streaming output, cancellation, heartbeat, provider events, and artifact coordination.
 
 Connection endpoint shape for a host runtime:
 
@@ -37,7 +37,7 @@ The relay client sends `hello` immediately after connection:
 ```json
 {
   "type": "hello",
-  "protocol": "ya-relay.v1",
+  "protocol": "ya-environment-relay.v1",
   "client_id": "client_macbook_123",
   "client_kind": "ya_desktop",
   "client_version": "0.1.0",
@@ -373,4 +373,4 @@ Complete request:
 
 ## Versioning
 
-The protocol string is `ya-relay.v1`. Breaking changes should use `ya-relay.v2`. Additive method fields can be negotiated through the `hello.capabilities` payload.
+The protocol string is `ya-environment-relay.v1`. Breaking changes should use `ya-environment-relay.v2`. Additive method fields can be negotiated through the `hello.capabilities` payload.

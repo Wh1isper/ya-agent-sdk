@@ -2,7 +2,7 @@
 
 Resource management, lifecycle hooks, and environment implementations.
 
-> **Note**: Base abstractions (`Environment`, `FileOperator`, `Shell`, `ResourceRegistry`, etc.) are defined in the [y-agent-environment](https://github.com/wh1isper/y-agent-environment) protocol package. This SDK provides concrete implementations (`LocalEnvironment`, `SandboxEnvironment`).
+> **Note**: Base abstractions (`Environment`, `FileOperator`, `Shell`, `ResourceRegistry`, etc.) are defined in the [ya-agent-environment](https://github.com/wh1isper/ya-mono/tree/main/packages/ya-agent-environment) protocol package. This SDK provides concrete implementations (`LocalEnvironment`, `SandboxEnvironment`).
 
 ## Overview
 
@@ -66,7 +66,7 @@ toolsets = await registry.get_toolsets()
 await registry.close_all()
 ```
 
-> Full API: [y-agent-environment](https://github.com/wh1isper/y-agent-environment)
+> Full API: [ya-agent-environment](https://github.com/wh1isper/ya-mono/tree/main/packages/ya-agent-environment)
 
 ## Creating Custom Environments
 
@@ -157,7 +157,7 @@ class ContainerEnvironment(Environment):
 Resources can provide their own toolsets via `get_toolsets()`. This enables better encapsulation where a resource owns both its state and the tools that operate on it:
 
 ```python
-from y_agent_environment import BaseResource
+from ya_agent_environment import BaseResource
 
 class ProcessManager(BaseResource):
     async def setup(self) -> None:
@@ -196,7 +196,7 @@ Resources can be exported and restored across process restarts using factories.
 `BaseResource` is a convenience abstract class with async `close()` and default export/restore:
 
 ```python
-from y_agent_environment import BaseResource
+from ya_agent_environment import BaseResource
 
 class ApiClientSession(BaseResource):
     def __init__(self, client: ApiClient):
@@ -225,7 +225,7 @@ class ApiClientSession(BaseResource):
 Factory functions receive the `Environment` instance, allowing access to `file_operator`, `shell`, `resources`, and `tmp_dir`:
 
 ```python
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 
 async def create_api_client(env: Environment) -> ApiClientSession:
     return ApiClientSession(

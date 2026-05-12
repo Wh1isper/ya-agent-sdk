@@ -6,7 +6,7 @@ These tests do NOT require Docker and should run in all CI environments.
 from pathlib import Path
 
 import pytest
-from y_agent_environment import FileOperationError, PathNotAllowedError
+from ya_agent_environment import FileOperationError, PathNotAllowedError
 from ya_agent_sdk.environment.local import VirtualLocalFileOperator, VirtualMount
 
 # --- VirtualMount Tests ---

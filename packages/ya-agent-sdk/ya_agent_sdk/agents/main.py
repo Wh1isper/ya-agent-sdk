@@ -35,7 +35,7 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.run import AgentRun
 from typing_extensions import TypeVar
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.compact import create_cache_friendly_compact_filter, create_compact_filter

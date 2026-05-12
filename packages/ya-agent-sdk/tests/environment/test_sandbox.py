@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from y_agent_environment import ShellExecutionError
+from ya_agent_environment import ShellExecutionError
 
 # Skip all tests in this module if docker is not installed
 docker = pytest.importorskip("docker")
@@ -295,7 +295,7 @@ def test_sandbox_environment_default_work_dir(tmp_path: Path) -> None:
 
 async def test_sandbox_environment_properties_before_enter(tmp_path: Path) -> None:
     """Should raise error when accessing properties before entering context."""
-    from y_agent_environment import EnvironmentNotEnteredError
+    from ya_agent_environment import EnvironmentNotEnteredError
 
     env = SandboxEnvironment(
         mounts=[VirtualMount(tmp_path, Path("/workspace"))],

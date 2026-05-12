@@ -2,7 +2,7 @@
 
 ## Goal
 
-YA Relay gives an agent runtime access to external execution environments. The protocol must make every capability explicit, scoped, revocable, and traceable.
+YA Environment Relay gives an agent runtime access to external execution environments. The protocol must make every capability explicit, scoped, revocable, and traceable.
 
 ## Trust Layers
 

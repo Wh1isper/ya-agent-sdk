@@ -21,7 +21,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from y_agent_environment import (
+from ya_agent_environment import (
     Environment,
     EnvironmentNotEnteredError,
     ExecutionHandle,

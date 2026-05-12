@@ -12,7 +12,7 @@ from pydantic_ai import AbstractToolset, Agent, ModelMessage, ModelResponse, Req
 from pydantic_ai.messages import BinaryContent
 from pydantic_ai.output import OutputDataT
 from typing_extensions import TypeVar
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 
 from ya_agent_sdk._logger import get_logger
 

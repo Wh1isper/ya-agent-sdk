@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal, cast
 from pydantic import Field
 from pydantic_ai import BinaryContent, ImageUrl, RunContext, ToolReturn, VideoUrl
 from pydantic_ai.messages import AudioUrl
-from y_agent_environment import FileOperator
+from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext

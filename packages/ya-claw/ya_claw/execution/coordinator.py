@@ -13,7 +13,7 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, stream_agent
 from ya_agent_sdk.context import BusMessage, ResumableState
 from ya_agent_sdk.environment import SandboxEnvironment

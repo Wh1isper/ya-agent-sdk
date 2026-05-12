@@ -48,16 +48,17 @@ dependencies = [
     "pydantic-ai-slim[anthropic,cli,google,mcp,openai,retries,vertexai]>=1.92.0",
     "pyobjc-framework-Cocoa>=10.0; platform_system == 'Darwin'",
     "python-dotenv>=1.0.0",
-    "y-agent-environment>=0.1.0",
+    "ya-agent-environment=={{ version }}",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["yaacli"]
 
 [tool.uv.sources]
+ya-agent-environment = { workspace = true }
 ya-agent-sdk = { workspace = true }
 
 [tool.deptry]
 ignore = ["DEP001"]
-package_module_name_map = { "click" = "click", "pillow" = "PIL", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-settings" = "pydantic_settings", "pyobjc-framework-Cocoa" = "AppKit|Foundation", "python-dotenv" = "dotenv", "ya-agent-sdk" = "ya_agent_sdk", "y-agent-environment" = "y_agent_environment" }
-per_rule_ignores = { DEP001 = ["quick_validate"], DEP003 = ["anyio", "click", "dotenv", "prompt_toolkit", "pillow", "pydantic", "pydantic_ai", "pydantic_settings", "pyobjc-framework-Cocoa", "rich", "yaml", "y_agent_environment", "ya_agent_sdk", "yaacli"], DEP004 = ["pytest"] }
+package_module_name_map = { "click" = "click", "pillow" = "PIL", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-settings" = "pydantic_settings", "pyobjc-framework-Cocoa" = "AppKit|Foundation", "python-dotenv" = "dotenv", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-environment" = "ya_agent_environment" }
+per_rule_ignores = { DEP001 = ["quick_validate"], DEP003 = ["anyio", "click", "dotenv", "prompt_toolkit", "pillow", "pydantic", "pydantic_ai", "pydantic_settings", "pyobjc-framework-Cocoa", "rich", "yaml", "ya_agent_environment", "ya_agent_sdk", "yaacli"], DEP004 = ["pytest"] }

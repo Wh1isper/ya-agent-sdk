@@ -1,10 +1,10 @@
-# 01. YA Relay Overview
+# 01. YA Environment Relay Overview
 
 ## Goal
 
-YA Relay connects an agent runtime to capabilities that execute in another process, device, sandbox, or host. It turns those external capabilities into `ya-agent-sdk` Environment components so the agent can use them through normal file, shell, resource, and tool abstractions.
+YA Environment Relay connects an agent runtime to capabilities that execute in another process, device, sandbox, or host. It turns those external capabilities into `ya-agent-sdk` Environment components so the agent can use them through normal file, shell, resource, and tool abstractions.
 
-YA Relay is protocol-level infrastructure. Product integrations such as YA Desktop, YA Claw, cloud workers, or sandbox services implement the protocol for their own deployment models.
+YA Environment Relay is protocol-level infrastructure. Product integrations such as YA Desktop, YA Claw, cloud workers, or sandbox services implement the protocol for their own deployment models.
 
 ## Parties
 
@@ -30,7 +30,7 @@ Definitions:
 
 ## Capability Families
 
-YA Relay uses capability families to group provider methods:
+YA Environment Relay uses capability families to group provider methods:
 
 ```text
 fileops
@@ -55,7 +55,7 @@ Initial protocol should define the first six families. Browser can be added as a
 - Toolset
 - resumable resources
 
-YA Relay should provide remote implementations of these abstractions:
+YA Environment Relay should provide remote implementations of these abstractions:
 
 ```python
 RelayEnvironment(Environment)
@@ -69,7 +69,7 @@ This keeps agent code and profiles stable while moving execution to a connected 
 
 ## Relationship to Claw
 
-Claw can use YA Relay as one `WorkspaceProvider` backend:
+Claw can use YA Environment Relay as one `WorkspaceProvider` backend:
 
 ```text
 WorkspaceProvider kind = relay
@@ -102,19 +102,19 @@ Desktop owns user consent, local grants, and native permission UX. Claw owns run
 
 ## Relationship to MCP
 
-MCP and YA Relay address overlapping but different surfaces:
+MCP and YA Environment Relay address overlapping but different surfaces:
 
-| Surface                        | MCP                         | YA Relay         |
-| ------------------------------ | --------------------------- | ---------------- |
-| Tool discovery                 | yes                         | yes              |
-| JSON Schema tool input         | yes                         | yes              |
-| FileOperator abstraction       | product-specific            | built in         |
-| Shell streaming                | server-specific             | built in         |
-| Environment/resource lifecycle | limited by server           | built in         |
-| Runtime artifact ownership     | external or custom          | built in         |
-| User device relay              | possible with custom server | primary use case |
+| Surface                        | MCP                         | YA Environment Relay |
+| ------------------------------ | --------------------------- | -------------------- |
+| Tool discovery                 | yes                         | yes                  |
+| JSON Schema tool input         | yes                         | yes                  |
+| FileOperator abstraction       | product-specific            | built in             |
+| Shell streaming                | server-specific             | built in             |
+| Environment/resource lifecycle | limited by server           | built in             |
+| Runtime artifact ownership     | external or custom          | built in             |
+| User device relay              | possible with custom server | primary use case     |
 
-A relay client can wrap MCP servers and register selected tools into YA Relay. A Claw profile can use MCP servers and relay capabilities together.
+A relay client can wrap MCP servers and register selected tools into YA Environment Relay. A Claw profile can use MCP servers and relay capabilities together.
 
 ## High-Level Flow
 

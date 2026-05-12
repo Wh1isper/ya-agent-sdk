@@ -9,6 +9,8 @@
 
 ## Packages
 
+- [`packages/ya-agent-environment`](packages/ya-agent-environment) — Environment abstractions for general agents
+- [`packages/ya-environment-relay`](packages/ya-environment-relay) — Provider-neutral relay protocol for external Environment capabilities
 - [`packages/ya-agent-sdk`](packages/ya-agent-sdk) — Python SDK for building AI agents with Pydantic AI
 - [`packages/yaacli`](packages/yaacli) — TUI reference implementation built on top of `ya-agent-sdk`
 - [`packages/ya-claw`](packages/ya-claw) — workspace-native single-node runtime web service with `WorkspaceProvider`, in-process runtime state, schedules, bridges, and SQLite-first storage
@@ -129,6 +131,9 @@ make test
 
 ## Package Guides
 
+- [ya-agent-environment README](packages/ya-agent-environment/README.md)
+- [ya-environment-relay README](packages/ya-environment-relay/README.md)
+- [ya-environment-relay spec](packages/ya-environment-relay/spec/README.md)
 - [ya-agent-sdk README](packages/ya-agent-sdk/README.md)
 - [yaacli README](packages/yaacli/README.md)
 - [ya-claw README](packages/ya-claw/README.md)
@@ -145,7 +150,7 @@ make test
 | `make install-skills`              | Install canonical skills into `~/.agents/skills`                    |
 | `make lint`                        | Check lock consistency and run pre-commit hooks                     |
 | `make check`                       | Run lock validation, lint, pyright, deptry, and web checks          |
-| `make test`                        | Run SDK, CLI, and YA Claw tests                                     |
+| `make test`                        | Run environment, SDK, CLI, YA Claw, and YA Desktop tests            |
 | `make run-claw`                    | Run the YA Claw backend                                             |
 | `make web-dev`                     | Run the YA Claw web app                                             |
 | `make build-claw`                  | Build the `ya-claw` distribution                                    |

@@ -1,6 +1,6 @@
 [project]
 name = "ya-agent-sdk"
-dynamic = ["version"]
+dynamic = ["version", "dependencies"]
 description = "Application framework for building AI agents with Pydantic AI - environment abstractions, session management, and hierarchical agent patterns"
 authors = [{ name = "wh1isper", email = "jizhongsheng957@gmail.com" }]
 readme = "README.md"
@@ -16,20 +16,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
-dependencies = [
-    "y-agent-environment==0.9.0",
-    "anyio>=4.12.0",
-    "httpx>=0.28.1",
-    "jinja2>=3.0.0",
-    "pathspec>=0.12.0",
-    "pillow>=10.0.0",
-    "pydantic>=2.12.5",
-    "pydantic-ai-slim>=1.92.0",
-    "pydantic-settings>=2.0.0",
-    "pyyaml>=6.0.0",
-    "tenacity>=9.0.0",
-    "typing-extensions>=4.15.0",
-]
 
 [project.urls]
 Repository = "https://github.com/wh1isper/ya-mono"
@@ -87,10 +73,29 @@ vcs = "git"
 style = "pep440"
 bump = true
 
+[tool.hatch.metadata.hooks.uv-dynamic-versioning]
+dependencies = [
+    "ya-agent-environment=={{ version }}",
+    "anyio>=4.12.0",
+    "httpx>=0.28.1",
+    "jinja2>=3.0.0",
+    "pathspec>=0.12.0",
+    "pillow>=10.0.0",
+    "pydantic>=2.12.5",
+    "pydantic-ai-slim>=1.92.0",
+    "pydantic-settings>=2.0.0",
+    "pyyaml>=6.0.0",
+    "tenacity>=9.0.0",
+    "typing-extensions>=4.15.0",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["ya_agent_sdk"]
 
 [tool.deptry]
 ignore = ["DEP001", "DEP002"]
-package_module_name_map = { "anyio" = "anyio", "boto3" = "boto3", "boto3-stubs" = "boto3_stubs|mypy_boto3_s3", "docker" = "docker", "fastembed" = "fastembed", "firecrawl-py" = "firecrawl", "httpx" = "httpx", "inline-snapshot" = "inline_snapshot", "jinja2" = "jinja2", "markitdown" = "markitdown", "numpy" = "numpy", "pathspec" = "pathspec", "pillow" = "PIL", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-ai-slim" = "pydantic_ai_slim", "pydantic-settings" = "pydantic_settings", "pymupdf" = "pymupdf|fitz", "pymupdf-layout" = "pymupdf_layout", "pymupdf4llm" = "pymupdf4llm", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-cov" = "pytest_cov", "pytest-httpx" = "pytest_httpx", "pytest-xdist" = "pytest_xdist", "pyright" = "pyright", "python-dotenv" = "dotenv", "pyyaml" = "yaml", "ruff" = "ruff", "tavily-python" = "tavily", "tenacity" = "tenacity", "typing-extensions" = "typing_extensions", "ya-agent-sdk" = "ya_agent_sdk", "y-agent-environment" = "y_agent_environment" }
+package_module_name_map = { "anyio" = "anyio", "boto3" = "boto3", "boto3-stubs" = "boto3_stubs|mypy_boto3_s3", "docker" = "docker", "fastembed" = "fastembed", "firecrawl-py" = "firecrawl", "httpx" = "httpx", "inline-snapshot" = "inline_snapshot", "jinja2" = "jinja2", "markitdown" = "markitdown", "numpy" = "numpy", "pathspec" = "pathspec", "pillow" = "PIL", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-ai-slim" = "pydantic_ai_slim", "pydantic-settings" = "pydantic_settings", "pymupdf" = "pymupdf|fitz", "pymupdf-layout" = "pymupdf_layout", "pymupdf4llm" = "pymupdf4llm", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-cov" = "pytest_cov", "pytest-httpx" = "pytest_httpx", "pytest-xdist" = "pytest_xdist", "pyright" = "pyright", "python-dotenv" = "dotenv", "pyyaml" = "yaml", "ruff" = "ruff", "tavily-python" = "tavily", "tenacity" = "tenacity", "typing-extensions" = "typing_extensions", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-environment" = "ya_agent_environment" }
 per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["ya-agent-sdk", "python-dotenv"], DEP003 = ["anthropic", "botocore"], DEP004 = ["pytest"] }
+
+[tool.uv.sources]
+ya-agent-environment = { workspace = true }

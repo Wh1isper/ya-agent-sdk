@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from y_agent_environment import BaseResource
+from ya_agent_environment import BaseResource
 
 if TYPE_CHECKING:
     from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset

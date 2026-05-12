@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from pydantic_ai import BinaryContent, ImageUrl, VideoUrl
 from pydantic_ai.messages import AudioUrl, DocumentUrl
-from y_agent_environment import FileOperator
+from ya_agent_environment import FileOperator
 
 from ya_claw.controller.models import (
     BinaryPart,

@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.tools import RunContext
-from y_agent_environment import CompletedProcess, Shell
-from y_agent_environment.shell import ExecutionHandle
+from ya_agent_environment import CompletedProcess, Shell
+from ya_agent_environment.shell import ExecutionHandle
 from ya_agent_sdk.filters.background_shell import inject_background_results
 
 

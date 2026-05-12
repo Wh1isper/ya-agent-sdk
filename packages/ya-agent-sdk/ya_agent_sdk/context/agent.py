@@ -104,7 +104,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from y_agent_environment import Environment, FileOperator, ResourceRegistry, Shell
+from ya_agent_environment import Environment, FileOperator, ResourceRegistry, Shell
 
 from ya_agent_sdk.agents.lifecycle import LifecycleExtension
 from ya_agent_sdk.events import AgentEvent

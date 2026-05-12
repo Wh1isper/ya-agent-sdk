@@ -42,8 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from y_agent_environment import FileOperationError, FileOperator, FileStat, PathNotAllowedError, TmpFileOperator
-from y_agent_environment.file_operator import DEFAULT_CHUNK_SIZE
+from ya_agent_environment import FileOperationError, FileOperator, FileStat, PathNotAllowedError, TmpFileOperator
+from ya_agent_environment.file_operator import DEFAULT_CHUNK_SIZE
 
 
 class MountBackend(ABC):
@@ -519,7 +519,7 @@ class CompositeFileOperator(FileOperator):
 
     async def _build_mount_instructions(self, parent: ET.Element, mount: Mount) -> None:
         """Add a single mount's information to context instructions."""
-        from y_agent_environment.utils import generate_filetree
+        from ya_agent_environment.utils import generate_filetree
 
         mb = mount.mount_backend
         mount_elem = ET.SubElement(parent, "mount")

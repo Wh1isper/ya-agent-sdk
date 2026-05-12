@@ -10,7 +10,7 @@ from typing import Annotated, cast
 from pydantic import Field
 from pydantic_ai import ApprovalRequired, RunContext
 from typing_extensions import TypedDict
-from y_agent_environment import Shell
+from ya_agent_environment import Shell
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext

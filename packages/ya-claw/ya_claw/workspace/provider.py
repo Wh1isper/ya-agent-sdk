@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from loguru import logger
-from y_agent_environment import Environment, FileOperationError, ResourceFactory, ResourceRegistryState
+from ya_agent_environment import Environment, FileOperationError, ResourceFactory, ResourceRegistryState
 from ya_agent_sdk.environment import (
     LocalShell,
     SandboxEnvironment,

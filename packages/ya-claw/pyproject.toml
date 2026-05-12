@@ -51,6 +51,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "sse-starlette>=3.0.0",
     "uvicorn[standard]>=0.35.0",
+    "ya-agent-environment=={{ version }}",
     "ya-agent-sdk[all]=={{ version }}",
 ]
 
@@ -63,6 +64,7 @@ include = [
 ]
 
 [tool.uv.sources]
+ya-agent-environment = { workspace = true }
 ya-agent-sdk = { workspace = true }
 
 [dependency-groups]
@@ -78,5 +80,5 @@ dev = [
 
 [tool.deptry]
 ignore = ["DEP001"]
-package_module_name_map = { "ag-ui-protocol" = "ag_ui", "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-sdk" = "ya_agent_sdk" }
-per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "greenlet", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_sdk", "ya_claw"], DEP004 = ["pytest"] }
+package_module_name_map = { "ag-ui-protocol" = "ag_ui", "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-environment" = "ya_agent_environment", "ya-agent-sdk" = "ya_agent_sdk" }
+per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "greenlet", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_environment", "ya_agent_sdk", "ya_claw"], DEP004 = ["pytest"] }

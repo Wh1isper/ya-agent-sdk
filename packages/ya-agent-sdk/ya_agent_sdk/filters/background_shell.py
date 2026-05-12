@@ -14,7 +14,7 @@ from html import escape as _html_escape
 
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.tools import RunContext
-from y_agent_environment import CompletedProcess, FileOperator
+from ya_agent_environment import CompletedProcess, FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext

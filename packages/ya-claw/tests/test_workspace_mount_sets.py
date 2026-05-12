@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
-from y_agent_environment import FileOperationError
+from ya_agent_environment import FileOperationError
 from ya_agent_sdk.environment import SandboxEnvironment
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (

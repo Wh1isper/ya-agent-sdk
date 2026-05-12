@@ -37,14 +37,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from y_agent_environment import BaseResource
+from ya_agent_environment import BaseResource
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.usage import UsageSnapshot
 
 from yaacli.logging import get_logger
 
 if TYPE_CHECKING:
-    from y_agent_environment.shell import Shell
+    from ya_agent_environment.shell import Shell
     from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 logger = get_logger(__name__)

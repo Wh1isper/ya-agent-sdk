@@ -2,7 +2,7 @@
 
 Export and restore resource states across process restarts via async factories.
 
-> **Note**: Base protocols and classes (`Resource`, `ResumableResource`, `BaseResource`, `ResourceRegistry`, etc.) are defined in the [y-agent-environment](https://github.com/wh1isper/y-agent-environment) protocol package.
+> **Note**: Base protocols and classes (`Resource`, `ResumableResource`, `BaseResource`, `ResourceRegistry`, etc.) are defined in the [ya-agent-environment](https://github.com/wh1isper/ya-mono/tree/main/packages/ya-agent-environment) protocol package.
 
 ## Overview
 
@@ -43,7 +43,7 @@ flowchart LR
 `BaseResource` is a convenience abstract class with async `close()` and default no-op export/restore:
 
 ```python
-from y_agent_environment import BaseResource
+from ya_agent_environment import BaseResource
 
 class ApiClientSession(BaseResource):
     def __init__(self, client: ApiClient):
@@ -158,7 +158,7 @@ class ApiClientSession:
 Factory functions receive the `Environment` instance:
 
 ```python
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 
 async def create_api_client(env: Environment) -> ApiClientSession:
     return ApiClientSession(

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Relay Environment maps `ya-relay.v1` capabilities into `ya-agent-sdk` runtime abstractions. Agents and toolsets should interact with normal SDK interfaces while execution happens through a connected relay provider.
+Relay Environment maps `ya-environment-relay.v1` capabilities into `ya-agent-sdk` runtime abstractions. Agents and toolsets should interact with normal SDK interfaces while execution happens through a connected relay provider.
 
 ## Environment Shape
 

@@ -124,6 +124,7 @@ jobs:
       - name: Run tests
         run: >-
           uv run python -m pytest
+          packages/ya-agent-environment/tests
           packages/ya-agent-sdk/tests
           packages/yaacli/tests
           packages/ya-claw/tests

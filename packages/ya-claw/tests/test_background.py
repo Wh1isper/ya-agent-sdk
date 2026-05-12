@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 from pydantic_ai import RunContext
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_claw.execution.background import BackgroundMonitor, BackgroundTaskAlreadyActiveError

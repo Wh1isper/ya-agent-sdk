@@ -1,6 +1,6 @@
 """Shared utilities for filesystem tools."""
 
-from y_agent_environment import FileOperator
+from ya_agent_environment import FileOperator
 
 # Size of the initial chunk read for binary detection (same heuristic as GNU grep)
 _BINARY_CHECK_BYTES = 8192

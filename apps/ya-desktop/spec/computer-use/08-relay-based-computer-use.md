@@ -2,9 +2,9 @@
 
 ## Goal
 
-Host Computer Use should run on top of YA Relay. Claw exposes `computer_*` tools to the agent, and the tool implementation dispatches `computer.*` relay methods to YA Desktop. Desktop executes screen capture, accessibility inspection, input injection, pause, takeover, and local safety policy.
+Host Computer Use should run on top of YA Environment Relay. Claw exposes `computer_*` tools to the agent, and the tool implementation dispatches `computer.*` relay methods to YA Desktop. Desktop executes screen capture, accessibility inspection, input injection, pause, takeover, and local safety policy.
 
-This makes Computer Use one capability inside a broader relay-backed Environment, alongside local file operations, shell execution, resources, and custom tools. The generic protocol is defined in `packages/ya-relay/spec/`.
+This makes Computer Use one capability inside a broader relay-backed Environment, alongside local file operations, shell execution, resources, and custom tools. The generic protocol is defined in `packages/ya-environment-relay/spec/`.
 
 ## Runtime Path
 
@@ -13,7 +13,7 @@ sequenceDiagram
     participant Model as Model
     participant Claw as Claw Runtime
     participant Env as RelayEnvironment
-    participant Relay as ya-relay WebSocket
+    participant Relay as ya-environment-relay WebSocket
     participant Desktop as YA Desktop
     participant Bridge as Host Computer Bridge
     participant OS as OS APIs
@@ -39,7 +39,7 @@ sequenceDiagram
 flowchart TB
     AgentTools[Agent Tool Surface] --> ComputerToolset[Claw ComputerUseToolset]
     ComputerToolset --> RelayComputer[RelayComputerProvider]
-    RelayComputer --> RelayProtocol[ya-relay.v1 computer.*]
+    RelayComputer --> RelayProtocol[ya-environment-relay.v1 computer.*]
     RelayProtocol --> DesktopComputer[Desktop Computer Provider]
     DesktopComputer --> NativeProvider[macOS / Windows / Linux Native Provider]
 ```
@@ -48,7 +48,7 @@ Layer responsibilities:
 
 - `ComputerUseToolset`: model-facing tool names, descriptions, tool result text.
 - `RelayComputerProvider`: converts tool calls into relay requests and handles artifacts.
-- `ya-relay.v1`: transport envelope, request IDs, streaming, cancellation, errors.
+- `ya-environment-relay.v1`: transport envelope, request IDs, streaming, cancellation, errors.
 - `Desktop Computer Provider`: local policy, permission state, provider lifecycle, action execution.
 - `Native Provider`: OS-specific capture, accessibility, input, app/window metadata.
 
@@ -59,7 +59,7 @@ Desktop advertises computer capability in the relay hello frame:
 ```json
 {
   "type": "hello",
-  "protocol": "ya-relay.v1",
+  "protocol": "ya-environment-relay.v1",
   "device_id": "dev_macbook_123",
   "capabilities": {
     "computer": {
@@ -287,7 +287,7 @@ Claw and Desktop both participate in policy checks.
 sequenceDiagram
     participant Claw as Claw
     participant Inbox as Desktop Inbox
-    participant Relay as ya-relay
+    participant Relay as ya-environment-relay
     participant Provider as Desktop Provider
 
     Claw->>Claw: classify computer.act
@@ -341,7 +341,7 @@ This keeps one transport and one provider model. A loopback HTTP bridge remains 
 Remote Claw uses the same relay protocol. Desktop initiates the connection and advertises local computer capability.
 
 ```text
-Remote Claw <- ya-relay WebSocket <- YA Desktop -> Host Computer Bridge -> OS APIs
+Remote Claw <- ya-environment-relay WebSocket <- YA Desktop -> Host Computer Bridge -> OS APIs
 ```
 
 Remote mode requires explicit Space trust, artifact upload policy, and visible active connection state.

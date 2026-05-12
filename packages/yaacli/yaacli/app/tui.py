@@ -122,7 +122,7 @@ from yaacli.usage import SessionUsage
 
 if TYPE_CHECKING:
     from prompt_toolkit.key_binding import KeyPressEvent
-    from y_agent_environment import BackgroundProcess
+    from ya_agent_environment import BackgroundProcess
 
 logger = get_logger(__name__)
 

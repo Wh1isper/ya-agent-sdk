@@ -4,11 +4,12 @@
 
 Workspace members:
 
+- `packages/ya-agent-environment` — Environment abstractions for general agents
+- `packages/ya-environment-relay` — Provider-neutral relay protocol for external Environment capabilities
 - `packages/ya-agent-sdk` — SDK for building AI agents with Pydantic AI
 - `packages/yaacli` — TUI reference implementation built on top of the SDK
 - `packages/ya-claw` — workspace-native single-node runtime web service with `WorkspaceProvider`, in-process runtime state, schedules, bridges, and SQLite-first storage
 - `packages/ya-agent-platform` — WIP stateless agent service with TBD scope
-- `packages/ya-relay` — spec-only for now; provider-neutral relay protocol and SDK Environment mapping for external fileops, shell, resources, custom tools, artifacts, and computer use
 
 Shared repository areas:
 
@@ -32,6 +33,20 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - **Frontend Stack**: Vite + React + TypeScript
 
 ## Package Directions
+
+### `packages/ya-agent-environment`
+
+- shared base abstractions for agent environments
+- implementation package import name is `ya_agent_environment`
+- relay protocol is defined by sibling package `packages/ya-environment-relay` using protocol string `ya-environment-relay.v1`
+- future relay implementation modules should live under `packages/ya-environment-relay`
+
+### `packages/ya-environment-relay`
+
+- protocol package for external fileops, shell, resources, custom tools, artifacts, and computer use
+- protocol string is `ya-environment-relay.v1`
+- implementation package import name is `ya_environment_relay`
+- Environment base definitions live in `packages/ya-agent-environment`
 
 ### `packages/ya-agent-sdk`
 
@@ -150,6 +165,8 @@ Keep `packages/ya-agent-sdk/.env.example`, `packages/yaacli/.env.example`, `pack
 When editing workspace metadata, keep these files aligned:
 
 - `pyproject.toml`
+- `packages/ya-agent-environment/pyproject.toml`
+- `packages/ya-environment-relay/pyproject.toml`
 - `packages/ya-agent-sdk/pyproject.toml`
 - `packages/yaacli/pyproject.toml`
 - `packages/ya-claw/pyproject.toml`

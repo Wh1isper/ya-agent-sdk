@@ -10,7 +10,7 @@ from typing import Annotated, Literal, cast
 import pydantic
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
-from y_agent_environment import FileOperator
+from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext

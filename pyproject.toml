@@ -13,6 +13,8 @@ package = false
 
 [tool.uv.workspace]
 members = [
+    "packages/ya-agent-environment",
+    "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
     "packages/yaacli",
     "packages/ya-claw",
@@ -20,18 +22,24 @@ members = [
 ]
 
 [tool.uv.sources]
+ya-agent-environment = { workspace = true }
+ya-environment-relay = { workspace = true }
 ya-agent-sdk = { workspace = true }
 ya-claw = { workspace = true }
 ya-agent-platform = { workspace = true }
 
 [tool.pyright]
 include = [
+    "packages/ya-agent-environment/ya_agent_environment",
+    "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
     "packages/yaacli/yaacli",
     "packages/ya-claw/ya_claw",
     "packages/ya-agent-platform/ya_agent_platform",
 ]
 exclude = [
+    "packages/ya-agent-environment/tests",
+    "packages/ya-environment-relay/tests",
     "packages/ya-agent-sdk/tests",
     "packages/yaacli/tests",
     "packages/ya-claw/tests",
@@ -46,6 +54,8 @@ exclude = [
 ]
 pythonVersion = "3.11"
 extraPaths = [
+    "packages/ya-agent-environment",
+    "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
     "packages/yaacli",
     "packages/ya-claw",
@@ -87,8 +97,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"packages/ya-agent-environment/ya_agent_environment/*" = ["A004"]
 "packages/yaacli/yaacli/*" = ["C901", "SIM108"]
 "packages/yaacli/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
+"packages/ya-agent-environment/tests/*" = ["S101", "S108", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-agent-sdk/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-claw/tests/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/yaacli/yaacli/skills/**/*.py" = ["E402"]
@@ -108,6 +120,8 @@ skip_empty = true
 [tool.coverage.run]
 branch = true
 source = [
+    "packages/ya-agent-environment/ya_agent_environment",
+    "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
     "packages/yaacli/yaacli",
     "packages/ya-claw/ya_claw",

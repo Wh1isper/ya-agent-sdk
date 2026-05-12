@@ -6,16 +6,16 @@ Host Computer Use lets an agent see and operate the user's desktop under explici
 
 ## Section Map
 
-| Section | Document                                                                 | Topic                                                                       |
-| ------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| 01      | [01-product-and-boundary.md](01-product-and-boundary.md)                 | product goal, supported modes, Claw/Desktop boundary                        |
-| 02      | [02-native-provider-architecture.md](02-native-provider-architecture.md) | Desktop host computer provider, bridge process, macOS implementation layers |
-| 03      | [03-tool-protocol.md](03-tool-protocol.md)                               | provider-neutral computer tool schema, snapshots, actions, results          |
-| 04      | [04-permissions-and-safety.md](04-permissions-and-safety.md)             | macOS permissions, trust model, HITL policy, takeover semantics             |
-| 05      | [05-claw-runtime-integration.md](05-claw-runtime-integration.md)         | profiles, capabilities, tool proxy, run trace, artifacts, remote RPC mode   |
-| 06      | [06-desktop-ux.md](06-desktop-ux.md)                                     | Spaces, Chats, Inbox, Settings, live monitor, timeline rendering            |
-| 07      | [07-implementation-plan.md](07-implementation-plan.md)                   | milestones, package layout, test strategy, open decisions                   |
-| 08      | [08-relay-based-computer-use.md](08-relay-based-computer-use.md)         | Computer Use as a Desktop Relay capability over ya-relay                    |
+| Section | Document                                                                 | Topic                                                                            |
+| ------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| 01      | [01-product-and-boundary.md](01-product-and-boundary.md)                 | product goal, supported modes, Claw/Desktop boundary                             |
+| 02      | [02-native-provider-architecture.md](02-native-provider-architecture.md) | Desktop host computer provider, bridge process, macOS implementation layers      |
+| 03      | [03-tool-protocol.md](03-tool-protocol.md)                               | provider-neutral computer tool schema, snapshots, actions, results               |
+| 04      | [04-permissions-and-safety.md](04-permissions-and-safety.md)             | macOS permissions, trust model, HITL policy, takeover semantics                  |
+| 05      | [05-claw-runtime-integration.md](05-claw-runtime-integration.md)         | profiles, capabilities, tool proxy, run trace, artifacts, remote RPC mode        |
+| 06      | [06-desktop-ux.md](06-desktop-ux.md)                                     | Spaces, Chats, Inbox, Settings, live monitor, timeline rendering                 |
+| 07      | [07-implementation-plan.md](07-implementation-plan.md)                   | milestones, package layout, test strategy, open decisions                        |
+| 08      | [08-relay-based-computer-use.md](08-relay-based-computer-use.md)         | Computer Use as a Desktop Environment Relay capability over ya-environment-relay |
 
 ## Design Principles
 

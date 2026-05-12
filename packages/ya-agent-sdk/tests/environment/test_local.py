@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from inline_snapshot import snapshot
-from y_agent_environment import FileOperationError, PathNotAllowedError, ShellTimeoutError
+from ya_agent_environment import FileOperationError, PathNotAllowedError, ShellTimeoutError
 from ya_agent_sdk.environment import (
     LocalEnvironment,
     LocalFileOperator,

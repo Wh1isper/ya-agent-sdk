@@ -20,7 +20,7 @@ from typing import Annotated, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
-from y_agent_environment import Shell
+from ya_agent_environment import Shell
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.context.bus import BusMessage
 from ya_agent_sdk.events import BackgroundShellStartEvent

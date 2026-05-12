@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import DeferredToolRequests
-from y_agent_environment import Environment
+from ya_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.context import (
     ModelConfig,

@@ -1,18 +1,18 @@
-# 09. Desktop Relay Integration
+# 09. Desktop Environment Relay Integration
 
 ## Goal
 
-YA Desktop should implement a YA Relay client that exposes local desktop capabilities to Claw runtimes. The generic protocol is defined in `packages/ya-relay/spec/`. This document covers the Desktop product integration: Spaces, local grants, provider lifecycle, diagnostics, and UX.
+YA Desktop should implement a YA Environment Relay client that exposes local desktop capabilities to Claw runtimes. The generic protocol is defined in `packages/ya-environment-relay/spec/`. This document covers the Desktop product integration: Spaces, local grants, provider lifecycle, diagnostics, and UX.
 
 ## Protocol Dependency
 
-Desktop Relay uses `ya-relay.v1`:
+Desktop Environment Relay uses `ya-environment-relay.v1`:
 
-- [YA Relay Overview](../../../packages/ya-relay/spec/01-overview.md)
-- [Protocol](../../../packages/ya-relay/spec/02-protocol.md)
-- [Relay Environment](../../../packages/ya-relay/spec/03-environment.md)
-- [Security and Policy](../../../packages/ya-relay/spec/04-security-and-policy.md)
-- [Implementation Plan](../../../packages/ya-relay/spec/05-implementation-plan.md)
+- [YA Environment Relay Overview](../../../packages/ya-environment-relay/spec/01-overview.md)
+- [Protocol](../../../packages/ya-environment-relay/spec/02-protocol.md)
+- [Relay Environment](../../../packages/ya-environment-relay/spec/03-environment.md)
+- [Security and Policy](../../../packages/ya-environment-relay/spec/04-security-and-policy.md)
+- [Implementation Plan](../../../packages/ya-environment-relay/spec/05-implementation-plan.md)
 
 Desktop acts as a relay client. Claw acts as a relay server and maps accepted capabilities into a relay-backed Environment.
 
@@ -31,7 +31,7 @@ YA Desktop should expose these capabilities through relay:
 ```mermaid
 flowchart TB
     Space[Desktop Space] --> Grants[Relay Grants]
-    Grants --> RelayClient[YA Desktop Relay Client]
+    Grants --> RelayClient[YA Desktop Environment Relay Client]
     RelayClient --> LocalFS[Local File Provider]
     RelayClient --> LocalShell[Sandboxed Shell Provider]
     RelayClient --> ToolHost[Custom Tool Host]
@@ -118,7 +118,7 @@ apps/ya-desktop/src/features/relay/
 
 ## Custom Tools
 
-Desktop custom tools are configured locally and advertised through YA Relay `tool.register` / `tool.list`. Examples:
+Desktop custom tools are configured locally and advertised through YA Environment Relay `tool.register` / `tool.list`. Examples:
 
 - open file in local editor.
 - copy text to clipboard.
@@ -151,7 +151,7 @@ Local embedded Claw can use the same relay protocol. This keeps fileops, shell, 
 YA Desktop -> local ya-clawd relay WebSocket -> YA Desktop providers
 ```
 
-A loopback HTTP provider can exist for early prototypes, but the product model should converge on `ya-relay.v1`.
+A loopback HTTP provider can exist for early prototypes, but the product model should converge on `ya-environment-relay.v1`.
 
 ## Desktop UX
 
@@ -166,7 +166,7 @@ Desktop should render relay state in:
 ## Implementation Order
 
 1. Add Desktop relay settings model and mock connection state.
-2. Implement YA Relay WebSocket client against a mock server.
+2. Implement YA Environment Relay WebSocket client against a mock server.
 3. Connect to Claw relay endpoint.
 4. Add file provider for read/list/stat.
 5. Add shell provider with streaming and cancel.

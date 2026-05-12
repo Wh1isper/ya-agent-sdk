@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from y_agent_environment import FileOperator
+from ya_agent_environment import FileOperator
 from ya_agent_sdk.environment.composite import CompositeFileOperator, Mount, MountBackend
 from ya_agent_sdk.environment.local import LocalFileOperator
 
@@ -134,7 +134,7 @@ async def test_routing_isolation(composite_op: CompositeFileOperator, mount_dirs
 @pytest.mark.anyio
 async def test_path_outside_all_mounts_raises(tmp_path: Path):
     """Paths not under any mount raise PathNotAllowedError."""
-    from y_agent_environment import PathNotAllowedError
+    from ya_agent_environment import PathNotAllowedError
 
     op = LocalFileOperator(default_path=tmp_path)
     composite = CompositeFileOperator(
@@ -214,7 +214,7 @@ async def test_read_only_mount_allows_read(readonly_composite_op: CompositeFileO
 @pytest.mark.anyio
 async def test_read_only_mount_blocks_write(readonly_composite_op: CompositeFileOperator):
     """Write operations on read-only mounts raise FileOperationError."""
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     with pytest.raises(FileOperationError, match="read-only"):
         await readonly_composite_op.write_file("/mnt/pc/new.txt", "blocked")
@@ -225,7 +225,7 @@ async def test_read_only_mount_blocks_delete(
     readonly_composite_op: CompositeFileOperator, mount_dirs: tuple[Path, Path]
 ):
     """Delete operations on read-only mounts raise FileOperationError."""
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     _, remote = mount_dirs
     (remote / "file.txt").write_text("data")
@@ -237,7 +237,7 @@ async def test_read_only_mount_blocks_delete(
 @pytest.mark.anyio
 async def test_read_only_mount_blocks_mkdir(readonly_composite_op: CompositeFileOperator):
     """mkdir on read-only mounts raises FileOperationError."""
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     with pytest.raises(FileOperationError, match="read-only"):
         await readonly_composite_op.mkdir("/mnt/pc/newdir")
@@ -277,7 +277,7 @@ async def test_cross_mount_move(composite_op: CompositeFileOperator):
 @pytest.mark.anyio
 async def test_cross_mount_directory_copy_raises(composite_op: CompositeFileOperator):
     """Copying directories across mounts raises a clear error."""
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     await composite_op.mkdir("/mnt/pc/mydir")
     await composite_op.write_file("/mnt/pc/mydir/file.txt", "content")
@@ -289,7 +289,7 @@ async def test_cross_mount_directory_copy_raises(composite_op: CompositeFileOper
 @pytest.mark.anyio
 async def test_cross_mount_directory_move_raises(composite_op: CompositeFileOperator):
     """Moving directories across mounts raises a clear error."""
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     await composite_op.mkdir("/mnt/pc/movedir")
     await composite_op.write_file("/mnt/pc/movedir/file.txt", "content")
@@ -552,7 +552,7 @@ class OfflineMountBackend(MountBackend):
 @pytest.mark.anyio
 async def test_unavailable_backend_blocks_read(tmp_path: Path):
     """Operations on unavailable backends raise FileOperationError."""
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -578,7 +578,7 @@ async def test_unavailable_backend_blocks_read(tmp_path: Path):
 @pytest.mark.anyio
 async def test_unavailable_backend_error_includes_detail(tmp_path: Path):
     """Error message includes status_detail when available."""
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -621,7 +621,7 @@ async def test_backend_comes_online(tmp_path: Path):
     )
 
     # Offline: should fail
-    from y_agent_environment import FileOperationError
+    from ya_agent_environment import FileOperationError
 
     with pytest.raises(FileOperationError):
         await composite.read_file("/mnt/pc/data.txt")

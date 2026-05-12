@@ -3,7 +3,7 @@
 TUIEnvironment extends LocalEnvironment with BackgroundMonitor
 for managing background subagent tasks and shell process monitoring.
 Shell background process management is handled by the Shell ABC from
-y-agent-environment directly.
+ya-agent-environment directly.
 
 Example:
     async with TUIEnvironment(default_path=Path.cwd()) as env:
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from y_agent_environment import ResourceFactory, ResourceRegistryState
+from ya_agent_environment import ResourceFactory, ResourceRegistryState
 from ya_agent_sdk.environment.local import LocalEnvironment
 
 from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
