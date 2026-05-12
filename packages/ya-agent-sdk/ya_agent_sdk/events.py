@@ -181,7 +181,7 @@ class SubagentCompleteEvent(AgentEvent):
 
 @dataclass
 class UsageSnapshotEvent(AgentEvent):
-    """Emitted when cumulative run usage changes.
+    """Emitted after model requests when cumulative run usage is available.
 
     Consumers can treat each event as the latest usage state for the run.
     The snapshot includes the main agent and internal model calls such as
@@ -189,11 +189,11 @@ class UsageSnapshotEvent(AgentEvent):
 
     Attributes:
         snapshot: Cumulative usage snapshot for the current run.
-        source: Component that triggered the snapshot.
+        source: Stream boundary that triggered the snapshot.
     """
 
     snapshot: UsageSnapshot | None = None
-    source: str = "model_request"
+    source: str = "model_request_complete"
 
 
 # =============================================================================

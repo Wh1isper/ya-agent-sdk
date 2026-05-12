@@ -64,6 +64,7 @@ from ya_agent_sdk.events import (
     ModelRequestStartEvent,
     ToolCallsCompleteEvent,
     ToolCallsStartEvent,
+    UsageSnapshotEvent,
 )
 from ya_agent_sdk.filters.auto_load_files import process_auto_load_files
 from ya_agent_sdk.filters.cold_start import cold_start_trim
@@ -1190,8 +1191,6 @@ async def stream_agent(  # noqa: C901
         current_loop = tracker.loop_index
         tracker.loop_index += 1  # Increment for next loop
 
-        await ctx.emit_usage_snapshot_event(source="before_model_request")
-
         await emit_lifecycle_event(
             ModelRequestStartEvent(event_id=ctx.run_id, loop_index=current_loop, message_count=len(run.all_messages()))
         )
@@ -1214,6 +1213,14 @@ async def stream_agent(  # noqa: C901
                 duration_seconds=time.perf_counter() - node_start_time,
             )
         )
+        snapshot = ctx.build_usage_snapshot()
+        await ctx.emit_event(
+            UsageSnapshotEvent(
+                event_id=f"{snapshot.run_id}:usage_snapshot:model_request_complete:{current_loop}",
+                snapshot=snapshot,
+                source="model_request_complete",
+            )
+        )
 
     async def handle_call_tools_node(
         node: CallToolsNode[AgentDepsT, OutputT],
@@ -1228,7 +1235,6 @@ async def stream_agent(  # noqa: C901
         current_loop = tracker.loop_index - 1
         has_tool_calls = _has_tool_call_parts(node.model_response.parts)
         if has_tool_calls:
-            await ctx.emit_usage_snapshot_event(source="before_tool_calls")
             await emit_lifecycle_event(ToolCallsStartEvent(event_id=ctx.run_id, loop_index=current_loop))
 
         await process_node(node, run)

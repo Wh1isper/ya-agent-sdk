@@ -69,7 +69,7 @@ import warnings
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -328,6 +328,11 @@ AgentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | Agen
 def _create_stream_queue_factory() -> dict[str, asyncio.Queue[AgentStreamEvent]]:
     """Create a defaultdict factory for subagent stream queues."""
     return defaultdict(asyncio.Queue)
+
+
+def snapshot_run_usage(usage: RunUsage) -> RunUsage:
+    """Return an immutable-in-practice snapshot of current RunUsage values."""
+    return replace(usage, details=dict(usage.details))
 
 
 # =============================================================================
@@ -1770,7 +1775,7 @@ class AgentContext(BaseModel):
             agent_id=agent_id,
             agent_name=agent_name,
             model_id=model_id,
-            usage=usage,
+            usage=snapshot_run_usage(usage),
             usage_id=usage_id,
             source=source,
         )

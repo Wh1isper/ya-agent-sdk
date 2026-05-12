@@ -8,7 +8,7 @@ import pytest
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
+from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.subagent import (
     create_subagent_call_func,
@@ -343,7 +343,7 @@ async def test_create_subagent_call_func_stores_history():
 
 
 async def _assert_streaming_subagent_events(queue, *, mock_event: dict[str, str]) -> None:
-    """Assert streamed subagent events without realtime usage snapshots."""
+    """Assert streamed subagent events stay on the subagent queue."""
     start_event = await queue.get()
     assert isinstance(start_event, SubagentStartEvent)
     assert start_event.agent_name == "streamer"
@@ -362,6 +362,17 @@ async def _assert_streaming_subagent_events(queue, *, mock_event: dict[str, str]
     assert complete_event.success is True
     assert complete_event.event_id == start_event.event_id
     assert complete_event.event_id == start_event.agent_id
+    assert queue.empty()
+
+
+async def _assert_parent_usage_events(queue, *, subagent_id: str) -> None:
+    """Assert realtime usage snapshots are full parent-run snapshots."""
+    usage_event = await queue.get()
+    assert isinstance(usage_event, UsageSnapshotEvent)
+    assert usage_event.source == "model_request_complete"
+    assert usage_event.snapshot is not None
+    assert usage_event.snapshot.entries[0].agent_id == subagent_id
+    assert usage_event.snapshot.entries[0].source == "subagent_model_request"
     assert queue.empty()
 
 
@@ -445,6 +456,7 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     assert not queue.empty()
 
     await _assert_streaming_subagent_events(queue, mock_event=mock_event)
+    await _assert_parent_usage_events(ctx.agent_stream_queues[ctx.agent_id], subagent_id=subagent_id)
     assert ctx.usage_snapshot_entries[subagent_id].agent_id == subagent_id
     assert ctx.usage_snapshot_entries[subagent_id].model_id == "test-model"
     assert ctx.usage_snapshot_entries[subagent_id].usage.requests == 2

@@ -20,7 +20,7 @@ class UsageBoundaryTool(BaseTool):
 
 
 @pytest.mark.asyncio
-async def test_stream_agent_emits_usage_snapshot_at_session_end(tmp_path):
+async def test_stream_agent_emits_usage_snapshot_after_node_complete(tmp_path):
     env = LocalEnvironment(tmp_base_dir=tmp_path)
     runtime = create_agent(TestModel(custom_output_text="ok"), env=env)
 
@@ -30,7 +30,7 @@ async def test_stream_agent_emits_usage_snapshot_at_session_end(tmp_path):
             if isinstance(stream_event.event, UsageSnapshotEvent):
                 usage_events.append(stream_event.event)
 
-    assert [event.source for event in usage_events] == ["session_end"]
+    assert [event.source for event in usage_events] == ["model_request_complete", "session_end"]
     snapshot = usage_events[-1].snapshot
     assert snapshot is not None
     assert snapshot.run_id == runtime.ctx.run_id
@@ -43,7 +43,7 @@ async def test_stream_agent_emits_usage_snapshot_at_session_end(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stream_agent_emits_usage_snapshot_before_tool_calls(tmp_path):
+async def test_stream_agent_emits_usage_snapshot_after_changed_nodes(tmp_path):
     env = LocalEnvironment(tmp_base_dir=tmp_path)
     runtime = create_agent(TestModel(call_tools=["tool"]), env=env, tools=[UsageBoundaryTool])
 
@@ -54,14 +54,15 @@ async def test_stream_agent_emits_usage_snapshot_before_tool_calls(tmp_path):
 
     usage_events = [event for event in events if isinstance(event, UsageSnapshotEvent)]
     assert [event.source for event in usage_events] == [
-        "before_tool_calls",
-        "before_model_request",
+        "model_request_complete",
+        "model_request_complete",
         "session_end",
     ]
     assert usage_events[0].snapshot is not None
     assert usage_events[0].snapshot.total_usage.requests >= 1
     assert usage_events[1].snapshot is not None
-    assert usage_events[1].snapshot.total_usage.requests >= usage_events[0].snapshot.total_usage.requests
+    assert usage_events[1].snapshot.total_usage.requests > usage_events[0].snapshot.total_usage.requests
+    assert usage_events[2].snapshot == usage_events[1].snapshot
 
 
 @pytest.mark.asyncio

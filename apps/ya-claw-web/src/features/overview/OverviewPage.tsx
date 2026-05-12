@@ -53,10 +53,7 @@ export function OverviewPage() {
     (count, session) => count + (session.memory_state?.extract_count ?? 0),
     0,
   )
-  const readySandboxCount = rows.filter(
-    (session) =>
-      session.workspace_state?.sandbox_state?.ready_state === 'ready',
-  ).length
+  const scheduleCount = schedules.data?.schedules.length ?? 0
   const enabledSchedules =
     schedules.data?.schedules.filter((item) => item.enabled).length ?? 0
 
@@ -148,10 +145,10 @@ export function OverviewPage() {
           accent="violet"
         />
         <MetricCard
-          icon={Server}
-          label="Ready sandboxes"
-          value={String(readySandboxCount)}
-          detail={`${rows.length} session workspace states`}
+          icon={CalendarClock}
+          label="Schedules"
+          value={String(scheduleCount)}
+          detail={`${enabledSchedules} enabled`}
           accent="blue"
         />
       </div>
