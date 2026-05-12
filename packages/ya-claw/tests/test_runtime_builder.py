@@ -14,6 +14,7 @@ from ya_claw.config import ClawSettings
 from ya_claw.execution.profile import ClawShellReviewConfig, ResolvedProfile
 from ya_claw.execution.runtime import ClawRuntimeBuilder
 from ya_claw.workspace import MappedLocalEnvironment, WorkspaceBinding
+from ya_claw.workspace.models import WorkspaceMountBinding
 
 
 def _build_workspace_binding(
@@ -22,12 +23,20 @@ def _build_workspace_binding(
     backend_hint: str = "local",
     metadata: dict[str, object] | None = None,
 ) -> WorkspaceBinding:
+    mount = WorkspaceMountBinding(
+        id="workspace",
+        host_path=host_path,
+        virtual_path=Path("/workspace"),
+        mode="rw",
+    )
     return WorkspaceBinding(
         host_path=host_path,
         virtual_path=Path("/workspace"),
         cwd=Path("/workspace"),
         readable_paths=[Path("/workspace")],
         writable_paths=[Path("/workspace")],
+        mounts=[mount],
+        fingerprint="sha256:test",
         metadata=dict(metadata or {}),
         backend_hint=backend_hint,
     )

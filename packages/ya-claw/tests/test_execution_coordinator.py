@@ -22,6 +22,7 @@ from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
 from ya_claw.workspace import WorkspaceBinding, WorkspaceProvider
+from ya_claw.workspace.models import WorkspaceMountBinding
 
 
 class StubWorkspaceProvider(WorkspaceProvider):
@@ -32,12 +33,20 @@ class StubWorkspaceProvider(WorkspaceProvider):
         host_path = self._workspace_dir
         host_path.mkdir(parents=True, exist_ok=True)
         virtual_path = Path("/workspace")
+        mount = WorkspaceMountBinding(
+            id="workspace",
+            host_path=host_path,
+            virtual_path=virtual_path,
+            mode="rw",
+        )
         return WorkspaceBinding(
             host_path=host_path,
             virtual_path=virtual_path,
             cwd=virtual_path,
             readable_paths=[virtual_path],
             writable_paths=[virtual_path],
+            mounts=[mount],
+            fingerprint="sha256:test",
             metadata=dict(metadata or {}),
             backend_hint="local",
         )

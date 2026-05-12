@@ -59,18 +59,20 @@ Use the same values for systemd or custom container deployments when memory resi
 
 ## Workspace Provider Settings
 
-| Variable                                                | Purpose                                                                   |
-| ------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `YA_CLAW_WORKSPACE_PROVIDER_BACKEND`                    | `docker` for Docker shell execution, `local` for local shell execution    |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE`               | Workspace image, default `ghcr.io/wh1isper/ya-claw-workspace:latest`      |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR`  | Docker daemon-visible workspace path for service Docker + Docker shell    |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID`                 | UID inside auto-started workspace containers                              |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_GID`                 | GID inside auto-started workspace containers                              |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER`           | Docker exec user; default `auto` resolves to workspace UID:GID            |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME`                | Default HOME for Docker exec commands, default `/home/claw`               |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR` | Stable workspace container ID cache directory                             |
-| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS`        | Comma-separated Docker extra mounts using host_path:container_path[:mode] |
-| `YA_CLAW_WORKSPACE_ENV_VARS`                            | Comma-separated process env names forwarded into workspace environments   |
+| Variable                                                | Purpose                                                                                                                                                  |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `YA_CLAW_WORKSPACE_PROVIDER_BACKEND`                    | `docker` for Docker shell execution, `local` for local shell execution                                                                                   |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE`               | Workspace image, default `ghcr.io/wh1isper/ya-claw-workspace:latest`                                                                                     |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR`  | Docker daemon-visible workspace path for service Docker + Docker shell                                                                                   |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID`                 | UID inside auto-started workspace containers                                                                                                             |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_GID`                 | GID inside auto-started workspace containers                                                                                                             |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER`           | Docker exec user; default `auto` resolves to workspace UID:GID                                                                                           |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME`                | Default HOME for Docker exec commands, default `/home/claw`                                                                                              |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR` | Stable workspace container metadata root; session cache path is `sessions/{session_id}/workspace.json`, run cache path is `runs/{run_id}/workspace.json` |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS`        | Comma-separated Docker extra mounts using host_path:container_path[:mode]                                                                                |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY`    | Session sandbox retention, `stop_on_idle` or `keep_warm`; default `stop_on_idle`                                                                         |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS`    | Idle seconds before stopping session sandboxes under `stop_on_idle`; default `3600`                                                                      |
+| `YA_CLAW_WORKSPACE_ENV_VARS`                            | Comma-separated process env names forwarded into workspace environments                                                                                  |
 
 ## Schedule and Heartbeat Settings
 

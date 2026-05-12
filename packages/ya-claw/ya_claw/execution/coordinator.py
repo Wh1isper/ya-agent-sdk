@@ -24,7 +24,14 @@ from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
 from ya_claw.controller.hitl import HitlController
-from ya_claw.controller.models import ActiveInteraction, InputPart, RunStatus, SessionStatusReason, parse_input_parts
+from ya_claw.controller.models import (
+    ActiveInteraction,
+    InputPart,
+    RunStatus,
+    SessionStatusReason,
+    TriggerType,
+    parse_input_parts,
+)
 from ya_claw.execution.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
 from ya_claw.execution.checkpoint import build_message_checkpoint, commit_run_artifacts, write_message_checkpoint
 from ya_claw.execution.input import InputMappingResult, map_input_parts
@@ -44,6 +51,14 @@ from ya_claw.workspace import (
     WorkspaceBinding,
     WorkspaceProvider,
     build_workspace_sandbox_metadata,
+)
+from ya_claw.workspace.models import (
+    SANDBOX_SCOPE_RUN,
+    SANDBOX_SCOPE_SESSION,
+    WORKSPACE_SNAPSHOT_METADATA_KEY,
+    SandboxScopeLiteral,
+    merge_workspace_metadata,
+    workspace_snapshot,
 )
 
 
@@ -293,6 +308,8 @@ class RunCoordinator:
 
                 profile = await self._profile_resolver.resolve(run_record.profile_name or session_record.profile_name)
                 workspace_binding = self._resolve_workspace_binding(run_record, session_record, profile)
+                self._persist_run_workspace_snapshot(run_record, workspace_binding)
+                await db_session.commit()
                 restore_point = None
                 if _run_restores_state(run_record):
                     restore_point = await load_restore_point(
@@ -541,115 +558,131 @@ class RunCoordinator:
         agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id)
         deferred_tool_results: DeferredToolResults | None = None
         use_initial_prompt = True
+        refresh_task: asyncio.Task[None] | None = None
 
-        async with runtime:
-            background_monitor.set_core_toolset(runtime.core_toolset)
+        try:
+            async with runtime:
+                try:
+                    background_monitor.set_core_toolset(runtime.core_toolset)
 
-            if isinstance(environment, Environment):
-                runtime.ctx.container_id = self._extract_environment_container_id(environment)
-            await self._persist_workspace_sandbox(session_id, workspace_binding, environment)
-            logger.debug(
-                "Agent runtime entered run_id={} session_id={} container_id={}",
-                run_id,
-                session_id,
-                runtime.ctx.container_id,
-            )
-            while True:
-                async with stream_agent(
-                    runtime,
-                    user_prompt_factory=(
-                        (lambda runtime_obj: self._build_initial_prompt(runtime_obj, input_parts))
-                        if use_initial_prompt
-                        else None
-                    ),
-                    message_history=message_history,
-                    deferred_tool_results=deferred_tool_results,
-                    resume_on_error=self._settings.agent_stream_resume_on_error,
-                    resume_max_attempts=self._settings.agent_stream_resume_max_attempts,
-                    resume_prompt=self._settings.agent_stream_resume_prompt,
-                ) as streamer:
-                    steering_task = asyncio.create_task(
-                        self._forward_runtime_signals(
-                            run_id=run_id,
-                            runtime=runtime,
-                            streamer=streamer,
-                        ),
-                        name=f"ya-claw-run-{run_id}-signals",
-                    )
-                    try:
-                        async for stream_event in streamer:
-                            for agui_event in agui_adapter.adapt_stream_event(stream_event):
-                                await self._runtime_state.append_run_event(run_id, agui_event)
-                            if streamer.run is not None:
-                                buffers.latest_message_payload = self._build_message_payload(
-                                    streamer.run,
-                                    replay_events=self._runtime_state.get_replay_events(run_id),
-                                )
-                                output = streamer.run.result.output if streamer.run.result else None
-                                buffers.output_text = self._stringify_output(output)
-                                buffers.output_summary = self._summarize_output(output)
-                                if isinstance(stream_event.event, (ModelRequestStartEvent, ModelRequestCompleteEvent)):
-                                    checkpoint = build_message_checkpoint(
-                                        run_id=run_id,
-                                        session_id=session_id,
-                                        checkpoint_kind=type(stream_event.event).__name__,
-                                        message=self._runtime_state.get_replay_events(run_id),
-                                    )
-                                    write_message_checkpoint(self._run_store, checkpoint)
-                        streamer.raise_if_exception()
-                        logger.debug("Agent stream completed run_id={} session_id={}", run_id, session_id)
-                    finally:
-                        steering_task.cancel()
-                        await asyncio.gather(steering_task, return_exceptions=True)
-
-                    if streamer.run is None:
-                        if self._runtime_state.get_termination_requested(run_id) is not None:
-                            raise AgentInterrupted()
-                        raise RuntimeError("Stream agent completed without run context.")
-
-                    buffers.latest_message_payload = self._build_message_payload(
-                        streamer.run,
-                        replay_events=self._runtime_state.get_replay_events(run_id),
-                    )
-                    buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
-                    buffers.latest_state_payload = self._build_state_payload(
-                        runtime.ctx,
+                    runtime.ctx.container_id = self._extract_environment_container_id(environment)
+                    await self._persist_workspace_sandbox(session_id, workspace_binding, environment)
+                    refresh_task = self._start_workspace_sandbox_refresh(
+                        session_id=session_id,
                         workspace_binding=workspace_binding,
-                        restore_point=restore_point,
-                        profile=profile,
-                        trigger_type=trigger_type,
-                        message_payload=buffers.latest_message_payload,
+                        environment=environment,
                     )
-                    output = streamer.run.result.output if streamer.run.result else None
-                    if isinstance(output, DeferredToolRequests):
-                        message_history = list(streamer.run.all_messages())
-                        deferred_tool_results = await self._handle_deferred_tool_requests(
-                            run_id=run_id,
-                            session_id=session_id,
-                            deferred_requests=output,
-                            message_history=message_history,
-                            runtime=runtime,
-                            agui_adapter=agui_adapter,
-                            run_metadata=run_metadata,
-                        )
-                        use_initial_prompt = False
-                        continue
-
-                    buffers.output_text = self._stringify_output(output)
-                    buffers.output_summary = self._summarize_output(output)
                     logger.debug(
-                        "Agent run artifacts prepared run_id={} message_count={} output_summary_chars={}",
+                        "Agent runtime entered run_id={} session_id={} container_id={}",
                         run_id,
-                        buffers.latest_message_payload.get("message_count")
-                        if isinstance(buffers.latest_message_payload, dict)
-                        else None,
-                        len(buffers.output_summary or ""),
+                        session_id,
+                        runtime.ctx.container_id,
                     )
-                    break
+                    while True:
+                        async with stream_agent(
+                            runtime,
+                            user_prompt_factory=(
+                                (lambda runtime_obj: self._build_initial_prompt(runtime_obj, input_parts))
+                                if use_initial_prompt
+                                else None
+                            ),
+                            message_history=message_history,
+                            deferred_tool_results=deferred_tool_results,
+                            resume_on_error=self._settings.agent_stream_resume_on_error,
+                            resume_max_attempts=self._settings.agent_stream_resume_max_attempts,
+                            resume_prompt=self._settings.agent_stream_resume_prompt,
+                        ) as streamer:
+                            steering_task = asyncio.create_task(
+                                self._forward_runtime_signals(
+                                    run_id=run_id,
+                                    runtime=runtime,
+                                    streamer=streamer,
+                                ),
+                                name=f"ya-claw-run-{run_id}-signals",
+                            )
+                            try:
+                                async for stream_event in streamer:
+                                    for agui_event in agui_adapter.adapt_stream_event(stream_event):
+                                        await self._runtime_state.append_run_event(run_id, agui_event)
+                                    if streamer.run is not None:
+                                        buffers.latest_message_payload = self._build_message_payload(
+                                            streamer.run,
+                                            replay_events=self._runtime_state.get_replay_events(run_id),
+                                        )
+                                        output = streamer.run.result.output if streamer.run.result else None
+                                        buffers.output_text = self._stringify_output(output)
+                                        buffers.output_summary = self._summarize_output(output)
+                                        if isinstance(
+                                            stream_event.event,
+                                            (ModelRequestStartEvent, ModelRequestCompleteEvent),
+                                        ):
+                                            checkpoint = build_message_checkpoint(
+                                                run_id=run_id,
+                                                session_id=session_id,
+                                                checkpoint_kind=type(stream_event.event).__name__,
+                                                message=self._runtime_state.get_replay_events(run_id),
+                                            )
+                                            write_message_checkpoint(self._run_store, checkpoint)
+                                streamer.raise_if_exception()
+                                logger.debug("Agent stream completed run_id={} session_id={}", run_id, session_id)
+                            finally:
+                                steering_task.cancel()
+                                await asyncio.gather(steering_task, return_exceptions=True)
 
-            drained_background = await background_monitor.drain_or_cancel(timeout=10.0)
-            if not drained_background:
-                logger.warning("YA Claw background subagents cancelled after drain timeout run_id={}", run_id)
+                            if streamer.run is None:
+                                if self._runtime_state.get_termination_requested(run_id) is not None:
+                                    raise AgentInterrupted()
+                                raise RuntimeError("Stream agent completed without run context.")
+
+                            buffers.latest_message_payload = self._build_message_payload(
+                                streamer.run,
+                                replay_events=self._runtime_state.get_replay_events(run_id),
+                            )
+                            buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
+                            buffers.latest_state_payload = self._build_state_payload(
+                                runtime.ctx,
+                                workspace_binding=workspace_binding,
+                                restore_point=restore_point,
+                                profile=profile,
+                                trigger_type=trigger_type,
+                                message_payload=buffers.latest_message_payload,
+                            )
+                            output = streamer.run.result.output if streamer.run.result else None
+                            if isinstance(output, DeferredToolRequests):
+                                message_history = list(streamer.run.all_messages())
+                                deferred_tool_results = await self._handle_deferred_tool_requests(
+                                    run_id=run_id,
+                                    session_id=session_id,
+                                    deferred_requests=output,
+                                    message_history=message_history,
+                                    runtime=runtime,
+                                    agui_adapter=agui_adapter,
+                                    run_metadata=run_metadata,
+                                )
+                                use_initial_prompt = False
+                                continue
+
+                            buffers.output_text = self._stringify_output(output)
+                            buffers.output_summary = self._summarize_output(output)
+                            logger.debug(
+                                "Agent run artifacts prepared run_id={} message_count={} output_summary_chars={}",
+                                run_id,
+                                buffers.latest_message_payload.get("message_count")
+                                if isinstance(buffers.latest_message_payload, dict)
+                                else None,
+                                len(buffers.output_summary or ""),
+                            )
+                            break
+
+                    drained_background = await background_monitor.drain_or_cancel(timeout=10.0)
+                    if not drained_background:
+                        logger.warning("YA Claw background subagents cancelled after drain timeout run_id={}", run_id)
+                finally:
+                    if refresh_task is not None:
+                        refresh_task.cancel()
+                        await asyncio.gather(refresh_task, return_exceptions=True)
+        finally:
+            await self._persist_workspace_sandbox(session_id, workspace_binding, environment, final=True)
 
     async def _handle_deferred_tool_requests(
         self,
@@ -814,31 +847,96 @@ class RunCoordinator:
         session_record: SessionRecord,
         profile: ResolvedProfile,
     ) -> WorkspaceBinding:
+        session_metadata = session_record.session_metadata if isinstance(session_record.session_metadata, dict) else {}
+        run_metadata = run_record.run_metadata if isinstance(run_record.run_metadata, dict) else {}
+        trigger_type = str(run_record.trigger_type)
+        sandbox_scope = _sandbox_scope_for_trigger(trigger_type)
         metadata: dict[str, Any] = {
             "run_id": run_record.id,
             "session_id": session_record.id,
             "profile_name": profile.name,
-            "trigger_type": run_record.trigger_type,
+            "trigger_type": trigger_type,
         }
-        if isinstance(session_record.session_metadata, dict):
-            sandbox = session_record.session_metadata.get("sandbox")
+        workspace_metadata = merge_workspace_metadata(
+            session_metadata=session_metadata,
+            run_metadata=run_metadata,
+        )
+        if workspace_metadata is not None:
+            metadata["workspace"] = workspace_metadata
+        if sandbox_scope == SANDBOX_SCOPE_SESSION:
+            sandbox = session_metadata.get("sandbox")
+            if isinstance(sandbox, dict):
+                metadata["sandbox"] = dict(sandbox)
+        else:
+            sandbox = run_metadata.get("sandbox")
             if isinstance(sandbox, dict):
                 metadata["sandbox"] = dict(sandbox)
         binding = self._workspace_provider.resolve(metadata)
+        self._apply_workspace_sandbox_lifecycle(binding, run_record=run_record, session_record=session_record)
         if isinstance(profile.workspace_backend_hint, str) and profile.workspace_backend_hint.strip() != "":
             binding.backend_hint = profile.workspace_backend_hint
             binding.metadata["workspace_backend_hint"] = profile.workspace_backend_hint
         logger.debug(
-            "Workspace binding resolved run_id={} session_id={} provider={} backend_hint={} host_path={} virtual_path={} docker_host_path={}",
+            "Workspace binding resolved run_id={} session_id={} provider={} backend_hint={} scope={} generation={} fingerprint={} host_path={} virtual_path={} docker_host_path={}",
             run_record.id,
             session_record.id,
             binding.metadata.get("provider"),
             binding.backend_hint,
+            binding.sandbox_scope,
+            binding.generation,
+            binding.fingerprint,
             binding.host_path,
             binding.virtual_path,
             binding.docker_host_path,
         )
         return binding
+
+    def _apply_workspace_sandbox_lifecycle(
+        self,
+        binding: WorkspaceBinding,
+        *,
+        run_record: RunRecord,
+        session_record: SessionRecord,
+    ) -> None:
+        if (binding.backend_hint or binding.metadata.get("provider")) != "docker":
+            return
+        scope = _sandbox_scope_for_trigger(str(run_record.trigger_type))
+        existing = _existing_sandbox_for_scope(scope, run_record=run_record, session_record=session_record)
+        generation = _next_sandbox_generation(existing=existing, fingerprint=binding.fingerprint, scope=scope)
+        container_ref = _build_scoped_container_ref(
+            scope=scope,
+            session_id=session_record.id,
+            run_id=run_record.id,
+            generation=generation,
+        )
+        sandbox_metadata = {
+            **existing,
+            "provider": "docker",
+            "scope": scope,
+            "generation": generation,
+            "workspace_fingerprint": binding.fingerprint,
+            "container_ref": container_ref,
+            "image": binding.metadata.get("docker_image"),
+            "session_id": session_record.id,
+            "run_id": run_record.id,
+            "retention_policy": self._settings.resolved_workspace_provider_docker_retention_policy,
+            "idle_ttl_seconds": self._settings.resolved_workspace_provider_docker_idle_ttl_seconds,
+        }
+        if scope == SANDBOX_SCOPE_RUN:
+            sandbox_metadata["cleanup_on_exit"] = True
+            sandbox_metadata.pop("container_id", None)
+        if _sandbox_fingerprint(existing) != binding.fingerprint:
+            sandbox_metadata.pop("container_id", None)
+            sandbox_metadata.pop("image_digest", None)
+            sandbox_metadata["status"] = "created"
+        binding.generation = generation
+        binding.sandbox_scope = scope
+        binding.metadata["sandbox"] = sandbox_metadata
+
+    def _persist_run_workspace_snapshot(self, run_record: RunRecord, binding: WorkspaceBinding) -> None:
+        metadata = dict(run_record.run_metadata)
+        metadata[WORKSPACE_SNAPSHOT_METADATA_KEY] = workspace_snapshot(binding)
+        run_record.run_metadata = metadata
 
     def _extract_environment_container_id(self, environment: Environment) -> str | None:
         if isinstance(environment, SandboxEnvironment):
@@ -847,29 +945,86 @@ class RunCoordinator:
                 return value.strip()
         return None
 
+    def _start_workspace_sandbox_refresh(
+        self,
+        *,
+        session_id: str,
+        workspace_binding: WorkspaceBinding,
+        environment: Environment,
+    ) -> asyncio.Task[None] | None:
+        if workspace_binding.sandbox_scope != SANDBOX_SCOPE_SESSION:
+            return None
+        if not isinstance(environment, SandboxEnvironment):
+            return None
+        interval_seconds = max(30, min(300, self._settings.resolved_workspace_provider_docker_idle_ttl_seconds // 3))
+        return asyncio.create_task(
+            self._refresh_workspace_sandbox_loop(
+                session_id=session_id,
+                workspace_binding=workspace_binding,
+                environment=environment,
+                interval_seconds=interval_seconds,
+            ),
+            name=f"ya-claw-sandbox-refresh-{session_id}",
+        )
+
+    async def _refresh_workspace_sandbox_loop(
+        self,
+        *,
+        session_id: str,
+        workspace_binding: WorkspaceBinding,
+        environment: Environment,
+        interval_seconds: int,
+    ) -> None:
+        try:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                await self._persist_workspace_sandbox(session_id, workspace_binding, environment)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Workspace sandbox last_used_at refresh failed session_id={}", session_id)
+
     async def _persist_workspace_sandbox(
         self,
         session_id: str,
         workspace_binding: WorkspaceBinding,
         environment: Environment,
+        *,
+        final: bool = False,
     ) -> None:
         sandbox_metadata = build_workspace_sandbox_metadata(binding=workspace_binding, environment=environment)
         if sandbox_metadata is None:
             return
+        now = _utc_now_iso()
+        sandbox_metadata["last_used_at"] = now
+        sandbox_metadata.setdefault("last_started_at", now)
+        scope = str(sandbox_metadata.get("scope") or workspace_binding.sandbox_scope or SANDBOX_SCOPE_SESSION)
+        if final and scope == SANDBOX_SCOPE_RUN:
+            sandbox_metadata["status"] = "stopped"
+            sandbox_metadata["container_id"] = None
 
         async with self._session_factory() as db_session:
             session_record = await db_session.get(SessionRecord, session_id)
             if not isinstance(session_record, SessionRecord):
                 return
-            session_metadata = dict(session_record.session_metadata)
-            if session_metadata.get("sandbox") == sandbox_metadata:
-                return
-            session_metadata["sandbox"] = sandbox_metadata
-            session_record.session_metadata = session_metadata
+            if scope == SANDBOX_SCOPE_SESSION:
+                session_metadata = dict(session_record.session_metadata)
+                session_metadata["sandbox"] = sandbox_metadata
+                session_record.session_metadata = session_metadata
+            run_id = _normalize_metadata_string(sandbox_metadata.get("run_id"))
+            if run_id is not None:
+                run_record = await db_session.get(RunRecord, run_id)
+                if isinstance(run_record, RunRecord):
+                    run_metadata = dict(run_record.run_metadata)
+                    run_metadata["sandbox"] = sandbox_metadata
+                    run_metadata[WORKSPACE_SNAPSHOT_METADATA_KEY] = workspace_snapshot(workspace_binding)
+                    run_record.run_metadata = run_metadata
             await db_session.commit()
             logger.debug(
-                "Persisted workspace sandbox metadata session_id={} container_id={} container_ref={}",
+                "Persisted workspace sandbox metadata session_id={} scope={} generation={} container_id={} container_ref={}",
                 session_id,
+                scope,
+                sandbox_metadata.get("generation"),
                 sandbox_metadata.get("container_id"),
                 sandbox_metadata.get("container_ref"),
             )
@@ -1161,6 +1316,58 @@ def _session_status_detail_from_run(
         detail["active_interactions"] = active_interactions
         detail["active_interaction_count"] = len(active_interactions)
     return detail
+
+
+def _sandbox_scope_for_trigger(trigger_type: str) -> SandboxScopeLiteral:
+    if trigger_type in {TriggerType.SCHEDULE.value, TriggerType.HEARTBEAT.value}:
+        return SANDBOX_SCOPE_RUN
+    return SANDBOX_SCOPE_SESSION
+
+
+def _existing_sandbox_for_scope(
+    scope: SandboxScopeLiteral,
+    *,
+    run_record: RunRecord,
+    session_record: SessionRecord,
+) -> dict[str, Any]:
+    if scope == SANDBOX_SCOPE_RUN:
+        metadata = run_record.run_metadata if isinstance(run_record.run_metadata, dict) else {}
+    else:
+        metadata = session_record.session_metadata if isinstance(session_record.session_metadata, dict) else {}
+    sandbox = metadata.get("sandbox")
+    return dict(sandbox) if isinstance(sandbox, dict) else {}
+
+
+def _sandbox_fingerprint(sandbox: dict[str, Any]) -> str | None:
+    value = sandbox.get("workspace_fingerprint")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _next_sandbox_generation(*, existing: dict[str, Any], fingerprint: str, scope: SandboxScopeLiteral) -> int:
+    if scope == SANDBOX_SCOPE_RUN:
+        return 1
+    current_generation = existing.get("generation")
+    generation = current_generation if isinstance(current_generation, int) and current_generation > 0 else 0
+    if generation > 0 and _sandbox_fingerprint(existing) == fingerprint:
+        return generation
+    return generation + 1
+
+
+def _build_scoped_container_ref(*, scope: SandboxScopeLiteral, session_id: str, run_id: str, generation: int) -> str:
+    if scope == SANDBOX_SCOPE_RUN:
+        return f"ya-claw-run-{run_id[:12]}"
+    return f"ya-claw-session-{session_id[:12]}-g{generation}"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_metadata_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 async def _load_run_scope(db_session: AsyncSession, run_id: str) -> tuple[SessionRecord, RunRecord]:

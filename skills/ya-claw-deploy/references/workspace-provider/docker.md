@@ -1,6 +1,6 @@
 # Docker Workspace Provider
 
-`DockerWorkspaceProvider` is the backend used when `YA_CLAW_WORKSPACE_PROVIDER_BACKEND=docker`. It gives agents a `/workspace` path and runs shell commands in a reusable Docker workspace container.
+`DockerWorkspaceProvider` is the backend used when `YA_CLAW_WORKSPACE_PROVIDER_BACKEND=docker`. It gives agents a virtual `/workspace` namespace and runs shell commands in Docker workspace containers.
 
 Read these shape-specific guides first:
 
@@ -15,6 +15,8 @@ YA_CLAW_WORKSPACE_PROVIDER_BACKEND=docker
 YA_CLAW_WORKSPACE_DIR=/var/lib/ya-claw/workspace
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE=ghcr.io/wh1isper/ya-claw-workspace:latest
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR=/var/lib/ya-claw/data/docker-workspace-containers
+YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY=stop_on_idle
+YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS=3600
 ```
 
 Set this when the service process path and Docker daemon path differ:
@@ -23,17 +25,22 @@ Set this when the service process path and Docker daemon path differ:
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR=/srv/ya-claw/workspace
 ```
 
-Mount additional host directories into the reusable workspace container with comma-separated `host_path:container_path[:mode]` entries. Supported modes are `rw` and `ro`.
+Mount provider support directories into workspace containers with comma-separated `host_path:container_path[:mode]` entries. Supported modes are `rw` and `ro`.
 
 ```env
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS=/srv/ya-claw/home:/home/claw:rw,/srv/ya-claw/cache:/cache:ro
 ```
 
-## Binding Semantics
+## Workspace Binding Semantics
 
-`DockerWorkspaceProvider` returns a binding with:
+YA Claw has two mount layers:
 
-| Field              | Meaning                                                                                                           |
+1. Logical workspace mounts come from API/session/run `workspace.mounts` and define the project folders, default cwd, guidance root, memory root, file browsing root, and runtime prompt workspace list.
+2. Provider extra mounts come from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS` and add support paths such as home, cache, credentials, or shared tool directories to the concrete Docker container.
+
+When API clients omit `workspace`, the configured service workspace becomes the fallback logical binding:
+
+| Field              | Fallback value                                                                                                    |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | `host_path`        | service-visible workspace path from `YA_CLAW_WORKSPACE_DIR`                                                       |
 | `docker_host_path` | Docker daemon-visible path from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR`, defaulting to `host_path` |
@@ -41,25 +48,76 @@ YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS=/srv/ya-claw/home:/home/claw:rw,/
 | `cwd`              | `/workspace`                                                                                                      |
 | `backend_hint`     | `docker`                                                                                                          |
 
-Extra mounts are recorded in binding metadata as `extra_mounts` and passed to Docker container creation. The workspace container sees the configured `container_path` values directly.
+Request-level logical mounts support multiple folders:
 
-`DockerEnvironmentFactory` creates a `ReusableSandboxEnvironment`. It uses `host_path` for virtual file operations and `docker_host_path` as the bind mount source when creating the workspace container.
-
-## Container Reuse
-
-YA Claw builds a stable workspace container name from `docker_host_path` and image:
-
-```text
-ya-claw-workspace-<fingerprint>
+```json
+{
+  "workspace": {
+    "mounts": [
+      {
+        "id": "main",
+        "host_path": "/srv/projects/app",
+        "docker_host_path": "/srv/projects/app",
+        "virtual_path": "/workspace/main",
+        "mode": "rw"
+      },
+      {
+        "id": "docs",
+        "host_path": "/srv/projects/docs",
+        "docker_host_path": "/srv/projects/docs",
+        "virtual_path": "/workspace/docs",
+        "mode": "ro"
+      }
+    ],
+    "default_mount_id": "main",
+    "cwd": "/workspace/main"
+  }
+}
 ```
 
-The selected container ID is cached at:
+YA Claw validates virtual path conflicts between logical mounts and provider extra mounts. Extra mounts are included in the workspace fingerprint and stay outside the logical workspace association.
+
+## Sandbox Scopes and Generation
+
+Docker sandbox scope follows the run source:
+
+| Source                                  | Scope     | Container ref format                    | Cleanup behavior                          |
+| --------------------------------------- | --------- | --------------------------------------- | ----------------------------------------- |
+| API, bridge, memory, foreground session | `session` | `ya-claw-session-{session_id_short}-gN` | Reused until idle TTL or explicit cleanup |
+| schedule and heartbeat                  | `run`     | `ya-claw-run-{run_id_short}`            | Stopped when the run exits                |
+
+Session-scoped Docker stores one active generation in session metadata. The generation increments when the workspace fingerprint changes. Fingerprint inputs include logical mounts, provider extra mounts, Docker image, UID, GID, cwd, and backend.
+
+Session-scoped cache path:
 
 ```text
-${YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR}/workspace.json
+${YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR}/sessions/{session_id}/workspace.json
 ```
 
-On each run, YA Claw reads the cache, verifies the container, starts stopped containers, checks Docker health when available, recreates failed containers, and writes the refreshed cache. Recreate the workspace container after changing extra mount configuration.
+Run-scoped cache path:
+
+```text
+${YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR}/runs/{run_id}/workspace.json
+```
+
+The cache file stores the current container ID, generation, fingerprint, container ref, Docker image, image digest, and lifecycle metadata. On each run, YA Claw resolves the current Docker image digest before trusting the cached container. A changed image digest takes precedence over container existence: YA Claw removes the stale container and starts a new container from the current image. YA Claw also starts stopped containers, checks Docker health when available, recreates failed containers, and writes refreshed metadata.
+
+## Idle TTL
+
+Session-scoped Docker sandboxes refresh `last_used_at` while a run is active and once more when the run exits after agent cleanup. The TTL cleaner scans session sandbox metadata, uses the same cache-path lock as run startup, stops idle containers, and deletes the session `workspace.json` cache file when:
+
+```text
+last_used_at + idle_ttl_seconds <= now
+```
+
+Retention policies:
+
+| Policy         | Behavior                                                                        |
+| -------------- | ------------------------------------------------------------------------------- |
+| `stop_on_idle` | Stop the session container after the idle TTL. Next run restarts it.            |
+| `keep_warm`    | Keep the session container running until service, session, or operator cleanup. |
+
+Run-scoped schedule and heartbeat sandboxes always use terminal cleanup.
 
 ## Docker Permission
 
@@ -124,17 +182,31 @@ The official workspace image contains:
 
 ## Verification
 
+List active containers:
+
 ```bash
-docker ps --filter 'name=ya-claw-workspace'
-docker inspect ya-claw-workspace-<fingerprint> --format '{{ json .Mounts }}'
-docker exec -it ya-claw-workspace-<fingerprint> pwd
-docker exec -it ya-claw-workspace-<fingerprint> ls -la /workspace
-docker exec -it ya-claw-workspace-<fingerprint> lark-cli --version
+docker ps --filter 'name=ya-claw-session'
+docker ps --filter 'name=ya-claw-run'
 ```
 
-Clear the workspace container after image or mount changes:
+Inspect a session container:
 
 ```bash
-docker rm -f ya-claw-workspace-<fingerprint>
-rm -f /var/lib/ya-claw/data/docker-workspace-containers/workspace.json
+docker inspect ya-claw-session-<session-short>-g<generation> --format '{{ json .Mounts }}'
+docker exec -it ya-claw-session-<session-short>-g<generation> pwd
+docker exec -it ya-claw-session-<session-short>-g<generation> ls -la /workspace
+docker exec -it ya-claw-session-<session-short>-g<generation> lark-cli --version
+```
+
+Reset a session-scoped workspace sandbox after image, UID/GID, or mount changes:
+
+```bash
+docker rm -f ya-claw-session-<session-short>-g<generation>
+rm -f /var/lib/ya-claw/data/docker-workspace-containers/sessions/<session-id>/workspace.json
+```
+
+Reset run-scoped diagnostics cache:
+
+```bash
+rm -rf /var/lib/ya-claw/data/docker-workspace-containers/runs/<run-id>
 ```

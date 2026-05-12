@@ -63,11 +63,12 @@ YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 For Docker shell shapes:
 
 ```bash
-docker ps --filter 'name=ya-claw-workspace'
-docker logs ya-claw-workspace-<fingerprint>
-docker exec -it ya-claw-workspace-<fingerprint> pwd
-docker exec -it ya-claw-workspace-<fingerprint> ls -la /workspace
-docker exec -it ya-claw-workspace-<fingerprint> lark-cli --version
+docker ps --filter 'name=ya-claw-session'
+docker ps --filter 'name=ya-claw-run'
+docker logs ya-claw-session-<session-short>-g<generation>
+docker exec -it ya-claw-session-<session-short>-g<generation> pwd
+docker exec -it ya-claw-session-<session-short>-g<generation> ls -la /workspace
+docker exec -it ya-claw-session-<session-short>-g<generation> lark-cli --version
 ```
 
 For service local + local shell:
@@ -76,11 +77,11 @@ For service local + local shell:
 sudo -u ya-claw sh -lc 'cd /var/lib/ya-claw/workspace && pwd && ls -la'
 ```
 
-Remove a stale workspace container and cache after changing the workspace image or mount contract:
+Remove a stale session workspace container and cache after changing the workspace image or mount contract:
 
 ```bash
-docker rm -f ya-claw-workspace-<fingerprint>
-rm -f /var/lib/ya-claw/data/docker-workspace-containers/workspace.json
+docker rm -f ya-claw-session-<session-short>-g<generation>
+rm -f /var/lib/ya-claw/data/docker-workspace-containers/sessions/<session-id>/workspace.json
 ```
 
 ## API Smoke Test

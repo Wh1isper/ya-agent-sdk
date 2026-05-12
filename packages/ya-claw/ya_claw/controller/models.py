@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AliasChoices, BaseModel, Field
 
 from ya_claw.orm.tables import RunRecord, SessionRecord
+from ya_claw.workspace.models import WorkspaceBindingSpec
 
 
 class RunStatus(StrEnum):
@@ -175,6 +176,7 @@ class ToolResult(BaseModel):
 class SessionCreateRequest(BaseModel):
     profile_name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    workspace: WorkspaceBindingSpec | None = None
     input_parts: list[InputPart] = Field(default_factory=list)
     dispatch_mode: DispatchMode = DispatchMode.ASYNC
     trigger_type: TriggerType = TriggerType.API
@@ -185,6 +187,7 @@ class SessionRunCreateRequest(BaseModel):
     reset_state: bool = False
     input_parts: list[InputPart] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    workspace: WorkspaceBindingSpec | None = None
     dispatch_mode: DispatchMode = DispatchMode.ASYNC
     trigger_type: TriggerType = TriggerType.API
 
@@ -193,6 +196,7 @@ class SessionForkRequest(BaseModel):
     restore_from_run_id: str | None = None
     profile_name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    workspace: WorkspaceBindingSpec | None = None
 
 
 class RunCreateRequest(BaseModel):
@@ -203,6 +207,7 @@ class RunCreateRequest(BaseModel):
     input_parts: list[InputPart] = Field(default_factory=list)
     trigger_type: TriggerType = TriggerType.API
     metadata: dict[str, Any] = Field(default_factory=dict)
+    workspace: WorkspaceBindingSpec | None = None
     dispatch_mode: DispatchMode = DispatchMode.ASYNC
 
 

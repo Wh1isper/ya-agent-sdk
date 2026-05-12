@@ -152,6 +152,6 @@ curl \
 After the first run that needs workspace execution:
 
 ```bash
-docker ps --filter 'name=ya-claw-workspace'
-docker inspect ya-claw-workspace-<fingerprint> --format '{{ json .Mounts }}'
+docker ps --filter 'name=ya-claw-session'
+docker inspect ya-claw-session-<session-short>-g<generation> --format '{{ json .Mounts }}'
 ```

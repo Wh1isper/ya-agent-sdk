@@ -52,6 +52,8 @@ flowchart TB
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_GID`                | GID used inside auto-started Docker workspace containers                    |
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER`          | Docker exec user, default `auto` resolves to workspace UID:GID              |
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME`               | default HOME passed to Docker exec commands, default `/home/claw`           |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY`   | session sandbox retention policy, default `stop_on_idle`                    |
+| `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS`   | idle TTL for stopped-on-idle Docker session sandboxes, default `3600`       |
 | `YA_CLAW_MCP_CONFIG_FILE`                              | global MCP JSON file injected into every runtime                            |
 | `YA_CLAW_WORKSPACE_MCP_CONFIG_PATH`                    | workspace MCP JSON path with workspace-level priority                       |
 | `YA_CLAW_SCHEDULE_DISPATCH_ENABLED`                    | enable schedule dispatcher                                                  |
@@ -206,7 +208,9 @@ The workspace provider treats the image as an implementation detail carried by `
 
 Auto-started Docker workspace containers receive `YA_CLAW_WORKSPACE_UID`, `YA_CLAW_WORKSPACE_GID`, `YA_CLAW_HOST_UID`, and `YA_CLAW_HOST_GID`. The default UID/GID comes from the YA Claw service process, and deployments can override them through `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID` and `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_GID`. Docker shell commands use `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER=auto` by default, which resolves to the workspace UID:GID. `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME` sets the default `HOME` for Docker exec commands and defaults to `/home/claw`.
 
-Workspace environments receive built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases from process environment values or the configured Lark bridge app settings. `YA_CLAW_WORKSPACE_ENV_VARS` forwards additional comma-separated process environment variable names into workspace environments; values are read from the YA Claw service process environment and passed to local shell execution or Docker container creation. `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS` mounts additional host directories into Docker workspace containers using comma-separated `host_path:container_path[:mode]` entries with `rw` and `ro` modes.
+Workspace environments receive built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases from process environment values or the configured Lark bridge app settings. `YA_CLAW_WORKSPACE_ENV_VARS` forwards additional comma-separated process environment variable names into workspace environments; values are read from the YA Claw service process environment and passed to local shell execution or Docker container creation. `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS` mounts additional host directories into Docker workspace containers using comma-separated `host_path:container_path[:mode]` entries with `rw` and `ro` modes. Extra mounts are provider support mounts: they are appended to Docker environment mounts, included in sandbox fingerprints, and excluded from workspace default cwd, guidance root, memory root, and Desktop Space association.
+
+Docker session sandboxes use `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY=stop_on_idle` by default and `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS=3600` by default. `keep_warm` keeps the current session sandbox running until explicit cleanup. `stop_on_idle` stops the current session sandbox after the TTL and starts it again for the next run when the workspace fingerprint still matches. The Docker container cache root remains `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR` or `<data_dir>/docker-workspace-containers`; session cache files live under `sessions/{session_id}/workspace.json`, and run-scoped automatic task cache files live under `runs/{run_id}/workspace.json`.
 
 ## WorkspaceProvider
 
@@ -253,7 +257,7 @@ Shape:
 - backend hint `docker`
 - optional image hint from profile or service bootstrap config
 
-`DockerEnvironmentFactory` builds virtual file operations over the service path and a Docker shell over `/workspace`. The reusable workspace container bind mount uses the daemon-visible host path.
+`DockerEnvironmentFactory` builds virtual file operations over service-visible mount paths and a Docker shell over declared virtual paths. The session-owned Docker workspace container bind mounts daemon-visible host paths into the declared virtual paths. The provider records one current sandbox generation per session and replaces that state when the workspace fingerprint changes.
 
 ## EnvironmentFactory
 
@@ -275,7 +279,7 @@ Responsibilities:
 
 | Service placement        | Shell backend | File operations                                                                     | Shell cwd                          | Docker mount source                         |
 | ------------------------ | ------------- | ----------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------- |
-| Host/local process       | local shell   | `LocalFileOperator` over declared host mounts                                       | host cwd resolved from virtual cwd | n/a                                         |
+| Host/local process       | local shell   | file operations over declared host mounts                                           | host cwd resolved from virtual cwd | n/a                                         |
 | Host/local process       | Docker shell  | `VirtualLocalFileOperator` mapping declared host mounts to virtual paths            | declared virtual cwd               | mount host path or `docker_host_path`       |
 | Docker service container | Docker shell  | `VirtualLocalFileOperator` mapping service-visible declared mounts to virtual paths | declared virtual cwd               | `docker_host_path` or daemon-visible source |
 

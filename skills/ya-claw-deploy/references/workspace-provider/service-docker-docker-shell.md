@@ -25,6 +25,8 @@ YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR=/srv/ya-claw/workspace
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE=ghcr.io/wh1isper/ya-claw-workspace:latest
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR=/var/lib/ya-claw/data/docker-workspace-containers
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS=/srv/ya-claw/home:/home/claw:rw
+YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY=stop_on_idle
+YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS=3600
 ```
 
 `YA_CLAW_WORKSPACE_DIR` is the service-container path. `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` is the Docker daemon-visible host path used for the workspace container bind mount. Extra mount host paths are also Docker daemon-visible host paths.
@@ -98,10 +100,10 @@ Use matching ownership for `/srv/ya-claw`, including `/srv/ya-claw/data` and `/s
 
 ```bash
 docker compose logs -f ya-claw
-docker ps --filter 'name=ya-claw-workspace'
-docker inspect ya-claw-workspace-<fingerprint> --format '{{ json .Mounts }}'
-docker exec -it ya-claw-workspace-<fingerprint> pwd
-docker exec -it ya-claw-workspace-<fingerprint> ls -la /workspace
+docker ps --filter 'name=ya-claw-session'
+docker inspect ya-claw-session-<session-short>-g<generation> --format '{{ json .Mounts }}'
+docker exec -it ya-claw-session-<session-short>-g<generation> pwd
+docker exec -it ya-claw-session-<session-short>-g<generation> ls -la /workspace
 ```
 
 The workspace container mount source should show `/srv/ya-claw/workspace` and target `/workspace`.

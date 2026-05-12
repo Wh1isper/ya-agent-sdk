@@ -8,10 +8,11 @@ The runtime assembly path should make each boundary explicit:
 
 1. resolve profile
 2. resolve workspace binding
-3. build environment
-4. construct `ClawAgentContext`
-5. create `AgentRuntime`
-6. execute through one `RunCoordinator`
+3. resolve Docker sandbox generation when the binding is Docker-backed
+4. build environment
+5. construct `ClawAgentContext`
+6. create `AgentRuntime`
+7. execute through one `RunCoordinator`
 
 ## Assembly Objects
 
@@ -47,6 +48,8 @@ Suggested fields:
 - `mounts`
 - `readable_paths`
 - `writable_paths`
+- `fingerprint`
+- `generation`
 - `environment_overrides`
 - `metadata`
 - `backend_hint`
@@ -93,6 +96,7 @@ Suggested inputs:
 - optional `ResumableState`
 - run and session metadata
 - source metadata such as API, schedule, heartbeat, or bridge ingress
+- resolved workspace fingerprint and sandbox generation when present
 
 Suggested output:
 
@@ -113,12 +117,23 @@ sequenceDiagram
     PROF-->>COORD: ResolvedProfile
     COORD->>WP: resolve(session metadata + run metadata)
     WP-->>COORD: WorkspaceBinding
+    COORD->>COORD: resolve sandbox generation for Docker binding
     COORD->>EF: build(binding, profile)
     EF-->>COORD: Environment
     COORD->>RB: build(profile, binding, environment, restore_state, run metadata)
     RB->>SDK: create_agent(...)
     RB-->>COORD: AgentRuntime
 ```
+
+## Sandbox Generation Rule
+
+Docker-backed bindings resolve sandbox scope before environment construction. API, bridge, and memory runs use a session-owned sandbox generation. Schedule and heartbeat runs use a run-owned sandbox generation and terminal cleanup.
+
+For session-scoped sandboxes, the coordinator compares the current workspace fingerprint with the current session sandbox state. A matching fingerprint reuses the generation. A changed fingerprint increments the generation and replaces the session sandbox state.
+
+Local bindings use workspace path policy directly and skip Docker sandbox generation.
+
+Run state stores the resolved workspace snapshot with fingerprint, sandbox scope, and generation.
 
 ## Environment Construction Rule
 
@@ -210,6 +225,7 @@ runtime = runtime_builder.build(
     source_kind=run.trigger_type,
     source_metadata=run.metadata.get("source", {}),
     workspace_metadata=resolved_workspace_metadata,
+    sandbox_generation=workspace_binding.generation,
 )
 ```
 

@@ -15,7 +15,8 @@ Both surfaces submit work through the same queued-run execution model. Their own
 - support isolated timer work that creates a clean session each fire
 - keep heartbeat configuration runtime-owned and visible to the console
 - load `HEARTBEAT.md` only for heartbeat-triggered runs
-- keep the single-workspace model: all runs share the configured workspace binding
+- inherit workspace binding from the owning or configured session when a timed run needs workspace files
+- use run-scoped Docker sandboxes for schedule and heartbeat runs and close them at terminal state
 
 ## Time-based Work Types
 
@@ -83,9 +84,11 @@ Delivery behavior:
 - the first run has `trigger_type="schedule"`
 - the run starts with a clean agent state
 - the run uses the configured workspace binding and regular workspace guidance
+- the run uses a run-scoped Docker sandbox when the workspace backend is Docker
+- the run closes its Docker sandbox at terminal state
 - the run loads schedule input and regular workspace guidance only
 
-This mode is useful for standalone recurring tasks that need workspace access, clean agent state, and durable run history.
+This mode is useful for standalone recurring tasks that need workspace access, clean agent state, durable run history, and a fresh container lifecycle per fire.
 
 ### `heartbeat`
 
@@ -97,6 +100,8 @@ Behavior:
 - each fire creates an isolated queued run
 - the run has `trigger_type="heartbeat"`
 - the runtime loads `HEARTBEAT.md` from the workspace root and injects it as heartbeat guidance
+- the run uses a run-scoped Docker sandbox when the workspace backend is Docker
+- the run closes its Docker sandbox at terminal state
 - heartbeat fires are queryable by the console
 - heartbeat management stays outside the agent schedule toolset
 

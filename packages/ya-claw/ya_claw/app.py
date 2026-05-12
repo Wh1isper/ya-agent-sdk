@@ -25,6 +25,7 @@ from ya_claw.config import ClawSettings, get_settings
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution import (
     ClawRuntimeBuilder,
+    DockerSandboxTtlDispatcher,
     ExecutionSupervisor,
     ProfileResolver,
     RunDispatcher,
@@ -77,6 +78,7 @@ class ClawApplication:
         app.state.schedule_dispatcher = None
         app.state.heartbeat_dispatcher = None
         app.state.session_prune_dispatcher = None
+        app.state.docker_sandbox_ttl_dispatcher = None
 
         self.register_api_token_middleware(app)
         app.add_middleware(
@@ -141,6 +143,8 @@ class ClawApplication:
             docker_extra_mounts=self.settings.resolved_workspace_provider_docker_extra_mounts,
             docker_exec_user=self.settings.resolved_workspace_provider_docker_exec_user,
             docker_exec_default_env=self.settings.resolved_workspace_provider_docker_exec_default_env,
+            docker_retention_policy=self.settings.resolved_workspace_provider_docker_retention_policy,
+            docker_idle_ttl_seconds=self.settings.resolved_workspace_provider_docker_idle_ttl_seconds,
         )
 
         if app.state.db_session_factory is not None:
@@ -205,6 +209,12 @@ class ClawApplication:
             )
             app.state.session_prune_dispatcher = session_prune_dispatcher
             await session_prune_dispatcher.startup()
+            docker_sandbox_ttl_dispatcher = DockerSandboxTtlDispatcher(
+                settings=self.settings,
+                session_factory=app.state.db_session_factory,
+            )
+            app.state.docker_sandbox_ttl_dispatcher = docker_sandbox_ttl_dispatcher
+            await docker_sandbox_ttl_dispatcher.startup()
             if self.settings.bridge_dispatch_mode == BridgeDispatchMode.EMBEDDED:
                 bridge_supervisor = build_bridge_supervisor(
                     settings=self.settings,
@@ -231,6 +241,7 @@ class ClawApplication:
             schedule_dispatcher = app.state.schedule_dispatcher
             heartbeat_dispatcher = app.state.heartbeat_dispatcher
             session_prune_dispatcher = app.state.session_prune_dispatcher
+            docker_sandbox_ttl_dispatcher = app.state.docker_sandbox_ttl_dispatcher
             execution_supervisor = app.state.execution_supervisor
 
             app.state.db_session_factory = None
@@ -246,6 +257,10 @@ class ClawApplication:
             app.state.schedule_dispatcher = None
             app.state.heartbeat_dispatcher = None
             app.state.session_prune_dispatcher = None
+            app.state.docker_sandbox_ttl_dispatcher = None
+
+            if isinstance(docker_sandbox_ttl_dispatcher, DockerSandboxTtlDispatcher):
+                await docker_sandbox_ttl_dispatcher.shutdown()
 
             if isinstance(session_prune_dispatcher, SessionPruneDispatcher):
                 await session_prune_dispatcher.shutdown()
@@ -292,6 +307,8 @@ class ClawApplication:
                 image=self.settings.workspace_provider_docker_image,
                 docker_host_workspace_dir=self.settings.resolved_workspace_provider_docker_host_workspace_dir,
                 extra_mounts=self.settings.resolved_workspace_provider_docker_extra_mounts,
+                workspace_uid=self.settings.resolved_workspace_provider_docker_uid,
+                workspace_gid=self.settings.resolved_workspace_provider_docker_gid,
             )
         logger.info("Configuring local workspace provider workspace_dir={}", self.settings.resolved_workspace_dir)
         return LocalWorkspaceProvider(self.settings.resolved_workspace_dir)

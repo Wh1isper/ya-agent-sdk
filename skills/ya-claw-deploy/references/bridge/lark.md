@@ -91,11 +91,11 @@ YA_CLAW_WORKSPACE_ENV_VARS=MY_TOOL_API_KEY
 
 For Docker shell shapes, `DefaultEnvironmentFactory` passes these values into `DockerEnvironmentFactory`; `ReusableSandboxEnvironment` then creates the workspace container with Docker SDK `containers.run(environment=...)`. The variables become container-level environment values available to `lark-cli`.
 
-Reusable workspace containers keep the environment from container creation time. After changing Lark credentials, remove the workspace container and its cache so YA Claw creates a container with the new environment:
+Session workspace containers keep the environment from container creation time. After changing Lark credentials, remove the active session container and its cache so YA Claw creates a container with the new environment:
 
 ```bash
-docker rm -f ya-claw-workspace-<fingerprint>
-rm -f /var/lib/ya-claw/data/docker-workspace-containers/workspace.json
+docker rm -f ya-claw-session-<session-short>-g<generation>
+rm -f /var/lib/ya-claw/data/docker-workspace-containers/sessions/<session-id>/workspace.json
 ```
 
 The official Docker workspace image includes `lark-cli` and copies Lark-related skills into `/workspace/.agents/skills/` at container startup.

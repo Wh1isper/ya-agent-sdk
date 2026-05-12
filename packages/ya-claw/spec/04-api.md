@@ -353,11 +353,16 @@ Suggested response shape:
     "heartbeat": true,
     "session_workspace_binding": true,
     "run_workspace_override": true,
-    "multi_mount_workspaces": true
+    "multi_mount_workspaces": true,
+    "session_docker_sandbox": true,
+    "run_scoped_auto_task_sandbox": true,
+    "sandbox_idle_ttl": true
   },
   "workspace_mount_modes": ["rw", "ro"],
+  "sandbox_retention_policies": ["stop_on_idle", "keep_warm"],
   "limits": {
-    "max_workspace_mounts_per_session": 8
+    "max_workspace_mounts_per_session": 8,
+    "default_sandbox_idle_ttl_seconds": 3600
   }
 }
 ```
@@ -423,7 +428,7 @@ Schedules are available through `/api/v1/schedules` CRUD routes plus manual fire
 | `POST`   | `/api/v1/schedules/{schedule_id}:trigger` | create manual fire   |
 | `GET`    | `/api/v1/schedules/{schedule_id}/fires`   | list schedule fires  |
 
-Schedule execution modes are `continue_session`, `fork_session`, and `isolate_session`.
+Schedule execution modes are `continue_session`, `fork_session`, and `isolate_session`. Schedule-triggered Docker runs use run-scoped sandboxes and close them at terminal state.
 
 ## Heartbeat
 
@@ -436,7 +441,7 @@ Heartbeat has read-oriented console routes and an admin manual trigger route.
 | `GET`  | `/api/v1/heartbeat/fires`   | list heartbeat fires                       |
 | `POST` | `/api/v1/heartbeat:trigger` | create manual heartbeat fire for admin use |
 
-Heartbeat is runtime-owned and available through heartbeat console/admin routes.
+Heartbeat is runtime-owned and available through heartbeat console/admin routes. Heartbeat-triggered Docker runs use run-scoped sandboxes and close them at terminal state.
 
 ## Profiles
 

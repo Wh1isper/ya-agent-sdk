@@ -40,18 +40,18 @@ YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 
 The workspace needs `lark-cli` reply credentials. YA Claw injects built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases into workspace environments from explicit process env values or from the Lark bridge settings. Additional process env values are forwarded by listing names in `YA_CLAW_WORKSPACE_ENV_VARS`.
 
-For Docker shell shapes, these values are passed when the reusable workspace container is created. Check the workspace container:
+For Docker shell shapes, these values are passed when the session workspace container is created. Check the workspace container:
 
 ```bash
-docker exec -it ya-claw-workspace-<fingerprint> lark-cli --version
-docker exec -it ya-claw-workspace-<fingerprint> sh -lc 'test -n "$LARK_APP_ID" && test -n "$LARK_APP_SECRET"'
+docker exec -it ya-claw-session-<session-short>-g<generation> lark-cli --version
+docker exec -it ya-claw-session-<session-short>-g<generation> sh -lc 'test -n "$LARK_APP_ID" && test -n "$LARK_APP_SECRET"'
 ```
 
-After credential changes, recreate the reusable workspace container so Docker receives the new environment:
+After credential changes, recreate the active session workspace container so Docker receives the new environment:
 
 ```bash
-docker rm -f ya-claw-workspace-<fingerprint>
-rm -f /var/lib/ya-claw/data/docker-workspace-containers/workspace.json
+docker rm -f ya-claw-session-<session-short>-g<generation>
+rm -f /var/lib/ya-claw/data/docker-workspace-containers/sessions/<session-id>/workspace.json
 ```
 
 ## Event Subscription Checks

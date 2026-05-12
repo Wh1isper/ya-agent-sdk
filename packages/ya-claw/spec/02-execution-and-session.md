@@ -116,6 +116,7 @@ It enables:
 
 - API acceptance before execution begins
 - unified execution for API, schedules, heartbeat, and bridges
+- trigger-specific Docker sandbox scope for conversation and automatic runs
 - concurrency control and future worker scaling
 - cancellation before claim
 - restart recovery and claim scans after process restart
@@ -162,6 +163,12 @@ Responsibilities:
 - advance run and session pointers through the execution state machine
 
 Workspace resolution uses session metadata plus run metadata. A run inherits the session workspace binding by default. A run-level `metadata["workspace"]` value replaces the session binding for that run.
+
+Docker sandbox scope follows trigger type:
+
+- API, bridge, and memory runs use the session-scoped Docker sandbox generation
+- schedule and heartbeat runs use run-scoped Docker sandboxes and close them at terminal state
+- local backend runs use resolved path bindings and skip Docker sandbox lifecycle
 
 ## Execution Registry and Runtime State
 

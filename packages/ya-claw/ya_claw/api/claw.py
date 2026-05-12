@@ -21,6 +21,12 @@ class ClawFeatures(BaseModel):
     profiles: bool = True
     schedules: bool = True
     heartbeat: bool = True
+    session_workspace_binding: bool = True
+    run_workspace_override: bool = True
+    multi_mount_workspaces: bool = True
+    session_docker_sandbox: bool = True
+    run_scoped_auto_task_sandbox: bool = True
+    sandbox_idle_ttl: bool = True
 
 
 class ClawInfo(BaseModel):
@@ -39,6 +45,9 @@ class ClawInfo(BaseModel):
     workspace_provider_backend: str
     storage_model: str
     features: ClawFeatures = Field(default_factory=ClawFeatures)
+    workspace_mount_modes: list[str] = Field(default_factory=lambda: ["rw", "ro"])
+    sandbox_retention_policies: list[str] = Field(default_factory=lambda: ["stop_on_idle", "keep_warm"])
+    limits: dict[str, int] = Field(default_factory=dict)
 
 
 @router.get("/info", response_model=ClawInfo)
@@ -58,6 +67,10 @@ async def get_claw_info(request: Request) -> ClawInfo:
         surfaces=["profiles", "sessions", "runs", "schedules", "heartbeat", "notifications"],
         workspace_provider_backend=settings.workspace_provider_backend,
         storage_model=_storage_model(settings.resolved_database_url),
+        limits={
+            "max_workspace_mounts_per_session": 8,
+            "default_sandbox_idle_ttl_seconds": settings.resolved_workspace_provider_docker_idle_ttl_seconds,
+        },
     )
 
 

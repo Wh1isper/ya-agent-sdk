@@ -8,11 +8,24 @@ from ya_agent_sdk.context import AgentContext
 from ya_claw.workspace import WorkspaceBinding
 
 
+class ClawWorkspaceMountSnapshot(BaseModel):
+    id: str
+    name: str | None = None
+    virtual_path: str
+    mode: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ClawWorkspaceBindingSnapshot(BaseModel):
     virtual_path: str
     cwd: str
     readable_paths: list[str] = Field(default_factory=list)
     writable_paths: list[str] = Field(default_factory=list)
+    mounts: list[ClawWorkspaceMountSnapshot] = Field(default_factory=list)
+    default_mount_id: str | None = None
+    fingerprint: str | None = None
+    generation: int | None = None
+    sandbox_scope: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     backend_hint: str | None = None
 
@@ -23,6 +36,20 @@ class ClawWorkspaceBindingSnapshot(BaseModel):
             cwd=str(binding.cwd),
             readable_paths=[str(path) for path in binding.readable_paths],
             writable_paths=[str(path) for path in binding.writable_paths],
+            mounts=[
+                ClawWorkspaceMountSnapshot(
+                    id=mount.id,
+                    name=mount.name,
+                    virtual_path=str(mount.virtual_path),
+                    mode=mount.mode,
+                    metadata=dict(mount.metadata),
+                )
+                for mount in binding.mounts
+            ],
+            default_mount_id=binding.default_mount.id if binding.mounts else None,
+            fingerprint=binding.fingerprint,
+            generation=binding.generation,
+            sandbox_scope=binding.sandbox_scope,
             metadata=dict(binding.metadata),
             backend_hint=binding.backend_hint,
         )

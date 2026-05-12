@@ -255,11 +255,16 @@ class ClawRuntimeBuilder:
             WorkspaceMemoryStore(binding).ensure()
             return self._build_memory_system_prompt(profile=profile, source_metadata=source_metadata)
         prompt_lines = [profile.system_prompt or _DEFAULT_SYSTEM_PROMPT]
+        prompt_lines.append("Workspace mounts:")
+        for mount in binding.mounts:
+            access = "writable" if mount.mode == "rw" else "read-only"
+            name = f" ({mount.name})" if mount.name else ""
+            prompt_lines.append(f"- {mount.id}{name}: {mount.virtual_path}, {access}")
         prompt_lines.append(f"Workspace virtual root: {binding.virtual_path}")
         prompt_lines.append(f"Default working directory: {binding.cwd}")
         prompt_lines.append(f"Readable paths: {', '.join(str(path) for path in binding.readable_paths)}")
         prompt_lines.append(f"Writable paths: {', '.join(str(path) for path in binding.writable_paths)}")
-        prompt_lines.append("Workspace skills are discovered from /workspace/.agents/skills/.")
+        prompt_lines.append(f"Workspace skills are discovered from {binding.virtual_path / '.agents' / 'skills'}/.")
         guidance = load_workspace_guidance(binding)
         if guidance is not None:
             prompt_lines.append(format_workspace_guidance(guidance))

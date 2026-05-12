@@ -32,6 +32,7 @@ from ya_claw.controller.run import RunController
 from ya_claw.controller.store import read_run_message_blob_if_exists, read_run_state_blob_if_exists
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
+from ya_claw.workspace.models import metadata_with_workspace
 
 _DEFAULT_SESSION_RUNS_LIMIT = 20
 _MAX_SESSION_RUNS_LIMIT = 100
@@ -64,10 +65,11 @@ class SessionController:
             len(request.input_parts),
             request.dispatch_mode,
         )
+        session_metadata = metadata_with_workspace(request.metadata, request.workspace)
         record = SessionRecord(
             id=session_id,
             profile_name=request.profile_name,
-            session_metadata=dict(request.metadata),
+            session_metadata=session_metadata,
             session_type="conversation",
         )
         db_session.add(record)
@@ -86,6 +88,7 @@ class SessionController:
                     input_parts=request.input_parts,
                     trigger_type=request.trigger_type,
                     metadata={},
+                    workspace=request.workspace,
                     dispatch_mode=request.dispatch_mode,
                 ),
             )
@@ -137,6 +140,7 @@ class SessionController:
                 input_parts=request.input_parts,
                 trigger_type=request.trigger_type,
                 metadata=run_metadata,
+                workspace=request.workspace,
                 dispatch_mode=request.dispatch_mode,
             ),
         )
@@ -333,11 +337,16 @@ class SessionController:
                 detail=f"Run '{restore_from_run_id}' does not belong to session '{session_id}'.",
             )
 
+        source_metadata = (
+            dict(source_record.session_metadata) if isinstance(source_record.session_metadata, dict) else {}
+        )
+        fork_metadata = {**source_metadata, **dict(request.metadata)}
+        fork_metadata = metadata_with_workspace(fork_metadata, request.workspace)
         fork_record = SessionRecord(
             id=uuid4().hex,
             parent_session_id=source_record.id,
             profile_name=request.profile_name or source_record.profile_name,
-            session_metadata=dict(request.metadata),
+            session_metadata=fork_metadata,
             session_type="conversation",
             head_run_id=restore_record.id,
             head_success_run_id=restore_record.id

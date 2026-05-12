@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ya_agent_sdk.environment import LocalFileOperator, SandboxEnvironment, VirtualMount
+from ya_agent_sdk.environment import SandboxEnvironment, VirtualLocalFileOperator, VirtualMount
 from ya_agent_sdk.environment.sandbox import DockerShell
 from ya_claw.workspace import (
     DockerEnvironmentFactory,
@@ -20,6 +20,29 @@ from ya_claw.workspace import (
     format_workspace_guidance,
     load_workspace_guidance,
 )
+
+
+class FakeImage:
+    id = "sha256:image-current"
+    short_id = "sha256:image-short"
+
+    def __init__(self, digest: str = "python:3.11@sha256:current") -> None:
+        self.attrs = {"RepoDigests": [digest]}
+
+
+class FakeImages:
+    def __init__(self, digest: str | None = None) -> None:
+        self.digest = digest
+
+    def get(self, image: str) -> FakeImage:
+        if self.digest is None:
+            raise RuntimeError(f"image unavailable: {image}")
+        return FakeImage(self.digest)
+
+
+class FakeDockerClientBase:
+    def __init__(self, *, images: FakeImages | None = None) -> None:
+        self.images = images or FakeImages()
 
 
 def test_local_workspace_provider_resolves_single_workspace(tmp_path: Path) -> None:
@@ -48,7 +71,7 @@ async def test_service_local_plus_local_shell_uses_real_paths_for_file_ops_and_s
     assert isinstance(environment, MappedLocalEnvironment)
 
     async with environment as env:
-        assert isinstance(env.file_operator, LocalFileOperator)
+        assert isinstance(env.file_operator, VirtualLocalFileOperator)
         assert env.shell is not None
         await env.file_operator.write_file("notes.txt", "hello")
         content = await env.file_operator.read_file("notes.txt")
@@ -154,8 +177,10 @@ async def test_reusable_sandbox_environment_passes_workspace_identity_to_docker(
             captured_run_kwargs.update(kwargs)
             return FakeContainer()
 
-    class FakeDockerClient:
-        containers = FakeContainers()
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images)
+            self.containers = FakeContainers()
 
     environment = ReusableSandboxEnvironment(
         mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
@@ -199,8 +224,10 @@ async def test_reusable_sandbox_environment_creates_shell_with_exec_user_and_hom
             assert container_id == "container-123"
             return FakeContainer()
 
-    class FakeDockerClient:
-        containers = FakeContainers()
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images)
+            self.containers = FakeContainers()
 
     environment = ReusableSandboxEnvironment(
         mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
@@ -264,7 +291,7 @@ def test_docker_environment_factory_prefers_container_id_and_keeps_stable_ref(tm
     assert environment.container_ref == "workspace-container"
 
 
-def test_docker_environment_factory_uses_single_cache_path(tmp_path: Path) -> None:
+def test_docker_environment_factory_uses_session_cache_path(tmp_path: Path) -> None:
     provider = DockerWorkspaceProvider(tmp_path / "workspace", image="python:3.11")
     binding = provider.resolve(metadata={"session_id": "session-1"})
     factory = DockerEnvironmentFactory(image="python:3.11", container_cache_dir=tmp_path / "cache")
@@ -272,7 +299,7 @@ def test_docker_environment_factory_uses_single_cache_path(tmp_path: Path) -> No
     environment = factory.build(binding)
 
     assert isinstance(environment, ReusableSandboxEnvironment)
-    assert environment.container_cache_path == tmp_path / "cache" / "workspace.json"
+    assert environment.container_cache_path == tmp_path / "cache" / "sessions" / "session-1" / "workspace.json"
 
 
 async def test_service_docker_plus_docker_shell_uses_host_visible_mount_for_container(tmp_path: Path) -> None:
@@ -286,8 +313,10 @@ async def test_service_docker_plus_docker_shell_uses_host_visible_mount_for_cont
             captured_run_kwargs.update(kwargs)
             return FakeContainer()
 
-    class FakeDockerClient:
-        containers = FakeContainers()
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images)
+            self.containers = FakeContainers()
 
     host_workspace_dir = tmp_path / "host-workspace"
     provider = DockerWorkspaceProvider(
@@ -317,8 +346,10 @@ async def test_docker_environment_factory_passes_extra_mounts_to_container(tmp_p
             captured_run_kwargs.update(kwargs)
             return FakeContainer()
 
-    class FakeDockerClient:
-        containers = FakeContainers()
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images)
+            self.containers = FakeContainers()
 
     workspace_dir = tmp_path / "workspace"
     home_dir = tmp_path / "home"
@@ -374,8 +405,10 @@ async def test_reusable_sandbox_environment_reads_and_refreshes_container_cache(
             assert container_id == "container-123"
             return FakeContainer()
 
-    class FakeDockerClient:
-        containers = FakeContainers()
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images)
+            self.containers = FakeContainers()
 
     environment = ReusableSandboxEnvironment(
         mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
@@ -422,8 +455,10 @@ async def test_reusable_sandbox_environment_waits_for_healthy_container(tmp_path
             assert container_id == "container-123"
             return FakeContainer()
 
-    class FakeDockerClient:
-        containers = FakeContainers()
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images)
+            self.containers = FakeContainers()
 
     environment = ReusableSandboxEnvironment(
         mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
@@ -438,6 +473,81 @@ async def test_reusable_sandbox_environment_waits_for_healthy_container(tmp_path
 
     assert environment.container_id == "container-123"
     assert health_statuses == []
+
+
+async def test_reusable_sandbox_environment_recreates_container_when_image_digest_changes(tmp_path: Path) -> None:  # noqa: C901
+    cache_path = tmp_path / "cache" / "workspace.json"
+    run_calls = 0
+    removed: list[str] = []
+
+    class FakeImageRef:
+        def __init__(self, digest: str) -> None:
+            self.id = digest
+            self.attrs = {"RepoDigests": [digest]}
+
+    class FakeContainer:
+        status = "running"
+
+        def __init__(self, container_id: str, digest: str) -> None:
+            self.id = container_id
+            self.image = FakeImageRef(digest)
+            self.attrs = {"State": {}, "Image": digest}
+
+        def reload(self) -> None:
+            return None
+
+        def stop(self, timeout: int = 10) -> None:
+            return None
+
+        def remove(self, force: bool = False) -> None:
+            removed.append(self.id)
+
+    class FakeContainers:
+        def get(self, container_ref: str) -> FakeContainer:
+            if container_ref in {"container-old", "workspace-container"}:
+                return FakeContainer("container-old", "python:3.11@sha256:old")
+            if container_ref == "container-new":
+                return FakeContainer("container-new", "python:3.11@sha256:new")
+            raise RuntimeError(container_ref)
+
+        def run(self, **kwargs: object) -> FakeContainer:
+            nonlocal run_calls
+            run_calls += 1
+            return FakeContainer("container-new", "python:3.11@sha256:new")
+
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images or FakeImages("python:3.11@sha256:new"))
+            self.containers = FakeContainers()
+
+    environment = ReusableSandboxEnvironment(
+        mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
+        work_dir="/workspace",
+        image="python:3.11",
+        container_ref="workspace-container",
+        container_cache_path=cache_path,
+    )
+    environment._client = FakeDockerClient()
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "container_ref": "workspace-container",
+            "container_id": "container-old",
+            "image": "python:3.11",
+            "image_digest": "python:3.11@sha256:old",
+        }),
+        encoding="utf-8",
+    )
+
+    await environment._ensure_container()
+
+    assert run_calls == 1
+    assert removed == ["container-old"]
+    assert environment.container_id == "container-new"
+    refreshed_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert refreshed_payload["container_id"] == "container-new"
+    assert refreshed_payload["image_digest"] == "python:3.11@sha256:new"
 
 
 async def test_reusable_sandbox_environment_refreshes_stale_cache(tmp_path: Path) -> None:
@@ -467,8 +577,10 @@ async def test_reusable_sandbox_environment_refreshes_stale_cache(tmp_path: Path
             run_calls += 1
             return FakeContainer()
 
-    class FakeDockerClient:
-        containers = FakeContainers()
+    class FakeDockerClient(FakeDockerClientBase):
+        def __init__(self, *, images: FakeImages | None = None) -> None:
+            super().__init__(images=images)
+            self.containers = FakeContainers()
 
     environment = ReusableSandboxEnvironment(
         mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],

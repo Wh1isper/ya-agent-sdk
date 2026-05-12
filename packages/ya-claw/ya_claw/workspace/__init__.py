@@ -12,6 +12,7 @@ from ya_claw.workspace.heartbeat import (
     format_heartbeat_guidance,
     load_heartbeat_guidance,
 )
+from ya_claw.workspace.models import WorkspaceBinding, WorkspaceBindingSpec, WorkspaceMountBinding, WorkspaceMountSpec
 from ya_claw.workspace.provider import (
     DefaultEnvironmentFactory,
     DockerEnvironmentFactory,
@@ -22,7 +23,6 @@ from ya_claw.workspace.provider import (
     LocalWorkspaceProvider,
     MappedLocalEnvironment,
     ReusableSandboxEnvironment,
-    WorkspaceBinding,
     WorkspaceLocalShell,
     WorkspaceProvider,
     build_workspace_container_ref,
@@ -47,8 +47,11 @@ __all__ = [
     "MappedLocalEnvironment",
     "ReusableSandboxEnvironment",
     "WorkspaceBinding",
+    "WorkspaceBindingSpec",
     "WorkspaceGuidance",
     "WorkspaceLocalShell",
+    "WorkspaceMountBinding",
+    "WorkspaceMountSpec",
     "WorkspaceProvider",
     "build_workspace_container_ref",
     "build_workspace_sandbox_metadata",

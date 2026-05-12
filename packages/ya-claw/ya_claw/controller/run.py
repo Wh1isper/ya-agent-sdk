@@ -39,6 +39,7 @@ from ya_claw.controller.store import (
 from ya_claw.execution.state_machine import cancel_run, interrupt_run, queue_run
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
+from ya_claw.workspace.models import metadata_with_workspace
 
 _ACTIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
 
@@ -66,7 +67,7 @@ class RunController:
             session_record = SessionRecord(
                 id=session_id,
                 profile_name=request.profile_name,
-                session_metadata={},
+                session_metadata=metadata_with_workspace({}, request.workspace),
                 session_type="conversation",
             )
             db_session.add(session_record)
@@ -101,7 +102,7 @@ class RunController:
             restore_from_run_id,
             request.reset_state,
         )
-        run_metadata = dict(request.metadata)
+        run_metadata = metadata_with_workspace(request.metadata, request.workspace)
         if request.reset_state:
             run_metadata["restore_state"] = False
 
