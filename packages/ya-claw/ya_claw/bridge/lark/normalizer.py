@@ -14,21 +14,39 @@ def normalize_lark_action(raw_event: dict[str, Any]) -> BridgeInboundAction | No
     event = _dict_value(raw_event.get("event")) or raw_event
     action = _dict_value(event.get("action"))
     value = _dict_value(action.get("value")) or _dict_value(event.get("value"))
-    token = _string_value(value.get("interaction_token") or event.get("interaction_token"))
     raw_action = _string_value(value.get("action") or action.get("action") or event.get("action"))
-    if token is None or raw_action not in {"approve", "deny"}:
-        return None
-    event_id = _string_value(header.get("event_id") or raw_event.get("event_id") or raw_event.get("uuid")) or token
-    return BridgeInboundAction(
-        adapter=BridgeAdapterType.LARK,
-        tenant_key=_string_value(header.get("tenant_key") or raw_event.get("tenant_key")) or "default",
-        event_id=event_id,
-        action_id=_string_value(action.get("tag") or action.get("name")) or "hitl_respond",
-        token=token,
-        approved=raw_action == "approve",
-        raw_event=raw_event,
-        metadata={"action": raw_action},
-    )
+    event_id = _string_value(header.get("event_id") or raw_event.get("event_id") or raw_event.get("uuid"))
+    tenant_key = _string_value(header.get("tenant_key") or raw_event.get("tenant_key")) or "default"
+    action_id = _string_value(action.get("tag") or action.get("name")) or raw_action or "bridge_action"
+
+    interaction_token = _string_value(value.get("interaction_token") or event.get("interaction_token"))
+    if interaction_token is not None and raw_action in {"approve", "deny"}:
+        return BridgeInboundAction(
+            adapter=BridgeAdapterType.LARK,
+            tenant_key=tenant_key,
+            event_id=event_id or interaction_token,
+            action_id=action_id,
+            action_type="hitl_respond",
+            token=interaction_token,
+            approved=raw_action == "approve",
+            raw_event=raw_event,
+            metadata={"action": raw_action},
+        )
+
+    recovery_token = _string_value(value.get("recovery_token") or event.get("recovery_token"))
+    if recovery_token is not None and raw_action in {"retry", "reset_and_retry"}:
+        return BridgeInboundAction(
+            adapter=BridgeAdapterType.LARK,
+            tenant_key=tenant_key,
+            event_id=event_id or recovery_token,
+            action_id=action_id,
+            action_type="session_recovery",
+            token=recovery_token,
+            raw_event=raw_event,
+            metadata={"action": raw_action},
+        )
+
+    return None
 
 
 def normalize_lark_event(raw_event: dict[str, Any]) -> BridgeInboundMessage | None:

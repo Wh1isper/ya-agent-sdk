@@ -46,23 +46,46 @@ class BridgeRuntimeHandler(BridgeMessageHandler):
         async with self._session_factory() as db_session:
             result = await self._controller.handle_inbound_action(
                 db_session,
+                self._settings,
                 self._runtime_state,
+                self._run_dispatcher,
                 action,
             )
         if self._notification_hub is not None and result.run_id is not None:
-            await self._notification_hub.publish(
-                "run.hitl.responded",
-                {
-                    "session_id": result.session_id,
-                    "run_id": result.run_id,
-                    "status": "responded",
-                    "remaining_interaction_count": result.remaining_interaction_count,
-                    "current_interaction": result.current_interaction.model_dump(mode="json")
-                    if result.current_interaction is not None
-                    else None,
-                },
-            )
+            if action.action_type == "hitl_respond":
+                await self._notification_hub.publish(
+                    "run.hitl.responded",
+                    {
+                        "session_id": result.session_id,
+                        "run_id": result.run_id,
+                        "status": "responded",
+                        "remaining_interaction_count": result.remaining_interaction_count,
+                        "current_interaction": result.current_interaction.model_dump(mode="json")
+                        if result.current_interaction is not None
+                        else None,
+                    },
+                )
+            elif action.action_type == "session_recovery":
+                await self._notification_hub.publish(
+                    "run.recovery.submitted",
+                    {
+                        "session_id": result.session_id,
+                        "run_id": result.run_id,
+                        "source_run_id": _source_run_id_from_recovery_token(action.token),
+                        "status": result.status,
+                        "action": action.metadata.get("action"),
+                    },
+                )
         return result
+
+
+def _source_run_id_from_recovery_token(token: str | None) -> str | None:
+    if not isinstance(token, str):
+        return None
+    parts = token.split(":")
+    if len(parts) < 3 or parts[0] != "recovery":
+        return None
+    return parts[2]
 
 
 class BridgeSupervisor:

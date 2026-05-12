@@ -13,7 +13,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ya_claw.bridge.base import BridgeAdapter, BridgeMessageHandler
-from ya_claw.bridge.lark.card import build_hitl_card
+from ya_claw.bridge.lark.card import build_hitl_card, build_recovery_card
 from ya_claw.bridge.lark.normalizer import normalize_lark_action, normalize_lark_event
 from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchResult, BridgeEventStatus
 from ya_claw.config import ClawSettings
@@ -45,6 +45,7 @@ class LarkBridgeAdapter(BridgeAdapter):
         self._stopping = False
         self._pending_submissions: set[Future[object]] = set()
         self._hitl_messages: dict[str, str] = {}
+        self._recovery_messages: dict[str, str] = {}
 
     @property
     def adapter_type(self) -> BridgeAdapterType:
@@ -99,8 +100,12 @@ class LarkBridgeAdapter(BridgeAdapter):
                 continue
             if event_type == "run.updated" and body.get("session_status_reason") == "hitl_pending":
                 await self._present_hitl(body)
+            elif event_type == "run.updated" and body.get("session_status_reason") == "run_failed":
+                await self._present_recovery(body)
             elif event_type == "run.hitl.responded":
                 await self._update_hitl_card(body)
+            elif event_type == "run.recovery.submitted":
+                await self._update_recovery_card(body)
 
     async def _present_hitl(self, payload: dict[str, Any]) -> None:
         interaction = _current_interaction(payload.get("session_status_detail"))
@@ -110,6 +115,36 @@ class LarkBridgeAdapter(BridgeAdapter):
         if chat_id is None:
             return
         await self._send_or_update_card(chat_id=chat_id, run_id=interaction.run_id, interaction=interaction)
+
+    async def _present_recovery(self, payload: dict[str, Any]) -> None:
+        run_id = payload.get("run_id")
+        if not isinstance(run_id, str):
+            return
+        chat_id = _chat_id_from_payload(payload)
+        if chat_id is None:
+            chat_id = await self._chat_id_from_run(run_id)
+        if chat_id is None:
+            return
+        card = build_recovery_card(payload)
+        existing_message_id = self._recovery_messages.get(run_id)
+        if isinstance(existing_message_id, str) and existing_message_id.strip():
+            await asyncio.to_thread(self._patch_lark_card, existing_message_id, card)
+            return
+        message_id = await asyncio.to_thread(self._send_lark_card, chat_id, card)
+        if isinstance(message_id, str) and message_id.strip():
+            self._recovery_messages[run_id] = message_id
+
+    async def _update_recovery_card(self, payload: dict[str, Any]) -> None:
+        action = payload.get("action")
+        source_run_id = payload.get("source_run_id")
+        if not isinstance(action, str) or not isinstance(source_run_id, str):
+            return
+        message_id = self._recovery_messages.get(source_run_id)
+        if message_id is None:
+            return
+        card = build_recovery_card({**payload, "run_id": source_run_id}, submitted_action=action)
+        await asyncio.to_thread(self._patch_lark_card, message_id, card)
+        self._recovery_messages.pop(source_run_id, None)
 
     async def _update_hitl_card(self, payload: dict[str, Any]) -> None:
         run_id = payload.get("run_id")
@@ -176,6 +211,28 @@ class LarkBridgeAdapter(BridgeAdapter):
                 status="active",
             )
             await db_session.commit()
+
+    async def _chat_id_from_run(self, run_id: str) -> str | None:
+        session_factory = self._session_factory
+        if session_factory is None:
+            return None
+        from sqlalchemy import select
+
+        from ya_claw.orm.tables import BridgeConversationRecord, RunRecord
+
+        async with session_factory() as db_session:
+            run_record = await db_session.get(RunRecord, run_id)
+            if not isinstance(run_record, RunRecord):
+                return None
+            result = await db_session.execute(
+                select(BridgeConversationRecord)
+                .where(BridgeConversationRecord.session_id == run_record.session_id)
+                .limit(1)
+            )
+            conversation = result.scalar_one_or_none()
+            if not isinstance(conversation, BridgeConversationRecord):
+                return None
+            return conversation.external_chat_id
 
     async def _mark_hitl_message_completed(self, *, run_id: str) -> None:
         session_factory = self._session_factory

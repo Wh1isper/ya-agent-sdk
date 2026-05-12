@@ -35,7 +35,7 @@ class BridgeInboundAction(BaseModel):
     action_id: str = "hitl_respond"
     action_type: str = "hitl_respond"
     token: str | None = None
-    approved: bool
+    approved: bool = False
     reason: str | None = None
     raw_event: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

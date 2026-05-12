@@ -86,8 +86,79 @@ def build_hitl_card(interaction: ActiveInteraction | None, *, completed: bool = 
     }
 
 
+def build_recovery_card(payload: dict[str, Any], *, submitted_action: str | None = None) -> dict[str, Any]:
+    session_id = _string_value(payload.get("session_id"))
+    run_id = _string_value(payload.get("run_id"))
+    sequence_no = payload.get("sequence_no")
+    error_message = _string_value(payload.get("error_message"))
+    detail = payload.get("session_status_detail")
+    if error_message is None and isinstance(detail, dict):
+        error_message = _string_value(detail.get("error_message"))
+    if submitted_action is not None:
+        title = "YA Claw recovery submitted"
+        template = "blue"
+        action_label = "Retry" if submitted_action == "retry" else "Reset and retry"
+        elements: list[dict[str, Any]] = [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "plain_text",
+                    "content": f"{action_label} was submitted for run {run_id or 'unknown'}.",
+                },
+            }
+        ]
+    else:
+        title = "YA Claw run failed"
+        template = "red"
+        detail_lines = [
+            f"**Session:** {session_id or 'unknown'}",
+            f"**Run:** {run_id or 'unknown'}",
+        ]
+        if isinstance(sequence_no, int):
+            detail_lines.append(f"**Sequence:** {sequence_no}")
+        elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(detail_lines)}}]
+        if error_message is not None:
+            elements.extend([
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**Error**"}},
+                {"tag": "div", "text": {"tag": "plain_text", "content": _truncate(error_message, 1800)}},
+            ])
+        if session_id is not None and run_id is not None:
+            token = _recovery_token(session_id, run_id)
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Retry"},
+                        "type": "primary",
+                        "value": {"action": "retry", "recovery_token": token},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Reset and retry"},
+                        "type": "danger",
+                        "value": {"action": "reset_and_retry", "recovery_token": token},
+                    },
+                ],
+            })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
+    }
+
+
 def _interaction_token(interaction: ActiveInteraction) -> str:
     return f"{interaction.session_id}:{interaction.run_id}:{interaction.interaction_id}:{interaction.sequence_no}"
+
+
+def _recovery_token(session_id: str, run_id: str) -> str:
+    return f"recovery:{session_id}:{run_id}"
 
 
 def _template_for_interaction(interaction: ActiveInteraction) -> str:
@@ -110,3 +181,10 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return f"{value[:limit]}..."
+
+
+def _string_value(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None

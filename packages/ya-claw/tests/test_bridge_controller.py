@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_claw.bridge.controller import BridgeController
-from ya_claw.bridge.models import BridgeAdapterType, BridgeEventStatus, BridgeInboundMessage
+from ya_claw.bridge.models import BridgeAdapterType, BridgeEventStatus, BridgeInboundAction, BridgeInboundMessage
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.dispatcher import RunDispatcher
@@ -263,3 +263,111 @@ async def test_bridge_controller_steers_active_conversation_session(db_session: 
     assert event_record.status == BridgeEventStatus.STEERED
     assert event_record.run_id == first.run_id
     assert run_count == 1
+
+
+async def test_bridge_controller_retries_failed_bridge_run(db_session: AsyncSession) -> None:
+    runtime_state = create_runtime_state()
+    controller = BridgeController()
+    settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
+    session = SessionRecord(id="session-1", profile_name="default", head_success_run_id="success-run")
+    success_run = RunRecord(
+        id="success-run",
+        session_id="session-1",
+        sequence_no=1,
+        status="completed",
+        trigger_type="bridge",
+        input_parts=[{"type": "text", "text": "success"}],
+    )
+    failed_run = RunRecord(
+        id="failed-run",
+        session_id="session-1",
+        sequence_no=2,
+        status="failed",
+        trigger_type="bridge",
+        input_parts=[{"type": "text", "text": "retry me"}],
+        run_metadata={"bridge": {"chat_id": "oc_1", "message_id": "om_1"}},
+    )
+    db_session.add_all([session, success_run, failed_run])
+    await db_session.commit()
+
+    result = await controller.handle_inbound_action(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        BridgeInboundAction(
+            adapter=BridgeAdapterType.LARK,
+            tenant_key="tenant-1",
+            event_id="action-1",
+            action_type="session_recovery",
+            token="recovery:session-1:failed-run",  # noqa: S106
+            metadata={"action": "retry"},
+        ),
+    )
+
+    assert result.status == BridgeEventStatus.QUEUED
+    assert result.run_id is not None
+    retry_run = await db_session.get(RunRecord, result.run_id)
+    refreshed_session = await db_session.get(SessionRecord, "session-1")
+    assert isinstance(retry_run, RunRecord)
+    assert isinstance(refreshed_session, SessionRecord)
+    assert retry_run.input_parts[0]["type"] == failed_run.input_parts[0]["type"]
+    assert retry_run.input_parts[0]["text"] == failed_run.input_parts[0]["text"]
+    assert retry_run.restore_from_run_id == "success-run"
+    assert retry_run.run_metadata["bridge"]["chat_id"] == "oc_1"
+    assert retry_run.run_metadata["recovery"]["mode"] == "retry"
+    assert retry_run.trigger_type == "bridge"
+    assert refreshed_session.head_success_run_id == "success-run"
+
+
+async def test_bridge_controller_reset_and_retries_failed_bridge_run(db_session: AsyncSession) -> None:
+    runtime_state = create_runtime_state()
+    controller = BridgeController()
+    settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
+    session = SessionRecord(id="session-1", profile_name="default", head_success_run_id="success-run")
+    success_run = RunRecord(
+        id="success-run",
+        session_id="session-1",
+        sequence_no=1,
+        status="completed",
+        trigger_type="bridge",
+        input_parts=[{"type": "text", "text": "success"}],
+    )
+    failed_run = RunRecord(
+        id="failed-run",
+        session_id="session-1",
+        sequence_no=2,
+        status="failed",
+        trigger_type="bridge",
+        input_parts=[{"type": "text", "text": "retry clean"}],
+    )
+    db_session.add_all([session, success_run, failed_run])
+    await db_session.commit()
+
+    result = await controller.handle_inbound_action(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        BridgeInboundAction(
+            adapter=BridgeAdapterType.LARK,
+            tenant_key="tenant-1",
+            event_id="action-1",
+            action_type="session_recovery",
+            token="recovery:session-1:failed-run",  # noqa: S106
+            metadata={"action": "reset_and_retry"},
+        ),
+    )
+
+    assert result.status == BridgeEventStatus.QUEUED
+    assert result.run_id is not None
+    retry_run = await db_session.get(RunRecord, result.run_id)
+    refreshed_session = await db_session.get(SessionRecord, "session-1")
+    assert isinstance(retry_run, RunRecord)
+    assert isinstance(refreshed_session, SessionRecord)
+    assert retry_run.input_parts[0]["type"] == failed_run.input_parts[0]["type"]
+    assert retry_run.input_parts[0]["text"] == failed_run.input_parts[0]["text"]
+    assert retry_run.restore_from_run_id is None
+    assert retry_run.run_metadata["restore_state"] is False
+    assert retry_run.run_metadata["recovery"]["mode"] == "reset_and_retry"
+    assert refreshed_session.head_success_run_id == "success-run"

@@ -291,7 +291,11 @@ export function ChatPage() {
                   }
                 />
                 <MemoryStatusBar session={activeSessionData?.session ?? null} />
-                <RunControlBar run={activeRunData?.run ?? null} />
+                <RunControlBar
+                  sessionId={selectedSessionId}
+                  run={activeRunData?.run ?? null}
+                  onSelectRun={selectRun}
+                />
                 <TimelinePanel
                   timeline={timeline}
                   loading={contentLoading}
@@ -609,35 +613,109 @@ function MemoryStatusBar({ session }: { session: SessionSummary | null }) {
   )
 }
 
-function RunControlBar({ run }: { run: RunSummary | null }) {
+function RunControlBar({
+  sessionId,
+  run,
+  onSelectRun,
+}: {
+  sessionId: string | null
+  run: RunSummary | null
+  onSelectRun: (runId: string | null) => void
+}) {
   const runControls = useRunControlMutations(run?.id ?? null)
-  if (!run || (run.status !== 'queued' && run.status !== 'running')) return null
+  const createRun = useCreateSessionRunMutation(sessionId)
+  if (!run) return null
+
+  const isActive = run.status === 'queued' || run.status === 'running'
+  const canRecover =
+    run.status === 'failed' &&
+    Boolean(sessionId) &&
+    Boolean(run.input_parts?.length)
+
+  async function recover(mode: 'retry' | 'reset_and_retry') {
+    if (!run || !sessionId || !run.input_parts?.length) return
+    try {
+      const createdRun = await createRun.mutateAsync({
+        input_parts: run.input_parts,
+        reset_state: mode === 'reset_and_retry',
+        metadata: {
+          recovery: {
+            mode,
+            source_run_id: run.id,
+            source_sequence_no: run.sequence_no,
+            reason: 'web_ui',
+          },
+        },
+      })
+      onSelectRun(createdRun.id)
+      toast.success(
+        mode === 'retry' ? 'Retry submitted' : 'Reset and retry submitted',
+      )
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'Failed to submit recovery run',
+      )
+    }
+  }
+
+  if (!isActive && !canRecover) return null
 
   return (
     <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
       <div className="flex items-center gap-2 text-sm text-slate-600">
         <StatusBadge status={run.status} />
         <span className="mono text-xs">{formatShortId(run.id, 12)}</span>
+        {canRecover ? (
+          <span className="text-xs text-rose-600">Run failed</span>
+        ) : null}
       </div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-100 disabled:opacity-60"
-          onClick={() => runControls.interrupt.mutate()}
-          disabled={runControls.interrupt.isPending}
-        >
-          <PauseCircle className="h-3.5 w-3.5" />
-          Interrupt
-        </button>
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
-          onClick={() => runControls.cancel.mutate()}
-          disabled={runControls.cancel.isPending}
-        >
-          <Square className="h-3.5 w-3.5" />
-          Cancel
-        </button>
+        {isActive ? (
+          <>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 transition hover:bg-amber-100 disabled:opacity-60"
+              onClick={() => runControls.interrupt.mutate()}
+              disabled={runControls.interrupt.isPending}
+            >
+              <PauseCircle className="h-3.5 w-3.5" />
+              Interrupt
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+              onClick={() => runControls.cancel.mutate()}
+              disabled={runControls.cancel.isPending}
+            >
+              <Square className="h-3.5 w-3.5" />
+              Cancel
+            </button>
+          </>
+        ) : null}
+        {canRecover ? (
+          <>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:opacity-60"
+              onClick={() => void recover('retry')}
+              disabled={createRun.isPending}
+            >
+              <RefreshCcw className="h-3.5 w-3.5" />
+              Retry
+            </button>
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+              onClick={() => void recover('reset_and_retry')}
+              disabled={createRun.isPending}
+            >
+              <ArchiveX className="h-3.5 w-3.5" />
+              Reset and retry
+            </button>
+          </>
+        ) : null}
       </div>
     </div>
   )

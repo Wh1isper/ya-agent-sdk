@@ -26,11 +26,12 @@ from ya_claw.controller.models import (
     SteerRequest,
     TextPart,
     TriggerType,
+    parse_input_parts,
 )
 from ya_claw.controller.run import RunController
 from ya_claw.controller.session import SessionController
 from ya_claw.execution.dispatcher import RunDispatcher
-from ya_claw.orm.tables import BridgeConversationRecord, BridgeEventRecord, SessionRecord
+from ya_claw.orm.tables import BridgeConversationRecord, BridgeEventRecord, RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
 
@@ -183,6 +184,24 @@ class BridgeController:
     async def handle_inbound_action(
         self,
         db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        dispatcher: RunDispatcher,
+        action: BridgeInboundAction,
+    ) -> BridgeDispatchResult:
+        if action.action_type == "session_recovery":
+            return await self._handle_session_recovery_action(
+                db_session,
+                settings,
+                runtime_state,
+                dispatcher,
+                action,
+            )
+        return await self._handle_hitl_action(db_session, runtime_state, action)
+
+    async def _handle_hitl_action(
+        self,
+        db_session: AsyncSession,
         runtime_state: InMemoryRuntimeState,
         action: BridgeInboundAction,
     ) -> BridgeDispatchResult:
@@ -222,6 +241,112 @@ class BridgeController:
             run_id=run_id,
             remaining_interaction_count=response.remaining_interaction_count,
             current_interaction=response.current_interaction,
+        )
+
+    async def _handle_session_recovery_action(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        dispatcher: RunDispatcher,
+        action: BridgeInboundAction,
+    ) -> BridgeDispatchResult:
+        token = action.token or ""
+        parts = token.split(":")
+        if len(parts) < 3 or parts[0] != "recovery":
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                error_message="Invalid recovery action token.",
+            )
+        session_id, source_run_id = parts[1], parts[2]
+        mode = action.metadata.get("action")
+        if mode not in {"retry", "reset_and_retry"}:
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                session_id=session_id,
+                run_id=source_run_id,
+                error_message="Unsupported recovery action.",
+            )
+
+        session_record = await db_session.get(SessionRecord, session_id)
+        if not isinstance(session_record, SessionRecord):
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                session_id=session_id,
+                run_id=source_run_id,
+                error_message=f"Session '{session_id}' was not found.",
+            )
+        source_run = await db_session.get(RunRecord, source_run_id)
+        if not isinstance(source_run, RunRecord) or source_run.session_id != session_id:
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                session_id=session_id,
+                run_id=source_run_id,
+                error_message=f"Run '{source_run_id}' was not found in session '{session_id}'.",
+            )
+        if source_run.status != "failed":
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                session_id=session_id,
+                run_id=source_run_id,
+                error_message=f"Run '{source_run_id}' is not failed.",
+            )
+
+        source_metadata = dict(source_run.run_metadata) if isinstance(source_run.run_metadata, dict) else {}
+        run_metadata: dict[str, object] = {
+            "recovery": {
+                "mode": mode,
+                "source_run_id": source_run.id,
+                "source_sequence_no": source_run.sequence_no,
+                "previous_head_success_run_id": session_record.head_success_run_id,
+                "reason": action.reason or "bridge_action",
+            }
+        }
+        bridge_metadata = source_metadata.get("bridge")
+        if isinstance(bridge_metadata, dict):
+            run_metadata["bridge"] = dict(bridge_metadata)
+
+        try:
+            retry_run = await self._session_controller.create_run(
+                db_session,
+                settings,
+                runtime_state,
+                session_id,
+                SessionRunCreateRequest(
+                    input_parts=parse_input_parts(list(source_run.input_parts)),
+                    metadata=run_metadata,
+                    reset_state=mode == "reset_and_retry",
+                    dispatch_mode=DispatchMode.ASYNC,
+                    trigger_type=TriggerType.BRIDGE,
+                ),
+            )
+        except HTTPException as exc:
+            return BridgeDispatchResult(
+                status=BridgeEventStatus.FAILED,
+                adapter=action.adapter,
+                event_id=action.event_id,
+                session_id=session_id,
+                run_id=source_run_id,
+                error_message=str(exc.detail),
+            )
+
+        dispatch_result = dispatcher.dispatch(retry_run.id, DispatchMode.ASYNC)
+        return BridgeDispatchResult(
+            status=BridgeEventStatus.SUBMITTED if dispatch_result.submitted else BridgeEventStatus.QUEUED,
+            adapter=action.adapter,
+            event_id=action.event_id,
+            session_id=session_id,
+            run_id=retry_run.id,
         )
 
     async def _find_existing_event(
