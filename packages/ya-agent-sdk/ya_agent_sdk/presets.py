@@ -306,6 +306,11 @@ class ModelSettingsPreset(StrEnum):
     OPENAI_RESPONSES_HIGH = "openai_responses_high"
     OPENAI_RESPONSES_MEDIUM = "openai_responses_medium"
     OPENAI_RESPONSES_LOW = "openai_responses_low"
+    OPENAI_RESPONSES_DEFAULT_FAST = "openai_responses_default_fast"
+    OPENAI_RESPONSES_XHIGH_FAST = "openai_responses_xhigh_fast"
+    OPENAI_RESPONSES_HIGH_FAST = "openai_responses_high_fast"
+    OPENAI_RESPONSES_MEDIUM_FAST = "openai_responses_medium_fast"
+    OPENAI_RESPONSES_LOW_FAST = "openai_responses_low_fast"
 
     # DeepSeek V4 presets (OpenAI-compatible API)
     DEEPSEEK_V4_DEFAULT = "deepseek_v4_default"
@@ -695,6 +700,7 @@ def _openai_responses_settings(
     reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"],
     reasoning_summary: Literal["detailed", "concise", "auto"] = "auto",
     max_tokens: int | None = None,
+    openai_service_tier: Literal["auto", "default", "flex", "priority"] | None = None,
 ) -> dict[str, Any]:
     """Create OpenAI Responses API settings for reasoning models.
 
@@ -702,6 +708,7 @@ def _openai_responses_settings(
         reasoning_effort: Reasoning intensity. GPT-5.5 supports 'none', 'low', 'medium', 'high', and 'xhigh'.
         reasoning_summary: Summary level of reasoning process.
         max_tokens: Maximum output tokens (None for model default).
+        openai_service_tier: OpenAI service tier for the model request.
 
     Returns:
         Dict suitable for OpenAIResponsesModelSettings.
@@ -713,6 +720,8 @@ def _openai_responses_settings(
     }
     if max_tokens is not None:
         settings["max_output_tokens"] = max_tokens
+    if openai_service_tier is not None:
+        settings["openai_service_tier"] = openai_service_tier
     return settings
 
 
@@ -750,6 +759,46 @@ OPENAI_RESPONSES_LOW: dict[str, Any] = _openai_responses_settings(
     max_tokens=8 * K_TOKENS,
 )
 """OpenAI Responses low: Minimal reasoning, faster responses."""
+
+OPENAI_RESPONSES_DEFAULT_FAST: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="medium",
+    reasoning_summary="auto",
+    max_tokens=16 * K_TOKENS,
+    openai_service_tier="priority",
+)
+"""OpenAI Responses default fast: Balanced reasoning on the priority service tier."""
+
+OPENAI_RESPONSES_XHIGH_FAST: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="xhigh",
+    reasoning_summary="detailed",
+    max_tokens=64 * K_TOKENS,
+    openai_service_tier="priority",
+)
+"""OpenAI Responses xhigh fast: Highest reasoning effort on the priority service tier."""
+
+OPENAI_RESPONSES_HIGH_FAST: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="high",
+    reasoning_summary="detailed",
+    max_tokens=32 * K_TOKENS,
+    openai_service_tier="priority",
+)
+"""OpenAI Responses high fast: Strong reasoning effort on the priority service tier."""
+
+OPENAI_RESPONSES_MEDIUM_FAST: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="medium",
+    reasoning_summary="auto",
+    max_tokens=16 * K_TOKENS,
+    openai_service_tier="priority",
+)
+"""OpenAI Responses medium fast: Balanced reasoning on the priority service tier."""
+
+OPENAI_RESPONSES_LOW_FAST: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="low",
+    reasoning_summary="concise",
+    max_tokens=8 * K_TOKENS,
+    openai_service_tier="priority",
+)
+"""OpenAI Responses low fast: Minimal reasoning on the priority service tier."""
 
 
 # =============================================================================
@@ -1063,6 +1112,11 @@ _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
     ModelSettingsPreset.OPENAI_RESPONSES_HIGH.value: OPENAI_RESPONSES_HIGH,
     ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM.value: OPENAI_RESPONSES_MEDIUM,
     ModelSettingsPreset.OPENAI_RESPONSES_LOW.value: OPENAI_RESPONSES_LOW,
+    ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT_FAST.value: OPENAI_RESPONSES_DEFAULT_FAST,
+    ModelSettingsPreset.OPENAI_RESPONSES_XHIGH_FAST.value: OPENAI_RESPONSES_XHIGH_FAST,
+    ModelSettingsPreset.OPENAI_RESPONSES_HIGH_FAST.value: OPENAI_RESPONSES_HIGH_FAST,
+    ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM_FAST.value: OPENAI_RESPONSES_MEDIUM_FAST,
+    ModelSettingsPreset.OPENAI_RESPONSES_LOW_FAST.value: OPENAI_RESPONSES_LOW_FAST,
     # DeepSeek V4
     ModelSettingsPreset.DEEPSEEK_V4_DEFAULT.value: DEEPSEEK_V4_DEFAULT,
     ModelSettingsPreset.DEEPSEEK_V4_HIGH.value: DEEPSEEK_V4_HIGH,

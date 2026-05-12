@@ -78,10 +78,15 @@ from ya_agent_sdk.presets import (
     OPENAI_LOW,
     OPENAI_MEDIUM,
     OPENAI_RESPONSES_DEFAULT,
+    OPENAI_RESPONSES_DEFAULT_FAST,
     OPENAI_RESPONSES_HIGH,
+    OPENAI_RESPONSES_HIGH_FAST,
     OPENAI_RESPONSES_LOW,
+    OPENAI_RESPONSES_LOW_FAST,
     OPENAI_RESPONSES_MEDIUM,
+    OPENAI_RESPONSES_MEDIUM_FAST,
     OPENAI_RESPONSES_XHIGH,
+    OPENAI_RESPONSES_XHIGH_FAST,
     OPENAI_XHIGH,
     ModelConfigPreset,
     ModelSettingsPreset,
@@ -357,11 +362,29 @@ def test_openai_responses_presets_structure() -> None:
         OPENAI_RESPONSES_HIGH,
         OPENAI_RESPONSES_MEDIUM,
         OPENAI_RESPONSES_LOW,
+        OPENAI_RESPONSES_DEFAULT_FAST,
+        OPENAI_RESPONSES_XHIGH_FAST,
+        OPENAI_RESPONSES_HIGH_FAST,
+        OPENAI_RESPONSES_MEDIUM_FAST,
+        OPENAI_RESPONSES_LOW_FAST,
     ]:
         assert "openai_reasoning_effort" in preset
         assert "openai_reasoning_summary" in preset
 
+    for preset in [
+        OPENAI_RESPONSES_DEFAULT_FAST,
+        OPENAI_RESPONSES_XHIGH_FAST,
+        OPENAI_RESPONSES_HIGH_FAST,
+        OPENAI_RESPONSES_MEDIUM_FAST,
+        OPENAI_RESPONSES_LOW_FAST,
+    ]:
+        assert preset["openai_service_tier"] == "priority"
+
     assert OPENAI_RESPONSES_XHIGH["openai_reasoning_effort"] == "xhigh"
+    assert OPENAI_RESPONSES_XHIGH_FAST["openai_reasoning_effort"] == "xhigh"
+    assert OPENAI_RESPONSES_HIGH_FAST["openai_reasoning_effort"] == "high"
+    assert OPENAI_RESPONSES_MEDIUM_FAST["openai_reasoning_effort"] == "medium"
+    assert OPENAI_RESPONSES_LOW_FAST["openai_reasoning_effort"] == "low"
     assert OPENAI_RESPONSES_XHIGH["max_output_tokens"] > OPENAI_RESPONSES_HIGH["max_output_tokens"]
 
 
@@ -411,6 +434,9 @@ def test_get_model_settings_by_enum() -> None:
     settings_openai_responses_xhigh = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_XHIGH)
     assert settings_openai_responses_xhigh == OPENAI_RESPONSES_XHIGH
 
+    settings_openai_responses_high_fast = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_HIGH_FAST)
+    assert settings_openai_responses_high_fast == OPENAI_RESPONSES_HIGH_FAST
+
     settings_deepseek = get_model_settings(ModelSettingsPreset.DEEPSEEK_V4_MAX)
     assert settings_deepseek == DEEPSEEK_V4_MAX
 
@@ -435,6 +461,9 @@ def test_get_model_settings_by_string() -> None:
 
     settings_openai_responses_xhigh = get_model_settings("openai_responses_xhigh")
     assert settings_openai_responses_xhigh == OPENAI_RESPONSES_XHIGH
+
+    settings_openai_responses_high_fast = get_model_settings("openai_responses_high_fast")
+    assert settings_openai_responses_high_fast == OPENAI_RESPONSES_HIGH_FAST
 
     settings_deepseek = get_model_settings("deepseek_v4_max")
     assert settings_deepseek == DEEPSEEK_V4_MAX
@@ -640,10 +669,15 @@ def test_list_presets() -> None:
         "openai_medium",
         "openai_responses",
         "openai_responses_default",
+        "openai_responses_default_fast",
         "openai_responses_high",
+        "openai_responses_high_fast",
         "openai_responses_low",
+        "openai_responses_low_fast",
         "openai_responses_medium",
+        "openai_responses_medium_fast",
         "openai_responses_xhigh",
+        "openai_responses_xhigh_fast",
         "openai_xhigh",
     ])
 
