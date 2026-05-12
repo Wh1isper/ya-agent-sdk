@@ -41,6 +41,7 @@ __all__ = [
     "GeneralConfig",
     "MCPConfig",
     "MCPServerConfig",
+    "ModelProfileConfig",
     "SubagentOverride",
     "SubagentsConfig",
     "ToolsConfig",
@@ -91,6 +92,22 @@ class GeneralConfig(BaseModel):
     def is_configured(self) -> bool:
         """Check if model is configured."""
         return bool(self.model)
+
+
+class ModelProfileConfig(BaseModel):
+    """Selectable model profile configuration."""
+
+    label: str | None = None
+    """Human-friendly label shown in the model selector."""
+
+    model: str
+    """Model for main agent. Format: 'provider:model_name'."""
+
+    model_settings: str | dict[str, Any] | None = None
+    """Model settings: preset name or dict of actual values."""
+
+    model_cfg: str | dict[str, Any] | None = None
+    """Model config for context management: preset name or dict."""
 
 
 class DisplayConfig(BaseModel):
@@ -272,6 +289,9 @@ class YaacliConfig(BaseModel):
     """
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     """Security runtime configuration."""
+
+    model_profiles: dict[str, ModelProfileConfig] = Field(default_factory=dict)
+    """Selectable model profiles for the /model command."""
 
     # From project config
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
@@ -509,8 +529,9 @@ class ConfigManager:
             return global_mcp
         return None
 
-    # Directories to exclude from file tree context in ~/.yaacli/
-    _TREEIGNORE_ENTRIES = frozenset({"sessions", "message_history", "worktrees"})
+    # Entries to exclude from file tree context in ~/.yaacli/
+    _TREEIGNORE_DIRS = frozenset({"sessions", "message_history", "worktrees"})
+    _TREEIGNORE_FILES = frozenset({"state.json"})
 
     def ensure_config_dir(self) -> None:
         """Create global config directory structure."""
@@ -525,7 +546,7 @@ class ConfigManager:
         This keeps session/history directories out of the agent's context.
         """
         gitignore_path = self._config_dir / ".gitignore"
-        needed = {f"{d}/" for d in self._TREEIGNORE_ENTRIES}
+        needed = {f"{d}/" for d in self._TREEIGNORE_DIRS} | set(self._TREEIGNORE_FILES)
         if gitignore_path.exists():
             existing = set(gitignore_path.read_text().splitlines())
             missing = needed - existing

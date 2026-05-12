@@ -39,15 +39,25 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit import Application
+from prompt_toolkit.application import in_terminal
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+from prompt_toolkit.shortcuts import radiolist_dialog
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
-from pydantic_ai import BinaryContent, DeferredToolRequests, DeferredToolResults, ToolDenied, UsageLimits, UserContent
+from pydantic_ai import (
+    BinaryContent,
+    DeferredToolRequests,
+    DeferredToolResults,
+    ModelSettings,
+    ToolDenied,
+    UsageLimits,
+    UserContent,
+)
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -65,6 +75,7 @@ from pydantic_ai.models import Model
 from rich.table import Table
 from rich.text import Text
 from ya_agent_sdk.agents.main import AgentRuntime, stream_agent
+from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, BusMessage, ResumableState, StreamEvent
 from ya_agent_sdk.events import (
     CompactCompleteEvent,
@@ -83,6 +94,7 @@ from ya_agent_sdk.events import (
     ToolCallsStartEvent,
     UsageSnapshotEvent,
 )
+from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.utils import get_latest_request_usage
 
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
@@ -95,6 +107,15 @@ from yaacli.environment import TUIEnvironment
 from yaacli.events import ContextUpdateEvent, LoopCompleteEvent, LoopCompleteReason, LoopIterationEvent
 from yaacli.hooks import emit_context_update
 from yaacli.logging import configure_tui_logging, get_logger
+from yaacli.model_profiles import (
+    ResolvedModelProfile,
+    build_model_profiles,
+    format_model_profile_choice,
+    format_model_profile_label,
+    get_startup_model_profile,
+    resolve_profile_model_cfg,
+    save_selected_model_profile_id,
+)
 from yaacli.perf import perf_log_report, perf_report, perf_timer
 from yaacli.runtime import create_tui_runtime
 from yaacli.session import TUIContext
@@ -294,6 +315,9 @@ class TUIApp:
 
     # Session-level usage tracking
     _session_usage: SessionUsage = field(default_factory=SessionUsage, init=False)
+
+    # Model profile state
+    _active_model_profile: ResolvedModelProfile | None = field(default=None, init=False)
 
     # UI refresh throttling
     _last_invalidate_time: float = field(default=0.0, init=False)
@@ -496,12 +520,15 @@ class TUIApp:
         # Load MCP config
         mcp_config = self.config_manager.load_mcp_config()
 
+        self._active_model_profile = get_startup_model_profile(self.config, self.config_manager.config_dir)
+
         # Create runtime
         self._runtime = create_tui_runtime(
             config=self.config,
             mcp_config=mcp_config,
             working_dir=self.working_dir,
             config_dir=self.config_manager.config_dir,
+            model_profile=self._active_model_profile,
         )
         await self._exit_stack.enter_async_context(self._runtime)
 
@@ -1035,6 +1062,14 @@ class TUIApp:
         if self._app:
             self._app.invalidate()
 
+    def _format_active_model_label(self) -> str:
+        """Format the active model label for status and welcome output."""
+        if self._active_model_profile is not None:
+            return format_model_profile_label(self._active_model_profile)
+        if self.config.general.model:
+            return self.config.general.model
+        return "unconfigured"
+
     # =========================================================================
     # Status Bar
     # =========================================================================
@@ -1082,6 +1117,8 @@ class TUIApp:
                     ("class:status-bar", " | "),
                     ("class:status-bar", phase_display),
                     ("class:status-bar", " | "),
+                    ("class:status-bar", f"Model: {self._format_active_model_label()}"),
+                    ("class:status-bar", " | "),
                     ("class:status-bar", f"Context: {context_pct}%"),
                 ]
                 ctx = self.runtime.ctx
@@ -1120,6 +1157,8 @@ class TUIApp:
                 ("class:status-bar", " | "),
                 ("class:status-bar", f"State: {state_text}"),
                 ("class:status-bar", " | "),
+                ("class:status-bar", f"Model: {self._format_active_model_label()}"),
+                ("class:status-bar", " | "),
                 ("class:status-bar", f"Context: {context_pct}%"),
             ]
             bg_label = self._format_background_label()
@@ -1148,6 +1187,64 @@ class TUIApp:
         state_indicator = "*" if self._state == TUIState.RUNNING else ">"
         mouse_mode = "scroll" if self._mouse_enabled else "select"
         return f"[{mouse_mode}] {state_indicator} "
+
+    async def _show_model_selector(self) -> None:
+        """Show the model profile selector and switch to the selected profile."""
+        if self._state == TUIState.RUNNING:
+            self._append_system_output("Model selection is available after the current run finishes.")
+            return
+
+        profiles = build_model_profiles(self.config)
+        if not profiles:
+            self._append_system_output("No model profiles are configured.")
+            return
+
+        current_id = self._active_model_profile.id if self._active_model_profile else profiles[0].id
+        values = [(profile.id, format_model_profile_choice(profile)) for profile in profiles]
+
+        async with in_terminal(render_cli_done=True):
+            selected_id = await radiolist_dialog(
+                title="Select model",
+                text="Choose the model profile for this session:",
+                values=values,
+                default=current_id,
+                ok_text="Use",
+                cancel_text="Cancel",
+            ).run_async()
+
+        if selected_id is None:
+            return
+
+        selected_profile = next((profile for profile in profiles if profile.id == selected_id), None)
+        if selected_profile is None:
+            self._append_system_output(f"Model profile not found: {selected_id}")
+            return
+
+        await self._switch_model_profile(selected_profile)
+
+    async def _switch_model_profile(self, profile: ResolvedModelProfile) -> None:
+        """Switch the current runtime to a model profile."""
+        if self._state == TUIState.RUNNING:
+            self._append_system_output("Model selection is available after the current run finishes.")
+            return
+
+        model_settings = resolve_model_settings(profile.model_settings)
+        model_cfg = resolve_profile_model_cfg(profile.model_cfg)
+
+        self.runtime.agent.model = infer_model(profile.model)
+        self.runtime.agent.model_settings = cast(ModelSettings, model_settings)
+        self.runtime.ctx.model_cfg = model_cfg
+        self._active_model_profile = profile
+        if model_cfg.context_window:
+            self._context_window_size = model_cfg.context_window
+        else:
+            self._context_window_size = 200000
+
+        save_selected_model_profile_id(self.config_manager.config_dir, profile.id)
+        self._append_system_output(f"Switched model to {format_model_profile_label(profile)}")
+
+        if self._app:
+            self._app.invalidate()
 
     # =========================================================================
     # Agent Execution
@@ -2457,6 +2554,9 @@ class TUIApp:
                 self._append_user_input(command)
                 self.switch_mode(TUIMode.PLAN)
                 self._append_system_output("Mode changed to PLAN")
+            case "/model":
+                self._append_user_input(command)
+                await self._show_model_selector()
             case "/tasks":
                 self._append_user_input(command)
                 self._show_tasks()
@@ -2627,6 +2727,7 @@ class TUIApp:
         sys_table.add_row("/help", "Show this help")
         sys_table.add_row("/clear", "Clear output and history")
         sys_table.add_row("/cost", "Show cost summary")
+        sys_table.add_row("/model", "Select model profile")
         sys_table.add_row("/tasks", "Show background tasks and processes")
         sys_table.add_row("/perf", "Show performance stats (YAACLI_PERF=1)")
         sys_table.add_row("/session [id]", "List sessions or restore by ID")
@@ -3156,7 +3257,7 @@ class TUIApp:
         # Welcome message
         title = Text("YAACLI CLI", style="bold magenta")
         self._append_output(self._renderer.render(title).rstrip())
-        self._append_output(f"Model: {self.config.general.model}")
+        self._append_output(f"Model: {self._format_active_model_label()}")
         self._append_output(f"Mode: {self._mode.value.upper()}")
         self._append_output(f"Config dir: {self.config_manager.config_dir}")
         self._append_output("This is the global YAACLI config directory.")

@@ -60,6 +60,23 @@ Provider API keys can live in that `.env` file or in `~/.yaacli/config.toml` und
 SDK and tool variables such as `YA_AGENT_*` and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) as the reference list for SDK and tool variables.
 
+Model profiles are configured in `~/.yaacli/config.toml` and selected with `/model` inside the TUI:
+
+```toml
+[general]
+model = "anthropic:claude-sonnet-4-5"
+model_settings = "anthropic_adaptive_high"
+model_cfg = "claude_200k"
+
+[model_profiles.fast]
+label = "Fast"
+model = "openai:gpt-5-mini"
+model_settings = "openai_responses_low"
+model_cfg = "gpt5_270k"
+```
+
+`[general]` is the startup fallback profile. The last selected profile is remembered in `~/.yaacli/state.json` and restored on the next launch when that profile still exists.
+
 Shell command review is configured in `~/.yaacli/config.toml` under `security.shell_review`:
 
 ```toml

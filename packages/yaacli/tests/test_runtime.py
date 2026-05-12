@@ -8,6 +8,7 @@ from yaacli.config import (
     GeneralConfig,
     MCPConfig,
     MCPServerConfig,
+    ModelProfileConfig,
     ToolsConfig,
     YaacliConfig,
 )
@@ -75,6 +76,35 @@ async def test_create_tui_runtime_orders_skill_paths_by_priority(tmp_path: Path)
             (working_dir / ".yaacli").resolve(),
         ]
         assert allowed_paths[:4] == expected_prefix
+
+
+def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None:
+    """Runtime uses the persisted model profile at startup."""
+    from yaacli.model_profiles import save_selected_model_profile_id
+
+    config_dir = tmp_path / "config"
+    config = YaacliConfig(
+        general=GeneralConfig(
+            model="openai:gpt-4",
+            model_cfg="claude_200k",
+        ),
+        model_profiles={
+            "long": ModelProfileConfig(
+                label="Long",
+                model="openai:gpt-4",
+                model_cfg="gemini_1m",
+            ),
+        },
+    )
+    save_selected_model_profile_id(config_dir, "long")
+
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        config_dir=config_dir,
+    )
+
+    assert runtime.ctx.model_cfg.context_window == 1_000_000
 
 
 def test_create_tui_runtime_with_model_settings(tmp_path: Path) -> None:

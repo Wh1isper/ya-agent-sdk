@@ -31,6 +31,7 @@ def test_default_config() -> None:
     assert config.general.model_settings is None
     assert config.general.agent_stream_resume_on_error is True
     assert config.general.agent_stream_resume_max_attempts == 2
+    assert config.model_profiles == {}
     assert config.general.agent_stream_resume_prompt.startswith("The previous streaming model request failed")
 
     # Display
@@ -108,6 +109,37 @@ code_theme = "light"
     assert config.display.code_theme == "light"
     assert config.tools.need_approval == []
     assert config.security.shell_review.enabled is False
+
+
+def test_load_global_model_profiles_config(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    clean_env: None,
+) -> None:
+    """Test loading selectable model profiles from global config.toml."""
+    config_file = temp_config_dir / "config.toml"
+    config_file.write_text("""
+[general]
+model = "anthropic:claude-sonnet-4-5"
+model_settings = "anthropic_adaptive_high"
+model_cfg = "claude_200k"
+
+[model_profiles.fast]
+label = "Fast"
+model = "openai:gpt-5-mini"
+model_settings = "openai_responses_low"
+model_cfg = "gpt5_270k"
+""")
+
+    config = config_manager.load()
+
+    assert config.general.model == "anthropic:claude-sonnet-4-5"
+    assert "fast" in config.model_profiles
+    fast = config.model_profiles["fast"]
+    assert fast.label == "Fast"
+    assert fast.model == "openai:gpt-5-mini"
+    assert fast.model_settings == "openai_responses_low"
+    assert fast.model_cfg == "gpt5_270k"
 
 
 def test_load_global_security_shell_review_config(
@@ -557,6 +589,7 @@ def test_ensure_config_dir_creates_gitignore(tmp_path: Path) -> None:
     assert "sessions/" in content
     assert "message_history/" in content
     assert "worktrees/" in content
+    assert "state.json" in content
 
 
 def test_ensure_config_dir_gitignore_idempotent(tmp_path: Path) -> None:
@@ -586,4 +619,5 @@ def test_ensure_config_dir_gitignore_appends_missing(tmp_path: Path) -> None:
     assert "sessions/" in content
     assert "message_history/" in content
     assert "worktrees/" in content
+    assert "state.json" in content
     assert "custom_ignore/" in content  # User entries preserved

@@ -30,9 +30,9 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic_ai import DeferredToolRequests, ModelSettings
 from pydantic_ai.output import OutputSpec
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
-from ya_agent_sdk.context import ModelCapability, ModelConfig, SecurityConfig, ShellReviewConfig, ToolConfig
+from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig, ToolConfig
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
-from ya_agent_sdk.presets import resolve_model_cfg, resolve_model_settings
+from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.subagents import SubagentConfig, load_subagents_from_dir
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.content import tools as content_tools
@@ -52,6 +52,7 @@ from yaacli.config import ConfigManager, MCPConfig, SubagentsConfig, YaacliConfi
 from yaacli.environment import TUIEnvironment
 from yaacli.guards import attach_loop_guard
 from yaacli.logging import get_logger
+from yaacli.model_profiles import ResolvedModelProfile, get_startup_model_profile, resolve_profile_model_cfg
 from yaacli.session import TUIContext
 from yaacli.toolsets.background import background_tools
 
@@ -59,34 +60,6 @@ if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
 
 logger = get_logger(__name__)
-
-
-def _resolve_model_cfg(model_cfg_input: str | dict[str, Any] | None) -> ModelConfig:
-    """Resolve model_cfg from preset name or dict to ModelConfig instance.
-
-    Handles conversion of capabilities from list[str] to set[ModelCapability].
-
-    Args:
-        model_cfg_input: Preset name (e.g., 'claude_200k'), dict, or None.
-
-    Returns:
-        ModelConfig instance.
-    """
-    if model_cfg_input is None:
-        return ModelConfig()
-
-    # Use SDK's resolve_model_cfg to get dict
-    cfg_dict = resolve_model_cfg(model_cfg_input)
-    if cfg_dict is None:
-        return ModelConfig()
-
-    # Convert capabilities from list[str] to set[ModelCapability] if present
-    if "capabilities" in cfg_dict:
-        caps = cfg_dict["capabilities"]
-        if isinstance(caps, (list, set)):
-            cfg_dict["capabilities"] = {ModelCapability(c) if isinstance(c, str) else c for c in caps}
-
-    return ModelConfig(**cfg_dict)
 
 
 def _load_system_prompt(config: YaacliConfig) -> str:
@@ -169,6 +142,7 @@ def create_tui_runtime(
     working_dir: Path | None = None,
     system_prompt: str | None = None,
     config_dir: Path | None = None,
+    model_profile: ResolvedModelProfile | None = None,
 ) -> AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment]:
     """Create AgentRuntime configured for TUI.
 
@@ -185,6 +159,7 @@ def create_tui_runtime(
         working_dir: Working directory for the environment. Defaults to cwd.
         system_prompt: Custom system prompt. If None, uses default.
         config_dir: Global config directory used for subagents and allowed paths.
+        model_profile: Optional resolved model profile override.
 
     Returns:
         AgentRuntime configured for TUI usage. Use as async context manager.
@@ -231,6 +206,13 @@ def create_tui_runtime(
     # Order matters for skill priority (later = higher priority):
     #   ~/.yaacli < ~/.agents < project dir < project .yaacli
     global_config_dir = config_dir or ConfigManager.DEFAULT_CONFIG_DIR
+    active_model_profile = model_profile or get_startup_model_profile(config, global_config_dir)
+    active_model = active_model_profile.model if active_model_profile else config.general.model
+    active_model_settings = (
+        active_model_profile.model_settings if active_model_profile else config.general.model_settings
+    )
+    active_model_cfg = active_model_profile.model_cfg if active_model_profile else config.general.model_cfg
+
     # Ensure .gitignore exists in config dir to keep session data out of file tree context
     ConfigManager(config_dir=global_config_dir).ensure_config_dir()
     shared_agents_dir = Path.home() / ".agents"
@@ -247,14 +229,14 @@ def create_tui_runtime(
     env_kwargs["include_os_env"] = config.include_os_env
 
     # Model configuration - resolve from preset name or dict
-    model_cfg = _resolve_model_cfg(config.general.model_cfg)
-    if config.general.model_cfg:
-        logger.debug(f"Using model_cfg: {config.general.model_cfg}")
+    model_cfg = resolve_profile_model_cfg(active_model_cfg)
+    if active_model_cfg:
+        logger.debug(f"Using model_cfg: {active_model_cfg}")
 
     # Resolve model settings from preset name or dict
-    model_settings = resolve_model_settings(config.general.model_settings)
+    model_settings = resolve_model_settings(active_model_settings)
     if model_settings:
-        logger.debug(f"Using model settings: {config.general.model_settings} -> {model_settings}")
+        logger.debug(f"Using model settings: {active_model_settings} -> {model_settings}")
 
     # Tool configuration - setup media hooks if S3 is configured
     tool_config_kwargs: dict[str, Any] = {}
@@ -341,7 +323,7 @@ def create_tui_runtime(
         )
 
     runtime = create_agent(
-        model=config.general.model or None,
+        model=active_model or None,
         model_settings=cast(ModelSettings, model_settings),
         output_type=output_type,
         env=TUIEnvironment,
@@ -365,7 +347,7 @@ def create_tui_runtime(
 
     logger.info(
         "Created TUI runtime: model=%s, toolsets=%d, output_retries=%d",
-        config.general.model,
+        active_model,
         len(toolsets),
         output_retries,
     )
