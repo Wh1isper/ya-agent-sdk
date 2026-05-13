@@ -342,6 +342,51 @@ def test_runtime_builder_system_prompt_skips_memory_for_schedule_and_loads_sched
     assert '<memory-file-index path="/workspace/memory">' not in system_prompt
 
 
+def test_runtime_builder_memory_system_prompt_loads_source_identity(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    host_path.mkdir(parents=True, exist_ok=True)
+    binding = _build_workspace_binding(host_path)
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+    )
+
+    system_prompt = builder._build_system_prompt(
+        profile=profile,
+        binding=binding,
+        source_kind="memory",
+        source_metadata={
+            "memory": {
+                "kind": "extract",
+                "source_session_id": "session-1",
+                "source_identity": {
+                    "bridge": {
+                        "latest_message": {
+                            "adapter": "lark",
+                            "tenant_key": "tenant-1",
+                            "chat_id": "chat-1",
+                            "sender_id": "user-1",
+                        }
+                    }
+                },
+            }
+        },
+    )
+
+    assert "Source identity:" in system_prompt
+    assert '"chat_id": "chat-1"' in system_prompt
+    assert '"sender_id": "user-1"' in system_prompt
+
+
 def test_runtime_builder_system_prompt_loads_memory_context(tmp_path: Path) -> None:
     settings = ClawSettings(
         api_token="test-token",  # noqa: S106

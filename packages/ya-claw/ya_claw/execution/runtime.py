@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import DeferredToolRequests
@@ -326,11 +327,16 @@ class ClawRuntimeBuilder:
         memory_metadata = dict(memory) if isinstance(memory, dict) else {}
         kind = str(memory_metadata.get("kind") or "extract")
         source_session_id = str(memory_metadata.get("source_session_id") or "")
+        source_identity = memory_metadata.get("source_identity") if isinstance(memory_metadata, dict) else None
         base_prompt = MEMORY_SUMMARY_SYSTEM_PROMPT if kind == "summary" else MEMORY_EXTRACT_SYSTEM_PROMPT
         return "\n".join([
             base_prompt,
             f"Memory job kind: {kind}",
             f"Source session ID: {source_session_id}",
+            "Source identity:",
+            json.dumps(
+                source_identity if isinstance(source_identity, dict) else {}, ensure_ascii=False, sort_keys=True
+            ),
             "Use filesystem and shell tools in the same workspace sandbox as the source session.",
             "Memory files live under memory/. Keep MEMORY.md as the compact durable brief for stable facts.",
             "Use event files and their YAML frontmatter for detailed provenance and memory discovery.",

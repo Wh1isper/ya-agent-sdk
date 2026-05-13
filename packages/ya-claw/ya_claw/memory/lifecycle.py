@@ -36,6 +36,7 @@ class MemoryRunRequest:
     source_sequence_start: int | None = None
     source_sequence_end: int | None = None
     trigger_payload: dict[str, Any] | None = None
+    source_identity: dict[str, Any] | None = None
 
 
 class ClawMemoryExtension(BaseLifecycleExtension[Any, Any]):
@@ -394,6 +395,8 @@ class MemoryLifecycle:
     ) -> str | None:
         memory_session = await self._ensure_memory_session(db_session, source_session)
         state.memory_session_id = memory_session.id
+        if request.source_identity is None:
+            request.source_identity = await _build_source_identity(db_session, source_session, request)
         if await _memory_session_busy(db_session, memory_session.id):
             _mark_pending_request(state, request)
             return None
@@ -477,6 +480,7 @@ def _pop_next_pending_request(state: SessionMemoryStateRecord) -> MemoryRunReque
     if kind is None:
         return _pop_next_pending_request(state)
     trigger_payload = request_data.get("context_handoff")
+    source_identity = request_data.get("source_identity")
     return MemoryRunRequest(
         source_session_id=str(request_data.get("source_session_id") or state.source_session_id),
         kind=kind,
@@ -491,6 +495,7 @@ def _pop_next_pending_request(state: SessionMemoryStateRecord) -> MemoryRunReque
         if isinstance(request_data.get("source_sequence_end"), int)
         else None,
         trigger_payload=dict(trigger_payload) if isinstance(trigger_payload, dict) else None,
+        source_identity=dict(source_identity) if isinstance(source_identity, dict) else None,
     )
 
 
@@ -531,10 +536,13 @@ def _request_metadata(request: MemoryRunRequest, *, memory_session_id: str) -> d
     }
     if request.trigger_payload is not None:
         metadata["context_handoff"] = request.trigger_payload
+    if request.source_identity is not None:
+        metadata["source_identity"] = request.source_identity
     return metadata
 
 
 async def _build_memory_prompt(db_session: AsyncSession, request: MemoryRunRequest) -> str:
+    source_identity = request.source_identity or await _build_source_identity(db_session, None, request)
     payload = {
         "kind": request.kind.value,
         "reason": request.reason,
@@ -542,6 +550,7 @@ async def _build_memory_prompt(db_session: AsyncSession, request: MemoryRunReque
         "source_run_ids": request.source_run_ids,
         "source_sequence_start": request.source_sequence_start,
         "source_sequence_end": request.source_sequence_end,
+        "source_identity": source_identity,
         "context_handoff": request.trigger_payload,
         "source_runs": await _source_run_material(db_session, request) if _should_embed_source_runs(request) else [],
     }
@@ -631,7 +640,90 @@ async def _memory_session_busy(db_session: AsyncSession, memory_session_id: str)
     return bool(result.scalar_one())
 
 
-async def _source_run_material(db_session: AsyncSession, request: MemoryRunRequest) -> list[dict[str, Any]]:
+_BRIDGE_IDENTITY_KEYS = (
+    "adapter",
+    "tenant_key",
+    "chat_id",
+    "chat_type",
+    "event_id",
+    "message_id",
+    "root_id",
+    "parent_id",
+    "thread_id",
+    "sender_id",
+    "sender_type",
+    "message_type",
+    "create_time",
+)
+
+
+async def _build_source_identity(
+    db_session: AsyncSession,
+    source_session: SessionRecord | None,
+    request: MemoryRunRequest,
+) -> dict[str, Any]:
+    if source_session is None:
+        loaded_session = await db_session.get(SessionRecord, request.source_session_id)
+        source_session = loaded_session if isinstance(loaded_session, SessionRecord) else None
+
+    identity: dict[str, Any] = {
+        "source_session": {
+            "session_id": request.source_session_id,
+        },
+    }
+    if isinstance(source_session, SessionRecord):
+        identity["source_session"] = {
+            "session_id": source_session.id,
+            "profile_name": source_session.profile_name,
+            "session_type": source_session.session_type,
+        }
+        conversation_identity = _bridge_identity_from_container(source_session.session_metadata)
+        if conversation_identity:
+            identity["bridge"] = {"conversation": conversation_identity}
+
+    source_runs = await _source_run_identities(db_session, request)
+    if source_runs:
+        identity["source_runs"] = source_runs
+        latest_bridge_message = next(
+            (item["bridge"] for item in reversed(source_runs) if isinstance(item.get("bridge"), dict)),
+            None,
+        )
+        if isinstance(latest_bridge_message, dict):
+            bridge_identity = dict(identity.get("bridge") or {})
+            bridge_identity["latest_message"] = latest_bridge_message
+            identity["bridge"] = bridge_identity
+    return identity
+
+
+async def _source_run_identities(db_session: AsyncSession, request: MemoryRunRequest) -> list[dict[str, Any]]:
+    identities: list[dict[str, Any]] = []
+    for record in await _source_run_records(db_session, request):
+        item: dict[str, Any] = {
+            "run_id": record.id,
+            "sequence_no": record.sequence_no,
+            "trigger_type": record.trigger_type,
+        }
+        bridge_identity = _bridge_identity_from_container(record.run_metadata)
+        if bridge_identity:
+            item["bridge"] = bridge_identity
+        identities.append(item)
+    return identities
+
+
+def _bridge_identity_from_container(container: Any) -> dict[str, Any]:
+    if not isinstance(container, dict):
+        return {}
+    candidate = container.get("bridge")
+    bridge = candidate if isinstance(candidate, dict) else container
+    identity: dict[str, Any] = {}
+    for key in _BRIDGE_IDENTITY_KEYS:
+        value = bridge.get(key)
+        if isinstance(value, str | int | float | bool):
+            identity[key] = value
+    return identity
+
+
+async def _source_run_records(db_session: AsyncSession, request: MemoryRunRequest) -> list[RunRecord]:
     statement = select(RunRecord).where(
         RunRecord.session_id == request.source_session_id,
         RunRecord.status == "completed",
@@ -645,16 +737,24 @@ async def _source_run_material(db_session: AsyncSession, request: MemoryRunReque
             statement = statement.where(RunRecord.sequence_no <= request.source_sequence_end)
     statement = statement.order_by(RunRecord.sequence_no.asc()).limit(50)
     result = await db_session.execute(statement)
+    return list(result.scalars().all())
+
+
+async def _source_run_material(db_session: AsyncSession, request: MemoryRunRequest) -> list[dict[str, Any]]:
     return [
         {
             "run_id": record.id,
             "sequence_no": record.sequence_no,
+            "trigger_type": record.trigger_type,
+            "source_identity": {
+                "bridge": _bridge_identity_from_container(record.run_metadata),
+            },
             "input_parts": record.input_parts,
             "output_text": record.output_text,
             "output_summary": record.output_summary,
             "committed_at": record.committed_at.isoformat() if record.committed_at is not None else None,
         }
-        for record in result.scalars().all()
+        for record in await _source_run_records(db_session, request)
     ]
 
 
