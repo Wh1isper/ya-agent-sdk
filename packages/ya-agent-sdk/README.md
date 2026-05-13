@@ -37,7 +37,26 @@ pip install ya-agent-sdk[web]
 pip install ya-agent-sdk[document]
 pip install ya-agent-sdk[s3]
 pip install ya-agent-sdk[tool-search]
+pip install ya-agent-sdk[oauth]
 ```
+
+## OAuth-backed Codex
+
+Use your ChatGPT/Codex subscription through `ya-oauth`:
+
+```bash
+uv run --package ya-oauth ya-oauth login codex
+```
+
+Then select the OAuth model string:
+
+```python
+from ya_agent_sdk.agents import create_agent
+
+runtime = create_agent("oauth@codex:gpt-5.5")
+```
+
+The SDK passes stable session and thread headers into the OAuth provider. YA Claw sets the provider session header from the session ID and the provider thread header from the run ID.
 
 ## Quick Start
 

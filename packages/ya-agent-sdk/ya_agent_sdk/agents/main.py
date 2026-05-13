@@ -647,7 +647,10 @@ def create_agent(
     effective_system_prompt = _load_system_prompt(system_prompt, system_prompt_template_vars)
 
     # --- Create Model with Wrapper ---
-    base_model = infer_model(model) if isinstance(model, str) else model
+    model_extra_headers = (
+        ctx.get_model_extra_headers() if isinstance(model, str) and model.startswith("oauth@codex:") else None
+    )
+    base_model = infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else model
     effective_model: Model | None = base_model
     if base_model is not None and ctx.model_wrapper is not None:
         wrapper_metadata = ctx.get_wrapper_metadata()

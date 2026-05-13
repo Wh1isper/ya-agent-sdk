@@ -60,6 +60,14 @@ Provider API keys can live in that `.env` file or in `~/.yaacli/config.toml` und
 SDK and tool variables such as `YA_AGENT_*` and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) as the reference list for SDK and tool variables.
 
+Codex OAuth credentials can be created once and reused from YAACLI:
+
+```bash
+uvx ya-oauth login codex
+```
+
+Then set `model = "oauth@codex:gpt-5.5"` in a YAACLI model profile.
+
 Model profiles are configured in `~/.yaacli/config.toml` and selected with `/model` inside the TUI:
 
 ```toml
@@ -72,6 +80,12 @@ model_cfg = "claude_200k"
 label = "Fast"
 model = "openai:gpt-5-mini"
 model_settings = "openai_responses_low"
+model_cfg = "gpt5_270k"
+
+[model_profiles.codex_oauth]
+label = "Codex OAuth"
+model = "oauth@codex:gpt-5.5"
+model_settings = "openai_responses_high"
 model_cfg = "gpt5_270k"
 ```
 

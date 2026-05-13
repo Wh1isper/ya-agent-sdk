@@ -30,7 +30,8 @@ web = ["tavily-python>=0.7.0", "firecrawl-py>=4.0.0", "markitdown[docx,pptx,xlsx
 document = ["pymupdf>=1.26.6", "pymupdf4llm>=0.2.8", "markitdown[docx,pptx,xlsx,xls,pdf]>=0.1.5", "pymupdf-layout>=1.26.6"]
 s3 = ["boto3>=1.34"]
 tool-search = ["fastembed>=0.6", "numpy>=2.0"]
-all = ["ya-agent-sdk[docker,web,document,s3,tool-search,examples]"]
+oauth = ["ya-oauth-provider"]
+all = ["ya-agent-sdk[docker,web,document,s3,tool-search,examples,oauth]"]
 
 [dependency-groups]
 dev = [
@@ -90,8 +91,9 @@ packages = ["ya_agent_sdk"]
 
 [tool.deptry]
 ignore = ["DEP001", "DEP002"]
-package_module_name_map = { "anyio" = "anyio", "boto3" = "boto3", "boto3-stubs" = "boto3_stubs|mypy_boto3_s3", "docker" = "docker", "fastembed" = "fastembed", "firecrawl-py" = "firecrawl", "httpx" = "httpx", "inline-snapshot" = "inline_snapshot", "jinja2" = "jinja2", "markitdown" = "markitdown", "numpy" = "numpy", "pathspec" = "pathspec", "pillow" = "PIL", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-settings" = "pydantic_settings", "pymupdf" = "pymupdf|fitz", "pymupdf-layout" = "pymupdf_layout", "pymupdf4llm" = "pymupdf4llm", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-cov" = "pytest_cov", "pytest-httpx" = "pytest_httpx", "pytest-xdist" = "pytest_xdist", "pyright" = "pyright", "python-dotenv" = "dotenv", "pyyaml" = "yaml", "ruff" = "ruff", "tavily-python" = "tavily", "tenacity" = "tenacity", "typing-extensions" = "typing_extensions", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-environment" = "ya_agent_environment" }
+package_module_name_map = { "anyio" = "anyio", "boto3" = "boto3", "boto3-stubs" = "boto3_stubs|mypy_boto3_s3", "docker" = "docker", "fastembed" = "fastembed", "firecrawl-py" = "firecrawl", "httpx" = "httpx", "inline-snapshot" = "inline_snapshot", "jinja2" = "jinja2", "markitdown" = "markitdown", "numpy" = "numpy", "pathspec" = "pathspec", "pillow" = "PIL", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-settings" = "pydantic_settings", "pymupdf" = "pymupdf|fitz", "pymupdf-layout" = "pymupdf_layout", "pymupdf4llm" = "pymupdf4llm", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-cov" = "pytest_cov", "pytest-httpx" = "pytest_httpx", "pytest-xdist" = "pytest_xdist", "pyright" = "pyright", "python-dotenv" = "dotenv", "pyyaml" = "yaml", "ruff" = "ruff", "tavily-python" = "tavily", "tenacity" = "tenacity", "typing-extensions" = "typing_extensions", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-environment" = "ya_agent_environment", "ya-oauth-provider" = "ya_oauth_provider" }
 per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["ya-agent-sdk", "python-dotenv"], DEP003 = ["anthropic", "botocore"], DEP004 = ["pytest"] }
 
 [tool.uv.sources]
 ya-agent-environment = { workspace = true }
+ya-oauth-provider = { workspace = true }

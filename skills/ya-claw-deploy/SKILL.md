@@ -33,7 +33,7 @@ Choose the deployment path:
 - Service local + Docker shell: read [`references/systemd.md`](references/systemd.md) and [`references/workspace-provider/service-local-docker-shell.md`](references/workspace-provider/service-local-docker-shell.md)
 - Service local + local shell: read [`references/workspace-provider/service-local-local-shell.md`](references/workspace-provider/service-local-local-shell.md)
 - SQLite or PostgreSQL storage: read [`references/database.md`](references/database.md)
-- Profile seeding and shell review policy: read [`references/profiles.md`](references/profiles.md)
+- Profile seeding, subscription-backed Codex profiles, and shell review policy: read [`references/profiles.md`](references/profiles.md)
 - Bridge deployment: read [`references/bridge/overview.md`](references/bridge/overview.md) and [`references/bridge/lark.md`](references/bridge/lark.md)
 - Schedules and heartbeat: read [`references/schedules-heartbeat.md`](references/schedules-heartbeat.md)
 - Session/run pruning: read [`references/operations.md#session-and-run-pruning`](references/operations.md#session-and-run-pruning)

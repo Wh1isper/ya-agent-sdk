@@ -1,5 +1,13 @@
 version: 1
 profiles:
+# Example ChatGPT/Codex subscription-backed profile. Run `ya-oauth login codex`
+# on the YA Claw host before selecting this profile.
+# - name: codex-oauth
+#   model: oauth@codex:gpt-5.5
+#   model_settings_preset: openai_responses_high
+#   model_config_preset: gpt5_270k
+#   builtin_toolsets:
+#   - core
 - name: default
   model: gateway@openai-responses:gpt-5.5
   model_settings_preset: openai_responses_high

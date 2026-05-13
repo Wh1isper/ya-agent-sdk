@@ -1,0 +1,60 @@
+[project]
+name = "ya-oauth-provider"
+dynamic = ["version", "dependencies"]
+description = "Pydantic AI OAuth-backed model provider helpers for YA"
+authors = [{ name = "wh1isper", email = "jizhongsheng957@gmail.com" }]
+readme = "README.md"
+keywords = ["oauth", "pydantic-ai", "agents"]
+requires-python = ">=3.11,<3.14"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Repository = "https://github.com/wh1isper/ya-mono"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.2.0",
+    "pytest-asyncio>=0.25.3",
+    "pytest-httpx>=0.35.0",
+    "ruff>=0.9.2",
+    "pyright>=1.1.0",
+]
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+bump = true
+
+[tool.hatch.metadata.hooks.uv-dynamic-versioning]
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.12.0",
+    "pydantic-ai>=1.94.0",
+    "tenacity>=9.0.0",
+    "ya-oauth=={{ version }}",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ya_oauth_provider"]
+
+[tool.uv.sources]
+ya-oauth = { workspace = true }
+
+[tool.deptry]
+ignore = ["DEP001", "DEP002"]
+package_module_name_map = { "httpx" = "httpx", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-httpx" = "pytest_httpx", "ruff" = "ruff", "pyright" = "pyright", "tenacity" = "tenacity", "ya-oauth" = "ya_oauth" }
+per_rule_ignores = { DEP003 = ["anyio", "httpx", "pydantic-ai", "pytest", "tenacity"], DEP004 = ["pytest"] }

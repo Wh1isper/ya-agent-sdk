@@ -112,6 +112,8 @@ class ClawRuntimeBuilder:
         extra_context_kwargs = {
             "session_id": session_id,
             "claw_run_id": run_id,
+            "provider_session_id": session_id,
+            "provider_thread_id": run_id,
             "profile_name": profile.name,
             "restore_from_run_id": restore_from_run_id,
             "dispatch_mode": dispatch_mode,

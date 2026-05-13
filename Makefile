@@ -205,6 +205,10 @@ check: ## Run code quality tools for all active packages
 	@(cd packages/ya-environment-relay && uvx deptry ya_environment_relay)
 	@echo "Running deptry for ya-agent-sdk"
 	@(cd packages/ya-agent-sdk && uvx deptry ya_agent_sdk)
+	@echo "Running deptry for ya-oauth"
+	@(cd packages/ya-oauth && uvx deptry ya_oauth)
+	@echo "Running deptry for ya-oauth-provider"
+	@(cd packages/ya-oauth-provider && uvx deptry ya_oauth_provider)
 	@echo "Running deptry for yaacli"
 	@(cd packages/yaacli && uvx deptry yaacli)
 	@echo "Running deptry for ya-claw"

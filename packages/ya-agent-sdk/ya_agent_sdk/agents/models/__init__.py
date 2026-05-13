@@ -22,6 +22,17 @@ def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None)
     """
     if not isinstance(model, str):
         return legacy_infer_model(model)
+    if model.startswith("oauth@"):
+        provider_name, _, model_name = model.removeprefix("oauth@").partition(":")
+        if not provider_name or not model_name:
+            raise ValueError("OAuth model strings must use format oauth@provider:model")
+        try:
+            from ya_oauth_provider import infer_oauth_model
+        except ImportError as exc:
+            raise ImportError(
+                "OAuth-backed models require ya-oauth-provider. Install ya-agent-sdk[oauth] or ya-oauth-provider."
+            ) from exc
+        return infer_oauth_model(provider_name, model_name, extra_headers=extra_headers)
     if "@" in model:
         gateway_name, model_name = model.split("@", 1)
         return infer_gateway_model(gateway_name, model_name, extra_headers=extra_headers)

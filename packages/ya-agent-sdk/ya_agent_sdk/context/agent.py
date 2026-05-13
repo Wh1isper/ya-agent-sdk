@@ -954,6 +954,12 @@ def _generate_run_id() -> str:
     return uuid4().hex
 
 
+def _string_header_value(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def _xml_to_string(element: Element) -> str:
     """Convert XML element to formatted string."""
     rough_string = tostring(element, encoding="unicode")
@@ -1015,6 +1021,12 @@ class AgentContext(BaseModel):
 
     parent_run_id: str | None = None
     """Parent run_id if this is a subagent context."""
+
+    provider_session_id: str | None = None
+    """Provider-facing session identifier for model request headers."""
+
+    provider_thread_id: str | None = None
+    """Provider-facing thread identifier for model request headers."""
 
     start_at: datetime | None = None
     """Timestamp when the context was entered."""
@@ -1333,6 +1345,22 @@ class AgentContext(BaseModel):
             return None
         end = self.end_at if self.end_at else datetime.now(UTC)
         return end - self.start_at
+
+    def get_model_extra_headers(self) -> dict[str, str]:
+        """Return stable provider headers for model construction.
+
+        OAuth-backed Codex models use both underscore and hyphen header variants,
+        matching OpenAI Codex session header behavior.
+        """
+        session_id = _string_header_value(getattr(self, "provider_session_id", None)) or self.run_id
+        thread_id = _string_header_value(getattr(self, "provider_thread_id", None)) or self.run_id
+        return {
+            "session_id": session_id,
+            "session-id": session_id,
+            "thread_id": thread_id,
+            "thread-id": thread_id,
+            "x-client-request-id": thread_id,
+        }
 
     def get_wrapper_metadata(self) -> dict[str, Any]:
         """Return context dict for model wrapper.

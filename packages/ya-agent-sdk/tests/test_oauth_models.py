@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import sys
+import types
+
+import pytest
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.context import AgentContext, ModelConfig
+
+
+def test_agent_context_model_extra_headers_defaults_to_run_id() -> None:
+    ctx = AgentContext(run_id="run-1")
+
+    assert ctx.get_model_extra_headers() == {
+        "session_id": "run-1",
+        "session-id": "run-1",
+        "thread_id": "run-1",
+        "thread-id": "run-1",
+        "x-client-request-id": "run-1",
+    }
+
+
+def test_agent_context_model_extra_headers_uses_provider_ids() -> None:
+    ctx = AgentContext(run_id="run-1", provider_session_id="session-1", provider_thread_id="thread-1")
+
+    assert ctx.get_model_extra_headers()["session_id"] == "session-1"
+    assert ctx.get_model_extra_headers()["session-id"] == "session-1"
+    assert ctx.get_model_extra_headers()["thread_id"] == "thread-1"
+    assert ctx.get_model_extra_headers()["thread-id"] == "thread-1"
+    assert ctx.get_model_extra_headers()["x-client-request-id"] == "thread-1"
+
+
+def test_infer_oauth_model_lazy_import(monkeypatch) -> None:
+    calls = []
+    module = types.ModuleType("ya_oauth_provider")
+
+    def fake_infer(provider_name: str, model_name: str, *, extra_headers: dict[str, str] | None = None):  # type: ignore[no-untyped-def]
+        calls.append((provider_name, model_name, extra_headers))
+        return "model"
+
+    module.infer_oauth_model = fake_infer  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ya_oauth_provider", module)
+
+    assert infer_model("oauth@codex:gpt-5.5", extra_headers={"session_id": "s1"}) == "model"
+    assert calls == [("codex", "gpt-5.5", {"session_id": "s1"})]
+
+
+def test_create_agent_passes_codex_headers_only_to_oauth_codex(monkeypatch) -> None:
+    calls = []
+
+    def fake_infer(model, extra_headers=None):  # type: ignore[no-untyped-def]
+        calls.append((model, extra_headers))
+        return None
+
+    monkeypatch.setattr("ya_agent_sdk.agents.main.infer_model", fake_infer)
+
+    create_agent("openai:gpt-4o", model_cfg=ModelConfig(context_window=1000))
+    create_agent("oauth@codex:gpt-5.5", model_cfg=ModelConfig(context_window=1000))
+
+    assert calls[0] == ("openai:gpt-4o", None)
+    assert calls[1][0] == "oauth@codex:gpt-5.5"
+    assert calls[1][1] is not None
+    assert calls[1][1]["session_id"]
+
+
+def test_infer_oauth_model_rejects_invalid_string() -> None:
+    with pytest.raises(ValueError, match="oauth@provider:model"):
+        infer_model("oauth@codex")

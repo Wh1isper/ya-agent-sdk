@@ -12,6 +12,8 @@
 - [`packages/ya-agent-environment`](packages/ya-agent-environment) — Environment abstractions for general agents
 - [`packages/ya-environment-relay`](packages/ya-environment-relay) — Provider-neutral relay protocol for external Environment capabilities
 - [`packages/ya-agent-sdk`](packages/ya-agent-sdk) — Python SDK for building AI agents with Pydantic AI
+- [`packages/ya-oauth`](packages/ya-oauth) — OAuth login, refresh, logout, token storage, and CLI for subscription-backed providers
+- [`packages/ya-oauth-provider`](packages/ya-oauth-provider) — Pydantic AI provider helpers for OAuth-backed model access
 - [`packages/yaacli`](packages/yaacli) — TUI reference implementation built on top of `ya-agent-sdk`
 - [`packages/ya-claw`](packages/ya-claw) — workspace-native single-node runtime web service with `WorkspaceProvider`, in-process runtime state, schedules, bridges, and SQLite-first storage
 - [`packages/ya-agent-platform`](packages/ya-agent-platform) — WIP stateless agent service with TBD scope
@@ -71,6 +73,16 @@ Recommended starting points:
 - Copy [`packages/ya-agent-sdk/.env.example`](packages/ya-agent-sdk/.env.example) to `packages/ya-agent-sdk/.env` when developing the SDK or configuring SDK/tool variables for workspace apps
 - Copy [`packages/yaacli/.env.example`](packages/yaacli/.env.example) to `packages/yaacli/.env` or your current working directory `.env` when developing YAACLI
 - Run examples from [`examples/`](examples/) for end-to-end usage patterns
+
+### OAuth-backed Codex
+
+Run Codex through your ChatGPT subscription with a local OAuth credential store:
+
+```bash
+uv run --package ya-oauth ya-oauth login codex
+```
+
+Then use `oauth@codex:gpt-5.5` in SDK, YAACLI, or YA Claw profiles. Credentials live in `~/.yaai/auth.json`.
 
 ### YA Claw
 
@@ -135,6 +147,8 @@ make test
 - [ya-environment-relay README](packages/ya-environment-relay/README.md)
 - [ya-environment-relay spec](packages/ya-environment-relay/spec/README.md)
 - [ya-agent-sdk README](packages/ya-agent-sdk/README.md)
+- [ya-oauth README](packages/ya-oauth/README.md)
+- [ya-oauth-provider README](packages/ya-oauth-provider/README.md)
 - [yaacli README](packages/yaacli/README.md)
 - [ya-claw README](packages/ya-claw/README.md)
 - [ya-agent-platform README](packages/ya-agent-platform/README.md)

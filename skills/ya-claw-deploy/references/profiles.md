@@ -55,6 +55,26 @@ Important built-in toolsets:
 - `session`: read-only current-session inspection tools
 - `schedule`: agent-owned schedule management tools
 
+## Subscription-backed Codex Profiles
+
+YA Claw can use a ChatGPT/Codex subscription account through the OAuth model provider. Create the host credential store before starting or seeding the service:
+
+```bash
+uvx ya-oauth login codex
+```
+
+Then seed a profile with the OAuth Codex model string:
+
+```yaml
+profiles:
+- name: codex-oauth
+  model: oauth@codex:gpt-5.5
+  model_settings: openai_responses_high
+  model_cfg: gpt5_270k
+```
+
+The service process reads credentials from `~/.yaai/auth.json`. Docker deployments should mount a persistent host directory to the service user's `~/.yaai` so refresh tokens survive image upgrades and container replacement.
+
 ## Shell Command Review
 
 Shell command review is configured per profile under `security.shell_review` in the seed YAML or stored AgentProfile `model_config_override`.

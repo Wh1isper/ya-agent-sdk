@@ -16,6 +16,8 @@ members = [
     "packages/ya-agent-environment",
     "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
+    "packages/ya-oauth",
+    "packages/ya-oauth-provider",
     "packages/yaacli",
     "packages/ya-claw",
     "packages/ya-agent-platform",
@@ -25,6 +27,8 @@ members = [
 ya-agent-environment = { workspace = true }
 ya-environment-relay = { workspace = true }
 ya-agent-sdk = { workspace = true }
+ya-oauth = { workspace = true }
+ya-oauth-provider = { workspace = true }
 ya-claw = { workspace = true }
 ya-agent-platform = { workspace = true }
 
@@ -33,6 +37,8 @@ include = [
     "packages/ya-agent-environment/ya_agent_environment",
     "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
+    "packages/ya-oauth/ya_oauth",
+    "packages/ya-oauth-provider/ya_oauth_provider",
     "packages/yaacli/yaacli",
     "packages/ya-claw/ya_claw",
     "packages/ya-agent-platform/ya_agent_platform",
@@ -41,6 +47,8 @@ exclude = [
     "packages/ya-agent-environment/tests",
     "packages/ya-environment-relay/tests",
     "packages/ya-agent-sdk/tests",
+    "packages/ya-oauth/tests",
+    "packages/ya-oauth-provider/tests",
     "packages/yaacli/tests",
     "packages/ya-claw/tests",
     "packages/ya-agent-platform/tests",
@@ -57,6 +65,8 @@ extraPaths = [
     "packages/ya-agent-environment",
     "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
+    "packages/ya-oauth",
+    "packages/ya-oauth-provider",
     "packages/yaacli",
     "packages/ya-claw",
     "packages/ya-agent-platform",
@@ -102,6 +112,8 @@ ignore = [
 "packages/yaacli/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-agent-environment/tests/*" = ["S101", "S108", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-agent-sdk/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
+"packages/ya-oauth/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
+"packages/ya-oauth-provider/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-claw/tests/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/yaacli/yaacli/skills/**/*.py" = ["E402"]
 "skills/examples/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904", "E402"]
@@ -123,6 +135,8 @@ source = [
     "packages/ya-agent-environment/ya_agent_environment",
     "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
+    "packages/ya-oauth/ya_oauth",
+    "packages/ya-oauth-provider/ya_oauth_provider",
     "packages/yaacli/yaacli",
     "packages/ya-claw/ya_claw",
 ]

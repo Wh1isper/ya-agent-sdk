@@ -7,6 +7,8 @@ Workspace members:
 - `packages/ya-agent-environment` — Environment abstractions for general agents
 - `packages/ya-environment-relay` — Provider-neutral relay protocol for external Environment capabilities
 - `packages/ya-agent-sdk` — SDK for building AI agents with Pydantic AI
+- `packages/ya-oauth` — OAuth login, refresh, logout, token storage, and CLI for subscription-backed providers
+- `packages/ya-oauth-provider` — Pydantic AI provider helpers for OAuth-backed model access
 - `packages/yaacli` — TUI reference implementation built on top of the SDK
 - `packages/ya-claw` — workspace-native single-node runtime web service with `WorkspaceProvider`, in-process runtime state, schedules, bridges, and SQLite-first storage
 - `packages/ya-agent-platform` — WIP stateless agent service with TBD scope
@@ -53,6 +55,19 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - SDK for building AI agents with Pydantic AI
 - preserves the core execution primitives used across the repository
 - changes here should keep examples, skills, and package docs aligned
+- OAuth-backed model strings use `oauth@provider:model`; Codex currently uses `oauth@codex:gpt-5.5` and receives session/thread headers from `AgentContext.get_model_extra_headers()`
+
+### `packages/ya-oauth`
+
+- CLI and storage package for OAuth-backed providers
+- stores credentials in `~/.yaai/auth.json` with locked atomic writes, directory mode `0700`, and file mode `0600`
+- `ya-oauth login codex` follows OpenAI Codex device-code auth and preserves Codex token refresh semantics
+
+### `packages/ya-oauth-provider`
+
+- Pydantic AI provider/model package for OAuth token sources
+- owns Codex request auth/header alignment, including bearer token, ChatGPT account ID, FedRAMP, originator/version, both underscore/hyphen session and thread headers, and `x-client-request-id`
+- refreshes once on HTTP 401 through the configured token source
 
 ### `packages/yaacli`
 

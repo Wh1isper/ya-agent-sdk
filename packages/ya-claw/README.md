@@ -186,6 +186,8 @@ The official YA Claw service and workspace Docker images set `MALLOC_ARENA_MAX=2
 
 Profiles store model, prompt, model context config, builtin tool groups, subagents, approval policy, security policy, MCP server definitions, and MCP namespace filters. YA Claw accepts profile MCP servers with `streamable_http` transport. Every YA Claw agent runtime receives the profile MCP configuration through `ToolProxyToolset`, and each profile can narrow that surface with `enabled_mcps` and `disabled_mcps`.
 
+Codex OAuth profiles use the `oauth@codex:gpt-5.5` model string after the service host has run `ya-oauth login codex`. YA Claw maps provider session headers to the YA Claw session ID and provider thread headers to the run ID. Docker deployments should mount a persistent host directory to the service user's `~/.yaai`, keep directory mode `0700` and `auth.json` mode `0600`, and keep credentials out of image layers.
+
 Shell command review is configured per profile under `security.shell_review`. The review model is explicit when enabled, and `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object. YA Claw runs shell review in auto-pilot deny mode: commands that reach `risk_threshold` trigger the configured action, and profile values of `on_needs_approval: defer` are coerced to deny at runtime. The default profile risk threshold is `extra_high`.
 
 ```yaml
