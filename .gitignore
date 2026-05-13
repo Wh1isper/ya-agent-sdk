@@ -166,4 +166,5 @@ apps/*/dist/
 !apps/ya-desktop/src-tauri/resources/uv/.gitkeep
 apps/ya-desktop/src-tauri/resources/uv/uv
 apps/ya-desktop/src-tauri/resources/uv/uv.exe
+apps/ya-desktop/src-tauri/gen/schemas/linux-schema.json
 *.tsbuildinfo

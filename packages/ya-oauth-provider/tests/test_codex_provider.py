@@ -38,17 +38,23 @@ def test_build_codex_headers() -> None:
     headers = build_codex_headers(
         OAuthAccount(chatgpt_account_id="acct_123", chatgpt_account_is_fedramp=True),
         extra_headers={"session_id": "s1", "thread-id": "t1", "x-client-request-id": "t1"},
-        version="test-version",
     )
 
     assert "Authorization" not in headers
     assert headers["ChatGPT-Account-ID"] == "acct_123"
     assert headers["X-OpenAI-Fedramp"] == "true"
     assert headers["originator"] == "ya_agent_sdk"
-    assert headers["version"] == "test-version"
+    assert "version" not in headers
     assert headers["session_id"] == "s1"
     assert headers["thread-id"] == "t1"
     assert headers["x-client-request-id"] == "t1"
+
+
+def test_build_codex_headers_omits_version_by_default() -> None:
+    headers = build_codex_headers(OAuthAccount())
+
+    assert headers["originator"] == "ya_agent_sdk"
+    assert "version" not in headers
 
 
 def test_build_codex_headers_rejects_reserved_extra_headers() -> None:
@@ -81,6 +87,7 @@ async def test_oauth_bearer_auth_fills_codex_responses_instructions() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(dict(json.loads(request.content)))
+        assert "version" not in request.headers
         return httpx.Response(200, json={"ok": True}, request=request)
 
     client = httpx.AsyncClient(

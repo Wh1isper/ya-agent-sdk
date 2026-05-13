@@ -16,6 +16,8 @@ _RESERVED_EXTRA_HEADERS = {
     "version",
 }
 
+CODEX_ORIGINATOR = "ya_agent_sdk"
+
 
 class OAuthBearerAuth(httpx.Auth):
     """httpx auth flow that attaches OAuth bearer headers and refreshes once on 401."""
@@ -58,12 +60,10 @@ def build_codex_headers(
     account: OAuthAccount,
     *,
     extra_headers: dict[str, str] | None = None,
-    version: str | None = None,
 ) -> dict[str, str]:
     """Build Codex-compatible request headers."""
     headers: dict[str, str] = {
-        "originator": "ya_agent_sdk",
-        "version": version or _sdk_version(),
+        "originator": CODEX_ORIGINATOR,
     }
     if account.chatgpt_account_id:
         headers["ChatGPT-Account-ID"] = account.chatgpt_account_id
@@ -121,12 +121,3 @@ def _clone_request(request: httpx.Request) -> httpx.Request:
         content=request.content,
         extensions=request.extensions.copy(),
     )
-
-
-def _sdk_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("ya-agent-sdk")
-    except Exception:
-        return "0.0.0"

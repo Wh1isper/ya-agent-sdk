@@ -10,4 +10,4 @@ YA Agent SDK loads this package for model strings such as:
 oauth@codex:gpt-5.5
 ```
 
-The provider attaches Codex-compatible bearer, account, originator, version, session, and thread headers.
+The provider attaches Codex-compatible bearer, account, originator, session, and thread headers. It omits the Codex `version` header by default to avoid coupling YA package versions to Codex CLI release gates.
