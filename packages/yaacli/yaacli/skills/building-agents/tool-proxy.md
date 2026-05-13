@@ -114,11 +114,11 @@ from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
 proxy = ToolProxyToolset(
     toolsets=[...],
-    search_strategy=create_best_strategy(),  # Embedding if available, keyword fallback
+    search_strategy=create_best_strategy(),  # BM25 when available, keyword fallback
 )
 ```
 
-See [Tool Search -- Search Strategies](tool-search.md) for details on `KeywordSearchStrategy` and `EmbeddingSearchStrategy`.
+See [Tool Search -- Search Strategies](tool-search.md) for details on `KeywordSearchStrategy` and `BM25SearchStrategy`.
 
 ## Optional Namespaces
 
@@ -138,7 +138,7 @@ If an optional namespace fails during initialization or at runtime, it is skippe
 `ToolProxyToolset` provides dynamic instructions that include:
 
 1. Base usage guide for `search_tools` and `call_tool`
-2. Search strategy hints (keyword vs. embedding)
+2. Search strategy hints (keyword vs. BM25)
 3. Available namespace list with descriptions and tool counts
 4. Previously discovered tools summary (for session continuity)
 
