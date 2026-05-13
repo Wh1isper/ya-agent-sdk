@@ -37,6 +37,7 @@ This spec set defines one execution shape:
 | 08      | [08-schedules-and-heartbeat.md](08-schedules-and-heartbeat.md)                           | schedule modes, heartbeat, agent schedule toolset, and timer dispatch        |
 | 09      | [09-session-memory.md](09-session-memory.md)                                             | workspace memory files, internal memory sessions, extract and summary agents |
 | 10      | [10-workspace-mount-sets.md](10-workspace-mount-sets.md)                                 | session-scoped workspace mount sets and multi-folder execution               |
+| 11      | [11-session-agency.md](11-session-agency.md)                                             | session agency, paired agency sessions, signals, steering, and action loops  |
 
 ## Out of Scope
 
