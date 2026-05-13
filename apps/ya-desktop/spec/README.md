@@ -45,7 +45,8 @@ The same desktop client can use:
 
 - Use Tauri 2 + TypeScript UI + Rust Core for YA Desktop.
 - Use app-managed `uv` to install and launch local Claw as the default runtime.
-- Keep development and pull request desktop artifacts unsigned by default; ship signing and Desktop app auto-update together in the release-channel phase.
+- Keep development and pull request desktop artifacts unsigned by default; pushes to `release/desktop/**` create unsigned `desktop-v*` GitHub draft releases for human review.
+- Ship signing and Desktop app auto-update together in the release-channel phase.
 - Provide a local packaging/install Makefile path so users can clone the repository, install YA Desktop locally, and rely on Claw runtime auto-update for runtime updates.
 - Treat Desktop as a Native Agent Workspace with Home, Chats, Board, Spaces, Inbox, and Settings surfaces.
 - Manage user work by conversations first; Claw sessions and runs are runtime backing objects.

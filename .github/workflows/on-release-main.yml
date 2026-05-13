@@ -11,6 +11,7 @@ on:
 jobs:
   publish:
     name: Publish Release
+    if: ${{ !startsWith(github.event.release.tag_name, 'desktop-v') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out

@@ -11,10 +11,43 @@ Signing is platform-specific. CI builds the same app on all targets, checks whet
 - Local development builds are unsigned.
 - Pull request CI builds are unsigned.
 - Main branch CI builds can produce unsigned artifacts for internal testing.
+- Pushes to `release/desktop/**` create or refresh unsigned GitHub draft releases tagged as `desktop-v*`.
+- Humans review draft artifacts and publish from GitHub when ready.
 - Signing and Desktop app auto-update ship together in the release-channel phase.
 - Tauri updater signing uses a separate keypair from OS code signing.
 
 Unsigned local builds are the default install path before release channels are ready. Users can clone the repository, build/install YA Desktop locally, and receive ongoing Claw runtime updates through Runtime Manager.
+
+## Unsigned Draft Release Flow
+
+```mermaid
+flowchart TB
+    Main[main] --> Branch[release/desktop/v0.1.0]
+    Branch --> Push[Push release branch]
+    Push --> Build[Build unsigned macOS Windows Linux artifacts]
+    Build --> Draft[Create or refresh desktop-v0.1.0 draft release]
+    Draft --> Review[Manual artifact review]
+    Review --> Publish[Publish from GitHub]
+```
+
+Release branch naming:
+
+```text
+release/desktop/v0.1.0
+release/desktop/v0.1.0-alpha.1
+release/desktop/v0.1.0-beta.1
+```
+
+Every push to the same release branch refreshes the same draft release and overwrites release assets. Published releases use a new version branch and tag.
+
+Current draft artifacts are unsigned. Draft release notes record remaining release-channel work:
+
+- macOS Developer ID signing, notarization, and stapling.
+- Windows Authenticode signing.
+- Tauri updater plugin and updater artifact signatures.
+- `desktop-release-index` latest.json generation after publish.
+
+Python package releases use tags such as `v0.73.1`. Desktop app releases use tags such as `desktop-v0.1.0`, and the package release workflow ignores `desktop-v*` tags.
 
 ## Platform Requirements
 
@@ -124,7 +157,7 @@ Release workflows should use conditional signing steps:
   run: ./scripts/sign-linux-desktop.sh
 ```
 
-The unsigned build remains the baseline path. Release-channel workflows enable signing together with Desktop app auto-update.
+The unsigned build remains the baseline path. The `release/desktop/**` draft workflow creates unsigned draft releases automatically. Release-channel workflows enable signing together with Desktop app auto-update.
 
 ## Local Developer Setup
 
@@ -146,12 +179,14 @@ Developers who maintain release credentials can opt into local signing by export
 
 ## Release Checklist
 
-1. Run repository validation: `make lint`, `make check`, `make test`.
-2. Run desktop validation: `make desktop-lint`, `make desktop-build`, `make desktop-test`, `make desktop-rust-fmt`, `make desktop-rust-check`, `make desktop-rust-clippy`.
-3. Build unsigned artifacts on macOS, Windows, and Linux.
-4. Enable Desktop app auto-update for the target release channel.
-5. Sign platform artifacts when credentials are present.
-6. Notarize and staple macOS artifacts.
-7. Generate checksums for all release artifacts.
-8. Sign updater artifacts when the updater channel is enabled.
-9. Upload artifacts and release metadata.
+01. Run repository validation: `make lint`, `make check`, `make test`.
+02. Run desktop validation: `make desktop-lint`, `make desktop-build`, `make desktop-test`, `make desktop-rust-fmt`, `make desktop-rust-check`, `make desktop-rust-clippy`.
+03. Create or update `release/desktop/vX.Y.Z`.
+04. Let CI create or refresh the unsigned `desktop-vX.Y.Z` draft release.
+05. Review macOS, Windows, Linux artifacts and `SHA256SUMS`.
+06. Publish the GitHub draft release when ready.
+07. Enable Desktop app auto-update for the target release channel.
+08. Sign platform artifacts when credentials are present.
+09. Notarize and staple macOS artifacts.
+10. Sign updater artifacts when the updater channel is enabled.
+11. Generate and publish updater metadata.
