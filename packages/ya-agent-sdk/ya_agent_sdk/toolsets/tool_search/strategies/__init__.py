@@ -1,8 +1,8 @@
 """Search strategies for tool discovery.
 
 Provides pluggable search algorithms for ToolSearchToolSet:
-- KeywordSearchStrategy: Zero-dependency regex/keyword matching (default)
-- EmbeddingSearchStrategy: Semantic search via FastEmbed (optional)
+- KeywordSearchStrategy: Zero-dependency regex/keyword matching
+- BM25SearchStrategy: Lightweight ranked lexical search via rank-bm25
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ class SearchStrategy(Protocol):
     plus a ``get_search_hint`` method that returns a brief usage hint for the model.
 
     Optionally implement ``build_index`` for strategies that need pre-computation
-    (e.g., embedding vectors).
+    (e.g., ranked lexical indexes).
     """
 
     async def build_index(self, tools: list[ToolMetadata]) -> None:
         """Build or rebuild the search index from tool metadata.
 
         Called when the tool registry changes. Strategies that need
-        pre-computation (e.g., embeddings) should implement this.
+        pre-computation (e.g., ranked lexical indexes) should implement this.
 
         Strategies that don't need pre-computation can implement this as ``pass``.
         """

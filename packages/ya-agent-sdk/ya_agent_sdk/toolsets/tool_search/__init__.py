@@ -20,12 +20,14 @@ Usage::
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
 from ya_agent_sdk.toolsets.tool_search.strategies import SearchStrategy
+from ya_agent_sdk.toolsets.tool_search.strategies.bm25 import BM25SearchStrategy
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
 from ya_agent_sdk.toolsets.tool_search.toolset import ToolSearchToolSet
 
 logger = get_logger(__name__)
 
 __all__ = [
+    "BM25SearchStrategy",
     "KeywordSearchStrategy",
     "SearchStrategy",
     "ToolMetadata",
@@ -36,40 +38,24 @@ __all__ = [
 
 
 def create_best_strategy(**kwargs) -> SearchStrategy:
-    """Create the best available search strategy with automatic fallback.
+    """Create the preferred search strategy.
 
-    Tries EmbeddingSearchStrategy first (requires fastembed + numpy).
-    Falls back to KeywordSearchStrategy if dependencies are unavailable
-    or model loading fails.
+    Uses BM25 ranking when ``rank-bm25`` is installed, with keyword matching as
+    the dependency-free fallback.
 
     Args:
-        **kwargs: Passed to EmbeddingSearchStrategy (e.g., model_name).
+        **kwargs: Passed to BM25SearchStrategy.
 
     Returns:
-        The best available SearchStrategy instance.
+        A SearchStrategy instance.
     """
     try:
-        from ya_agent_sdk.toolsets.tool_search.strategies.embedding import EmbeddingSearchStrategy
-
-        strategy = EmbeddingSearchStrategy(**kwargs)
-        # Eagerly verify model loads successfully
-        model = strategy._get_model()
-        list(model.embed(["test"]))
-        logger.debug("Using EmbeddingSearchStrategy")
+        strategy = BM25SearchStrategy(**kwargs)
+        # Eagerly verify rank-bm25 is importable so callers get the fallback at
+        # construction time rather than during the first search index build.
+        strategy._import_bm25()
+        logger.debug("Using BM25SearchStrategy")
         return strategy
     except Exception as exc:
-        logger.debug(f"EmbeddingSearchStrategy not available ({exc}), falling back to KeywordSearchStrategy")
+        logger.debug("BM25SearchStrategy not available (%s), falling back to KeywordSearchStrategy", exc)
         return KeywordSearchStrategy()
-
-
-# EmbeddingSearchStrategy is available via __getattr__ below (requires fastembed).
-# Not in __all__ because it is an optional dependency.
-
-
-def __getattr__(name: str):
-    """Lazy import for optional EmbeddingSearchStrategy."""
-    if name == "EmbeddingSearchStrategy":
-        from ya_agent_sdk.toolsets.tool_search.strategies.embedding import EmbeddingSearchStrategy
-
-        return EmbeddingSearchStrategy
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

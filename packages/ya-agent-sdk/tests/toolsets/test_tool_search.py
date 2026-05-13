@@ -11,6 +11,7 @@ from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
+from ya_agent_sdk.toolsets.tool_search.strategies.bm25 import BM25SearchStrategy
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
 from ya_agent_sdk.toolsets.tool_search.toolset import ToolSearchToolSet
 
@@ -799,37 +800,20 @@ async def test_instructions_only_for_loaded_toolsets(weather_toolset, mock_run_c
 
 
 # ---------------------------------------------------------------------------
-# EmbeddingSearchStrategy tests (requires fastembed + numpy)
+# BM25SearchStrategy tests (requires rank-bm25)
 # ---------------------------------------------------------------------------
 
 
-fastembed = pytest.importorskip("fastembed", reason="fastembed not installed")
-np = pytest.importorskip("numpy", reason="numpy not installed")
-
-
-@pytest.fixture(scope="module")
-def embedding_strategy():
-    """Create an EmbeddingSearchStrategy (slow model init, reuse across tests).
-
-    Skips if model download or loading fails (e.g., in CI without network
-    access or with incomplete model cache).
-    """
-    from ya_agent_sdk.toolsets.tool_search.strategies.embedding import EmbeddingSearchStrategy
-
-    strategy = EmbeddingSearchStrategy()
-    try:
-        # Trigger model download/load and a test embed to detect failures early
-        model = strategy._get_model()
-        list(model.embed(["test"]))
-    except Exception as exc:
-        pytest.skip(f"Embedding model not available: {exc}")
-    return strategy
+@pytest.fixture
+def bm25_available():
+    """Skip BM25 tests when the optional dependency is absent."""
+    pytest.importorskip("rank_bm25", reason="rank-bm25 not installed")
 
 
 @pytest.fixture
-async def indexed_candidates(embedding_strategy):
-    """Build an embedding index with test tools."""
-    candidates = [
+def bm25_candidates():
+    """Create test metadata for BM25 search."""
+    return [
         ToolMetadata(
             name="get_weather",
             description="Get the current weather in a given location",
@@ -869,113 +853,123 @@ async def indexed_candidates(embedding_strategy):
             },
         ),
     ]
-    await embedding_strategy.build_index(candidates)
-    return candidates
+
+
+@pytest.fixture
+async def indexed_bm25_strategy(bm25_available, bm25_candidates):
+    """Build a BM25 index with test tools."""
+    strategy = BM25SearchStrategy()
+    await strategy.build_index(bm25_candidates)
+    return strategy
 
 
 @pytest.mark.anyio
-async def test_embedding_search_weather(embedding_strategy, indexed_candidates):
-    """Semantic search for 'weather' should rank weather tools first."""
-    results = await embedding_strategy.search("check the weather", indexed_candidates, max_results=3)
+async def test_bm25_search_weather(bm25_available, indexed_bm25_strategy, bm25_candidates):
+    """BM25 search for weather should rank weather tools first."""
+    results = await indexed_bm25_strategy.search("current weather location", bm25_candidates, max_results=3)
     assert len(results) >= 1
-    result_names = [r.name for r in results]
-    assert "get_weather" in result_names or "get_forecast" in result_names
+    assert results[0].name == "get_weather"
 
 
 @pytest.mark.anyio
-async def test_embedding_search_finance(embedding_strategy, indexed_candidates):
-    """Semantic search for finance should rank finance tools first."""
-    results = await embedding_strategy.search("stock market price", indexed_candidates, max_results=3)
+async def test_bm25_search_finance(bm25_available, indexed_bm25_strategy, bm25_candidates):
+    """BM25 search for stock ticker should find stock tools."""
+    results = await indexed_bm25_strategy.search("stock ticker price", bm25_candidates, max_results=3)
     assert len(results) >= 1
     assert results[0].name == "get_stock_price"
 
 
 @pytest.mark.anyio
-async def test_embedding_search_currency(embedding_strategy, indexed_candidates):
-    """Semantic search for currency conversion."""
-    results = await embedding_strategy.search("convert dollars to euros", indexed_candidates, max_results=3)
+async def test_bm25_search_currency(bm25_available, indexed_bm25_strategy, bm25_candidates):
+    """BM25 search for currency conversion."""
+    results = await indexed_bm25_strategy.search("convert currency exchange rates", bm25_candidates, max_results=3)
     assert len(results) >= 1
     assert results[0].name == "convert_currency"
 
 
 @pytest.mark.anyio
-async def test_embedding_search_email(embedding_strategy, indexed_candidates):
-    """Semantic search for email should find send_email."""
-    results = await embedding_strategy.search("send a message to someone", indexed_candidates, max_results=3)
+async def test_bm25_search_email(bm25_available, indexed_bm25_strategy, bm25_candidates):
+    """BM25 search for email should find send_email."""
+    results = await indexed_bm25_strategy.search("email recipient subject body", bm25_candidates, max_results=3)
     assert len(results) >= 1
     assert results[0].name == "send_email"
 
 
 @pytest.mark.anyio
-async def test_embedding_search_max_results(embedding_strategy, indexed_candidates):
+async def test_bm25_search_max_results(bm25_available, indexed_bm25_strategy, bm25_candidates):
     """Should respect max_results parameter."""
-    results = await embedding_strategy.search("tool", indexed_candidates, max_results=2)
+    results = await indexed_bm25_strategy.search("get current", bm25_candidates, max_results=2)
     assert len(results) <= 2
 
 
 @pytest.mark.anyio
-async def test_embedding_search_empty_query(embedding_strategy, indexed_candidates):
+async def test_bm25_search_empty_query(bm25_available, indexed_bm25_strategy, bm25_candidates):
     """Empty query should return empty results."""
-    assert await embedding_strategy.search("", indexed_candidates) == []
+    assert await indexed_bm25_strategy.search("", bm25_candidates) == []
 
 
 @pytest.mark.anyio
-async def test_embedding_search_empty_candidates(embedding_strategy):
+async def test_bm25_search_empty_candidates(bm25_available, indexed_bm25_strategy):
     """Empty candidates should return empty results."""
-    assert await embedding_strategy.search("weather", []) == []
+    assert await indexed_bm25_strategy.search("weather", []) == []
 
 
 @pytest.mark.anyio
-async def test_embedding_search_candidate_filtering(embedding_strategy, indexed_candidates):
-    """Should only return tools from the candidates list, not all indexed tools."""
-    weather_only = [t for t in indexed_candidates if "weather" in t.name or "forecast" in t.name]
-    results = await embedding_strategy.search("stock price", weather_only, max_results=5)
+async def test_bm25_search_candidate_filtering(bm25_available, indexed_bm25_strategy, bm25_candidates):
+    """Should only return tools from the candidates list."""
+    weather_only = [t for t in bm25_candidates if "weather" in t.name or "forecast" in t.name]
+    results = await indexed_bm25_strategy.search("stock price", weather_only, max_results=5)
     result_names = {r.name for r in results}
     assert "get_stock_price" not in result_names
 
 
 @pytest.mark.anyio
-async def test_embedding_build_index_empty(embedding_strategy):
-    """Building index with empty list should not crash."""
-    await embedding_strategy.build_index([])
-    results = await embedding_strategy.search("anything", [])
+async def test_bm25_build_index_empty(bm25_available):
+    """Building index with empty list should succeed."""
+    strategy = BM25SearchStrategy()
+    await strategy.build_index([])
+    results = await strategy.search("anything", [])
     assert results == []
 
 
 @pytest.mark.anyio
-async def test_embedding_build_index_rebuild(embedding_strategy, indexed_candidates):
+async def test_bm25_build_index_rebuild(bm25_available, indexed_bm25_strategy):
     """Rebuilding index should replace previous index."""
     new_tools = [
         ToolMetadata(name="ping", description="Ping a server to check if it is alive"),
     ]
-    await embedding_strategy.build_index(new_tools)
-    results = await embedding_strategy.search("ping server", new_tools, max_results=3)
+    await indexed_bm25_strategy.build_index(new_tools)
+    results = await indexed_bm25_strategy.search("ping server", new_tools, max_results=3)
     assert len(results) == 1
     assert results[0].name == "ping"
 
-    # Rebuild with original for other tests
-    await embedding_strategy.build_index(indexed_candidates)
+
+@pytest.mark.anyio
+async def test_bm25_tokenizes_snake_case(bm25_available):
+    """Snake_case tool names should be searchable by separated words."""
+    strategy = BM25SearchStrategy()
+    candidates = [ToolMetadata(name="get_stock_price", description="Fetch market data")]
+    await strategy.build_index(candidates)
+    results = await strategy.search("stock price", candidates, max_results=3)
+    assert len(results) == 1
+    assert results[0].name == "get_stock_price"
 
 
 @pytest.mark.anyio
-async def test_toolset_with_embedding_strategy(weather_toolset, finance_toolset, mock_run_context, embedding_strategy):
-    """ToolSearchToolSet should work with EmbeddingSearchStrategy."""
-    from ya_agent_sdk.toolsets.tool_search.strategies.embedding import EmbeddingSearchStrategy
-
+async def test_toolset_with_bm25_strategy(bm25_available, weather_toolset, finance_toolset, mock_run_context):
+    """ToolSearchToolSet should work with BM25SearchStrategy."""
     ts = ToolSearchToolSet(
         toolsets=[weather_toolset, finance_toolset],
         namespace_descriptions={"weather": "Weather tools", "finance": "Finance tools"},
-        search_strategy=EmbeddingSearchStrategy(),
+        search_strategy=BM25SearchStrategy(),
     )
     tools = await ts.get_tools(mock_run_context)
     assert "tool_search" in tools
     assert "get_weather" not in tools
 
-    # Search for finance tools
-    result = await ts.call_tool("tool_search", {"query": "stock market"}, mock_run_context, tools["tool_search"])
+    result = await ts.call_tool("tool_search", {"query": "stock ticker price"}, mock_run_context, tools["tool_search"])
     assert "get_stock_price" in result or "finance" in result
 
-    # Finance namespace should be loaded
     tools = await ts.get_tools(mock_run_context)
     assert "get_stock_price" in tools
     assert "convert_currency" in tools

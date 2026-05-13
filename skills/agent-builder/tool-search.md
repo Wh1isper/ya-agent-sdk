@@ -148,51 +148,39 @@ from ya_agent_sdk.toolsets.tool_search import ToolSearchToolSet, KeywordSearchSt
 
 ts = ToolSearchToolSet(
     toolsets=[...],
-    search_strategy=KeywordSearchStrategy(),  # this is the default
+    search_strategy=KeywordSearchStrategy(),
 )
 ```
 
 Supports regex patterns: the model can search with `"get_.*data"` to match `get_user_data`, `get_weather_data`, etc.
 
-### EmbeddingSearchStrategy (semantic)
+### BM25SearchStrategy (ranked lexical)
 
-Semantic search using [FastEmbed](https://github.com/qdrant/fastembed) (ONNX-based local embeddings). Better at matching intent rather than exact keywords.
+BM25 search uses [`rank-bm25`](https://pypi.org/project/rank-bm25/) to rank matches across tool names, descriptions, namespace names, and parameter metadata. It provides better multi-term ranking than exact keyword matching while staying lightweight for large tool libraries.
 
 **Install:**
 
 ```bash
 pip install ya-agent-sdk[tool-search]
-# or: pip install fastembed numpy
+# or: pip install rank-bm25
 ```
 
 **Usage:**
 
 ```python
-from ya_agent_sdk.toolsets.tool_search import ToolSearchToolSet, EmbeddingSearchStrategy
+from ya_agent_sdk.toolsets.tool_search import BM25SearchStrategy, ToolSearchToolSet
 
 ts = ToolSearchToolSet(
     toolsets=[...],
-    search_strategy=EmbeddingSearchStrategy(),
+    search_strategy=BM25SearchStrategy(),
 )
 ```
 
-| Property | Value                               |
-| -------- | ----------------------------------- |
-| Model    | `BAAI/bge-small-en-v1.5` (384 dims) |
-| Size     | ~50MB (downloaded on first use)     |
-| Runtime  | ONNX Runtime (~50MB), no PyTorch    |
-| GPU      | Not required                        |
-| Latency  | ~5ms per query on CPU               |
-
-Custom model:
-
-```python
-strategy = EmbeddingSearchStrategy(model_name="BAAI/bge-base-en-v1.5")
-```
+BM25 tokenizes snake_case, hyphenated names, descriptions, namespace names, and parameter text. Good queries include concrete capability words such as `send email`, `read file`, `convert currency`, or `stock ticker`.
 
 ### Automatic Strategy Selection
 
-Use `create_best_strategy()` to automatically select the best available strategy. It tries `EmbeddingSearchStrategy` first (including model loading verification), and falls back to `KeywordSearchStrategy` if fastembed is not installed or the model fails to load.
+Use `create_best_strategy()` to select BM25 when `rank-bm25` is installed, with `KeywordSearchStrategy` as the dependency-free fallback.
 
 ```python
 from ya_agent_sdk.toolsets.tool_search import ToolSearchToolSet, create_best_strategy
@@ -203,7 +191,7 @@ ts = ToolSearchToolSet(
 )
 ```
 
-This is the recommended approach for applications that want the best search quality when available without hard-depending on fastembed.
+This is the recommended approach for applications that want ranked search quality with a lightweight optional dependency.
 
 ### Custom Strategy
 
