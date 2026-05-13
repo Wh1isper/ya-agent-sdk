@@ -56,6 +56,11 @@ class BM25SearchStrategy:
         normalized = text.replace("_", " ").replace("-", " ")
         return [token.lower() for token in _TOKEN_RE.findall(normalized)]
 
+    @classmethod
+    def _normalized_tokens(cls, text: str) -> str:
+        """Return a stable token-normalized string for exact name matching."""
+        return " ".join(cls._tokenize(text))
+
     @staticmethod
     def _import_bm25() -> Any:
         """Import rank-bm25 with an actionable error message."""
@@ -101,6 +106,7 @@ class BM25SearchStrategy:
         scores = self._index.get_scores(query_tokens)
 
         query_token_set = set(query_tokens)
+        normalized_query = self._normalized_tokens(query)
         scored: list[tuple[float, int, ToolMetadata]] = []
         for idx, tool in enumerate(self._indexed_tools):
             if id(tool) in candidate_ids:
@@ -112,6 +118,8 @@ class BM25SearchStrategy:
                     # matches discoverable while preserving BM25 rank whenever
                     # positive scores exist.
                     adjusted_score = max(score, 0.0) + (overlap * 1e-6)
+                    if normalized_query == self._normalized_tokens(tool.name):
+                        adjusted_score += 100.0
                     scored.append((adjusted_score, overlap, tool))
 
         scored.sort(key=lambda item: (-item[0], -item[1], item[2].name))
