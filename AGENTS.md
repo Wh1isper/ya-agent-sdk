@@ -125,6 +125,8 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - `Inbox` owns approvals, alerts, failed background work, and user decisions.
 - `Settings` owns preferences, hotkeys, notifications, tokens/keychain, advanced runtime, logs, and diagnostics.
 - After each YA Desktop product or implementation change, review `apps/ya-desktop/spec/*` and update the specs when the product model, navigation, architecture, or behavior changes.
+- YA Desktop signing and Desktop app auto-update should ship together in the release-channel phase.
+- Before Desktop app auto-update is ready, provide a local packaging/install Makefile path so users can clone the repository, build/install YA Desktop locally, and rely on Claw runtime auto-update for ongoing runtime updates.
 
 ## Development Workflow
 

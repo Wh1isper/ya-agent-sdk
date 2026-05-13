@@ -234,17 +234,19 @@ show_tray_notification()
 export_diagnostics()
 ```
 
-## Sidecar Manager
+## Runtime Manager
 
-`daemon.rs` should own local Claw sidecar lifecycle.
+`runtime_manager.rs` should own local Claw runtime installation, selection, and daemon lifecycle.
 
 Responsibilities:
 
-- resolve sidecar binary path
-- initialize app data directories
+- manage app data runtime directories
+- copy and use app-managed `uv`
+- install Python and Claw runtime virtualenvs
+- write and read `runtimes/claw/active.json`
 - generate and load local Claw token
 - allocate or discover port
-- spawn `ya-clawd serve`
+- spawn active `ya-clawd serve`
 - parse JSON ready line
 - poll `/health`
 - collect logs
@@ -286,11 +288,11 @@ type DesktopContextDraft = {
 01. Add `ya-clawd` CLI entrypoint to `packages/ya-claw`.
 02. Add `GET /health` to Claw.
 03. Build a Tauri dev app that starts local Claw through `uv run`.
-04. Add connection registry and local sidecar status.
+04. Add connection registry and local runtime status.
 05. Add Home with command input and recent chat placeholders.
 06. Add Chats with conversation list and selected chat detail shell.
 07. Add Board with kanban columns over chats.
-08. Add Spaces with workspace folder cards, runtime location, trust, and sidecar status.
+08. Add Spaces with workspace folder cards, runtime location, trust, and local runtime status.
 09. Add Inbox with approval and alert placeholders.
 10. Add Settings with preferences and advanced runtime entry.
 11. Add tray status and local daemon lifecycle controls.
@@ -307,14 +309,15 @@ type DesktopContextDraft = {
 6. Add remote session and workspace browsing.
 7. Add reconnect replay and replay-gap refresh handling for global SSE notifications.
 
-### Phase 3: Packaged Local Sidecar
+### Phase 3: App-Managed Local Runtime
 
-1. Add PyInstaller config for `ya-clawd`.
-2. Produce per-platform `ya-clawd` artifacts.
-3. Bundle sidecar into Tauri app.
-4. Add local DB migration and profile seeding on daemon startup.
-5. Add log export and diagnostics.
-6. Add update and rollback metadata.
+1. Bundle latest stable `uv` as a Desktop app resource.
+2. Add Runtime Manager install/status/select/repair commands.
+3. Install Claw runtime into app data on first launch.
+4. Add latest-first Claw runtime update checks and compatibility verification.
+5. Add local DB migration and profile seeding on daemon startup.
+6. Add log export and diagnostics.
+7. Add update and rollback metadata.
 
 ### Phase 4: Cloud Workspace Mode
 

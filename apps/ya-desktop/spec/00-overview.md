@@ -34,16 +34,17 @@ flowchart TB
 
     RustCore --> Registry[Connection Registry]
     RustCore --> System[System Integrations<br/>Hotkey / Tray / Clipboard / Screenshot / Notifications]
-    RustCore --> SidecarManager[Local Sidecar Manager]
+    RustCore --> RuntimeManager[Local Runtime Manager]
     RustCore --> Keychain[Keychain Secrets]
 
     Registry --> LocalConn[Local Embedded Claw]
     Registry --> RemoteConn[Remote Claw Server]
     Registry --> CloudConn[Cloud Claw Workspace]
 
-    LocalConn --> Sidecar[ya-clawd Sidecar<br/>127.0.0.1 random port]
-    Sidecar --> LocalStore[SQLite + Run Store]
-    Sidecar --> LocalWorkspace[Local WorkspaceProvider<br/>Controlled FileOps + Sandboxed Shell]
+    LocalConn --> Runtime[App-managed Claw Runtime<br/>uv + .venv + ya-clawd]
+    Runtime --> LocalDaemon[ya-clawd Daemon<br/>127.0.0.1 random port]
+    LocalDaemon --> LocalStore[SQLite + Run Store]
+    LocalDaemon --> LocalWorkspace[Local WorkspaceProvider<br/>Controlled FileOps + Sandboxed Shell]
 
     RemoteConn --> RemoteClaw[Self-hosted ya-claw<br/>HTTPS]
     CloudConn --> CloudClaw[Cloud ya-claw<br/>HTTPS]
@@ -54,7 +55,7 @@ flowchart TB
 
 ## Product Boundary
 
-Desktop owns the user-facing product experience, OS-native context capture, notifications, sidecar lifecycle, connection registry, and HITL interaction surfaces.
+Desktop owns the user-facing product experience, OS-native context capture, notifications, local runtime lifecycle, connection registry, and HITL interaction surfaces.
 
 Claw owns agent execution and durable runtime state: sessions, runs, profiles, workspace providers, memory, schedules, bridges, event replay, shell execution, and storage.
 

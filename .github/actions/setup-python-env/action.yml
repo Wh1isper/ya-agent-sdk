@@ -9,7 +9,7 @@ inputs:
   uv-version:
     description: "uv version to use"
     required: true
-    default: "0.6.2"
+    default: "0.11.14"
   extras:
     description: "Optional extras to install (comma-separated, e.g., 'docker')"
     required: false

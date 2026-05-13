@@ -23,6 +23,9 @@
   "bundle": {
     "active": true,
     "icon": [],
+    "resources": {
+      "resources/uv/*": "uv/"
+    },
     "targets": "all"
   },
   "identifier": "com.wh1isper.ya-desktop",

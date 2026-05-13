@@ -29,6 +29,7 @@ import { useState, type ReactNode } from 'react'
 import { Toaster } from 'sonner'
 
 import { cn } from '../lib'
+import { RuntimeManagerPanel } from '../runtime/RuntimeManagerPanel'
 
 type AppRoute = 'home' | 'chats' | 'board' | 'spaces' | 'inbox' | 'settings'
 
@@ -468,16 +469,19 @@ function SpacesPage() {
 
 function SettingsPage() {
   return (
-    <PanelPage
-      eyebrow="Settings"
-      title="Desktop preferences and advanced runtime"
-      body="Hotkeys, notifications, theme, voice, tokens, autostart, diagnostics and advanced runtime controls live here."
-      cards={[
-        ['Preferences', 'Hotkeys, notifications, voice and appearance', Settings],
-        ['Secrets', 'Keychain-backed token storage', KeyRound],
-        ['Advanced Runtime', 'Profiles, schedules, bridges, heartbeat, logs', SlidersHorizontal],
-      ]}
-    />
+    <div className="space-y-5">
+      <PanelPage
+        eyebrow="Settings"
+        title="Desktop preferences and advanced runtime"
+        body="Hotkeys, notifications, theme, voice, tokens, autostart, diagnostics and advanced runtime controls live here."
+        cards={[
+          ['Preferences', 'Hotkeys, notifications, voice and appearance', Settings],
+          ['Secrets', 'Keychain-backed token storage', KeyRound],
+          ['Advanced Runtime', 'Profiles, schedules, bridges, heartbeat, logs', SlidersHorizontal],
+        ]}
+      />
+      <RuntimeManagerPanel />
+    </div>
   )
 }
 

@@ -1,37 +1,64 @@
-# 01. Local Sidecar Packaging
+# 01. Local Runtime Packaging
 
 ## Direction
 
-YA Desktop should bundle a `ya-clawd` executable as a sidecar daemon. Tauri manages daemon lifecycle and the React UI talks to it through HTTP/SSE for the desktop MVP.
+YA Desktop uses an app-managed `uv` runtime manager to install and launch local Claw. The desktop app ships as a small native shell, then installs the selected Claw runtime into app data in the background.
 
-Local embedded Claw gives users an out-of-the-box agent runtime with local workspaces, local SQLite storage, session memory, and local tool execution.
+Local Claw still runs as a child daemon process named `ya-clawd`. Tauri owns lifecycle, logs, health checks, and runtime selection. The React UI talks to Claw through HTTP/SSE after the daemon reports readiness.
 
-## Local Runtime Layout
+This gives YA Desktop a small installer, independent Desktop and Claw release cadence, latest-first Claw updates, version rollback, and repair workflows.
 
-macOS application layout:
+## Product Model
+
+YA Desktop has two update domains:
+
+- Desktop app: Tauri shell, UI, native integrations, runtime manager, notifications, tray, updater, and OS keychain integration.
+- Claw runtime: Python packages, API server, execution engine, profiles, migrations, workspace providers, memory jobs, and agent capabilities.
+
+A local runtime is a versioned Claw installation managed by Desktop:
 
 ```text
-YA Desktop.app/
-  Contents/
-    MacOS/
-      ya-desktop
-    Resources/
-      sidecars/
-        ya-clawd-aarch64-apple-darwin
-        ya-clawd-x86_64-apple-darwin
+Claw Runtime
+  id: claw
+  version: 0.73.1
+  updatePolicy: latest-compatible
+  python: 3.13
+  package: ya-claw[all]
+  entrypoint: .venv/bin/ya-clawd
+  status: installing | installed | active | failed | stale
 ```
+
+## Runtime Layout
 
 macOS user data layout:
 
 ```text
 ~/Library/Application Support/YA Desktop/
   config.json
+  uv/
+    bin/
+      uv
+    cache/
+  runtimes/
+    claw/
+      0.73.1/
+        runtime.json
+        install.log
+        verify.log
+        .venv/
+      0.74.0/
+        runtime.json
+        install.log
+        verify.log
+        .venv/
+      active.json
   local-claw/
     .env
+    runtime.json
     ya_claw.sqlite3
     data/
       run-store/
-      workspaces/
+    workspaces/
     logs/
       ya-clawd.log
 ```
@@ -40,67 +67,138 @@ Linux user data layout:
 
 ```text
 ~/.config/ya-desktop/config.json
-~/.local/share/ya-desktop/local-claw/
+~/.local/share/ya-desktop/
+  uv/
+  runtimes/
+  local-claw/
 ```
 
 Windows user data layout:
 
 ```text
 %APPDATA%\YA Desktop\config.json
+%LOCALAPPDATA%\YA Desktop\uv\
+%LOCALAPPDATA%\YA Desktop\runtimes\
 %LOCALAPPDATA%\YA Desktop\local-claw\
 ```
 
-## Local Daemon Startup
+Runtime metadata example:
+
+```json
+{
+  "schemaVersion": 1,
+  "runtimeId": "claw",
+  "version": "0.73.1",
+  "updatePolicy": "latest-compatible",
+  "python": "3.13",
+  "package": "ya-claw[all]",
+  "venvPath": "/Users/me/Library/Application Support/YA Desktop/runtimes/claw/0.73.1/.venv",
+  "entrypoint": "/Users/me/Library/Application Support/YA Desktop/runtimes/claw/0.73.1/.venv/bin/ya-clawd",
+  "installedAt": "2026-05-13T01:00:00Z",
+  "verifiedAt": "2026-05-13T01:00:12Z"
+}
+```
+
+`active.json` example:
+
+```json
+{
+  "schemaVersion": 1,
+  "runtimeId": "claw",
+  "version": "0.73.1",
+  "entrypoint": "/Users/me/Library/Application Support/YA Desktop/runtimes/claw/0.73.1/.venv/bin/ya-clawd",
+  "selectedAt": "2026-05-13T01:00:12Z"
+}
+```
+
+## Bundled `uv`
+
+YA Desktop bundles the latest stable `uv` binary available at Desktop release time and copies it into the app data runtime directory on first launch.
+
+Desktop uses app-managed `uv` by default. Advanced settings can allow developers to choose a system `uv` path for local development and diagnostics.
+
+Runtime Manager sets these environment variables for all `uv` operations:
+
+```bash
+UV_CACHE_DIR="$APP_DATA/uv/cache"
+UV_PYTHON_INSTALL_DIR="$APP_DATA/uv/python"
+UV_LINK_MODE=copy
+```
+
+The app-managed runtime path gives Desktop deterministic install, update, repair, and cache-prune behavior.
+
+## Startup Flow
 
 ```mermaid
 sequenceDiagram
-    participant App as YA Desktop
-    participant Config as App Config
+    participant User
+    participant Desktop as YA Desktop
+    participant RM as Runtime Manager
+    participant UV as App-managed uv
     participant Daemon as Local ya-clawd
     participant API as Claw API
 
-    App->>Config: load connection registry
-    App->>Config: ensure local token, data dir, and port
-    App->>Daemon: spawn sidecar with env
-    Daemon->>API: bind 127.0.0.1:random_port
-    App->>API: GET /health
-    API-->>App: version and capabilities
-    App->>API: seed profiles when needed
-    App->>API: open sessions and workspaces
+    User->>Desktop: open installed app
+    Desktop->>RM: get active runtime
+    RM->>RM: load runtimes/claw/active.json
+    alt active runtime exists
+        RM->>Daemon: spawn active ya-clawd serve --port 0 --ready-json
+        Daemon-->>RM: ya_clawd.ready JSON line
+        RM-->>Desktop: Local Claw status with baseUrl
+    else first launch
+        RM-->>Desktop: runtime installation required
+        Desktop->>RM: install recommended runtime in background
+        RM->>UV: install Python and venv
+        UV-->>RM: installed runtime
+        RM->>Daemon: ya-clawd doctor --json-output
+        RM->>RM: write runtime.json and active.json
+        RM->>Daemon: spawn ya-clawd serve --port 0 --ready-json
+        Daemon-->>RM: ya_clawd.ready JSON line
+        RM-->>Desktop: Local Claw status with baseUrl
+    end
+```
+
+## Managed Daemon Command
+
+Runtime Manager launches the active runtime entrypoint:
+
+```bash
+YA_CLAW_API_TOKEN=local_random_secret \
+YA_CLAW_ENVIRONMENT=desktop-local \
+YA_CLAW_BRIDGE_DISPATCH_MODE=manual \
+YA_CLAW_WORKSPACE_PROVIDER_BACKEND=local \
+"$ACTIVE_RUNTIME/.venv/bin/ya-clawd" serve \
+  --host 127.0.0.1 \
+  --port 0 \
+  --data-dir "$APP_DATA/local-claw/data" \
+  --sqlite-path "$APP_DATA/local-claw/ya_claw.sqlite3" \
+  --workspace-root "$APP_DATA/local-claw/workspaces" \
+  --runtime-lock-file "$APP_DATA/local-claw/runtime.json" \
+  --ready-json
 ```
 
 Local daemon rules:
 
 - Bind to `127.0.0.1`.
-- Generate `YA_CLAW_API_TOKEN` on first launch and store it in the OS keychain.
-- Use a random available port and persist current runtime state in a lock file.
-- Write logs to the app data directory.
-- Restart automatically after crashes when always-on mode is enabled.
-- Run local desktop mode with bridge dispatch set to `manual` by default.
-
-Example environment:
-
-```bash
-YA_CLAW_API_TOKEN=local_random_secret
-YA_CLAW_HOST=127.0.0.1
-YA_CLAW_PORT=49321
-YA_CLAW_SQLITE_PATH="$APP_DATA/local-claw/ya_claw.sqlite3"
-YA_CLAW_DATA_DIR="$APP_DATA/local-claw/data"
-YA_CLAW_WORKSPACE_ROOT="$APP_DATA/local-claw/workspaces"
-YA_CLAW_BRIDGE_DISPATCH_MODE=manual
-ya-clawd serve
-```
+- Generate `YA_CLAW_API_TOKEN` on first launch and store it through Desktop's secret storage abstraction.
+- Use `--port 0` for a random available port and persist current runtime state in `runtime.json`.
+- Write stdout and stderr lines to `local-claw/logs/ya-clawd.log`.
+- Run local desktop mode with bridge dispatch set to `manual`.
+- Run local desktop mode with `YA_CLAW_WORKSPACE_PROVIDER_BACKEND=local` for direct local folder execution.
+- Start automatically from the Tauri setup hook after an active runtime is available.
+- Expose manual status/start/stop/restart controls through Tauri commands.
 
 ## `ya-clawd` Command Surface
 
-Add a stable command entrypoint to `packages/ya-claw/pyproject.toml`:
+`packages/ya-claw/pyproject.toml` exposes both the deployment CLI and desktop daemon alias:
 
 ```toml
 [project.scripts]
-ya-clawd = "ya_claw.cli:main"
+ya-claw = "ya_claw.cli:cli"
+ya-clawd = "ya_claw.cli:cli"
 ```
 
-Recommended commands:
+Supported commands:
 
 ```bash
 ya-clawd serve
@@ -110,7 +208,7 @@ ya-clawd doctor
 ya-clawd version
 ```
 
-`ya-clawd serve` should support:
+`ya-clawd serve` supports:
 
 - `--host`
 - `--port`
@@ -119,8 +217,8 @@ ya-clawd version
 - `--sqlite-path`
 - `--workspace-root`
 - `--runtime-lock-file`
-- JSON ready line on stdout after bind and initialization
-- graceful shutdown on process signal
+- `--ready-json` for a ready JSON line on stdout after bind and initialization
+- graceful shutdown through the child process lifecycle
 
 Example ready line:
 
@@ -129,92 +227,125 @@ Example ready line:
   "type": "ya_clawd.ready",
   "pid": 12345,
   "base_url": "http://127.0.0.1:49321",
-  "version": "0.4.0",
-  "instance_id": "rt_abc"
+  "version": "0.73.1",
+  "service_revision": "0.73.1+abc123",
+  "instance_id": "rt_abc",
+  "data_dir": "/Users/me/Library/Application Support/YA Desktop/local-claw/data",
+  "workspace_dir": "/Users/me/Library/Application Support/YA Desktop/local-claw/workspaces",
+  "database_url": "sqlite+aiosqlite:////.../ya_claw.sqlite3"
 }
 ```
 
-## Development Mode
+## Runtime Installation
 
-During desktop development, Tauri can start Claw from the monorepo through `uv`:
+Initial full runtime install uses the current Claw dependency surface and installs the latest compatible runtime:
 
 ```bash
-uv run --package ya-claw ya-clawd serve
+"$APP_UV" python install 3.13
+"$APP_UV" venv "$APP_DATA/runtimes/claw/pending/.venv" --python 3.13
+"$APP_UV" pip install \
+  --python "$APP_DATA/runtimes/claw/pending/.venv/bin/python" \
+  "ya-claw[all]"
 ```
 
-This keeps iteration fast and lets developers debug directly against source code.
+Release builds can install from PyPI, a private package index, or GitHub Release wheel URLs. Runtime Manager verifies the installed runtime with `ya-clawd version --json-output`, `doctor`, and a serve smoke before activation.
 
-## MVP Packaging
+Verification commands:
 
-For the first packaged desktop build, use PyInstaller in one-folder mode.
+```bash
+"$RUNTIME/.venv/bin/ya-clawd" version --json-output
+YA_CLAW_API_TOKEN=test "$RUNTIME/.venv/bin/ya-clawd" doctor --json-output
+YA_CLAW_API_TOKEN=test "$RUNTIME/.venv/bin/ya-clawd" serve --host 127.0.0.1 --port 0 --ready-json
+curl http://127.0.0.1:$PORT/healthz
+```
+
+## Development Flow
+
+Development command:
+
+```bash
+make desktop-dev
+```
+
+In dev mode, Tauri resolves the daemon command in this order:
+
+1. `YA_DESKTOP_CLAWD_COMMAND` environment variable.
+2. Active app-managed runtime from `runtimes/claw/active.json`.
+3. Monorepo fallback command:
+
+```bash
+uv run --package ya-claw ya-clawd
+```
+
+The fallback lets developers run Desktop before installing a managed runtime.
+
+## Build Flow
+
+Desktop package builds include the Tauri app, frontend assets, and app-managed `uv` resource. Development and pull request artifacts are unsigned by default. Release workflows sign platform artifacts when the matching macOS, Windows, Linux, or Tauri updater credentials are configured.
 
 ```mermaid
 flowchart LR
-    Checkout[Checkout repo] --> UV[uv sync]
-    UV --> Wheel[uv build ya-claw]
-    Wheel --> PyInstaller[PyInstaller ya-clawd]
-    PyInstaller --> Smoke[Smoke test health]
-    Smoke --> Tauri[Tauri bundle]
-    Tauri --> Sign[Code sign and notarize]
+    Checkout[Checkout repo] --> Frontend[Build frontend]
+    Frontend --> Rust[Build Tauri shell]
+    Rust --> UV[Bundle latest-stable uv resource]
+    UV --> Package[Build app installer]
+    Package --> Sign[Code sign and notarize]
 ```
 
-Suggested packaging files:
+Build commands:
 
-```text
-packages/ya-claw/packaging/
-  pyinstaller/
-    ya-clawd.spec
-    hooks/
-      hook-ya_agent_sdk.py
-      hook-pydantic_ai.py
-      hook-litellm.py
-      hook-openai.py
-      hook-anthropic.py
+```bash
+make desktop-tauri-build
 ```
 
-The PyInstaller spec should include:
+Runtime installation is a first-launch and background update concern. Release artifacts stay small while the runtime manager owns Claw installation and repair.
 
-- `profiles.yaml`
-- skill and prompt resources
-- migration files
-- package metadata
-- Pydantic AI provider dynamic imports
-- model provider SDK dynamic imports
-- SQLite dependencies
-- optional toolset resources used by Claw profiles
+## CI Flow
 
-## Release Packaging
+Desktop CI validates the runtime manager with app-managed `uv` on each target platform.
 
-Long term, publish `ya-clawd` as a standalone release artifact and bundle compatible artifacts into YA Desktop.
-
-```text
-ya-clawd v0.4.0
-  ya-clawd-aarch64-apple-darwin.tar.gz
-  ya-clawd-x86_64-apple-darwin.tar.gz
-  ya-clawd-x86_64-unknown-linux-gnu.tar.gz
-  ya-clawd-x86_64-pc-windows-msvc.zip
-
-ya-desktop v0.1.0
-  YA Desktop.dmg
-  YA Desktop.AppImage
-  YA Desktop Setup.exe
+```mermaid
+flowchart LR
+    Checkout --> Setup[setup node, rust, uv]
+    Setup --> Build[build desktop]
+    Build --> RuntimeInstall[install Claw runtime through Runtime Manager path]
+    RuntimeInstall --> Doctor[ya-clawd doctor]
+    Doctor --> Serve[ya-clawd serve --port 0]
+    Serve --> Health[healthz and claw info]
+    Health --> Artifact[upload desktop artifact]
 ```
 
-The desktop updater should support:
+Runtime CI should publish Python packages or wheels for `ya-agent-environment`, `ya-environment-relay`, `ya-agent-sdk`, and `ya-claw`, then verify that latest `ya-claw[all]` installs through the same `uv` path used by Desktop.
 
-- Desktop app upgrade.
-- Sidecar binary upgrade.
-- Local DB migration.
-- Profile migration.
-- Capability compatibility checks.
-- Rollback metadata for failed migrations.
+## Release Compatibility
+
+Desktop compares the active Claw runtime metadata with the compatibility payload reported by `ya-clawd version --json-output` before automatic activation.
+
+Compatibility payload:
+
+```json
+{
+  "desktop_compatibility": {
+    "contract": "claw-desktop.v1"
+  }
+}
+```
+
+`contract` is the activation decision field in the first version. Claw keeps compatibility within a contract version. Runtime Manager keeps the previous runtime active when the installed runtime reports an unsupported contract or fails verification.
+
+Runtime migrations run inside the selected Claw version before a runtime becomes active. Runtime Manager stores previous active runtime metadata so Desktop can switch back after a failed verification step.
 
 ## Smoke Tests
 
-Minimum packaged sidecar smoke tests:
+Minimum managed runtime smoke tests:
 
 ```bash
-dist/ya-clawd/ya-clawd version
-dist/ya-clawd/ya-clawd serve --host 127.0.0.1 --port 0
-curl http://127.0.0.1:$PORT/health
+uv python install 3.13
+uv venv "$RUNTIME/.venv" --python 3.13
+uv pip install --python "$RUNTIME/.venv/bin/python" "ya-claw[all]"
+"$RUNTIME/.venv/bin/ya-clawd" version --json-output
+YA_CLAW_API_TOKEN=test "$RUNTIME/.venv/bin/ya-clawd" doctor --json-output
+YA_CLAW_API_TOKEN=test "$RUNTIME/.venv/bin/ya-clawd" serve --host 127.0.0.1 --port 0 --ready-json
+curl http://127.0.0.1:$PORT/healthz
+curl http://127.0.0.1:$PORT/api/v1/claw/info -H "Authorization: Bearer test"
 ```

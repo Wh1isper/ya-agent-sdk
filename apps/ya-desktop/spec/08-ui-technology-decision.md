@@ -55,7 +55,8 @@ Tauri 2 + TypeScript UI + Rust Core gives the best balance between product itera
 flowchart TB
     UI[TypeScript UI<br/>React + Vite] --> Bridge[Tauri Commands / Events]
     Bridge --> RustCore[Rust Core]
-    RustCore --> Sidecar[Local ya-clawd Sidecar]
+    RustCore --> RuntimeManager[Local Runtime Manager]
+    RuntimeManager --> Clawd[Local ya-clawd Daemon]
     RustCore --> OS[OS Integrations]
     UI --> ClawAPI[Claw HTTP/SSE API]
     RustCore --> ClawAPI
@@ -69,6 +70,7 @@ flowchart TB
 
 ## Rust Core Responsibilities
 
+- app-managed `uv` runtime installation
 - local `ya-clawd` process lifecycle
 - local runtime data directory initialization
 - local token generation and keychain storage

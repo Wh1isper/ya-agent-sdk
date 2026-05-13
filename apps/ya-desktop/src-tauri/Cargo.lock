@@ -4956,6 +4956,8 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 name = "ya-desktop"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.3.4",
+ "hex",
  "serde",
  "serde_json",
  "tauri",

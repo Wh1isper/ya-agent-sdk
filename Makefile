@@ -122,10 +122,26 @@ desktop-rust-clippy: ## Run clippy for the YA Desktop Tauri app
 	@echo "Running ya-desktop Rust clippy"
 	@(cd apps/ya-desktop/src-tauri && cargo clippy --locked --all-targets --all-features -- -D warnings)
 
+.PHONY: desktop-prepare-uv-resource
+desktop-prepare-uv-resource: ## Copy the active uv binary into YA Desktop bundle resources
+	@echo "Preparing ya-desktop uv resource"
+	@python scripts/prepare-desktop-uv-resource.py
+
 .PHONY: desktop-tauri-build
-desktop-tauri-build: ## Build the YA Desktop Tauri bundle
+desktop-tauri-build: desktop-prepare-uv-resource ## Build the YA Desktop Tauri bundle
 	@echo "Building ya-desktop Tauri bundle"
 	@corepack pnpm --dir apps/ya-desktop tauri:build
+
+.PHONY: desktop-package-local
+desktop-package-local: desktop-tauri-build ## Build a local unsigned YA Desktop installer bundle
+	@echo "YA Desktop local bundles:"
+	@find apps/ya-desktop/src-tauri/target/release/bundle -type f \
+		\( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+		-print
+
+.PHONY: desktop-install-local
+desktop-install-local: desktop-package-local ## Build and install YA Desktop locally on the current machine
+	@python scripts/install-desktop-local.py
 
 .PHONY: docker-build-claw
 docker-build-claw: ## Build the YA Claw Docker image

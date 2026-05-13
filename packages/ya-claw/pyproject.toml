@@ -22,6 +22,7 @@ Repository = "https://github.com/wh1isper/ya-mono"
 
 [project.scripts]
 ya-claw = "ya_claw.cli:cli"
+ya-clawd = "ya_claw.cli:cli"
 
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]

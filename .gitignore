@@ -155,4 +155,13 @@ yaacli/yaacli/skills/building-agents
 # Frontend
 node_modules/
 apps/*/dist/
+!apps/ya-desktop/
+!apps/ya-desktop/src/
+!apps/ya-desktop/src/**
+!apps/ya-desktop/src-tauri/
+!apps/ya-desktop/src-tauri/resources/
+!apps/ya-desktop/src-tauri/resources/uv/
+!apps/ya-desktop/src-tauri/resources/uv/.gitkeep
+apps/ya-desktop/src-tauri/resources/uv/uv
+apps/ya-desktop/src-tauri/resources/uv/uv.exe
 *.tsbuildinfo
