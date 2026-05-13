@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncEngine
+from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
 from ya_claw.api.bridges import router as bridges_router
 from ya_claw.api.claw import router as claw_router
@@ -80,6 +81,7 @@ class ClawApplication:
         app.state.heartbeat_dispatcher = None
         app.state.session_prune_dispatcher = None
         app.state.docker_sandbox_ttl_dispatcher = None
+        app.state.oauth_refresh_supervisor = None
 
         self.register_api_token_middleware(app)
         app.add_middleware(
@@ -217,6 +219,14 @@ class ClawApplication:
             )
             app.state.docker_sandbox_ttl_dispatcher = docker_sandbox_ttl_dispatcher
             await docker_sandbox_ttl_dispatcher.startup()
+            oauth_refresh_supervisor = await self.create_oauth_refresh_supervisor(app.state.profile_resolver)
+            if oauth_refresh_supervisor is not None:
+                app.state.oauth_refresh_supervisor = oauth_refresh_supervisor
+                await oauth_refresh_supervisor.start()
+                logger.info(
+                    "OAuth refresh supervisor started providers={}", sorted(oauth_refresh_supervisor.provider_names)
+                )
+
             if self.settings.bridge_dispatch_mode == BridgeDispatchMode.EMBEDDED:
                 bridge_supervisor = build_bridge_supervisor(
                     settings=self.settings,
@@ -244,6 +254,7 @@ class ClawApplication:
             heartbeat_dispatcher = app.state.heartbeat_dispatcher
             session_prune_dispatcher = app.state.session_prune_dispatcher
             docker_sandbox_ttl_dispatcher = app.state.docker_sandbox_ttl_dispatcher
+            oauth_refresh_supervisor = app.state.oauth_refresh_supervisor
             execution_supervisor = app.state.execution_supervisor
 
             app.state.db_session_factory = None
@@ -260,6 +271,10 @@ class ClawApplication:
             app.state.heartbeat_dispatcher = None
             app.state.session_prune_dispatcher = None
             app.state.docker_sandbox_ttl_dispatcher = None
+            app.state.oauth_refresh_supervisor = None
+
+            if isinstance(oauth_refresh_supervisor, OAuthRefreshSupervisor):
+                await oauth_refresh_supervisor.shutdown()
 
             if isinstance(docker_sandbox_ttl_dispatcher, DockerSandboxTtlDispatcher):
                 await docker_sandbox_ttl_dispatcher.shutdown()
@@ -290,6 +305,33 @@ class ClawApplication:
 
             if isinstance(db_engine, AsyncEngine):
                 await db_engine.dispose()
+
+    async def create_oauth_refresh_supervisor(
+        self,
+        profile_resolver: ProfileResolver | None,
+    ) -> OAuthRefreshSupervisor | None:
+        if not self.settings.oauth_refresh_enabled or profile_resolver is None:
+            return None
+        models: set[str] = set()
+        for profile_name in {self.settings.default_profile, self.settings.bridge_lark_default_profile}:
+            if profile_name is None or profile_name.strip() == "":
+                continue
+            try:
+                profile = await profile_resolver.resolve(profile_name)
+            except Exception as exc:
+                logger.warning("OAuth refresh profile resolution skipped profile={} error={}", profile_name, exc)
+                continue
+            models.add(profile.model)
+        try:
+            models.update(await profile_resolver.list_enabled_models())
+        except Exception as exc:
+            logger.warning("OAuth refresh enabled profile scan skipped error={}", exc)
+        return create_oauth_refresh_supervisor_for_models(
+            models,
+            interval_seconds=self.settings.oauth_refresh_interval_seconds,
+            failure_retry_seconds=self.settings.oauth_refresh_failure_retry_seconds,
+            refresh_on_startup=self.settings.oauth_refresh_on_startup,
+        )
 
     def create_workspace_provider(self) -> WorkspaceProvider:
         if self.settings.workspace_provider_backend == "docker":

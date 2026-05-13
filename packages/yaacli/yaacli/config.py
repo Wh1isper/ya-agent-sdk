@@ -28,7 +28,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Literal, Self, TypedDict
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig, load_mcp_config_file
 
@@ -261,6 +261,15 @@ class MediaConfig(BaseModel):
     """S3 configuration for media upload."""
 
 
+class OAuthRefreshConfig(BaseModel):
+    """OAuth proactive refresh configuration."""
+
+    enabled: bool = True
+    interval_seconds: PositiveInt = 1800
+    failure_retry_seconds: PositiveInt = 60
+    refresh_on_startup: bool = True
+
+
 class YaacliConfig(BaseModel):
     """Complete yaacli configuration."""
 
@@ -270,6 +279,8 @@ class YaacliConfig(BaseModel):
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     """Media handling configuration (S3 upload, etc.)."""
+    oauth_refresh: OAuthRefreshConfig = Field(default_factory=OAuthRefreshConfig)
+    """OAuth proactive refresh configuration."""
     env: dict[str, str] = Field(default_factory=dict)
     """Environment variable overrides for the CLI process (e.g., API keys)."""
     shell_env: dict[str, str] = Field(default_factory=dict)
@@ -348,6 +359,12 @@ class EnvSettings(BaseSettings):
     agent_stream_resume_on_error: bool | None = None
     agent_stream_resume_max_attempts: int | None = None
     agent_stream_resume_prompt: str | None = None
+
+    # OAuth refresh
+    oauth_refresh_enabled: bool | None = None
+    oauth_refresh_interval_seconds: PositiveInt | None = None
+    oauth_refresh_failure_retry_seconds: PositiveInt | None = None
+    oauth_refresh_on_startup: bool | None = None
 
 
 # =============================================================================
@@ -496,6 +513,19 @@ class ConfigManager:
             general["agent_stream_resume_prompt"] = env.agent_stream_resume_prompt
         if general:
             overrides["general"] = general
+
+        # OAuth refresh
+        oauth_refresh: dict[str, Any] = {}
+        if env.oauth_refresh_enabled is not None:
+            oauth_refresh["enabled"] = env.oauth_refresh_enabled
+        if env.oauth_refresh_interval_seconds is not None:
+            oauth_refresh["interval_seconds"] = env.oauth_refresh_interval_seconds
+        if env.oauth_refresh_failure_retry_seconds is not None:
+            oauth_refresh["failure_retry_seconds"] = env.oauth_refresh_failure_retry_seconds
+        if env.oauth_refresh_on_startup is not None:
+            oauth_refresh["refresh_on_startup"] = env.oauth_refresh_on_startup
+        if oauth_refresh:
+            overrides["oauth_refresh"] = oauth_refresh
 
         return overrides
 

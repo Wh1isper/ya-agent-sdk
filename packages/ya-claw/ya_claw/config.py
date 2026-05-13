@@ -154,6 +154,10 @@ class ClawSettings(BaseSettings):
         "The previous streaming model request failed before the agent finished. "
         "Continue the task from the available conversation history. Avoid repeating completed work."
     )
+    oauth_refresh_enabled: bool = True
+    oauth_refresh_interval_seconds: PositiveInt = 1800
+    oauth_refresh_failure_retry_seconds: PositiveInt = 60
+    oauth_refresh_on_startup: bool = True
     profile_seed_file: Path | None = None
     auto_seed_profiles: bool = False
     schedule_dispatch_enabled: bool = True

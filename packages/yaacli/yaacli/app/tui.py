@@ -95,6 +95,7 @@ from ya_agent_sdk.events import (
 )
 from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.utils import get_latest_request_usage
+from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
 from yaacli.app.state import TUIMode
@@ -244,6 +245,7 @@ class TUIApp:
     _runtime: AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment] | None = field(
         default=None, init=False
     )
+    _oauth_refresh_supervisor: OAuthRefreshSupervisor | None = field(default=None, init=False, repr=False)
 
     # UI components
     _app: Application[None] | None = field(default=None, init=False, repr=False)
@@ -541,6 +543,13 @@ class TUIApp:
             USER_RULES_TAG,
         )
 
+        self._oauth_refresh_supervisor = self._create_oauth_refresh_supervisor()
+        if self._oauth_refresh_supervisor is not None:
+            await self._oauth_refresh_supervisor.start()
+            logger.info(
+                "OAuth refresh supervisor started providers=%s", sorted(self._oauth_refresh_supervisor.provider_names)
+            )
+
         # Initialize context window size from model config
         if self._runtime.ctx.model_cfg.context_window:
             self._context_window_size = self._runtime.ctx.model_cfg.context_window
@@ -583,6 +592,9 @@ class TUIApp:
         # Cancel any running agent task and tracked fire-and-forget tasks
         await self._cancel_agent_task()
         await self._cancel_managed_tasks()
+        if self._oauth_refresh_supervisor is not None:
+            await self._oauth_refresh_supervisor.shutdown()
+            self._oauth_refresh_supervisor = None
 
         # Give event loop a chance to process pending cleanups
         await asyncio.sleep(0)
@@ -1064,6 +1076,17 @@ class TUIApp:
         if self._app:
             self._app.invalidate()
 
+    def _create_oauth_refresh_supervisor(self) -> OAuthRefreshSupervisor | None:
+        if not self.config.oauth_refresh.enabled:
+            return None
+        models = [profile.model for profile in build_model_profiles(self.config)]
+        return create_oauth_refresh_supervisor_for_models(
+            models,
+            interval_seconds=self.config.oauth_refresh.interval_seconds,
+            failure_retry_seconds=self.config.oauth_refresh.failure_retry_seconds,
+            refresh_on_startup=self.config.oauth_refresh.refresh_on_startup,
+        )
+
     def _format_active_model_label(self) -> str:
         """Format the active model label for status and welcome output."""
         if self._active_model_profile is not None:
@@ -1284,7 +1307,10 @@ class TUIApp:
         model_settings = resolve_model_settings(profile.model_settings)
         model_cfg = resolve_profile_model_cfg(profile.model_cfg)
 
-        self.runtime.agent.model = infer_model(profile.model)
+        model_extra_headers = (
+            self.runtime.ctx.get_model_extra_headers() if profile.model.startswith("oauth@codex:") else None
+        )
+        self.runtime.agent.model = infer_model(profile.model, extra_headers=model_extra_headers)
         self.runtime.agent.model_settings = cast(ModelSettings, model_settings)
         self.runtime.ctx.model_cfg = model_cfg
         self._active_model_profile = profile

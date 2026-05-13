@@ -109,6 +109,11 @@ class ProfileResolver:
         logger.info("Execution profiles seeded count={} names={}", len(seeded_names), seeded_names)
         return seeded_names
 
+    async def list_enabled_models(self) -> list[str]:
+        async with self._session_factory() as db_session:
+            result = await db_session.execute(select(ProfileRecord.model).where(ProfileRecord.enabled.is_(True)))
+            return [model for model in result.scalars().all() if isinstance(model, str) and model.strip()]
+
     async def _load_profile_record(self, profile_name: str) -> ProfileRecord | None:
         async with self._session_factory() as db_session:
             record = await db_session.get(ProfileRecord, profile_name)

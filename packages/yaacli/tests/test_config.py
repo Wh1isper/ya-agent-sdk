@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
 from yaacli.config import (
     DEFAULT_COMMANDS,
     CommandDefinition,
@@ -269,6 +271,49 @@ need_approval = ["project_tool"]
     assert config.tools.need_approval == ["project_tool"]
 
 
+def test_load_global_oauth_refresh_config(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    clean_env: None,
+) -> None:
+    """Test loading OAuth proactive refresh config."""
+    config_file = temp_config_dir / "config.toml"
+    config_file.write_text("""
+[general]
+model = "oauth@codex:gpt-5.5"
+
+[oauth_refresh]
+enabled = true
+interval_seconds = 1200
+failure_retry_seconds = 30
+refresh_on_startup = false
+""")
+
+    config = config_manager.load()
+
+    assert config.oauth_refresh.enabled is True
+    assert config.oauth_refresh.interval_seconds == 1200
+    assert config.oauth_refresh.failure_retry_seconds == 30
+    assert config.oauth_refresh.refresh_on_startup is False
+
+
+def test_oauth_refresh_config_requires_positive_intervals(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    clean_env: None,
+) -> None:
+    """Test OAuth proactive refresh interval validation."""
+    config_file = temp_config_dir / "config.toml"
+    config_file.write_text("""
+[oauth_refresh]
+interval_seconds = 0
+failure_retry_seconds = -1
+""")
+
+    with pytest.raises(ValidationError):
+        config_manager.load()
+
+
 def test_env_overrides_tui_only(
     config_manager: ConfigManager,
     temp_config_dir: Path,
@@ -286,12 +331,16 @@ code_theme = "dark"
 
     os.environ["YAACLI_CODE_THEME"] = "light"
     os.environ["YAACLI_AGENT_STREAM_RESUME_MAX_ATTEMPTS"] = "3"
+    os.environ["YAACLI_OAUTH_REFRESH_INTERVAL_SECONDS"] = "900"
+    os.environ["YAACLI_OAUTH_REFRESH_ON_STARTUP"] = "false"
 
     config = config_manager.load()
 
     assert config.display.code_theme == "light"
     assert config.general.model == "openai:gpt-4o"
     assert config.general.agent_stream_resume_max_attempts == 3
+    assert config.oauth_refresh.interval_seconds == 900
+    assert config.oauth_refresh.refresh_on_startup is False
 
 
 def test_project_config_overrides_global(

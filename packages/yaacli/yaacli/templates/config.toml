@@ -70,6 +70,13 @@ agent_stream_resume_prompt = "The previous streaming model request failed before
 # OPENAI_API_KEY = "sk-..."
 # GOOGLE_API_KEY = "..."
 
+[oauth_refresh]
+# Proactively refresh OAuth-backed model provider tokens during CLI lifetime.
+enabled = true
+interval_seconds = 1800
+failure_retry_seconds = 60
+refresh_on_startup = true
+
 [display]
 # Code highlighting theme ("dark" or "light")
 code_theme = "dark"
