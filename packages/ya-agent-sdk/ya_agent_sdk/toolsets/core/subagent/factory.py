@@ -20,6 +20,7 @@ from pydantic_ai.models import Model
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.usage import coerce_run_usage
 
 # Type alias for instruction functions
 InstructionFunc = Callable[[RunContext[AgentContext]], str | None]
@@ -170,7 +171,7 @@ async def _run_subagent_iter(
                         agent_id=sub_ctx.agent_id,
                         agent_name=agent_name,
                         model_id=model_id,
-                        usage=run.usage(),
+                        usage=coerce_run_usage(run.usage),
                         usage_id=usage_id,
                         source="subagent_model_request",
                     )
@@ -325,7 +326,8 @@ def create_subagent_call_func(
                         usage_id=usage_id,
                     )
                     result_output = result.output
-                    request_count = result.usage().requests
+                    result_usage = coerce_run_usage(result.usage)
+                    request_count = result_usage.requests
 
                     # Store message history for future resume
                     deps.subagent_history[agent_id] = result.all_messages()
@@ -336,7 +338,7 @@ def create_subagent_call_func(
                         agent_id=agent_id,
                         agent_name=agent_name,
                         model_id=model_id,
-                        usage=result.usage(),
+                        usage=result_usage,
                         usage_id=usage_id,
                         source="subagent",
                     )

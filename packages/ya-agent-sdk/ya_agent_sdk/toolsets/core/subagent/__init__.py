@@ -19,7 +19,7 @@ Example::
         # ctx is already a subagent context (auto-created by factory)
         agent = get_search_agent()
         result = await agent.run(query, deps=ctx)
-        return result.output, result.usage()
+        return result.output, result.usage
 
     SearchTool = create_subagent_tool(
         name="search",
@@ -37,7 +37,7 @@ For streaming, use the parent context's stream queue::
         # Stream events can be sent to parent's subagent_stream_queues
         agent = get_search_agent()
         result = await agent.run(query, deps=ctx)
-        return result.output, result.usage()
+        return result.output, result.usage
 """
 
 from ya_agent_sdk.toolsets.core.base import BaseTool

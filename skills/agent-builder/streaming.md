@@ -111,7 +111,7 @@ async def on_complete(ctx: AgentCompleteContext) -> None:
     """Called after all nodes processed, result available."""
     if ctx.run.result:
         print(f"Result: {ctx.run.result.output}")
-        print(f"Usage: {ctx.run.usage()}")
+        print(f"Usage: {ctx.run.usage}")
 
 async with stream_agent(
     runtime,

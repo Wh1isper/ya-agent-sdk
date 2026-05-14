@@ -23,6 +23,7 @@ from ya_agent_sdk._config import AgentSettings
 from ya_agent_sdk._logger import logger
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.presets import resolve_model_settings
+from ya_agent_sdk.usage import coerce_run_usage
 
 # =============================================================================
 # Exceptions
@@ -296,4 +297,4 @@ async def get_audio_description(
     # Get model_id from agent's model
     model_id = cast(Model, agent.model).model_name
 
-    return result.output.description, model_id, result.usage()
+    return result.output.description, model_id, coerce_run_usage(result.usage)
