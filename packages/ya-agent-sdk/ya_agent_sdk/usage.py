@@ -6,8 +6,35 @@ snapshot models used by agents, CLI clients, and runtime services.
 
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
+from typing import Any
+
 from pydantic import BaseModel, Field
 from pydantic_ai.usage import RunUsage
+
+_RUN_USAGE_FIELD_NAMES = frozenset(field.name for field in fields(RunUsage))
+
+
+def coerce_run_usage(usage: RunUsage) -> RunUsage:
+    """Convert Pydantic AI usage wrappers into a concrete ``RunUsage`` instance."""
+    if type(usage) is RunUsage:
+        return RunUsage(**_run_usage_data(usage))
+    if callable(usage):
+        usage = usage()
+    return RunUsage(**_run_usage_data(usage))
+
+
+def _run_usage_data(usage: Any) -> dict[str, Any]:
+    if not is_dataclass(usage):
+        raise TypeError(f"Expected RunUsage-compatible dataclass, got {type(usage).__name__}")
+
+    data: dict[str, Any] = {}
+    for name in _RUN_USAGE_FIELD_NAMES:
+        value = getattr(usage, name)
+        if name == "details":
+            value = dict(value)
+        data[name] = value
+    return data
 
 
 class UsageSnapshotEntry(BaseModel):

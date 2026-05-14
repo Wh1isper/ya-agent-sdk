@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext, ModelConfig, ShellReviewConfig, TaskStatus
 from ya_agent_sdk.environment.local import LocalEnvironment
 
@@ -884,6 +885,31 @@ async def test_resumable_state_json_serialization(env: LocalEnvironment) -> None
         assert "agent-1" in history
         assert len(history["agent-1"]) == 2
         assert history["agent-1"][0].parts[0].content == "Hello"
+
+
+class _CallableRunUsage:
+    def __init__(self, usage: RunUsage) -> None:
+        self._usage = usage
+        self.details = {"provider_cached_tokens": 999}
+
+    def __call__(self) -> RunUsage:
+        return self._usage
+
+
+async def test_update_usage_snapshot_entry_normalizes_callable_usage_wrapper(env: LocalEnvironment) -> None:
+    async with AgentContext(env=env) as ctx:
+        ctx.update_usage_snapshot_entry(
+            agent_id="main",
+            agent_name="main",
+            model_id="openai-chat:gpt-4o",
+            usage=_CallableRunUsage(RunUsage(input_tokens=10, output_tokens=20, details={"cached_tokens": 3})),  # type: ignore[arg-type]
+        )
+
+        entry = ctx.build_usage_snapshot().entries[0]
+        assert type(entry.usage) is RunUsage
+        assert entry.usage.input_tokens == 10
+        assert entry.usage.output_tokens == 20
+        assert entry.usage.details == {"cached_tokens": 3}
 
 
 async def test_resumable_state_json_serialization_with_usage_ledger(env: LocalEnvironment) -> None:

@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from pydantic_ai.usage import RunUsage
-from ya_agent_sdk.usage import UsageSnapshot
+from ya_agent_sdk.usage import UsageSnapshot, coerce_run_usage
 
 
 @dataclass
@@ -57,6 +57,8 @@ class SessionUsage:
             model_id: Model identifier (e.g., "openai-chat:gpt-4o", "anthropic:claude-sonnet-4").
             usage: The RunUsage to accumulate.
         """
+        usage = coerce_run_usage(usage)
+
         # Accumulate by agent
         if agent not in self._manual_agent_usages:
             self._manual_agent_usages[agent] = RunUsage()
@@ -70,21 +72,31 @@ class SessionUsage:
 
     def _rebuild_totals(self) -> None:
         """Rebuild public totals from manual fallback usage and per-run snapshots."""
-        self.agent_usages = {agent: RunUsage() + usage for agent, usage in self._manual_agent_usages.items()}
-        self.model_usages = {model_id: RunUsage() + usage for model_id, usage in self._manual_model_usages.items()}
+        self.agent_usages = {
+            agent: RunUsage() + coerce_run_usage(usage) for agent, usage in self._manual_agent_usages.items()
+        }
+        self.model_usages = {
+            model_id: RunUsage() + coerce_run_usage(usage) for model_id, usage in self._manual_model_usages.items()
+        }
 
         for snapshot in self._run_snapshots.values():
             for agent, entry in snapshot.agent_usages.items():
                 if agent not in self.agent_usages:
                     self.agent_usages[agent] = RunUsage()
-                self.agent_usages[agent].incr(entry.usage)
+                self.agent_usages[agent].incr(coerce_run_usage(entry.usage))
             for model_id, usage in snapshot.model_usages.items():
                 if model_id not in self.model_usages:
                     self.model_usages[model_id] = RunUsage()
-                self.model_usages[model_id].incr(usage)
+                self.model_usages[model_id].incr(coerce_run_usage(usage))
 
     def set_run_snapshot(self, snapshot: UsageSnapshot) -> None:
         """Replace usage for one run with a realtime SDK snapshot."""
+        for entry in snapshot.entries:
+            entry.usage = coerce_run_usage(entry.usage)
+        for entry in snapshot.agent_usages.values():
+            entry.usage = coerce_run_usage(entry.usage)
+        snapshot.model_usages = {model_id: coerce_run_usage(usage) for model_id, usage in snapshot.model_usages.items()}
+        snapshot.total_usage = coerce_run_usage(snapshot.total_usage)
         self._run_snapshots[snapshot.run_id] = snapshot
         self._uncommitted_run_ids.add(snapshot.run_id)
         self._rebuild_totals()

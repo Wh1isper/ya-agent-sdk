@@ -69,7 +69,7 @@ import warnings
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -108,7 +108,7 @@ from ya_agent_environment import Environment, FileOperator, ResourceRegistry, Sh
 
 from ya_agent_sdk.agents.lifecycle import LifecycleExtension
 from ya_agent_sdk.events import AgentEvent, UsageSnapshotEvent
-from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot, UsageSnapshotEntry
+from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot, UsageSnapshotEntry, coerce_run_usage
 from ya_agent_sdk.utils import get_latest_request_usage
 
 from .bus import BusMessage, MessageBus
@@ -328,11 +328,6 @@ AgentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | Agen
 def _create_stream_queue_factory() -> dict[str, asyncio.Queue[AgentStreamEvent]]:
     """Create a defaultdict factory for subagent stream queues."""
     return defaultdict(asyncio.Queue)
-
-
-def snapshot_run_usage(usage: RunUsage) -> RunUsage:
-    """Return an immutable-in-practice snapshot of current RunUsage values."""
-    return replace(usage, details=dict(usage.details))
 
 
 # =============================================================================
@@ -1803,7 +1798,7 @@ class AgentContext(BaseModel):
             agent_id=agent_id,
             agent_name=agent_name,
             model_id=model_id,
-            usage=snapshot_run_usage(usage),
+            usage=coerce_run_usage(usage),
             usage_id=usage_id,
             source=source,
         )

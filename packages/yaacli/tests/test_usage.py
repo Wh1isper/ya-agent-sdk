@@ -160,6 +160,24 @@ class TestSessionUsage:
         assert model_usage.cache_write_tokens == 10
 
 
+class _CallableRunUsage:
+    def __init__(self, usage: RunUsage) -> None:
+        self._usage = usage
+        self.details = {"provider_cached_tokens": 999}
+
+    def __call__(self) -> RunUsage:
+        return self._usage
+
+
+def test_session_usage_normalizes_callable_usage_wrapper() -> None:
+    session = SessionUsage()
+    session.add("main", "openai-chat:gpt-4o", _CallableRunUsage(RunUsage(input_tokens=7, details={"cached": 2})))  # type: ignore[arg-type]
+
+    assert type(session.agent_usages["main"]) is RunUsage
+    assert session.agent_usages["main"].input_tokens == 7
+    assert session.agent_usages["main"].details == {"cached": 2}
+
+
 def test_session_usage_replaces_uncommitted_run_snapshot() -> None:
     """Realtime usage snapshots should replace the current run totals."""
     from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
