@@ -67,19 +67,30 @@ class DockerSandboxTtlDispatcher:
                 container_ref = _normalize_string(sandbox.get("container_ref")) or container_id or session_record.id
                 lock = get_docker_container_lock(cache_path=cache_path, container_ref=container_ref)
                 async with lock:
+                    stop_succeeded = True
                     if container_id is not None:
-                        await _stop_docker_container(container_id)
-                    await _delete_cache_file(cache_path)
-                    next_sandbox = {
-                        **sandbox,
-                        "status": "stopped",
-                        "container_id": None,
-                        "last_used_at": _utc_now_iso(),
-                    }
+                        stop_succeeded = await _stop_docker_container(container_id)
+                    if stop_succeeded:
+                        await _delete_cache_file(cache_path)
+                        next_sandbox = {
+                            **sandbox,
+                            "status": "stopped",
+                            "ready_state": "not_started",
+                            "container_id": None,
+                            "verified_container_id": None,
+                            "last_used_at": _utc_now_iso(),
+                            "error_message": None,
+                        }
+                        stopped += 1
+                    else:
+                        next_sandbox = {
+                            **sandbox,
+                            "status": sandbox.get("status") or "running",
+                            "error_message": f"Failed to stop idle Docker workspace container: {container_id}",
+                            "last_stop_attempt_at": _utc_now_iso(),
+                        }
                     session_record.session_metadata = {**metadata, "sandbox": next_sandbox}
-                    stopped += 1
-            if stopped:
-                await db_session.commit()
+            await db_session.commit()
             return stopped
 
     async def _run_loop(self) -> None:
@@ -133,8 +144,8 @@ async def _delete_cache_file(cache_path: Path | None) -> None:
     await loop.run_in_executor(None, _delete)
 
 
-async def _stop_docker_container(container_id: str) -> None:
-    def _stop() -> None:
+async def _stop_docker_container(container_id: str) -> bool:
+    def _stop() -> bool:
         try:
             import docker
 
@@ -142,13 +153,19 @@ async def _stop_docker_container(container_id: str) -> None:
             try:
                 container = client.containers.get(container_id)
                 container.stop(timeout=10)
+                return True
+            except Exception as exc:
+                if exc.__class__.__name__ == "NotFound":
+                    return True
+                raise
             finally:
                 client.close()
         except Exception as exc:
             logger.warning("Failed to stop idle Docker workspace container id={} error={}", container_id, exc)
+            return False
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _stop)
+    return await loop.run_in_executor(None, _stop)
 
 
 def _parse_datetime(value: Any) -> datetime | None:

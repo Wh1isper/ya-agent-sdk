@@ -38,6 +38,7 @@ async def get_session_workspace(request: Request, session_id: str) -> SessionWor
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
         return await workspace_controller.get_session_workspace(
+            settings=_get_settings(request),
             db_session=db_session,
             workspace_provider=_get_workspace_provider(request),
             session_id=session_id,
@@ -48,7 +49,11 @@ async def get_session_workspace(request: Request, session_id: str) -> SessionWor
 async def get_session_sandbox(request: Request, session_id: str) -> SessionSandboxState:
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
-        return await workspace_controller.get_session_sandbox(db_session=db_session, session_id=session_id)
+        return await workspace_controller.get_session_sandbox(
+            settings=_get_settings(request),
+            db_session=db_session,
+            session_id=session_id,
+        )
 
 
 @router.post("/sessions/{session_id}/sandbox:prepare", response_model=SessionSandboxState)

@@ -30,6 +30,7 @@ from ya_claw.controller.models import (
 )
 from ya_claw.controller.run import RunController
 from ya_claw.controller.store import read_run_message_blob_if_exists, read_run_state_blob_if_exists
+from ya_claw.controller.workspace_runtime import reconcile_session_sandbox_metadata
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.workspace.models import metadata_with_workspace
@@ -177,6 +178,7 @@ class SessionController:
         record = await db_session.get(SessionRecord, session_id)
         if not isinstance(record, SessionRecord):
             raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
+        await self._reconcile_workspace_states(db_session, settings=settings, records=[record])
 
         summary = await self._build_summary(db_session, record)
         run_list = await self._list_runs(
@@ -372,6 +374,22 @@ class SessionController:
         if not isinstance(record.active_run_id, str):
             raise HTTPException(status_code=409, detail=f"Session '{session_id}' does not have an active run.")
         return record.active_run_id
+
+    async def _reconcile_workspace_states(
+        self,
+        db_session: AsyncSession,
+        *,
+        settings: ClawSettings,
+        records: list[SessionRecord],
+    ) -> None:
+        if settings.workspace_provider_backend != "docker":
+            return
+        for record in records:
+            await reconcile_session_sandbox_metadata(
+                settings=settings,
+                db_session=db_session,
+                session_record=record,
+            )
 
     async def _build_summary(self, db_session: AsyncSession, record: SessionRecord) -> SessionSummary:
         summaries = await self._build_summaries(db_session, [record])

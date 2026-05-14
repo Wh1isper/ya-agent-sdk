@@ -60,6 +60,7 @@ from ya_claw.workspace.models import (
     merge_workspace_metadata,
     workspace_snapshot,
 )
+from ya_claw.workspace.runtime_models import build_session_sandbox_state_from_sandbox, session_sandbox_event_payload
 
 
 @dataclass(slots=True)
@@ -1037,6 +1038,31 @@ class RunCoordinator:
                 sandbox_metadata.get("container_id"),
                 sandbox_metadata.get("container_ref"),
             )
+        if scope == SANDBOX_SCOPE_SESSION:
+            await self._publish_workspace_sandbox_update(session_id=session_id, sandbox_metadata=sandbox_metadata)
+
+    async def _publish_workspace_sandbox_update(
+        self,
+        *,
+        session_id: str,
+        sandbox_metadata: dict[str, Any],
+    ) -> None:
+        if self._notification_hub is None:
+            return
+        sandbox_state = build_session_sandbox_state_from_sandbox(sandbox_metadata)
+        handle = self._runtime_state.get_session_run_handle(session_id)
+        run_id = handle.run_id if handle is not None else None
+        payload = session_sandbox_event_payload(
+            session_id=session_id,
+            run_id=run_id,
+            sandbox_state=sandbox_state,
+        )
+        await self._notification_hub.publish("workspace.sandbox.updated", payload)
+        if run_id is not None:
+            try:
+                await self._runtime_state.append_run_event(run_id, payload, replay=False)
+            except KeyError:
+                return
 
     def _resolve_dispatch_mode(self, run_id: str) -> str:
         handle = self._runtime_state.get_run_handle(run_id)

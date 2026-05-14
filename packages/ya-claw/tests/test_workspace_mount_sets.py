@@ -258,8 +258,9 @@ async def test_docker_sandbox_ttl_dispatcher_stops_expired_session_sandbox(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text('{"container_id":"container-ttl"}\n', encoding="utf-8")
 
-    async def fake_stop(container_id: str) -> None:
+    async def fake_stop(container_id: str) -> bool:
         stopped.append(container_id)
+        return True
 
     monkeypatch.setattr("ya_claw.execution.sandbox_ttl._stop_docker_container", fake_stop)
     session_record = SessionRecord(
@@ -294,3 +295,49 @@ async def test_docker_sandbox_ttl_dispatcher_stops_expired_session_sandbox(
     assert session_record.session_metadata["sandbox"]["container_id"] is None
     assert not cache_path.exists()
     assert not cache_path.parent.exists()
+
+
+async def test_docker_sandbox_ttl_dispatcher_keeps_metadata_when_stop_fails(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_stop(container_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr("ya_claw.execution.sandbox_ttl._stop_docker_container", fake_stop)
+    session_record = SessionRecord(
+        id="session-ttl-failed",
+        profile_name="general",
+        session_metadata={
+            "sandbox": {
+                "provider": "docker",
+                "scope": "session",
+                "status": "running",
+                "ready_state": "ready",
+                "retention_policy": "stop_on_idle",
+                "idle_ttl_seconds": 1,
+                "last_used_at": (datetime.now(UTC) - timedelta(seconds=10)).isoformat().replace("+00:00", "Z"),
+                "container_id": "container-ttl-failed",
+                "verified_container_id": "container-ttl-failed",
+                "container_ref": "ya-claw-session-session-ttl-failed-g1",
+            }
+        },
+    )
+    db_session.add(session_record)
+    await db_session.commit()
+
+    dispatcher = DockerSandboxTtlDispatcher(
+        settings=settings.model_copy(update={"workspace_provider_backend": "docker"}),
+        session_factory=create_session_factory(db_engine),
+    )
+    stopped_count = await dispatcher.cleanup_once()
+    await db_session.refresh(session_record)
+
+    sandbox = session_record.session_metadata["sandbox"]
+    assert stopped_count == 0
+    assert sandbox["status"] == "running"
+    assert sandbox["container_id"] == "container-ttl-failed"
+    assert sandbox["verified_container_id"] == "container-ttl-failed"
+    assert "Failed to stop idle Docker workspace container" in sandbox["error_message"]

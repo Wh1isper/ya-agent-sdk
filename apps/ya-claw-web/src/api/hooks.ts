@@ -68,7 +68,8 @@ export function useSessionWorkspaceQuery(sessionId: string | null) {
     queryFn: () => api.getSessionWorkspace(sessionId ?? ''),
     enabled: Boolean(sessionId),
     placeholderData: keepPreviousData,
-    staleTime: 10_000,
+    refetchInterval: 2_000,
+    staleTime: 1_000,
   })
 }
 
@@ -139,7 +140,8 @@ export function useSessionsQuery() {
     queryKey: queryKeys.sessions,
     queryFn: () => api.listSessions(),
     placeholderData: keepPreviousData,
-    staleTime: 10_000,
+    refetchInterval: 5_000,
+    staleTime: 2_000,
   })
 }
 
@@ -207,8 +209,16 @@ export function useCreateSessionMutation() {
       profile_name?: string | null
       input_parts: InputPart[]
     }) => api.createSession(payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+    onSuccess: async (response) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.session(response.session.id),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.sessionWorkspace(response.session.id),
+        }),
+      ])
     },
   })
 }
@@ -225,6 +235,11 @@ export function useCreateSessionRunMutation(sessionId: string | null) {
         sessionId
           ? queryClient.invalidateQueries({
               queryKey: queryKeys.session(sessionId),
+            })
+          : Promise.resolve(),
+        sessionId
+          ? queryClient.invalidateQueries({
+              queryKey: queryKeys.sessionWorkspace(sessionId),
             })
           : Promise.resolve(),
         queryClient.invalidateQueries({ queryKey: queryKeys.run(run.id) }),

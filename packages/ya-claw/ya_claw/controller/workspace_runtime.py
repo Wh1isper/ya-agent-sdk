@@ -112,11 +112,17 @@ class WorkspaceRuntimeController:
     async def get_session_workspace(
         self,
         *,
+        settings: ClawSettings,
         db_session: AsyncSession,
         workspace_provider: WorkspaceProvider,
         session_id: str,
     ) -> SessionWorkspaceState:
         session_record = await _require_session(db_session, session_id)
+        await reconcile_session_sandbox_metadata(
+            settings=settings,
+            db_session=db_session,
+            session_record=session_record,
+        )
         metadata = _session_metadata_with_id(session_record)
         binding = workspace_provider.resolve(metadata)
         return SessionWorkspaceState(
@@ -127,10 +133,16 @@ class WorkspaceRuntimeController:
     async def get_session_sandbox(
         self,
         *,
+        settings: ClawSettings,
         db_session: AsyncSession,
         session_id: str,
     ) -> SessionSandboxState:
         session_record = await _require_session(db_session, session_id)
+        await reconcile_session_sandbox_metadata(
+            settings=settings,
+            db_session=db_session,
+            session_record=session_record,
+        )
         sandbox_state = build_session_sandbox_state(session_record.session_metadata)
         if sandbox_state is None:
             raise HTTPException(status_code=404, detail=f"Session '{session_id}' does not have sandbox state.")
@@ -249,8 +261,27 @@ class WorkspaceRuntimeController:
             sandbox.get("container_id")
         )
         cache_path = _normalize_path(sandbox.get("cache_path"))
+        stop_succeeded = True
         if container_id is not None:
-            await _stop_docker_container(container_id)
+            stop_succeeded = await _stop_docker_container(container_id)
+        if not stop_succeeded:
+            next_sandbox = {
+                **sandbox,
+                "error_message": f"Failed to stop Docker workspace container: {container_id}",
+                "last_stop_attempt_at": _utc_now_iso(),
+            }
+            sandbox_state = await self._persist_sandbox_metadata(
+                db_session=db_session,
+                session_record=session_record,
+                sandbox_metadata=next_sandbox,
+            )
+            await _publish_sandbox_update(
+                notification_hub=notification_hub,
+                runtime_state=runtime_state,
+                session_id=session_id,
+                sandbox_state=sandbox_state,
+            )
+            raise HTTPException(status_code=500, detail="Failed to stop Docker workspace container.")
         await _delete_cache_file(cache_path)
 
         next_sandbox = {
@@ -288,6 +319,108 @@ class WorkspaceRuntimeController:
         await db_session.commit()
         await db_session.refresh(session_record)
         return build_session_sandbox_state_from_sandbox(sandbox_metadata)
+
+
+async def reconcile_session_sandbox_metadata(
+    *,
+    settings: ClawSettings,
+    db_session: AsyncSession,
+    session_record: SessionRecord,
+) -> None:
+    if settings.workspace_provider_backend != "docker":
+        return
+    metadata = session_record.session_metadata if isinstance(session_record.session_metadata, dict) else {}
+    sandbox = metadata.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return
+    next_sandbox = await _reconciled_docker_sandbox_metadata(sandbox)
+    if next_sandbox == sandbox:
+        return
+    session_record.session_metadata = {**metadata, "sandbox": next_sandbox}
+    await db_session.commit()
+    await db_session.refresh(session_record)
+
+
+async def _reconciled_docker_sandbox_metadata(sandbox: dict[str, Any]) -> dict[str, Any]:
+    if sandbox.get("provider") != "docker":
+        return sandbox
+    container_id = _normalize_string(sandbox.get("container_id")) or _normalize_string(
+        sandbox.get("verified_container_id")
+    )
+    container_ref = _normalize_string(sandbox.get("container_ref"))
+    lookup_ref = container_id or container_ref
+    if lookup_ref is None:
+        return sandbox
+    inspection = await _inspect_docker_container(lookup_ref)
+    if inspection is None:
+        return sandbox
+    status = inspection.get("status")
+    if status == "missing":
+        if _normalize_string(sandbox.get("container_id")) is None:
+            return sandbox
+        return {
+            **sandbox,
+            "status": "stopped",
+            "ready_state": "not_started",
+            "container_id": None,
+            "verified_container_id": None,
+            "error_message": None,
+        }
+    inspected_container_id = _normalize_string(inspection.get("container_id"))
+    if status == "running":
+        return {
+            **sandbox,
+            "status": "running",
+            "ready_state": "ready",
+            "container_id": inspected_container_id or _normalize_string(sandbox.get("container_id")),
+            "verified_container_id": inspected_container_id or _normalize_string(sandbox.get("verified_container_id")),
+            "error_message": None,
+        }
+    if status in {"exited", "dead", "removing"}:
+        return {
+            **sandbox,
+            "status": "stopped",
+            "ready_state": "not_started",
+            "container_id": None,
+            "verified_container_id": None,
+            "error_message": None,
+        }
+    return {
+        **sandbox,
+        "status": status or _normalize_string(sandbox.get("status")) or "created",
+        "ready_state": "not_started",
+        "container_id": inspected_container_id or _normalize_string(sandbox.get("container_id")),
+        "verified_container_id": None,
+    }
+
+
+async def _inspect_docker_container(container_ref: str) -> dict[str, str | None] | None:
+    def _inspect() -> dict[str, str | None] | None:
+        try:
+            import docker
+
+            client = docker.from_env()
+            try:
+                container = client.containers.get(container_ref)
+                container.reload()
+                return {
+                    "container_id": _normalize_string(getattr(container, "id", None)),
+                    "status": _normalize_string(getattr(container, "status", None)),
+                }
+            except Exception as exc:
+                if exc.__class__.__name__ == "NotFound":
+                    return {"container_id": None, "status": "missing"}
+                raise
+            finally:
+                client.close()
+        except Exception as exc:
+            logger.warning("Failed to inspect Docker workspace container ref={} error={}", container_ref, exc)
+            return None
+
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _inspect)
 
 
 async def _require_session(db_session: AsyncSession, session_id: str) -> SessionRecord:
