@@ -20,7 +20,7 @@ Example::
         # HandoffTool.is_context_manage_tool = True, so create_agent()
         # will automatically set ctx.context_manage_tool_name = 'summarize'
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             toolsets=[toolset],
             history_processors=[process_handoff_message],  # Required for handoff to work

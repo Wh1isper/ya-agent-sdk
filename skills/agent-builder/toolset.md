@@ -114,7 +114,7 @@ Typically via `create_agent`:
 from ya_agent_sdk.agents import create_agent, stream_agent
 
 runtime = create_agent(
-    "openai:gpt-4",
+    "openai-chat:gpt-4",
     tools=[ViewTool, EditTool, GrepTool],
     pre_hooks={"view": my_pre_hook},
     post_hooks={"edit": my_post_hook},

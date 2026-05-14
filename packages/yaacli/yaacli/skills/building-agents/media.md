@@ -166,7 +166,7 @@ media_filter = create_media_upload_filter(
 
 # Use in agent
 agent = Agent(
-    "openai:gpt-4o",
+    "openai-chat:gpt-4o",
     deps_type=AgentContext,
     capabilities=[
         ProcessHistory(drop_extra_images),  # First: limit/compress images

@@ -40,7 +40,7 @@ flowchart TB
 ```python
 from ya_agent_sdk.agents import create_agent, stream_agent
 
-runtime = create_agent("openai:gpt-4")
+runtime = create_agent("openai-chat:gpt-4")
 async with stream_agent(runtime, "Hello") as streamer:
     async for event in streamer:
         print(event)
@@ -53,14 +53,14 @@ async with stream_agent(runtime, "Hello") as streamer:
 ```python
 # Template string with variables
 runtime = create_agent(
-    "openai:gpt-4",
+    "openai-chat:gpt-4",
     system_prompt="You are a {{ role }}. {{ instructions | default('') }}",
     system_prompt_template_vars={"role": "code reviewer"},
 )
 
 # Default template file (prompts/main.md) with variables
 runtime = create_agent(
-    "openai:gpt-4",
+    "openai-chat:gpt-4",
     system_prompt_template_vars={"project_name": "my-project"},
 )
 ```
@@ -95,7 +95,7 @@ with open("session.json", "w") as f:
 # Restore
 from ya_agent_sdk.context import ResumableState
 state = ResumableState.model_validate_json(Path("session.json").read_text())
-runtime = create_agent("openai:gpt-4", state=state)
+runtime = create_agent("openai-chat:gpt-4", state=state)
 ```
 
 ### Export Options
@@ -174,7 +174,7 @@ def my_wrapper(model: Model, agent_name: str, context: dict[str, Any]) -> Model:
 
 # Usage with custom wrapper_metadata
 runtime = create_agent(
-    "openai:gpt-4",
+    "openai-chat:gpt-4",
     model_wrapper=my_wrapper,
     extra_context_kwargs={
         "wrapper_metadata": {
@@ -258,7 +258,7 @@ class MyContext(AgentContext):
 
 # Usage with create_agent
 runtime = create_agent(
-    "openai:gpt-4o",
+    "openai-chat:gpt-4o",
     context_type=MyContext,
     tool_config=MyToolConfig(my_service_api_key="xxx"),
     model_cfg=MyModelConfig(custom_threshold=0.9),
@@ -296,14 +296,14 @@ config.model_extra["my_custom_key"]  # Also works
 
 ### UsageSnapshotEntry Fields
 
-| Field        | Type          | Description                                                           |
-| ------------ | ------------- | --------------------------------------------------------------------- |
-| `agent_id`   | `str`         | Agent/source instance ID (e.g., `main`, `searcher-a7b9`)              |
-| `agent_name` | `str`         | Agent/source name (e.g., `compact`, `image_understanding`, `search`)  |
-| `model_id`   | `str`         | Model identifier (e.g., `openai:gpt-4o`, `anthropic:claude-sonnet-4`) |
-| `usage`      | `RunUsage`    | Cumulative token usage for this agent/source                          |
-| `usage_id`   | `str \| None` | Stable usage record ID for idempotent updates                         |
-| `source`     | `str`         | Component that reported this usage                                    |
+| Field        | Type          | Description                                                                |
+| ------------ | ------------- | -------------------------------------------------------------------------- |
+| `agent_id`   | `str`         | Agent/source instance ID (e.g., `main`, `searcher-a7b9`)                   |
+| `agent_name` | `str`         | Agent/source name (e.g., `compact`, `image_understanding`, `search`)       |
+| `model_id`   | `str`         | Model identifier (e.g., `openai-chat:gpt-4o`, `anthropic:claude-sonnet-4`) |
+| `usage`      | `RunUsage`    | Cumulative token usage for this agent/source                               |
+| `usage_id`   | `str \| None` | Stable usage record ID for idempotent updates                              |
+| `source`     | `str`         | Component that reported this usage                                         |
 
 ## Extending AgentContext
 

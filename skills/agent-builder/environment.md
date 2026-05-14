@@ -31,7 +31,7 @@ AgentContext - Short-lived, references Environment resources
 from ya_agent_sdk.agents import create_agent, stream_agent
 
 # Default: uses LocalEnvironment
-runtime = create_agent("openai:gpt-4")
+runtime = create_agent("openai-chat:gpt-4")
 async with stream_agent(runtime, "Hello") as streamer:
     async for event in streamer:
         print(event)

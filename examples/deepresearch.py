@@ -340,7 +340,7 @@ Please conduct deep research on the following objective and produce a comprehens
 
     if run and run.result:
         print(run.result.output.summary)
-        print(f"\nUsage: {run.usage()}")
+        print(f"\nUsage: {run.usage}")
         print(f"Total messages: {len(run.all_messages())}")
 
         # Save session state

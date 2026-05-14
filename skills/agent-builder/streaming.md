@@ -43,7 +43,7 @@ flowchart TB
 ```python
 from ya_agent_sdk.agents import create_agent, stream_agent
 
-runtime = create_agent("openai:gpt-4o")
+runtime = create_agent("openai-chat:gpt-4o")
 
 async with stream_agent(runtime, "Hello") as streamer:
     async for event in streamer:

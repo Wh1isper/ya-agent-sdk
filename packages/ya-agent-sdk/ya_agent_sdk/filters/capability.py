@@ -24,7 +24,7 @@ Example::
             )
         )
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[filter_by_capability],
         )
@@ -178,7 +178,7 @@ def filter_by_capability(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[filter_by_capability],
         )

@@ -25,7 +25,7 @@ Example::
             )
         )
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[drop_extra_images, drop_extra_videos],
         )
@@ -216,7 +216,7 @@ def drop_extra_images(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[drop_extra_images],
         )
@@ -295,7 +295,7 @@ def drop_gif_images(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[drop_gif_images],
         )
@@ -473,7 +473,7 @@ def drop_extra_videos(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[drop_extra_videos],
         )

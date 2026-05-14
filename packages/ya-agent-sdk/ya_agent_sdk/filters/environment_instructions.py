@@ -20,7 +20,7 @@ Example::
         )
         env_filter = create_environment_instructions_filter(env)
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[env_filter],
         )
@@ -60,7 +60,7 @@ def create_environment_instructions_filter(
     Example:
         env_filter = create_environment_instructions_filter(env)
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             history_processors=[env_filter],
         )
     """

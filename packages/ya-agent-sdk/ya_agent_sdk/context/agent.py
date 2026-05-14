@@ -26,7 +26,7 @@ Example:
         from ya_agent_sdk.agents.main import create_agent, stream_agent
 
         # create_agent returns AgentRuntime (not a context manager)
-        runtime = create_agent("openai:gpt-4")
+        runtime = create_agent("openai-chat:gpt-4")
 
         # stream_agent manages runtime lifecycle automatically
         async with stream_agent(runtime, "Hello") as streamer:
@@ -35,7 +35,7 @@ Example:
 
     Using create_agent with manual agent.run::
 
-        runtime = create_agent("openai:gpt-4")
+        runtime = create_agent("openai-chat:gpt-4")
         async with runtime:  # Enter runtime to manage env/ctx/agent
             result = await runtime.agent.run("Hello", deps=runtime.ctx)
             print(result.output)
@@ -184,7 +184,7 @@ Example::
         return LangfuseModel(model, name=agent_name)
 
     runtime = create_agent(
-        "openai:gpt-4",
+        "openai-chat:gpt-4",
         model_wrapper=my_wrapper,
     )
 """
@@ -223,7 +223,7 @@ Example::
             yield
 
     runtime = create_agent(
-        "openai:gpt-4",
+        "openai-chat:gpt-4",
         subagent_wrapper=trace_subagent,
     )
 """
@@ -429,7 +429,7 @@ class ToolIdWrapper:
             case FunctionToolCallEvent():
                 event.part.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
             case FunctionToolResultEvent():
-                event.result.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
+                event.part.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
             case PartStartEvent() | PartEndEvent():
                 if isinstance(event.part, (ToolCallPart, ToolReturnPart, RetryPromptPart)):
                     event.part.tool_call_id = self.upsert_tool_call_id(event.part.tool_call_id)
@@ -992,7 +992,7 @@ class AgentContext(BaseModel):
 
             from ya_agent_sdk.agents.main import create_agent, stream_agent
 
-            runtime = create_agent("openai:gpt-4")
+            runtime = create_agent("openai-chat:gpt-4")
             # stream_agent manages runtime lifecycle automatically
             async with stream_agent(runtime, "Hello") as streamer:
                 async for event in streamer:
@@ -1000,7 +1000,7 @@ class AgentContext(BaseModel):
 
         Using create_agent with manual agent.run::
 
-            runtime = create_agent("openai:gpt-4")
+            runtime = create_agent("openai-chat:gpt-4")
             async with runtime:
                 result = await runtime.agent.run("Hello", deps=runtime.ctx)
 
@@ -1229,7 +1229,7 @@ class AgentContext(BaseModel):
             return traced_model(model, name=agent_name, trace_id=context.get("run_id"))
 
         runtime = create_agent(
-            "openai:gpt-4",
+            "openai-chat:gpt-4",
             model_wrapper=my_wrapper,
         )
     """
@@ -1261,7 +1261,7 @@ class AgentContext(BaseModel):
                 yield
 
         runtime = create_agent(
-            "openai:gpt-4",
+            "openai-chat:gpt-4",
             subagent_wrapper=trace_subagent,
         )
     """
@@ -1279,7 +1279,7 @@ class AgentContext(BaseModel):
     Example::
 
         runtime = create_agent(
-            "openai:gpt-4",
+            "openai-chat:gpt-4",
             model_wrapper=my_wrapper,
             extra_context_kwargs={
                 "wrapper_metadata": {
@@ -1768,7 +1768,7 @@ class AgentContext(BaseModel):
 
             async with AgentContext(...) as ctx:
                 agent = Agent(
-                    'openai:gpt-4',
+                    'openai-chat:gpt-4',
                     deps_type=AgentContext,
                     capabilities=ctx.get_history_capabilities(),
                 )

@@ -22,7 +22,7 @@ from yaacli.runtime import create_tui_runtime
 def test_create_tui_runtime_minimal(tmp_path: Path) -> None:
     """Test creating runtime with minimal config."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
     )
 
     runtime = create_tui_runtime(
@@ -39,7 +39,7 @@ def test_create_tui_runtime_minimal(tmp_path: Path) -> None:
 async def test_create_tui_runtime_uses_custom_config_dir_for_allowed_paths(tmp_path: Path) -> None:
     """Test runtime wiring with a custom global config directory."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
     )
     config_dir = tmp_path / "custom-config"
 
@@ -56,7 +56,7 @@ async def test_create_tui_runtime_uses_custom_config_dir_for_allowed_paths(tmp_p
 async def test_create_tui_runtime_orders_skill_paths_by_priority(tmp_path: Path) -> None:
     """Test skill path priority: global, shared, project, project config."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
     )
     config_dir = tmp_path / "custom-config"
     working_dir = tmp_path / "workspace"
@@ -85,13 +85,13 @@ def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None
     config_dir = tmp_path / "config"
     config = YaacliConfig(
         general=GeneralConfig(
-            model="openai:gpt-4",
+            model="openai-chat:gpt-4",
             model_cfg="claude_200k",
         ),
         model_profiles={
             "long": ModelProfileConfig(
                 label="Long",
-                model="openai:gpt-4",
+                model="openai-chat:gpt-4",
                 model_cfg="gemini_1m",
             ),
         },
@@ -112,7 +112,7 @@ def test_create_tui_runtime_with_model_settings(tmp_path: Path) -> None:
     # Use openai which is more commonly mocked in tests
     config = YaacliConfig(
         general=GeneralConfig(
-            model="openai:gpt-4",
+            model="openai-chat:gpt-4",
             model_settings="openai_high",
         ),
     )
@@ -128,7 +128,7 @@ def test_create_tui_runtime_with_model_settings(tmp_path: Path) -> None:
 def test_create_tui_runtime_with_mcp_servers(tmp_path: Path) -> None:
     """Test creating runtime with MCP servers."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
     )
     mcp_config = MCPConfig(
         servers={
@@ -152,7 +152,7 @@ def test_create_tui_runtime_with_mcp_servers(tmp_path: Path) -> None:
 def test_create_tui_runtime_with_need_approval(tmp_path: Path) -> None:
     """Test creating runtime with tools needing approval."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
         tools=ToolsConfig(need_approval=["shell_sandbox", "file_write"]),
     )
 
@@ -167,7 +167,7 @@ def test_create_tui_runtime_with_need_approval(tmp_path: Path) -> None:
 def test_create_tui_runtime_uses_cwd_by_default() -> None:
     """Test that runtime uses cwd when working_dir not specified."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
     )
 
     runtime = create_tui_runtime(config=config)
@@ -181,7 +181,7 @@ def test_create_tui_runtime_with_model_cfg_preset(tmp_path: Path) -> None:
 
     config = YaacliConfig(
         general=GeneralConfig(
-            model="openai:gpt-4",
+            model="openai-chat:gpt-4",
             model_cfg="claude_200k",
         ),
     )
@@ -205,7 +205,7 @@ def test_create_tui_runtime_with_model_cfg_gemini(tmp_path: Path) -> None:
     # Use openai model to avoid API key requirement, but test gemini preset
     config = YaacliConfig(
         general=GeneralConfig(
-            model="openai:gpt-4",
+            model="openai-chat:gpt-4",
             model_cfg="gemini_1m",
         ),
     )
@@ -228,7 +228,7 @@ def test_create_tui_runtime_with_model_cfg_dict(tmp_path: Path) -> None:
 
     config = YaacliConfig(
         general=GeneralConfig(
-            model="openai:gpt-4",
+            model="openai-chat:gpt-4",
             model_cfg={
                 "context_window": 100_000,
                 "max_images": 10,
@@ -251,7 +251,7 @@ def test_create_tui_runtime_with_model_cfg_dict(tmp_path: Path) -> None:
 def test_create_tui_runtime_with_no_model_cfg(tmp_path: Path) -> None:
     """Test creating runtime without model_cfg uses defaults."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4"),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
     )
 
     runtime = create_tui_runtime(

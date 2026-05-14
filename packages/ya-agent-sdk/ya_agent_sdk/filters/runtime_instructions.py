@@ -33,7 +33,7 @@ Example::
             )
         )
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[inject_runtime_instructions],
             metadata=lambda _: {'context_manage_tool': 'handoff'},
@@ -74,7 +74,7 @@ async def inject_runtime_instructions(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[inject_runtime_instructions],
         )

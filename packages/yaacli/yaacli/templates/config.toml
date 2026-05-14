@@ -6,7 +6,7 @@
 # Format: "provider:model_name"
 # Examples:
 #   - anthropic:claude-sonnet-4-5
-#   - openai:gpt-4o
+#   - openai-chat:gpt-4o
 #   - google:gemini-2.5-pro
 #   - oauth@codex:gpt-5.5  # run `ya-oauth login codex` first
 model = ""
@@ -24,7 +24,7 @@ model = ""
 # The last selected profile is remembered in ~/.yaacli/state.json.
 # [model_profiles.fast]
 # label = "Fast"
-# model = "openai:gpt-5-mini"
+# model = "openai-responses:gpt-5-mini"
 # model_settings = "openai_responses_low"
 # model_cfg = "gpt5_270k"
 #
@@ -107,7 +107,7 @@ disabled = []
 
 # Override settings for specific subagents
 # [subagents.overrides.explorer]
-# model = "openai:gpt-4o"
+# model = "openai-chat:gpt-4o"
 # model_settings = "openai_default"
 
 # =============================================================================

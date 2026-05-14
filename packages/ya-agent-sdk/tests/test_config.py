@@ -25,11 +25,11 @@ def test_agent_context_settings_from_env(monkeypatch, tmp_path: Path) -> None:
     tmp_base = tmp_path / "tmp"
     tmp_base.mkdir()
 
-    monkeypatch.setenv("YA_AGENT_IMAGE_UNDERSTANDING_MODEL", "openai:gpt-4o")
+    monkeypatch.setenv("YA_AGENT_IMAGE_UNDERSTANDING_MODEL", "openai-chat:gpt-4o")
     monkeypatch.setenv("YA_AGENT_VIDEO_UNDERSTANDING_MODEL", "google-gla:gemini-2.0-flash")
 
     settings = AgentSettings()
-    assert settings.image_understanding_model == "openai:gpt-4o"
+    assert settings.image_understanding_model == "openai-chat:gpt-4o"
     assert settings.video_understanding_model == "google-gla:gemini-2.0-flash"
 
 

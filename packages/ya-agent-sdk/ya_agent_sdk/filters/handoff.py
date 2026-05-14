@@ -121,7 +121,7 @@ async def process_handoff_message(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             capabilities=[ProcessHistory(process_handoff_message)],
         )

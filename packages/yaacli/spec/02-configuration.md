@@ -524,7 +524,7 @@ yaacli init
 yaacli config show
 
 # Set a configuration value
-yaacli config set general.model "openai:gpt-4o"
+yaacli config set general.model "openai-chat:gpt-4o"
 
 # Get a configuration value
 yaacli config get general.model

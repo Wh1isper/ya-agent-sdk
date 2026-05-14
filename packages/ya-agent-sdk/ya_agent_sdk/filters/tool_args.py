@@ -11,7 +11,7 @@ Example::
     from ya_agent_sdk.filters.tool_args import fix_truncated_tool_args
 
     agent = Agent(
-        'openai:gpt-4',
+        'openai-chat:gpt-4',
         deps_type=AgentContext,
         history_processors=[fix_truncated_tool_args],
     )
@@ -48,7 +48,7 @@ async def fix_truncated_tool_args(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[fix_truncated_tool_args],
         )

@@ -25,7 +25,7 @@ def test_build_model_profiles_includes_default_and_configured_profiles() -> None
         model_profiles={
             "fast": ModelProfileConfig(
                 label="Fast",
-                model="openai:gpt-5-mini",
+                model="openai-responses:gpt-5-mini",
                 model_settings="openai_responses_low",
                 model_cfg="gpt5_270k",
             ),
@@ -38,7 +38,7 @@ def test_build_model_profiles_includes_default_and_configured_profiles() -> None
     assert profiles[0].label == "Default"
     assert profiles[0].is_default is True
     assert profiles[1].label == "Fast"
-    assert profiles[1].model == "openai:gpt-5-mini"
+    assert profiles[1].model == "openai-responses:gpt-5-mini"
 
 
 def test_save_and_load_selected_model_profile_id(tmp_path: Path) -> None:
@@ -56,7 +56,7 @@ def test_startup_profile_uses_persisted_selection_when_available(tmp_path: Path)
     config = YaacliConfig(
         general=GeneralConfig(model="anthropic:claude-sonnet-4-5"),
         model_profiles={
-            "fast": ModelProfileConfig(label="Fast", model="openai:gpt-5-mini"),
+            "fast": ModelProfileConfig(label="Fast", model="openai-responses:gpt-5-mini"),
         },
     )
     save_selected_model_profile_id(tmp_path, "fast")
@@ -65,7 +65,7 @@ def test_startup_profile_uses_persisted_selection_when_available(tmp_path: Path)
 
     assert profile is not None
     assert profile.id == "fast"
-    assert profile.model == "openai:gpt-5-mini"
+    assert profile.model == "openai-responses:gpt-5-mini"
 
 
 def test_startup_profile_falls_back_to_default_for_stale_selection(tmp_path: Path) -> None:
@@ -73,7 +73,7 @@ def test_startup_profile_falls_back_to_default_for_stale_selection(tmp_path: Pat
     config = YaacliConfig(
         general=GeneralConfig(model="anthropic:claude-sonnet-4-5"),
         model_profiles={
-            "fast": ModelProfileConfig(label="Fast", model="openai:gpt-5-mini"),
+            "fast": ModelProfileConfig(label="Fast", model="openai-responses:gpt-5-mini"),
         },
     )
     save_selected_model_profile_id(tmp_path, "stale")

@@ -211,7 +211,7 @@ Send real-time guidance to agents during execution:
 from ya_agent_sdk.agents import create_agent, stream_agent
 from ya_agent_sdk.context import BusMessage
 
-runtime = create_agent("openai:gpt-4o")
+runtime = create_agent("openai-chat:gpt-4o")
 
 async def on_user_input(text: str):
     """Called when user types during agent execution."""

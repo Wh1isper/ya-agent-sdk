@@ -78,7 +78,7 @@ model_cfg = "claude_200k"
 
 [model_profiles.fast]
 label = "Fast"
-model = "openai:gpt-5-mini"
+model = "openai-responses:gpt-5-mini"
 model_settings = "openai_responses_low"
 model_cfg = "gpt5_270k"
 

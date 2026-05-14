@@ -69,7 +69,7 @@ async with create_agent("anthropic:claude-sonnet-4") as runtime:
 ```python
 from ya_agent_sdk.agents import create_agent, stream_agent
 
-runtime = create_agent("openai:gpt-4o")
+runtime = create_agent("openai-chat:gpt-4o")
 
 async with stream_agent(runtime, "Hello") as streamer:
     async for event in streamer:
@@ -101,11 +101,11 @@ Read [`./toolset.md`](./toolset.md) when the task needs custom toolsets, hooks, 
 ```python
 from ya_agent_sdk.agents import create_agent
 
-async with create_agent("openai:gpt-4o") as runtime:
+async with create_agent("openai-chat:gpt-4o") as runtime:
     await runtime.agent.run("Remember that I prefer concise answers.", deps=runtime.ctx)
     state = runtime.ctx.export_state()
 
-restored_runtime = create_agent("openai:gpt-4o", state=state)
+restored_runtime = create_agent("openai-chat:gpt-4o", state=state)
 ```
 
 Read [`./context.md`](./context.md) for `ResumableState`, message history handling, and restore semantics.
@@ -141,7 +141,7 @@ researcher = SubagentConfig(
 )
 
 async with create_agent(
-    "openai:gpt-4o",
+    "openai-chat:gpt-4o",
     subagent_configs=[researcher],
     unified_subagents=True,
 ) as runtime:

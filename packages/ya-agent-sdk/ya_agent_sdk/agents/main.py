@@ -184,14 +184,14 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
         core_toolset: The core toolset with BaseTool instances.
 
     Example:
-        runtime = create_agent("openai:gpt-4")
+        runtime = create_agent("openai-chat:gpt-4")
         async with runtime:
             result = await runtime.agent.run("Hello", deps=runtime.ctx)
             print(result.output)
 
         # Or with external env management:
         async with env:
-            runtime = create_agent("openai:gpt-4", env=env)
+            runtime = create_agent("openai-chat:gpt-4", env=env)
             async with runtime:  # Only enters ctx and agent
                 result = await runtime.agent.run("Hello", deps=runtime.ctx)
     """
@@ -401,7 +401,7 @@ def create_agent(
     the lifecycle of these components.
 
     Args:
-        model: Model string (e.g., "openai:gpt-4") or Model instance.
+        model: Model string (e.g., "openai-chat:gpt-4") or Model instance.
 
         model_settings: Optional model settings for inference configuration.
         model_wrapper: Optional wrapper for model instrumentation (observability, caching).
@@ -472,7 +472,7 @@ def create_agent(
     Example:
         Basic usage::
 
-            runtime = create_agent("openai:gpt-4")
+            runtime = create_agent("openai-chat:gpt-4")
             async with runtime:
                 result = await runtime.agent.run("Hello", deps=runtime.ctx)
                 print(result.output)
@@ -494,12 +494,12 @@ def create_agent(
                 mounts=[VirtualMount(Path("."), Path("/workspace"))],
                 image="python:3.11",
             ) as sandbox_env:
-                runtime = create_agent("openai:gpt-4", env=sandbox_env)
+                runtime = create_agent("openai-chat:gpt-4", env=sandbox_env)
 
         With templated system prompt::
 
             runtime = create_agent(
-                "openai:gpt-4",
+                "openai-chat:gpt-4",
                 system_prompt="You are a {{ role }}. {{ extra_instructions | default('') }}",
                 system_prompt_template_vars={"role": "helpful assistant"},
             )
@@ -871,7 +871,7 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
             streamer.raise_if_exception()
             # Access final result and usage
             if streamer.run:
-                print(f"Usage: {streamer.run.usage()}")
+                print(f"Usage: {streamer.run.usage}")
     """
 
     _output_queue: asyncio.Queue[StreamEvent]
@@ -1057,7 +1057,7 @@ async def stream_agent(  # noqa: C901
     Example::
 
         # Recommended: Let stream_agent manage the runtime lifecycle
-        runtime = create_agent("openai:gpt-4")
+        runtime = create_agent("openai-chat:gpt-4")
         async with stream_agent(
             runtime,
             "Search for Python tutorials",
@@ -1205,7 +1205,7 @@ async def stream_agent(  # noqa: C901
             agent_id=main_agent_info.agent_id,
             agent_name=main_agent_info.agent_name,
             model_id=base_model.model_name,
-            usage=run.usage(),
+            usage=run.usage,
             source="main_model_request",
         )
 

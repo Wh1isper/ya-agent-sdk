@@ -11,11 +11,11 @@ This SDK builds on pydantic-ai. There are two ways to configure models:
 from ya_agent_sdk.agents.models import infer_model
 
 # Option 1: Native pydantic-ai format (direct provider connection)
-model = infer_model("openai:gpt-4o")
+model = infer_model("openai-chat:gpt-4o")
 model = infer_model("anthropic:claude-3-5-sonnet-20241022")
 
 # Option 2: Gateway format (via gateway proxy)
-model = infer_model("mygateway@openai:gpt-4o")
+model = infer_model("mygateway@openai-chat:gpt-4o")
 model = infer_model("mygateway@anthropic:claude-3-5-sonnet-20241022")
 ```
 
@@ -27,14 +27,14 @@ See official docs: [pydantic-ai Models](https://ai.pydantic.dev/models/)
 
 **Common formats:**
 
-| Provider         | Format                  | Example                                |
-| ---------------- | ----------------------- | -------------------------------------- |
-| OpenAI           | `openai:<model>`        | `openai:gpt-4o`                        |
-| Anthropic        | `anthropic:<model>`     | `anthropic:claude-3-5-sonnet-20241022` |
-| Google           | `gemini:<model>`        | `gemini:gemini-1.5-pro`                |
-| Google           | `google-gla:<model>`    | `google-gla:gemini-2.5-pro`            |
-| Google Vertex AI | `google-vertex:<model>` | `google-vertex:gemini-2.5-pro`         |
-| Groq             | `groq:<model>`          | `groq:llama-3.1-70b-versatile`         |
+| Provider         | Format                                             | Example                                |
+| ---------------- | -------------------------------------------------- | -------------------------------------- |
+| OpenAI           | `openai-chat:<model>` / `openai-responses:<model>` | `openai-chat:gpt-4o`                   |
+| Anthropic        | `anthropic:<model>`                                | `anthropic:claude-3-5-sonnet-20241022` |
+| Google           | `gemini:<model>`                                   | `gemini:gemini-1.5-pro`                |
+| Google           | `google-gla:<model>`                               | `google-gla:gemini-2.5-pro`            |
+| Google Vertex AI | `google-vertex:<model>`                            | `google-vertex:gemini-2.5-pro`         |
+| Groq             | `groq:<model>`                                     | `groq:llama-3.1-70b-versatile`         |
 
 ## Google Vertex AI Configuration
 
@@ -131,7 +131,7 @@ Naming convention: `{GATEWAY_NAME}_API_KEY` and `{GATEWAY_NAME}_BASE_URL`
 
 | Provider Name                                 | Model String Format                            |
 | --------------------------------------------- | ---------------------------------------------- |
-| `openai` / `openai-chat` / `openai-responses` | `gateway@openai:gpt-4o`                        |
+| `openai` / `openai-chat` / `openai-responses` | `gateway@openai-chat:gpt-4o`                   |
 | `anthropic`                                   | `gateway@anthropic:claude-3-5-sonnet-20241022` |
 | `gemini` / `google-vertex`                    | `gateway@gemini:gemini-1.5-pro`                |
 | `groq`                                        | `gateway@groq:llama-3.1-70b-versatile`         |
@@ -168,7 +168,7 @@ from pydantic_ai import Agent
 from ya_agent_sdk.agents.models import infer_model
 
 agent = Agent(
-    model=infer_model("mygateway@openai:gpt-4o"),
+    model=infer_model("mygateway@openai-chat:gpt-4o"),
     system_prompt="You are a helpful assistant."
 )
 ```

@@ -1262,7 +1262,7 @@ async def test_tui_app_run_agent_reports_saved_recovery_session():
 async def test_tui_app_model_command_opens_in_tui_selector() -> None:
     """/model should open the embedded TUI selector without terminal dialogs."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4o"),
+        general=GeneralConfig(model="openai-chat:gpt-4o"),
         model_profiles={
             "sonnet": ModelProfileConfig(label="Sonnet", model="anthropic:claude-sonnet-4-5"),
         },
@@ -1281,7 +1281,7 @@ async def test_tui_app_model_command_opens_in_tui_selector() -> None:
 def test_tui_app_model_selector_movement_wraps() -> None:
     """Embedded model selector movement should stay inside TUI state."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4o"),
+        general=GeneralConfig(model="openai-chat:gpt-4o"),
         model_profiles={
             "sonnet": ModelProfileConfig(label="Sonnet", model="anthropic:claude-sonnet-4-5"),
             "gemini": ModelProfileConfig(label="Gemini", model="google-gla:gemini-2.5-pro"),
@@ -1303,7 +1303,7 @@ def test_tui_app_model_selector_movement_wraps() -> None:
 def test_tui_app_model_selector_text_marks_current_and_highlighted_profiles() -> None:
     """Embedded model selector output should mark active and highlighted profiles."""
     config = YaacliConfig(
-        general=GeneralConfig(model="openai:gpt-4o"),
+        general=GeneralConfig(model="openai-chat:gpt-4o"),
         model_profiles={
             "sonnet": ModelProfileConfig(label="Sonnet", model="anthropic:claude-sonnet-4-5"),
         },

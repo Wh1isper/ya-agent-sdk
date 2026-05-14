@@ -52,7 +52,7 @@ show_elapsed_time = true
 [subagents]
 disabled = []                 # Subagents to disable by name
 # [subagents.overrides.explorer]
-# model = "openai:gpt-4o"
+# model = "openai-chat:gpt-4o"
 ```
 
 ### tools.toml (Project)

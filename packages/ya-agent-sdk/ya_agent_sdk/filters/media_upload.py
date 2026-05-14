@@ -20,7 +20,7 @@ Example::
 
     # Use in agent
     agent = Agent(
-        'openai:gpt-4',
+        'openai-chat:gpt-4',
         deps_type=AgentContext,
         history_processors=[
             drop_extra_images,  # First: limit images
@@ -128,7 +128,7 @@ def create_media_upload_filter(
         filter_fn = create_media_upload_filter(uploader)
 
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[filter_fn],
         )

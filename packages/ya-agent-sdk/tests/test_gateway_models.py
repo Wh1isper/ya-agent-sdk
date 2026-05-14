@@ -1,5 +1,6 @@
 """Tests for gateway model inference helpers."""
 
+import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from ya_agent_sdk.agents.models.gateway import (
@@ -45,7 +46,7 @@ def test_infer_gateway_deepseek_v4_uses_reasoning_content_profile(monkeypatch) -
     monkeypatch.setenv("COLORIST_API_KEY", "test-key")
     monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", "openai:deepseek-v4-pro")
+    model = infer_model("colorist", "openai-chat:deepseek-v4-pro")
 
     assert isinstance(model, OpenAIChatModel)
     profile = OpenAIModelProfile.from_profile(model.profile)
@@ -62,7 +63,7 @@ def test_infer_gateway_mimo_v2_5_uses_reasoning_content_profile(monkeypatch) -> 
     monkeypatch.setenv("COLORIST_API_KEY", "test-key")
     monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", "openai:MiMo-V2.5-Pro")
+    model = infer_model("colorist", "openai-chat:MiMo-V2.5-Pro")
 
     assert isinstance(model, OpenAIChatModel)
     profile = OpenAIModelProfile.from_profile(model.profile)
@@ -78,7 +79,7 @@ def test_infer_gateway_deepseek_r1_uses_tool_choice_profile_patch(monkeypatch) -
     monkeypatch.setenv("COLORIST_API_KEY", "test-key")
     monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", "openai:deepseek-reasoner")
+    model = infer_model("colorist", "openai-chat:deepseek-reasoner")
 
     assert isinstance(model, OpenAIChatModel)
     profile = OpenAIModelProfile.from_profile(model.profile)
@@ -86,3 +87,13 @@ def test_infer_gateway_deepseek_r1_uses_tool_choice_profile_patch(monkeypatch) -
     assert profile.openai_chat_thinking_field is None
     assert profile.openai_chat_send_back_thinking_parts == "auto"
     assert profile.openai_supports_tool_choice_required is False
+
+
+@pytest.mark.parametrize("provider_prefix", ["openai", "chat", "responses"])
+def test_infer_gateway_rejects_openai_provider_aliases(provider_prefix: str, monkeypatch) -> None:
+    """Should require explicit OpenAI API selection for gateways."""
+    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
+    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+
+    with pytest.raises(ValueError, match=r"openai-chat.*openai-responses"):
+        infer_model("colorist", f"{provider_prefix}:gpt-4o")

@@ -599,7 +599,7 @@ def create_cache_friendly_compact_filter(
                     usage_limits=UsageLimits(request_limit=1),
                 ) as result:
                     summary_markdown = str(await result.get_output())
-                    usage = result.usage()
+                    usage = result.usage
 
                 model = ctx.model
                 model_id = model.model_name if model is not None else "unknown"
@@ -710,9 +710,9 @@ def create_compact_filter(
 
     Example::
 
-        compact_filter = await create_compact_filter(model="openai:gpt-4o-mini")
+        compact_filter = await create_compact_filter(model="openai-chat:gpt-4o-mini")
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             capabilities=[ProcessHistory(compact_filter)],
         )
@@ -791,7 +791,7 @@ def create_compact_filter(
                     agent_id=AGENT_NAME,
                     agent_name=AGENT_NAME,
                     model_id=model_id,
-                    usage=result.usage(),
+                    usage=result.usage,
                     source="compact",
                     usage_id=usage_id,
                     ledger_key=usage_id,
@@ -825,7 +825,7 @@ def create_compact_filter(
                     trimmed_messages=trimmed_result.messages,
                     handoff_messages=compacted,
                     summary_markdown=condense_markdown,
-                    usage=result.usage(),
+                    usage=result.usage,
                     metadata={"trim": trimmed_result},
                     compacted_messages=compacted,
                     condense_result=condense_result,

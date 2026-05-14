@@ -76,7 +76,7 @@ Loaded tool state is stored in `AgentContext` and automatically persisted via `R
 
 ```python
 # Session 1: discover and use tools
-async with create_agent("openai:gpt-4o", toolsets=[search_toolset]) as runtime:
+async with create_agent("openai-chat:gpt-4o", toolsets=[search_toolset]) as runtime:
     result = await runtime.agent.run("Search arxiv for transformers", deps=runtime.ctx)
 
     # Export state - includes tool_search_loaded_namespaces and tool_search_loaded_tools
@@ -84,7 +84,7 @@ async with create_agent("openai:gpt-4o", toolsets=[search_toolset]) as runtime:
     save_to_disk(state)
 
 # Session 2: restore - arxiv tools are immediately available
-async with create_agent("openai:gpt-4o", toolsets=[search_toolset], state=saved_state) as runtime:
+async with create_agent("openai-chat:gpt-4o", toolsets=[search_toolset], state=saved_state) as runtime:
     # No need to call tool_search again for arxiv tools
     result = await runtime.agent.run("Get paper details for 2401.12345", deps=runtime.ctx)
 ```
@@ -253,7 +253,7 @@ search_toolset = ToolSearchToolSet(
 
 # Combine: core first, search last
 async with create_agent(
-    "openai:gpt-4o",
+    "openai-chat:gpt-4o",
     toolsets=[core_toolset, search_toolset],
 ) as runtime:
     ...
@@ -284,7 +284,7 @@ search_toolset = ToolSearchToolSet(
 
 # Combine both
 async with create_agent(
-    "openai:gpt-4o",
+    "openai-chat:gpt-4o",
     toolsets=[core_toolset, search_toolset],
 ) as runtime:
     ...

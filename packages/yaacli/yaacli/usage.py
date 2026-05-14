@@ -33,7 +33,7 @@ class SessionUsage:
     Tracks token usage across all agent runs in a CLI session.
     Usage is grouped by:
     - Agent name (main, subagent names, image_understanding, etc.)
-    - Model ID (openai:gpt-4o, anthropic:claude-sonnet-4, etc.)
+    - Model ID (openai-chat:gpt-4o, anthropic:claude-sonnet-4, etc.)
 
     Uses pydantic-ai's RunUsage for accurate tracking including details field.
 
@@ -54,7 +54,7 @@ class SessionUsage:
 
         Args:
             agent: Agent name (e.g., "main", "explorer", "image_understanding").
-            model_id: Model identifier (e.g., "openai:gpt-4o", "anthropic:claude-sonnet-4").
+            model_id: Model identifier (e.g., "openai-chat:gpt-4o", "anthropic:claude-sonnet-4").
             usage: The RunUsage to accumulate.
         """
         # Accumulate by agent

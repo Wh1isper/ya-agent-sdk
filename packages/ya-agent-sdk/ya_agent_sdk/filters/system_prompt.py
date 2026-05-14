@@ -11,7 +11,7 @@ Example::
     from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
 
     agent = Agent(
-        'openai:gpt-4',
+        'openai-chat:gpt-4',
         deps_type=AgentContext,
         history_processors=[create_system_prompt_filter("You are a helpful assistant.")],
     )
@@ -90,7 +90,7 @@ def create_system_prompt_filter(
 
     Example:
         agent = Agent(
-            'openai:gpt-4',
+            'openai-chat:gpt-4',
             deps_type=AgentContext,
             history_processors=[create_system_prompt_filter("You are a helpful assistant.")],
         )

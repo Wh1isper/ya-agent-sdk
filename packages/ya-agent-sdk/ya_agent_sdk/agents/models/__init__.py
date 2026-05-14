@@ -8,6 +8,17 @@ from ya_agent_sdk.agents.models.gateway import infer_model as infer_gateway_mode
 __all__ = ["Model", "infer_model"]
 
 
+_OPENAI_PROVIDER_ERROR = (
+    "Model provider 'openai:' is ambiguous. Use 'openai-chat:<model>' for Chat Completions "
+    "or 'openai-responses:<model>' for the Responses API."
+)
+
+
+def _raise_for_ambiguous_openai_provider(model: str) -> None:
+    if model.startswith("openai:"):
+        raise ValueError(_OPENAI_PROVIDER_ERROR)
+
+
 def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None) -> Model:
     """Infer model from string or return Model instance.
 
@@ -22,6 +33,7 @@ def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None)
     """
     if not isinstance(model, str):
         return legacy_infer_model(model)
+    _raise_for_ambiguous_openai_provider(model)
     if model.startswith("oauth@"):
         provider_name, _, model_name = model.removeprefix("oauth@").partition(":")
         if not provider_name or not model_name:

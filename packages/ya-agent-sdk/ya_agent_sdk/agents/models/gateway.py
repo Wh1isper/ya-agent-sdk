@@ -13,6 +13,11 @@ from pydantic_ai.providers import Provider
 from ya_agent_sdk.agents.models.utils import create_async_http_client
 
 REQUIRED_TOOL_CHOICE_UNSUPPORTED_MODEL_KEYWORDS: tuple[str, ...] = ("deepseek",)
+_OPENAI_PROVIDER_ERROR = (
+    "Gateway upstream OpenAI provider alias is ambiguous. Use 'openai-chat' for Chat Completions "
+    "or 'openai-responses' for the Responses API."
+)
+_OPENAI_PROVIDER_ALIASES: tuple[str, ...] = ("openai", "chat", "responses")
 
 
 def _supports_required_tool_choice(model_name: str) -> bool:
@@ -119,6 +124,78 @@ def _build_openai_chat_model(model_name: str, provider: Provider[Any]) -> Model:
     return OpenAIChatModel(model_name=model_name, provider=provider, profile=_build_openai_chat_profile(model_name))
 
 
+def _read_gateway_credentials(api_key_env_var: str, base_url_env_var: str) -> tuple[str, str]:
+    api_key = os.getenv(api_key_env_var)
+    if not api_key:
+        raise KeyError(f"API key not found, check environment variable: {api_key_env_var}.")
+
+    base_url = os.getenv(base_url_env_var)
+    if not base_url:
+        raise KeyError(f"Gateway URL not found, check environment variable: {base_url_env_var}.")
+
+    return api_key, base_url
+
+
+def _build_gateway_http_client(
+    provider_name: str,
+    api_key: str,
+    *,
+    extra_headers: dict[str, str] | None,
+) -> httpx.AsyncClient:
+    # Only google-gla/bedrock need extra_headers via http_client (their providers don't support direct header injection)
+    needs_extra_headers_patch = provider_name in ("google-vertex", "google-gla", "bedrock", "converse")
+
+    if extra_headers and needs_extra_headers_patch:
+        http_client = create_async_http_client(extra_headers=extra_headers)
+    else:
+        http_client = create_async_http_client()
+
+    http_client.event_hooks = {"request": [_request_hook(api_key)]}
+    return http_client
+
+
+def _build_gateway_provider(
+    provider_name: str,
+    gateway_name: str,
+    api_key: str,
+    base_url: str,
+    http_client: httpx.AsyncClient,
+) -> Provider[Any]:
+    if provider_name in _OPENAI_PROVIDER_ALIASES:
+        raise ValueError(_OPENAI_PROVIDER_ERROR)
+    if provider_name in (
+        "openai-chat",
+        "openai-responses",
+    ):
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        return OpenAIProvider(api_key=api_key, base_url=base_url, http_client=http_client)
+    if provider_name == "groq":
+        from pydantic_ai.providers.groq import GroqProvider
+
+        return GroqProvider(api_key=api_key, base_url=base_url, http_client=http_client)
+    if provider_name == "anthropic":
+        from anthropic import AsyncAnthropic  # pyright: ignore[reportMissingImports]
+        from pydantic_ai.providers.anthropic import AnthropicProvider
+
+        return AnthropicProvider(
+            anthropic_client=AsyncAnthropic(auth_token=api_key, base_url=base_url, http_client=http_client)
+        )
+    if provider_name in ("bedrock", "converse"):
+        from pydantic_ai.providers.bedrock import BedrockProvider
+
+        return BedrockProvider(
+            api_key=api_key,
+            base_url=base_url,
+            region_name=gateway_name,  # Fake region name to avoid NoRegionError
+        )
+    if provider_name in ("google-vertex", "google-gla"):
+        from pydantic_ai.providers.google import GoogleProvider
+
+        return GoogleProvider(vertexai=True, api_key=api_key, base_url=base_url, http_client=http_client)
+    raise KeyError(f"Unknown upstream provider: {provider_name}")
+
+
 def make_gateway_provider(
     gateway_name: str,
     extra_headers: dict[str, str] | None = None,
@@ -144,59 +221,9 @@ def make_gateway_provider(
     base_url_env_var = f"{gateway_prefix}_BASE_URL"
 
     def gateway_provider(provider_name: str) -> Provider[Any]:
-        api_key = os.getenv(api_key_env_var)
-        if not api_key:
-            raise KeyError(f"API key not found, check environment variable: {api_key_env_var}.")
-
-        base_url = os.getenv(base_url_env_var)
-        if not base_url:
-            raise KeyError(f"Gateway URL not found, check environment variable: {base_url_env_var}.")
-
-        # Only google-gla/bedrock need extra_headers via http_client (their providers don't support direct header injection)
-        needs_extra_headers_patch = provider_name in ("google-vertex", "google-gla", "bedrock", "converse")
-
-        if extra_headers and needs_extra_headers_patch:
-            http_client = create_async_http_client(extra_headers=extra_headers)
-        else:
-            http_client = create_async_http_client()
-
-        http_client.event_hooks = {"request": [_request_hook(api_key)]}
-
-        if provider_name in (
-            "openai",
-            "openai-chat",
-            "openai-responses",
-            "chat",
-            "responses",
-        ):
-            from pydantic_ai.providers.openai import OpenAIProvider
-
-            return OpenAIProvider(api_key=api_key, base_url=base_url, http_client=http_client)
-        elif provider_name == "groq":
-            from pydantic_ai.providers.groq import GroqProvider
-
-            return GroqProvider(api_key=api_key, base_url=base_url, http_client=http_client)
-        elif provider_name == "anthropic":
-            from anthropic import AsyncAnthropic  # pyright: ignore[reportMissingImports]
-            from pydantic_ai.providers.anthropic import AnthropicProvider
-
-            return AnthropicProvider(
-                anthropic_client=AsyncAnthropic(auth_token=api_key, base_url=base_url, http_client=http_client)
-            )
-        elif provider_name in ("bedrock", "converse"):
-            from pydantic_ai.providers.bedrock import BedrockProvider
-
-            return BedrockProvider(
-                api_key=api_key,
-                base_url=base_url,
-                region_name=gateway_name,  # Fake region name to avoid NoRegionError
-            )
-        elif provider_name in ("google-vertex", "google-gla"):
-            from pydantic_ai.providers.google import GoogleProvider
-
-            return GoogleProvider(vertexai=True, api_key=api_key, base_url=base_url, http_client=http_client)
-        else:
-            raise KeyError(f"Unknown upstream provider: {provider_name}")
+        api_key, base_url = _read_gateway_credentials(api_key_env_var, base_url_env_var)
+        http_client = _build_gateway_http_client(provider_name, api_key, extra_headers=extra_headers)
+        return _build_gateway_provider(provider_name, gateway_name, api_key, base_url, http_client)
 
     return gateway_provider
 
@@ -231,7 +258,9 @@ def infer_model(gateway_name: str, model: str, extra_headers: dict[str, str] | N
     provider_factory = make_gateway_provider(gateway_name, extra_headers)
 
     provider_prefix, model_name = _split_provider_and_model(model)
-    if provider_prefix in ("openai", "openai-chat", "chat"):
+    if provider_prefix in _OPENAI_PROVIDER_ALIASES:
+        raise ValueError(_OPENAI_PROVIDER_ERROR)
+    if provider_prefix == "openai-chat":
         profile = _build_openai_chat_profile(model_name)
         if profile is not None:
             provider = provider_factory(provider_prefix)

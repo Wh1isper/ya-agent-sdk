@@ -77,7 +77,7 @@ from ya_agent_sdk.events import (
     ToolCallsCompleteEvent,
 )
 
-runtime = create_agent("openai:gpt-4o")
+runtime = create_agent("openai-chat:gpt-4o")
 
 async with stream_agent(runtime, "Hello") as streamer:
     async for stream_event in streamer:

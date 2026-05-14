@@ -47,11 +47,11 @@ def test_default_config() -> None:
 def test_general_config_with_preset() -> None:
     """Test GeneralConfig with preset model_settings."""
     config = GeneralConfig(
-        model="openai:gpt-4o",
+        model="openai-chat:gpt-4o",
         model_settings="openai_high",
     )
 
-    assert config.model == "openai:gpt-4o"
+    assert config.model == "openai-chat:gpt-4o"
     assert config.model_settings == "openai_high"
 
 
@@ -97,7 +97,7 @@ def test_load_global_config(
     config_file = temp_config_dir / "config.toml"
     config_file.write_text("""
 [general]
-model = "openai:gpt-4o"
+model = "openai-chat:gpt-4o"
 model_settings = "openai_high"
 
 [display]
@@ -106,7 +106,7 @@ code_theme = "light"
 
     config = config_manager.load()
 
-    assert config.general.model == "openai:gpt-4o"
+    assert config.general.model == "openai-chat:gpt-4o"
     assert config.general.model_settings == "openai_high"
     assert config.display.code_theme == "light"
     assert config.tools.need_approval == []
@@ -128,7 +128,7 @@ model_cfg = "claude_200k"
 
 [model_profiles.fast]
 label = "Fast"
-model = "openai:gpt-5-mini"
+model = "openai-responses:gpt-5-mini"
 model_settings = "openai_responses_low"
 model_cfg = "gpt5_270k"
 """)
@@ -139,7 +139,7 @@ model_cfg = "gpt5_270k"
     assert "fast" in config.model_profiles
     fast = config.model_profiles["fast"]
     assert fast.label == "Fast"
-    assert fast.model == "openai:gpt-5-mini"
+    assert fast.model == "openai-responses:gpt-5-mini"
     assert fast.model_settings == "openai_responses_low"
     assert fast.model_cfg == "gpt5_270k"
 
@@ -153,7 +153,7 @@ def test_load_global_security_shell_review_config(
     config_file = temp_config_dir / "config.toml"
     config_file.write_text("""
 [general]
-model = "openai:gpt-4o"
+model = "openai-chat:gpt-4o"
 
 [security.shell_review]
 enabled = true
@@ -204,7 +204,7 @@ def test_global_and_project_config(
     global_config = temp_config_dir / "config.toml"
     global_config.write_text("""
 [general]
-model = "openai:gpt-4o"
+model = "openai-chat:gpt-4o"
 
 [display]
 code_theme = "light"
@@ -220,7 +220,7 @@ need_approval = ["dangerous_tool"]
 
     config = config_manager.load()
 
-    assert config.general.model == "openai:gpt-4o"
+    assert config.general.model == "openai-chat:gpt-4o"
     assert config.display.code_theme == "light"
     assert config.tools.need_approval == ["dangerous_tool"]
 
@@ -323,7 +323,7 @@ def test_env_overrides_tui_only(
     global_config = temp_config_dir / "config.toml"
     global_config.write_text("""
 [general]
-model = "openai:gpt-4o"
+model = "openai-chat:gpt-4o"
 
 [display]
 code_theme = "dark"
@@ -337,7 +337,7 @@ code_theme = "dark"
     config = config_manager.load()
 
     assert config.display.code_theme == "light"
-    assert config.general.model == "openai:gpt-4o"
+    assert config.general.model == "openai-chat:gpt-4o"
     assert config.general.agent_stream_resume_max_attempts == 3
     assert config.oauth_refresh.interval_seconds == 900
     assert config.oauth_refresh.refresh_on_startup is False
@@ -354,7 +354,7 @@ def test_project_config_overrides_global(
     global_config = temp_config_dir / "config.toml"
     global_config.write_text("""
 [general]
-model = "openai:gpt-4o"
+model = "openai-chat:gpt-4o"
 max_requests = 500
 
 [display]
@@ -414,12 +414,12 @@ def test_reload(
     assert config1.general.model == ""
 
     config_file = temp_config_dir / "config.toml"
-    config_file.write_text('[general]\nmodel = "openai:gpt-4o"')
+    config_file.write_text('[general]\nmodel = "openai-chat:gpt-4o"')
 
     assert config_manager.config.general.model == ""
 
     config2 = config_manager.reload()
-    assert config2.general.model == "openai:gpt-4o"
+    assert config2.general.model == "openai-chat:gpt-4o"
 
 
 def test_save_default_config(

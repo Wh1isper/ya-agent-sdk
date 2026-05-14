@@ -15,7 +15,7 @@ Example::
     from ya_agent_sdk.filters.auto_load_files import process_auto_load_files
 
     agent = Agent(
-        'openai:gpt-4',
+        'openai-chat:gpt-4',
         deps_type=AgentContext,
         history_processors=[process_auto_load_files],
     )

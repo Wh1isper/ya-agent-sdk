@@ -458,7 +458,7 @@ async def test_view_video_fallback_passes_model_wrapper(tmp_path: Path) -> None:
         ctx = await stack.enter_async_context(
             AgentContext(
                 env=env,
-                tool_config=ToolConfig(video_understanding_model="openai:gpt-4o"),
+                tool_config=ToolConfig(video_understanding_model="openai-chat:gpt-4o"),
                 model_wrapper=model_wrapper,
                 wrapper_metadata={"trace_id": "trace-1"},
             )
@@ -479,7 +479,7 @@ async def test_view_video_fallback_passes_model_wrapper(tmp_path: Path) -> None:
             result = await tool.call(mock_run_ctx, file_path="test.mp4")
 
     assert "This video shows a test scene" in result
-    assert captured_kwargs["model"] == "openai:gpt-4o"
+    assert captured_kwargs["model"] == "openai-chat:gpt-4o"
     assert captured_kwargs["model_wrapper"] is model_wrapper
     assert captured_kwargs["wrapper_metadata"]["run_id"] == ctx.run_id
     assert captured_kwargs["wrapper_metadata"]["agent_id"] == "main"

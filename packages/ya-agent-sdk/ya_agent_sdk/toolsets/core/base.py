@@ -128,7 +128,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             global_hooks=GlobalHooks(pre=global_pre, post=global_post),
         )
 
-        agent = Agent(model="openai:gpt-4", toolsets=[toolset])
+        agent = Agent(model="openai-chat:gpt-4", toolsets=[toolset])
     """
 
     def __init__(

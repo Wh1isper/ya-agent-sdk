@@ -349,7 +349,7 @@ async def main():
         run = stream.run
 
     if run:
-        print(f"\nUsage: {run.usage()}")
+        print(f"\nUsage: {run.usage}")
         print(f"Messages so far: {len(run.all_messages())}")
         save_message_history(run.all_messages_json())
         new_state = runtime.ctx.export_state()

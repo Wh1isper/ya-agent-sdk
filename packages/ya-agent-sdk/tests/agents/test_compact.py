@@ -1226,6 +1226,7 @@ class _FakeCompactResult:
         self.output = output
         self._usage = usage
 
+    @property
     def usage(self) -> RunUsage:
         return self._usage
 
@@ -1238,6 +1239,7 @@ class _FakeCompactStreamResult:
     async def get_output(self) -> str:
         return self.output
 
+    @property
     def usage(self) -> RunUsage:
         return self._usage
 
