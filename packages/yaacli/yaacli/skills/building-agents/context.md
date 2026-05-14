@@ -296,14 +296,14 @@ config.model_extra["my_custom_key"]  # Also works
 
 ### UsageSnapshotEntry Fields
 
-| Field        | Type          | Description                                                           |
-| ------------ | ------------- | --------------------------------------------------------------------- |
-| `agent_id`   | `str`         | Agent/source instance ID (e.g., `main`, `searcher-a7b9`)              |
-| `agent_name` | `str`         | Agent/source name (e.g., `compact`, `image_understanding`, `search`)  |
+| Field        | Type          | Description                                                                |
+| ------------ | ------------- | -------------------------------------------------------------------------- |
+| `agent_id`   | `str`         | Agent/source instance ID (e.g., `main`, `searcher-a7b9`)                   |
+| `agent_name` | `str`         | Agent/source name (e.g., `compact`, `image_understanding`, `search`)       |
 | `model_id`   | `str`         | Model identifier (e.g., `openai-chat:gpt-4o`, `anthropic:claude-sonnet-4`) |
-| `usage`      | `RunUsage`    | Cumulative token usage for this agent/source                          |
-| `usage_id`   | `str \| None` | Stable usage record ID for idempotent updates                         |
-| `source`     | `str`         | Component that reported this usage                                    |
+| `usage`      | `RunUsage`    | Cumulative token usage for this agent/source                               |
+| `usage_id`   | `str \| None` | Stable usage record ID for idempotent updates                              |
+| `source`     | `str`         | Component that reported this usage                                         |
 
 ## Extending AgentContext
 
