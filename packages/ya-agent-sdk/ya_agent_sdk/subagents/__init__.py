@@ -50,14 +50,12 @@ Usage::
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai._agent_graph import HistoryProcessor
 from pydantic_ai.capabilities import AbstractCapability
 
-from ya_agent_sdk.context import AgentContext, ModelConfig
+from ya_agent_sdk.context import ModelConfig
 from ya_agent_sdk.presets import INHERIT
 from ya_agent_sdk.subagents.builder import build_subagent_agent
 from ya_agent_sdk.subagents.config import (
@@ -123,7 +121,6 @@ def load_builtin_subagent_tools(
     *,
     model: str | Model | None = None,
     model_settings: dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -138,7 +135,6 @@ def load_builtin_subagent_tools(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model for all subagents.
         model_settings: Fallback model settings for all subagents.
-        history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for all subagents.
         pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
         capabilities: Parent capabilities to inherit unless a subagent config overrides them.
@@ -163,7 +159,6 @@ def load_builtin_subagent_tools(
         parent_toolset,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -179,7 +174,6 @@ def load_unified_subagent_tool_from_dir(
     description: str = "Delegate task to a specialized subagent",
     model: str | Model | None = None,
     model_settings: dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -197,7 +191,6 @@ def load_unified_subagent_tool_from_dir(
         description: Tool description shown to the model.
         model: Fallback model for subagents with model="inherit".
         model_settings: Fallback model settings for subagents.
-        history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for subagents.
         pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
         capabilities: Parent capabilities to inherit unless a subagent config overrides them.
@@ -223,7 +216,6 @@ def load_unified_subagent_tool_from_dir(
         description=description,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -238,7 +230,6 @@ def load_builtin_unified_subagent_tool(
     description: str = "Delegate task to a specialized subagent",
     model: str | Model | None = None,
     model_settings: dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -255,7 +246,6 @@ def load_builtin_unified_subagent_tool(
         description: Tool description shown to the model.
         model: Fallback model for subagents with model="inherit".
         model_settings: Fallback model settings for subagents.
-        history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for subagents.
         pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
         capabilities: Parent capabilities to inherit unless a subagent config overrides them.
@@ -280,7 +270,6 @@ def load_builtin_unified_subagent_tool(
         description=description,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,

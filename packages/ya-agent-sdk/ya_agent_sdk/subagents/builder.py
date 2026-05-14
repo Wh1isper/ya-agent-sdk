@@ -10,14 +10,11 @@ ya_agent_sdk.subagents.factory and ya_agent_sdk.toolsets.core.subagent.unified.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
-from pydantic_ai._agent_graph import HistoryProcessor
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 
-from ya_agent_sdk.agents.capabilities import history_processors_to_capabilities
 from ya_agent_sdk.agents.guards import attach_message_bus_guard
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ModelConfig
@@ -114,7 +111,6 @@ def _resolve_capabilities(
     config: SubagentConfig,
     parent_pre_capabilities: list[AbstractCapability[Any]] | None,
     parent_capabilities: list[AbstractCapability[Any]] | None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None,
     sdk_capabilities: list[AbstractCapability[Any]] | None,
 ) -> list[AbstractCapability[Any]]:
     """Resolve effective capabilities for a subagent."""
@@ -123,7 +119,6 @@ def _resolve_capabilities(
     return [
         *(user_pre_capabilities or []),
         *(sdk_capabilities or []),
-        *history_processors_to_capabilities(history_processors, stacklevel=4),
         *(user_capabilities or []),
         ProcessHistory(create_system_prompt_filter(config.system_prompt)),
     ]
@@ -135,7 +130,6 @@ def build_subagent_agent(
     *,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -148,7 +142,6 @@ def build_subagent_agent(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings.
-        history_processors: Deprecated history processors for the subagent.
         model_cfg: Fallback ModelConfig.
         inherit_hooks: Whether to inherit hooks from parent toolset.
         pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
@@ -162,7 +155,6 @@ def build_subagent_agent(
         parent_toolset,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -176,7 +168,6 @@ def _build_subagent_agent(
     *,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -187,9 +178,7 @@ def _build_subagent_agent(
     effective_model = _resolve_model(config, model)
     resolved_settings = _resolve_model_settings(config, model_settings)
     resolved_model_cfg = _resolve_model_cfg(config, model_cfg)
-    resolved_capabilities = _resolve_capabilities(
-        config, pre_capabilities, capabilities, history_processors, sdk_capabilities
-    )
+    resolved_capabilities = _resolve_capabilities(config, pre_capabilities, capabilities, sdk_capabilities)
     toolsets = _build_toolsets(config, parent_toolset, inherit_hooks=inherit_hooks)
 
     agent: Agent[AgentContext, str] = Agent(

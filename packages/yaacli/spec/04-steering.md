@@ -250,7 +250,7 @@ classDiagram
         +steering_manager: SteeringManager
         +event_bus: EventBus
         +last_steering_messages: list
-        +get_history_processors()
+        +get_history_capabilities()
     }
 
     class TUIState {
@@ -277,8 +277,9 @@ classDiagram
 
 ```python
 from enum import Enum
-from typing import Callable, Any
+from typing import Any
 
+from pydantic_ai.capabilities import ProcessHistory
 from ya_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
 from ya_agent_environment import Environment
 
@@ -338,20 +339,15 @@ class TUIContext(AgentContext):
                 max_size=steering_config.buffer_size,
             )
 
-    def get_history_processors(self) -> list[Callable]:
-        """Get history processors including steering injection.
-
-        Returns processors in order:
-        1. tool_id_wrapper.wrap_messages (from parent)
-        2. inject_steering_message (TUI-specific)
-        """
-        processors = super().get_history_processors()
+    def get_history_capabilities(self):
+        """Get history capabilities including steering injection."""
+        capabilities = super().get_history_capabilities()
 
         # Add steering injection if enabled
         if self.steering_manager:
-            processors.append(inject_steering_message)
+            capabilities.append(ProcessHistory(inject_steering_message))
 
-        return processors
+        return capabilities
 
     def transition_to(self, new_state: TUIState) -> None:
         """Transition to a new state with validation."""

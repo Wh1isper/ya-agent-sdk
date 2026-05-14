@@ -35,7 +35,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Protocol, runtime_checkable
 
 from pydantic import Field
 from pydantic_ai import Agent, RunContext
-from pydantic_ai._agent_graph import HistoryProcessor
 from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk._logger import get_logger
@@ -78,7 +77,6 @@ def _build_subagent_entry(
     *,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -91,7 +89,6 @@ def _build_subagent_entry(
         parent_toolset,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -160,7 +157,6 @@ def _build_registry(
     *,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -175,7 +171,6 @@ def _build_registry(
             parent_toolset,
             model=model,
             model_settings=model_settings,
-            history_processors=history_processors,
             model_cfg=model_cfg,
             inherit_hooks=inherit_hooks,
             pre_capabilities=pre_capabilities,
@@ -194,7 +189,6 @@ def create_unified_subagent_tool(
     description: str = "Delegate task to a specialized subagent",
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -213,7 +207,6 @@ def create_unified_subagent_tool(
         description: Tool description shown to the model.
         model: Fallback model for subagents with model="inherit".
         model_settings: Fallback model settings for subagents.
-        history_processors: Deprecated history processors for all subagents.
         model_cfg: Fallback ModelConfig for subagents.
         inherit_hooks: Whether to inherit hooks from parent toolset.
         pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
@@ -229,7 +222,6 @@ def create_unified_subagent_tool(
         description=description,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -245,7 +237,6 @@ def _create_unified_subagent_tool(
     description: str = "Delegate task to a specialized subagent",
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -263,7 +254,6 @@ def _create_unified_subagent_tool(
         parent_toolset,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,

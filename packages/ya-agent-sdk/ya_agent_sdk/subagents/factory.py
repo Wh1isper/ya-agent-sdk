@@ -5,12 +5,10 @@ This module provides functions to create subagent tools from SubagentConfig obje
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import RunContext
-from pydantic_ai._agent_graph import HistoryProcessor
 from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
@@ -38,7 +36,6 @@ def create_subagent_tool_from_config(
     *,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -51,7 +48,6 @@ def create_subagent_tool_from_config(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings. Used if config.model_settings is 'inherit' or None.
-        history_processors: Deprecated history processors to use for the subagent.
         model_cfg: Fallback ModelConfig. Used if config.model_cfg is None.
         inherit_hooks: Whether to inherit hooks from parent toolset.
         pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
@@ -65,7 +61,6 @@ def create_subagent_tool_from_config(
         parent_toolset,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -79,7 +74,6 @@ def _create_subagent_tool(
     *,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -92,7 +86,6 @@ def _create_subagent_tool(
         parent_toolset,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -127,7 +120,6 @@ def create_subagent_tool_from_markdown(
     *,
     model: str | Model | None = None,
     model_settings: dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -142,7 +134,6 @@ def create_subagent_tool_from_markdown(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings. Used if config.model_settings is 'inherit' or None.
-        history_processors: Deprecated history processors to use for the subagent.
         model_cfg: Fallback ModelConfig. Used if config.model_cfg is None.
         pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
         capabilities: Parent user capabilities to inherit (if config doesn't override).
@@ -182,7 +173,6 @@ def create_subagent_tool_from_markdown(
         parent_toolset,
         model=model,
         model_settings=model_settings,
-        history_processors=history_processors,
         model_cfg=model_cfg,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
@@ -196,7 +186,6 @@ def load_subagent_tools_from_dir(
     *,
     model: str | Model | None = None,
     model_settings: dict[str, Any] | str | None = None,
-    history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
     model_cfg: ModelConfig | None = None,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
@@ -211,7 +200,6 @@ def load_subagent_tools_from_dir(
         parent_toolset: The parent toolset to derive tools from.
         model: Fallback model for all subagents.
         model_settings: Fallback model settings for all subagents.
-        history_processors: Deprecated history processors to use for all subagents.
         model_cfg: Fallback ModelConfig for all subagents.
         pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
         capabilities: Parent user capabilities to inherit unless a subagent config overrides them.
@@ -237,7 +225,6 @@ def load_subagent_tools_from_dir(
             parent_toolset,
             model=model,
             model_settings=model_settings,
-            history_processors=history_processors,
             model_cfg=model_cfg,
             inherit_hooks=inherit_hooks,
             pre_capabilities=pre_capabilities,

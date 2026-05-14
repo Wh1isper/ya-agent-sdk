@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 from pydantic_ai import ApprovalRequired, CallDeferred, RunContext, Tool, UserError
-from pydantic_ai._agent_graph import HistoryProcessor
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import (
@@ -302,7 +301,6 @@ class Toolset(BaseToolset[AgentDepsT]):
         *,
         model: str | Model | None = None,
         model_settings: ModelSettings | dict[str, Any] | str | None = None,
-        history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
         model_cfg: ModelConfig | None = None,
         unified: bool = False,
         inherit_hooks: bool = False,
@@ -314,7 +312,6 @@ class Toolset(BaseToolset[AgentDepsT]):
             configs,
             model=model,
             model_settings=model_settings,
-            history_processors=history_processors,
             model_cfg=model_cfg,
             unified=unified,
             inherit_hooks=inherit_hooks,
@@ -328,7 +325,6 @@ class Toolset(BaseToolset[AgentDepsT]):
         *,
         model: str | Model | None = None,
         model_settings: ModelSettings | dict[str, Any] | str | None = None,
-        history_processors: Sequence[HistoryProcessor[AgentContext]] | None = None,
         model_cfg: ModelConfig | None = None,
         unified: bool = False,
         inherit_hooks: bool = False,
@@ -346,8 +342,6 @@ class Toolset(BaseToolset[AgentDepsT]):
             configs: Sequence of SubagentConfig defining the subagents to create.
             model: Fallback model for subagents with 'inherit' or None model.
             model_settings: Fallback model settings for subagents with 'inherit' or None.
-            history_processors: Deprecated history processors for subagents. Use
-                capabilities=[ProcessHistory(...)] for new code.
             model_cfg: Fallback ModelConfig for subagents.
             unified: If True, create a single 'delegate' tool that can call any subagent
                 by name parameter. If False (default), create separate tools for each
@@ -399,7 +393,6 @@ class Toolset(BaseToolset[AgentDepsT]):
                 parent_toolset=cast(Any, self),
                 model=model,
                 model_settings=model_settings,
-                history_processors=history_processors,
                 model_cfg=model_cfg,
                 inherit_hooks=inherit_hooks,
                 pre_capabilities=pre_capabilities,
@@ -415,7 +408,6 @@ class Toolset(BaseToolset[AgentDepsT]):
                     parent_toolset=cast(Any, self),
                     model=model,
                     model_settings=model_settings,
-                    history_processors=history_processors,
                     model_cfg=model_cfg,
                     inherit_hooks=inherit_hooks,
                     pre_capabilities=pre_capabilities,

@@ -65,7 +65,6 @@ Example:
 from __future__ import annotations
 
 import asyncio
-import warnings
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -1769,18 +1768,6 @@ class AgentContext(BaseModel):
                 )
         """
         return [ProcessHistory(processor) for processor in self._build_history_processors()]
-
-    def get_history_processors(self) -> list[Callable[..., Any]]:
-        """Return context history processor callables.
-
-        Deprecated: use get_history_capabilities() and pass the result to Agent(capabilities=...).
-        """
-        warnings.warn(
-            "AgentContext.get_history_processors() is deprecated; use get_history_capabilities() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._build_history_processors()
 
     def update_usage_snapshot_entry(
         self,

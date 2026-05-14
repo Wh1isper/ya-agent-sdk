@@ -8,12 +8,13 @@ Example::
     from pydantic_ai import Agent
 
     from ya_agent_sdk.context import AgentContext
+    from pydantic_ai.capabilities import ProcessHistory
     from ya_agent_sdk.filters.tool_args import fix_truncated_tool_args
 
     agent = Agent(
         'openai-chat:gpt-4',
         deps_type=AgentContext,
-        history_processors=[fix_truncated_tool_args],
+        capabilities=[ProcessHistory(fix_truncated_tool_args)],
     )
 """
 
@@ -23,6 +24,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ToolCallPart,
+    ToolSearchCallPart,
 )
 from pydantic_ai.tools import RunContext
 
@@ -36,7 +38,7 @@ async def fix_truncated_tool_args(
 ) -> list[ModelMessage]:
     """Fix truncated or invalid JSON tool arguments in model responses.
 
-    This is a pydantic-ai history_processor that validates tool call arguments
+    This is a Pydantic AI history processor that validates tool call arguments
     and replaces invalid JSON with a placeholder that instructs the model to retry.
 
     Args:
@@ -50,14 +52,19 @@ async def fix_truncated_tool_args(
         agent = Agent(
             'openai-chat:gpt-4',
             deps_type=AgentContext,
-            history_processors=[fix_truncated_tool_args],
+            capabilities=[ProcessHistory(fix_truncated_tool_args)],
         )
     """
     for msg in message_history:
         if isinstance(msg, ModelRequest):
             continue
         for part in msg.parts:
-            if isinstance(part, ToolCallPart) and isinstance(part.args, str) and part.args:
+            if (
+                isinstance(part, ToolCallPart)
+                and not isinstance(part, ToolSearchCallPart)
+                and isinstance(part.args, str)
+                and part.args
+            ):
                 try:
                     json.loads(part.args)
                 except json.JSONDecodeError:
