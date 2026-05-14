@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import warnings
 from asyncio import Queue
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
 # Logger names to configure
 TUI_LOGGER_NAME = "yaacli"
 SDK_LOGGER_NAME = "ya_agent_sdk"
+PY_WARNINGS_LOGGER_NAME = "py.warnings"
 
 # Log file name
 LOG_FILE_NAME = "yaacli.log"
@@ -168,6 +170,31 @@ def _configure_logger(
     logger.propagate = False
 
 
+def _configure_warning_logger(verbose: bool = False) -> None:
+    """Route Python warnings away from stderr during CLI/TUI execution."""
+    logging.captureWarnings(True)
+    warnings.filterwarnings(
+        "ignore",
+        category=DeprecationWarning,
+        message="builtin type swigvarlink has no __module__ attribute",
+    )
+
+    logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
+    logger.handlers.clear()
+
+    if verbose:
+        log_file = Path.cwd() / LOG_FILE_NAME
+        handler: logging.Handler = logging.FileHandler(log_file)
+        formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        handler.setFormatter(formatter)
+    else:
+        handler = logging.NullHandler()
+
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False
+
+
 def _redirect_root_logger(verbose: bool = False) -> None:
     """Redirect root logger away from stderr.
 
@@ -244,6 +271,7 @@ def configure_tui_logging(
     # These libraries propagate through the root logger, which has a default
     # StreamHandler to stderr set up by basicConfig in __init__.py.
     _redirect_root_logger(verbose=verbose)
+    _configure_warning_logger(verbose=verbose)
 
     _initialized = True
 
@@ -255,9 +283,12 @@ def reset_logging() -> None:
     """
     global _initialized, _log_queue, _verbose_mode
 
+    logging.captureWarnings(False)
+
     for name in [
         TUI_LOGGER_NAME,
         SDK_LOGGER_NAME,
+        PY_WARNINGS_LOGGER_NAME,
     ]:
         logger = logging.getLogger(name)
         logger.handlers.clear()
@@ -280,6 +311,8 @@ def configure_logging(verbose: bool = False) -> None:
     _verbose_mode = verbose
 
     level = logging.DEBUG if verbose else logging.WARNING
+
+    _configure_warning_logger(verbose=verbose)
 
     # Configure both loggers
     for name in [TUI_LOGGER_NAME, SDK_LOGGER_NAME]:

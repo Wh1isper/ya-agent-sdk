@@ -15,9 +15,9 @@ from pydantic_ai.usage import RunUsage
 _RUN_USAGE_FIELD_NAMES = frozenset(field.name for field in fields(RunUsage))
 
 
-def coerce_run_usage(usage: RunUsage) -> RunUsage:
+def coerce_run_usage(usage: Any) -> RunUsage:
     """Convert Pydantic AI usage wrappers into a concrete ``RunUsage`` instance."""
-    if type(usage) is RunUsage:
+    if is_dataclass(usage):
         return RunUsage(**_run_usage_data(usage))
     if callable(usage):
         usage = usage()

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 
 from yaacli.logging import (
     LOG_FILE_NAME,
+    PY_WARNINGS_LOGGER_NAME,
     SDK_LOGGER_NAME,
     TUI_LOGGER_NAME,
     LogEvent,
@@ -156,6 +158,47 @@ class TestConfigureTuiLogging:
         logger = logging.getLogger(TUI_LOGGER_NAME)
         assert len(logger.handlers) == 1
 
+    def test_warnings_are_routed_away_from_stderr(self):
+        """Test Python warnings are captured by logging in TUI mode."""
+        queue: asyncio.Queue = asyncio.Queue()
+        configure_tui_logging(queue)
+
+        logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
+        assert len(logger.handlers) == 1
+        assert isinstance(logger.handlers[0], logging.NullHandler)
+        assert logger.propagate is False
+
+    def test_swig_shutdown_warning_is_filtered(self):
+        """Test known SWIG shutdown warning is filtered in TUI mode."""
+        queue: asyncio.Queue = asyncio.Queue()
+        configure_tui_logging(queue)
+
+        with warnings.catch_warnings(record=True) as records:
+            warnings.warn(
+                "builtin type swigvarlink has no __module__ attribute",
+                DeprecationWarning,
+                stacklevel=1,
+            )
+
+        assert records == []
+
+    def test_verbose_warnings_go_to_file(self, tmp_path, monkeypatch):
+        """Test verbose TUI mode writes Python warnings to the log file."""
+        monkeypatch.chdir(tmp_path)
+        queue: asyncio.Queue = asyncio.Queue()
+        configure_tui_logging(queue, verbose=True)
+
+        logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
+        assert len(logger.handlers) == 1
+        assert isinstance(logger.handlers[0], logging.FileHandler)
+
+        logger.warning("warning routed")
+        for handler in logger.handlers:
+            handler.flush()
+
+        log_file = tmp_path / LOG_FILE_NAME
+        assert "warning routed" in log_file.read_text()
+
 
 class TestGetLogger:
     """Tests for get_logger."""
@@ -188,10 +231,14 @@ class TestResetLogging:
         assert len(tui_logger.handlers) == 1
         assert len(sdk_logger.handlers) == 1
 
+        warnings_logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
+        assert len(warnings_logger.handlers) == 1
+
         reset_logging()
 
         assert len(tui_logger.handlers) == 0
         assert len(sdk_logger.handlers) == 0
+        assert len(warnings_logger.handlers) == 0
 
 
 class TestConfigureLogging:
@@ -225,3 +272,12 @@ class TestConfigureLogging:
 
         content = log_file.read_text()
         assert "Test log message" in content
+
+    def test_startup_warnings_are_routed_away_from_stderr(self):
+        """Test Python warnings are captured by startup logging."""
+        configure_logging(verbose=False)
+
+        logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
+        assert len(logger.handlers) == 1
+        assert isinstance(logger.handlers[0], logging.NullHandler)
+        assert logger.propagate is False
