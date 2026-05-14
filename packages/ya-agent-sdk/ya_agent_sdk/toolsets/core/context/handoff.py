@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -90,6 +91,7 @@ Use this tool when context is getting large and you need to preserve essential i
 before resetting, or when switching focus to a different topic or task.
 The summary will be injected into the new context automatically.
 """
+    permission = ToolPermissionProfile.context_management()
     auto_inherit = True
     is_context_manage_tool = True
 

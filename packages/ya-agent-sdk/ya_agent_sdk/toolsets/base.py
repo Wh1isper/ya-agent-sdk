@@ -18,6 +18,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from typing_extensions import TypeVar
 
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile, refine_permission_from_args
 
 if TYPE_CHECKING:
     pass
@@ -145,6 +146,9 @@ class BaseTool(ABC):
             superseded_by_tags = frozenset({"shell"})  # shell can do mkdir better
     """
 
+    permission: ToolPermissionProfile = ToolPermissionProfile.read_workspace()
+    """Security permission metadata used by approval review."""
+
     auto_inherit: bool = False
     """Whether this tool is automatically inherited by subagents.
 
@@ -205,6 +209,14 @@ class BaseTool(ABC):
 
     def get_approval_metadata(self) -> dict[str, Any] | None:
         return None
+
+    def resolve_permission(
+        self,
+        ctx: RunContext[AgentContext],
+        args: dict[str, Any],
+    ) -> ToolPermissionProfile:
+        """Resolve security permission metadata for a concrete tool call."""
+        return refine_permission_from_args(self.permission, args)
 
     @abstractmethod
     async def call(self, ctx: RunContext[AgentContext], /, *args: Any, **kwargs: Any) -> Any:

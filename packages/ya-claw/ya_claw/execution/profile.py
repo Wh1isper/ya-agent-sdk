@@ -6,10 +6,9 @@ from typing import Any
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from ya_agent_sdk.context import ShellReviewConfig, ShellReviewRiskLevel
 from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
 from ya_agent_sdk.subagents.config import SubagentConfig
 
@@ -21,8 +20,16 @@ _DEFAULT_BUILTIN_TOOLSETS = ["core"]
 _DEFAULT_PROFILE_NAME = "default"
 
 
-class ClawShellReviewConfig(ShellReviewConfig):
-    unattended_risk_threshold: ShellReviewRiskLevel | None = None
+class ClawApprovalReviewConfig(BaseModel):
+    enabled: bool = False
+    model: str | None = None
+    model_settings: str | dict[str, Any] | None = None
+    prompt: str | None = None
+    timeout_seconds: float = 30.0
+    max_denials: int = 3
+    include_recent_messages: int = 12
+    truncation: dict[str, Any] = Field(default_factory=dict)
+    mcp_permissions: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class InlineSubagentDefinition(BaseModel):
@@ -49,7 +56,7 @@ class ResolvedProfile:
     unified_subagents: bool = False
     need_user_approve_tools: list[str] = field(default_factory=list)
     need_user_approve_mcps: list[str] = field(default_factory=list)
-    shell_review: ClawShellReviewConfig | None = None
+    approval_review: ClawApprovalReviewConfig | None = None
     enabled_mcps: list[str] = field(default_factory=list)
     disabled_mcps: list[str] = field(default_factory=list)
     mcp_servers: dict[str, Any] = field(default_factory=dict)
@@ -140,7 +147,7 @@ class ProfileResolver:
             unified_subagents=bool(record.unified_subagents),
             need_user_approve_tools=list(record.need_user_approve_tools or []),
             need_user_approve_mcps=list(record.need_user_approve_mcps or []),
-            shell_review=_resolve_shell_review(record.model_config_override),
+            approval_review=_resolve_approval_review(record.model_config_override),
             enabled_mcps=list(record.enabled_mcps or []),
             disabled_mcps=list(record.disabled_mcps or []),
             mcp_servers=normalize_profile_mcp_servers(record.mcp_servers),
@@ -181,22 +188,13 @@ class ProfileResolver:
         return resolved_configs
 
 
-def _resolve_shell_review(model_config_override: dict[str, Any] | None) -> ClawShellReviewConfig | None:
+def _resolve_approval_review(model_config_override: dict[str, Any] | None) -> ClawApprovalReviewConfig | None:
     if not isinstance(model_config_override, dict):
         return None
     raw_security = model_config_override.get("security")
-    if isinstance(raw_security, dict) and isinstance(raw_security.get("shell_review"), dict):
-        return _resolve_claw_shell_review_config(raw_security["shell_review"])
-    raw_legacy = model_config_override.get("shell_review")
-    if isinstance(raw_legacy, dict):
-        return _resolve_claw_shell_review_config(raw_legacy)
+    if isinstance(raw_security, dict) and isinstance(raw_security.get("approval_review"), dict):
+        return ClawApprovalReviewConfig.model_validate(raw_security["approval_review"])
     return None
-
-
-def _resolve_claw_shell_review_config(raw: dict[str, Any]) -> ClawShellReviewConfig:
-    config = dict(raw)
-    config.setdefault("risk_threshold", "extra_high")
-    return ClawShellReviewConfig.model_validate(config)
 
 
 def _resolve_inheritable_model_settings(preset_or_dict: str | dict[str, Any] | None) -> dict[str, Any] | None:

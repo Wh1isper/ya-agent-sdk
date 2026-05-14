@@ -1,6 +1,6 @@
 ---
 name: agent-builder
-description: Build and configure AI agents with ya-agent-sdk and Pydantic AI. Covers create_agent(), stream_agent(), AgentContext, ResumableState session persistence, toolsets, subagents, environments, and HITL approval. Use when implementing agent applications, wiring tools into an agent, restoring multi-turn sessions, configuring subagent hierarchies, adding approval flows, or working with ya-agent-sdk APIs such as create_agent, export_state, stream_agent, and SubagentConfig.
+description: Build and configure AI agents with ya-agent-sdk and Pydantic AI. Covers create_agent(), stream_agent(), AgentContext, ResumableState session persistence, toolsets, subagents, environments, approval review, and HITL approval. Use when implementing agent applications, wiring tools into an agent, restoring multi-turn sessions, configuring subagent hierarchies, adding approval flows, or working with ya-agent-sdk APIs such as create_agent, export_state, stream_agent, SecurityConfig.auto_review, and SubagentConfig.
 ---
 
 # Building Agents with ya-agent-sdk
@@ -114,18 +114,25 @@ Read [`./context.md`](./context.md) for `ResumableState`, message history handli
 
 ```python
 from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.context import SecurityConfig
 from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
 from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
 
 async with create_agent(
     model="anthropic:claude-sonnet-4",
     tools=[*filesystem_tools, *shell_tools],
-    need_user_approve_tools=["shell", "edit"],
+    need_user_approve_tools=["shell_exec", "edit"],
+    extra_context_kwargs={
+        "security": SecurityConfig.auto_review(
+            reviewer_model="gateway@openai-responses:gpt-5.4-mini",
+            model_settings="openai_responses_low",
+        )
+    },
 ) as runtime:
     ...
 ```
 
-Read [`./toolset.md`](./toolset.md) when approval rules interact with hooks, tool composition, or custom tool registration.
+Read [`./toolset.md`](./toolset.md) when approval review or HITL rules interact with hooks, tool composition, or custom tool registration.
 
 ### Add subagents
 

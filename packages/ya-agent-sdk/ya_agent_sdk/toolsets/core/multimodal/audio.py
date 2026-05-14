@@ -11,6 +11,7 @@ from pydantic_ai import RunContext
 
 from ya_agent_sdk.agents.audio_understanding import get_audio_description
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 
@@ -23,6 +24,7 @@ class ReadAudioTool(BaseTool):
 
     name = "read_audio"
     description = "Read and analyze audio from a URL. Use when native audio understanding is unavailable."
+    permission = ToolPermissionProfile.read_workspace()
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """No instruction needed for this tool."""

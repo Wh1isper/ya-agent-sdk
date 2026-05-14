@@ -571,15 +571,6 @@ export type ProfileMCPServer = {
   required: boolean
 }
 
-export type ProfileShellReviewConfig = {
-  enabled?: boolean
-  model?: string | null
-  model_settings?: string | Record<string, unknown> | null
-  on_needs_approval?: 'defer' | 'deny'
-  risk_threshold?: 'low' | 'medium' | 'high' | 'extra_high'
-  system_prompt?: string | null
-}
-
 export type ProfileSummary = {
   name: string
   model: string

@@ -39,6 +39,7 @@ from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext, ModelConfig
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.subagents.builder import _build_subagent_agent
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
@@ -273,6 +274,7 @@ def _create_unified_subagent_tool(
         # These will be overwritten
         name = ""
         description = ""
+        permission = ToolPermissionProfile.delegation()
 
         # Store names for introspection and parameter description
         _available_subagents: tuple[str, ...] = subagent_names

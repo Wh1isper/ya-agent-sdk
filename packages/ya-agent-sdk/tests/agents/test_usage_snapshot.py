@@ -68,11 +68,11 @@ async def test_stream_agent_emits_usage_snapshot_after_changed_nodes(tmp_path):
 @pytest.mark.asyncio
 async def test_usage_ledger_update_can_be_emitted_later(agent_context):
     agent_context.update_usage_snapshot_entry(
-        agent_id="shell_review",
-        agent_name="shell_review",
+        agent_id="approval_review",
+        agent_name="approval_review",
         model_id="review-model",
         usage=RunUsage(requests=1, input_tokens=10, output_tokens=2),
-        source="shell_review",
+        source="approval_review",
         usage_id="review-1",
         ledger_key="review-1",
     )
@@ -86,5 +86,5 @@ async def test_usage_ledger_update_can_be_emitted_later(agent_context):
     assert isinstance(event, UsageSnapshotEvent)
     assert event.source == "session_end"
     assert event.snapshot is not None
-    assert event.snapshot.entries[0].agent_id == "shell_review"
+    assert event.snapshot.entries[0].agent_id == "approval_review"
     assert event.snapshot.total_usage.requests == 1

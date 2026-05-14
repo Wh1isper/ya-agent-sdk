@@ -14,6 +14,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 logger = get_logger(__name__)
@@ -49,6 +50,7 @@ class TodoReadTool(BaseTool):
 
     name = "to_do_read"
     description = "Read the current session's to-do list."
+    permission = ToolPermissionProfile.session_state()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
@@ -98,6 +100,7 @@ class TodoWriteTool(BaseTool):
 
     name = "to_do_write"
     description = "Replace the session's to-do list with an updated list."
+    permission = ToolPermissionProfile.session_state()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""

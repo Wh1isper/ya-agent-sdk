@@ -13,6 +13,7 @@ from pydantic_ai import RunContext
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext, BusMessage, TaskStatus
 from ya_agent_sdk.events import TaskEvent, TaskInfo
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.base import Instruction
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
@@ -58,6 +59,7 @@ class TaskCreateTool(BaseTool):
 
     name = "task_create"
     description = "Create a new task. Task status defaults to pending."
+    permission = ToolPermissionProfile.session_state()
     auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
@@ -93,6 +95,7 @@ class TaskGetTool(BaseTool):
 
     name = "task_get"
     description = "Get task details by ID."
+    permission = ToolPermissionProfile.session_state()
     auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
@@ -134,6 +137,7 @@ class TaskUpdateTool(BaseTool):
 
     name = "task_update"
     description = "Update task status, content, or dependencies."
+    permission = ToolPermissionProfile.session_state()
     auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
@@ -236,6 +240,7 @@ class TaskListTool(BaseTool):
 
     name = "task_list"
     description = "List all tasks and their status."
+    permission = ToolPermissionProfile.session_state()
     auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:

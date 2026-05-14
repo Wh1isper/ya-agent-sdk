@@ -10,6 +10,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._types import BatchMkdirResponse, MkdirResult, MkdirSummary
 
@@ -30,6 +31,7 @@ class MkdirTool(BaseTool):
 
     name = "mkdir"
     description = "Create multiple directories in batch within the working directory."
+    permission = ToolPermissionProfile.write_workspace()
     superseded_by_tags = frozenset({"shell"})
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:

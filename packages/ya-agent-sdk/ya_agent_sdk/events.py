@@ -175,6 +175,72 @@ class SubagentCompleteEvent(AgentEvent):
 
 
 # =============================================================================
+# Approval Review Events
+# =============================================================================
+
+
+@dataclass
+class ApprovalReviewRequestedEvent(AgentEvent):
+    """Emitted when approval review is requested for a tool call."""
+
+    request_id: str = ""
+    tool_call_id: str | None = None
+    tool_name: str = ""
+    source: str = ""
+    categories: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+    decision: str = "auto_review"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ApprovalReviewCompletedEvent(AgentEvent):
+    """Emitted when approval review completes."""
+
+    request_id: str = ""
+    tool_call_id: str | None = None
+    tool_name: str = ""
+    source: str = ""
+    categories: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+    decision: str = "auto_review"
+    outcome: str = "allow"
+    risk_level: str = "low"
+    authorization: str = "implied"
+    rationale: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ApprovalReviewDeniedEvent(AgentEvent):
+    """Emitted when approval review blocks execution."""
+
+    request_id: str = ""
+    tool_call_id: str | None = None
+    tool_name: str = ""
+    source: str = ""
+    categories: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+    decision: str = "auto_review"
+    outcome: str = "deny"
+    risk_level: str = "high"
+    authorization: str = "missing"
+    rationale: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ApprovalReviewTruncatedEvent(AgentEvent):
+    """Emitted when a tool result is truncated."""
+
+    tool_call_id: str | None = None
+    tool_name: str = ""
+    original_chars: int = 0
+    truncated_chars: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# =============================================================================
 # Usage Events
 # =============================================================================
 

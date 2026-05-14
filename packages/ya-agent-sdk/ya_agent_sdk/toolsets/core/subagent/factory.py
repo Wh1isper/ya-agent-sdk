@@ -19,6 +19,7 @@ from pydantic_ai.models import Model
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.usage import coerce_run_usage
 
@@ -87,6 +88,7 @@ def create_subagent_tool(
         # These will be set by the closure
         name = ""  # Placeholder, will be overwritten
         description = ""  # Placeholder, will be overwritten
+        permission = ToolPermissionProfile.delegation()
 
         def is_available(self, ctx: RunContext[AgentContext]) -> bool:
             if availability_check is None:

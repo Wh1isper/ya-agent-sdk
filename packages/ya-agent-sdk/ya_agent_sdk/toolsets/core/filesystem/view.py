@@ -16,6 +16,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._types import (
     ViewMetadata,
@@ -127,6 +128,7 @@ class ViewTool(BaseTool):
         "Read files from local filesystem. Supports text, images (PNG/JPEG/WebP), videos (MP4/WebM/MOV), "
         "and audio (MP3/WAV/OGG). For PDF files, use `pdf_convert` tool instead."
     )
+    permission = ToolPermissionProfile.read_workspace()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""

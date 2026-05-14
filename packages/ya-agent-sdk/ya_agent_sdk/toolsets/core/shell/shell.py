@@ -8,30 +8,20 @@ background process management (start, wait, kill).
 from typing import Annotated, cast
 
 from pydantic import Field
-from pydantic_ai import ApprovalRequired, RunContext
+from pydantic_ai import RunContext
 from typing_extensions import TypedDict
 from ya_agent_environment import Shell
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.environment.local import LocalFileOperator, LocalShell
-from ya_agent_sdk.environment.sandbox import DockerShell
 from ya_agent_sdk.events import BackgroundShellKilledEvent, BackgroundShellStartEvent
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.toolsets.core.shell.review import (
-    ShellReviewBlockedResult,
-    ShellReviewContextSnapshot,
-    ShellReviewRecord,
-    ShellReviewRequest,
-    get_previous_shell_reviews,
-    review_shell_command,
-)
 
 logger = get_logger(__name__)
 
 OUTPUT_TRUNCATE_LIMIT = 20000
 DEFAULT_TIMEOUT_SECONDS = 180
-SHELL_REVIEW_HISTORY_LIMIT = 10
 
 
 class ShellResult(TypedDict, total=False):
@@ -56,127 +46,6 @@ def _merge_shell_environment(
     if shell_env or environment:
         return {**shell_env, **(environment or {})}
     return environment
-
-
-def _shell_context(shell: Shell | None) -> tuple[str | None, list[str], str | None, str | None]:
-    """Return shell cwd, allowed paths, platform, and executable for review context."""
-    if isinstance(shell, LocalShell):
-        return (
-            str(shell._default_cwd) if shell._default_cwd is not None else None,
-            [str(path) for path in shell._allowed_paths],
-            shell._platform_name,
-            shell._shell_executable,
-        )
-    if isinstance(shell, DockerShell):
-        return (shell._container_workdir, [shell._container_workdir], "docker", None)
-    if isinstance(shell, Shell):
-        return (
-            str(shell._default_cwd) if shell._default_cwd is not None else None,
-            [str(path) for path in shell._allowed_paths],
-            None,
-            None,
-        )
-    return None, [], None, None
-
-
-def _file_operator_context(file_operator: object) -> tuple[str | None, list[str]]:
-    """Return file operator default path and allowed paths for review context."""
-    if isinstance(file_operator, LocalFileOperator):
-        return (
-            str(file_operator._default_path) if file_operator._default_path is not None else None,
-            [str(path) for path in file_operator._allowed_paths],
-        )
-    return None, []
-
-
-def _build_shell_review_context(
-    run_ctx: RunContext[AgentContext],
-    *,
-    timeout_seconds: int,
-    tool_call_id: str | None,
-) -> ShellReviewContextSnapshot:
-    """Build compact execution context for shell review."""
-    shell_default_cwd, shell_allowed_paths, shell_platform, shell_executable = _shell_context(run_ctx.deps.shell)
-    file_default_path, file_allowed_paths = _file_operator_context(run_ctx.deps.file_operator)
-    tool_call_approved = run_ctx.tool_call_approved if isinstance(run_ctx.tool_call_approved, bool) else False
-
-    return ShellReviewContextSnapshot(
-        timeout_seconds=timeout_seconds,
-        tool_call_id=tool_call_id,
-        tool_call_approved=tool_call_approved,
-        default_cwd=shell_default_cwd or file_default_path,
-        allowed_paths=shell_allowed_paths or file_allowed_paths,
-        shell_platform=shell_platform,
-        shell_executable=shell_executable,
-    )
-
-
-async def _review_shell_command_or_block(
-    run_ctx: RunContext[AgentContext],
-    *,
-    command: str,
-    cwd: str | None,
-    background: bool,
-    environment_keys: list[str],
-    timeout_seconds: int,
-) -> ShellResult | None:
-    """Review a shell command and return a blocked result when policy denies execution."""
-    ctx = run_ctx.deps
-    tool_call_id = run_ctx.tool_call_id if isinstance(run_ctx.tool_call_id, str) else None
-    request = ShellReviewRequest(
-        command=command,
-        cwd=cwd,
-        background=background,
-        environment_keys=environment_keys,
-        context_snapshot=_build_shell_review_context(
-            run_ctx,
-            timeout_seconds=timeout_seconds,
-            tool_call_id=tool_call_id,
-        ),
-    )
-    tool_call_approved = run_ctx.tool_call_approved if isinstance(run_ctx.tool_call_approved, bool) else False
-    if tool_call_approved:
-        records = [record for record in ctx.shell_review_records if isinstance(record, ShellReviewRecord)]
-        fingerprint = request.command_fingerprint()
-        for record in reversed(records):
-            if tool_call_id is not None and record.tool_call_id == tool_call_id:
-                record.approved = True
-                break
-        else:
-            for record in reversed(records):
-                if record.request.command_fingerprint() == fingerprint:
-                    record.approved = True
-                    break
-        logger.info("Shell review approval replay bypassed reviewer")
-        return None
-
-    request.previous_reviews = get_previous_shell_reviews(ctx, request, tool_call_id=tool_call_id)
-    review = await review_shell_command(ctx, request=request, usage_uuid=tool_call_id)
-    review_record = ShellReviewRecord(request=request, decision=review, tool_call_id=tool_call_id)
-    ctx.shell_review_records.append(review_record)
-    if not review.requires_approval(ctx):
-        review_record.approved = True
-        return None
-
-    logger.info(
-        "Shell review requested approval command_chars=%d risk_level=%s reason=%s",
-        len(command),
-        review.risk_level,
-        review.reason,
-    )
-    metadata = request.to_approval_metadata(review)
-    if review.requires_defer(ctx):
-        logger.info("Shell review deferring command for approval risk_level=%s", review.risk_level)
-        raise ApprovalRequired(metadata=metadata)
-    if review.requires_deny(ctx):
-        logger.warning("Shell review blocked command risk_level=%s reason=%s", review.risk_level, review.reason)
-        blocked = ShellReviewBlockedResult(
-            error=f"Shell command blocked by review: {review.reason}",
-            shell_review=review,
-        )
-        return cast(ShellResult, blocked.model_dump(mode="json"))
-    review_record.approved = True
-    return None
 
 
 async def _start_background_shell_command(
@@ -280,6 +149,7 @@ class ShellTool(BaseTool):
 
     name = "shell_exec"
     description = "Execute a shell command."
+    permission = ToolPermissionProfile.execute_local_system()
     tags = frozenset({"shell"})
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
@@ -328,17 +198,6 @@ class ShellTool(BaseTool):
         shell = cast(Shell, ctx.deps.shell)
         environment = _merge_shell_environment(ctx.deps, environment)
 
-        blocked_result = await _review_shell_command_or_block(
-            ctx,
-            command=command,
-            cwd=cwd,
-            background=background,
-            environment_keys=sorted((environment or {}).keys()),
-            timeout_seconds=timeout_seconds,
-        )
-        if blocked_result is not None:
-            return blocked_result
-
         # Background mode: start and return immediately
         if background:
             return await _start_background_shell_command(
@@ -383,6 +242,7 @@ class ShellWaitTool(BaseTool):
         "Set timeout_seconds=0 to poll (drain current output without waiting). "
         "Use shell_status to list process IDs."
     )
+    permission = ToolPermissionProfile.execute_local_system()
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
 
@@ -480,6 +340,7 @@ class ShellKillTool(BaseTool):
     description = (
         "Kill a running background shell process. Returns final buffered output. Use shell_status to list process IDs."
     )
+    permission = ToolPermissionProfile.execute_local_system()
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
 
@@ -529,6 +390,7 @@ class ShellStatusTool(BaseTool):
 
     name = "shell_status"
     description = "List all background shell processes and their status (running, completed, failed)."
+    permission = ToolPermissionProfile.execute_local_system()
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
 
@@ -563,6 +425,7 @@ class ShellInputTool(BaseTool):
         "Use for answering prompts, sending commands to REPLs, or piping data. "
         "Set close_stdin=true to send EOF after writing."
     )
+    permission = ToolPermissionProfile.execute_local_system()
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
 
@@ -628,6 +491,7 @@ class ShellSignalTool(BaseTool):
         "Common signals: 2 (SIGINT/Ctrl+C), 15 (SIGTERM). "
         "Use shell_kill to terminate and clean up instead."
     )
+    permission = ToolPermissionProfile.execute_local_system()
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
 

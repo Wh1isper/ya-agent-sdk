@@ -170,11 +170,51 @@ Recommended context construction inputs:
 - inject restored `ResumableState` when present
 - attach builtin tools from profile resolution
 - attach runtime-wide MCP toolsets from the active MCP JSON file
-- apply profile MCP filters and approval policy
+- apply profile MCP filters and SDK approval review policy
 - attach subagent configs
 - construct system prompt or template variables from resolved profile and binding
 - inject workspace guidance from `AGENTS.md` when present
 - inject heartbeat guidance from `HEARTBEAT.md` only when `source_kind="heartbeat"`
+
+## Approval Review Assembly
+
+YA Claw should map profile security configuration into the SDK approval review system described in `packages/ya-agent-sdk/spec/03-approval-review.md`.
+
+Profile shape:
+
+```yaml
+security:
+  approval_review:
+    enabled: true
+    model: oauth@codex:gpt-5.5
+    timeout_seconds: 30
+    max_denials: 3
+    truncation:
+      enabled: true
+      max_text_chars: 60000
+    mcp_permissions:
+      filesystem:
+        default_decision: auto_review
+        categories: [read, write]
+        scopes: [workspace]
+      github:
+        default_decision: auto_review
+        categories: [external_integration, network, write]
+        scopes: [external_service]
+```
+
+`ProfileResolver` should keep the profile value declarative. `ClawRuntimeBuilder` converts it into `ya_agent_sdk.context.SecurityConfig` and sets it on `ClawAgentContext.security`.
+
+Runtime assembly responsibilities:
+
+- build SDK `SecurityConfig.auto_review(...)` from profile YAML
+- pass reviewer model and model settings through the regular SDK model resolution path
+- pass MCP permission overrides into `build_mcp_servers(...)`
+- include `session_id`, `claw_run_id`, `profile_name`, `source_kind`, and workspace snapshot metadata in approval review requests
+- project approval review records into live events and run trace entries
+- apply SDK result truncation for built-in tools, MCP tools, and proxied tools
+
+`need_user_approve_tools` and `need_user_approve_mcps` remain explicit HITL inputs. Security review policy lives under `security.approval_review`. Claw runtime assembly uses generic approval review for shell execution and other protected tool boundaries.
 
 ## Guidance Loading
 

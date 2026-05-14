@@ -237,8 +237,8 @@ def test_approval_ui_render_approval_panel():
     assert "Approval Required" in result
 
 
-def test_approval_ui_render_approval_panel_shell_review_reason():
-    """Test rendering shell review reason in approval panel."""
+def test_approval_ui_render_approval_panel_review_reason():
+    """Test rendering approval review reason in approval panel."""
     renderer = RichRenderer(width=100)
     ui = ApprovalUI(renderer)
 
@@ -253,13 +253,13 @@ def test_approval_ui_render_approval_panel_shell_review_reason():
         index=1,
         total=1,
         metadata={
-            "reviewer": "shell_command_reviewer",
+            "reviewer": "approval_review",
             "risk_level": "high",
             "reason": "Deletes files under build.",
         },
     )
 
-    assert "Shell review" in result
+    assert "Approval review" in result
     assert "high" in result
     assert "Deletes files under build." in result
 

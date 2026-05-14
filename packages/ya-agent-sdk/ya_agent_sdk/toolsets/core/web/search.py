@@ -11,6 +11,7 @@ from pydantic import Field
 from pydantic_ai import RunContext
 
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.web._http_client import check_url_accessible, get_http_client
 
@@ -53,6 +54,7 @@ class SearchTool(BaseTool):
 
     name = "search"
     description = "Search the web for information using search APIs."
+    permission = ToolPermissionProfile.network_read()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available if Google, Brave, or Tavily API keys are configured."""
@@ -172,6 +174,7 @@ class SearchStockImageTool(BaseTool):
 
     name = "search_stock_image"
     description = "Search royalty-free stock images from Pixabay for design work."
+    permission = ToolPermissionProfile.network_read()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available if Pixabay API key is configured."""
@@ -239,6 +242,7 @@ class SearchImageTool(BaseTool):
 
     name = "search_image"
     description = "Search real-time images via RapidAPI (similar to Google Images)."
+    permission = ToolPermissionProfile.network_read()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available if RapidAPI key is configured."""

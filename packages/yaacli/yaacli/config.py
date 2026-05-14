@@ -5,7 +5,7 @@ Configuration files are loaded with project-level priority (no merging):
 1. **config.toml** (model + TUI settings + security runtime settings):
    - Global: ~/.yaacli/config.toml
    - Project: .yaacli/config.toml (overrides global entirely)
-   - Contains: model, model_settings, display, steering, session, subagents, env, security.shell_review
+   - Contains: model, model_settings, display, steering, session, subagents, env
 
 2. **tools.toml** (tool permissions and project tool overrides):
    - Global: ~/.yaacli/tools.toml
@@ -26,9 +26,9 @@ from __future__ import annotations
 import tomllib
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal, Self, TypedDict
+from typing import Any, Literal, TypedDict
 
-from pydantic import BaseModel, Field, PositiveInt, model_validator
+from pydantic import BaseModel, Field, PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig, load_mcp_config_file
 
@@ -132,23 +132,6 @@ class DisplayConfig(BaseModel):
     """Show elapsed time."""
 
 
-class ShellReviewConfig(BaseModel):
-    """Shell command safety review configuration."""
-
-    enabled: bool = False
-    model: str | None = None
-    model_settings: str | dict[str, Any] | None = None
-    on_needs_approval: str = "defer"
-    risk_threshold: str = "high"
-
-    @model_validator(mode="after")
-    def validate_model_when_enabled(self) -> Self:
-        if self.enabled and (self.model is None or self.model.strip() == ""):
-            msg = "security.shell_review.model is required when shell review is enabled."
-            raise ValueError(msg)
-        return self
-
-
 class ToolsConfig(BaseModel):
     """Tool permission configuration."""
 
@@ -157,13 +140,6 @@ class ToolsConfig(BaseModel):
 
     need_approval_mcps: list[str] = Field(default_factory=list)
     """MCP servers requiring user approval for all tools."""
-
-
-class SecurityConfig(BaseModel):
-    """Security runtime configuration."""
-
-    shell_review: ShellReviewConfig = Field(default_factory=ShellReviewConfig)
-    """Shell command safety review configuration."""
 
 
 class SubagentOverride(BaseModel):
@@ -298,9 +274,6 @@ class YaacliConfig(BaseModel):
     Set to False to prevent CLI process env vars (API keys, etc.)
     from leaking into shell subprocesses.
     """
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-    """Security runtime configuration."""
-
     model_profiles: dict[str, ModelProfileConfig] = Field(default_factory=dict)
     """Selectable model profiles for the /model command."""
 

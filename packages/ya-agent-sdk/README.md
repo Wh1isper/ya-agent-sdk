@@ -73,25 +73,22 @@ async with stream_agent(runtime, "Hello") as streamer:
         print(event)
 ```
 
-## Shell Command Review
+## Approval Review
 
-Configure shell command review on `AgentContext.security.shell_review` to run a small reviewer model before shell execution:
+Configure approval review on `AgentContext.security.approval_review` to run a reviewer model before protected tool execution:
 
 ```python
 from ya_agent_sdk.agents import create_agent, stream_agent
-from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig
+from ya_agent_sdk.context import SecurityConfig
 
 runtime = create_agent(
     "gateway@openai-responses:gpt-5.5",
     extra_context_kwargs={
-        "security": SecurityConfig(
-            shell_review=ShellReviewConfig(
-                enabled=True,
-                model="gateway@openai-responses:gpt-5.4-mini",
-                model_settings="openai_responses_low",
-                on_needs_approval="defer",
-                risk_threshold="high",
-            )
+        "security": SecurityConfig.auto_review(
+            reviewer_model="gateway@openai-responses:gpt-5.4-mini",
+            model_settings="openai_responses_low",
+            timeout_seconds=30,
+            max_denials=3,
         )
     },
 )
@@ -101,7 +98,7 @@ async with stream_agent(runtime, "Run the test suite") as streamer:
         print(event)
 ```
 
-`model` is required when shell review is enabled. `model_settings` accepts SDK preset names or an inline settings dictionary. `on_needs_approval` supports `defer` for HITL-capable runtimes and `deny` for autopilot runtimes. `risk_threshold` defaults to `high` and controls when the configured action triggers.
+The generic approval reviewer covers shell commands, workspace writes, MCP tools, and other tool permission boundaries.
 
 ## Model Preset Tips
 

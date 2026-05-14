@@ -91,19 +91,6 @@ model_cfg = "gpt5_270k"
 
 `[general]` is the startup fallback profile. The last selected profile is remembered in `~/.yaacli/state.json` and restored on the next launch when that profile still exists.
 
-Shell command review is configured in `~/.yaacli/config.toml` under `security.shell_review`:
-
-```toml
-[security.shell_review]
-enabled = true
-model = "gateway@openai-responses:gpt-5.4-mini"
-model_settings = "openai_responses_low"
-on_needs_approval = "defer"
-risk_threshold = "high"
-```
-
-When enabled, `model` is required. `model_settings` accepts SDK preset names or an inline TOML table. `risk_threshold` defaults to `high` and controls when the configured action triggers.
-
 Run CLI tests from the workspace root:
 
 ```bash

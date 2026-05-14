@@ -12,6 +12,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._gitignore import filter_gitignored
 
@@ -35,6 +36,7 @@ class GlobTool(BaseTool):
 
     name = "glob"
     description = "Find files by glob pattern. Returns paths sorted by modification time (newest first)."
+    permission = ToolPermissionProfile.read_workspace()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""

@@ -16,6 +16,7 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from typing_extensions import TypedDict
 
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 
@@ -102,6 +103,7 @@ class SubagentInfoTool(BaseTool):
         "List all known subagents and their metadata. "
         "Use this to discover subagents that may have been forgotten from context."
     )
+    permission = ToolPermissionProfile.delegation()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Only available when there is subagent information."""

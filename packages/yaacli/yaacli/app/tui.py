@@ -1880,12 +1880,12 @@ class TUIApp:
             Text(f"Tool: {tool_call.tool_name}", style="bold yellow"),
         ]
 
-        if metadata and metadata.get("reviewer") == "shell_command_reviewer":
+        if metadata:
             reason = metadata.get("reason")
             risk_level = metadata.get("risk_level")
             if reason or risk_level:
                 content_parts.append(Text(""))
-                content_parts.append(Text("Shell review:", style="bold cyan"))
+                content_parts.append(Text("Approval review:", style="bold cyan"))
                 if risk_level:
                     content_parts.append(Text(f"Risk: {risk_level}", style="yellow"))
                 if reason:

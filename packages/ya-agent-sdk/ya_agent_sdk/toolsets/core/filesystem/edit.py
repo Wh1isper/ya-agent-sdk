@@ -11,6 +11,7 @@ from ya_agent_environment import FileOperator
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import FileChange, FileChangeAction, FileChangeEvent, TextReplacement
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._types import EditItem
 from ya_agent_sdk.toolsets.core.filesystem._utils import is_binary_file
@@ -75,6 +76,7 @@ class EditTool(BaseTool):
 
     name = "edit"
     description = "Performs exact string replacement in files. Use empty `old_string` to create new files."
+    permission = ToolPermissionProfile.write_workspace()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
@@ -173,6 +175,7 @@ class MultiEditTool(BaseTool):
 
     name = "multi_edit"
     description = "Perform multiple find-and-replace operations on a single file efficiently."
+    permission = ToolPermissionProfile.write_workspace()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""

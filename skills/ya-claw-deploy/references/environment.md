@@ -76,17 +76,16 @@ Use the same values for systemd or custom container deployments when memory resi
 
 ## Schedule and Heartbeat Settings
 
-| Variable                                         | Default                                    | Purpose                                                                  |
-| ------------------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------ |
-| `YA_CLAW_SCHEDULE_DISPATCH_ENABLED`              | `true`                                     | Enables cron schedule dispatch                                           |
-| `YA_CLAW_SCHEDULE_TICK_SECONDS`                  | `5`                                        | Dispatcher scan interval in seconds                                      |
-| `YA_CLAW_SCHEDULE_MAX_DUE_PER_TICK`              | `20`                                       | Maximum due schedule fires processed per scan                            |
-| `YA_CLAW_HEARTBEAT_ENABLED`                      | `false`                                    | Enables the heartbeat dispatcher                                         |
-| `YA_CLAW_HEARTBEAT_INTERVAL_SECONDS`             | `300`                                      | Seconds between heartbeat fires                                          |
-| `YA_CLAW_HEARTBEAT_PROFILE`                      | unset                                      | Profile used for heartbeat runs; falls back to `YA_CLAW_DEFAULT_PROFILE` |
-| `YA_CLAW_HEARTBEAT_PROMPT`                       | `Run heartbeat according to HEARTBEAT.md.` | Prompt submitted for heartbeat runs                                      |
-| `YA_CLAW_HEARTBEAT_ON_ACTIVE`                    | `skip`                                     | Active-run policy for heartbeat dispatch                                 |
-| `YA_CLAW_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD` | unset                                      | Fallback shell review risk threshold for schedule/heartbeat runs         |
+| Variable                             | Default                                    | Purpose                                                                  |
+| ------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------ |
+| `YA_CLAW_SCHEDULE_DISPATCH_ENABLED`  | `true`                                     | Enables cron schedule dispatch                                           |
+| `YA_CLAW_SCHEDULE_TICK_SECONDS`      | `5`                                        | Dispatcher scan interval in seconds                                      |
+| `YA_CLAW_SCHEDULE_MAX_DUE_PER_TICK`  | `20`                                       | Maximum due schedule fires processed per scan                            |
+| `YA_CLAW_HEARTBEAT_ENABLED`          | `false`                                    | Enables the heartbeat dispatcher                                         |
+| `YA_CLAW_HEARTBEAT_INTERVAL_SECONDS` | `300`                                      | Seconds between heartbeat fires                                          |
+| `YA_CLAW_HEARTBEAT_PROFILE`          | unset                                      | Profile used for heartbeat runs; falls back to `YA_CLAW_DEFAULT_PROFILE` |
+| `YA_CLAW_HEARTBEAT_PROMPT`           | `Run heartbeat according to HEARTBEAT.md.` | Prompt submitted for heartbeat runs                                      |
+| `YA_CLAW_HEARTBEAT_ON_ACTIVE`        | `skip`                                     | Active-run policy for heartbeat dispatch                                 |
 
 Heartbeat guidance lives at `<YA_CLAW_WORKSPACE_DIR>/HEARTBEAT.md`. See [`schedules-heartbeat.md`](schedules-heartbeat.md) for deployment steps, API checks, and backup notes.
 

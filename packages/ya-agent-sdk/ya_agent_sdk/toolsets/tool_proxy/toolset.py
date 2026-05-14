@@ -27,6 +27,7 @@ from pydantic_ai.toolsets.abstract import AbstractToolset, ToolsetTool
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
+from ya_agent_sdk.security.approval import truncate_tool_output
 from ya_agent_sdk.toolsets.base import BaseToolset, InstructableToolset, collect_instruction_parts
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
@@ -565,7 +566,11 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         ts, original_tool = self._toolset_tools_cache[tool_name]
 
         try:
-            return await ts.call_tool(tool_name, arguments, ctx, original_tool)
+            result = await ts.call_tool(tool_name, arguments, ctx, original_tool)
+            truncation_config = None
+            if ctx.deps.security.approval_review is not None:
+                truncation_config = ctx.deps.security.approval_review.truncation
+            return truncate_tool_output(result, truncation_config)
         except (ApprovalRequired, CallDeferred):
             raise
         except Exception as e:

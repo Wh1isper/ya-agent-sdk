@@ -28,6 +28,22 @@ from pydantic_ai import ApprovalRequired, RunContext
 from pydantic_ai.mcp import MCPServer, MCPServerStdio, MCPServerStreamableHTTP
 
 from ya_agent_sdk._logger import get_logger
+from ya_agent_sdk.security.approval import (
+    ApprovalReviewConfig,
+    ApprovalReviewOutcome,
+    PermissionDecision,
+    build_approval_request,
+    denial_tool_result,
+    evaluate_approval_review,
+    infer_mcp_permission,
+    resolve_policy_decision,
+    truncate_tool_output,
+)
+from ya_agent_sdk.toolsets.core.approval_helpers import (
+    emit_approval_completed,
+    emit_approval_denied,
+    emit_approval_requested,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai.mcp import CallToolFunc, ToolResult
@@ -129,7 +145,12 @@ def filter_mcp_config(
     return MCPConfig(servers=filtered_servers)
 
 
-def create_mcp_approval_hook(server_name: str) -> ProcessToolCallback:
+def create_mcp_approval_hook(
+    server_name: str,
+    *,
+    transport: str = "stdio",
+    approval_review: ApprovalReviewConfig | None = None,
+) -> ProcessToolCallback:
     """Create a process_tool_call hook for MCP tool approval."""
 
     async def hook(
@@ -138,12 +159,52 @@ def create_mcp_approval_hook(server_name: str) -> ProcessToolCallback:
         name: str,
         tool_args: dict[str, Any],
     ) -> ToolResult:
+        context_review = getattr(getattr(ctx.deps, "security", None), "approval_review", None)
+        active_review = context_review if isinstance(context_review, ApprovalReviewConfig) else approval_review
+        if active_review is not None and active_review.enabled and not ctx.tool_call_approved:
+            override = active_review.mcp_permissions.get(server_name)
+            permission = infer_mcp_permission(
+                server_name=server_name,
+                transport=transport,
+                tool_name=name,
+                tool_args=tool_args,
+                override=override,
+            )
+            decision = resolve_policy_decision(permission)
+            request = build_approval_request(
+                ctx.deps,
+                tool_name=f"{server_name}_{name}",
+                tool_args=tool_args,
+                permission=permission,
+                mcp_server=server_name,
+                mcp_tool=name,
+                metadata={"mcp_transport": transport},
+            )
+            if decision == PermissionDecision.DENY:
+                from ya_agent_sdk.security.approval import closed_deny_result
+
+                result = closed_deny_result(
+                    request,
+                    rationale=permission.rationale or "MCP tool call denied by configured permission policy.",
+                )
+                await emit_approval_denied(ctx.deps, request, result, decision.value)
+                return denial_tool_result(result)  # type: ignore[return-value]
+            if decision == PermissionDecision.AUTO_REVIEW:
+                await emit_approval_requested(ctx.deps, request, decision.value)
+                review_result = await evaluate_approval_review(ctx.deps, request)
+                await emit_approval_completed(ctx.deps, request, review_result, decision.value)
+                if review_result.outcome == ApprovalReviewOutcome.DENY:
+                    await emit_approval_denied(ctx.deps, request, review_result, decision.value)
+                    return denial_tool_result(review_result)  # type: ignore[return-value]
+
         if server_name in ctx.deps.need_user_approve_mcps and not ctx.tool_call_approved:
             full_name = f"{server_name}_{name}"
             logger.debug("MCP tool %r requires approval", full_name)
             raise ApprovalRequired(metadata={"mcp_server": server_name, "mcp_tool": name, "full_name": full_name})
 
-        return await call_tool(name, tool_args, None)
+        result = await call_tool(name, tool_args, None)
+        truncation_config = active_review.truncation if isinstance(active_review, ApprovalReviewConfig) else None
+        return truncate_tool_output(result, truncation_config)  # type: ignore[return-value]
 
     return hook
 
@@ -152,10 +213,15 @@ def build_mcp_server(
     name: str,
     config: MCPServerConfig,
     need_approval: bool = False,
+    approval_review: ApprovalReviewConfig | None = None,
 ) -> MCPServer | None:
     """Build a single MCPServer instance from configuration."""
 
-    process_tool_call = create_mcp_approval_hook(name) if need_approval else None
+    process_tool_call = (
+        create_mcp_approval_hook(name, transport=config.transport, approval_review=approval_review)
+        if need_approval or (approval_review is not None and approval_review.enabled)
+        else None
+    )
 
     match config.transport:
         case "stdio":
@@ -187,6 +253,7 @@ def build_mcp_server(
 def build_mcp_servers(
     mcp_config: MCPConfig,
     need_approval_mcps: list[str] | None = None,
+    approval_review: ApprovalReviewConfig | None = None,
 ) -> list[MCPServer]:
     """Build MCPServer instances from MCPConfig."""
 
@@ -194,7 +261,12 @@ def build_mcp_servers(
     approval_names = _normalize_namespace_names(need_approval_mcps)
 
     for name, config in mcp_config.servers.items():
-        server = build_mcp_server(name, config, need_approval=name in approval_names)
+        server = build_mcp_server(
+            name,
+            config,
+            need_approval=name in approval_names,
+            approval_review=approval_review,
+        )
         if server is not None:
             servers.append(server)
             logger.info("Added MCP server: %s (%s, approval=%s)", name, config.transport, name in approval_names)

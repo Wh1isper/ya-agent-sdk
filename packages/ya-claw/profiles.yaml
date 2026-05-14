@@ -13,13 +13,18 @@ profiles:
   model_settings_preset: openai_responses_high
   model_config_preset: gpt5_270k
   security:
-    shell_review:
+    approval_review:
       enabled: false
       model: gateway@openai-responses:gpt-5.4-mini
       model_settings: openai_responses_low
-      on_needs_approval: deny
-      risk_threshold: extra_high
-      unattended_risk_threshold: high
+      timeout_seconds: 30
+      max_denials: 3
+      include_recent_messages: 12
+      truncation:
+        enabled: true
+        max_text_chars: 60000
+        head_chars: 30000
+        tail_chars: 20000
   system_prompt: |-
     <agent_behavior>
 

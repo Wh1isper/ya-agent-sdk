@@ -29,10 +29,25 @@ from typing_extensions import TypeVar
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import (
+    ApprovalReviewOutcome,
+    PermissionDecision,
+    build_approval_request,
+    closed_deny_result,
+    denial_tool_result,
+    evaluate_approval_review,
+    resolve_policy_decision,
+    truncate_tool_output,
+)
 from ya_agent_sdk.toolsets.base import (
     BaseTool,
     BaseToolset,
     Instruction,
+)
+from ya_agent_sdk.toolsets.core.approval_helpers import (
+    emit_approval_completed,
+    emit_approval_denied,
+    emit_approval_requested,
 )
 from ya_agent_sdk.utils import get_tool_name_from_id
 
@@ -587,6 +602,30 @@ class Toolset(BaseToolset[AgentDepsT]):
             logger.debug(f"call_tool: {name!r} executing tool pre-hook")
             args = await tool.pre_hook(ctx, args, metadata)
 
+        if tool.tool_instance is not None and not ctx.tool_call_approved:
+            permission = tool.tool_instance.resolve_permission(ctx, args)
+            decision = resolve_policy_decision(permission)
+            if decision == PermissionDecision.DENY:
+                request = build_approval_request(ctx.deps, tool_name=name, tool_args=args, permission=permission)
+                deny_result = closed_deny_result(
+                    request,
+                    rationale=permission.rationale or "Tool call denied by configured permission policy.",
+                )
+                await emit_approval_denied(ctx.deps, request, deny_result, decision.value)
+                return denial_tool_result(deny_result)
+            if (
+                decision == PermissionDecision.AUTO_REVIEW
+                and ctx.deps.security.approval_review is not None
+                and ctx.deps.security.approval_review.enabled
+            ):
+                request = build_approval_request(ctx.deps, tool_name=name, tool_args=args, permission=permission)
+                await emit_approval_requested(ctx.deps, request, decision.value)
+                review_result = await evaluate_approval_review(ctx.deps, request)
+                await emit_approval_completed(ctx.deps, request, review_result, decision.value)
+                if review_result.outcome == ApprovalReviewOutcome.DENY:
+                    await emit_approval_denied(ctx.deps, request, review_result, decision.value)
+                    return denial_tool_result(review_result)
+
         logger.debug(f"call_tool: {name!r} executing tool function")
         try:
             result = await self._call_tool_func(args, ctx, tool)
@@ -622,6 +661,11 @@ class Toolset(BaseToolset[AgentDepsT]):
         if isinstance(result, BaseException):
             logger.debug(f"call_tool: {name!r} raising exception: {type(result).__name__}")
             return f"Error calling tool {name}: {result}"
+
+        truncation_config = None
+        if ctx.deps.security.approval_review is not None:
+            truncation_config = ctx.deps.security.approval_review.truncation
+        result = truncate_tool_output(result, truncation_config)
 
         logger.debug(f"call_tool: {name!r} completed successfully")
         return result

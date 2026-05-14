@@ -172,7 +172,7 @@ if isinstance(event, SubagentStartEvent):
 
 ### Usage Snapshot Events
 
-`UsageSnapshotEvent` is emitted whenever the unified per-run usage ledger changes. It is the realtime usage surface for clients and includes main-agent usage plus reported internal model usage such as subagents, compaction, and shell review.
+`UsageSnapshotEvent` is emitted whenever the unified per-run usage ledger changes. It is the realtime usage surface for clients and includes main-agent usage plus reported internal model usage such as subagents, compaction, and approval review.
 
 | Field                   | Description                             |
 | ----------------------- | --------------------------------------- |

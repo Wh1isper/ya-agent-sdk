@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import suppress
 from typing import Any, Literal
 from uuid import uuid4
@@ -469,7 +470,7 @@ def _project_run_trace(
 
     for event in events:
         event_type = str(event.get("type", "")).strip()
-        item_type = _trace_item_type(event_type)
+        item_type = _trace_item_type(event, event_type)
         if item_type is None:
             continue
 
@@ -502,15 +503,54 @@ def _project_run_trace(
     return trace, truncated
 
 
-def _trace_item_type(event_type: str) -> Literal["tool_call", "tool_response"] | None:
+def _trace_item_type(
+    event: dict[str, Any],
+    event_type: str,
+) -> Literal["tool_call", "tool_response", "approval_review"] | None:
     if event_type == "TOOL_CALL_CHUNK":
         return "tool_call"
     if event_type == "TOOL_CALL_RESULT":
         return "tool_response"
+    if event_type == "CUSTOM":
+        name = str(event.get("name", ""))
+        if name in {
+            "agent.approval_review_requested",
+            "agent.approval_review_completed",
+            "agent.approval_review_denied",
+        }:
+            return "approval_review"
+    if event_type in {
+        "approval_review.requested",
+        "approval_review.completed",
+        "approval_review.denied",
+        "APPROVAL_REVIEW_REQUESTED",
+        "APPROVAL_REVIEW_COMPLETED",
+        "APPROVAL_REVIEW_DENIED",
+    }:
+        return "approval_review"
     return None
 
 
 def _trace_content(event: dict[str, Any], item_type: str) -> str | None:
+    if item_type == "approval_review":
+        source_event = event
+        value = event.get("value")
+        if isinstance(value, dict) and isinstance(value.get("payload"), dict):
+            source_event = value["payload"]
+        payload = {
+            "request_id": _string_field(source_event, "request_id", "requestId"),
+            "tool_call_id": _string_field(source_event, "tool_call_id", "toolCallId"),
+            "tool_name": _string_field(source_event, "tool_name", "toolCallName"),
+            "source": source_event.get("source"),
+            "decision": source_event.get("decision"),
+            "outcome": source_event.get("outcome"),
+            "risk_level": source_event.get("risk_level") or source_event.get("riskLevel"),
+            "authorization": source_event.get("authorization"),
+            "categories": source_event.get("categories"),
+            "scopes": source_event.get("scopes"),
+            "rationale": source_event.get("rationale"),
+        }
+        return json.dumps({k: v for k, v in payload.items() if v is not None}, ensure_ascii=False)
     value = event.get("delta") if item_type == "tool_call" else event.get("content")
     if value is None:
         return None

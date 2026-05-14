@@ -15,6 +15,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, safe_stream_request, verify_url
 
@@ -32,6 +33,7 @@ class DownloadTool(BaseTool):
 
     name = "download"
     description = "Download files from URLs and save to local filesystem."
+    permission = ToolPermissionProfile.network_download()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""

@@ -55,17 +55,12 @@ def tool_name_by_call_id(messages: list[ModelMessage]) -> dict[str, str]:
 
 
 def _interaction_kind(metadata: dict[str, Any], tool_call: ToolCallPart) -> str:
-    reviewer = metadata.get("reviewer")
-    if reviewer == "shell_command_reviewer":
-        return "shell_review"
     if isinstance(metadata.get("mcp_server"), str):
         return "mcp_approval"
     return "tool_approval"
 
 
 def _interaction_title(metadata: dict[str, Any], tool_call: ToolCallPart) -> str:
-    if metadata.get("reviewer") == "shell_command_reviewer":
-        return "Shell command approval required"
     full_name = metadata.get("full_name")
     if isinstance(full_name, str) and full_name.strip():
         return f"MCP tool approval required: {full_name.strip()}"

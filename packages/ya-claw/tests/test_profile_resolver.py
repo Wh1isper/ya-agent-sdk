@@ -32,13 +32,14 @@ profiles:
     model_settings_preset: openai_responses_high
     model_config_preset: gpt5_270k
     security:
-      shell_review:
+      approval_review:
         enabled: true
         model: gateway@openai-responses:gpt-5.5-mini
         model_settings: openai_responses_low
-        on_needs_approval: deny
-        risk_threshold: extra_high
-        unattended_risk_threshold: high
+        timeout_seconds: 30
+        max_denials: 3
+        truncation:
+          max_text_chars: 60000
     system_prompt: |
       You are the profile-scoped execution agent.
     builtin_toolsets: [filesystem, shell]
@@ -92,13 +93,13 @@ profiles:
 
     assert seeded_names == ["default"]
     assert resolved_profile.model == "gateway@openai-responses:gpt-5.5"
-    assert resolved_profile.shell_review is not None
-    assert resolved_profile.shell_review.enabled is True
-    assert resolved_profile.shell_review.model == "gateway@openai-responses:gpt-5.5-mini"
-    assert isinstance(resolved_profile.shell_review.model_settings, dict)
-    assert resolved_profile.shell_review.model_settings["openai_reasoning_effort"] == "low"
-    assert resolved_profile.shell_review.risk_threshold == "extra_high"
-    assert resolved_profile.shell_review.unattended_risk_threshold == "high"
+    assert resolved_profile.approval_review is not None
+    assert resolved_profile.approval_review.enabled is True
+    assert resolved_profile.approval_review.model == "gateway@openai-responses:gpt-5.5-mini"
+    assert resolved_profile.approval_review.model_settings == "openai_responses_low"
+    assert resolved_profile.approval_review.timeout_seconds == 30
+    assert resolved_profile.approval_review.max_denials == 3
+    assert resolved_profile.approval_review.truncation["max_text_chars"] == 60000
     assert resolved_profile.system_prompt == "You are the profile-scoped execution agent."
     assert resolved_profile.builtin_toolsets == ["filesystem", "shell"]
     assert resolved_profile.need_user_approve_mcps == ["context7"]
@@ -140,9 +141,9 @@ profiles:
         assert isinstance(record, ProfileRecord)
         assert record.source_checksum is not None
         assert record.model_config_override is not None
-        assert record.model_config_override["security"]["shell_review"]["model_settings"] == "openai_responses_low"
-        assert record.model_config_override["security"]["shell_review"]["risk_threshold"] == "extra_high"
-        assert record.model_config_override["security"]["shell_review"]["unattended_risk_threshold"] == "high"
+        assert record.model_config_override["security"]["approval_review"]["model_settings"] == "openai_responses_low"
+        assert record.model_config_override["security"]["approval_review"]["timeout_seconds"] == 30
+        assert record.model_config_override["security"]["approval_review"]["truncation"]["max_text_chars"] == 60000
         assert record.builtin_toolsets == ["filesystem", "shell"]
         assert record.need_user_approve_mcps == ["context7"]
         assert record.enabled_mcps == ["context7", "github"]
@@ -253,7 +254,7 @@ profiles:
         await resolver.seed_profiles()
 
 
-async def test_profile_resolver_accepts_legacy_toolsets_alias_from_yaml(
+async def test_profile_resolver_accepts_toolsets_alias_from_yaml(
     tmp_path: Path,
     db_engine: AsyncEngine,
 ) -> None:
@@ -261,7 +262,7 @@ async def test_profile_resolver_accepts_legacy_toolsets_alias_from_yaml(
     seed_file.write_text(
         """
 profiles:
-  - name: legacy
+  - name: alias-profile
     model: gateway@openai-responses:gpt-5.5
     toolsets: [core, web]
 """.strip(),
@@ -277,7 +278,7 @@ profiles:
     resolver = ProfileResolver(settings=settings, session_factory=session_factory)
 
     await resolver.seed_profiles()
-    resolved_profile = await resolver.resolve("legacy")
+    resolved_profile = await resolver.resolve("alias-profile")
 
     assert resolved_profile.builtin_toolsets == ["core", "web"]
 

@@ -13,6 +13,7 @@ from pydantic_ai import BinaryContent, RunContext
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.web._http_client import (
     ForbiddenUrlError,
@@ -38,6 +39,7 @@ class FetchTool(BaseTool):
 
     name = "fetch"
     description = "Read web files or check resource availability via HTTP."
+    permission = ToolPermissionProfile.network_read()
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         return _load_instruction()

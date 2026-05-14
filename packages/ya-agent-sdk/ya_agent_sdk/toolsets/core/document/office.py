@@ -22,6 +22,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 logger = get_logger(__name__)
@@ -56,6 +57,7 @@ class OfficeConvertTool(BaseTool):
 
     name = "office_to_markdown"
     description = "Convert Office documents (Word, PowerPoint, Excel) and EPub to markdown."
+    permission = ToolPermissionProfile.write_workspace()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""

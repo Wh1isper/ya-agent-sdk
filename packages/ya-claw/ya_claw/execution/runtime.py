@@ -10,11 +10,9 @@ from ya_agent_sdk.context import (
     ModelConfig,
     ResumableState,
     SecurityConfig,
-    ShellReviewAction,
-    ShellReviewConfig,
-    ShellReviewRiskLevel,
 )
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps, filter_mcp_config
+from ya_agent_sdk.security.approval import ApprovalReviewConfig, McpPermissionProfile, ToolResultTruncationConfig
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.document import tools as document_tools
 from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
@@ -124,9 +122,9 @@ class ClawRuntimeBuilder:
             "source_metadata": dict(source_metadata or {}),
             "claw_metadata": dict(claw_metadata or {}),
         }
-        shell_review = self._resolve_shell_review(profile, source_kind=source_kind)
-        if shell_review is not None:
-            extra_context_kwargs["security"] = SecurityConfig(shell_review=shell_review)
+        security = self._resolve_security(profile, source_kind=source_kind)
+        if security != SecurityConfig():
+            extra_context_kwargs["security"] = security
         return create_agent(
             model=profile.model,
             model_settings=cast(Any, profile.model_settings),
@@ -155,32 +153,31 @@ class ClawRuntimeBuilder:
     def _build_model_config(self, profile: ResolvedProfile) -> ModelConfig:
         return ModelConfig.model_validate(dict(profile.model_config or {}))
 
-    def _resolve_shell_review(self, profile: ResolvedProfile, *, source_kind: str | None) -> ShellReviewConfig | None:
-        if profile.shell_review is None:
-            return None
-        review = profile.shell_review.model_copy(deep=True)
-        if _is_unattended_source(source_kind):
-            review.risk_threshold = self._resolve_unattended_shell_review_risk_threshold(
-                profile, source_kind=source_kind
-            )
-            if review.on_needs_approval == ShellReviewAction.DEFER:
-                review.on_needs_approval = ShellReviewAction.DENY
-        return ShellReviewConfig.model_validate(review.model_dump())
+    def _resolve_security(self, profile: ResolvedProfile, *, source_kind: str | None) -> SecurityConfig:
+        approval_review = self._resolve_approval_review(profile)
+        return SecurityConfig(approval_review=approval_review)
 
-    def _resolve_unattended_shell_review_risk_threshold(
-        self,
-        profile: ResolvedProfile,
-        *,
-        source_kind: str | None,
-    ) -> ShellReviewRiskLevel:
-        review = profile.shell_review
-        if review is None:
-            return ShellReviewRiskLevel.HIGH
-        if review.unattended_risk_threshold is not None:
-            return review.unattended_risk_threshold
-        if self._settings.unattended_shell_review_risk_threshold is not None:
-            return ShellReviewRiskLevel(self._settings.unattended_shell_review_risk_threshold)
-        return review.risk_threshold
+    def _resolve_approval_review(self, profile: ResolvedProfile) -> ApprovalReviewConfig | None:
+        if profile.approval_review is None or not profile.approval_review.enabled:
+            return None
+        model = profile.approval_review.model or getattr(self._settings, "approval_review_model", None)
+        if not model:
+            return None
+        truncation = ToolResultTruncationConfig.model_validate(profile.approval_review.truncation or {})
+        mcp_permissions = {
+            name: McpPermissionProfile.model_validate({**value, "server_name": value.get("server_name") or name})
+            for name, value in profile.approval_review.mcp_permissions.items()
+        }
+        return SecurityConfig.auto_review(
+            reviewer_model=model,
+            model_settings=profile.approval_review.model_settings,
+            prompt=profile.approval_review.prompt,
+            timeout_seconds=profile.approval_review.timeout_seconds or self._settings.approval_review_timeout_seconds,
+            max_denials=profile.approval_review.max_denials or self._settings.approval_review_max_denials,
+            include_recent_messages=profile.approval_review.include_recent_messages,
+            truncation=truncation,
+            mcp_permissions=mcp_permissions,
+        ).approval_review
 
     def _resolve_need_user_approve_tools(self, profile: ResolvedProfile, *, source_kind: str | None) -> list[str]:
         if _is_unattended_source(source_kind):
@@ -230,7 +227,12 @@ class ClawRuntimeBuilder:
         if not filtered_config.servers:
             return toolsets
 
-        mcp_servers = build_mcp_servers(filtered_config, need_approval_mcps=profile.need_user_approve_mcps)
+        approval_review = self._resolve_approval_review(profile)
+        mcp_servers = build_mcp_servers(
+            filtered_config,
+            need_approval_mcps=profile.need_user_approve_mcps,
+            approval_review=approval_review,
+        )
         if not mcp_servers:
             return toolsets
 

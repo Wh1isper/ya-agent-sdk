@@ -107,7 +107,7 @@ When a bridge-triggered run enters HITL, the Lark adapter sends one interactive 
 Card behavior:
 
 - one active approval card per run
-- shell review renders command, risk, cwd, and reason fields
+- approval review renders tool name, risk, reason, command, cwd, and arguments when available
 - generic tool/MCP approval renders tool name and arguments
 - command and arguments use plain text blocks for reliable Lark rendering
 - approve/deny buttons emit `card.action.trigger` with an interaction token

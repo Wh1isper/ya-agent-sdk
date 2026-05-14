@@ -76,7 +76,7 @@ The heartbeat view can expose an admin manual trigger action. Heartbeat manageme
 
 ### Profiles
 
-Shows profile CRUD, seed status, enabled built-in toolsets, model configuration, MCP filters, approval policy, and subagent configuration.
+Shows profile CRUD, seed status, enabled built-in toolsets, model configuration, MCP filters, approval review policy, result truncation settings, and subagent configuration.
 
 ### Bridges
 
@@ -84,11 +84,11 @@ Shows bridge adapters, bridge dispatch mode, recent inbound events, conversation
 
 ### Run View
 
-Shows live event output, final summary, AGUI-aligned event flow, trigger type, source metadata, and error state when needed.
+Shows live event output, final summary, AGUI-aligned event flow, approval review outcomes, trigger type, source metadata, and error state when needed.
 
 ### Run Summary
 
-Shows the final run result, commit metadata, source metadata, schedule or heartbeat fire links, and continuation readiness.
+Shows the final run result, commit metadata, source metadata, approval review trace highlights, schedule or heartbeat fire links, and continuation readiness.
 
 ## Console API Contract
 
@@ -104,7 +104,7 @@ The web shell uses these API layers:
 - `/api/v1/schedules` for schedule CRUD, manual trigger, and fire history
 - `/api/v1/heartbeat/*` for effective heartbeat config, status, and fire history
 
-The web shell should implement SSE through `fetch` and `ReadableStream` parsing so bearer authorization headers are sent consistently. The global notification stream updates collection state, while nested run and session streams render active AGUI output.
+The web shell should implement SSE through `fetch` and `ReadableStream` parsing so bearer authorization headers are sent consistently. The global notification stream updates collection state, while nested run and session streams render active AGUI output. Approval review display details live in [11-approval-review-integration.md](11-approval-review-integration.md).
 
 ```mermaid
 flowchart LR

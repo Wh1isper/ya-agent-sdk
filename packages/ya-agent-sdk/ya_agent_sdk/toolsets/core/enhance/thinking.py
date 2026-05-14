@@ -12,6 +12,7 @@ from pydantic import Field
 from pydantic_ai import RunContext
 
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -29,6 +30,7 @@ class ThinkingTool(BaseTool):
 
     name = "thinking"
     description = "Think about something without obtaining new information or making changes."
+    permission = ToolPermissionProfile.context_management()
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
         """Load instruction from prompts/thinking.md."""

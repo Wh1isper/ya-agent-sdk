@@ -133,7 +133,7 @@ Check `lark-cli` availability and credentials in the workspace container or loca
 
 ### HITL Card Does Not Appear
 
-Confirm `card.action.trigger` is included in `YA_CLAW_BRIDGE_LARK_EVENT_TYPES` and subscribed in the Lark app. Check that the run notification has `session_status_reason=hitl_pending` and `active_interactions` in status detail. Shell review cards require profile shell review `on_needs_approval=defer`; generic tool/MCP approval cards require profile `need_user_approve_tools` or `need_user_approve_mcps` on an interactive run.
+Confirm `card.action.trigger` is included in `YA_CLAW_BRIDGE_LARK_EVENT_TYPES` and subscribed in the Lark app. Check that the run notification has `session_status_reason=hitl_pending` and `active_interactions` in status detail. Approval cards require profile `security.approval_review`, `need_user_approve_tools`, or `need_user_approve_mcps` on an interactive run.
 
 ### HITL Card Button Does Not Resolve
 
@@ -145,7 +145,7 @@ Bridge messages received while a run is HITL pending should create `bridge_event
 
 ### Unattended Schedule and Heartbeat Runs
 
-Schedule and heartbeat runs use unattended approval behavior. Shell review `defer` becomes `deny`, and generic tool/MCP approval lists are cleared for that run. Configure profile-level `unattended_risk_threshold` for agent-specific background behavior. Use reduced built-in toolsets and limited MCP access for background profiles.
+Schedule and heartbeat runs use unattended approval behavior. Generic tool/MCP approval lists are cleared for that run while profile-level approval review remains active. Use reduced built-in toolsets and limited MCP access for background profiles.
 
 ### Manual Command Status
 

@@ -1,10 +1,8 @@
-# Profiles
-
 Profiles define reusable agent runtime behavior. They live in the database and can be seeded from YAML.
 
 ## Default Profile
 
-`YA_CLAW_DEFAULT_PROFILE` defaults to `default`. Set it only when a deployment uses another profile name as the request fallback.
+`YA_CLAW_DEFAULT_PROFILE` defaults to `default`. Set it when a deployment uses another profile name as the request fallback.
 
 ```env
 YA_CLAW_DEFAULT_PROFILE=default
@@ -44,8 +42,8 @@ Profiles can define:
 - model settings and config presets
 - built-in tool groups
 - subagents
-- tool approval policy
-- shell command review policy
+- generic approval review policy
+- tool and MCP approval policy
 - MCP server definitions
 - enabled and disabled MCP namespaces
 - workspace backend hint
@@ -75,30 +73,32 @@ profiles:
 
 The service process reads credentials from `~/.yaai/auth.json`. Docker deployments should mount a persistent host directory to the service user's `~/.yaai` so refresh tokens survive image upgrades and container replacement.
 
-## Shell Command Review
+## Approval Review
 
-Shell command review is configured per profile under `security.shell_review` in the seed YAML or stored AgentProfile `model_config_override`.
+Approval review is configured per profile under `security.approval_review` in seed YAML or stored AgentProfile `model_config_override`. The reviewer applies to protected tool permission boundaries including shell execution, workspace writes, destructive file operations, downloads, external mutations, and configured MCP tools.
 
 ```yaml
 profiles:
 - name: default
   model: gateway@openai-responses:gpt-5.5
   security:
-    shell_review:
+    approval_review:
       enabled: true
       model: gateway@openai-responses:gpt-5.4-mini
       model_settings: openai_responses_low
-      on_needs_approval: deny
-      risk_threshold: extra_high
+      timeout_seconds: 30
+      max_denials: 3
+      include_recent_messages: 12
+      mcp_permissions:
+        github:
+          default_decision: auto_review
+          categories: [external_integration, network, write]
+          scopes: [external_service]
 ```
 
-Supported `risk_threshold` values are `low`, `medium`, `high`, and `extra_high`. Commands with reviewer risk below the threshold execute directly. Commands at or above the threshold enter the configured action.
+`model` is required when approval review is enabled. `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object. `max_denials` controls how many reviewer denials can be surfaced before the protected call returns a closed denial.
 
-YA Claw uses `extra_high` as the profile shell review threshold default. Set `risk_threshold` explicitly when a deployment wants a stricter policy, for example `high` for remote code execution, broad destructive workspace changes, writes outside the workspace, sensitive file reads, sudo usage, or system-level changes.
-
-`on_needs_approval` accepts `deny` and `defer`. Interactive API, stream, and bridge runs can use `defer` to enter HITL and wait for an explicit user response. Schedule and heartbeat runs use unattended approval behavior: `defer` is converted to `deny`, so threshold-triggering commands are blocked and background automation keeps running.
-
-`model` is required when shell review is enabled. `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object.
+Interactive API, stream, and bridge runs can enter HITL when an approval review denies a protected call or a user-approval policy defers a tool call. Schedule and heartbeat runs clear `need_user_approve_tools` and `need_user_approve_mcps` for that run; approval review remains profile-controlled.
 
 ## Tool and MCP Approval
 
@@ -114,9 +114,7 @@ profiles:
     - github
 ```
 
-Interactive runs surface these approvals through the same HITL mechanism as shell review. Bridge-triggered Lark runs render one active approval card in the source chat and update it in place as each interaction resolves.
-
-Schedule and heartbeat runs clear `need_user_approve_tools` and `need_user_approve_mcps` for that run. Use dedicated schedule or heartbeat profiles to narrow the available tool surface, disable optional MCP servers, or set stricter shell review thresholds.
+Interactive runs surface these approvals through the same HITL mechanism as approval review. Bridge-triggered Lark runs render one active approval card in the source chat and update it in place as each interaction resolves.
 
 ## Profile Patterns for Interactive and Background Runs
 
@@ -127,15 +125,17 @@ profiles:
 - name: lark-interactive
   model: gateway@openai-responses:gpt-5.5
   security:
-    shell_review:
+    approval_review:
       enabled: true
       model: gateway@openai-responses:gpt-5.4-mini
       model_settings: openai_responses_low
-      on_needs_approval: defer
-      risk_threshold: high
+      timeout_seconds: 30
+      max_denials: 3
+  need_user_approve_tools:
+    - file_write
 ```
 
-Use an unattended profile for schedule and heartbeat jobs:
+Use a constrained profile for schedule and heartbeat jobs:
 
 ```yaml
 profiles:
@@ -143,24 +143,15 @@ profiles:
   model: gateway@openai-responses:gpt-5.5
   builtin_toolsets: [filesystem, shell, session]
   security:
-    shell_review:
+    approval_review:
       enabled: true
       model: gateway@openai-responses:gpt-5.4-mini
       model_settings: openai_responses_low
-      on_needs_approval: deny
-      risk_threshold: extra_high
-      unattended_risk_threshold: high
+      timeout_seconds: 30
+      max_denials: 1
 ```
 
-Shell review risk threshold precedence for unattended runs:
-
-1. `unattended_risk_threshold`
-2. service-level `YA_CLAW_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD`
-3. `risk_threshold`
-
-Schedule and heartbeat share the same unattended threshold. The service-level value is a fallback. Prefer profile-level thresholds for agent-specific behavior.
-
-The bundled `packages/ya-claw/profiles.yaml` keeps shell review disabled by default and includes the default review model and `risk_threshold: extra_high` fields as an operator-ready template.
+Schedule and heartbeat share the same runtime assembly path as normal runs, with profile-level approval review and a narrowed user approval surface. Prefer dedicated profiles for background tasks so available toolsets, MCP namespaces, and reviewer model settings match automation risk.
 
 ## Test Run
 

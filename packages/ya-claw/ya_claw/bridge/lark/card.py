@@ -165,8 +165,6 @@ def _template_for_interaction(interaction: ActiveInteraction) -> str:
     risk_level = interaction.metadata.get("risk_level")
     if risk_level in {"extra_high", "high"}:
         return "red" if risk_level == "extra_high" else "orange"
-    if interaction.kind == "shell_review":
-        return "orange"
     return "blue"
 
 

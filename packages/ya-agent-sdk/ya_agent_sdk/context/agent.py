@@ -77,7 +77,7 @@ from uuid import uuid4
 from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_ai import (
     DeferredToolRequests,
     FunctionToolCallEvent,
@@ -107,6 +107,12 @@ from ya_agent_environment import Environment, FileOperator, ResourceRegistry, Sh
 
 from ya_agent_sdk.agents.lifecycle import LifecycleExtension
 from ya_agent_sdk.events import AgentEvent, UsageSnapshotEvent
+from ya_agent_sdk.security.approval import (
+    ApprovalReviewConfig,
+    ApprovalReviewResultRecord,
+    McpPermissionProfile,
+    ToolResultTruncationConfig,
+)
 from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot, UsageSnapshotEntry, coerce_run_usage
 from ya_agent_sdk.utils import get_latest_request_usage
 
@@ -486,57 +492,41 @@ MediaToUrlHook = Callable[[RunContext["AgentContext"], bytes, str], Awaitable[st
 # =============================================================================
 
 
-class ShellReviewAction(StrEnum):
-    """Action when shell command review requires approval."""
-
-    DEFER = "defer"
-    DENY = "deny"
-
-
-class ShellReviewRiskLevel(StrEnum):
-    """Shell command review risk levels."""
-
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    EXTRA_HIGH = "extra_high"
-
-
-class ShellReviewConfig(BaseModel):
-    """Configuration for shell command safety review."""
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    enabled: bool = False
-    model: str | None = None
-    model_settings: dict[str, Any] | None = None
-    on_needs_approval: ShellReviewAction = ShellReviewAction.DEFER
-    risk_threshold: ShellReviewRiskLevel = ShellReviewRiskLevel.HIGH
-    system_prompt: str | None = None
-
-    @field_validator("model_settings", mode="before")
-    @classmethod
-    def resolve_model_settings_preset(cls, value: Any) -> dict[str, Any] | None:
-        """Resolve model settings preset names at the SDK config boundary."""
-        if value is None:
-            return None
-        from ya_agent_sdk.presets import resolve_model_settings
-
-        return resolve_model_settings(value)
-
-    @model_validator(mode="after")
-    def validate_model_when_enabled(self) -> Self:
-        if self.enabled and (self.model is None or self.model.strip() == ""):
-            msg = "shell_review.model is required when shell review is enabled."
-            raise ValueError(msg)
-        return self
-
-
 class SecurityConfig(BaseModel):
     """Security-related runtime configuration."""
 
-    shell_review: ShellReviewConfig | None = None
-    """Optional shell command safety review configuration."""
+    model_config = {"arbitrary_types_allowed": True}
+
+    approval_review: ApprovalReviewConfig | None = None
+    """Optional generic approval review configuration."""
+
+    @classmethod
+    def auto_review(
+        cls,
+        *,
+        reviewer_model: str | Model,
+        model_settings: str | dict[str, Any] | None = None,
+        prompt: str | None = None,
+        timeout_seconds: float = 30.0,
+        max_denials: int = 3,
+        include_recent_messages: int = 12,
+        truncation: ToolResultTruncationConfig | None = None,
+        mcp_permissions: dict[str, McpPermissionProfile] | None = None,
+    ) -> Self:
+        """Create a SecurityConfig with generic approval review enabled."""
+        return cls(
+            approval_review=ApprovalReviewConfig(
+                enabled=True,
+                model=reviewer_model,
+                model_settings=model_settings,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+                max_denials=max_denials,
+                include_recent_messages=include_recent_messages,
+                truncation=truncation or ToolResultTruncationConfig(),
+                mcp_permissions=mcp_permissions or {},
+            )
+        )
 
 
 class ToolConfig(BaseModel):
@@ -1064,8 +1054,10 @@ class AgentContext(BaseModel):
     usage_snapshot_entries: dict[str, UsageSnapshotEntry] = Field(default_factory=dict)
     """Unified per-run usage ledger, keyed by agent/source ID."""
 
-    shell_review_records: deque[Any] = Field(default_factory=lambda: deque(maxlen=10), exclude=True)
-    """Recent shell review records for current-run safety context."""
+    approval_review_records: deque[ApprovalReviewResultRecord] = Field(
+        default_factory=lambda: deque(maxlen=20), exclude=True
+    )
+    """Recent approval review records for current-run safety context."""
 
     user_prompts: str | Sequence[UserContent] | None = None
     """User prompts collected during the session for compact."""
@@ -1615,7 +1607,7 @@ class AgentContext(BaseModel):
         Per-run state (fresh for each run):
             - run_id, start_at, end_at
             - tool_id_wrapper, agent_stream_queues
-            - usage_snapshot_entries, shell_review_records, deferred_tool_metadata
+            - usage_snapshot_entries, approval_review_records, deferred_tool_metadata
             - force_inject_instructions
 
         Shared state (same reference as original):
@@ -1636,7 +1628,7 @@ class AgentContext(BaseModel):
             "tool_id_wrapper": ToolIdWrapper(),
             "agent_stream_queues": _create_stream_queue_factory(),
             "usage_snapshot_entries": {},
-            "shell_review_records": deque(maxlen=10),
+            "approval_review_records": deque(maxlen=20),
             "deferred_tool_metadata": {},
             "force_inject_instructions": False,
         }
@@ -1702,7 +1694,7 @@ class AgentContext(BaseModel):
             "steering_messages": [],  # Subagent has its own steering queue
             "tool_id_wrapper": ToolIdWrapper(),  # Fresh wrapper for subagent
             "tool_tags": set(),  # Fresh tags for subagent (recomputed by its own Toolset)
-            "shell_review_records": deque(maxlen=10),
+            "approval_review_records": deque(maxlen=20),
             "security": self.security.model_copy(deep=True),
             # env is inherited via model_copy (shares parent's env reference)
             **override,

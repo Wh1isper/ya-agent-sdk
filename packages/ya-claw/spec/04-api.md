@@ -70,15 +70,15 @@ Sandbox state uses `status` for lifecycle (`created`, `preparing`, `ready`, `fai
 
 ## Runs
 
-| Method | Path                              | Purpose                         |
-| ------ | --------------------------------- | ------------------------------- |
-| `POST` | `/api/v1/runs`                    | create a queued run directly    |
-| `GET`  | `/api/v1/runs/{run_id}`           | inspect run and committed state |
-| `GET`  | `/api/v1/runs/{run_id}/trace`     | inspect compact tool trace      |
-| `POST` | `/api/v1/runs/{run_id}/steer`     | steer a specific active run     |
-| `POST` | `/api/v1/runs/{run_id}/interrupt` | interrupt a specific active run |
-| `POST` | `/api/v1/runs/{run_id}/cancel`    | cancel a specific active run    |
-| `GET`  | `/api/v1/runs/{run_id}/events`    | replay and tail run events      |
+| Method | Path                              | Purpose                                        |
+| ------ | --------------------------------- | ---------------------------------------------- |
+| `POST` | `/api/v1/runs`                    | create a queued run directly                   |
+| `GET`  | `/api/v1/runs/{run_id}`           | inspect run and committed state                |
+| `GET`  | `/api/v1/runs/{run_id}/trace`     | inspect compact tool and approval review trace |
+| `POST` | `/api/v1/runs/{run_id}/steer`     | steer a specific active run                    |
+| `POST` | `/api/v1/runs/{run_id}/interrupt` | interrupt a specific active run                |
+| `POST` | `/api/v1/runs/{run_id}/cancel`    | cancel a specific active run                   |
+| `GET`  | `/api/v1/runs/{run_id}/events`    | replay and tail run events                     |
 
 ## Request Model
 
@@ -166,6 +166,12 @@ Suggested fields:
 ```
 
 Session create stores `workspace` in session metadata. Session continuation inherits the session workspace. Run create and session-run create can provide a workspace override for that execution. Workspace mount-set semantics live in [10-workspace-mount-sets.md](10-workspace-mount-sets.md).
+
+## Approval Review API Projection
+
+Approval review is configured through profile security settings and projected through existing run event and trace APIs.
+
+Profile create, update, detail, and seed flows should preserve `security.approval_review` inside profile model configuration. Run trace should include `approval_review` items alongside `tool_call` and `tool_response` items. The detailed integration contract lives in [11-approval-review-integration.md](11-approval-review-integration.md).
 
 ## Creation Semantics
 

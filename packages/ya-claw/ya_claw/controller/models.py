@@ -268,7 +268,7 @@ class SessionTurnsResponse(BaseModel):
 
 class RunTraceItem(BaseModel):
     sequence_no: int
-    type: Literal["tool_call", "tool_response"]
+    type: Literal["tool_call", "tool_response", "approval_review"]
     tool_call_id: str | None = None
     tool_name: str | None = None
     message_id: str | None = None

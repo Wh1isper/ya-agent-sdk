@@ -10,18 +10,17 @@ from ya_claw.config import ClawSettings
 from ya_claw.controller.models import ActiveInteraction
 
 
-def test_build_hitl_card_special_cases_shell_review() -> None:
+def test_build_hitl_card_highlights_review_risk() -> None:
     interaction = ActiveInteraction(
         interaction_id="hitl-1",
         run_id="run-1",
         session_id="session-1",
         tool_call_id="tool-1",
         tool_name="shell_exec",
-        kind="shell_review",
-        title="Shell command approval required",
+        kind="tool_approval",
+        title="Tool approval required: shell_exec",
         description="risky command",
         metadata={
-            "reviewer": "shell_command_reviewer",
             "risk_level": "extra_high",
             "command": "rm -rf dist",
             "cwd": "/workspace",

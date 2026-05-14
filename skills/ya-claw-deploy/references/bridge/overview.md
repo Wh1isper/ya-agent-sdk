@@ -74,20 +74,20 @@ Seed or pre-create the selected AgentProfile before enabling bridge traffic. See
 
 ## HITL and Deferred Bridge Input
 
-Interactive runs can enter HITL when shell review, tool approval, or MCP approval returns deferred tool requests. YA Claw persists the approval batch and interactions in the database, publishes `hitl_pending` status in run/session notifications, and waits for a response through the run interaction API or bridge action path.
+Interactive runs can enter HITL when approval review, tool approval, or MCP approval returns deferred tool requests. YA Claw persists the approval batch and interactions in the database, publishes `hitl_pending` status in run/session notifications, and waits for a response through the run interaction API or bridge action path.
 
 Bridge messages that arrive while the run is HITL pending are stored as deferred input rows. After the approval batch resolves, YA Claw consumes queued input in sequence order and injects it into the same running agent through the message bus. This keeps user follow-up messages durable while a bridge approval card is active.
 
 Relevant durable records:
 
 - `hitl_batches`: one pending approval batch per run
-- `hitl_interactions`: ordered shell/tool/MCP approval items in the batch
+- `hitl_interactions`: ordered approval items in the batch
 - `hitl_deferred_inputs`: bridge messages received while HITL is pending
 - `bridge_hitl_messages`: external approval card message IDs used for in-place updates
 
 ## Unattended Runs
 
-Schedule and heartbeat runs are unattended automation. YA Claw runs them with unattended approval behavior: shell review `on_needs_approval=defer` is converted to `deny`, and profile `need_user_approve_tools` / `need_user_approve_mcps` are cleared for that run. Configure the profile-level `unattended_risk_threshold` for background runs; use the service-level `YA_CLAW_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD` only as a fallback default.
+Schedule and heartbeat runs are unattended automation. YA Claw clears profile `need_user_approve_tools` and `need_user_approve_mcps` for that run while preserving profile-level approval review. Use dedicated background profiles to narrow toolsets, MCP namespaces, and reviewer model settings.
 
 ## Workspace Reply Path
 

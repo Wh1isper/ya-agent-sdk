@@ -11,6 +11,7 @@ from pydantic_ai import RunContext
 
 from ya_agent_sdk.agents.video_understanding import get_video_description
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 
@@ -23,6 +24,7 @@ class ReadVideoTool(BaseTool):
 
     name = "read_video"
     description = "Read and analyze a video from a URL. Use when native video understanding is unavailable."
+    permission = ToolPermissionProfile.read_workspace()
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """No instruction needed for this tool."""

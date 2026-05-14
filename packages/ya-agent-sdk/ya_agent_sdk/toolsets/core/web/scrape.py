@@ -13,6 +13,7 @@ from pydantic_ai import RunContext
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, verify_url
 
@@ -32,6 +33,7 @@ class ScrapeTool(BaseTool):
 
     name = "scrape"
     description = "Convert websites to Markdown format for content analysis."
+    permission = ToolPermissionProfile.network_read()
 
     def __init__(self) -> None:
         self._md = MarkItDown(enable_plugins=True)

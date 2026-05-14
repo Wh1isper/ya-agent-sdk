@@ -13,6 +13,7 @@ from pydantic_ai import RunContext
 
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import NoteEvent
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.base import Instruction
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
@@ -36,6 +37,7 @@ class NoteTool(BaseTool):
         "Notes persist across turns. Runtime context shows note keys; use note_get to read values. "
         "Omit value to delete the entry."
     )
+    permission = ToolPermissionProfile.session_state()
     auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
@@ -70,6 +72,7 @@ class NoteGetTool(BaseTool):
 
     name = "note_get"
     description = "Read note entries by key. Omit key to list all notes with values."
+    permission = ToolPermissionProfile.session_state()
     auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:

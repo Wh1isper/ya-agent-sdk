@@ -27,6 +27,7 @@ from pydantic_ai import DocumentUrl, ImageUrl, RunContext, VideoUrl
 from pydantic_ai.messages import AudioUrl
 
 from ya_agent_sdk.context import AgentContext, ModelCapability
+from ya_agent_sdk.security.approval import ToolPermissionProfile
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.content._url_helper import (
     ContentCategory,
@@ -56,6 +57,7 @@ class LoadMediaUrlTool(BaseTool):
 
     name = "load_media_url"
     description = "Load multimedia content directly from HTTP/HTTPS URL (images, videos, audio). e.g. https://example.com/image.png, https://example.com/video.mp4, https://youtube.com/watch?v=abc123"
+    permission = ToolPermissionProfile.network_read()
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available based on model capabilities.

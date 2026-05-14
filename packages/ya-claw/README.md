@@ -188,7 +188,7 @@ Profiles store model, prompt, model context config, builtin tool groups, subagen
 
 Codex OAuth profiles use the `oauth@codex:gpt-5.5` model string after the service host has run `ya-oauth login codex`. YA Claw maps provider session headers to the YA Claw session ID and provider thread headers to the run ID. Docker deployments should mount a persistent host directory to the service user's `~/.yaai`, keep directory mode `0700` and `auth.json` mode `0600`, and keep credentials out of image layers.
 
-Shell command review is configured per profile under `security.shell_review`. The review model is explicit when enabled, and `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object. YA Claw runs shell review in auto-pilot deny mode: commands that reach `risk_threshold` trigger the configured action, and profile values of `on_needs_approval: defer` are coerced to deny at runtime. The default profile risk threshold is `extra_high`.
+Automatic tool review is configured per profile under `security.approval_review`. The reviewer model is explicit when enabled, and `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object. YA Claw routes shell execution, workspace writes, MCP calls, and other protected tool boundaries through the generic approval review policy.
 
 ```yaml
 profiles:
@@ -197,12 +197,15 @@ profiles:
     model_settings_preset: openai_responses_high
     model_config_preset: gpt5_270k
     security:
-      shell_review:
+      approval_review:
         enabled: true
         model: gateway@openai-responses:gpt-5.4-mini
         model_settings: openai_responses_low
-        on_needs_approval: deny
-        risk_threshold: extra_high
+        timeout_seconds: 30
+        max_denials: 3
+        truncation:
+          enabled: true
+          max_text_chars: 60000
 ```
 
 Session and run requests can provide `workspace.mounts` with one or more logical workspace folders, one default mount, a default cwd, and `rw` or `ro` access per mount. When requests omit workspace configuration, YA Claw uses the shared workspace configured by `YA_CLAW_WORKSPACE_DIR` and maps it to `/workspace`. Workspace guidance and memory use the default logical mount, and runtime prompts list the resolved mount set.

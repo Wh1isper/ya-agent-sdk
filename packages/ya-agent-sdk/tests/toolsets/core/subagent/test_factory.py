@@ -376,6 +376,133 @@ async def _assert_parent_usage_events(queue, *, subagent_id: str) -> None:
     assert queue.empty()
 
 
+async def test_create_subagent_call_func_overwrites_cumulative_usage_snapshots_for_one_run():
+    """Subagent usage snapshots should replace the same ledger entry during one run."""
+    mock_agent = MagicMock(spec=Agent)
+    mock_agent.model.model_name = "test-model"
+    mock_agent.name = "streamer"
+
+    mock_run = MagicMock()
+    mock_run.result = MagicMock()
+    mock_run.result.output = "result with streaming"
+    mock_run.result.all_messages = MagicMock(return_value=[])
+    mock_run.result.usage = MagicMock(return_value=RunUsage(requests=2, input_tokens=20, output_tokens=30))
+    mock_run.ctx = MagicMock()
+
+    mock_model_node_1 = MagicMock()
+    mock_model_node_2 = MagicMock()
+    mock_end_node = MagicMock()
+
+    @asynccontextmanager
+    async def mock_stream(ctx):
+        async def event_gen():
+            yield {"type": "text", "content": "streaming..."}
+
+        yield event_gen()
+
+    mock_model_node_1.stream = mock_stream
+    mock_model_node_2.stream = mock_stream
+
+    usage_by_node = {
+        mock_model_node_1: RunUsage(requests=1, input_tokens=10, output_tokens=15),
+        mock_model_node_2: RunUsage(requests=2, input_tokens=20, output_tokens=30),
+    }
+
+    async def node_iter():
+        for node in [mock_model_node_1, mock_model_node_2, mock_end_node]:
+            mock_run.usage = usage_by_node.get(node, RunUsage())
+            yield node
+
+    mock_run.__aiter__ = lambda _: node_iter()
+
+    @asynccontextmanager
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+        yield mock_run
+
+    mock_agent.iter = mock_iter
+
+    Agent.is_user_prompt_node = staticmethod(lambda n: False)
+    Agent.is_end_node = staticmethod(lambda n: n is mock_end_node)
+    Agent.is_model_request_node = staticmethod(lambda n: n in {mock_model_node_1, mock_model_node_2})
+    Agent.is_call_tools_node = staticmethod(lambda n: False)
+
+    call_func = create_subagent_call_func(mock_agent)
+
+    ctx = AgentContext()
+    ctx._stream_queue_enabled = True
+    run_ctx = _create_mock_run_context(ctx, tool_call_id="tool-call-1")
+    mock_self = MagicMock(spec=BaseTool)
+
+    await call_func(mock_self, run_ctx, prompt="test streaming")
+
+    subagent_id = next(iter(ctx.agent_registry.keys()))
+    usage_events: list[UsageSnapshotEvent] = []
+    parent_queue = ctx.agent_stream_queues[ctx.agent_id]
+    while not parent_queue.empty():
+        event = await parent_queue.get()
+        if isinstance(event, UsageSnapshotEvent):
+            usage_events.append(event)
+
+    assert len(ctx.usage_snapshot_entries) == 1
+    assert ctx.usage_snapshot_entries[subagent_id].usage == RunUsage(requests=2, input_tokens=20, output_tokens=30)
+    assert [event.snapshot.total_usage for event in usage_events if event.snapshot is not None] == [
+        RunUsage(requests=1, input_tokens=10, output_tokens=15),
+        RunUsage(requests=2, input_tokens=20, output_tokens=30),
+    ]
+    assert usage_events[-1].snapshot is not None
+    assert len(usage_events[-1].snapshot.entries) == 1
+
+
+async def test_create_subagent_call_func_resume_after_prepare_new_run_does_not_count_previous_turn_usage():
+    """A resumed subagent in a fresh parent run should start with an empty usage ledger."""
+    mock_agent = MagicMock(spec=Agent)
+    mock_agent.model.model_name = "test-model"
+    mock_agent.name = "analyze"
+
+    usages = iter([
+        RunUsage(requests=1, input_tokens=10, output_tokens=20),
+        RunUsage(requests=1, input_tokens=3, output_tokens=4),
+    ])
+
+    async def empty_async_iter():
+        return
+        yield
+
+    @asynccontextmanager
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+        usage = next(usages)
+        mock_run = MagicMock()
+        mock_run.result = MagicMock()
+        mock_run.result.output = "result"
+        mock_run.result.all_messages = MagicMock(return_value=[{"role": "user", "content": prompt}])
+        mock_run.result.usage = MagicMock(return_value=usage)
+        mock_run.__aiter__ = lambda _: empty_async_iter()
+        yield mock_run
+
+    mock_agent.iter = mock_iter
+    call_func = create_subagent_call_func(mock_agent)
+
+    turn1_ctx = AgentContext()
+    run_ctx_1 = _create_mock_run_context(turn1_ctx, tool_call_id="tool-call-1")
+    mock_self = MagicMock(spec=BaseTool)
+
+    output_1 = await call_func(mock_self, run_ctx_1, prompt="first")
+    assert "<id>analyze-" in output_1
+    agent_id = next(iter(turn1_ctx.agent_registry.keys()))
+    assert turn1_ctx.build_usage_snapshot().total_usage == RunUsage(requests=1, input_tokens=10, output_tokens=20)
+
+    turn2_ctx = turn1_ctx.prepare_new_run()
+    assert turn2_ctx.usage_snapshot_entries == {}
+
+    run_ctx_2 = _create_mock_run_context(turn2_ctx, tool_call_id="tool-call-2")
+    await call_func(mock_self, run_ctx_2, prompt="second", agent_id=agent_id)
+
+    snapshot = turn2_ctx.build_usage_snapshot()
+    assert len(snapshot.entries) == 1
+    assert snapshot.entries[0].agent_id == agent_id
+    assert snapshot.total_usage == RunUsage(requests=1, input_tokens=3, output_tokens=4)
+
+
 async def test_create_subagent_call_func_with_streaming_nodes():
     """Test create_subagent_call_func handles model request and call tools nodes."""
     mock_agent = MagicMock(spec=Agent)

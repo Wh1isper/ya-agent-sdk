@@ -187,17 +187,34 @@ class CustomToolset(Toolset):
 
 > Full examples: `ya_agent_sdk/toolsets/core/base.py`
 
-## Human-in-the-Loop (HITL) Approval
+## Approval Review and HITL
 
-Configure tools requiring user approval:
+Use `SecurityConfig.auto_review(...)` to run a reviewer model before protected tool execution. Built-in tools expose `ToolPermissionProfile` metadata so shell execution, workspace writes, destructive file operations, downloads, external mutations, and configured MCP tools can be reviewed through one generic path.
 
 ```python
-ctx.need_user_approve_tools = ["shell", "edit", "write"]
+from ya_agent_sdk.context import SecurityConfig
+
+runtime = create_agent(
+    "gateway@openai-responses:gpt-5.5",
+    tools=[ShellTool, WriteTool, EditTool],
+    extra_context_kwargs={
+        "security": SecurityConfig.auto_review(
+            reviewer_model="gateway@openai-responses:gpt-5.4-mini",
+            model_settings="openai_responses_low",
+        )
+    },
+)
 ```
 
-When called, these tools raise `ApprovalRequired`. Implement `get_approval_metadata()` in your tool to provide context.
+Use explicit HITL lists when a tool should always wait for user approval:
 
-> HITL flow details: `ya_agent_sdk/toolsets/core/base.py`
+```python
+ctx.need_user_approve_tools = ["shell_exec", "edit", "write"]
+```
+
+When called, these tools raise `ApprovalRequired`. Implement `get_approval_metadata()` in your tool to provide context. Approval review runs after pre-hooks and before tool execution so the reviewer sees final tool arguments.
+
+> Approval and HITL flow details: `ya_agent_sdk/toolsets/core/base.py`
 
 ## Architecture
 
