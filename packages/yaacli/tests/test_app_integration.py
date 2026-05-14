@@ -23,7 +23,9 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import BinaryContent
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from ya_agent_environment.shell import BackgroundProcess
+from ya_agent_sdk.agents.main import AgentInterrupted
 
 # Import the components we're testing
 from yaacli.app import TUIApp, TUIMode, TUIState
@@ -1233,6 +1235,39 @@ def test_tui_app_load_history_clears_pending_attachments(tmp_path: Path) -> None
 
     assert app._pending_attachments == []
     assert app._message_history == []
+
+
+def test_tui_app_persist_stream_recoverable_state_updates_memory_only_on_interrupt():
+    """Recoverable stream state should update in-memory history without saving session files."""
+    config = MockConfig()
+    config_manager = MockConfigManager()
+    app = TUIApp(config=config, config_manager=config_manager)
+    app._runtime = MagicMock()
+    app._runtime.agent.model.model_name = "test-model"
+    app._session_usage = MagicMock()
+    app._session_usage.has_run_snapshot = True
+    app._auto_save_history = MagicMock()
+    app._save_session_snapshot = MagicMock()
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="hello")]),
+        ModelResponse(
+            parts=[TextPart(content="partial")],
+            metadata={"ya_agent_sdk": {"partial": True, "reason": "stream_interrupted"}},
+        ),
+    ]
+    stream = MagicMock()
+    stream.run = MagicMock()
+    stream.run.usage.total_tokens = 123
+    stream.recoverable_messages.return_value = history
+    stream.exception = AgentInterrupted("Agent execution was interrupted")
+
+    assert app._persist_stream_recoverable_state(stream) is True
+
+    assert app._message_history == history
+    assert app._last_run is stream.run
+    app._auto_save_history.assert_not_called()
+    app._save_session_snapshot.assert_not_called()
 
 
 @pytest.mark.asyncio

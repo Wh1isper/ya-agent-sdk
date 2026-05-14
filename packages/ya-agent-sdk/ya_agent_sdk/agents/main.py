@@ -26,7 +26,12 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
     RetryPromptPart,
+    TextPart,
+    TextPartDelta,
     ToolReturnPart,
     UserContent,
 )
@@ -817,6 +822,56 @@ Continue the task from the available conversation history. Avoid repeating compl
 
 
 @dataclass
+class PartialTextAccumulator:
+    """Accumulates stream text parts that are safe to append to history on interrupt."""
+
+    _parts: dict[int, TextPart] = field(default_factory=dict)
+    saw_non_text_response_part: bool = False
+
+    def reset(self) -> None:
+        """Start tracking a new model response."""
+        self._parts.clear()
+        self.saw_non_text_response_part = False
+
+    def observe(self, event: AgentStreamEvent) -> None:
+        """Record a stream event for text-only partial response recovery."""
+        if isinstance(event, PartStartEvent):
+            if isinstance(event.part, TextPart):
+                self._parts[event.index] = event.part
+            else:
+                self.saw_non_text_response_part = True
+                self._parts.pop(event.index, None)
+        elif isinstance(event, PartDeltaEvent):
+            if isinstance(event.delta, TextPartDelta):
+                part = self._parts.get(event.index)
+                if part is None:
+                    self._parts[event.index] = TextPart(content=event.delta.content_delta)
+                else:
+                    part.content += event.delta.content_delta
+            else:
+                self.saw_non_text_response_part = True
+                self._parts.pop(event.index, None)
+        elif isinstance(event, PartEndEvent):
+            if isinstance(event.part, TextPart):
+                self._parts[event.index] = event.part
+            else:
+                self.saw_non_text_response_part = True
+                self._parts.pop(event.index, None)
+
+    def build_response(self) -> ModelResponse | None:
+        """Build a partial ModelResponse when only text response parts were observed."""
+        if self.saw_non_text_response_part:
+            return None
+        parts = [self._parts[index] for index in sorted(self._parts) if self._parts[index].content]
+        if not parts:
+            return None
+        return ModelResponse(
+            parts=parts,
+            metadata={"ya_agent_sdk": {"partial": True, "reason": "stream_interrupted"}},
+        )
+
+
+@dataclass
 class AgentStreamer(Generic[AgentDepsT, OutputT]):
     """Async iterator for streaming agent events with interrupt capability.
 
@@ -852,9 +907,28 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
     _main_task: asyncio.Task[None]
     _poll_done: asyncio.Event
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    _partial_text: PartialTextAccumulator = field(default_factory=PartialTextAccumulator)
     run: AgentRun[AgentDepsT, OutputT] | None = None
     exception: BaseException | None = None
     _interrupted: bool = False
+
+    def recoverable_messages(self) -> list[ModelMessage]:
+        """Return run history plus safe text-only partial output.
+
+        Completed runs return `run.all_messages()` unchanged. Interrupted or failed
+        streams may have emitted assistant text before pydantic-ai finalized the
+        ModelResponse; when the emitted response contains text parts only, that
+        text is appended as a partial ModelResponse so callers can persist it.
+        """
+        messages: list[ModelMessage] = []
+        if self.run is not None:
+            messages = list(self.run.all_messages())
+            if messages and isinstance(messages[-1], ModelResponse):
+                return messages
+        partial_response = self._partial_text.build_response()
+        if partial_response is not None:
+            messages.append(partial_response)
+        return messages
 
     def interrupt(self) -> None:
         """Interrupt the stream immediately, cancelling all running tasks.
@@ -864,6 +938,7 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
         AgentInterrupted will be raised.
         """
         self._interrupted = True
+        self.exception = AgentInterrupted("Agent execution was interrupted")
         for task in self._tasks:
             if not task.done():
                 task.cancel()
@@ -1071,6 +1146,7 @@ async def stream_agent(  # noqa: C901
     output_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     main_done = asyncio.Event()
     poll_done = asyncio.Event()
+    partial_text = PartialTextAccumulator()
 
     logger.debug(
         "Starting stream_agent with user_prompt=%s",
@@ -1102,11 +1178,13 @@ async def stream_agent(  # noqa: C901
                     if pre_event_hook:
                         await pre_event_hook(event_ctx)
 
+                    wrapped_event = ctx.tool_id_wrapper.wrap_event(event)
+                    partial_text.observe(wrapped_event)
                     await output_queue.put(
                         StreamEvent(
                             agent_id=main_agent_info.agent_id,
                             agent_name=main_agent_info.agent_name,
-                            event=ctx.tool_id_wrapper.wrap_event(event),
+                            event=wrapped_event,
                         )
                     )
 
@@ -1172,6 +1250,7 @@ async def stream_agent(  # noqa: C901
             ModelRequestStartEvent(event_id=ctx.run_id, loop_index=current_loop, message_count=len(run.all_messages()))
         )
 
+        partial_text.reset()
         await process_node(node, run)
 
         base_model = cast(Model, agent.model)
@@ -1601,6 +1680,7 @@ async def stream_agent(  # noqa: C901
         _main_task=main_task,
         _poll_done=poll_done,
         _tasks=[main_task, poll_task],
+        _partial_text=partial_text,
     )
 
     try:

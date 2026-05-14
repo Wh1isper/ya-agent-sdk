@@ -646,6 +646,7 @@ class RunCoordinator:
                             buffers.latest_message_payload = self._build_message_payload(
                                 streamer.run,
                                 replay_events=self._runtime_state.get_replay_events(run_id),
+                                recoverable_messages=streamer.recoverable_messages(),
                             )
                             runtime.ctx.container_id = self._extract_environment_container_id(environment)
                             buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
@@ -1168,8 +1169,30 @@ class RunCoordinator:
             events.append(terminal_event)
         return events
 
-    def _build_message_payload(self, run: Any, *, replay_events: list[dict[str, Any]]) -> dict[str, Any]:
-        messages = ModelMessagesTypeAdapter.dump_python(run.all_messages(), mode="json")
+    def _build_message_payload(
+        self,
+        run: Any,
+        *,
+        replay_events: list[dict[str, Any]],
+        recoverable_messages: list[ModelMessage] | None = None,
+    ) -> dict[str, Any]:
+        source_messages = recoverable_messages if recoverable_messages is not None else run.all_messages()
+        messages = ModelMessagesTypeAdapter.dump_python(source_messages, mode="json")
+        events = list(replay_events)
+        return {
+            "events": events,
+            "message_history": messages,
+            "messages": events,
+            "message_count": len(messages) if isinstance(messages, list) else None,
+        }
+
+    def _build_message_payload_from_messages(
+        self,
+        messages_source: list[ModelMessage],
+        *,
+        replay_events: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        messages = ModelMessagesTypeAdapter.dump_python(messages_source, mode="json")
         events = list(replay_events)
         return {
             "events": events,

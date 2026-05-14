@@ -73,7 +73,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from rich.table import Table
 from rich.text import Text
-from ya_agent_sdk.agents.main import AgentRuntime, stream_agent
+from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, stream_agent
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, BusMessage, ResumableState, StreamEvent
 from ya_agent_sdk.events import (
@@ -1699,40 +1699,43 @@ class TUIApp:
             resume_max_attempts=self.config.general.agent_stream_resume_max_attempts,
             resume_prompt=self.config.general.agent_stream_resume_prompt,
         ) as stream:
-            async for event in stream:
-                self._handle_stream_event(event)
-
-            # Always try to save message history from the run, even on error.
-            # This preserves conversation context so user can continue
-            # with a new prompt after an error, instead of losing all context.
-            # Wrapped in try/except since run fields may be incomplete on error.
-            self._last_run = stream.run
             try:
-                if stream.run:
-                    self._message_history = list(stream.run.all_messages())
-                    # Update context usage from run
-                    usage = stream.run.usage
-                    latest_usage = get_latest_request_usage(self._message_history)
-                    self._current_context_tokens = latest_usage.total_tokens if latest_usage else usage.total_tokens
+                async for event in stream:
+                    self._handle_stream_event(event)
 
-                    # Accumulate main-agent usage when no realtime snapshot was emitted.
-                    if not self._session_usage.has_run_snapshot:
-                        model_id = cast(Model, self.runtime.agent.model).model_name
-                        self._session_usage.add("main", model_id, usage)
-                    self._session_usage.commit_run_snapshot()
-            except Exception:
-                logger.debug("Failed to save message history from errored run", exc_info=True)
-
-            # Persist the latest recoverable state before surfacing stream errors.
-            # Error paths include the usage ledger to preserve crash-recovery context.
-            try:
                 stream.raise_if_exception()
-            except Exception:
+            except BaseException as exc:
+                self._persist_stream_recoverable_state(stream)
+                if isinstance(exc, AgentInterrupted | asyncio.CancelledError):
+                    raise
                 self._save_session_snapshot(include_usage_ledger=True, save_reason="error")
                 raise
 
+            self._persist_stream_recoverable_state(stream)
             self._auto_save_history()
             return stream.run.result if stream.run else None
+
+    def _persist_stream_recoverable_state(self, stream: Any) -> bool:
+        """Persist stream recoverable messages and usage to in-memory session state."""
+        self._last_run = stream.run
+        if stream.run is None:
+            return False
+        try:
+            message_history = stream.recoverable_messages()
+            self._message_history = message_history
+            usage = stream.run.usage
+            latest_usage = get_latest_request_usage(message_history)
+            self._current_context_tokens = latest_usage.total_tokens if latest_usage else usage.total_tokens
+
+            # Accumulate main-agent usage when no realtime snapshot was emitted.
+            if not self._session_usage.has_run_snapshot:
+                model_id = cast(Model, self.runtime.agent.model).model_name
+                self._session_usage.add("main", model_id, usage)
+            self._session_usage.commit_run_snapshot()
+        except Exception:
+            logger.debug("Failed to persist recoverable stream state", exc_info=True)
+            return False
+        return True
 
     async def _request_user_action(
         self,

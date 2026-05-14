@@ -13,6 +13,8 @@ import contextvars
 from pathlib import Path
 from unittest.mock import patch
 
+from pydantic_ai.messages import ModelRequest, ModelResponse, PartStartEvent, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from ya_agent_sdk.agents.main import (
     AgentInterrupted,
     _restore_task_cancellation,
@@ -23,14 +25,14 @@ from ya_agent_sdk.agents.main import (
 from ya_agent_sdk.environment.local import LocalEnvironment
 
 
-def _make_runtime(tmp_path: Path):
+def _make_runtime(tmp_path: Path, model="test", **kwargs):
     """Create a simple runtime with test model for cancel tests."""
     env = LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     )
-    return create_agent(model="test", env=env)
+    return create_agent(model=model, env=env, **kwargs)
 
 
 async def test_cancel_stops_agent_execution(tmp_path: Path) -> None:
@@ -195,6 +197,84 @@ async def test_cancel_with_external_cancellation(tmp_path: Path) -> None:
 
             assert streamer.exception is None
             assert len(events) > 0
+
+
+async def test_interrupted_stream_exposes_text_only_recoverable_messages(tmp_path: Path) -> None:
+    """Interrupted streams expose emitted text as partial recoverable history."""
+
+    async def stream_function(_messages, _agent_info: AgentInfo):
+        yield "hello "
+        await asyncio.sleep(10)
+        yield "world"
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async with stream_agent(runtime, "say something") as streamer:
+        async for event in streamer:
+            if isinstance(event.event, PartStartEvent) and isinstance(event.event.part, TextPart):
+                streamer.interrupt()
+                break
+
+    messages = streamer.recoverable_messages()
+    assert len(messages) >= 2
+    response = messages[-1]
+    assert isinstance(response, ModelResponse)
+    assert response.parts == [TextPart(content="hello ")]
+    assert response.metadata == {"ya_agent_sdk": {"partial": True, "reason": "stream_interrupted"}}
+
+
+async def test_interrupted_stream_skips_partial_history_after_tool_call_part(tmp_path: Path) -> None:
+    """Partial history skips streams that emitted tool call structure."""
+
+    async def stream_function(_messages, _agent_info: AgentInfo):
+        yield ModelResponse(parts=[ToolCallPart(tool_name="some_tool", args={}, tool_call_id="call-1")])
+        await asyncio.sleep(10)
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async with stream_agent(runtime, "call tool") as streamer:
+        async for _event in streamer:
+            streamer.interrupt()
+            break
+
+    messages = streamer.recoverable_messages()
+    assert not (messages and isinstance(messages[-1], ModelResponse))
+
+
+async def test_interrupted_stream_appends_current_text_after_completed_tool_history(tmp_path: Path) -> None:
+    """Current partial text is appended after prior tool/text history."""
+
+    history = [
+        ModelResponse(parts=[ToolCallPart(tool_name="first_tool", args={}, tool_call_id="call-1")]),
+        ModelRequest(parts=[ToolReturnPart(tool_name="first_tool", content="first result", tool_call_id="call-1")]),
+        ModelResponse(
+            parts=[
+                TextPart(content="Text after first tool."),
+                ToolCallPart(tool_name="second_tool", args={}, tool_call_id="call-2"),
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="second_tool", content="second result", tool_call_id="call-2")]),
+    ]
+
+    async def stream_function(_messages, _agent_info: AgentInfo):
+        yield "final partial "
+        await asyncio.sleep(10)
+        yield "tail"
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async with stream_agent(runtime, "continue", message_history=history) as streamer:
+        async for event in streamer:
+            if isinstance(event.event, PartStartEvent) and event.event.part == TextPart(content="final partial "):
+                streamer.interrupt()
+                break
+
+    messages = streamer.recoverable_messages()
+    assert messages[: len(history)] == history
+    response = messages[-1]
+    assert isinstance(response, ModelResponse)
+    assert response.parts == [TextPart(content="final partial ")]
+    assert response.metadata == {"ya_agent_sdk": {"partial": True, "reason": "stream_interrupted"}}
 
 
 async def test_suspend_current_task_cancellation_allows_cleanup_waits() -> None:
