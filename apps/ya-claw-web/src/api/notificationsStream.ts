@@ -7,7 +7,9 @@ import type {
   NotificationEvent,
   RunStatus,
   SessionGetResponse,
+  SessionSandboxState,
   SessionSummary,
+  SessionWorkspaceState,
 } from '../types'
 import { queryKeys } from './queryKeys'
 
@@ -102,6 +104,63 @@ function isRunStatus(value: string | null): value is RunStatus {
   )
 }
 
+function isSessionSandboxState(value: unknown): value is SessionSandboxState {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Record<string, unknown>
+  return typeof candidate.status === 'string'
+}
+
+function patchSessionWorkspaceFromNotification(
+  queryClient: ReturnType<typeof useQueryClient>,
+  event: NotificationEvent,
+  sessionId: string | null,
+) {
+  if (!sessionId || event.type !== 'workspace.sandbox.updated') return
+  const sandboxState = event.payload.sandbox_state
+  if (!isSessionSandboxState(sandboxState)) return
+
+  const applyWorkspaceState = (
+    workspaceState: SessionWorkspaceState | null | undefined,
+  ): SessionWorkspaceState => ({
+    binding: workspaceState?.binding ?? null,
+    sandbox_state: sandboxState,
+  })
+
+  queryClient.setQueryData<SessionSummary[]>(queryKeys.sessions, (previous) =>
+    previous?.map((session) =>
+      session.id === sessionId
+        ? {
+            ...session,
+            workspace_state: applyWorkspaceState(session.workspace_state),
+          }
+        : session,
+    ),
+  )
+  queryClient.setQueryData<SessionGetResponse>(
+    queryKeys.session(sessionId),
+    (previous) =>
+      previous
+        ? {
+            ...previous,
+            session: {
+              ...previous.session,
+              workspace_state: applyWorkspaceState(
+                previous.session.workspace_state,
+              ),
+            },
+          }
+        : previous,
+  )
+  queryClient.setQueryData<SessionWorkspaceState>(
+    queryKeys.sessionWorkspace(sessionId),
+    (previous) => applyWorkspaceState(previous),
+  )
+  queryClient.setQueryData<SessionSandboxState>(
+    queryKeys.sessionSandbox(sessionId),
+    sandboxState,
+  )
+}
+
 function patchSessionStatusFromNotification(
   queryClient: ReturnType<typeof useQueryClient>,
   event: NotificationEvent,
@@ -162,6 +221,7 @@ function invalidateForNotification(
     event.type.startsWith('workspace.')
   ) {
     patchSessionStatusFromNotification(queryClient, event, sessionId, runId)
+    patchSessionWorkspaceFromNotification(queryClient, event, sessionId)
     void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
     if (sessionId) {
       void queryClient.invalidateQueries({

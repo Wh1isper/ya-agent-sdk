@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from ya_claw.config import ClawSettings
+from ya_claw.controller.session import SessionController
 from ya_claw.controller.workspace_runtime import WorkspaceRuntimeController, reconcile_session_sandbox_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.orm.base import Base
@@ -77,6 +78,55 @@ async def test_reconcile_marks_stopped_snapshot_running_when_container_is_runnin
             assert sandbox["ready_state"] == "ready"
             assert sandbox["container_id"] == "container-running"
             assert sandbox["verified_container_id"] == "container-running"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_session_list_reconciles_workspace_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_inspect(container_ref: str) -> dict[str, str | None]:
+        assert container_ref == "container-ready"
+        return {"container_id": "container-ready", "status": "running"}
+
+    monkeypatch.setattr("ya_claw.controller.workspace_runtime._inspect_docker_container", fake_inspect)
+    engine, session_factory = await _create_session_factory(tmp_path)
+    try:
+        async with session_factory() as db_session:
+            session_record = SessionRecord(
+                id="session-list-reconcile",
+                profile_name="default",
+                session_metadata={
+                    "sandbox": {
+                        "provider": "docker",
+                        "scope": "session",
+                        "status": "stopped",
+                        "ready_state": "not_started",
+                        "container_ref": "workspace-ref",
+                        "container_id": "container-ready",
+                        "retention_policy": "stop_on_idle",
+                        "idle_ttl_seconds": 3600,
+                        "last_used_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    }
+                },
+            )
+            db_session.add(session_record)
+            await db_session.commit()
+
+            summaries = await SessionController().list(
+                db_session,
+                settings=_docker_settings(tmp_path),
+            )
+
+            assert len(summaries) == 1
+            sandbox_state = summaries[0].workspace_state.sandbox_state if summaries[0].workspace_state else None
+            assert sandbox_state is not None
+            assert sandbox_state.status == "ready"
+            assert sandbox_state.ready_state == "ready"
+            assert sandbox_state.container_id == "container-ready"
+            assert sandbox_state.verified_container_id == "container-ready"
     finally:
         await engine.dispose()
 

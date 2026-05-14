@@ -146,7 +146,13 @@ class SessionController:
             ),
         )
 
-    async def list(self, db_session: AsyncSession, *, include_internal: bool = False) -> list[SessionSummary]:
+    async def list(
+        self,
+        db_session: AsyncSession,
+        *,
+        settings: ClawSettings | None = None,
+        include_internal: bool = False,
+    ) -> list[SessionSummary]:
         logger.debug("Listing sessions include_internal={}", include_internal)
         statement: Select[tuple[SessionRecord]] = select(SessionRecord)
         if not include_internal:
@@ -154,6 +160,8 @@ class SessionController:
         statement = statement.order_by(SessionRecord.updated_at.desc())
         result = await db_session.execute(statement)
         records = list(result.scalars().all())
+        if settings is not None:
+            await self._reconcile_workspace_states(db_session, settings=settings, records=records)
         return await self._build_summaries(db_session, records)
 
     async def get(

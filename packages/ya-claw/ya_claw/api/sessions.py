@@ -69,9 +69,10 @@ async def create_session_stream(request: Request, payload: SessionCreateRequest)
 
 @router.get("", response_model=list[SessionSummary])
 async def list_sessions(request: Request, include_internal: bool = False) -> list[SessionSummary]:
+    settings = _get_settings(request)
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
-        return await session_controller.list(db_session, include_internal=include_internal)
+        return await session_controller.list(db_session, settings=settings, include_internal=include_internal)
 
 
 @router.get("/{session_id}", response_model=SessionGetResponse)
