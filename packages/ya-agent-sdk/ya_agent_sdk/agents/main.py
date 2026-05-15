@@ -26,12 +26,18 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    ModelResponsePart,
+    NativeToolCallPart,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     RetryPromptPart,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
+    ToolCallPart,
+    ToolCallPartDelta,
     ToolReturnPart,
     UserContent,
 )
@@ -823,52 +829,103 @@ Continue the task from the available conversation history. Avoid repeating compl
 
 @dataclass
 class PartialTextAccumulator:
-    """Accumulates stream text parts that are safe to append to history on interrupt."""
+    """Accumulates recoverable streamed response parts for interrupted history.
 
-    _parts: dict[int, TextPart] = field(default_factory=dict)
-    saw_non_text_response_part: bool = False
+    Text can be recovered while still partial. Thinking and tool-call parts are
+    recovered after their closing PartEndEvent, so persisted history contains
+    whole thinking blocks and whole tool-call arguments.
+    """
+
+    _parts: dict[int, ModelResponsePart] = field(default_factory=dict)
+    _in_progress_parts: dict[
+        int, ThinkingPart | ToolCallPart | NativeToolCallPart | ThinkingPartDelta | ToolCallPartDelta
+    ] = field(default_factory=dict)
 
     def reset(self) -> None:
         """Start tracking a new model response."""
         self._parts.clear()
-        self.saw_non_text_response_part = False
+        self._in_progress_parts.clear()
 
     def observe(self, event: AgentStreamEvent) -> None:
-        """Record a stream event for text-only partial response recovery."""
+        """Record a stream event for interrupted response recovery."""
         if isinstance(event, PartStartEvent):
-            if isinstance(event.part, TextPart):
-                self._parts[event.index] = event.part
-            else:
-                self.saw_non_text_response_part = True
-                self._parts.pop(event.index, None)
+            self._observe_part_start(event)
         elif isinstance(event, PartDeltaEvent):
-            if isinstance(event.delta, TextPartDelta):
-                part = self._parts.get(event.index)
-                if part is None:
-                    self._parts[event.index] = TextPart(content=event.delta.content_delta)
-                else:
-                    part.content += event.delta.content_delta
-            else:
-                self.saw_non_text_response_part = True
-                self._parts.pop(event.index, None)
+            self._observe_part_delta(event)
         elif isinstance(event, PartEndEvent):
-            if isinstance(event.part, TextPart):
-                self._parts[event.index] = event.part
+            self._observe_part_end(event)
+
+    def _observe_part_start(self, event: PartStartEvent) -> None:
+        if isinstance(event.part, TextPart):
+            self._parts[event.index] = event.part
+            self._in_progress_parts.pop(event.index, None)
+        elif isinstance(event.part, ThinkingPart | BaseToolCallPart):
+            self._parts.pop(event.index, None)
+            self._in_progress_parts[event.index] = event.part
+        else:
+            self._parts.pop(event.index, None)
+            self._in_progress_parts.pop(event.index, None)
+
+    def _observe_part_delta(self, event: PartDeltaEvent) -> None:
+        if isinstance(event.delta, TextPartDelta):
+            part = self._parts.get(event.index)
+            if isinstance(part, TextPart):
+                self._parts[event.index] = event.delta.apply(part)
             else:
-                self.saw_non_text_response_part = True
-                self._parts.pop(event.index, None)
+                self._parts[event.index] = TextPart(
+                    content=event.delta.content_delta,
+                    provider_name=event.delta.provider_name,
+                    provider_details=event.delta.provider_details,
+                )
+            self._in_progress_parts.pop(event.index, None)
+        elif isinstance(event.delta, ThinkingPartDelta):
+            self._observe_thinking_delta(event.index, event.delta)
+        elif isinstance(event.delta, ToolCallPartDelta):
+            self._observe_tool_call_delta(event.index, event.delta)
+        else:
+            self._parts.pop(event.index, None)
+            self._in_progress_parts.pop(event.index, None)
+
+    def _observe_thinking_delta(self, index: int, delta: ThinkingPartDelta) -> None:
+        part = self._in_progress_parts.get(index)
+        if isinstance(part, (ThinkingPart, ThinkingPartDelta)):
+            self._in_progress_parts[index] = delta.apply(part)
+        else:
+            self._in_progress_parts[index] = delta
+        self._parts.pop(index, None)
+
+    def _observe_tool_call_delta(self, index: int, delta: ToolCallPartDelta) -> None:
+        part = self._in_progress_parts.get(index)
+        if isinstance(part, (ToolCallPart, NativeToolCallPart, ToolCallPartDelta)):
+            self._in_progress_parts[index] = delta.apply(part)
+        else:
+            self._in_progress_parts[index] = delta.as_part() or delta
+        self._parts.pop(index, None)
+
+    def _observe_part_end(self, event: PartEndEvent) -> None:
+        if isinstance(event.part, (TextPart, ThinkingPart, BaseToolCallPart)):
+            self._parts[event.index] = event.part
+        else:
+            self._parts.pop(event.index, None)
+        self._in_progress_parts.pop(event.index, None)
 
     def build_response(self) -> ModelResponse | None:
-        """Build a partial ModelResponse when only text response parts were observed."""
-        if self.saw_non_text_response_part:
-            return None
-        parts = [self._parts[index] for index in sorted(self._parts) if self._parts[index].content]
+        """Build a recoverable partial ModelResponse from stream progress."""
+        parts = [self._parts[index] for index in sorted(self._parts) if self._is_non_empty_part(self._parts[index])]
         if not parts:
             return None
         return ModelResponse(
             parts=parts,
             metadata={"ya_agent_sdk": {"partial": True, "reason": "stream_interrupted"}},
         )
+
+    @staticmethod
+    def _is_non_empty_part(part: ModelResponsePart) -> bool:
+        if isinstance(part, TextPart | ThinkingPart):
+            return bool(part.content)
+        if isinstance(part, BaseToolCallPart):
+            return bool(part.tool_name)
+        return True
 
 
 @dataclass
