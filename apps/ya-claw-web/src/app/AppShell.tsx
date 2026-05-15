@@ -141,7 +141,7 @@ export function AppShell() {
   }, [syncFromUrl])
 
   return (
-    <div className="flex min-h-dvh bg-slate-100 text-slate-950">
+    <div className="flex h-dvh overflow-hidden bg-slate-100 text-slate-950">
       <aside className="hidden w-72 shrink-0 flex-col border-r border-slate-200/80 bg-white/95 shadow-sm backdrop-blur lg:flex">
         <div className="border-b border-slate-200 p-5">
           <div className="flex items-center gap-3">
@@ -194,7 +194,7 @@ export function AppShell() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/85 px-3 backdrop-blur sm:px-6">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
@@ -223,10 +223,10 @@ export function AppShell() {
 
         <main
           className={cn(
-            'min-h-0 flex-1 pb-16 lg:pb-0',
+            'min-h-0 flex-1 overflow-hidden pb-16 lg:pb-0',
             route === 'chat' || route === 'debug'
               ? 'overflow-hidden'
-              : 'overflow-auto',
+              : 'overflow-auto overscroll-contain',
           )}
         >
           <Suspense fallback={<PageLoading />}>{renderRoute(route)}</Suspense>

@@ -85,8 +85,10 @@ import { mergeSessionHistoryPages } from './sessionHistory'
 const DEBUG_METADATA = { web: { surface: 'debug' } }
 
 export function DebugPage() {
-  const selectedSessionId = useLayoutStore((state) => state.selectedSessionId)
-  const selectedRunId = useLayoutStore((state) => state.selectedRunId)
+  const selectedSessionId = useLayoutStore(
+    (state) => state.selectedDebugSessionId,
+  )
+  const selectedRunId = useLayoutStore((state) => state.selectedDebugRunId)
   const selectSession = useLayoutStore((state) => state.selectSession)
   const selectRun = useLayoutStore((state) => state.selectRun)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -220,7 +222,7 @@ export function DebugPage() {
   const runEvents = history.events
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-slate-100">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-100">
       <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 bg-white px-3 py-3 sm:h-16 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-0">
         <div className="flex min-w-0 items-center gap-2 text-sm text-slate-600 sm:gap-3">
           <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 font-medium text-slate-700">
@@ -288,7 +290,7 @@ export function DebugPage() {
         <Panel defaultSize="74%" minSize="64%">
           <Group orientation="horizontal" className="h-full min-h-0">
             <Panel defaultSize="68%" minSize="44%">
-              <div className="flex h-full min-h-0 flex-col">
+              <div className="flex h-full min-h-0 flex-col overflow-hidden">
                 <RunStrip
                   runs={runs}
                   selectedRunId={resolvedRunId}
@@ -345,7 +347,7 @@ export function DebugPage() {
         </Panel>
       </Group>
 
-      <div className="grid min-h-0 flex-1 grid-rows-[14rem_minmax(0,1fr)] lg:hidden">
+      <div className="grid min-h-0 flex-1 grid-rows-[14rem_minmax(0,1fr)] overflow-hidden lg:hidden">
         <SessionList
           sessions={filteredSessions}
           selectedSessionId={selectedSessionId}
@@ -363,7 +365,7 @@ export function DebugPage() {
           }}
         />
         <div className="min-h-0 overflow-hidden">
-          <div className="flex h-full min-h-0 flex-col">
+          <div className="flex h-full min-h-0 flex-col overflow-hidden">
             <RunStrip
               runs={runs}
               selectedRunId={resolvedRunId}
@@ -425,7 +427,7 @@ function SessionList({
   onSelect: (session: SessionSummary) => void
 }) {
   return (
-    <aside className="flex h-full min-h-0 flex-col border-b border-r border-slate-200 bg-white lg:border-b-0">
+    <aside className="flex h-full min-h-0 flex-col overflow-hidden border-b border-r border-slate-200 bg-white lg:border-b-0">
       <div className="border-b border-slate-200 p-4">
         <div className="relative">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
@@ -437,7 +439,7 @@ function SessionList({
           />
         </div>
       </div>
-      <div className="scrollbar-thin min-h-0 flex-1 overflow-auto p-3">
+      <div className="scrollbar-thin min-h-0 flex-1 overscroll-contain overflow-auto p-3">
         {loading ? <SessionSkeleton /> : null}
         {!loading && sessions.length === 0 ? (
           <EmptyState
@@ -858,7 +860,7 @@ function EventDevToolsPanel({
   })
 
   return (
-    <aside className="flex h-full min-h-0 flex-col border-l border-slate-200 bg-slate-950 text-slate-100">
+    <aside className="flex h-full min-h-0 flex-col overflow-hidden border-l border-slate-200 bg-slate-950 text-slate-100">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-800 px-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
@@ -879,7 +881,7 @@ function EventDevToolsPanel({
       </div>
       <div
         ref={parentRef}
-        className="scrollbar-thin min-h-0 flex-1 overflow-auto p-2"
+        className="scrollbar-thin min-h-0 flex-1 overscroll-contain overflow-auto p-2"
       >
         {loading ? (
           <div className="space-y-2 p-2">
@@ -1023,7 +1025,7 @@ function TimelinePanel({
   return (
     <section
       ref={scrollRef}
-      className="scrollbar-thin min-h-0 flex-1 overflow-auto bg-slate-50 p-3 sm:p-5"
+      className="scrollbar-thin min-h-0 flex-1 overscroll-contain overflow-auto bg-slate-50 p-3 sm:p-5"
       onScroll={() => {
         const element = scrollRef.current
         if (!element) return

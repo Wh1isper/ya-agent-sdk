@@ -24,6 +24,10 @@ export type LayoutState = {
   route: AppRoute
   selectedSessionId: string | null
   selectedRunId: string | null
+  selectedChatSessionId: string | null
+  selectedChatRunId: string | null
+  selectedDebugSessionId: string | null
+  selectedDebugRunId: string | null
   selectedProfileName: string | null
   inspectorTab: string
   setRoute: (route: AppRoute) => void
@@ -42,35 +46,76 @@ export const useLayoutStore = create<LayoutState>()(
       route: initialUrlSelection.route,
       selectedSessionId: initialUrlSelection.selectedSessionId,
       selectedRunId: initialUrlSelection.selectedRunId,
+      selectedChatSessionId:
+        initialUrlSelection.route === 'chat'
+          ? initialUrlSelection.selectedSessionId
+          : null,
+      selectedChatRunId:
+        initialUrlSelection.route === 'chat'
+          ? initialUrlSelection.selectedRunId
+          : null,
+      selectedDebugSessionId:
+        initialUrlSelection.route === 'debug'
+          ? initialUrlSelection.selectedSessionId
+          : null,
+      selectedDebugRunId:
+        initialUrlSelection.route === 'debug'
+          ? initialUrlSelection.selectedRunId
+          : null,
       selectedProfileName: initialUrlSelection.selectedProfileName,
       inspectorTab: 'summary',
       setRoute: (route) => {
-        pushBrowserPath(buildRoutePath(route))
-        set({
-          route,
-          selectedSessionId:
-            route === 'chat' || route === 'debug'
-              ? get().selectedSessionId
-              : null,
-          selectedRunId:
-            route === 'chat' || route === 'debug' ? get().selectedRunId : null,
-        })
+        const state = get()
+        const selectedSessionId =
+          route === 'chat'
+            ? state.selectedChatSessionId
+            : route === 'debug'
+              ? state.selectedDebugSessionId
+              : null
+        const selectedRunId =
+          route === 'chat'
+            ? state.selectedChatRunId
+            : route === 'debug'
+              ? state.selectedDebugRunId
+              : null
+        pushBrowserPath(
+          route === 'chat' || route === 'debug'
+            ? buildChatPath(selectedSessionId, selectedRunId, route)
+            : buildRoutePath(route),
+        )
+        set({ route, selectedSessionId, selectedRunId })
       },
       selectSession: (selectedSessionId) => {
         const route = get().route === 'debug' ? 'debug' : 'chat'
         pushBrowserPath(buildChatPath(selectedSessionId, null, route))
-        set((state) => ({
-          selectedSessionId,
-          selectedRunId: selectedSessionId ? state.selectedRunId : null,
-          route,
-        }))
+        set((state) => {
+          const selectedRunId = selectedSessionId ? state.selectedRunId : null
+          return route === 'debug'
+            ? {
+                selectedSessionId,
+                selectedRunId,
+                selectedDebugSessionId: selectedSessionId,
+                selectedDebugRunId: selectedRunId,
+                route,
+              }
+            : {
+                selectedSessionId,
+                selectedRunId,
+                selectedChatSessionId: selectedSessionId,
+                selectedChatRunId: selectedRunId,
+                route,
+              }
+        })
       },
       selectRun: (selectedRunId) => {
         const route = get().route === 'debug' ? 'debug' : 'chat'
-        pushBrowserPath(
-          buildChatPath(get().selectedSessionId, selectedRunId, route),
+        const selectedSessionId = get().selectedSessionId
+        pushBrowserPath(buildChatPath(selectedSessionId, selectedRunId, route))
+        set(
+          route === 'debug'
+            ? { selectedRunId, selectedDebugRunId: selectedRunId, route }
+            : { selectedRunId, selectedChatRunId: selectedRunId, route },
         )
-        set({ selectedRunId, route })
       },
       selectProfile: (selectedProfileName) => {
         pushBrowserPath(buildProfilePath(selectedProfileName))
@@ -79,7 +124,25 @@ export const useLayoutStore = create<LayoutState>()(
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),
       syncFromUrl: () => {
         const next = parseUrlSelection()
-        set(next)
+        set({
+          ...next,
+          selectedChatSessionId:
+            next.route === 'chat'
+              ? next.selectedSessionId
+              : get().selectedChatSessionId,
+          selectedChatRunId:
+            next.route === 'chat'
+              ? next.selectedRunId
+              : get().selectedChatRunId,
+          selectedDebugSessionId:
+            next.route === 'debug'
+              ? next.selectedSessionId
+              : get().selectedDebugSessionId,
+          selectedDebugRunId:
+            next.route === 'debug'
+              ? next.selectedRunId
+              : get().selectedDebugRunId,
+        })
         replaceBrowserPath(
           next.route === 'chat' || next.route === 'debug'
             ? buildChatPath(

@@ -39,8 +39,10 @@ import remarkGfm from 'remark-gfm'
 const WEB_CHAT_METADATA = { web: { surface: 'chat' } }
 
 export function ChatPage() {
-  const selectedSessionId = useLayoutStore((state) => state.selectedSessionId)
-  const selectedRunId = useLayoutStore((state) => state.selectedRunId)
+  const selectedSessionId = useLayoutStore(
+    (state) => state.selectedChatSessionId,
+  )
+  const selectedRunId = useLayoutStore((state) => state.selectedChatRunId)
   const selectSession = useLayoutStore((state) => state.selectSession)
   const selectRun = useLayoutStore((state) => state.selectRun)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -49,14 +51,24 @@ export function ChatPage() {
     () => (sessions.data ?? []).filter(isWebChatSession),
     [sessions.data],
   )
-  const selectedSession = useSessionQuery(selectedSessionId)
-  const activeSessionData = selectedSessionId ? selectedSession.data : undefined
+  const selectedSessionBelongsToChat = useMemo(
+    () => webSessions.some((session) => session.id === selectedSessionId),
+    [selectedSessionId, webSessions],
+  )
+  const effectiveSessionId = selectedSessionBelongsToChat
+    ? selectedSessionId
+    : null
+  const effectiveRunId = selectedSessionBelongsToChat ? selectedRunId : null
+  const selectedSession = useSessionQuery(effectiveSessionId)
+  const activeSessionData = effectiveSessionId
+    ? selectedSession.data
+    : undefined
   const resolvedRunId =
-    selectedRunId ??
+    effectiveRunId ??
     activeSessionData?.session.active_run_id ??
     activeSessionData?.session.head_run_id ??
     null
-  const sessionHistory = useSessionHistoryQuery(selectedSessionId, {
+  const sessionHistory = useSessionHistoryQuery(effectiveSessionId, {
     runsLimit: 3,
   })
   const selectedRun = useRunQuery(resolvedRunId)
@@ -79,7 +91,7 @@ export function ChatPage() {
   const live = useRunEventStream(
     resolvedRunId,
     activeRunData?.run.status ?? null,
-    selectedSessionId,
+    effectiveSessionId,
   )
   const selectedRunReplayEvents = useMemo(
     () =>
@@ -110,7 +122,7 @@ export function ChatPage() {
   const activeRunForComposer = currentSession?.active_run_id ? activeRun : null
 
   useEffect(() => {
-    if (!selectedSessionId && webSessions[0]?.id) {
+    if (!effectiveSessionId && webSessions[0]?.id) {
       selectSession(webSessions[0].id)
       selectRun(
         webSessions[0].active_run_id ??
@@ -119,16 +131,16 @@ export function ChatPage() {
           null,
       )
     }
-  }, [selectRun, selectSession, selectedSessionId, webSessions])
+  }, [effectiveSessionId, selectRun, selectSession, webSessions])
 
   useEffect(() => {
-    if (!selectedSessionId || selectedRunId) return
+    if (!effectiveSessionId || effectiveRunId) return
     const nextRunId =
       activeSessionData?.session.active_run_id ??
       activeSessionData?.session.head_run_id ??
       null
     if (nextRunId) selectRun(nextRunId)
-  }, [activeSessionData, selectRun, selectedRunId, selectedSessionId])
+  }, [activeSessionData, effectiveRunId, effectiveSessionId, selectRun])
 
   function startNewChat() {
     selectSession(null)
@@ -148,10 +160,10 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 bg-white">
+    <div className="flex h-full min-h-0 overflow-hidden bg-white">
       <ChatSidebar
         sessions={webSessions}
-        selectedSessionId={selectedSessionId}
+        selectedSessionId={effectiveSessionId}
         loading={sessions.isLoading}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -160,7 +172,7 @@ export function ChatPage() {
         onRefresh={() => sessions.refetch()}
       />
 
-      <section className="flex min-w-0 flex-1 flex-col bg-slate-50">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-50">
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-3 sm:px-5">
           <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <button
@@ -210,7 +222,7 @@ export function ChatPage() {
           onLoadOlder={() => sessionHistory.fetchNextPage()}
         />
         <ChatComposer
-          selectedSessionId={selectedSessionId}
+          selectedSessionId={effectiveSessionId}
           selectedProfile={currentSession?.profile_name ?? null}
           activeRun={activeRunForComposer}
         />
@@ -285,7 +297,7 @@ function ChatSidebar({
             <RefreshCcw className="h-4 w-4" />
           </button>
         </div>
-        <div className="scrollbar-thin min-h-0 flex-1 overflow-auto p-3">
+        <div className="scrollbar-thin min-h-0 flex-1 overscroll-contain overflow-auto p-3">
           {loading ? <ChatListSkeleton /> : null}
           {!loading && sessions.length === 0 ? (
             <EmptyState
@@ -381,7 +393,7 @@ function ChatTranscript({
   return (
     <main
       ref={scrollRef}
-      className="scrollbar-thin min-h-0 flex-1 overflow-auto px-3 py-5 sm:px-6"
+      className="scrollbar-thin min-h-0 flex-1 overscroll-contain overflow-auto px-3 py-5 sm:px-6"
       onScroll={() => {
         const element = scrollRef.current
         if (!element) return
