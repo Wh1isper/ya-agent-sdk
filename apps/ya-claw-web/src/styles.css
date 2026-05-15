@@ -24,7 +24,7 @@
 
 body {
   margin: 0;
-  min-width: 1024px;
+  min-width: 320px;
   min-height: 100vh;
   background:
     radial-gradient(

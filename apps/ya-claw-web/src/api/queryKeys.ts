@@ -11,6 +11,10 @@ export const queryKeys = {
     ['bridge-events', conversationId ?? 'all', status ?? 'all'] as const,
   sessions: ['sessions'] as const,
   session: (sessionId: string) => ['session', sessionId] as const,
+  sessionHistoryBase: (sessionId: string) =>
+    ['session-history', sessionId] as const,
+  sessionHistory: (sessionId: string, runsLimit: number) =>
+    ['session-history', sessionId, runsLimit] as const,
   run: (runId: string) => ['run', runId] as const,
   runTrace: (runId: string) => ['run-trace', runId] as const,
   profiles: ['profiles'] as const,

@@ -1,5 +1,6 @@
 import {
   keepPreviousData,
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -156,6 +157,32 @@ export function useSessionQuery(sessionId: string | null) {
   })
 }
 
+export function useSessionHistoryQuery(
+  sessionId: string | null,
+  options: { runsLimit?: number } = {},
+) {
+  const api = useApiClient()
+  const runsLimit = options.runsLimit ?? 3
+  return useInfiniteQuery({
+    queryKey: sessionId
+      ? queryKeys.sessionHistory(sessionId, runsLimit)
+      : ['session-history', 'none', runsLimit],
+    queryFn: ({ pageParam }: { pageParam: number | null }) =>
+      api.getSession(sessionId ?? '', {
+        runsLimit,
+        beforeSequenceNo: pageParam,
+        includeMessage: true,
+        includeInputParts: true,
+      }),
+    enabled: Boolean(sessionId),
+    initialPageParam: null as number | null,
+    getNextPageParam: (lastPage) =>
+      lastPage.session.runs_next_before_sequence_no ?? undefined,
+    placeholderData: keepPreviousData,
+    staleTime: 5_000,
+  })
+}
+
 export function useRunQuery(runId: string | null) {
   const api = useApiClient()
   return useQuery({
@@ -208,6 +235,7 @@ export function useCreateSessionMutation() {
     mutationFn: (payload: {
       profile_name?: string | null
       input_parts: InputPart[]
+      metadata?: Record<string, unknown>
     }) => api.createSession(payload),
     onSuccess: async (response) => {
       await Promise.all([

@@ -44,6 +44,31 @@ export function buildTimeline(
   return state
 }
 
+export function buildTimelineFromRuns(
+  runs: Array<{
+    id: string
+    input_parts?: InputPart[] | null
+    message?: AguiEvent[] | null
+  }>,
+  options: TimelineReduceOptions = {},
+): AguiTimelineState {
+  return runs.reduce((state, run) => {
+    let nextState = state
+    if (run.input_parts?.length) {
+      nextState = appendBlock(nextState, {
+        kind: 'user_input',
+        id: `${run.id}:input`,
+        runId: run.id,
+        parts: run.input_parts,
+      })
+    }
+    return (run.message ?? []).reduce(
+      (runState, event) => reduceAguiEvent(runState, event, options),
+      nextState,
+    )
+  }, createInitialTimelineState())
+}
+
 export function reduceAguiEvent(
   state: AguiTimelineState,
   event: AguiEvent,

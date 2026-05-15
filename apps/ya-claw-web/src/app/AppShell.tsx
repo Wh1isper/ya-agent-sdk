@@ -1,5 +1,6 @@
 import {
   Bot,
+  Bug,
   CalendarClock,
   Circle,
   HeartPulse,
@@ -28,6 +29,11 @@ const BridgesPage = lazy(() =>
 const ChatPage = lazy(() =>
   import('../features/chat/ChatPage').then((module) => ({
     default: module.ChatPage,
+  })),
+)
+const DebugPage = lazy(() =>
+  import('../features/chat/DebugPage').then((module) => ({
+    default: module.DebugPage,
   })),
 )
 const HeartbeatPage = lazy(() =>
@@ -68,7 +74,8 @@ const navItems: Array<{
     helper: 'Health and activity',
     icon: Home,
   },
-  { route: 'chat', label: 'Chat', helper: 'Sessions and runs', icon: Bot },
+  { route: 'chat', label: 'Chat', helper: 'Web conversations', icon: Bot },
+  { route: 'debug', label: 'Debug', helper: 'Sessions and runs', icon: Bug },
   {
     route: 'schedules',
     label: 'Schedules',
@@ -103,7 +110,8 @@ const navItems: Array<{
 
 const routeCopy: Record<AppRoute, { eyebrow: string; title: string }> = {
   overview: { eyebrow: 'Runtime', title: 'Overview' },
-  chat: { eyebrow: 'AGUI', title: 'Chat Runtime' },
+  chat: { eyebrow: 'Web', title: 'Chat' },
+  debug: { eyebrow: 'AGUI', title: 'Debug Runtime' },
   schedules: { eyebrow: 'Automation', title: 'Schedules' },
   bridges: { eyebrow: 'Integrations', title: 'Bridges' },
   heartbeat: { eyebrow: 'Automation', title: 'Heartbeat' },
@@ -133,8 +141,8 @@ export function AppShell() {
   }, [syncFromUrl])
 
   return (
-    <div className="flex min-h-screen bg-slate-100 text-slate-950">
-      <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200/80 bg-white/95 shadow-sm backdrop-blur">
+    <div className="flex min-h-dvh bg-slate-100 text-slate-950">
+      <aside className="hidden w-72 shrink-0 flex-col border-r border-slate-200/80 bg-white/95 shadow-sm backdrop-blur lg:flex">
         <div className="border-b border-slate-200 p-5">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-sm font-semibold text-white shadow-sm">
@@ -164,56 +172,7 @@ export function AppShell() {
             </p>
           </div>
         </div>
-        <nav className="flex-1 space-y-1.5 p-3" aria-label="Primary navigation">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            const active = route === item.route
-            return (
-              <button
-                key={item.route}
-                type="button"
-                aria-current={active ? 'page' : undefined}
-                className={cn(
-                  'group flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition',
-                  active
-                    ? 'bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-100'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950',
-                )}
-                onClick={() => setRoute(item.route)}
-              >
-                <span
-                  className={cn(
-                    'flex h-9 w-9 items-center justify-center rounded-xl transition',
-                    active
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'bg-slate-100 text-slate-500 group-hover:bg-white group-hover:text-slate-700',
-                  )}
-                >
-                  <Icon className="h-4 w-4" aria-hidden />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold">
-                    {item.label}
-                  </span>
-                  <span
-                    className={cn(
-                      'mt-0.5 block text-xs',
-                      active ? 'text-blue-500' : 'text-slate-400',
-                    )}
-                  >
-                    {item.helper}
-                  </span>
-                </span>
-                {active ? (
-                  <Circle
-                    className="h-2 w-2 fill-current text-blue-600"
-                    aria-hidden
-                  />
-                ) : null}
-              </button>
-            )
-          })}
-        </nav>
+        <NavList route={route} setRoute={setRoute} />
         <div className="border-t border-slate-200 p-4 text-xs text-slate-500">
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
             <p className="font-medium text-slate-700">Connection</p>
@@ -236,16 +195,16 @@ export function AppShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/85 px-6 backdrop-blur">
-          <div>
+        <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/85 px-3 backdrop-blur sm:px-6">
+          <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
               {activeRoute.eyebrow}
             </p>
-            <h1 className="text-lg font-semibold tracking-tight text-slate-950">
+            <h1 className="truncate text-lg font-semibold tracking-tight text-slate-950">
               {activeRoute.title}
             </h1>
           </div>
-          <div className="flex items-center gap-3 text-xs text-slate-500">
+          <div className="hidden items-center gap-3 text-xs text-slate-500 sm:flex">
             <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 font-medium text-slate-700 shadow-sm">
               <StatusDot status={backendTone} />
               Backend{' '}
@@ -264,20 +223,114 @@ export function AppShell() {
 
         <main
           className={cn(
-            'min-h-0 flex-1',
-            route === 'chat' ? 'overflow-hidden' : 'overflow-auto',
+            'min-h-0 flex-1 pb-16 lg:pb-0',
+            route === 'chat' || route === 'debug'
+              ? 'overflow-hidden'
+              : 'overflow-auto',
           )}
         >
           <Suspense fallback={<PageLoading />}>{renderRoute(route)}</Suspense>
         </main>
+        <MobileNav route={route} setRoute={setRoute} />
       </div>
     </div>
+  )
+}
+
+function NavList({
+  route,
+  setRoute,
+}: {
+  route: AppRoute
+  setRoute: (route: AppRoute) => void
+}) {
+  return (
+    <nav className="flex-1 space-y-1.5 p-3" aria-label="Primary navigation">
+      {navItems.map((item) => {
+        const Icon = item.icon
+        const active = route === item.route
+        return (
+          <button
+            key={item.route}
+            type="button"
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'group flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition',
+              active
+                ? 'bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-100'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950',
+            )}
+            onClick={() => setRoute(item.route)}
+          >
+            <span
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-xl transition',
+                active
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-500 group-hover:bg-white group-hover:text-slate-700',
+              )}
+            >
+              <Icon className="h-4 w-4" aria-hidden />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold">{item.label}</span>
+              <span
+                className={cn(
+                  'mt-0.5 block text-xs',
+                  active ? 'text-blue-500' : 'text-slate-400',
+                )}
+              >
+                {item.helper}
+              </span>
+            </span>
+            {active ? (
+              <Circle
+                className="h-2 w-2 fill-current text-blue-600"
+                aria-hidden
+              />
+            ) : null}
+          </button>
+        )
+      })}
+    </nav>
+  )
+}
+
+function MobileNav({
+  route,
+  setRoute,
+}: {
+  route: AppRoute
+  setRoute: (route: AppRoute) => void
+}) {
+  return (
+    <nav className="fixed inset-x-0 bottom-0 z-20 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 py-2 shadow-lg backdrop-blur lg:hidden">
+      {navItems.slice(0, 4).map((item) => {
+        const Icon = item.icon
+        const active = route === item.route
+        return (
+          <button
+            key={item.route}
+            type="button"
+            className={cn(
+              'flex flex-col items-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-medium transition',
+              active ? 'bg-blue-50 text-blue-700' : 'text-slate-500',
+            )}
+            onClick={() => setRoute(item.route)}
+          >
+            <Icon className="h-4 w-4" aria-hidden />
+            <span>{item.label}</span>
+          </button>
+        )
+      })}
+    </nav>
   )
 }
 
 function renderRoute(route: AppRoute) {
   if (route === 'overview') return <OverviewPage />
   if (route === 'chat') return <ChatPage />
+  if (route === 'debug') return <DebugPage />
   if (route === 'schedules') return <SchedulesPage />
   if (route === 'bridges') return <BridgesPage />
   if (route === 'heartbeat') return <HeartbeatPage />

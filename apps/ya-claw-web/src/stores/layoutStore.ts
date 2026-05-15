@@ -13,6 +13,7 @@ import {
 export type AppRoute =
   | 'overview'
   | 'chat'
+  | 'debug'
   | 'schedules'
   | 'bridges'
   | 'heartbeat'
@@ -47,21 +48,29 @@ export const useLayoutStore = create<LayoutState>()(
         pushBrowserPath(buildRoutePath(route))
         set({
           route,
-          selectedSessionId: route === 'chat' ? get().selectedSessionId : null,
-          selectedRunId: route === 'chat' ? get().selectedRunId : null,
+          selectedSessionId:
+            route === 'chat' || route === 'debug'
+              ? get().selectedSessionId
+              : null,
+          selectedRunId:
+            route === 'chat' || route === 'debug' ? get().selectedRunId : null,
         })
       },
       selectSession: (selectedSessionId) => {
-        pushBrowserPath(buildChatPath(selectedSessionId))
+        const route = get().route === 'debug' ? 'debug' : 'chat'
+        pushBrowserPath(buildChatPath(selectedSessionId, null, route))
         set((state) => ({
           selectedSessionId,
           selectedRunId: selectedSessionId ? state.selectedRunId : null,
-          route: 'chat',
+          route,
         }))
       },
       selectRun: (selectedRunId) => {
-        pushBrowserPath(buildChatPath(get().selectedSessionId, selectedRunId))
-        set({ selectedRunId, route: 'chat' })
+        const route = get().route === 'debug' ? 'debug' : 'chat'
+        pushBrowserPath(
+          buildChatPath(get().selectedSessionId, selectedRunId, route),
+        )
+        set({ selectedRunId, route })
       },
       selectProfile: (selectedProfileName) => {
         pushBrowserPath(buildProfilePath(selectedProfileName))
@@ -72,8 +81,12 @@ export const useLayoutStore = create<LayoutState>()(
         const next = parseUrlSelection()
         set(next)
         replaceBrowserPath(
-          next.route === 'chat'
-            ? buildChatPath(next.selectedSessionId, next.selectedRunId)
+          next.route === 'chat' || next.route === 'debug'
+            ? buildChatPath(
+                next.selectedSessionId,
+                next.selectedRunId,
+                next.route,
+              )
             : next.route === 'profiles'
               ? buildProfilePath(next.selectedProfileName)
               : buildRoutePath(next.route),

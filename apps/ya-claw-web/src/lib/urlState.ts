@@ -3,6 +3,7 @@ import type { AppRoute } from '../stores/layoutStore'
 const routePaths: Record<AppRoute, string> = {
   overview: '/',
   chat: '/chat',
+  debug: '/debug',
   schedules: '/schedules',
   bridges: '/bridges',
   heartbeat: '/heartbeat',
@@ -21,9 +22,9 @@ export function parseUrlSelection(
   pathname = window.location.pathname,
 ): UrlSelection {
   const segments = pathname.split('/').filter(Boolean)
-  if (segments[0] === 'chat') {
+  if (segments[0] === 'chat' || segments[0] === 'debug') {
     return {
-      route: 'chat',
+      route: segments[0] === 'debug' ? 'debug' : 'chat',
       selectedSessionId:
         segments[1] === 'sessions' ? (segments[2] ?? null) : null,
       selectedRunId: segments[3] === 'runs' ? (segments[4] ?? null) : null,
@@ -51,11 +52,16 @@ export function buildRoutePath(route: AppRoute) {
   return routePaths[route]
 }
 
-export function buildChatPath(sessionId: string | null, runId?: string | null) {
-  if (!sessionId) return '/chat'
+export function buildChatPath(
+  sessionId: string | null,
+  runId?: string | null,
+  route: 'chat' | 'debug' = 'chat',
+) {
+  const prefix = `/${route}`
+  if (!sessionId) return prefix
   const encodedSession = encodeURIComponent(sessionId)
-  if (!runId) return `/chat/sessions/${encodedSession}`
-  return `/chat/sessions/${encodedSession}/runs/${encodeURIComponent(runId)}`
+  if (!runId) return `${prefix}/sessions/${encodedSession}`
+  return `${prefix}/sessions/${encodedSession}/runs/${encodeURIComponent(runId)}`
 }
 
 export function buildProfilePath(profileName: string | null) {
@@ -75,6 +81,7 @@ export function pushBrowserPath(path: string) {
 }
 
 function routeFromSegment(segment: string | undefined): AppRoute {
+  if (segment === 'debug') return 'debug'
   if (segment === 'schedules') return 'schedules'
   if (segment === 'bridges') return 'bridges'
   if (segment === 'heartbeat') return 'heartbeat'

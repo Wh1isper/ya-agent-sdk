@@ -31,6 +31,11 @@ import {
   sandboxTone,
   ttlLabel,
 } from '../workspaceDisplay'
+import {
+  channelLabel,
+  sessionChannel,
+  sessionTitle,
+} from '../chat/sessionClassification'
 
 export function OverviewPage() {
   const health = useHealthQuery()
@@ -102,9 +107,15 @@ export function OverviewPage() {
           <div className="grid gap-3 bg-white p-6">
             <QuickAction
               icon={MessageSquare}
-              title="Open chat runtime"
-              description="Review session replay, live events, and run controls."
+              title="Open web chat"
+              description="Talk with YA Claw from a clean ChatGPT-style surface."
               onClick={() => setRoute('chat')}
+            />
+            <QuickAction
+              icon={Activity}
+              title="Open debug runtime"
+              description="Review session replay, live events, and run controls."
+              onClick={() => setRoute('debug')}
             />
             <QuickAction
               icon={CalendarClock}
@@ -167,10 +178,10 @@ export function OverviewPage() {
             <button
               type="button"
               className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
-              onClick={() => setRoute('chat')}
+              onClick={() => setRoute('debug')}
             >
               <PlayCircle className="h-3.5 w-3.5" />
-              Open chat
+              Open debug
             </button>
           </div>
           <div className="mt-4 space-y-2">
@@ -181,7 +192,7 @@ export function OverviewPage() {
                   No sessions yet
                 </p>
                 <p className="mt-2 text-sm text-slate-500">
-                  Start from Chat Runtime to create the first session.
+                  Start from Chat or Debug to create the first session.
                 </p>
               </div>
             ) : null}
@@ -390,9 +401,12 @@ function SessionRow({
           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
             {session.run_count} runs
           </span>
+          <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+            {channelLabel(sessionChannel(session))}
+          </span>
         </div>
         <p className="mt-1 line-clamp-1 text-sm font-medium text-slate-900">
-          {session.latest_run?.input_preview ?? 'No input yet'}
+          {sessionTitle(session)}
         </p>
         <p className="mt-1 text-xs text-slate-500">
           {session.profile_name ?? 'default'} · {session.session_type}

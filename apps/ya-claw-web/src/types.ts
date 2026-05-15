@@ -490,6 +490,8 @@ export type SessionSummary = {
   created_at: string
   updated_at: string
   status: SessionStatus
+  status_reason?: string
+  status_detail?: Record<string, unknown>
   run_count: number
   head_run_id?: string | null
   head_success_run_id?: string | null
@@ -522,6 +524,7 @@ export type SessionRunCreateRequest = {
   reset_state?: boolean
   input_parts: InputPart[]
   metadata?: Record<string, unknown>
+  trigger_type?: string
 }
 
 export type RunGetResponse = {

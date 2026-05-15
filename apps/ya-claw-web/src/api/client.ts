@@ -171,9 +171,24 @@ export class ClawApiClient {
     return this.request<SessionSummary[]>('/api/v1/sessions')
   }
 
-  getSession(sessionId: string) {
+  getSession(
+    sessionId: string,
+    options: {
+      runsLimit?: number
+      beforeSequenceNo?: number | null
+      includeMessage?: boolean
+      includeInputParts?: boolean
+    } = {},
+  ) {
+    const params = new URLSearchParams()
+    params.set('runs_limit', String(options.runsLimit ?? 20))
+    params.set('include_message', String(options.includeMessage ?? true))
+    params.set('include_input_parts', String(options.includeInputParts ?? true))
+    if (typeof options.beforeSequenceNo === 'number') {
+      params.set('before_sequence_no', String(options.beforeSequenceNo))
+    }
     return this.request<SessionGetResponse>(
-      `/api/v1/sessions/${sessionId}?include_message=true&include_input_parts=true`,
+      `/api/v1/sessions/${sessionId}?${params.toString()}`,
     )
   }
 
