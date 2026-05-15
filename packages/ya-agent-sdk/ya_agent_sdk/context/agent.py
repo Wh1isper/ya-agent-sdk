@@ -96,6 +96,8 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelResponseStreamEvent,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
@@ -425,7 +427,10 @@ class ToolIdWrapper:
             case FunctionToolResultEvent():
                 event.part.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
             case PartStartEvent() | PartEndEvent():
-                if isinstance(event.part, (ToolCallPart, ToolReturnPart, RetryPromptPart)):
+                if isinstance(
+                    event.part,
+                    (ToolCallPart, NativeToolCallPart, ToolReturnPart, NativeToolReturnPart, RetryPromptPart),
+                ):
                     event.part.tool_call_id = self.upsert_tool_call_id(event.part.tool_call_id)
             case PartDeltaEvent():
                 if isinstance(event.delta, ToolCallPartDelta) and event.delta.tool_call_id:
@@ -451,7 +456,7 @@ class ToolIdWrapper:
 
     def wrap_messages(
         self,
-        _: RunContext[AgentContext],
+        _: Any,
         message_history: list[ModelMessage],
     ) -> list[ModelMessage]:
         """Normalize all tool call IDs in the message history.
@@ -467,7 +472,9 @@ class ToolIdWrapper:
         """
         for m in message_history:
             for p in m.parts:
-                if isinstance(p, (ToolCallPart, ToolReturnPart, RetryPromptPart)):
+                if isinstance(
+                    p, (ToolCallPart, NativeToolCallPart, ToolReturnPart, NativeToolReturnPart, RetryPromptPart)
+                ):
                     p.tool_call_id = self.upsert_tool_call_id(p.tool_call_id)
         return message_history
 

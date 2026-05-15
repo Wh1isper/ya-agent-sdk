@@ -62,6 +62,7 @@ from ya_agent_sdk.context import (
     StreamEvent,
     SubagentWrapper,
     ToolConfig,
+    ToolIdWrapper,
 )
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.events import (
@@ -965,6 +966,7 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
     _poll_done: asyncio.Event
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
     _partial_text: PartialTextAccumulator = field(default_factory=PartialTextAccumulator)
+    _tool_id_wrapper: ToolIdWrapper | None = None
     run: AgentRun[AgentDepsT, OutputT] | None = None
     exception: BaseException | None = None
     _interrupted: bool = False
@@ -980,11 +982,15 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
         messages: list[ModelMessage] = []
         if self.run is not None:
             messages = list(self.run.all_messages())
+            if self._tool_id_wrapper is not None:
+                messages = self._tool_id_wrapper.wrap_messages(None, messages)
             if messages and isinstance(messages[-1], ModelResponse):
                 return messages
         partial_response = self._partial_text.build_response()
         if partial_response is not None:
             messages.append(partial_response)
+            if self._tool_id_wrapper is not None:
+                messages = self._tool_id_wrapper.wrap_messages(None, messages)
         return messages
 
     def interrupt(self) -> None:
@@ -1738,6 +1744,7 @@ async def stream_agent(  # noqa: C901
         _poll_done=poll_done,
         _tasks=[main_task, poll_task],
         _partial_text=partial_text,
+        _tool_id_wrapper=ctx.tool_id_wrapper,
     )
 
     try:
