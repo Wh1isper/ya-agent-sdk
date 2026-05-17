@@ -104,6 +104,8 @@ Responsibilities:
 - global run notification state
 - pending interaction state and routing
 - top-level navigation between Home, Chats, Board, Spaces, Inbox, and Settings
+- collapsible left navigation and right context panels so users can focus on the main content surface
+- persistent layout preferences for collapsed sidebars when settings storage is available
 
 ### `claw/`
 

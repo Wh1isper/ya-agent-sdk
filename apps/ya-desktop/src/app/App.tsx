@@ -15,7 +15,10 @@ import {
   KeyRound,
   LayoutDashboard,
   MessageSquareText,
+  PanelLeft,
+  PanelLeftClose,
   PanelRight,
+  PanelRightClose,
   Plus,
   Search,
   Settings,
@@ -25,13 +28,25 @@ import {
   TerminalSquare,
   type LucideIcon,
 } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Toaster } from 'sonner'
 
 import { cn } from '../lib'
 import { RuntimeManagerPanel } from '../runtime/RuntimeManagerPanel'
 
 type AppRoute = 'home' | 'chats' | 'board' | 'spaces' | 'inbox' | 'settings'
+
+type DesktopLayoutPreferences = {
+  leftSidebarCollapsed: boolean
+  rightPanelCollapsed: boolean
+}
+
+const defaultLayoutPreferences: DesktopLayoutPreferences = {
+  leftSidebarCollapsed: false,
+  rightPanelCollapsed: false,
+}
+
+const layoutPreferencesStorageKey = 'ya-desktop.layout-preferences.v1'
 
 const queryClient = new QueryClient()
 
@@ -107,44 +122,88 @@ const boardColumns = [
 
 export function App() {
   const [route, setRoute] = useState<AppRoute>('home')
+  const [layoutPreferences, setLayoutPreferences] = useState<DesktopLayoutPreferences>(
+    readLayoutPreferences,
+  )
+  const { leftSidebarCollapsed, rightPanelCollapsed } = layoutPreferences
   const active =
     route === 'settings'
       ? { route, label: 'Settings', helper: 'Preferences', icon: Settings }
       : (navItems.find((item) => item.route === route) ?? navItems[0])
+
+  useEffect(() => {
+    writeLayoutPreferences(layoutPreferences)
+  }, [layoutPreferences])
+
+  const toggleLeftSidebar = () => {
+    setLayoutPreferences((current) => ({
+      ...current,
+      leftSidebarCollapsed: !current.leftSidebarCollapsed,
+    }))
+  }
+
+  const toggleRightPanel = () => {
+    setLayoutPreferences((current) => ({
+      ...current,
+      rightPanelCollapsed: !current.rightPanelCollapsed,
+    }))
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
       <div className="min-h-screen bg-[#f7f7f4] text-[#171717]">
         <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(59,130,246,0.10),transparent_32%),radial-gradient(circle_at_80%_12%,rgba(15,23,42,0.06),transparent_28%),linear-gradient(180deg,#fbfbf8_0%,#f4f3ef_100%)]" />
         <div className="relative flex h-screen p-3">
-          <aside className="flex w-[292px] shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/80 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl">
-            <SidebarHeader />
+          <aside
+            className={cn(
+              'flex shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/80 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-[width] duration-300 ease-out',
+              leftSidebarCollapsed ? 'w-[84px]' : 'w-[292px]',
+            )}
+          >
+            <SidebarHeader collapsed={leftSidebarCollapsed} onToggle={toggleLeftSidebar} />
             <nav className="min-h-0 flex-1 space-y-1 overflow-auto px-3 py-2">
               {navItems.map((item) => (
                 <NavItem
                   key={item.route}
                   item={item}
                   active={route === item.route}
+                  collapsed={leftSidebarCollapsed}
                   onClick={() => setRoute(item.route)}
                 />
               ))}
             </nav>
             <SidebarFooter
               active={route === 'settings'}
+              collapsed={leftSidebarCollapsed}
               onSettings={() => setRoute('settings')}
             />
           </aside>
 
           <main className="ml-3 flex min-w-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-black/[0.06] bg-white/65 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl">
-            <TopBar active={active} />
+            <TopBar
+              active={active}
+              leftSidebarCollapsed={leftSidebarCollapsed}
+              rightPanelCollapsed={rightPanelCollapsed}
+              onToggleLeftSidebar={toggleLeftSidebar}
+              onToggleRightPanel={toggleRightPanel}
+            />
             <div className="min-h-0 flex-1 overflow-auto px-5 py-5 lg:px-8 lg:py-7">
               {renderRoute(route)}
             </div>
           </main>
 
-          <aside className="ml-3 hidden w-[336px] shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/70 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl 2xl:flex">
-            <RightPanel />
-          </aside>
+          {!rightPanelCollapsed && (
+            <aside className="ml-3 hidden w-[336px] shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/70 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl 2xl:flex">
+              <RightPanel
+                onCollapse={() =>
+                  setLayoutPreferences((current) => ({
+                    ...current,
+                    rightPanelCollapsed: true,
+                  }))
+                }
+              />
+            </aside>
+          )}
         </div>
         <Toaster richColors />
       </div>
@@ -152,25 +211,45 @@ export function App() {
   )
 }
 
-function SidebarHeader() {
+function SidebarHeader({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   return (
     <div className="border-b border-black/[0.06] p-4">
-      <div className="flex items-center gap-3">
-        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#111827] text-sm font-black tracking-tight text-white shadow-lg shadow-slate-950/15">
+      <div className={cn('flex items-center gap-3', collapsed && 'justify-center')}>
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#111827] text-sm font-black tracking-tight text-white shadow-lg shadow-slate-950/15">
           YA
         </div>
-        <div className="min-w-0">
-          <p className="font-semibold tracking-tight text-slate-950">YA Desktop</p>
-          <p className="mt-0.5 text-xs text-slate-500">Native Agent Workspace</p>
-        </div>
+        {!collapsed && (
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold tracking-tight text-slate-950">YA Desktop</p>
+            <p className="mt-0.5 text-xs text-slate-500">Native Agent Workspace</p>
+          </div>
+        )}
+        {!collapsed && (
+          <IconButton
+            label="Collapse navigation"
+            icon={PanelLeftClose}
+            onClick={onToggle}
+          />
+        )}
       </div>
-      <button className="mt-4 flex w-full items-center gap-2 rounded-2xl border border-black/[0.06] bg-[#f7f7f4] px-3 py-2.5 text-left text-sm text-slate-500 transition hover:bg-white hover:text-slate-900 hover:shadow-sm">
-        <Search className="h-4 w-4" />
-        <span className="min-w-0 flex-1 truncate">Search chats, spaces, runs</span>
-        <span className="rounded-lg border border-black/[0.06] bg-white px-1.5 py-0.5 text-[10px] text-slate-400">
-          ⌘K
-        </span>
-      </button>
+      {collapsed ? (
+        <button
+          type="button"
+          aria-label="Expand navigation"
+          className="mt-4 flex h-11 w-full items-center justify-center rounded-2xl border border-black/[0.06] bg-[#f7f7f4] text-slate-500 transition hover:bg-white hover:text-slate-900 hover:shadow-sm"
+          onClick={onToggle}
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
+      ) : (
+        <button className="mt-4 flex w-full items-center gap-2 rounded-2xl border border-black/[0.06] bg-[#f7f7f4] px-3 py-2.5 text-left text-sm text-slate-500 transition hover:bg-white hover:text-slate-900 hover:shadow-sm">
+          <Search className="h-4 w-4" />
+          <span className="min-w-0 flex-1 truncate">Search chats, spaces, runs</span>
+          <span className="rounded-lg border border-black/[0.06] bg-white px-1.5 py-0.5 text-[10px] text-slate-400">
+            ⌘K
+          </span>
+        </button>
+      )}
     </div>
   )
 }
@@ -178,10 +257,12 @@ function SidebarHeader() {
 function NavItem({
   item,
   active,
+  collapsed,
   onClick,
 }: {
   item: (typeof navItems)[number]
   active: boolean
+  collapsed: boolean
   onClick: () => void
 }) {
   const Icon = item.icon
@@ -189,8 +270,10 @@ function NavItem({
     <button
       type="button"
       aria-current={active ? 'page' : undefined}
+      title={collapsed ? item.label : undefined}
       className={cn(
         'group flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition',
+        collapsed && 'justify-center px-2',
         active
           ? 'bg-[#111827] text-white shadow-lg shadow-slate-950/10'
           : 'text-slate-600 hover:bg-[#f7f7f4] hover:text-slate-950',
@@ -207,43 +290,57 @@ function NavItem({
       >
         <Icon className="h-4 w-4" />
       </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-semibold">{item.label}</span>
-        <span
-          className={cn(
-            'mt-0.5 block truncate text-xs',
-            active ? 'text-slate-300' : 'text-slate-400',
-          )}
-        >
-          {item.helper}
+      {!collapsed && (
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold">{item.label}</span>
+          <span
+            className={cn(
+              'mt-0.5 block truncate text-xs',
+              active ? 'text-slate-300' : 'text-slate-400',
+            )}
+          >
+            {item.helper}
+          </span>
         </span>
-      </span>
+      )}
     </button>
   )
 }
 
 function SidebarFooter({
   active,
+  collapsed,
   onSettings,
 }: {
   active: boolean
+  collapsed: boolean
   onSettings: () => void
 }) {
   return (
     <div className="border-t border-black/[0.06] p-4">
-      <div className="rounded-2xl border border-emerald-900/10 bg-emerald-50/80 p-3">
+      <div
+        className={cn(
+          'rounded-2xl border border-emerald-900/10 bg-emerald-50/80 p-3',
+          collapsed && 'flex justify-center px-2 py-3',
+        )}
+        title={collapsed ? 'Local ready' : undefined}
+      >
         <div className="flex items-center gap-2">
           <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]" />
-          <p className="text-sm font-semibold text-emerald-950">Local ready</p>
+          {!collapsed && <p className="text-sm font-semibold text-emerald-950">Local ready</p>}
         </div>
-        <p className="mt-1 text-xs leading-5 text-emerald-800/70">
-          This Mac · ya-mono · trusted
-        </p>
+        {!collapsed && (
+          <p className="mt-1 text-xs leading-5 text-emerald-800/70">
+            This Mac · ya-mono · trusted
+          </p>
+        )}
       </div>
       <button
         type="button"
+        title={collapsed ? 'Settings' : undefined}
         className={cn(
           'mt-3 flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition',
+          collapsed && 'justify-center px-2',
           active
             ? 'bg-[#111827] text-white shadow-lg shadow-slate-950/10'
             : 'text-slate-600 hover:bg-[#f7f7f4] hover:text-slate-950',
@@ -260,27 +357,46 @@ function SidebarFooter({
         >
           <Settings className="h-4 w-4" />
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">Settings</span>
-          <span
-            className={cn(
-              'mt-0.5 block text-xs',
-              active ? 'text-slate-300' : 'text-slate-400',
-            )}
-          >
-            Preferences
+        {!collapsed && (
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold">Settings</span>
+            <span
+              className={cn(
+                'mt-0.5 block text-xs',
+                active ? 'text-slate-300' : 'text-slate-400',
+              )}
+            >
+              Preferences
+            </span>
           </span>
-        </span>
+        )}
       </button>
     </div>
   )
 }
 
-function TopBar({ active }: { active: { label: string; icon: LucideIcon } }) {
+function TopBar({
+  active,
+  leftSidebarCollapsed,
+  rightPanelCollapsed,
+  onToggleLeftSidebar,
+  onToggleRightPanel,
+}: {
+  active: { label: string; icon: LucideIcon }
+  leftSidebarCollapsed: boolean
+  rightPanelCollapsed: boolean
+  onToggleLeftSidebar: () => void
+  onToggleRightPanel: () => void
+}) {
   const Icon = active.icon
   return (
     <header className="flex h-20 shrink-0 items-center justify-between border-b border-black/[0.06] px-5 lg:px-8">
       <div className="flex items-center gap-3">
+        <IconButton
+          label={leftSidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+          icon={leftSidebarCollapsed ? PanelLeft : PanelLeftClose}
+          onClick={onToggleLeftSidebar}
+        />
         <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-slate-800 shadow-sm ring-1 ring-black/[0.06]">
           <Icon className="h-5 w-5" />
         </div>
@@ -290,9 +406,17 @@ function TopBar({ active }: { active: { label: string; icon: LucideIcon } }) {
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <button className="hidden items-center gap-2 rounded-2xl border border-black/[0.06] bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition hover:text-slate-950 md:inline-flex">
-          <PanelRight className="h-4 w-4" />
-          Context
+        <button
+          type="button"
+          className="hidden items-center gap-2 rounded-2xl border border-black/[0.06] bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition hover:text-slate-950 md:inline-flex"
+          onClick={onToggleRightPanel}
+        >
+          {rightPanelCollapsed ? (
+            <PanelRight className="h-4 w-4" />
+          ) : (
+            <PanelRightClose className="h-4 w-4" />
+          )}
+          {rightPanelCollapsed ? 'Show context' : 'Hide context'}
         </button>
         <button className="inline-flex items-center gap-2 rounded-2xl bg-[#111827] px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-slate-950/15 transition hover:bg-slate-800">
           <Plus className="h-4 w-4" />
@@ -514,10 +638,13 @@ function PanelPage({
   )
 }
 
-function RightPanel() {
+function RightPanel({ onCollapse }: { onCollapse: () => void }) {
   return (
     <div className="flex h-full flex-col">
-      <SectionHeader title="Live context" action="Refresh" />
+      <div className="flex items-center justify-between gap-3">
+        <SectionHeader title="Live context" action="Refresh" />
+        <IconButton label="Hide context" icon={PanelRightClose} onClick={onCollapse} />
+      </div>
       <div className="mt-4 rounded-3xl border border-black/[0.06] bg-white p-4 shadow-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Active chat</p>
         <h3 className="mt-2 text-lg font-semibold text-slate-950">No live run</h3>
@@ -562,10 +689,32 @@ function HeroMetric({ label, value }: { label: string; value: string }) {
 
 function SectionHeader({ title, action }: { title: string; action: string }) {
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div className="flex flex-1 items-center justify-between gap-3">
       <h2 className="text-sm font-semibold text-slate-950">{title}</h2>
       <button className="text-xs font-semibold text-blue-600 hover:text-blue-700">{action}</button>
     </div>
+  )
+}
+
+function IconButton({
+  label,
+  icon: Icon,
+  onClick,
+}: {
+  label: string
+  icon: LucideIcon
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/[0.06] bg-white text-slate-500 shadow-sm transition hover:bg-[#f7f7f4] hover:text-slate-950"
+      onClick={onClick}
+    >
+      <Icon className="h-4 w-4" />
+    </button>
   )
 }
 
@@ -666,6 +815,39 @@ function SpaceCard({
       </div>
     </button>
   )
+}
+
+function readLayoutPreferences(): DesktopLayoutPreferences {
+  if (typeof window === 'undefined') return defaultLayoutPreferences
+
+  try {
+    const rawValue = window.localStorage.getItem(layoutPreferencesStorageKey)
+    if (!rawValue) return defaultLayoutPreferences
+
+    const parsedValue = JSON.parse(rawValue) as Partial<DesktopLayoutPreferences>
+    return {
+      leftSidebarCollapsed:
+        typeof parsedValue.leftSidebarCollapsed === 'boolean'
+          ? parsedValue.leftSidebarCollapsed
+          : defaultLayoutPreferences.leftSidebarCollapsed,
+      rightPanelCollapsed:
+        typeof parsedValue.rightPanelCollapsed === 'boolean'
+          ? parsedValue.rightPanelCollapsed
+          : defaultLayoutPreferences.rightPanelCollapsed,
+    }
+  } catch {
+    return defaultLayoutPreferences
+  }
+}
+
+function writeLayoutPreferences(preferences: DesktopLayoutPreferences) {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(layoutPreferencesStorageKey, JSON.stringify(preferences))
+  } catch {
+    // Keep the prototype usable in restricted storage contexts.
+  }
 }
 
 function statusTone(tone: string) {

@@ -75,6 +75,8 @@ Desktop is the preferred HITL surface for approvals because it can show native n
 
 ## Product Surfaces
 
+The main application shell supports a focus mode through collapsible side panels. The left navigation can collapse to icon-only width, and the right context panel can hide entirely, giving Home, Chats, Board, Spaces, Inbox, and Settings more horizontal room for focused work. The top bar exposes both controls so users can move between navigation, context, and main content without changing routes.
+
 ### Home
 
 Home is the command-first default surface.
