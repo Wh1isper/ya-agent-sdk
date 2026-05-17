@@ -55,6 +55,7 @@ struct LocalClawStatus {
     sqlite_path: Option<String>,
     log_file: Option<String>,
     lock_file: Option<String>,
+    api_token: Option<String>,
     message: String,
 }
 
@@ -278,6 +279,10 @@ fn start_local_claw(
     ]);
     command.env("YA_CLAW_API_TOKEN", api_token);
     command.env("YA_CLAW_ENVIRONMENT", "desktop-local");
+    command.env(
+        "YA_CLAW_ALLOW_ORIGINS",
+        r#"["http://127.0.0.1:5174","http://localhost:5174","http://tauri.localhost","https://tauri.localhost"]"#,
+    );
     command.env("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual");
     command.env("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local");
     command.env("YA_CLAW_AUTO_SEED_PROFILES", "true");
@@ -1433,15 +1438,23 @@ fn split_command_args(command: &str) -> Result<Vec<String>, String> {
 }
 
 fn status_from_info(info: &LocalClawRuntimeInfo, running: bool, message: &str) -> LocalClawStatus {
+    let api_token = if running {
+        PathBuf::from(&info.data_dir)
+            .parent()
+            .and_then(|root| ensure_local_api_token(&root.join(".env")).ok())
+    } else {
+        None
+    };
     LocalClawStatus {
         running,
-        base_url: Some(info.base_url.clone()),
-        pid: Some(info.pid),
+        base_url: running.then(|| info.base_url.clone()),
+        pid: running.then_some(info.pid),
         data_dir: Some(info.data_dir.clone()),
         workspace_dir: Some(info.workspace_dir.clone()),
         sqlite_path: Some(info.sqlite_path.clone()),
         log_file: Some(info.log_file.clone()),
         lock_file: Some(info.lock_file.clone()),
+        api_token,
         message: message.to_string(),
     }
 }
@@ -1456,6 +1469,7 @@ fn stopped_status(message: &str) -> LocalClawStatus {
         sqlite_path: None,
         log_file: None,
         lock_file: None,
+        api_token: None,
         message: message.to_string(),
     }
 }

@@ -81,6 +81,12 @@ The main application shell supports a focus mode through collapsible side panels
 
 Home is the command-first default surface.
 
+Current implementation:
+
+- Shows Local Claw runtime health when an active local connection exists.
+- Reads recent chats from `GET /api/v1/sessions` through the Desktop Claw client.
+- Shows offline, loading, empty, and error states when Local Claw is stopped or unreachable.
+
 Capabilities:
 
 - Central command input for new conversations.
@@ -93,6 +99,14 @@ Capabilities:
 ### Chats
 
 Chats are the primary work management surface.
+
+Current implementation:
+
+- Lists real Claw sessions from the active local connection.
+- Selects a session and reads `GET /api/v1/sessions/{session_id}` with recent runs.
+- Reads completed turns from `GET /api/v1/sessions/{session_id}/turns`.
+- Reads compact run traces from `GET /api/v1/runs/{run_id}/trace` for recent runs.
+- Keeps streaming, continuation, rerun, and cancel actions in the next implementation slice.
 
 Capabilities:
 

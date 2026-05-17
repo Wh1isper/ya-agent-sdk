@@ -28,9 +28,24 @@ import {
   TerminalSquare,
   type LucideIcon,
 } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Toaster } from 'sonner'
 
+import {
+  useActiveClawConnection,
+  useClawHealth,
+  useClawInfo,
+  useClawRunTraces,
+  useClawSession,
+  useClawSessions,
+  useClawSessionTurns,
+  type ClawRunStatus,
+  type ClawRunSummary,
+  type ClawRunTraceResponse,
+  type ClawSessionStatus,
+  type ClawSessionSummary,
+  type ClawSessionTurn,
+} from '../claw'
 import { cn } from '../lib'
 import { RuntimeManagerPanel } from '../runtime/RuntimeManagerPanel'
 
@@ -57,10 +72,30 @@ const navItems: Array<{
   icon: LucideIcon
 }> = [
   { route: 'home', label: 'Home', helper: 'Start and resume', icon: Home },
-  { route: 'chats', label: 'Chats', helper: 'Conversations', icon: MessageSquareText },
-  { route: 'board', label: 'Board', helper: 'Kanban view', icon: LayoutDashboard },
-  { route: 'spaces', label: 'Spaces', helper: 'Workspace folders', icon: BriefcaseBusiness },
-  { route: 'inbox', label: 'Inbox', helper: 'Approvals and alerts', icon: Inbox },
+  {
+    route: 'chats',
+    label: 'Chats',
+    helper: 'Conversations',
+    icon: MessageSquareText,
+  },
+  {
+    route: 'board',
+    label: 'Board',
+    helper: 'Kanban view',
+    icon: LayoutDashboard,
+  },
+  {
+    route: 'spaces',
+    label: 'Spaces',
+    helper: 'Workspace folders',
+    icon: BriefcaseBusiness,
+  },
+  {
+    route: 'inbox',
+    label: 'Inbox',
+    helper: 'Approvals and alerts',
+    icon: Inbox,
+  },
 ]
 
 const conversations = [
@@ -115,16 +150,34 @@ const rightContext = [
 ]
 
 const boardColumns = [
-  { title: 'Active', items: conversations.filter((item) => item.status === 'Active') },
-  { title: 'Waiting', items: conversations.filter((item) => item.status === 'Waiting') },
-  { title: 'Done', items: conversations.filter((item) => item.status === 'Done') },
+  {
+    title: 'Active',
+    items: conversations.filter((item) => item.status === 'Active'),
+  },
+  {
+    title: 'Waiting',
+    items: conversations.filter((item) => item.status === 'Waiting'),
+  },
+  {
+    title: 'Done',
+    items: conversations.filter((item) => item.status === 'Done'),
+  },
 ]
 
 export function App() {
-  const [route, setRoute] = useState<AppRoute>('home')
-  const [layoutPreferences, setLayoutPreferences] = useState<DesktopLayoutPreferences>(
-    readLayoutPreferences,
+  return (
+    <QueryClientProvider client={queryClient}>
+      <DesktopShell />
+    </QueryClientProvider>
   )
+}
+
+function DesktopShell() {
+  const [route, setRoute] = useState<AppRoute>('home')
+  const [layoutPreferences, setLayoutPreferences] =
+    useState<DesktopLayoutPreferences>(readLayoutPreferences)
+  const activeConnectionQuery = useActiveClawConnection()
+  const shellConnection = activeConnectionQuery.data?.connection ?? null
   const { leftSidebarCollapsed, rightPanelCollapsed } = layoutPreferences
   const active =
     route === 'settings'
@@ -150,78 +203,96 @@ export function App() {
   }
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <div className="min-h-screen bg-[#f7f7f4] text-[#171717]">
-        <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(59,130,246,0.10),transparent_32%),radial-gradient(circle_at_80%_12%,rgba(15,23,42,0.06),transparent_28%),linear-gradient(180deg,#fbfbf8_0%,#f4f3ef_100%)]" />
-        <div className="relative flex h-screen p-3">
-          <aside
-            className={cn(
-              'flex shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/80 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-[width] duration-300 ease-out',
-              leftSidebarCollapsed ? 'w-[84px]' : 'w-[292px]',
-            )}
-          >
-            <SidebarHeader collapsed={leftSidebarCollapsed} onToggle={toggleLeftSidebar} />
-            <nav className="min-h-0 flex-1 space-y-1 overflow-auto px-3 py-2">
-              {navItems.map((item) => (
-                <NavItem
-                  key={item.route}
-                  item={item}
-                  active={route === item.route}
-                  collapsed={leftSidebarCollapsed}
-                  onClick={() => setRoute(item.route)}
-                />
-              ))}
-            </nav>
-            <SidebarFooter
-              active={route === 'settings'}
-              collapsed={leftSidebarCollapsed}
-              onSettings={() => setRoute('settings')}
+    <div className="min-h-screen bg-[#f7f7f4] text-[#171717]">
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(59,130,246,0.10),transparent_32%),radial-gradient(circle_at_80%_12%,rgba(15,23,42,0.06),transparent_28%),linear-gradient(180deg,#fbfbf8_0%,#f4f3ef_100%)]" />
+      <div className="relative flex h-screen p-3">
+        <aside
+          className={cn(
+            'flex shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/80 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-[width] duration-300 ease-out',
+            leftSidebarCollapsed ? 'w-[84px]' : 'w-[292px]',
+          )}
+        >
+          <SidebarHeader
+            collapsed={leftSidebarCollapsed}
+            onToggle={toggleLeftSidebar}
+          />
+          <nav className="min-h-0 flex-1 space-y-1 overflow-auto px-3 py-2">
+            {navItems.map((item) => (
+              <NavItem
+                key={item.route}
+                item={item}
+                active={route === item.route}
+                collapsed={leftSidebarCollapsed}
+                onClick={() => setRoute(item.route)}
+              />
+            ))}
+          </nav>
+          <SidebarFooter
+            active={route === 'settings'}
+            collapsed={leftSidebarCollapsed}
+            connectionReady={Boolean(shellConnection)}
+            statusMessage={
+              activeConnectionQuery.data?.status.message ??
+              'Checking Local Claw'
+            }
+            onSettings={() => setRoute('settings')}
+          />
+        </aside>
+
+        <main className="ml-3 flex min-w-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-black/[0.06] bg-white/65 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+          <TopBar
+            active={active}
+            leftSidebarCollapsed={leftSidebarCollapsed}
+            rightPanelCollapsed={rightPanelCollapsed}
+            onToggleLeftSidebar={toggleLeftSidebar}
+            onToggleRightPanel={toggleRightPanel}
+          />
+          <div className="min-h-0 flex-1 overflow-auto px-5 py-5 lg:px-8 lg:py-7">
+            {renderRoute(route)}
+          </div>
+        </main>
+
+        {!rightPanelCollapsed && (
+          <aside className="ml-3 hidden w-[336px] shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/70 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl 2xl:flex">
+            <RightPanel
+              onCollapse={() =>
+                setLayoutPreferences((current) => ({
+                  ...current,
+                  rightPanelCollapsed: true,
+                }))
+              }
             />
           </aside>
-
-          <main className="ml-3 flex min-w-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-black/[0.06] bg-white/65 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl">
-            <TopBar
-              active={active}
-              leftSidebarCollapsed={leftSidebarCollapsed}
-              rightPanelCollapsed={rightPanelCollapsed}
-              onToggleLeftSidebar={toggleLeftSidebar}
-              onToggleRightPanel={toggleRightPanel}
-            />
-            <div className="min-h-0 flex-1 overflow-auto px-5 py-5 lg:px-8 lg:py-7">
-              {renderRoute(route)}
-            </div>
-          </main>
-
-          {!rightPanelCollapsed && (
-            <aside className="ml-3 hidden w-[336px] shrink-0 flex-col rounded-[28px] border border-black/[0.06] bg-white/70 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl 2xl:flex">
-              <RightPanel
-                onCollapse={() =>
-                  setLayoutPreferences((current) => ({
-                    ...current,
-                    rightPanelCollapsed: true,
-                  }))
-                }
-              />
-            </aside>
-          )}
-        </div>
-        <Toaster richColors />
+        )}
       </div>
-    </QueryClientProvider>
+      <Toaster richColors />
+    </div>
   )
 }
 
-function SidebarHeader({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+function SidebarHeader({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean
+  onToggle: () => void
+}) {
   return (
     <div className="border-b border-black/[0.06] p-4">
-      <div className={cn('flex items-center gap-3', collapsed && 'justify-center')}>
+      <div
+        className={cn('flex items-center gap-3', collapsed && 'justify-center')}
+      >
         <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#111827] text-sm font-black tracking-tight text-white shadow-lg shadow-slate-950/15">
           YA
         </div>
         {!collapsed && (
           <div className="min-w-0 flex-1">
-            <p className="font-semibold tracking-tight text-slate-950">YA Desktop</p>
-            <p className="mt-0.5 text-xs text-slate-500">Native Agent Workspace</p>
+            <p className="font-semibold tracking-tight text-slate-950">
+              YA Desktop
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Native Agent Workspace
+            </p>
           </div>
         )}
         {!collapsed && (
@@ -244,7 +315,9 @@ function SidebarHeader({ collapsed, onToggle }: { collapsed: boolean; onToggle: 
       ) : (
         <button className="mt-4 flex w-full items-center gap-2 rounded-2xl border border-black/[0.06] bg-[#f7f7f4] px-3 py-2.5 text-left text-sm text-slate-500 transition hover:bg-white hover:text-slate-900 hover:shadow-sm">
           <Search className="h-4 w-4" />
-          <span className="min-w-0 flex-1 truncate">Search chats, spaces, runs</span>
+          <span className="min-w-0 flex-1 truncate">
+            Search chats, spaces, runs
+          </span>
           <span className="rounded-lg border border-black/[0.06] bg-white px-1.5 py-0.5 text-[10px] text-slate-400">
             ⌘K
           </span>
@@ -292,7 +365,9 @@ function NavItem({
       </span>
       {!collapsed && (
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold">{item.label}</span>
+          <span className="block truncate text-sm font-semibold">
+            {item.label}
+          </span>
           <span
             className={cn(
               'mt-0.5 block truncate text-xs',
@@ -310,28 +385,56 @@ function NavItem({
 function SidebarFooter({
   active,
   collapsed,
+  connectionReady,
+  statusMessage,
   onSettings,
 }: {
   active: boolean
   collapsed: boolean
+  connectionReady: boolean
+  statusMessage: string
   onSettings: () => void
 }) {
+  const statusTitle = connectionReady ? 'Local ready' : 'Local offline'
   return (
     <div className="border-t border-black/[0.06] p-4">
       <div
         className={cn(
-          'rounded-2xl border border-emerald-900/10 bg-emerald-50/80 p-3',
+          connectionReady
+            ? 'rounded-2xl border border-emerald-900/10 bg-emerald-50/80 p-3'
+            : 'rounded-2xl border border-slate-900/10 bg-slate-50/80 p-3',
           collapsed && 'flex justify-center px-2 py-3',
         )}
-        title={collapsed ? 'Local ready' : undefined}
+        title={collapsed ? statusTitle : undefined}
       >
         <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]" />
-          {!collapsed && <p className="text-sm font-semibold text-emerald-950">Local ready</p>}
+          <span
+            className={cn(
+              'h-2 w-2 rounded-full',
+              connectionReady
+                ? 'bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]'
+                : 'bg-slate-400 shadow-[0_0_0_4px_rgba(100,116,139,0.10)]',
+            )}
+          />
+          {!collapsed && (
+            <p
+              className={cn(
+                'text-sm font-semibold',
+                connectionReady ? 'text-emerald-950' : 'text-slate-700',
+              )}
+            >
+              {statusTitle}
+            </p>
+          )}
         </div>
         {!collapsed && (
-          <p className="mt-1 text-xs leading-5 text-emerald-800/70">
-            This Mac · ya-mono · trusted
+          <p
+            className={cn(
+              'mt-1 text-xs leading-5',
+              connectionReady ? 'text-emerald-800/70' : 'text-slate-500',
+            )}
+          >
+            {connectionReady ? 'This computer · active runtime' : statusMessage}
           </p>
         )}
       </div>
@@ -393,7 +496,9 @@ function TopBar({
     <header className="flex h-20 shrink-0 items-center justify-between border-b border-black/[0.06] px-5 lg:px-8">
       <div className="flex items-center gap-3">
         <IconButton
-          label={leftSidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+          label={
+            leftSidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'
+          }
           icon={leftSidebarCollapsed ? PanelLeft : PanelLeftClose}
           onClick={onToggleLeftSidebar}
         />
@@ -401,8 +506,12 @@ function TopBar({
           <Icon className="h-5 w-5" />
         </div>
         <div>
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">Desktop</p>
-          <h1 className="text-lg font-semibold text-slate-950">{active.label}</h1>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
+            Desktop
+          </p>
+          <h1 className="text-lg font-semibold text-slate-950">
+            {active.label}
+          </h1>
         </div>
       </div>
       <div className="flex items-center gap-2">
@@ -445,6 +554,16 @@ function renderRoute(route: AppRoute) {
 }
 
 function HomePage() {
+  const activeConnectionQuery = useActiveClawConnection()
+  const connection = activeConnectionQuery.data?.connection ?? null
+  const healthQuery = useClawHealth(connection)
+  const infoQuery = useClawInfo(connection)
+  const sessionsQuery = useClawSessions(connection)
+  const recentSessions = sessionsQuery.data?.slice(0, 3) ?? []
+  const runtimeDetail = connection
+    ? `${infoQuery.data?.serviceVersion ?? infoQuery.data?.version ?? 'Claw'} · ${healthQuery.data?.status ?? 'checking'}`
+    : (activeConnectionQuery.data?.status.message ?? 'Local Claw is stopped')
+
   return (
     <div className="mx-auto max-w-5xl space-y-6 py-3">
       <section className="rounded-[2rem] border border-black/[0.06] bg-white p-7 text-center shadow-sm">
@@ -456,7 +575,8 @@ function HomePage() {
           What should YA do next?
         </h2>
         <p className="mx-auto mt-4 max-w-2xl text-base leading-7 text-slate-500">
-          Start a new conversation from selected text, clipboard, screenshots, active app context, or the current space.
+          Start a new conversation from selected text, clipboard, screenshots,
+          active app context, or the current space.
         </p>
         <div className="mx-auto mt-8 max-w-3xl rounded-[2rem] border border-black/[0.06] bg-white p-3 shadow-[0_24px_80px_rgba(15,23,42,0.10)]">
           <div className="flex items-center gap-3 rounded-[1.35rem] bg-[#f7f7f4] px-4 py-4 ring-1 ring-black/[0.04]">
@@ -470,25 +590,49 @@ function HomePage() {
             </button>
           </div>
           <div className="mt-3 grid gap-3 md:grid-cols-3">
-            <ContextPill icon={FileCode2} title="Selection" detail="No text captured" />
-            <ContextPill icon={Folder} title="Space" detail="ya-mono" />
-            <ContextPill icon={TerminalSquare} title="Runtime" detail="Local Claw" />
+            <ContextPill
+              icon={FileCode2}
+              title="Selection"
+              detail="No text captured"
+            />
+            <ContextPill
+              icon={Folder}
+              title="Space"
+              detail={connection?.workspaceDir ?? 'Local workspace'}
+            />
+            <ContextPill
+              icon={TerminalSquare}
+              title="Runtime"
+              detail={runtimeDetail}
+            />
           </div>
         </div>
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[1fr_0.8fr]">
         <Card title="Recent chats" action="Open Chats">
-          <div className="space-y-3">
-            {conversations.slice(0, 2).map((conversation) => (
-              <ConversationRow key={conversation.title} {...conversation} />
-            ))}
-          </div>
+          <LiveSessionList
+            connectionReady={Boolean(connection)}
+            loading={sessionsQuery.isLoading}
+            error={sessionsQuery.error}
+            sessions={recentSessions}
+            emptyTitle="No chats yet"
+            emptyDetail="Start a conversation after Local Claw is running."
+          />
         </Card>
-        <Card title="Current space" action="Open Spaces">
+        <Card title="Current runtime" action="Open Settings">
           <div className="grid gap-3">
-            <HeroMetric label="Folder" value="ya-mono" />
-            <HeroMetric label="Runtime" value="Local Claw" />
+            <HeroMetric
+              label="Connection"
+              value={connection?.name ?? 'Local Claw stopped'}
+            />
+            <HeroMetric
+              label="Health"
+              value={
+                healthQuery.data?.status ??
+                (connection ? 'Checking' : 'Offline')
+              }
+            />
           </div>
         </Card>
       </section>
@@ -497,39 +641,83 @@ function HomePage() {
 }
 
 function ChatsPage() {
+  const activeConnectionQuery = useActiveClawConnection()
+  const connection = activeConnectionQuery.data?.connection ?? null
+  const sessionsQuery = useClawSessions(connection)
+  const sessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data])
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    null,
+  )
+  const selectedSessionExists = selectedSessionId
+    ? sessions.some((session) => session.id === selectedSessionId)
+    : false
+  const effectiveSessionId = selectedSessionExists
+    ? selectedSessionId
+    : (sessions[0]?.id ?? null)
+  const sessionQuery = useClawSession(connection, effectiveSessionId)
+  const turnsQuery = useClawSessionTurns(connection, effectiveSessionId)
+  const selectedSession =
+    sessionQuery.data?.session ??
+    sessions.find((session) => session.id === effectiveSessionId) ??
+    null
+  const runs =
+    sessionQuery.data?.session.runs ??
+    (selectedSession?.latest_run ? [selectedSession.latest_run] : [])
+  const traceQueries = useClawRunTraces(connection, runs)
+
   return (
     <div className="grid min-h-full gap-5 xl:grid-cols-[360px_1fr]">
       <section className="rounded-[2rem] border border-black/[0.06] bg-white p-5 shadow-sm">
-        <SectionHeader title="Chats" action="New" />
+        <SectionHeader title="Chats" action={connection ? 'Live' : 'Offline'} />
         <div className="mt-4 space-y-3">
-          {conversations.map((conversation) => (
-            <ConversationRow key={conversation.title} {...conversation} compact />
-          ))}
+          <LiveSessionList
+            connectionReady={Boolean(connection)}
+            loading={sessionsQuery.isLoading}
+            error={sessionsQuery.error}
+            sessions={sessions}
+            selectedSessionId={effectiveSessionId}
+            onSelectSession={setSelectedSessionId}
+            compact
+            emptyTitle="No sessions found"
+            emptyDetail="Create a chat once Local Claw is running."
+          />
         </div>
       </section>
       <section className="flex min-h-[620px] flex-col rounded-[2rem] border border-black/[0.06] bg-white shadow-sm">
         <div className="border-b border-black/[0.06] p-5">
           <p className="text-sm font-semibold text-blue-600">Conversation</p>
           <h2 className="mt-1 text-2xl font-semibold tracking-[-0.025em] text-slate-950">
-            Ship the YA Desktop shell
+            {selectedSession
+              ? sessionTitle(selectedSession)
+              : connection
+                ? 'Select a chat'
+                : 'Local Claw is offline'}
           </h2>
+          <p className="mt-2 text-xs text-slate-500">
+            {selectedSession
+              ? `${selectedSession.run_count ?? selectedSession.runCount ?? 0} runs · ${selectedSession.profile_name ?? selectedSession.profileName ?? 'default'} profile`
+              : (activeConnectionQuery.data?.status.message ??
+                'Start Local Claw from Settings to load chats.')}
+          </p>
         </div>
-        <div className="grid flex-1 gap-5 p-5 lg:grid-cols-[1fr_300px]">
-          <div className="flex items-center justify-center rounded-[1.6rem] bg-[#fbfbf8] p-8 text-center ring-1 ring-black/[0.04]">
-            <div>
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-[#111827] text-white shadow-lg shadow-slate-950/15">
-                <Bot className="h-7 w-7" />
-              </div>
-              <h3 className="mt-5 text-xl font-semibold text-slate-950">Conversation surface</h3>
-              <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
-                Messages, AGUI replay, run timeline, shell output, diffs and artifacts live inside the selected chat.
-              </p>
-            </div>
+        <div className="grid flex-1 gap-5 p-5 lg:grid-cols-[1fr_320px]">
+          <div className="min-h-0 rounded-[1.6rem] bg-[#fbfbf8] p-5 ring-1 ring-black/[0.04]">
+            <SessionTurnsPanel
+              loading={sessionQuery.isLoading || turnsQuery.isLoading}
+              error={sessionQuery.error ?? turnsQuery.error}
+              turns={turnsQuery.data?.turns ?? []}
+              selectedSession={selectedSession}
+            />
           </div>
           <div className="space-y-3">
-            <ActionRow icon={Activity} title="Run timeline" detail="No live run" />
-            <ActionRow icon={TerminalSquare} title="Shell output" detail="No command running" />
-            <ActionRow icon={GitBranch} title="File diff" detail="No diff loaded" />
+            <RunTimeline runs={runs} />
+            <TracePreview
+              loading={traceQueries.some((query) => query.isLoading)}
+              error={traceQueries.find((query) => query.error)?.error ?? null}
+              traces={traceQueries.flatMap((query) =>
+                query.data ? [query.data] : [],
+              )}
+            />
           </div>
         </div>
       </section>
@@ -545,7 +733,10 @@ function BoardPage() {
           key={column.title}
           className="rounded-[2rem] border border-black/[0.06] bg-white p-5 shadow-sm"
         >
-          <SectionHeader title={column.title} action={`${column.items.length}`} />
+          <SectionHeader
+            title={column.title}
+            action={`${column.items.length}`}
+          />
           <div className="mt-4 space-y-3">
             {column.items.map((conversation) => (
               <ConversationCard key={conversation.title} {...conversation} />
@@ -564,9 +755,21 @@ function InboxPage() {
       title="Decisions that need a human"
       body="Approvals, alerts, failed background runs, bridge events, and scheduled work that need attention land here."
       cards={[
-        ['Command approvals', 'Approve shell commands with preview and risk context', TerminalSquare],
-        ['File diffs', 'Review file changes before write operations continue', GitBranch],
-        ['Workspace trust', 'Confirm execution location and filesystem access', ShieldCheck],
+        [
+          'Command approvals',
+          'Approve shell commands with preview and risk context',
+          TerminalSquare,
+        ],
+        [
+          'File diffs',
+          'Review file changes before write operations continue',
+          GitBranch,
+        ],
+        [
+          'Workspace trust',
+          'Confirm execution location and filesystem access',
+          ShieldCheck,
+        ],
       ]}
     />
   )
@@ -580,7 +783,8 @@ function SpacesPage() {
         Workspace folders and runtime locations
       </h2>
       <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-500">
-        A Space combines a folder or cloud workspace, runtime connection, trust level, execution location, and default profile.
+        A Space combines a folder or cloud workspace, runtime connection, trust
+        level, execution location, and default profile.
       </p>
       <div className="mt-8 grid gap-4 xl:grid-cols-3">
         {spaces.map((space) => (
@@ -599,9 +803,17 @@ function SettingsPage() {
         title="Desktop preferences and advanced runtime"
         body="Hotkeys, notifications, theme, voice, tokens, autostart, diagnostics and advanced runtime controls live here."
         cards={[
-          ['Preferences', 'Hotkeys, notifications, voice and appearance', Settings],
+          [
+            'Preferences',
+            'Hotkeys, notifications, voice and appearance',
+            Settings,
+          ],
           ['Secrets', 'Keychain-backed token storage', KeyRound],
-          ['Advanced Runtime', 'Profiles, schedules, bridges, heartbeat, logs', SlidersHorizontal],
+          [
+            'Advanced Runtime',
+            'Profiles, schedules, bridges, heartbeat, logs',
+            SlidersHorizontal,
+          ],
         ]}
       />
       <RuntimeManagerPanel />
@@ -623,13 +835,20 @@ function PanelPage({
   return (
     <section className="rounded-[2rem] border border-black/[0.06] bg-white p-7 shadow-sm">
       <p className="text-sm font-semibold text-blue-600">{eyebrow}</p>
-      <h2 className="mt-2 max-w-3xl text-4xl font-semibold tracking-[-0.035em] text-slate-950">{title}</h2>
+      <h2 className="mt-2 max-w-3xl text-4xl font-semibold tracking-[-0.035em] text-slate-950">
+        {title}
+      </h2>
       <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-500">{body}</p>
       <div className="mt-8 grid gap-4 md:grid-cols-3">
         {cards.map(([cardTitle, detail, Icon]) => (
-          <div key={cardTitle} className="rounded-3xl border border-black/[0.06] bg-[#f7f7f4] p-5">
+          <div
+            key={cardTitle}
+            className="rounded-3xl border border-black/[0.06] bg-[#f7f7f4] p-5"
+          >
             <Icon className="h-5 w-5 text-slate-700" />
-            <h3 className="mt-4 text-sm font-semibold text-slate-950">{cardTitle}</h3>
+            <h3 className="mt-4 text-sm font-semibold text-slate-950">
+              {cardTitle}
+            </h3>
             <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
           </div>
         ))}
@@ -643,12 +862,22 @@ function RightPanel({ onCollapse }: { onCollapse: () => void }) {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-3">
         <SectionHeader title="Live context" action="Refresh" />
-        <IconButton label="Hide context" icon={PanelRightClose} onClick={onCollapse} />
+        <IconButton
+          label="Hide context"
+          icon={PanelRightClose}
+          onClick={onCollapse}
+        />
       </div>
       <div className="mt-4 rounded-3xl border border-black/[0.06] bg-white p-4 shadow-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Active chat</p>
-        <h3 className="mt-2 text-lg font-semibold text-slate-950">No live run</h3>
-        <p className="mt-2 text-sm leading-6 text-slate-500">Global SSE notifications will hydrate this panel.</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+          Active chat
+        </p>
+        <h3 className="mt-2 text-lg font-semibold text-slate-950">
+          No live run
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-slate-500">
+          Global SSE notifications will hydrate this panel.
+        </p>
       </div>
       <div className="mt-5 space-y-3">
         {rightContext.map((row) => (
@@ -659,7 +888,276 @@ function RightPanel({ onCollapse }: { onCollapse: () => void }) {
   )
 }
 
-function Card({ title, action, children }: { title: string; action: string; children: ReactNode }) {
+function LiveSessionList({
+  connectionReady,
+  loading,
+  error,
+  sessions,
+  selectedSessionId,
+  onSelectSession,
+  compact,
+  emptyTitle,
+  emptyDetail,
+}: {
+  connectionReady: boolean
+  loading: boolean
+  error: Error | null
+  sessions: ClawSessionSummary[]
+  selectedSessionId?: string | null
+  onSelectSession?: (sessionId: string) => void
+  compact?: boolean
+  emptyTitle: string
+  emptyDetail: string
+}) {
+  if (!connectionReady) {
+    return (
+      <EmptyState
+        title="Local Claw is offline"
+        detail="Open Settings and start Local Claw to load chats."
+      />
+    )
+  }
+
+  if (loading) {
+    return (
+      <EmptyState
+        title="Loading chats"
+        detail="Reading sessions from the active Local Claw runtime."
+      />
+    )
+  }
+
+  if (error) {
+    return <EmptyState title="Could not load chats" detail={error.message} />
+  }
+
+  if (sessions.length === 0) {
+    return <EmptyState title={emptyTitle} detail={emptyDetail} />
+  }
+
+  return (
+    <div className="space-y-3">
+      {sessions.map((session) => (
+        <SessionRow
+          key={session.id}
+          session={session}
+          compact={compact}
+          selected={session.id === selectedSessionId}
+          onClick={
+            onSelectSession ? () => onSelectSession(session.id) : undefined
+          }
+        />
+      ))}
+    </div>
+  )
+}
+
+function SessionTurnsPanel({
+  loading,
+  error,
+  turns,
+  selectedSession,
+}: {
+  loading: boolean
+  error: Error | null
+  turns: ClawSessionTurn[]
+  selectedSession: ClawSessionSummary | null
+}) {
+  if (!selectedSession) {
+    return (
+      <div className="flex h-full min-h-[360px] items-center justify-center text-center">
+        <div>
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-[#111827] text-white shadow-lg shadow-slate-950/15">
+            <Bot className="h-7 w-7" />
+          </div>
+          <h3 className="mt-5 text-xl font-semibold text-slate-950">
+            Conversation surface
+          </h3>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
+            Select a live Claw session to inspect turns, runs, traces, and
+            replay metadata.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (loading)
+    return (
+      <EmptyState
+        title="Loading turns"
+        detail="Reading successful completed turns."
+      />
+    )
+  if (error)
+    return <EmptyState title="Could not load turns" detail={error.message} />
+  if (turns.length === 0) {
+    return (
+      <EmptyState
+        title="No completed turns"
+        detail="Runs will appear here after a successful completion."
+      />
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {turns.map((turn) => (
+        <div
+          key={turn.run_id ?? turn.runId}
+          className="rounded-3xl border border-black/[0.06] bg-white p-4 shadow-sm"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+              Turn {turn.sequence_no ?? turn.sequenceNo ?? '—'}
+            </p>
+            <span className="rounded-full border border-black/[0.06] bg-[#f7f7f4] px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+              {formatDate(
+                turn.committed_at ??
+                  turn.committedAt ??
+                  turn.created_at ??
+                  turn.createdAt,
+              )}
+            </span>
+          </div>
+          <p className="mt-3 text-sm font-semibold text-slate-950">
+            {turn.input_preview ?? turn.inputPreview ?? 'Input parts'}
+          </p>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+            {turn.output_summary ??
+              turn.outputSummary ??
+              turn.output_text ??
+              turn.outputText ??
+              'No output summary.'}
+          </p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function RunTimeline({ runs }: { runs: ClawRunSummary[] }) {
+  if (runs.length === 0) {
+    return (
+      <ActionRow icon={Activity} title="Run timeline" detail="No runs loaded" />
+    )
+  }
+
+  return (
+    <div className="rounded-3xl border border-black/[0.06] bg-white p-4 shadow-sm">
+      <SectionHeader title="Run timeline" action={`${runs.length}`} />
+      <div className="mt-3 space-y-3">
+        {runs.slice(0, 5).map((run) => (
+          <div
+            key={run.id}
+            className="flex items-start gap-3 rounded-2xl bg-[#fbfbf8] p-3"
+          >
+            <span
+              className={cn(
+                'mt-1 h-2.5 w-2.5 rounded-full',
+                statusTone(statusToneName(run.status)),
+              )}
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-slate-950">
+                Run #{run.sequence_no ?? run.sequenceNo ?? '—'} · {run.status}
+              </p>
+              <p className="mt-1 truncate text-xs text-slate-500">
+                {run.output_summary ??
+                  run.outputSummary ??
+                  run.error_message ??
+                  run.errorMessage ??
+                  run.input_preview ??
+                  run.inputPreview ??
+                  'No summary'}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TracePreview({
+  loading,
+  error,
+  traces,
+}: {
+  loading: boolean
+  error: Error | null
+  traces: ClawRunTraceResponse[]
+}) {
+  const items = traces.flatMap((trace) => trace.trace ?? []).slice(0, 6)
+  if (loading) {
+    return (
+      <ActionRow
+        icon={TerminalSquare}
+        title="Run trace"
+        detail="Loading tool calls"
+      />
+    )
+  }
+  if (error) {
+    return (
+      <ActionRow
+        icon={TerminalSquare}
+        title="Run trace"
+        detail={error.message}
+      />
+    )
+  }
+  if (items.length === 0) {
+    return (
+      <ActionRow
+        icon={TerminalSquare}
+        title="Run trace"
+        detail="No tool calls loaded"
+      />
+    )
+  }
+
+  return (
+    <div className="rounded-3xl border border-black/[0.06] bg-white p-4 shadow-sm">
+      <SectionHeader title="Run trace" action={`${items.length}`} />
+      <div className="mt-3 space-y-2">
+        {items.map((item, index) => (
+          <div
+            key={`${item.tool_call_id ?? item.toolCallId ?? index}-${index}`}
+            className="rounded-2xl bg-[#fbfbf8] p-3"
+          >
+            <p className="text-xs font-semibold text-slate-900">
+              {item.type === 'tool_call' ? 'Tool call' : 'Tool response'} ·{' '}
+              {item.tool_name ?? item.toolName ?? item.role ?? 'runtime'}
+            </p>
+            <p className="mt-1 line-clamp-3 text-xs leading-5 text-slate-500">
+              {item.content ?? 'No trace content.'}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="rounded-3xl border border-dashed border-black/[0.08] bg-[#fbfbf8] p-5 text-center">
+      <p className="text-sm font-semibold text-slate-950">{title}</p>
+      <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
+    </div>
+  )
+}
+
+function Card({
+  title,
+  action,
+  children,
+}: {
+  title: string
+  action: string
+  children: ReactNode
+}) {
   return (
     <section className="rounded-[2rem] border border-black/[0.06] bg-white p-6 shadow-sm">
       <SectionHeader title={title} action={action} />
@@ -668,7 +1166,15 @@ function Card({ title, action, children }: { title: string; action: string; chil
   )
 }
 
-function ContextPill({ icon: Icon, title, detail }: { icon: LucideIcon; title: string; detail: string }) {
+function ContextPill({
+  icon: Icon,
+  title,
+  detail,
+}: {
+  icon: LucideIcon
+  title: string
+  detail: string
+}) {
   return (
     <div className="rounded-2xl border border-black/[0.06] bg-[#fbfbf8] p-4 text-left">
       <Icon className="h-4 w-4 text-slate-500" />
@@ -691,7 +1197,9 @@ function SectionHeader({ title, action }: { title: string; action: string }) {
   return (
     <div className="flex flex-1 items-center justify-between gap-3">
       <h2 className="text-sm font-semibold text-slate-950">{title}</h2>
-      <button className="text-xs font-semibold text-blue-600 hover:text-blue-700">{action}</button>
+      <button className="text-xs font-semibold text-blue-600 hover:text-blue-700">
+        {action}
+      </button>
     </div>
   )
 }
@@ -718,45 +1226,79 @@ function IconButton({
   )
 }
 
-function ActionRow({ icon: Icon, title, detail }: { icon: LucideIcon; title: string; detail: string }) {
+function ActionRow({
+  icon: Icon,
+  title,
+  detail,
+}: {
+  icon: LucideIcon
+  title: string
+  detail: string
+}) {
   return (
     <button className="flex w-full items-center gap-3 rounded-2xl border border-black/[0.06] bg-white p-3 text-left shadow-sm transition hover:bg-[#fbfbf8]">
       <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#f7f7f4] text-slate-600 ring-1 ring-black/[0.04]">
         <Icon className="h-4 w-4" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-semibold text-slate-950">{title}</span>
-        <span className="mt-0.5 block truncate text-xs text-slate-500">{detail}</span>
+        <span className="block truncate text-sm font-semibold text-slate-950">
+          {title}
+        </span>
+        <span className="mt-0.5 block truncate text-xs text-slate-500">
+          {detail}
+        </span>
       </span>
       <ChevronRight className="h-4 w-4 text-slate-300" />
     </button>
   )
 }
 
-function ConversationRow({
-  title,
-  detail,
-  status,
-  tone,
-  space,
+function SessionRow({
+  session,
   compact,
+  selected,
+  onClick,
 }: {
-  title: string
-  detail: string
-  status: string
-  tone: string
-  space: string
+  session: ClawSessionSummary
   compact?: boolean
+  selected?: boolean
+  onClick?: () => void
 }) {
+  const latestRun = session.latest_run ?? session.latestRun
+  const status = session.status
   return (
-    <button className={cn('flex w-full items-center gap-4 rounded-3xl border border-black/[0.06] bg-white text-left shadow-sm transition hover:bg-[#fbfbf8]', compact ? 'p-3' : 'p-4')}>
-      <span className={cn('h-3 w-3 rounded-full', statusTone(tone))} />
+    <button
+      type="button"
+      className={cn(
+        'flex w-full items-center gap-4 rounded-3xl border text-left shadow-sm transition hover:bg-[#fbfbf8]',
+        compact ? 'p-3' : 'p-4',
+        selected
+          ? 'border-slate-950 bg-[#fbfbf8]'
+          : 'border-black/[0.06] bg-white',
+      )}
+      onClick={onClick}
+    >
+      <span
+        className={cn(
+          'h-3 w-3 rounded-full',
+          statusTone(statusToneName(status)),
+        )}
+      />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-semibold text-slate-950">{title}</span>
-        <span className="mt-1 block truncate text-xs text-slate-500">{space} · {detail}</span>
+        <span className="block truncate text-sm font-semibold text-slate-950">
+          {sessionTitle(session)}
+        </span>
+        <span className="mt-1 block truncate text-xs text-slate-500">
+          {session.profile_name ?? session.profileName ?? 'default'} ·{' '}
+          {latestRun?.output_summary ??
+            latestRun?.outputSummary ??
+            latestRun?.input_preview ??
+            latestRun?.inputPreview ??
+            `${session.run_count ?? session.runCount ?? 0} runs`}
+        </span>
       </span>
       <span className="rounded-full border border-black/[0.06] bg-[#f7f7f4] px-3 py-1 text-xs font-semibold text-slate-600">
-        {status}
+        {labelForStatus(status)}
       </span>
     </button>
   )
@@ -783,8 +1325,12 @@ function ConversationCard({
           {status}
         </span>
       </div>
-      <h3 className="mt-4 text-sm font-semibold leading-5 text-slate-950">{title}</h3>
-      <p className="mt-2 text-xs leading-5 text-slate-500">{space} · {detail}</p>
+      <h3 className="mt-4 text-sm font-semibold leading-5 text-slate-950">
+        {title}
+      </h3>
+      <p className="mt-2 text-xs leading-5 text-slate-500">
+        {space} · {detail}
+      </p>
     </button>
   )
 }
@@ -824,7 +1370,9 @@ function readLayoutPreferences(): DesktopLayoutPreferences {
     const rawValue = window.localStorage.getItem(layoutPreferencesStorageKey)
     if (!rawValue) return defaultLayoutPreferences
 
-    const parsedValue = JSON.parse(rawValue) as Partial<DesktopLayoutPreferences>
+    const parsedValue = JSON.parse(
+      rawValue,
+    ) as Partial<DesktopLayoutPreferences>
     return {
       leftSidebarCollapsed:
         typeof parsedValue.leftSidebarCollapsed === 'boolean'
@@ -844,14 +1392,62 @@ function writeLayoutPreferences(preferences: DesktopLayoutPreferences) {
   if (typeof window === 'undefined') return
 
   try {
-    window.localStorage.setItem(layoutPreferencesStorageKey, JSON.stringify(preferences))
+    window.localStorage.setItem(
+      layoutPreferencesStorageKey,
+      JSON.stringify(preferences),
+    )
   } catch {
     // Keep the prototype usable in restricted storage contexts.
   }
 }
 
+function sessionTitle(session: ClawSessionSummary) {
+  const latestRun = session.latest_run ?? session.latestRun
+  const metadataTitle = session.metadata?.title
+  if (typeof metadataTitle === 'string' && metadataTitle.trim())
+    return metadataTitle
+  return (
+    latestRun?.input_preview ??
+    latestRun?.inputPreview ??
+    `Session ${session.id.slice(0, 8)}`
+  )
+}
+
+function labelForStatus(status: ClawSessionStatus | ClawRunStatus) {
+  const normalized = String(status)
+  return (
+    normalized.charAt(0).toUpperCase() +
+    normalized.slice(1).replaceAll('_', ' ')
+  )
+}
+
+function statusToneName(status: ClawSessionStatus | ClawRunStatus) {
+  if (status === 'queued' || status === 'running') return 'blue'
+  if (status === 'failed' || status === 'interrupted') return 'amber'
+  if (status === 'cancelled') return 'slate'
+  return 'emerald'
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return 'No date'
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(value))
+  } catch {
+    return value
+  }
+}
+
 function statusTone(tone: string) {
-  if (tone === 'blue') return 'bg-blue-500 shadow-[0_0_0_4px_rgba(59,130,246,.10)]'
-  if (tone === 'amber') return 'bg-amber-500 shadow-[0_0_0_4px_rgba(245,158,11,.12)]'
-  return 'bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,.12)]'
+  if (tone === 'blue')
+    return 'bg-blue-500 shadow-[0_0_0_4px_rgba(59,130,246,.10)]'
+  if (tone === 'amber')
+    return 'bg-amber-500 shadow-[0_0_0_4px_rgba(245,158,11,.12)]'
+  if (tone === 'emerald')
+    return 'bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,.12)]'
+  return 'bg-slate-400 shadow-[0_0_0_4px_rgba(100,116,139,.10)]'
 }

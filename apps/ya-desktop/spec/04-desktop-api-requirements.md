@@ -9,10 +9,18 @@ YA Desktop owns desktop-native concerns such as connection config, global hotkey
 ## Health
 
 ```http
+GET /healthz
+```
+
+The current Desktop P0 client uses `/healthz` for local runtime status after deriving an active connection from the Tauri sidecar status.
+
+Future public health may also expose:
+
+```http
 GET /health
 ```
 
-Should return version, instance ID, uptime, and readiness.
+It should return version, instance ID, uptime, and readiness.
 
 Example response:
 
@@ -25,13 +33,21 @@ Example response:
 }
 ```
 
-## Capabilities
+## Claw Info and Capabilities
+
+The current Desktop P0 client reads runtime information from:
+
+```http
+GET /api/v1/claw/info
+```
+
+A future capability-specific endpoint can expose a normalized feature matrix:
 
 ```http
 GET /api/v1/capabilities
 ```
 
-Used by Desktop to adapt local, remote, and cloud UI.
+Desktop uses Claw info and capabilities to adapt local, remote, and cloud UI.
 
 Example response:
 
@@ -213,11 +229,12 @@ POST /api/v1/sessions:stream
 POST /api/v1/sessions/{session_id}/runs:stream
 GET /api/v1/sessions
 GET /api/v1/sessions/{session_id}
+GET /api/v1/sessions/{session_id}/turns
 GET /api/v1/runs/{run_id}
 GET /api/v1/runs/{run_id}/trace
 ```
 
-Desktop depends on AGUI-aligned replay events for stream rendering and run replay.
+The current P0 Desktop client uses the read-only subset: sessions, session detail, session turns, run trace, health, and Claw info. Desktop depends on AGUI-aligned replay events for stream rendering and run replay.
 
 ## Global Notifications
 

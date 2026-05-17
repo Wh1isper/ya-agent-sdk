@@ -9,6 +9,7 @@ export type LocalClawStatus = {
   sqlitePath?: string | null
   logFile?: string | null
   lockFile?: string | null
+  apiToken?: string | null
   message: string
 }
 

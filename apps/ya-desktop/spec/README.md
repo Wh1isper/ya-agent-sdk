@@ -39,6 +39,7 @@ The same desktop client can use:
 | 09      | [09-desktop-relay.md](09-desktop-relay.md)                                       | YA Environment Relay client integration for Desktop local capabilities             |
 | 10      | [10-runtime-manager-and-updates.md](10-runtime-manager-and-updates.md)           | Runtime Manager, bundled `uv`, latest-first Claw updates, and rollback policy      |
 | 11      | [11-signing-and-release.md](11-signing-and-release.md)                           | platform signing, notarization, updater signing, and release defaults              |
+| 12      | [12-feature-coverage-plan.md](12-feature-coverage-plan.md)                       | feature coverage across visible UI, Desktop Core, and Claw backend                 |
 | CU      | [computer-use/README.md](computer-use/README.md)                                 | first-party Host Computer Use architecture, protocol, safety, and UX               |
 
 ## Near-Term Decisions

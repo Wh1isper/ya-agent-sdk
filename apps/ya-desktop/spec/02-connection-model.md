@@ -6,6 +6,24 @@ YA Desktop should treat every runtime target as a Claw connection. The same UI s
 
 The local embedded connection adds daemon lifecycle management. Remote and cloud connections add authentication and server capability discovery.
 
+## Current Local Connection Implementation
+
+The current P0 Desktop implementation derives an active local connection directly from `getLocalClawStatus()`:
+
+```ts
+type DesktopClawConnection = {
+  id: "local";
+  kind: "local_embedded";
+  name: "Local Claw";
+  baseUrl: string;
+  apiToken?: string | null;
+  dataDir?: string | null;
+  workspaceDir?: string | null;
+};
+```
+
+When Local Claw is running and exposes `baseUrl`, the React UI creates a `ClawHttpClient` for read-only P0 data. The local bearer token is still backed by the Desktop-managed `.env` file created by Rust Core. A future keychain slice will move this secret behind a secure token reference and leave only `tokenRef` in frontend-visible connection config.
+
 ## Connection Registry
 
 YA Desktop maintains a connection registry in desktop app config.
@@ -105,11 +123,14 @@ export interface ClawClient {
   connectionId: string;
 
   health(): Promise<ClawHealth>;
+  info(): Promise<ClawInfo>;
   capabilities(): Promise<ClawCapabilities>;
 
   listWorkspaces(): Promise<Workspace[]>;
   listSessions(params?: ListSessionsParams): Promise<SessionList>;
   getSession(sessionId: string): Promise<SessionDetail>;
+  listSessionTurns(sessionId: string): Promise<SessionTurnsResponse>;
+  getRunTrace(runId: string): Promise<RunTraceResponse>;
 
   streamSessionRun(
     sessionId: string,
