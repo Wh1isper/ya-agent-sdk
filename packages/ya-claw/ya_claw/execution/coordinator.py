@@ -240,6 +240,10 @@ class ExecutionSupervisor:
             self._runtime_state.clear_background_task(run_id)
 
     async def _claim_run(self, run_id: str) -> bool:
+        if not self._accepting_submissions:
+            logger.info("Run claim skipped run_id={} reason=supervisor_shutting_down", run_id)
+            return False
+
         async with self._session_factory() as db_session:
             session_record, run_record = await _load_run_scope(db_session, run_id)
             if run_record.status != "queued":

@@ -390,6 +390,63 @@ async def test_execution_supervisor_shutdown_cancels_tasks_after_timeout(
     assert runtime_state.get_background_task("run-hanging") is None
 
 
+async def test_execution_supervisor_skips_claim_after_shutdown_started(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    session_record = SessionRecord(
+        id="session-1",
+        profile_name="general",
+        session_metadata={},
+        head_run_id="run-1",
+        active_run_id="run-1",
+    )
+    run_record = RunRecord(
+        id="run-1",
+        session_id="session-1",
+        sequence_no=1,
+        restore_from_run_id=None,
+        status="queued",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[{"type": "text", "text": "hello"}],
+        run_metadata={},
+    )
+    db_session.add(session_record)
+    db_session.add(run_record)
+    await db_session.commit()
+
+    supervisor = ExecutionSupervisor(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=StubRuntimeBuilder(),
+    )
+    await supervisor.shutdown()
+
+    claimed = await supervisor._claim_run("run-1")
+
+    refreshed_run = await db_session.get(RunRecord, "run-1")
+    refreshed_session = await db_session.get(SessionRecord, "session-1")
+    assert claimed is False
+    assert isinstance(refreshed_run, RunRecord)
+    assert isinstance(refreshed_session, SessionRecord)
+    await db_session.refresh(refreshed_run)
+    await db_session.refresh(refreshed_session)
+    assert refreshed_run.status == "queued"
+    assert refreshed_run.claimed_by is None
+    assert refreshed_run.claimed_at is None
+    assert refreshed_run.started_at is None
+    assert refreshed_session.head_run_id == "run-1"
+    assert refreshed_session.active_run_id == "run-1"
+    assert runtime_state.get_run_handle("run-1") is None
+
+
 async def test_execution_supervisor_claims_queued_run(
     db_session: AsyncSession,
     db_engine: AsyncEngine,
