@@ -26,6 +26,10 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
         "YA_CLAW_SERVICE_COMMIT",
         "YA_CLAW_SERVICE_BUILD",
         "YA_CLAW_SERVICE_IMAGE",
+        "YA_CLAW_SCHEDULE_DISPATCH_ENABLED",
+        "YA_CLAW_HEARTBEAT_ENABLED",
+        "YA_CLAW_BRIDGE_DISPATCH_MODE",
+        "YA_CLAW_AGENCY_ENABLED",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -35,6 +39,10 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local")
     monkeypatch.setenv("YA_CLAW_PROFILE_SEED_FILE", str(tmp_path / "profiles.yaml"))
     monkeypatch.setenv("YA_CLAW_AUTO_SEED_PROFILES", "false")
+    monkeypatch.setenv("YA_CLAW_SCHEDULE_DISPATCH_ENABLED", "false")
+    monkeypatch.setenv("YA_CLAW_HEARTBEAT_ENABLED", "false")
+    monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
     monkeypatch.setenv("YA_CLAW_SERVICE_VERSION", "dev")
     monkeypatch.setenv("YA_CLAW_SERVICE_COMMIT", "abcdef1234567890")
     monkeypatch.setenv("YA_CLAW_SERVICE_BUILD", "dev-42-1")
@@ -164,5 +172,6 @@ def test_profile_delete_emits_console_notification() -> None:
 
         events = _notification_hub(client).events
 
-    assert events[-1].type == "profile.deleted"
-    assert events[-1].payload["profile_name"] == "custom"
+    profile_deleted_events = [event for event in events if event.type == "profile.deleted"]
+    assert len(profile_deleted_events) == 1
+    assert profile_deleted_events[0].payload["profile_name"] == "custom"
