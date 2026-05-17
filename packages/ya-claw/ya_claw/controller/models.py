@@ -286,27 +286,8 @@ class SessionTurnsResponse(BaseModel):
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
-class AgencyBudget(BaseModel):
-    max_actions: int = 5
-    max_tool_calls: int = 80
-    max_runtime_seconds: int = 900
-    max_workspace_writes: int = 10
-    external_actions: Literal["deny"] = "deny"
-
-
 class AgencyRiskPolicy(BaseModel):
-    max_auto_action_risk: Literal["low", "medium", "high", "extra_high"] = "low"
-    denied_actions: list[str] = Field(
-        default_factory=lambda: [
-            "external_send",
-            "delete",
-            "deploy",
-            "secret_access",
-            "payment",
-            "security_change",
-            "billing_change",
-        ]
-    )
+    max_auto_action_risk: Literal["low", "medium", "high", "extra_high"] = "extra_high"
 
 
 class AgencyFireSummary(BaseModel):
@@ -341,9 +322,7 @@ class AgencyConfigResponse(BaseModel):
     agency_session_id: str
     singleton_scope_key: str
     singleton_source_session_id: str
-    budget_defaults: dict[str, Any] = Field(default_factory=dict)
     risk_policy: AgencyRiskPolicy = Field(default_factory=AgencyRiskPolicy)
-    deny_external_actions: bool = True
     memory_files: dict[str, str] = Field(default_factory=dict)
     next_fire_at: datetime | None = None
 
@@ -368,7 +347,6 @@ class AgencyTriggerRequest(BaseModel):
     source_run_id: str | None = None
     client_token: str | None = None
     prompt: str | None = None
-    budget: AgencyBudget | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -383,7 +383,6 @@ class ClawRuntimeBuilder:
         trigger_kinds = agency.get("trigger_kinds") if isinstance(agency, dict) else []
         source_session_ids = agency.get("source_session_ids") if isinstance(agency, dict) else []
         sources = agency.get("sources") if isinstance(agency, dict) else []
-        budget = agency.get("budget") if isinstance(agency, dict) else {}
         return "\n".join([
             '<agency-context source="agency">',
             f"Episode ID: {agency.get('episode_id') if isinstance(agency, dict) else ''}",
@@ -395,9 +394,7 @@ class ClawRuntimeBuilder:
             f"Trigger kinds: {','.join(str(item) for item in trigger_kinds) if isinstance(trigger_kinds, list) else ''}",
             "Sources:",
             json.dumps(sources if isinstance(sources, list) else [], ensure_ascii=False, sort_keys=True),
-            "Budget:",
-            json.dumps(budget if isinstance(budget, dict) else {}, ensure_ascii=False, sort_keys=True),
-            "This is an automated singleton agency run. Coordinate across referenced source sessions, operate within budget, deny external actions, and leave auditable workspace artifacts.",
+            "This is an automated singleton agency run. Coordinate across referenced source sessions, use the full configured profile tool surface carefully, and leave auditable workspace artifacts.",
             "</agency-context>",
         ])
 

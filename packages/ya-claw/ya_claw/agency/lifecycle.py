@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (
-    AgencyBudget,
     AgencyFireKind,
     AgencyFireStatus,
     AgencyRiskPolicy,
@@ -28,7 +27,6 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 
 AGENCY_SINGLETON_SCOPE_KEY = "agency:global"
 AGENCY_SINGLETON_SOURCE_SESSION_ID = sha256(AGENCY_SINGLETON_SCOPE_KEY.encode("utf-8")).hexdigest()[:32]
-_DENIED_ACTIONS = ["external_send", "delete", "deploy", "secret_access", "payment", "security_change", "billing_change"]
 _FIRE_PRIORITIES: dict[str, int] = {
     AgencyFireKind.MANUAL.value: 10,
     AgencyFireKind.MEMORY_COMMITTED.value: 30,
@@ -92,8 +90,7 @@ class AgencyLifecycle:
                 "version": 1,
                 "profile_name": profile_name,
             })
-            agency.setdefault("enabled", self._settings.agency_enabled)
-            agency.setdefault("risk_policy", _settings_default_risk_policy(self._settings).model_dump(mode="json"))
+            agency["risk_policy"] = _settings_default_risk_policy(self._settings).model_dump(mode="json")
             metadata["agency"] = agency
             record.session_metadata = metadata
             return record
@@ -106,7 +103,6 @@ class AgencyLifecycle:
             source_session_id=AGENCY_SINGLETON_SOURCE_SESSION_ID,
             session_metadata=_agency_session_metadata(
                 profile_name=profile_name,
-                enabled=self._settings.agency_enabled,
                 risk_policy=_settings_default_risk_policy(self._settings),
             ),
         )
@@ -131,7 +127,6 @@ class AgencyLifecycle:
         source_run_id: str | None = None,
         client_token: str | None = None,
         prompt: str | None = None,
-        budget: AgencyBudget | None = None,
         payload: dict[str, Any] | None = None,
         scheduled_at: datetime | None = None,
         dedupe_key: str | None = None,
@@ -141,7 +136,7 @@ class AgencyLifecycle:
         fire_kind = kind.value if isinstance(kind, AgencyFireKind) else str(kind)
         if source_session_id is not None:
             await _load_source_conversation_session(db_session, source_session_id)
-        if not _agency_enabled(agency_session, default=self._settings.agency_enabled):
+        if not self._settings.agency_enabled:
             if fire_kind == AgencyFireKind.MANUAL.value:
                 raise HTTPException(status_code=409, detail="Agency is disabled.")
             fire = await self._insert_fire(
@@ -152,7 +147,6 @@ class AgencyLifecycle:
                 source_run_id=source_run_id,
                 client_token=client_token,
                 prompt=prompt,
-                budget=budget,
                 payload=payload,
                 scheduled_at=scheduled_at,
                 dedupe_key=dedupe_key,
@@ -169,7 +163,6 @@ class AgencyLifecycle:
             source_run_id=source_run_id,
             client_token=client_token,
             prompt=prompt,
-            budget=budget,
             payload=payload,
             scheduled_at=scheduled_at,
             dedupe_key=dedupe_key,
@@ -194,8 +187,8 @@ class AgencyLifecycle:
         return await self.dispatch_pending(db_session)
 
     async def dispatch_due(self, db_session: AsyncSession) -> AgencyFireDelivery | None:
-        agency_session = await self.ensure_agency_session(db_session)
-        if not _agency_enabled(agency_session, default=self._settings.agency_enabled):
+        await self.ensure_agency_session(db_session)
+        if not self._settings.agency_enabled:
             await db_session.commit()
             return None
         due_at = await self.next_timer_fire_at(db_session)
@@ -212,8 +205,8 @@ class AgencyLifecycle:
         )
 
     async def next_timer_fire_at(self, db_session: AsyncSession) -> datetime | None:
-        agency_session = await self.ensure_agency_session(db_session)
-        if not _agency_enabled(agency_session, default=self._settings.agency_enabled):
+        await self.ensure_agency_session(db_session)
+        if not self._settings.agency_enabled:
             return None
         result = await db_session.execute(
             select(AgencyFireRecord)
@@ -338,7 +331,6 @@ class AgencyLifecycle:
         source_run_id: str | None,
         client_token: str | None,
         prompt: str | None,
-        budget: AgencyBudget | None,
         payload: dict[str, Any] | None,
         scheduled_at: datetime | None,
         dedupe_key: str | None,
@@ -351,8 +343,6 @@ class AgencyLifecycle:
             effective_payload["prompt"] = prompt
         if client_token is not None:
             effective_payload["client_token"] = client_token
-        if budget is not None:
-            effective_payload["budget"] = budget.model_dump(mode="json")
         effective_dedupe_key = dedupe_key or _dedupe_key(
             kind=kind,
             source_session_id=source_session_id,
@@ -398,13 +388,11 @@ class AgencyLifecycle:
     ) -> RunRecord:
         sequence_no = await _next_sequence_no(db_session, agency_session.id)
         run_id = uuid4().hex
-        budget = _budget_from_fires(fires)
         risk_policy = _resolve_risk_policy(settings=self._settings, agency_session=agency_session)
         metadata = _episode_metadata(
             agency_session=agency_session,
             run_id=run_id,
             fires=fires,
-            budget=budget,
             risk_policy=risk_policy,
         )
         run_record = RunRecord(
@@ -432,25 +420,17 @@ def _queue_run(session: SessionRecord, run: RunRecord) -> None:
     run.status = "queued"
 
 
-def _agency_session_metadata(*, profile_name: str, enabled: bool, risk_policy: AgencyRiskPolicy) -> dict[str, Any]:
+def _agency_session_metadata(*, profile_name: str, risk_policy: AgencyRiskPolicy) -> dict[str, Any]:
     return {
         "agency": {
             "kind": "claw_agency_session",
             "scope": "global",
             "scope_key": AGENCY_SINGLETON_SCOPE_KEY,
             "version": 1,
-            "enabled": enabled,
             "profile_name": profile_name,
             "risk_policy": risk_policy.model_dump(mode="json"),
         }
     }
-
-
-def _agency_enabled(agency_session: SessionRecord, *, default: bool) -> bool:
-    metadata = agency_session.session_metadata if isinstance(agency_session.session_metadata, dict) else {}
-    agency = metadata.get("agency") if isinstance(metadata.get("agency"), dict) else {}
-    value = agency.get("enabled") if isinstance(agency, dict) else None
-    return bool(value) if isinstance(value, bool) else default
 
 
 def _settings_default_risk_policy(settings: ClawSettings) -> AgencyRiskPolicy:
@@ -462,23 +442,7 @@ def _settings_default_risk_policy(settings: ClawSettings) -> AgencyRiskPolicy:
     return AgencyRiskPolicy()
 
 
-def _metadata_risk_policy(metadata: dict[str, Any]) -> AgencyRiskPolicy | None:
-    agency = metadata.get("agency") if isinstance(metadata, dict) else None
-    if not isinstance(agency, dict):
-        return None
-    risk_policy = agency.get("risk_policy")
-    if isinstance(risk_policy, dict):
-        return AgencyRiskPolicy.model_validate(risk_policy)
-    value = agency.get("max_auto_action_risk")
-    if value in {"low", "medium", "high", "extra_high"}:
-        return AgencyRiskPolicy(max_auto_action_risk=value)
-    return None
-
-
 def _resolve_risk_policy(*, settings: ClawSettings, agency_session: SessionRecord) -> AgencyRiskPolicy:
-    agency_policy = _metadata_risk_policy(agency_session.session_metadata)
-    if agency_policy is not None:
-        return agency_policy
     return _settings_default_risk_policy(settings)
 
 
@@ -566,21 +530,11 @@ def _fire_input_part(fire: AgencyFireRecord) -> CommandPart:
     )
 
 
-def _budget_from_fires(fires: list[AgencyFireRecord]) -> AgencyBudget:
-    for fire in fires:
-        payload = fire.payload if isinstance(fire.payload, dict) else {}
-        budget = payload.get("budget")
-        if isinstance(budget, dict):
-            return AgencyBudget.model_validate(budget)
-    return AgencyBudget()
-
-
 def _episode_metadata(
     *,
     agency_session: SessionRecord,
     run_id: str,
     fires: list[AgencyFireRecord],
-    budget: AgencyBudget,
     risk_policy: AgencyRiskPolicy,
 ) -> dict[str, Any]:
     source_session_ids = _unique_strings([fire.source_session_id for fire in fires])
@@ -605,7 +559,6 @@ def _episode_metadata(
             "primary_source_session_id": source_session_ids[0] if source_session_ids else None,
             "source_run_ids": source_run_ids,
             "episode_id": f"episode-{run_id}",
-            "budget": budget.model_dump(mode="json"),
             "risk_policy": risk_policy.model_dump(mode="json"),
         },
         "restore_state": True,

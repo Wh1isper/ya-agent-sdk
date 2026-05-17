@@ -100,8 +100,40 @@ async def test_manual_fire_creates_singleton_agency_session_and_run(
     assert run.run_metadata["agency"]["fire_ids"] == [fire.id]
     assert run.run_metadata["agency"]["trigger_kinds"] == ["manual"]
     assert run.run_metadata["agency"]["source_session_ids"] == ["session-1"]
-    assert run.run_metadata["agency"]["budget"]["external_actions"] == "deny"
+    assert run.run_metadata["agency"]["risk_policy"] == {"max_auto_action_risk": "extra_high"}
+    assert "budget" not in run.run_metadata["agency"]
     assert run.input_parts[0]["name"] == "agency_fire"
+
+
+async def test_agency_enabled_uses_settings_instead_of_metadata(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    agency_session = SessionRecord(
+        id="agency-session-1",
+        profile_name="general",
+        session_type="agency",
+        source_session_id=AGENCY_SINGLETON_SOURCE_SESSION_ID,
+        session_metadata={"agency": {"kind": "claw_agency_session", "enabled": False}},
+    )
+    db_session.add_all([
+        agency_session,
+        SessionRecord(id="session-1", profile_name="general", session_metadata={}),
+    ])
+    await db_session.commit()
+    lifecycle = AgencyLifecycle(settings=settings, runtime_state=create_runtime_state())
+
+    next_fire_at = await lifecycle.next_timer_fire_at(db_session)
+    delivery = await lifecycle.create_fire(
+        db_session,
+        kind=AgencyFireKind.MANUAL,
+        source_session_id="session-1",
+        client_token=make_client_token("manual-1"),
+        dispatch=False,
+    )
+
+    assert next_fire_at is not None
+    assert delivery.delivery == "pending"
 
 
 async def test_singleton_agency_session_reused_for_all_sources(

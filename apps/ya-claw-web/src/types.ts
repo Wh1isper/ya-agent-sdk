@@ -480,17 +480,8 @@ export type MemoryStateSummary = {
   updated_at?: string | null
 }
 
-export type AgencyBudget = {
-  max_actions: number
-  max_tool_calls: number
-  max_runtime_seconds: number
-  max_workspace_writes: number
-  external_actions: 'deny'
-}
-
 export type AgencyRiskPolicy = {
   max_auto_action_risk: 'low' | 'medium' | 'high' | 'extra_high'
-  denied_actions: string[]
 }
 
 export type AgencyFireSummary = {
@@ -533,9 +524,7 @@ export type AgencyConfigResponse = {
   agency_session_id: string
   singleton_scope_key: string
   singleton_source_session_id: string
-  budget_defaults: Record<string, unknown>
   risk_policy: AgencyRiskPolicy
-  deny_external_actions: boolean
   memory_files: Record<string, string>
   next_fire_at?: string | null
 }
@@ -560,7 +549,6 @@ export type AgencyTriggerRequest = {
   source_run_id?: string | null
   client_token?: string | null
   prompt?: string | null
-  budget?: AgencyBudget | null
   payload?: Record<string, unknown>
 }
 

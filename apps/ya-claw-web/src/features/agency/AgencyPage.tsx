@@ -253,10 +253,6 @@ function AgencyDetails({
           mono
         />
         <InfoRow
-          label="External actions"
-          value={config?.deny_external_actions ? 'deny' : 'deny'}
-        />
-        <InfoRow
           label="Risk threshold"
           value={config?.risk_policy.max_auto_action_risk ?? 'pending'}
         />

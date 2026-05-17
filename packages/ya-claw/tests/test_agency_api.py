@@ -72,15 +72,16 @@ def test_agency_config_status_and_fires() -> None:
         config = config_response.json()
         assert config["enabled"] is True
         assert config["singleton_scope_key"] == "agency:global"
-        assert config["budget_defaults"]["external_actions"] == "deny"
-        assert config["deny_external_actions"] is True
-        assert config["risk_policy"]["max_auto_action_risk"] == "extra_high"
+        assert "budget_defaults" not in config
+        assert "deny_external_actions" not in config
+        assert config["risk_policy"] == {"max_auto_action_risk": "extra_high"}
 
         status_response = client.get("/api/v1/agency/status", headers=_auth_headers())
         assert status_response.status_code == 200
         status = status_response.json()
         assert status["agency_session_id"] == config["agency_session_id"]
         assert status["state"] in {"idle", "queued", "running"}
+        assert status["next_fire_at"] is not None
         assert isinstance(status["pending_fire_count"], int)
 
         fires_response = client.get("/api/v1/agency/fires", headers=_auth_headers())

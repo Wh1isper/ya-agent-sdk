@@ -176,14 +176,7 @@ Example fire payloads:
   "kind": "manual",
   "source_session_id": "session-...",
   "client_token": "manual-...",
-  "prompt": "Review recent memory changes and decide next useful work.",
-  "budget": {
-    "max_actions": 5,
-    "max_tool_calls": 80,
-    "max_runtime_seconds": 900,
-    "max_workspace_writes": 10,
-    "external_actions": "deny"
-  }
+  "prompt": "Review recent memory changes and decide next useful work."
 }
 ```
 
@@ -259,16 +252,8 @@ Behavior:
     "primary_source_session_id": "session-...",
     "source_run_ids": ["run-..."],
     "episode_id": "episode-...",
-    "budget": {
-      "max_actions": 5,
-      "max_tool_calls": 80,
-      "max_runtime_seconds": 900,
-      "max_workspace_writes": 10,
-      "external_actions": "deny"
-    },
     "risk_policy": {
-      "max_auto_action_risk": "low",
-      "denied_actions": ["external_send", "delete", "deploy", "secret_access", "payment"]
+      "max_auto_action_risk": "extra_high"
     }
   },
   "restore_state": true
@@ -306,7 +291,7 @@ Agency runs are unattended. The safety mode matches cron-style behavior:
 - security changes and irreversible external actions are denied;
 - shell review uses unattended mode and converts approval-needed outcomes to deny.
 
-Allowed autonomous work focuses on local observation, organization, drafting, safe file edits within budget, local checks, and deferred decision records.
+Allowed autonomous work focuses on local observation, organization, drafting, safe file edits, local checks, and deferred decision records.
 
 ## Runtime Context Assembly
 
@@ -319,7 +304,7 @@ Agency runs use:
 - action history from `memory/agency/ACTION_LOG.md`;
 - recent memory and agency file indexes;
 - source session tools for referenced conversations and traces;
-- fire payloads with source references, budget, and risk policy.
+- fire payloads with source references and risk policy.
 
 Injected context blocks:
 
@@ -332,7 +317,6 @@ Source session IDs: session-a,session-b
 Fire IDs: fire-...
 Trigger kinds: manual,memory_committed
 Sources: [...]
-Budget: {...}
 </agency-context>
 ```
 
@@ -356,7 +340,7 @@ Top-level endpoints:
 
 | Method | Path                            | Purpose                                                                                    |
 | ------ | ------------------------------- | ------------------------------------------------------------------------------------------ |
-| `GET`  | `/api/v1/agency/config`         | read enabled state, profile, interval, singleton session id, budget defaults, risk policy  |
+| `GET`  | `/api/v1/agency/config`         | read enabled state, profile, interval, singleton session id, and risk policy               |
 | `GET`  | `/api/v1/agency/status`         | read active/idle/queued state, active run, latest run, pending fire count, next timer fire |
 | `GET`  | `/api/v1/agency/fires?limit=50` | list fire history                                                                          |
 | `POST` | `/api/v1/agency:trigger`        | create a manual fire and dispatch it                                                       |
@@ -389,14 +373,7 @@ Top-level endpoints:
   "kind": "manual",
   "source_session_id": "session-...",
   "client_token": "manual-...",
-  "prompt": "Review current workspace memory and propose the next useful action.",
-  "budget": {
-    "max_actions": 5,
-    "max_tool_calls": 80,
-    "max_runtime_seconds": 900,
-    "max_workspace_writes": 10,
-    "external_actions": "deny"
-  }
+  "prompt": "Review current workspace memory and propose the next useful action."
 }
 ```
 

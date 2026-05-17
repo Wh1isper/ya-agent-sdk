@@ -48,7 +48,7 @@ class AgencyController:
         await db_session.refresh(agency_session)
         metadata = _agency_metadata(agency_session)
         return AgencyConfigResponse(
-            enabled=bool(metadata.get("enabled", settings.agency_enabled)),
+            enabled=settings.agency_enabled,
             profile_name=str(
                 metadata.get("profile_name") or agency_session.profile_name or settings.resolved_agency_profile
             ),
@@ -56,9 +56,7 @@ class AgencyController:
             agency_session_id=agency_session.id,
             singleton_scope_key=AGENCY_SINGLETON_SCOPE_KEY,
             singleton_source_session_id=agency_session.source_session_id or "",
-            budget_defaults=_budget_defaults(),
             risk_policy=_resolved_risk_policy(settings, metadata),
-            deny_external_actions=True,
             memory_files={
                 "index": "memory/AGENCY.md",
                 "action_log": "memory/agency/ACTION_LOG.md",
@@ -80,7 +78,7 @@ class AgencyController:
         active_run = await _active_run(db_session, agency_session)
         pending_fire_count = await _fire_count(db_session, "pending")
         return AgencyStatusResponse(
-            enabled=bool(_agency_metadata(agency_session).get("enabled", settings.agency_enabled)),
+            enabled=settings.agency_enabled,
             agency_session_id=agency_session.id,
             state=_agency_state(agency_session, latest_run=latest_run),
             active_run=run_summary_from_record(active_run) if active_run is not None else None,
@@ -147,7 +145,6 @@ class AgencyController:
             source_run_id=request.source_run_id,
             client_token=request.client_token,
             prompt=request.prompt,
-            budget=request.budget,
             payload=request.payload,
             dispatch=True,
         )
@@ -198,20 +195,7 @@ def _agency_metadata(agency_session: SessionRecord) -> dict[str, Any]:
     return dict(agency) if isinstance(agency, dict) else {}
 
 
-def _budget_defaults() -> dict[str, Any]:
-    return {
-        "max_actions": 5,
-        "max_tool_calls": 80,
-        "max_runtime_seconds": 900,
-        "max_workspace_writes": 10,
-        "external_actions": "deny",
-    }
-
-
 def _resolved_risk_policy(settings: ClawSettings, agency_metadata: dict[str, Any]) -> AgencyRiskPolicy:
-    risk_policy = agency_metadata.get("risk_policy")
-    if isinstance(risk_policy, dict):
-        return AgencyRiskPolicy.model_validate(risk_policy)
     threshold = settings.agency_unattended_shell_review_risk_threshold
     if threshold is None:
         threshold = settings.unattended_shell_review_risk_threshold
