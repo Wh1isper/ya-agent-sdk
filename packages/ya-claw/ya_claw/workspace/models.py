@@ -40,11 +40,11 @@ class WorkspaceMountSpec(BaseModel):
 
     @field_validator("id", "name", "host_path", "virtual_path", "docker_host_path", mode="before")
     @classmethod
-    def _strip_optional_string(cls, value: Any) -> Any:
+    def _strip_optional_string(cls, value: object) -> str | None:
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None
-        return value
+        return None
 
     @field_validator("host_path", "virtual_path")
     @classmethod
@@ -62,11 +62,11 @@ class WorkspaceBindingSpec(BaseModel):
 
     @field_validator("default_mount_id", "cwd", mode="before")
     @classmethod
-    def _strip_optional_string(cls, value: Any) -> Any:
+    def _strip_optional_string(cls, value: object) -> str | None:
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None
-        return value
+        return None
 
     @model_validator(mode="after")
     def _validate_binding(self) -> WorkspaceBindingSpec:  # noqa: C901

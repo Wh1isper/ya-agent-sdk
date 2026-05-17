@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from logging.config import fileConfig
-from typing import Any
 
 from alembic import context
 from sqlalchemy import create_engine, pool
@@ -23,7 +22,7 @@ def get_url() -> str:
     return to_sync_database_url(settings.resolved_database_url)
 
 
-def include_object(obj: Any, name: str | None, type_: str, reflected: bool, compare_to: Any) -> bool:
+def include_object(obj: object, name: str | None, type_: str, reflected: bool, compare_to: object) -> bool:
     return not (type_ == "table" and reflected and compare_to is None)
 
 

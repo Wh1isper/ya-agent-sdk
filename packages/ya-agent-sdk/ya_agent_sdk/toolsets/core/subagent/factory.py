@@ -100,7 +100,7 @@ def create_subagent_tool(
                 return instruction(ctx)
             return instruction
 
-        async def call(self, ctx: RunContext[AgentContext], /, **kwargs: Any) -> str:
+        async def call(self, ctx: RunContext[AgentContext], /, **kwargs: object) -> str:
             # Placeholder - will be replaced by actual call_func
             raise NotImplementedError  # pragma: no cover
 

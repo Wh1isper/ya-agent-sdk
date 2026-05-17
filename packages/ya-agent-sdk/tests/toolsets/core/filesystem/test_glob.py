@@ -3,9 +3,9 @@
 import json
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 import ya_agent_sdk.toolsets.core.filesystem.glob as glob_module
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
@@ -350,7 +350,7 @@ async def test_glob_no_gitignore_returns_list(tmp_path: Path) -> None:
         assert any("file.py" in f for f in result)
 
 
-async def test_glob_hard_output_limit_writes_temp_file(tmp_path: Path, monkeypatch: Any) -> None:
+async def test_glob_hard_output_limit_writes_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Should write to temp file when serialized output exceeds hard size limit."""
     # Set a small hard limit to trigger temp file writing
     monkeypatch.setattr(glob_module, "OUTPUT_TRUNCATE_LIMIT", 1000)

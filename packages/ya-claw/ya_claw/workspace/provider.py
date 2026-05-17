@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from loguru import logger
 from ya_agent_environment import (
@@ -20,6 +20,7 @@ from ya_agent_environment import (
     ResourceFactory,
     ResourceRegistryState,
     Shell,
+    TmpFileOperator,
 )
 from ya_agent_sdk.environment import (
     LocalShell,
@@ -78,8 +79,25 @@ class WorkspaceProvider(ABC):
 
 
 class PolicyVirtualLocalFileOperator(VirtualLocalFileOperator):
-    def __init__(self, *, read_only_virtual_paths: list[Path] | None = None, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+    def __init__(
+        self,
+        *,
+        mounts: list[VirtualMount],
+        default_virtual_path: Path | None = None,
+        read_only_virtual_paths: list[Path] | None = None,
+        instructions_skip_dirs: frozenset[str] | None = None,
+        instructions_max_depth: int = 3,
+        tmp_dir: Path | None = None,
+        tmp_file_operator: TmpFileOperator | None = None,
+    ) -> None:
+        super().__init__(
+            mounts=mounts,
+            default_virtual_path=default_virtual_path,
+            instructions_skip_dirs=instructions_skip_dirs,
+            instructions_max_depth=instructions_max_depth,
+            tmp_dir=tmp_dir,
+            tmp_file_operator=tmp_file_operator,
+        )
         self._read_only_virtual_paths = [Path(path) for path in read_only_virtual_paths or []]
 
     def _assert_writable(self, path: str) -> None:
@@ -530,7 +548,7 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
         def _wait() -> None:
             deadline = time.monotonic() + timeout_seconds
             while True:
-                health_status = _inspect_container_health_status(self.client, container_id)
+                health_status = _inspect_container_health_status(cast(_DockerClientLike, self.client), container_id)
                 if health_status is None or health_status == "healthy":
                     return
                 if health_status == "unhealthy":
@@ -564,7 +582,7 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
         image = self._image
 
         def _inspect_image_digest() -> str | None:
-            return _resolve_image_digest(self.client, image)
+            return _resolve_image_digest(cast(_DockerClientLike, self.client), image)
 
         loop = asyncio.get_running_loop()
         digest = await loop.run_in_executor(None, _inspect_image_digest)
@@ -1284,7 +1302,50 @@ def _sandbox_shell_ready_state(environment: SandboxEnvironment) -> str | None:
     return None
 
 
-def _inspect_container_health_status(client: Any, container_id: str) -> str | None:
+class _DockerContainerCollectionLike(Protocol):
+    def get(self, name: str) -> _DockerContainerLike: ...
+
+
+class _DockerImageCollectionLike(Protocol):
+    def get(self, name: str) -> _DockerImageLike: ...
+
+
+class _DockerClientLike(Protocol):
+    @property
+    def containers(self) -> _DockerContainerCollectionLike: ...
+
+    @property
+    def images(self) -> _DockerImageCollectionLike: ...
+
+
+class _DockerImageLike(Protocol):
+    @property
+    def attrs(self) -> object: ...
+
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def short_id(self) -> object: ...
+
+
+class _DockerContainerLike(Protocol):
+    @property
+    def attrs(self) -> object: ...
+
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def image(self) -> object: ...
+
+    @property
+    def status(self) -> object: ...
+
+    def reload(self) -> None: ...
+
+
+def _inspect_container_health_status(client: _DockerClientLike, container_id: str) -> str | None:
     try:
         container = client.containers.get(container_id)
         container.reload()
@@ -1302,7 +1363,7 @@ def _inspect_container_health_status(client: Any, container_id: str) -> str | No
     return _normalize_optional_str(health.get("Status"))
 
 
-def _resolve_image_digest(client: Any, image: str) -> str | None:
+def _resolve_image_digest(client: _DockerClientLike, image: str) -> str | None:
     try:
         image_obj = client.images.get(image)
     except Exception as exc:
@@ -1320,7 +1381,7 @@ def _resolve_image_digest(client: Any, image: str) -> str | None:
     return _normalize_optional_str(getattr(image_obj, "short_id", None))
 
 
-def _container_image_digest(container: Any) -> str | None:
+def _container_image_digest(container: _DockerContainerLike) -> str | None:
     image = getattr(container, "image", None)
     if image is not None:
         repo_digests = getattr(image, "attrs", {}).get("RepoDigests")
@@ -1354,14 +1415,14 @@ def _build_container_cache_path(cache_dir: Path | None, *, metadata: dict[str, A
     return None
 
 
-def _normalize_sandbox_scope(value: Any) -> SandboxScopeLiteral | None:
+def _normalize_sandbox_scope(value: object) -> SandboxScopeLiteral | None:
     normalized = _normalize_optional_str(value)
     if normalized in {SANDBOX_SCOPE_SESSION, SANDBOX_SCOPE_RUN}:
         return cast(SandboxScopeLiteral, normalized)
     return None
 
 
-def _normalize_optional_str(value: Any) -> str | None:
+def _normalize_optional_str(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip()
@@ -1397,7 +1458,7 @@ def build_docker_workspace_exec_default_env(*, home: str | None = None, user: st
     return {"HOME": normalized_home, "USER": normalized_user}
 
 
-def _first_optional_int(*values: Any) -> int | None:
+def _first_optional_int(*values: object) -> int | None:
     for value in values:
         normalized_value = _normalize_optional_int(value)
         if normalized_value is not None:
@@ -1405,7 +1466,7 @@ def _first_optional_int(*values: Any) -> int | None:
     return None
 
 
-def _normalize_optional_int(value: Any) -> int | None:
+def _normalize_optional_int(value: object) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, str) and value.strip().isdigit():

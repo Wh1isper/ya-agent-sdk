@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Generic
+from typing import Any, Generic, TypeAlias
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage
@@ -49,7 +49,7 @@ class CompactCompleteContext(ContextHandoffCompleteContext[AgentDepsT]):
     """Context passed when automatic compaction completes."""
 
     compacted_messages: list[ModelMessage] = field(default_factory=list)
-    condense_result: Any = None
+    condense_result: object = None
 
 
 @dataclass
@@ -67,10 +67,13 @@ class CompactFailedContext(Generic[AgentDepsT]):
 class AgentErrorContext(Generic[AgentDepsT, EnvT]):
     """Context passed when stream execution raises an exception."""
 
-    runtime: Any
-    agent_info: Any
-    output_queue: Any
+    runtime: object
+    agent_info: object
+    output_queue: object
     error: BaseException
+
+
+LifecycleContext: TypeAlias = Any
 
 
 class BaseLifecycleExtension(Generic[AgentDepsT, EnvT]):
@@ -78,25 +81,25 @@ class BaseLifecycleExtension(Generic[AgentDepsT, EnvT]):
 
     name = "base"
 
-    async def on_runtime_ready(self, ctx: Any) -> None:
+    async def on_runtime_ready(self, ctx: LifecycleContext) -> None:
         pass
 
-    async def on_agent_start(self, ctx: Any) -> None:
+    async def on_agent_start(self, ctx: LifecycleContext) -> None:
         pass
 
-    async def on_before_node(self, ctx: Any) -> None:
+    async def on_before_node(self, ctx: LifecycleContext) -> None:
         pass
 
-    async def on_after_node(self, ctx: Any) -> None:
+    async def on_after_node(self, ctx: LifecycleContext) -> None:
         pass
 
-    async def on_before_event(self, ctx: Any) -> None:
+    async def on_before_event(self, ctx: LifecycleContext) -> None:
         pass
 
-    async def on_after_event(self, ctx: Any) -> None:
+    async def on_after_event(self, ctx: LifecycleContext) -> None:
         pass
 
-    async def on_agent_complete(self, ctx: Any) -> None:
+    async def on_agent_complete(self, ctx: LifecycleContext) -> None:
         pass
 
     async def on_agent_error(self, ctx: AgentErrorContext[AgentDepsT, EnvT]) -> None:
@@ -122,9 +125,9 @@ CompactLifecycleCallback = Callable[[CompactCompleteContext[Any]], Awaitable[Non
 async def run_extension_method(
     extensions: Sequence[BaseLifecycleExtension[Any, Any]],
     method_name: str,
-    ctx: Any,
+    ctx: object,
     *,
-    logger: Any | None = None,
+    logger: object | None = None,
 ) -> None:
     """Run a lifecycle method on each extension."""
 

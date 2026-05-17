@@ -38,6 +38,8 @@ from pydantic_ai.messages import RetryPromptPart, TextPart, ThinkingPart, ToolCa
 from ya_agent_sdk.context.agent import StreamEvent
 from ya_agent_sdk.events import ModelRequestStartEvent, UsageSnapshotEvent
 
+from ya_claw.json_types import JsonObject, JsonValue
+
 _RUN_CUSTOM_EVENT_PREFIX = "ya_claw"
 _AGENT_CUSTOM_EVENT_PREFIX = "ya_agent"
 _REPLAY_DROP_EVENT_TYPES = frozenset({
@@ -157,7 +159,7 @@ class AguiReplayBuffer:
             self._chunk_fragments[index] = [fragment]
         return index
 
-    def _append_delta_fragment(self, index: int, value: Any) -> None:
+    def _append_delta_fragment(self, index: int, value: JsonValue) -> None:
         fragment = _delta_fragment(value)
         if fragment is None:
             return
@@ -182,7 +184,7 @@ class AguiEventAdapter:
             )
         )
 
-    def build_run_finished_event(self, result: Any = None) -> dict[str, Any]:
+    def build_run_finished_event(self, result: JsonValue = None) -> dict[str, Any]:
         _ = result
         return _dump_agui_event(
             RunFinishedEvent(
@@ -443,7 +445,7 @@ class AguiEventAdapter:
             self._custom_agent_event("function_tool_result", stream_event=stream_event, payload=_serialize_value(event))
         ]
 
-    def _tool_result_event(self, part: ToolReturnPart, *, content: Any | None = None) -> dict[str, Any]:
+    def _tool_result_event(self, part: ToolReturnPart, *, content: object = None) -> dict[str, Any]:
         tool_call_id = part.tool_call_id
         return _dump_agui_event(
             ToolCallResultEvent(
@@ -513,7 +515,7 @@ class AguiEventAdapter:
         event_name: str,
         *,
         stream_event: StreamEvent,
-        payload: Any,
+        payload: JsonValue,
     ) -> dict[str, Any]:
         return _dump_agui_event(
             CustomEvent(
@@ -535,20 +537,20 @@ def _dump_agui_event(event: BaseModel) -> dict[str, Any]:
     return payload
 
 
-def _event_field(event: dict[str, Any], camel_name: str, snake_name: str) -> Any:
+def _event_field(event: JsonObject, camel_name: str, snake_name: str) -> JsonValue:
     if camel_name in event:
         return event[camel_name]
     return event.get(snake_name)
 
 
-def _normalized_identifier(value: Any) -> str | None:
+def _normalized_identifier(value: JsonValue) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip()
     return normalized or None
 
 
-def _delta_fragment(value: Any) -> str | None:
+def _delta_fragment(value: JsonValue) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -556,7 +558,7 @@ def _delta_fragment(value: Any) -> str | None:
     return str(value)
 
 
-def _stringify_tool_call_args(value: Any) -> str | None:
+def _stringify_tool_call_args(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -564,7 +566,7 @@ def _stringify_tool_call_args(value: Any) -> str | None:
     return json.dumps(_serialize_value(value), ensure_ascii=False, separators=(",", ":"))
 
 
-def _stringify_tool_result(value: Any) -> str:
+def _stringify_tool_result(value: object) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(_serialize_value(value), ensure_ascii=False)
@@ -575,7 +577,7 @@ def _camel_to_snake(value: str) -> str:
     return snake.removesuffix("_event")
 
 
-def _serialize_value(value: Any) -> Any:
+def _serialize_value(value: object) -> JsonValue:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, datetime):

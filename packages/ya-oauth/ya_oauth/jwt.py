@@ -37,11 +37,11 @@ def account_from_id_token(id_token: str) -> OAuthAccount:
     )
 
 
-def _string_or_none(value: Any) -> str | None:
+def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _plan_type(value: Any) -> str | None:
+def _plan_type(value: object) -> str | None:
     if isinstance(value, str):
         return value
     if isinstance(value, dict):

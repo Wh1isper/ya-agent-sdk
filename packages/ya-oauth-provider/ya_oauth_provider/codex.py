@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from pydantic_ai import RunContext
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
@@ -75,7 +76,7 @@ class CodexResponsesModel(OpenAIResponsesModel):
         messages: list[ModelMessage],
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
-        run_context: Any | None = None,
+        run_context: RunContext[Any] | None = None,
     ) -> AsyncIterator[StreamedResponse]:
         async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as response:
             yield response

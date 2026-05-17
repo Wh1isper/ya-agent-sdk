@@ -49,6 +49,7 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import (
+    AgentRunResult,
     BinaryContent,
     DeferredToolRequests,
     DeferredToolResults,
@@ -71,11 +72,19 @@ from pydantic_ai.messages import (
     ToolCallPart,
 )
 from pydantic_ai.models import Model
+from pydantic_ai.run import AgentRun
 from rich.table import Table
 from rich.text import Text
-from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, stream_agent
+from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, AgentStreamer, stream_agent
 from ya_agent_sdk.agents.models import infer_model
-from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, BusMessage, ResumableState, StreamEvent
+from ya_agent_sdk.context import (
+    PROJECT_GUIDANCE_TAG,
+    USER_RULES_TAG,
+    AgentContext,
+    BusMessage,
+    ResumableState,
+    StreamEvent,
+)
 from ya_agent_sdk.events import (
     CompactCompleteEvent,
     CompactFailedEvent,
@@ -268,7 +277,7 @@ class TUIApp:
     # Agent execution
     _agent_task: asyncio.Task[None] | None = field(default=None, init=False)
     _managed_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
-    _last_run: Any | None = field(default=None, init=False)  # AgentRun from last execution
+    _last_run: AgentRun[TUIContext, str | DeferredToolRequests] | None = field(default=None, init=False)
     _message_history: list[Any] | None = field(default=None, init=False)  # Conversation history
 
     # Tool tracking
@@ -1666,7 +1675,7 @@ class TUIApp:
         self,
         prompt: str | DeferredToolResults,
         attachments: Sequence[PendingAttachment] | None = None,
-    ) -> Any:
+    ) -> AgentRunResult[str | DeferredToolRequests] | None:
         """Execute a single agent stream and return the result.
 
         Args:
@@ -1715,7 +1724,9 @@ class TUIApp:
             self._auto_save_history()
             return stream.run.result if stream.run else None
 
-    def _persist_stream_recoverable_state(self, stream: Any) -> bool:
+    def _persist_stream_recoverable_state(
+        self, stream: AgentStreamer[AgentContext, str | DeferredToolRequests]
+    ) -> bool:
         """Persist stream recoverable messages and usage to in-memory session state."""
         self._last_run = stream.run
         if stream.run is None:
@@ -1809,7 +1820,7 @@ class TUIApp:
         self._approval_event = None
         return approved, reason
 
-    def _format_args_for_display(self, args: Any, max_str_len: int = 500, max_lines: int = 30) -> str:
+    def _format_args_for_display(self, args: object, max_str_len: int = 500, max_lines: int = 30) -> str:
         """Format tool arguments for display with smart truncation.
 
         Args:
@@ -1821,7 +1832,7 @@ class TUIApp:
             Formatted JSON string or fallback representation
         """
 
-        def truncate_strings(obj: Any, max_len: int) -> Any:
+        def truncate_strings(obj: object, max_len: int) -> object:
             """Recursively truncate long strings in nested structures."""
             if isinstance(obj, str):
                 if len(obj) > max_len:

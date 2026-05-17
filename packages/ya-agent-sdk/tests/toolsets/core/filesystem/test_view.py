@@ -2,7 +2,6 @@
 
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 from inline_snapshot import snapshot
@@ -442,13 +441,13 @@ async def test_view_video_fallback_passes_model_wrapper(tmp_path: Path) -> None:
     """Should pass model wrapper metadata to video fallback analysis."""
     from ya_agent_sdk.context import ToolConfig
 
-    captured_kwargs: dict[str, Any] = {}
+    captured_kwargs: dict[str, object] = {}
 
-    async def mock_get_video_description(**kwargs: Any):
+    async def mock_get_video_description(**kwargs: object) -> tuple[str, str, RunUsage]:
         captured_kwargs.update(kwargs)
         return "This video shows a test scene.", "test-model", RunUsage()
 
-    def model_wrapper(model: Model, agent_name: str, metadata: dict[str, Any]) -> Model:
+    def model_wrapper(model: Model, agent_name: str, metadata: dict[str, object]) -> Model:
         return model
 
     async with AsyncExitStack() as stack:

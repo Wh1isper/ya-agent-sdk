@@ -6,7 +6,7 @@ Uses rank-bm25 to rank tool metadata with a lightweight lexical retrieval model.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Protocol, cast
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata
@@ -14,6 +14,16 @@ from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata
 logger = get_logger(__name__)
 
 _TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
+
+
+class _ScoreVector(Protocol):
+    def __getitem__(self, index: int) -> float: ...
+
+
+class _BM25Index(Protocol):
+    def __init__(self, corpus: list[list[str]], *, epsilon: float = 0.25) -> None: ...
+
+    def get_scores(self, query: list[str]) -> _ScoreVector: ...
 
 
 class BM25SearchStrategy:
@@ -35,7 +45,7 @@ class BM25SearchStrategy:
             epsilon: BM25Okapi epsilon floor for terms with negative IDF.
         """
         self._epsilon = epsilon
-        self._index: Any = None
+        self._index: _BM25Index | None = None
         self._indexed_tools: list[ToolMetadata] = []
         self._tokenized_corpus: list[list[str]] = []
 
@@ -62,14 +72,14 @@ class BM25SearchStrategy:
         return " ".join(cls._tokenize(text))
 
     @staticmethod
-    def _import_bm25() -> Any:
+    def _import_bm25() -> type[_BM25Index]:
         """Import rank-bm25 with an actionable error message."""
         try:
             from rank_bm25 import BM25Okapi
         except ImportError:
             msg = "rank-bm25 is required for BM25SearchStrategy. Install it with: pip install ya-agent-sdk[tool-search]"
             raise ImportError(msg) from None
-        return BM25Okapi
+        return cast(type[_BM25Index], BM25Okapi)
 
     async def build_index(self, tools: list[ToolMetadata]) -> None:
         """Build a BM25 index from tool metadata."""

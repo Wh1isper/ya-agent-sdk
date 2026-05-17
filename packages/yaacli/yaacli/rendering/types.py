@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import time
 from enum import StrEnum
-from typing import Any
 
 from pydantic import BaseModel
+
+from yaacli.json_types import JsonObject, JsonValue
 
 
 class ToolCallState(StrEnum):
@@ -34,11 +35,11 @@ class ToolCallInfo(BaseModel):
 
     tool_call_id: str
     name: str
-    args: str | dict[str, Any] | None = None
+    args: str | JsonObject | None = None
     state: ToolCallState
     start_time: float
     end_time: float | None = None
-    result: Any | None = None
+    result: JsonValue = None
 
     # Special tools that need detailed panel rendering
     SPECIAL_TOOLS: frozenset[str] = frozenset({

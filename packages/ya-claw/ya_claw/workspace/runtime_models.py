@@ -13,6 +13,8 @@ WorkspaceRuntimeStatusValue = Literal["ready", "degraded", "unavailable", "check
 RuntimeCheckStatus = Literal["ready", "warning", "error", "checking", "skipped"]
 SessionSandboxStatus = Literal["created", "mounted", "preparing", "ready", "failed", "stopped"]
 SessionSandboxReadyState = Literal["not_started", "starting", "ready", "failed"]
+_SESSION_SANDBOX_STATUSES: set[SessionSandboxStatus] = {"created", "mounted", "preparing", "ready", "failed", "stopped"}
+_SESSION_SANDBOX_READY_STATES: set[SessionSandboxReadyState] = {"not_started", "starting", "ready", "failed"}
 
 
 class RuntimeCheck(BaseModel):
@@ -244,8 +246,8 @@ def session_sandbox_event_payload(
     return payload
 
 
-def _normalize_sandbox_status(value: Any, *, ready_state: SessionSandboxReadyState) -> SessionSandboxStatus:
-    if value in {"created", "mounted", "preparing", "ready", "failed", "stopped"}:
+def _normalize_sandbox_status(value: object, *, ready_state: SessionSandboxReadyState) -> SessionSandboxStatus:
+    if isinstance(value, str) and value in _SESSION_SANDBOX_STATUSES:
         return value
     if ready_state == "ready":
         return "ready"
@@ -256,20 +258,20 @@ def _normalize_sandbox_status(value: Any, *, ready_state: SessionSandboxReadySta
     return "created"
 
 
-def _normalize_ready_state(value: Any) -> SessionSandboxReadyState:
-    if value in {"not_started", "starting", "ready", "failed"}:
+def _normalize_ready_state(value: object) -> SessionSandboxReadyState:
+    if isinstance(value, str) and value in _SESSION_SANDBOX_READY_STATES:
         return value
     return "not_started"
 
 
-def _normalize_optional_str(value: Any) -> str | None:
+def _normalize_optional_str(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     stripped = value.strip()
     return stripped or None
 
 
-def _normalize_positive_int(value: Any) -> int | None:
+def _normalize_positive_int(value: object) -> int | None:
     if isinstance(value, int) and value > 0:
         return value
     if isinstance(value, str) and value.strip().isdigit():
@@ -278,7 +280,7 @@ def _normalize_positive_int(value: Any) -> int | None:
     return None
 
 
-def _parse_datetime(value: Any) -> datetime | None:
+def _parse_datetime(value: object) -> datetime | None:
     if not isinstance(value, str) or value.strip() == "":
         return None
     try:

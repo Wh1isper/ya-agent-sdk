@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import RunContext
+from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
@@ -387,8 +388,8 @@ class SkillToolset(BaseToolset[AgentContext]):
         name: str,
         tool_args: dict[str, Any],
         ctx: RunContext[AgentContext],
-        tool: Any,
-    ) -> Any:
+        tool: ToolsetTool[AgentContext],
+    ) -> object:
         """Not implemented - SkillToolset provides no tools."""
         msg = f"SkillToolset does not provide tools, received call for '{name}'"
         raise NotImplementedError(msg)

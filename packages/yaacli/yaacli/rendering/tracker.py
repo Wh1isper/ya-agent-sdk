@@ -6,8 +6,8 @@ Tracks tool call states and manages rendering lifecycle.
 from __future__ import annotations
 
 import time
-from typing import Any
 
+from yaacli.json_types import JsonObject, JsonValue
 from yaacli.rendering.types import ToolCallInfo, ToolCallState
 
 
@@ -18,7 +18,7 @@ class ToolCallTracker:
         self.tool_calls: dict[str, ToolCallInfo] = {}
         self.call_order: list[str] = []
 
-    def start_call(self, tool_call_id: str, name: str, args: str | dict[str, Any] | None = None) -> None:
+    def start_call(self, tool_call_id: str, name: str, args: str | JsonObject | None = None) -> None:
         """Register a new tool call."""
         self.tool_calls[tool_call_id] = ToolCallInfo(
             tool_call_id=tool_call_id,
@@ -29,7 +29,7 @@ class ToolCallTracker:
         )
         self.call_order.append(tool_call_id)
 
-    def complete_call(self, tool_call_id: str, result: Any = None) -> None:
+    def complete_call(self, tool_call_id: str, result: JsonValue = None) -> None:
         """Mark tool call as complete."""
         if tool_call_id in self.tool_calls:
             info = self.tool_calls[tool_call_id]

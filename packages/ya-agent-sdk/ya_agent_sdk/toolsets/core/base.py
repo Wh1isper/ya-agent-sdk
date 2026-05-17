@@ -59,7 +59,7 @@ class UserInteraction(BaseModel):
         "If true, 'user_input' may contain additional data provided by the user.",
     )
     reason: str | None = Field(None, description="The reason for rejection, if any.")
-    user_input: Any = Field(
+    user_input: object = Field(
         None,
         description="Additional user input data. Structure depends on tool implementation.",
     )
@@ -434,7 +434,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         """Create a pydantic_ai Tool wrapper for a BaseTool instance."""
 
         @functools.wraps(tool_instance.call)
-        async def _call(ctx: RunContext[AgentDepsT], **kwargs: Any) -> Any:
+        async def _call(ctx: RunContext[AgentDepsT], **kwargs: object) -> object:
             return await tool_instance.call(ctx, **kwargs)
 
         return Tool(
@@ -512,7 +512,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         args: dict[str, Any],
         ctx: RunContext[AgentDepsT],
         tool: HookableToolsetTool[AgentDepsT],
-    ) -> Any:
+    ) -> object:
         """Execute the tool function and capture exceptions.
 
         Subclasses can override this method to customize tool execution,
@@ -542,7 +542,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         tool_args: dict[str, Any],
         ctx: RunContext[AgentDepsT],
         tool: ToolsetTool[AgentDepsT],
-    ) -> Any:
+    ) -> object:
         """Call a tool with hooks.
 
         Execution order: global_pre -> tool_pre -> execute -> tool_post -> global_post

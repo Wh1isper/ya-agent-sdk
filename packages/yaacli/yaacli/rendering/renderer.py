@@ -6,9 +6,8 @@ Provides RichRenderer for converting Rich renderables to ANSI strings.
 from __future__ import annotations
 
 from io import StringIO
-from typing import Any
 
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
@@ -24,7 +23,7 @@ class RichRenderer:
     def __init__(self, width: int | None = None) -> None:
         self._width = width or 120
 
-    def render(self, renderable: Any, width: int | None = None) -> str:
+    def render(self, renderable: RenderableType, width: int | None = None) -> str:
         """Render Rich object to ANSI string.
 
         Args:
@@ -52,7 +51,7 @@ class RichRenderer:
 
     def render_panel(
         self,
-        content: str | Any,
+        content: RenderableType,
         title: str | None = None,
         border_style: str = "blue",
     ) -> str:
@@ -73,7 +72,7 @@ class CachedRichRenderer(RichRenderer):
         self._cache_size = cache_size
         self._cache_order: list[tuple[int, int]] = []
 
-    def render(self, renderable: Any, width: int | None = None) -> str:
+    def render(self, renderable: RenderableType, width: int | None = None) -> str:
         """Render with caching based on content hash."""
         render_width = width or self._width
 

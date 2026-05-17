@@ -268,7 +268,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         tool_args: dict[str, Any],
         ctx: RunContext[AgentContext],
         tool: ToolsetTool[AgentContext],
-    ) -> Any:
+    ) -> object:
         """Dispatch to search_tools or call_tool implementation."""
         if name == _SEARCH_TOOLS_NAME:
             return await self._execute_search(ctx, tool_args)
@@ -406,7 +406,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 dict[str, Any],
                 Field(description="Arguments to pass to the tool, matching its parameter schema"),
             ],
-        ) -> Any:
+        ) -> object:
             return await toolset_ref._execute_call(ctx, {"name": name, "arguments": arguments})
 
         return Tool(
@@ -537,7 +537,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
     # call_tool implementation
     # -------------------------------------------------------------------------
 
-    async def _execute_call(self, ctx: RunContext[AgentContext], tool_args: dict[str, Any]) -> Any:
+    async def _execute_call(self, ctx: RunContext[AgentContext], tool_args: dict[str, Any]) -> object:
         """Proxy a tool call to the underlying toolset.
 
         Validates the tool exists, delegates to the owning toolset, and

@@ -142,7 +142,7 @@ class ApprovalUI:
 
     def _format_args(
         self,
-        args: Any,
+        args: object,
         max_str_len: int = 500,
         max_lines: int = 30,
     ) -> str:
@@ -157,7 +157,7 @@ class ApprovalUI:
             Formatted JSON string or fallback representation
         """
 
-        def truncate_strings(obj: Any, max_len: int) -> Any:
+        def truncate_strings(obj: object, max_len: int) -> object:
             """Recursively truncate long strings in nested structures."""
             if isinstance(obj, str):
                 if len(obj) > max_len:

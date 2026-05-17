@@ -271,7 +271,7 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
         tool_args: dict[str, Any],
         ctx: RunContext[AgentContext],
         tool: ToolsetTool[AgentContext],
-    ) -> Any:
+    ) -> object:
         """Call a tool by name.
 
         If the tool is tool_search, execute the search and update loaded state

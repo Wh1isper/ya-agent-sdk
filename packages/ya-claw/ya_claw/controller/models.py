@@ -6,7 +6,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field
 
-from ya_claw.orm.tables import RunRecord, SessionRecord
+from ya_claw.json_types import JsonObject, JsonValue
+from ya_claw.orm.tables import (
+    AgencySignalRecord,
+    RunRecord,
+    SessionAgencyStateRecord,
+    SessionMemoryStateRecord,
+    SessionRecord,
+)
 from ya_claw.workspace.models import WorkspaceBindingSpec
 from ya_claw.workspace.runtime_models import SessionWorkspaceState, build_session_workspace_state
 
@@ -151,7 +158,7 @@ class UserInteraction(BaseModel):
     tool_call_id: str
     approved: bool
     reason: str | None = None
-    user_input: Any | None = None
+    user_input: JsonValue = None
 
 
 class ActiveInteraction(BaseModel):
@@ -163,7 +170,7 @@ class ActiveInteraction(BaseModel):
     kind: str = "approval"
     title: str
     description: str | None = None
-    arguments_preview: Any | None = None
+    arguments_preview: JsonValue = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     status: Literal["pending", "approved", "denied"] = "pending"
     sequence_no: int = 1
@@ -175,7 +182,7 @@ class ActiveInteraction(BaseModel):
 class InteractionRespondRequest(BaseModel):
     approved: bool
     reason: str | None = None
-    user_input: Any | None = None
+    user_input: JsonValue = None
     client_token: str | None = None
 
 
@@ -191,7 +198,7 @@ class InteractionRespondResponse(BaseModel):
 
 class ToolResult(BaseModel):
     tool_call_id: str
-    content: Any
+    content: JsonValue
     error: str | None = None
 
 
@@ -451,14 +458,14 @@ class MemoryActionResponse(BaseModel):
 
 class SessionGetResponse(BaseModel):
     session: SessionDetail
-    state: dict[str, object] | None = None
+    state: JsonObject | None = None
     message: list[dict[str, Any]] | None = None
 
 
 class RunGetResponse(BaseModel):
     session: SessionSummary
     run: RunDetail
-    state: dict[str, object] | None = None
+    state: JsonObject | None = None
     message: list[dict[str, Any]] | None = None
 
 
@@ -588,12 +595,12 @@ def public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return dict(metadata)
 
 
-def parse_message_events(raw_message_payload: Any) -> list[dict[str, Any]] | None:
+def parse_message_events(raw_message_payload: JsonValue) -> list[JsonObject] | None:
     if raw_message_payload is None:
         return None
     if not isinstance(raw_message_payload, list):
         raise TypeError("message payload must be a top-level JSON array of AGUI event objects")
-    parsed_events = [event for event in raw_message_payload if isinstance(event, dict)]
+    parsed_events: list[JsonObject] = [event for event in raw_message_payload if isinstance(event, dict)]
     if len(parsed_events) != len(raw_message_payload):
         raise TypeError("message payload must contain only AGUI event objects")
     return parsed_events
@@ -715,7 +722,7 @@ def resolve_session_status_detail(
     return detail
 
 
-def memory_state_summary_from_record(record: Any) -> MemoryStateSummary:
+def memory_state_summary_from_record(record: SessionMemoryStateRecord) -> MemoryStateSummary:
     return MemoryStateSummary(
         source_session_id=record.source_session_id,
         memory_session_id=record.memory_session_id,
@@ -734,7 +741,7 @@ def memory_state_summary_from_record(record: Any) -> MemoryStateSummary:
     )
 
 
-def agency_state_summary_from_record(record: Any) -> AgencyStateSummary:
+def agency_state_summary_from_record(record: SessionAgencyStateRecord) -> AgencyStateSummary:
     return AgencyStateSummary(
         source_session_id=record.source_session_id,
         agency_session_id=record.agency_session_id,
@@ -752,7 +759,7 @@ def agency_state_summary_from_record(record: Any) -> AgencyStateSummary:
     )
 
 
-def agency_signal_summary_from_record(record: Any) -> AgencySignalSummary:
+def agency_signal_summary_from_record(record: AgencySignalRecord) -> AgencySignalSummary:
     return AgencySignalSummary(
         id=record.id,
         source_session_id=record.source_session_id,

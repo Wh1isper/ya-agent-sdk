@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.context import AgentContext, BusMessage, TaskStatus
+from ya_agent_sdk.context import AgentContext, BusMessage, Task, TaskStatus
 from ya_agent_sdk.events import TaskEvent, TaskInfo
 from ya_agent_sdk.toolsets.base import Instruction
 from ya_agent_sdk.toolsets.core.base import BaseTool
@@ -146,7 +146,7 @@ class TaskUpdateTool(BaseTool):
     def _broadcast_update(
         self,
         ctx: RunContext[AgentContext],
-        task: Any,
+        task: Task,
         update_summary: str,
     ) -> None:
         """Broadcast task update to message bus (subagents only)."""

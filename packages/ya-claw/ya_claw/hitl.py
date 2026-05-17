@@ -8,6 +8,7 @@ from pydantic_ai import DeferredToolRequests
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 
 from ya_claw.controller.models import ActiveInteraction
+from ya_claw.json_types import JsonValue
 
 
 def build_active_interactions(
@@ -77,7 +78,7 @@ def _interaction_description(metadata: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _preview_tool_args(value: Any) -> Any:
+def _preview_tool_args(value: object) -> JsonValue:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, dict):

@@ -4,6 +4,7 @@ import json
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import DeferredToolRequests
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.context import (
@@ -92,7 +93,7 @@ class ClawRuntimeBuilder:
         self,
         *,
         settings: ClawSettings,
-        session_factory: Any | None = None,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory

@@ -170,7 +170,7 @@ def _template_for_interaction(interaction: ActiveInteraction) -> str:
     return "blue"
 
 
-def _format_arguments(value: Any) -> str:
+def _format_arguments(value: object) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, indent=2, default=str)
     except TypeError:
@@ -183,7 +183,7 @@ def _truncate(value: str, limit: int) -> str:
     return f"{value[:limit]}..."
 
 
-def _string_value(value: Any) -> str | None:
+def _string_value(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip()

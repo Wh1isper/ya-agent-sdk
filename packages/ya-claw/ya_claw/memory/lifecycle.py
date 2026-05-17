@@ -10,9 +10,12 @@ from loguru import logger
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from ya_agent_environment import Environment
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
+from ya_agent_sdk.agents.main import RuntimeReadyContext
 
 from ya_claw.config import ClawSettings
+from ya_claw.context import ClawAgentContext
 from ya_claw.controller.models import DispatchMode, MemoryJobKind, TriggerType
 from ya_claw.execution.state_machine import queue_run
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
@@ -45,7 +48,7 @@ class MemoryRunRequest:
     source_identity: dict[str, Any] | None = None
 
 
-class ClawMemoryExtension(BaseLifecycleExtension[Any, Any]):
+class ClawMemoryExtension(BaseLifecycleExtension[ClawAgentContext, Environment]):
     """SDK lifecycle extension for workspace-native YA Claw memory."""
 
     name = "ya_claw_memory"
@@ -59,19 +62,19 @@ class ClawMemoryExtension(BaseLifecycleExtension[Any, Any]):
         self._settings = settings
         self._session_factory = session_factory
 
-    async def on_runtime_ready(self, ctx: Any) -> None:
+    async def on_runtime_ready(self, ctx: RuntimeReadyContext[ClawAgentContext, Any, Environment]) -> None:
         try:
             await self._on_runtime_ready(ctx)
         except Exception:
             logger.exception("YA Claw memory context injection failed")
 
-    async def on_context_handoff_complete(self, ctx: ContextHandoffCompleteContext[Any]) -> None:
+    async def on_context_handoff_complete(self, ctx: ContextHandoffCompleteContext[ClawAgentContext]) -> None:
         try:
             self._on_context_handoff_complete(ctx)
         except Exception:
             logger.exception("YA Claw memory context handoff capture failed")
 
-    async def _on_runtime_ready(self, ctx: Any) -> None:
+    async def _on_runtime_ready(self, ctx: RuntimeReadyContext[ClawAgentContext, Any, Environment]) -> None:
         runtime_ctx = getattr(ctx.runtime, "ctx", None)
         if runtime_ctx is None:
             return
@@ -103,7 +106,7 @@ class ClawMemoryExtension(BaseLifecycleExtension[Any, Any]):
         if missing_tags:
             runtime_ctx.injected_context_tags = (*runtime_ctx.injected_context_tags, *missing_tags)
 
-    def _on_context_handoff_complete(self, ctx: ContextHandoffCompleteContext[Any]) -> None:
+    def _on_context_handoff_complete(self, ctx: ContextHandoffCompleteContext[ClawAgentContext]) -> None:
         if not self._settings.memory_enabled:
             return
         deps = ctx.deps
@@ -599,18 +602,18 @@ def _memory_metadata(run_metadata: dict[str, Any]) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _memory_kind(value: Any) -> MemoryJobKind | None:
+def _memory_kind(value: object) -> MemoryJobKind | None:
     try:
         return MemoryJobKind(value)
     except Exception:
         return None
 
 
-def _string_or_none(value: Any) -> str | None:
+def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _int_or_zero(value: Any) -> int:
+def _int_or_zero(value: object) -> int:
     return value if isinstance(value, int) else 0
 
 
@@ -725,7 +728,7 @@ async def _source_run_identities(db_session: AsyncSession, request: MemoryRunReq
     return identities
 
 
-def _bridge_identity_from_container(container: Any) -> dict[str, Any]:
+def _bridge_identity_from_container(container: object) -> dict[str, Any]:
     if not isinstance(container, dict):
         return {}
     candidate = container.get("bridge")

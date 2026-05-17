@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
@@ -274,7 +275,7 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: TracebackType | None,
     ) -> bool | None:
         """Exit the runtime, cleaning up only what we entered.
 
@@ -1014,7 +1015,7 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
 
         Raises:
             AgentInterrupted: If interrupt() was called.
-            BaseException: Any other exception that occurred during streaming.
+            BaseException: Additional exception that occurred during streaming.
         """
         # Check stored exception first
         if self.exception is not None:

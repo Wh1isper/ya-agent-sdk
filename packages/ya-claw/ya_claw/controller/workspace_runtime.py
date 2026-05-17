@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 from fastapi import HTTPException
 from loguru import logger
@@ -399,7 +399,7 @@ async def _inspect_docker_container(container_ref: str) -> dict[str, str | None]
         try:
             import docker
 
-            client = docker.from_env()
+            client = cast(_DockerClientLike, docker.from_env())
             try:
                 container = client.containers.get(container_ref)
                 container.reload()
@@ -462,11 +462,11 @@ async def _publish_sandbox_update(
 def _inspect_docker_runtime(settings: ClawSettings) -> DockerRuntimeStatus:
     daemon = DockerDaemonStatus(status="checking")
     image = DockerImageStatus(ref=settings.workspace_provider_docker_image)
-    client: Any | None = None
+    client: _DockerClientLike | None = None
     try:
         import docker
 
-        client = docker.from_env()
+        client = cast(_DockerClientLike, docker.from_env())
         version_payload = client.version()
         server_version = version_payload.get("Version") if isinstance(version_payload, dict) else None
         daemon = DockerDaemonStatus(
@@ -546,7 +546,51 @@ def _runtime_status_from_checks(checks: list[RuntimeCheck]) -> WorkspaceRuntimeS
     return "ready"
 
 
-def _image_digest(image_obj: Any) -> str | None:
+class _DockerContainerCollectionLike(Protocol):
+    def get(self, name: str) -> _DockerContainerLike: ...
+
+
+class _DockerImageCollectionLike(Protocol):
+    def get(self, name: str) -> _DockerImageLike: ...
+
+
+class _DockerClientLike(Protocol):
+    @property
+    def containers(self) -> _DockerContainerCollectionLike: ...
+
+    @property
+    def images(self) -> _DockerImageCollectionLike: ...
+
+    def version(self) -> object: ...
+
+    def close(self) -> None: ...
+
+
+class _DockerContainerLike(Protocol):
+    @property
+    def attrs(self) -> object: ...
+
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def status(self) -> object: ...
+
+    def reload(self) -> None: ...
+
+
+class _DockerImageLike(Protocol):
+    @property
+    def attrs(self) -> object: ...
+
+    @property
+    def id(self) -> object: ...
+
+    @property
+    def short_id(self) -> object: ...
+
+
+def _image_digest(image_obj: _DockerImageLike) -> str | None:
     attrs = image_obj.attrs if isinstance(image_obj.attrs, dict) else {}
     repo_digests = attrs.get("RepoDigests")
     if isinstance(repo_digests, list):
@@ -560,14 +604,14 @@ def _image_digest(image_obj: Any) -> str | None:
     return short_id.strip() if short_id is not None and short_id.strip() else None
 
 
-def _normalize_string(value: Any) -> str | None:
+def _normalize_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     stripped = value.strip()
     return stripped or None
 
 
-def _normalize_path(value: Any) -> Path | None:
+def _normalize_path(value: object) -> Path | None:
     normalized = _normalize_string(value)
     return Path(normalized).expanduser() if normalized is not None else None
 

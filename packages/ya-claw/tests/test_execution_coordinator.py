@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from ya_agent_environment import Environment
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.coordinator import (
@@ -62,13 +63,21 @@ class StubProfileResolver:
         )
 
 
+class StubEnvironment(Environment):
+    async def _setup(self) -> None:
+        return None
+
+    async def _teardown(self) -> None:
+        return None
+
+
 class StubEnvironmentFactory:
-    def build(self, binding: WorkspaceBinding) -> Any:
-        return object()
+    def build(self, binding: WorkspaceBinding) -> Environment:
+        return StubEnvironment()
 
 
 class StubRuntimeBuilder:
-    def build(self, **_: Any) -> Any:
+    def build(self, **_: object) -> object:
         return object()
 
 

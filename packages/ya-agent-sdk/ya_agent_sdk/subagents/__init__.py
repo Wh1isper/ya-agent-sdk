@@ -277,7 +277,7 @@ def load_builtin_unified_subagent_tool(
     )
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> object:
     """Lazy import for symbols from toolsets.core.subagent to avoid circular imports."""
     if name in _LAZY_IMPORTS:
         from ya_agent_sdk.toolsets.core.subagent import (

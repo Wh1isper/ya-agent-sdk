@@ -456,7 +456,7 @@ class ToolIdWrapper:
 
     def wrap_messages(
         self,
-        _: Any,
+        _: RunContext[AgentContext] | None,
         message_history: list[ModelMessage],
     ) -> list[ModelMessage]:
         """Normalize all tool call IDs in the message history.
@@ -523,7 +523,10 @@ class ShellReviewConfig(BaseModel):
 
     @field_validator("model_settings", mode="before")
     @classmethod
-    def resolve_model_settings_preset(cls, value: Any) -> dict[str, Any] | None:
+    def resolve_model_settings_preset(
+        cls,
+        value: ModelSettings | str | dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
         """Resolve model settings preset names at the SDK config boundary."""
         if value is None:
             return None
@@ -955,7 +958,7 @@ def _generate_run_id() -> str:
     return uuid4().hex
 
 
-def _string_header_value(value: Any) -> str | None:
+def _string_header_value(value: object) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
@@ -1301,7 +1304,7 @@ class AgentContext(BaseModel):
     _stream_queue_enabled: bool = False
     _compact_depth: int = 0
 
-    def __init__(self, **data: Any) -> None:
+    def __init__(self, **data: object) -> None:
         """Initialize AgentContext."""
         super().__init__(**data)
         object.__setattr__(self, "_enter_lock", asyncio.Lock())
@@ -1659,7 +1662,7 @@ class AgentContext(BaseModel):
         self,
         agent_name: str,
         agent_id: str | None = None,
-        **override: Any,
+        **override: object,
     ) -> Self:
         """Create a child context for subagent with independent timing.
 
@@ -1881,7 +1884,7 @@ class AgentContext(BaseModel):
         automatically enabled when using stream_agent().
 
         Args:
-            event: Any event object (AgentEvent subclass, pydantic-ai events, or custom).
+            event: Arbitrary event object (AgentEvent subclass, pydantic-ai events, or custom).
 
         Example::
 

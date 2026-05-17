@@ -656,7 +656,7 @@ async def _mark_run_signals_consumed(
         signal.run_id = run_id
 
 
-def _string_or_none(value: Any) -> str | None:
+def _string_or_none(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     stripped = value.strip()

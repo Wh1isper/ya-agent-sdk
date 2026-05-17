@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import RunContext
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
@@ -96,7 +96,10 @@ def _create_subagent_tool(
 
 
 def _create_tool(
-    config: SubagentConfig, parent_toolset: Toolset[Any], agent: Any, model_cfg: ModelConfig | None
+    config: SubagentConfig,
+    parent_toolset: Toolset[Any],
+    agent: Agent[AgentContext, str],
+    model_cfg: ModelConfig | None,
 ) -> type[BaseTool]:
     required_tools = config.tools
 

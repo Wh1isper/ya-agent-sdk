@@ -9,6 +9,7 @@ from typing import Any
 
 from ya_claw.agui_adapter import AguiReplayBuffer
 from ya_claw.controller.models import ActiveInteraction, UserInteraction
+from ya_claw.json_types import JsonValue
 
 
 @dataclass(slots=True)
@@ -158,7 +159,7 @@ class InMemoryRuntimeState:
         *,
         approved: bool,
         reason: str | None = None,
-        user_input: Any | None = None,
+        user_input: JsonValue = None,
     ) -> tuple[ActiveInteraction, ActiveInteraction | None, int]:
         state = self.hitl_states.get(run_id)
         if state is None:

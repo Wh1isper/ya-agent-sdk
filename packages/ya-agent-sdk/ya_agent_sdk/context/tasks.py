@@ -85,7 +85,7 @@ class TaskManager(BaseModel):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def __init__(self, **data: Any) -> None:
+    def __init__(self, **data: object) -> None:
         """Initialize TaskManager.
 
         Args:

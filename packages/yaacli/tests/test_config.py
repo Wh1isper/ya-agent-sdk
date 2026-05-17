@@ -590,7 +590,7 @@ def test_user_command_overrides_default() -> None:
 def test_load_commands_from_config_file(
     temp_config_dir: Path,
     temp_project_dir: Path,
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test loading commands from config.toml."""
     monkeypatch.chdir(temp_project_dir)

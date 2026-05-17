@@ -11,8 +11,6 @@ guidance during agent execution:
 
 from __future__ import annotations
 
-from typing import Any
-
 from ya_agent_sdk.context import AgentContext
 
 
@@ -32,7 +30,7 @@ class TUIContext(AgentContext):
     loop_iteration: int = 0
     loop_max_iterations: int = 10
 
-    def __init__(self, **data: Any) -> None:
+    def __init__(self, **data: object) -> None:
         """Initialize TUIContext."""
         super().__init__(**data)
 

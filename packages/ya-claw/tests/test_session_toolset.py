@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.request
 from typing import Any
 
 from ya_agent_environment import Environment
@@ -10,6 +11,7 @@ from ya_claw.toolsets.session import (
     ClawSelfClient,
     GetRunTraceTool,
     ListSessionTurnsTool,
+    SelfSessionClient,
 )
 
 
@@ -105,7 +107,7 @@ class FakeSelfClient:
         }
 
 
-def _context_with_client(client: Any) -> FakeRunContext:
+def _context_with_client(client: SelfSessionClient) -> FakeRunContext:
     env = EmptyEnvironment()
     ctx = AgentContext(agent_id="main", env=env)
     assert ctx.resources is not None
@@ -207,7 +209,7 @@ def test_claw_self_client_builds_session_scoped_authorized_requests(monkeypatch)
         def read(self) -> bytes:
             return json.dumps({"session_id": "session-1", "turns": []}).encode("utf-8")
 
-    def fake_urlopen(request: Any, timeout: float) -> FakeResponse:
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeResponse:
         seen["url"] = request.full_url
         seen["authorization"] = request.headers.get("Authorization")
         seen["timeout"] = timeout

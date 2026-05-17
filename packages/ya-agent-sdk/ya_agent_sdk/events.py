@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -66,7 +66,7 @@ class CompactCompleteEvent(AgentEvent):
     summary_markdown: str = ""
     original_message_count: int = 0
     compacted_message_count: int = 0
-    condense_result: Any = None
+    condense_result: object = None
 
 
 @dataclass

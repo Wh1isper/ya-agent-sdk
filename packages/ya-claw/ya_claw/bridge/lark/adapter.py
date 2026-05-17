@@ -7,7 +7,7 @@ import http
 import json
 from collections.abc import Coroutine
 from concurrent.futures import Future
-from typing import Any
+from typing import Any, TypeAlias
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -20,6 +20,8 @@ from ya_claw.config import ClawSettings
 from ya_claw.controller.hitl import HitlController
 from ya_claw.controller.models import ActiveInteraction
 from ya_claw.notifications import NotificationHub
+
+LarkSdkObject: TypeAlias = Any
 
 _LARK_CARD_ACTION_ACK = {"toast": {"type": "info", "content": "YA Claw is processing your response."}}
 
@@ -39,7 +41,7 @@ class LarkBridgeAdapter(BridgeAdapter):
         self._session_factory = session_factory
         self._hitl_controller = HitlController()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._client: Any | None = None
+        self._client: LarkSdkObject | None = None
         self._app_id: str | None = None
         self._app_secret: str | None = None
         self._stopping = False
@@ -321,7 +323,7 @@ class LarkBridgeAdapter(BridgeAdapter):
         if not getattr(response, "success", lambda: False)():
             logger.warning("Failed to patch Lark HITL card message_id={} response={}", message_id, response)
 
-    def _openapi_client(self, lark_module: Any) -> Any:
+    def _openapi_client(self, lark_module: LarkSdkObject) -> LarkSdkObject:
         if self._app_id is None or self._app_secret is None:
             raise RuntimeError("Lark OpenAPI credentials are unavailable.")
         return (
@@ -357,7 +359,7 @@ class LarkBridgeAdapter(BridgeAdapter):
         with contextlib.suppress(RuntimeError):
             client.start()
 
-    def _handle_lark_payload(self, lark_module: Any, data: object) -> None:
+    def _handle_lark_payload(self, lark_module: LarkSdkObject, data: object) -> None:
         raw_event = _marshal_lark_payload(lark_module, data)
         action = normalize_lark_action(raw_event)
         if action is not None:
@@ -375,8 +377,8 @@ class LarkBridgeAdapter(BridgeAdapter):
         )
         self._submit_from_sdk_thread(self._handler.handle_message(message))
 
-    def _install_card_action_handler(self, client: Any, lark_module: Any) -> None:
-        async def handle_card_action_frame(frame: Any, headers: Any, payload: bytes) -> None:
+    def _install_card_action_handler(self, client: LarkSdkObject, lark_module: LarkSdkObject) -> None:
+        async def handle_card_action_frame(frame: LarkSdkObject, headers: LarkSdkObject, payload: bytes) -> None:
             self._handle_lark_payload(lark_module, payload)
             frame.payload = _marshal_lark_ws_response(lark_module, _LARK_CARD_ACTION_ACK)
             await client._write_message(frame.SerializeToString())
@@ -435,7 +437,7 @@ class LarkBridgeAdapter(BridgeAdapter):
             logger.exception("Lark bridge message handler failed.")
 
 
-def _current_interaction(detail: Any) -> ActiveInteraction | None:
+def _current_interaction(detail: object) -> ActiveInteraction | None:
     if not isinstance(detail, dict):
         return None
     interactions = detail.get("active_interactions")
@@ -469,7 +471,7 @@ def _chat_id_from_payload(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def _marshal_lark_payload(lark_module: Any, payload: Any) -> dict[str, Any]:
+def _marshal_lark_payload(lark_module: LarkSdkObject, payload: object) -> dict[str, Any]:
     if isinstance(payload, bytes | bytearray):
         parsed_bytes = lark_module.JSON.unmarshal(bytes(payload), dict)
         return parsed_bytes if isinstance(parsed_bytes, dict) else {}
@@ -479,7 +481,7 @@ def _marshal_lark_payload(lark_module: Any, payload: Any) -> dict[str, Any]:
 
 
 def _marshal_lark_ws_response(
-    lark_module: Any,
+    lark_module: LarkSdkObject,
     data: dict[str, Any] | None,
     *,
     status_code: int = http.HTTPStatus.OK,

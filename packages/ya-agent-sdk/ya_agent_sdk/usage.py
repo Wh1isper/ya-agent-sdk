@@ -15,7 +15,7 @@ from pydantic_ai.usage import RunUsage
 _RUN_USAGE_FIELD_NAMES = frozenset(field.name for field in fields(RunUsage))
 
 
-def coerce_run_usage(usage: Any) -> RunUsage:
+def coerce_run_usage(usage: object) -> RunUsage:
     """Convert Pydantic AI usage wrappers into a concrete ``RunUsage`` instance."""
     if is_dataclass(usage):
         return RunUsage(**_run_usage_data(usage))
@@ -24,7 +24,7 @@ def coerce_run_usage(usage: Any) -> RunUsage:
     return RunUsage(**_run_usage_data(usage))
 
 
-def _run_usage_data(usage: Any) -> dict[str, Any]:
+def _run_usage_data(usage: object) -> dict[str, Any]:
     if not is_dataclass(usage):
         raise TypeError(f"Expected RunUsage-compatible dataclass, got {type(usage).__name__}")
 

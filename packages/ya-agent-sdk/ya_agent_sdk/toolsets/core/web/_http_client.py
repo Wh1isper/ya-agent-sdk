@@ -6,13 +6,37 @@ import ipaddress
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypedDict, Unpack
 from urllib.parse import urljoin, urlparse
 
 import httpx
+from httpx._client import UseClientDefault
+from httpx._types import (
+    CookieTypes,
+    HeaderTypes,
+    QueryParamTypes,
+    RequestContent,
+    RequestData,
+    RequestExtensions,
+    RequestFiles,
+    TimeoutTypes,
+)
 
 if TYPE_CHECKING:
     pass
+
+
+class SafeStreamRequestKwargs(TypedDict, total=False):
+    content: RequestContent | None
+    data: RequestData | None
+    files: RequestFiles | None
+    json: object
+    params: QueryParamTypes | None
+    headers: HeaderTypes | None
+    cookies: CookieTypes | None
+    timeout: TimeoutTypes | UseClientDefault
+    extensions: RequestExtensions | None
+
 
 # Blocked IP ranges for SSRF protection
 _BLOCKED_RANGES: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
@@ -160,7 +184,7 @@ async def safe_stream_request(
     method: str = "GET",
     max_redirects: int = 10,
     skip_verification: bool = False,
-    **kwargs: Any,
+    **kwargs: Unpack[SafeStreamRequestKwargs],
 ) -> AsyncIterator[httpx.Response]:
     """Make streamed HTTP request with SSRF protection and safe redirects."""
     if not skip_verification:

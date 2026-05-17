@@ -1,6 +1,5 @@
 """Tests for ya_agent_sdk.toolsets.base module."""
 
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,6 +14,7 @@ from ya_agent_sdk.toolsets.base import (
     UserInputPreprocessResult,
 )
 from ya_agent_sdk.toolsets.core.base import (
+    CallMetadata,
     GlobalHooks,
     HookableToolsetTool,
     Toolset,
@@ -75,10 +75,12 @@ def test_global_hooks_empty() -> None:
 def test_global_hooks_with_hooks() -> None:
     """Should accept hook functions."""
 
-    async def pre_hook(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
+    async def pre_hook(
+        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         return args
 
-    async def post_hook(ctx: Any, name: str, result: Any, metadata: dict) -> Any:
+    async def post_hook(ctx: RunContext[AgentContext], name: str, result: object, metadata: CallMetadata) -> object:
         return result
 
     hooks = GlobalHooks(pre=pre_hook, post=post_hook)
@@ -165,7 +167,9 @@ async def test_base_toolset_get_instructions_returns_none() -> None:
         async def get_tools(self, ctx: RunContext) -> dict:
             return {}
 
-        async def call_tool(self, name: str, tool_args: dict, ctx: RunContext, tool: Any) -> Any:
+        async def call_tool(
+            self, name: str, tool_args: dict[str, object], ctx: RunContext[AgentContext], tool: object
+        ) -> object:
             pass
 
     toolset = SimpleToolset()
@@ -236,19 +240,23 @@ async def test_toolset_call_tool_with_hooks(agent_context: AgentContext) -> None
     """Should execute hooks in order."""
     call_order: list[str] = []
 
-    async def global_pre(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
+    async def global_pre(
+        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         call_order.append("global_pre")
         return args
 
-    async def global_post(ctx: Any, name: str, result: Any, metadata: dict) -> Any:
+    async def global_post(ctx: RunContext[AgentContext], name: str, result: object, metadata: CallMetadata) -> object:
         call_order.append("global_post")
         return result
 
-    async def tool_pre(ctx: Any, args: dict, metadata: dict) -> dict:
+    async def tool_pre(
+        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         call_order.append("tool_pre")
         return args
 
-    async def tool_post(ctx: Any, result: Any, metadata: dict) -> Any:
+    async def tool_post(ctx: RunContext[AgentContext], result: object, metadata: CallMetadata) -> object:
         call_order.append("tool_post")
         return result
 
@@ -270,22 +278,26 @@ async def test_toolset_call_tool_metadata_shared_across_hooks(agent_context: Age
     """Should share metadata dict across all hooks in a single call_tool invocation."""
     captured_metadata: list[dict] = []
 
-    async def global_pre(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
+    async def global_pre(
+        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         metadata["global_pre_time"] = "t0"
         captured_metadata.append(dict(metadata))
         return args
 
-    async def tool_pre(ctx: Any, args: dict, metadata: dict) -> dict:
+    async def tool_pre(
+        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         metadata["tool_pre_time"] = "t1"
         captured_metadata.append(dict(metadata))
         return args
 
-    async def tool_post(ctx: Any, result: Any, metadata: dict) -> Any:
+    async def tool_post(ctx: RunContext[AgentContext], result: object, metadata: CallMetadata) -> object:
         metadata["tool_post_time"] = "t2"
         captured_metadata.append(dict(metadata))
         return result
 
-    async def global_post(ctx: Any, name: str, result: Any, metadata: dict) -> Any:
+    async def global_post(ctx: RunContext[AgentContext], name: str, result: object, metadata: CallMetadata) -> object:
         metadata["global_post_time"] = "t3"
         captured_metadata.append(dict(metadata))
         return result
@@ -411,13 +423,17 @@ def test_toolset_subset_specific_tools(agent_context: AgentContext) -> None:
 def test_toolset_subset_inherit_hooks(agent_context: AgentContext) -> None:
     """Should inherit hooks when inherit_hooks=True."""
 
-    async def pre_hook(ctx: Any, args: dict, metadata: dict) -> dict:
+    async def pre_hook(
+        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         return args
 
-    async def post_hook(ctx: Any, result: Any, metadata: dict) -> Any:
+    async def post_hook(ctx: RunContext[AgentContext], result: object, metadata: CallMetadata) -> object:
         return result
 
-    async def global_pre(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
+    async def global_pre(
+        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         return args
 
     toolset = Toolset(
@@ -435,7 +451,9 @@ def test_toolset_subset_inherit_hooks(agent_context: AgentContext) -> None:
 def test_toolset_subset_no_inherit_hooks(agent_context: AgentContext) -> None:
     """Should not inherit hooks by default."""
 
-    async def pre_hook(ctx: Any, args: dict, metadata: dict) -> dict:
+    async def pre_hook(
+        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         return args
 
     toolset = Toolset(
@@ -484,7 +502,9 @@ def test_toolset_with_subagents_preserves_hooks(agent_context: AgentContext) -> 
     """Should preserve hooks in new toolset."""
     from ya_agent_sdk.subagents import SubagentConfig
 
-    async def pre_hook(ctx: Any, args: dict, metadata: dict) -> dict:
+    async def pre_hook(
+        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         return args
 
     toolset = Toolset(
@@ -533,7 +553,9 @@ def test_toolset_with_subagents_inherit_hooks(agent_context: AgentContext) -> No
 
     from ya_agent_sdk.subagents import SubagentConfig
 
-    async def global_pre(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
+    async def global_pre(
+        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
+    ) -> dict[str, object]:
         return args
 
     toolset = Toolset(
@@ -548,12 +570,16 @@ def test_toolset_with_subagents_inherit_hooks(agent_context: AgentContext) -> No
     )
 
     # Track what inherit_hooks value reaches subset()
-    captured_kwargs: list[dict] = []
+    captured_kwargs: list[dict[str, object]] = []
     original_subset = Toolset.subset
 
-    def tracking_subset(self: Any, *args: Any, **kwargs: Any) -> Any:
+    def tracking_subset(
+        self: Toolset[AgentContext],
+        *args: object,
+        **kwargs: object,
+    ) -> Toolset[AgentContext]:
         captured_kwargs.append(kwargs)
-        return original_subset(self, *args, **kwargs)
+        return original_subset(self, *args, **kwargs)  # type: ignore[arg-type]
 
     with patch.object(Toolset, "subset", tracking_subset):
         toolset.with_subagents([config], inherit_hooks=True)
@@ -576,12 +602,16 @@ def test_toolset_with_subagents_no_inherit_hooks_by_default(agent_context: Agent
         tools=["dummy_tool"],
     )
 
-    captured_kwargs: list[dict] = []
+    captured_kwargs: list[dict[str, object]] = []
     original_subset = Toolset.subset
 
-    def tracking_subset(self: Any, *args: Any, **kwargs: Any) -> Any:
+    def tracking_subset(
+        self: Toolset[AgentContext],
+        *args: object,
+        **kwargs: object,
+    ) -> Toolset[AgentContext]:
         captured_kwargs.append(kwargs)
-        return original_subset(self, *args, **kwargs)
+        return original_subset(self, *args, **kwargs)  # type: ignore[arg-type]
 
     with patch.object(Toolset, "subset", tracking_subset):
         toolset.with_subagents([config])

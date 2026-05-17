@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -299,7 +300,7 @@ class ClawCliApplication:
 
 
 class _ReadyUvicornServer(uvicorn.Server):
-    def __init__(self, *, config: uvicorn.Config, ready_callback: Any) -> None:
+    def __init__(self, *, config: uvicorn.Config, ready_callback: Callable[[], None]) -> None:
         super().__init__(config=config)
         self._ready_callback = ready_callback
         self._ready_emitted = False

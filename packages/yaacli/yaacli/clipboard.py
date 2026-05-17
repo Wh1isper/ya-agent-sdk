@@ -12,7 +12,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 from urllib.parse import unquote, urlparse
 
 from ya_agent_sdk.utils import detect_image_media_type
@@ -23,6 +23,12 @@ _SUPPORTED_MEDIA_TYPES: tuple[str, ...] = (
     "image/gif",
     "image/webp",
 )
+
+
+class _PillowImageLike(Protocol):
+    """Minimal Pillow image surface used for PNG encoding."""
+
+    def save(self, fp: io.BytesIO, format: str) -> None: ...  # noqa: A002
 
 
 @dataclass(frozen=True)
@@ -59,7 +65,7 @@ async def _run_command(args: list[str], timeout_seconds: float = 2.0) -> tuple[i
     return returncode, stdout, stderr
 
 
-def _encode_image_as_png_bytes(image: Any) -> bytes:
+def _encode_image_as_png_bytes(image: _PillowImageLike) -> bytes:
     """Encode a Pillow image object as PNG bytes."""
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
@@ -96,7 +102,7 @@ def _read_image_file(path: str | os.PathLike[str]) -> ClipboardImage | None:
     return ClipboardImage(data=image_bytes, media_type=detected_type)
 
 
-def _clipboard_image_from_pillow_payload(payload: Any) -> ClipboardImage | None:
+def _clipboard_image_from_pillow_payload(payload: object) -> ClipboardImage | None:
     """Normalize Pillow ImageGrab payload into clipboard image bytes."""
     try:
         from PIL import Image

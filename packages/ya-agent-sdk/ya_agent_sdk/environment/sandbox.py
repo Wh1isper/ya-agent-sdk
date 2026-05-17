@@ -44,7 +44,7 @@ import docker
 import docker.errors
 
 
-def _coerce_docker_exec_output(output: Any) -> tuple[bytes, bytes]:
+def _coerce_docker_exec_output(output: bytes | tuple[object, object] | Iterator[bytes] | object) -> tuple[bytes, bytes]:
     if isinstance(output, tuple) and len(output) == 2:
         out, err = output
         stdout_bytes = out if isinstance(out, bytes) else b""

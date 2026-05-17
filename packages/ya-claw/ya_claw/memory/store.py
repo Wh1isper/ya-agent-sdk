@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from ya_claw.json_types import JsonValue
 from ya_claw.workspace import WorkspaceBinding
 
 MEMORY_DIRNAME = "memory"
@@ -226,7 +228,7 @@ def _read_memory_file(root: Path, path: Path) -> str | None:
         return None
 
 
-def _safe_stat(root: Path, path: Path) -> Any | None:
+def _safe_stat(root: Path, path: Path) -> os.stat_result | None:
     try:
         if not _is_safe_regular_file(root, path):
             return None
@@ -263,7 +265,7 @@ def _split_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     return dict(parsed) if isinstance(parsed, dict) else {}, body
 
 
-def _string_or_none(value: Any) -> str | None:
+def _string_or_none(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     value = value.strip()
@@ -276,7 +278,7 @@ def _truncate(value: str, max_chars: int) -> str:
     return value[:max_chars]
 
 
-def _json_for_xml_text(value: Any) -> str:
+def _json_for_xml_text(value: JsonValue) -> str:
     return (
         json
         .dumps(value, ensure_ascii=False, sort_keys=True)

@@ -15,6 +15,8 @@ from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
+from ya_claw.json_types import JsonArray, JsonValue
+
 CLAW_SELF_CLIENT_KEY = "claw_self_client"
 _DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
 
@@ -173,7 +175,7 @@ class ClawSelfClient:
             return response_payload
         raise RuntimeError("YA Claw self API returned a non-object JSON payload.")
 
-    def _get_json_sync(self, path: str, params: dict[str, str]) -> Any:
+    def _get_json_sync(self, path: str, params: dict[str, str]) -> JsonValue:
         query = urllib.parse.urlencode(params)
         url = f"{self._base_url}{path}"
         if query:
@@ -195,7 +197,7 @@ class ClawSelfClient:
         except urllib.error.URLError as exc:
             raise RuntimeError(f"YA Claw self API request failed: {exc.reason}") from exc
 
-    def _send_json_sync(self, path: str, method: str, payload: dict[str, Any]) -> Any:
+    def _send_json_sync(self, path: str, method: str, payload: dict[str, Any]) -> JsonValue:
         url = f"{self._base_url}{path}"
         parsed_url = urlparse(url)
         if parsed_url.scheme not in {"http", "https"}:
@@ -365,8 +367,11 @@ def _compact_turn(
     max_output_chars: int,
     include_binary_data: bool,
 ) -> dict[str, Any]:
+    sanitized_input_parts: JsonArray = _sanitize_input_parts(
+        turn.get("input_parts"), include_binary_data=include_binary_data
+    )
     input_parts, input_truncated = _trim_json_value(
-        _sanitize_input_parts(turn.get("input_parts"), include_binary_data=include_binary_data),
+        sanitized_input_parts,
         max_chars=max_input_chars,
     )
     output_text, output_truncated = _trim_text(_string_or_none(turn.get("output_text")), max_output_chars)
@@ -386,7 +391,7 @@ def _compact_turn(
     }
 
 
-def _sanitize_input_parts(value: Any, *, include_binary_data: bool) -> Any:
+def _sanitize_input_parts(value: JsonValue, *, include_binary_data: bool) -> JsonArray:
     if not isinstance(value, list):
         return []
     return [
@@ -408,7 +413,7 @@ def _sanitize_input_part(part: dict[str, Any], *, include_binary_data: bool) -> 
     return sanitized
 
 
-def _trim_json_value(value: Any, *, max_chars: int) -> tuple[Any, bool]:
+def _trim_json_value(value: JsonValue, *, max_chars: int) -> tuple[JsonValue, bool]:
     dumped = _dump_json(value)
     if len(dumped) <= max_chars:
         return value, False
@@ -423,7 +428,7 @@ def _trim_text(value: str | None, max_chars: int) -> tuple[str | None, bool]:
     return value[:max_chars], True
 
 
-def _string_or_none(value: Any) -> str | None:
+def _string_or_none(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -431,7 +436,7 @@ def _string_or_none(value: Any) -> str | None:
     return str(value)
 
 
-def _dump_json(value: Any) -> str:
+def _dump_json(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 

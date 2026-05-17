@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from loguru import logger
 from pydantic import BaseModel
@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_environment import Environment
-from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, stream_agent
+from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, AgentStreamer, stream_agent
 from ya_agent_sdk.context import BusMessage, ResumableState
 from ya_agent_sdk.environment import SandboxEnvironment
 from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent
@@ -42,6 +42,7 @@ from ya_claw.execution.runtime import ClawRuntimeBuilder
 from ya_claw.execution.state_machine import complete_run, fail_run, interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
 from ya_claw.hitl import build_active_interactions
+from ya_claw.json_types import JsonValue
 from ya_claw.memory.lifecycle import MemoryLifecycle
 from ya_claw.notifications import NotificationHub
 from ya_claw.orm.tables import RunRecord, SessionRecord
@@ -72,6 +73,10 @@ class ExecutionBuffers:
     output_text: str | None = None
     output_summary: str | None = None
     claw_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class _AgentRunMessages(Protocol):
+    def all_messages(self) -> list[ModelMessage]: ...
 
 
 class ExecutionSupervisor:
@@ -860,7 +865,7 @@ class RunCoordinator:
         *,
         run_id: str,
         runtime: AgentRuntime[ClawAgentContext, Any, Environment],
-        streamer: Any,
+        streamer: AgentStreamer[ClawAgentContext, Any],
     ) -> None:
         while True:
             termination_reason = self._runtime_state.get_termination_requested(run_id)
@@ -1196,7 +1201,7 @@ class RunCoordinator:
 
     def _build_message_payload(
         self,
-        run: Any,
+        run: _AgentRunMessages,
         *,
         replay_events: list[dict[str, Any]],
         recoverable_messages: list[ModelMessage] | None = None,
@@ -1226,7 +1231,7 @@ class RunCoordinator:
             "message_count": len(messages) if isinstance(messages, list) else None,
         }
 
-    def _stringify_output(self, output: Any) -> str | None:
+    def _stringify_output(self, output: object) -> str | None:
         if output is None:
             return None
         if isinstance(output, str):
@@ -1234,7 +1239,7 @@ class RunCoordinator:
             return value or None
         return str(output)
 
-    def _summarize_output(self, output: Any) -> str | None:
+    def _summarize_output(self, output: object) -> str | None:
         value = self._stringify_output(output)
         if value is None:
             return None
@@ -1260,7 +1265,7 @@ class RunCoordinator:
         )
         return supervisor.submit_run(run_id)
 
-    def _serialize_value(self, value: Any) -> Any:
+    def _serialize_value(self, value: object) -> JsonValue:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
         if isinstance(value, datetime):
@@ -1292,8 +1297,8 @@ def _runtime_source_metadata(
     *,
     trigger_type: str,
     run_metadata: dict[str, Any],
-    memory_metadata: Any,
-    agency_metadata: Any = None,
+    memory_metadata: object,
+    agency_metadata: object = None,
 ) -> dict[str, Any]:
     metadata = {"trigger_type": trigger_type, **run_metadata}
     if isinstance(memory_metadata, dict):
@@ -1303,14 +1308,14 @@ def _runtime_source_metadata(
     return metadata
 
 
-def _memory_source_session_id(memory_metadata: Any) -> str | None:
+def _memory_source_session_id(memory_metadata: object) -> str | None:
     if not isinstance(memory_metadata, dict):
         return None
     value = memory_metadata.get("source_session_id")
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _agency_source_session_id(agency_metadata: Any) -> str | None:
+def _agency_source_session_id(agency_metadata: object) -> str | None:
     if not isinstance(agency_metadata, dict):
         return None
     value = agency_metadata.get("source_session_id")
@@ -1458,7 +1463,7 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _normalize_metadata_string(value: Any) -> str | None:
+def _normalize_metadata_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     stripped = value.strip()

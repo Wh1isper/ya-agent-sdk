@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, runtime_checkable
 
 from pydantic import BaseModel
 from pydantic_ai import RunContext
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     pass
 
 AgentDepsT = TypeVar("AgentDepsT", bound=AgentContext, default=AgentContext, contravariant=True)
+ToolCallDynamic: TypeAlias = Any
 
 
 class UserInputPreprocessResult(BaseModel):
@@ -207,7 +208,13 @@ class BaseTool(ABC):
         return None
 
     @abstractmethod
-    async def call(self, ctx: RunContext[AgentContext], /, *args: Any, **kwargs: Any) -> Any:
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        /,
+        *args: ToolCallDynamic,
+        **kwargs: ToolCallDynamic,
+    ) -> ToolCallDynamic:
         """Execute the tool logic.
 
         Subclasses should override this method with their specific parameter signature.
@@ -226,7 +233,7 @@ class BaseTool(ABC):
     async def process_user_input(
         self,
         ctx: AgentContext,
-        user_input: Any,
+        user_input: object,
     ) -> UserInputPreprocessResult | None:
         """Process user input for HITL scenarios.
 
@@ -246,7 +253,7 @@ class BaseTool(ABC):
         """
         return None
 
-    def get_deferred_metadata(self, ctx: RunContext[AgentContext]) -> Any:
+    def get_deferred_metadata(self, ctx: RunContext[AgentContext]) -> object:
         """Get HITL metadata for the tool call, if applicable."""
         return ctx.tool_call_metadata
 

@@ -10,7 +10,6 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -39,13 +38,13 @@ from yaacli.model_profiles import build_model_profiles
 class MockConfig:
     """Minimal mock config for testing."""
 
-    general: Any = field(
+    general: object = field(
         default_factory=lambda: MagicMock(
             max_requests=10,
             mode="act",
         )
     )
-    display: Any = field(
+    display: object = field(
         default_factory=lambda: MagicMock(
             max_lines=500,
             mouse=True,
@@ -61,11 +60,11 @@ class MockConfig:
 class MockConfigManager:
     """Minimal mock config manager for testing."""
 
-    global_config_dir: Any = field(default_factory=lambda: MagicMock())
-    project_config_dir: Any = field(default_factory=lambda: MagicMock())
+    global_config_dir: object = field(default_factory=lambda: MagicMock())
+    project_config_dir: object = field(default_factory=lambda: MagicMock())
     config_dir: Path = field(default_factory=lambda: Path.cwd() / ".yaacli-test-config")
 
-    def get_sessions_dir(self) -> Any:
+    def get_sessions_dir(self) -> object:
         return MagicMock(exists=lambda: False)
 
     def get_mcp_config(self) -> None:
@@ -683,7 +682,7 @@ async def test_tui_app_slash_commands_are_added_to_prompt_history():
     app = TUIApp(config=config, config_manager=config_manager)
     input_area = TextArea(multiline=True)
 
-    async def fake_run_agent(prompt: str, attachments: Any = None) -> None:
+    async def fake_run_agent(prompt: str, attachments: object = None) -> None:
         return None
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
@@ -812,7 +811,7 @@ async def test_tui_app_submit_custom_slash_command():
     input_area = TextArea(multiline=True)
     captured_prompts: list[str] = []
 
-    async def fake_run_agent(prompt: str, attachments: Any = None) -> None:
+    async def fake_run_agent(prompt: str, attachments: object = None) -> None:
         captured_prompts.append(prompt)
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
@@ -844,7 +843,7 @@ async def test_tui_app_run_async_accepts_custom_slash_command_enter() -> None:
     app = TUIApp(config=config, config_manager=config_manager)
     captured_prompts: list[str] = []
 
-    async def fake_run_agent(prompt: str, attachments: Any = None) -> None:
+    async def fake_run_agent(prompt: str, attachments: object = None) -> None:
         captured_prompts.append(prompt)
         if app._app:
             app._app.exit()

@@ -40,7 +40,7 @@ class Resource(Protocol):
                 return []  # No toolsets
     """
 
-    def close(self) -> Any:
+    def close(self) -> object:
         """Close the resource. Can be sync or async."""
         ...
 

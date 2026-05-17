@@ -16,6 +16,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.context.agent import MediaToUrlHook
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._types import (
     ViewMetadata,
@@ -210,7 +211,7 @@ class ViewTool(BaseTool):
 
     async def _maybe_convert_media_to_url(
         self,
-        hook: Any,
+        hook: MediaToUrlHook,
         ctx: RunContext[AgentContext],
         data: bytes,
         media_type: str,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 from pydantic_ai import RunContext
@@ -30,7 +29,7 @@ class FakeDelegateTool(BaseTool):
     name = "delegate"
     description = "fake delegate"
 
-    async def call(self, ctx: RunContext[AgentContext], /, *args: Any, **kwargs: Any) -> str:
+    async def call(self, ctx: RunContext[AgentContext], /, *args: object, **kwargs: object) -> str:
         await asyncio.sleep(0)
         return "delegate result"
 
@@ -39,7 +38,7 @@ class FailingDelegateTool(BaseTool):
     name = "delegate"
     description = "failing delegate"
 
-    async def call(self, ctx: RunContext[AgentContext], /, *args: Any, **kwargs: Any) -> str:
+    async def call(self, ctx: RunContext[AgentContext], /, *args: object, **kwargs: object) -> str:
         raise RuntimeError("delegate boom")
 
 

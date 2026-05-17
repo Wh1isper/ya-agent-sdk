@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import copy
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, Unpack
 
 from ya_agent_sdk.context import ModelCapability
 
@@ -143,10 +143,21 @@ def build_context_management(
     return {"edits": edits}
 
 
+class ContextManagementOptions(TypedDict, total=False):
+    clear_tool_uses: bool
+    tool_use_trigger_tokens: int
+    tool_use_keep: int
+    tool_use_clear_at_least: int | None
+    tool_use_clear_inputs: bool
+    tool_use_exclude_tools: list[str] | None
+    clear_thinking: bool
+    thinking_keep_turns: int | Literal["all"]
+
+
 def with_context_management(
     settings: dict[str, Any],
     context_management: dict[str, Any] | None = None,
-    **kwargs: Any,
+    **kwargs: Unpack[ContextManagementOptions],
 ) -> dict[str, Any]:
     """Add Anthropic context management to existing model settings.
 

@@ -259,7 +259,7 @@ def _apply_seed_row(record: ProfileRecord, row: dict[str, Any], *, source_checks
     record.source_checksum = _normalize_optional_str(row.get("source_checksum")) or source_checksum
 
 
-def _resolve_builtin_toolsets(value: Any) -> list[str]:
+def _resolve_builtin_toolsets(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip() != ""]
     return list(_DEFAULT_BUILTIN_TOOLSETS)
@@ -283,20 +283,20 @@ def _resolve_seed_builtin_toolsets(row: dict[str, Any]) -> list[str]:
     return list(_DEFAULT_BUILTIN_TOOLSETS)
 
 
-def _normalize_optional_str(value: Any) -> str | None:
+def _normalize_optional_str(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip()
     return normalized or None
 
 
-def _normalize_optional_dict(value: Any) -> dict[str, Any] | None:
+def _normalize_optional_dict(value: object) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return dict(value)
     return None
 
 
-def _normalize_optional_str_list(value: Any, *, allow_empty: bool = False) -> list[str] | None:
+def _normalize_optional_str_list(value: object, *, allow_empty: bool = False) -> list[str] | None:
     if not isinstance(value, list):
         return None
     values = [str(item).strip() for item in value if str(item).strip() != ""]
@@ -305,7 +305,7 @@ def _normalize_optional_str_list(value: Any, *, allow_empty: bool = False) -> li
     return None
 
 
-def _normalize_optional_dict_list(value: Any) -> list[dict[str, Any]] | None:
+def _normalize_optional_dict_list(value: object) -> list[dict[str, Any]] | None:
     if not isinstance(value, list):
         return None
     rows = [dict(item) for item in value if isinstance(item, dict)]

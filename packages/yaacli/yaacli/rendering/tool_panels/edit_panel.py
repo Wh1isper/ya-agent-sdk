@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TypedDict
 
 from rich.console import Group
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
+from yaacli.json_types import JsonObject
 from yaacli.rendering.tool_panels.base import generate_unified_diff
+
+
+class EditOperation(TypedDict):
+    old_string: str
+    new_string: str
+    replace_all: bool
 
 
 def create_edit_panel(
     name: str,
-    args: Any,
+    args: str | JsonObject | None,
     content: str | None,
     code_theme: str = "monokai",
 ) -> Panel:
@@ -25,7 +32,7 @@ def create_edit_panel(
 
         if args_dict:
             file_path = args_dict.get("file_path", "unknown")
-            edits_list = args_dict.get("edits", [])
+            edits_list = _edit_operations(args_dict.get("edits"))
 
             content_parts = []
 
@@ -44,8 +51,8 @@ def create_edit_panel(
                 content_parts.extend(edit_sequence)
             else:
                 # Handle single edit format
-                old_string = args_dict.get("old_string", "")
-                new_string = args_dict.get("new_string", "")
+                old_string = _string_value(args_dict.get("old_string"))
+                new_string = _string_value(args_dict.get("new_string"))
 
                 if old_string or new_string:
                     if not old_string:
@@ -110,21 +117,41 @@ def create_edit_panel(
     )
 
 
-def _parse_edit_args(args: Any) -> dict:
+def _parse_edit_args(args: str | JsonObject | None) -> JsonObject:
     """Parse the edit tool arguments into a dictionary."""
-    args_dict = {}
+    args_dict: JsonObject = {}
     if args:
         if isinstance(args, dict):
             args_dict = args
         elif isinstance(args, str):
             try:
-                args_dict = json.loads(args)
+                parsed_args = json.loads(args)
+                args_dict = parsed_args if isinstance(parsed_args, dict) else {"raw_args": args}
             except json.JSONDecodeError:
                 args_dict = {"raw_args": args}
     return args_dict
 
 
-def _create_edit_summary(edits_list: list[dict]) -> Text:
+def _edit_operations(value: object) -> list[EditOperation]:
+    if not isinstance(value, list):
+        return []
+    operations: list[EditOperation] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        operations.append({
+            "old_string": _string_value(item.get("old_string")),
+            "new_string": _string_value(item.get("new_string")),
+            "replace_all": item.get("replace_all") is True,
+        })
+    return operations
+
+
+def _string_value(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _create_edit_summary(edits_list: list[EditOperation]) -> Text:
     """Create a summary of edit operations."""
     total_edits = len(edits_list)
     new_files = sum(1 for edit in edits_list if not edit.get("old_string", ""))
@@ -143,14 +170,14 @@ def _create_edit_summary(edits_list: list[dict]) -> Text:
     return Text(f"Summary: {total_edits} edit{'s' if total_edits > 1 else ''} ({summary_text})", style="bold green")
 
 
-def _format_edit_sequence(edits_list: list[dict], code_theme: str = "monokai") -> list:
+def _format_edit_sequence(edits_list: list[EditOperation], code_theme: str = "monokai") -> list[Text | Syntax]:
     """Format a sequence of edit operations for display."""
     content_parts = []
 
     for i, edit_item in enumerate(edits_list, 1):
-        old_string = edit_item.get("old_string", "")
-        new_string = edit_item.get("new_string", "")
-        replace_all = edit_item.get("replace_all", False)
+        old_string = edit_item["old_string"]
+        new_string = edit_item["new_string"]
+        replace_all = edit_item["replace_all"]
 
         # Add edit operation header
         operation_type = "New file creation" if not old_string else "Content modification"

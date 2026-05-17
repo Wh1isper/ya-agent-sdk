@@ -10,7 +10,7 @@ def _is_sqlite_url(database_url: str) -> bool:
     return database_url.startswith("sqlite")
 
 
-def create_engine(database_url: str, **kwargs: Any) -> AsyncEngine:
+def create_engine(database_url: str, **kwargs: object) -> AsyncEngine:
     defaults: dict[str, Any] = {
         "echo": False,
         "pool_pre_ping": True,

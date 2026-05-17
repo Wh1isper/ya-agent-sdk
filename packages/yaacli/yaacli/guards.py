@@ -11,7 +11,7 @@ via ctx.deps.emit_event() for TUI rendering.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TypeVar
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelRetry
@@ -35,7 +35,7 @@ def _has_completion_marker(output: str) -> bool:
     return any(line.strip() == LOOP_COMPLETE_MARKER for line in output.splitlines())
 
 
-async def loop_guard(ctx: RunContext[TUIContext], output: Any) -> Any:
+async def loop_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
     """Output guard that drives loop mode via ModelRetry.
 
     When loop mode is active (ctx.deps.loop_task is not None), this guard
@@ -121,7 +121,10 @@ async def loop_guard(ctx: RunContext[TUIContext], output: Any) -> Any:
     )
 
 
-def attach_loop_guard(agent: Agent[TUIContext, Any]) -> None:
+OutputT = TypeVar("OutputT")
+
+
+def attach_loop_guard(agent: Agent[TUIContext, OutputT]) -> None:
     """Attach loop guard to an agent as an output validator.
 
     This function adds the loop_guard as an output validator to the given
@@ -132,5 +135,5 @@ def attach_loop_guard(agent: Agent[TUIContext, Any]) -> None:
     """
 
     @agent.output_validator
-    async def _guard(ctx: RunContext[TUIContext], output: Any) -> Any:
+    async def _guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
         return await loop_guard(ctx, output)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 from unittest.mock import MagicMock
 
 import pytest
@@ -99,7 +99,7 @@ class FailingTool(BaseTool):
     name = "failing_tool"
     description = "A tool that always fails"
 
-    async def call(self, ctx: RunContext[AgentContext]) -> Any:
+    async def call(self, ctx: RunContext[AgentContext]) -> object:
         raise ValueError("Something went wrong")
 
 

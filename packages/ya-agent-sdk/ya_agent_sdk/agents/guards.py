@@ -6,7 +6,7 @@ to agents created via create_agent and subagent factory functions.
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelRetry
@@ -44,7 +44,7 @@ async def message_bus_guard(ctx: RunContext[AgentContext], output: OutputT) -> O
     return output
 
 
-def attach_message_bus_guard(agent: Agent[AgentDepsT, Any]) -> None:
+def attach_message_bus_guard(agent: Agent[AgentDepsT, OutputT]) -> None:
     """Attach message bus guard to an agent.
 
     This function adds the message_bus_guard as an output validator
@@ -55,5 +55,5 @@ def attach_message_bus_guard(agent: Agent[AgentDepsT, Any]) -> None:
     """
 
     @agent.output_validator
-    async def _guard(ctx: RunContext[AgentDepsT], output: Any) -> Any:
+    async def _guard(ctx: RunContext[AgentDepsT], output: OutputT) -> OutputT:
         return await message_bus_guard(ctx, output)  # type: ignore[arg-type]

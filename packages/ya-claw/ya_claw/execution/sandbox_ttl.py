@@ -168,7 +168,7 @@ async def _stop_docker_container(container_id: str) -> bool:
     return await loop.run_in_executor(None, _stop)
 
 
-def _parse_datetime(value: Any) -> datetime | None:
+def _parse_datetime(value: object) -> datetime | None:
     if not isinstance(value, str) or value.strip() == "":
         return None
     try:
@@ -180,19 +180,19 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _normalize_path(value: Any) -> Path | None:
+def _normalize_path(value: object) -> Path | None:
     normalized = _normalize_string(value)
     return Path(normalized).expanduser() if normalized is not None else None
 
 
-def _normalize_string(value: Any) -> str | None:
+def _normalize_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     stripped = value.strip()
     return stripped or None
 
 
-def _normalize_positive_int(value: Any) -> int | None:
+def _normalize_positive_int(value: object) -> int | None:
     if isinstance(value, int) and value > 0:
         return value
     if isinstance(value, str) and value.strip().isdigit():

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import difflib
 import json
-from typing import Any
 
 from rich.panel import Panel
 
+from yaacli.json_types import JsonObject
 
-def format_args_for_display(args: Any, max_length: int = 80) -> tuple[str, int]:
+
+def format_args_for_display(args: str | JsonObject | None, max_length: int = 80) -> tuple[str, int]:
     """Format tool arguments for inline display with truncation info.
 
     Returns:
@@ -103,7 +104,7 @@ def generate_unified_diff(old_string: str, new_string: str) -> str:
 
 def create_default_panel(
     name: str,
-    args: Any = None,
+    args: str | JsonObject | None = None,
     content: str | None = None,
     max_result_lines: int = 2,
     max_arg_length: int = 120,

@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ya_claw.bridge.models import BridgeAdapterType, BridgeInboundAction, BridgeInboundMessage
+from ya_claw.json_types import JsonObject, JsonValue
 
 _MESSAGE_RECEIVE_EVENT = "im.message.receive_v1"
 _DRIVE_EVENT_PREFIX = "drive."
@@ -238,7 +239,7 @@ def _generic_content_text(event_type: str, event: dict[str, Any]) -> str:
     return json.dumps({"event_type": event_type, "event": event}, ensure_ascii=False)
 
 
-def _find_first_key(value: Any, keys: tuple[str, ...]) -> Any:
+def _find_first_key(value: JsonValue, keys: tuple[str, ...]) -> JsonValue:
     if isinstance(value, dict):
         for key in keys:
             candidate = value.get(key)
@@ -256,7 +257,7 @@ def _find_first_key(value: Any, keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _parse_content(value: Any) -> dict[str, Any] | None:
+def _parse_content(value: JsonValue) -> JsonObject | None:
     if isinstance(value, dict):
         return value
     if isinstance(value, str) and value.strip() != "":
@@ -268,23 +269,24 @@ def _parse_content(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _content_text(message_type: str, content: dict[str, Any] | None, fallback: Any) -> str | None:
+def _content_text(message_type: str, content: JsonObject | None, fallback: JsonValue) -> str | None:
     if content is None:
         return fallback if isinstance(fallback, str) else None
-    if message_type == "text" and isinstance(content.get("text"), str):
-        return content["text"]
+    text_value = content.get("text")
+    if message_type == "text" and isinstance(text_value, str):
+        return text_value
     if message_type == "post":
         return json.dumps(content, ensure_ascii=False)
-    if isinstance(content.get("text"), str):
-        return content["text"]
+    if isinstance(text_value, str):
+        return text_value
     return json.dumps(content, ensure_ascii=False)
 
 
-def _dict_value(value: Any) -> dict[str, Any]:
+def _dict_value(value: JsonValue) -> JsonObject:
     return value if isinstance(value, dict) else {}
 
 
-def _string_value(value: Any) -> str | None:
+def _string_value(value: JsonValue) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip()
