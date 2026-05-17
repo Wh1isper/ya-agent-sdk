@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_environment import Environment
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
+from ya_claw.execution import coordinator as coordinator_module
 from ya_claw.execution.coordinator import (
     ExecutionBuffers,
     ExecutionSupervisor,
@@ -390,7 +391,8 @@ async def test_execution_supervisor_shutdown_cancels_tasks_after_timeout(
     assert runtime_state.get_background_task("run-hanging") is None
 
 
-async def test_execution_supervisor_skips_claim_after_shutdown_started(
+async def test_execution_supervisor_skips_claim_when_shutdown_races_with_db_load(
+    monkeypatch: pytest.MonkeyPatch,
     db_session: AsyncSession,
     db_engine: AsyncEngine,
     settings: ClawSettings,
@@ -418,6 +420,18 @@ async def test_execution_supervisor_skips_claim_after_shutdown_started(
     db_session.add(run_record)
     await db_session.commit()
 
+    original_load_run_scope = coordinator_module._load_run_scope
+    scope_loaded = asyncio.Event()
+    release_scope = asyncio.Event()
+
+    async def blocking_load_run_scope(db_session_arg: AsyncSession, run_id: str) -> tuple[SessionRecord, RunRecord]:
+        result = await original_load_run_scope(db_session_arg, run_id)
+        scope_loaded.set()
+        await release_scope.wait()
+        return result
+
+    monkeypatch.setattr(coordinator_module, "_load_run_scope", blocking_load_run_scope)
+
     supervisor = ExecutionSupervisor(
         settings=settings,
         session_factory=create_session_factory(db_engine),
@@ -427,9 +441,12 @@ async def test_execution_supervisor_skips_claim_after_shutdown_started(
         profile_resolver=StubProfileResolver(),
         runtime_builder=StubRuntimeBuilder(),
     )
-    await supervisor.shutdown()
+    claim_task = asyncio.create_task(supervisor._claim_run("run-1"))
+    await asyncio.wait_for(scope_loaded.wait(), timeout=1)
 
-    claimed = await supervisor._claim_run("run-1")
+    await supervisor.shutdown()
+    release_scope.set()
+    claimed = await asyncio.wait_for(claim_task, timeout=1)
 
     refreshed_run = await db_session.get(RunRecord, "run-1")
     refreshed_session = await db_session.get(SessionRecord, "session-1")

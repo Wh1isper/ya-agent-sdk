@@ -249,6 +249,9 @@ class ExecutionSupervisor:
             if run_record.status != "queued":
                 logger.debug("Run claim skipped run_id={} status={}", run_id, run_record.status)
                 return False
+            if not self._accepting_submissions:
+                logger.info("Run claim skipped run_id={} reason=supervisor_shutting_down", run_id)
+                return False
 
             dispatch_mode = self._resolve_dispatch_mode(run_id)
             if self._runtime_state.get_run_handle(run_id) is None:
