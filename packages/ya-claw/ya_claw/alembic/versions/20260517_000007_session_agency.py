@@ -68,9 +68,11 @@ def upgrade() -> None:
     op.create_index("ix_agency_signals_status_created", "agency_signals", ["status", "created_at"])
     op.create_index("ix_agency_signals_source_status", "agency_signals", ["source_session_id", "status"])
     op.create_index("ix_agency_signals_run", "agency_signals", ["run_id"])
+    op.create_index("ix_sessions_type_source_unique", "sessions", ["session_type", "source_session_id"], unique=True)
 
 
 def downgrade() -> None:
+    op.drop_index("ix_sessions_type_source_unique", table_name="sessions")
     op.drop_index("ix_agency_signals_run", table_name="agency_signals")
     op.drop_index("ix_agency_signals_source_status", table_name="agency_signals")
     op.drop_index("ix_agency_signals_status_created", table_name="agency_signals")

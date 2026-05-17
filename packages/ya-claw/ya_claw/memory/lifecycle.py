@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from fastapi import HTTPException
 from loguru import logger
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from sqlalchemy import func, select
@@ -14,9 +15,10 @@ from ya_agent_environment import Environment
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.agents.main import RuntimeReadyContext
 
+from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
-from ya_claw.controller.models import DispatchMode, MemoryJobKind, TriggerType
+from ya_claw.controller.models import AgencySignalReason, AgencySignalRequest, DispatchMode, MemoryJobKind, TriggerType
 from ya_claw.execution.state_machine import queue_run
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -146,11 +148,13 @@ class MemoryLifecycle:
         session_factory: async_sessionmaker[AsyncSession],
         runtime_state: InMemoryRuntimeState,
         submit_run: Callable[[str], bool] | None = None,
+        agency_submit_run: Callable[[str], bool] | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._runtime_state = runtime_state
         self._submit_run = submit_run
+        self._agency_submit_run = agency_submit_run
 
     async def on_run_committed(
         self,
@@ -226,6 +230,7 @@ class MemoryLifecycle:
         if not self._settings.memory_enabled:
             return []
         queued_run_ids: list[str] = []
+        agency_signal: tuple[str, dict[str, Any]] | None = None
         async with self._session_factory() as db_session:
             scope = await self._load_memory_run_scope(db_session, memory_run_id)
             if scope is None:
@@ -259,12 +264,28 @@ class MemoryLifecycle:
                 state.pending_summary = False
                 state.last_summary_run_id = memory_run_id
 
+            agency_signal = (
+                source_session.id,
+                {
+                    "memory_run_id": memory_run_id,
+                    "memory_job_kind": kind.value,
+                    "memory_reason": memory.get("reason"),
+                    "source_run_ids": [item for item in memory.get("source_run_ids", []) if isinstance(item, str)]
+                    if isinstance(memory.get("source_run_ids"), list)
+                    else [],
+                    "source_sequence_start": memory.get("source_sequence_start"),
+                    "source_sequence_end": memory.get("source_sequence_end"),
+                },
+            )
+
             run_id = await self._enqueue_next_pending(db_session, state, source_session)
             if run_id is not None:
                 queued_run_ids.append(run_id)
 
             await db_session.commit()
 
+        if agency_signal is not None:
+            await self._emit_memory_committed_signal(*agency_signal)
         self._submit_all(queued_run_ids)
         return queued_run_ids
 
@@ -444,6 +465,28 @@ class MemoryLifecycle:
         if request is None:
             return None
         return await self._enqueue_or_mark_pending(db_session, state, source_session, request)
+
+    async def _emit_memory_committed_signal(self, source_session_id: str, payload: dict[str, Any]) -> None:
+        if not self._settings.agency_enabled:
+            return
+        source_run_ids = [item for item in payload.get("source_run_ids", []) if isinstance(item, str)]
+        request = AgencySignalRequest(
+            reason=AgencySignalReason.MEMORY_COMMITTED,
+            client_token=str(payload.get("memory_run_id") or uuid4().hex),
+            source_run_ids=source_run_ids,
+            metadata={"memory_committed": payload},
+        )
+        async with self._session_factory() as db_session:
+            lifecycle = AgencyLifecycle(
+                settings=self._settings,
+                runtime_state=self._runtime_state,
+                submit_run=self._agency_submit_run,
+            )
+            try:
+                await lifecycle.create_signal(db_session, source_session_id, request)
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
 
     def _submit_all(self, run_ids: list[str]) -> None:
         if self._submit_run is None:

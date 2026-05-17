@@ -76,6 +76,7 @@ class SessionRecord(Base):
         ),
         Index("ix_sessions_session_type_updated", "session_type", "updated_at"),
         Index("ix_sessions_source_session", "source_session_id"),
+        Index("ix_sessions_type_source_unique", "session_type", "source_session_id", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)

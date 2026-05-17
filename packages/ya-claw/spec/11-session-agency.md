@@ -671,7 +671,7 @@ Session list and detail responses expose `agency_state`.
 Settings:
 
 ```python
-agency_enabled: bool = False
+agency_enabled: bool = True
 agency_idle_after_seconds: int = 600
 agency_cooldown_seconds: int = 1800
 agency_profile: str | None = None
@@ -684,7 +684,7 @@ agency_recent_files_limit: int = 5
 agency_index_target_chars: int = 16_000
 agency_index_max_chars: int = 32_000
 agency_action_log_recent_chars: int = 32_000
-agency_unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = None
+agency_unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = "extra_high"
 ```
 
 Session metadata can override agency enablement:

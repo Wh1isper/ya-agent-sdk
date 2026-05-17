@@ -413,6 +413,7 @@ class RunCoordinator:
                     session_factory=self._session_factory,
                     runtime_state=self._runtime_state,
                     submit_run=self._submit_memory_run,
+                    agency_submit_run=self._submit_memory_run,
                 )
                 if session_record.session_type == "memory":
                     await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
@@ -494,6 +495,15 @@ class RunCoordinator:
                         submit_run=self._submit_memory_run,
                     )
                     await lifecycle.on_memory_run_terminal(memory_run_id=run_record.id)
+                elif session_record.session_type == "agency":
+                    agency_lifecycle = AgencyLifecycle(
+                        settings=self._settings,
+                        runtime_state=self._runtime_state,
+                        submit_run=self._submit_memory_run,
+                    )
+                    await agency_lifecycle.on_agency_run_terminal(db_session, run_record)
+                    await db_session.commit()
+                    await db_session.refresh(run_record)
                 await _publish_run_status_notification(
                     self._notification_hub,
                     "run.updated",
