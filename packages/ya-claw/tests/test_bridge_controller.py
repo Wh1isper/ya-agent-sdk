@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from ya_claw.bridge.context_snapshot import BridgePreviousMessageSnapshotItem, BridgePreviousMessagesSnapshot
 from ya_claw.bridge.controller import BridgeController
 from ya_claw.bridge.models import BridgeAdapterType, BridgeEventStatus, BridgeInboundAction, BridgeInboundMessage
 from ya_claw.config import ClawSettings
@@ -158,6 +159,120 @@ async def test_bridge_controller_escapes_xml_prompt_values(db_session: AsyncSess
     assert "<event_id>event&apos;1</event_id>" in prompt
     assert "<content>hello &lt;world&gt; &amp; friends</content>" in prompt
     assert "&lt;reply&gt;" in prompt
+
+
+async def test_bridge_controller_includes_previous_messages_snapshot_from_message_metadata(
+    db_session: AsyncSession,
+) -> None:
+    runtime_state = create_runtime_state()
+    controller = BridgeController()
+    settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
+    snapshot = BridgePreviousMessagesSnapshot(
+        items=[
+            BridgePreviousMessageSnapshotItem(
+                speaker="self",
+                relation="parent",
+                message_id="om_parent",
+                sender_id="cli_self",
+                sender_type="app",
+                message_type="text",
+                create_time="1000",
+                content_text="scheduled task asked for approval",
+            )
+        ]
+    )
+
+    result = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        BridgeInboundMessage(
+            adapter=BridgeAdapterType.LARK,
+            tenant_key="tenant-1",
+            event_id="event-1",
+            message_id="om_1",
+            parent_id="om_parent",
+            chat_id="oc_1",
+            content_text="approved",
+            metadata={"previous_messages_snapshot": snapshot.model_dump(mode="json")},
+        ),
+    )
+
+    assert result.run_id is not None
+    run_record = await db_session.get(RunRecord, result.run_id)
+    event_result = await db_session.execute(select(BridgeEventRecord).where(BridgeEventRecord.event_id == "event-1"))
+    event_record = event_result.scalar_one()
+    assert isinstance(run_record, RunRecord)
+    prompt = run_record.input_parts[0]["text"]
+    assert '<previous_messages_snapshot source="lark" max_messages="1" truncated="false">' in prompt
+    assert 'speaker="self"' in prompt
+    assert 'relation="parent"' in prompt
+    assert "scheduled task asked for approval" in prompt
+    assert "Messages marked speaker=&quot;self&quot; were sent by this Lark bridge bot/app" in prompt
+    assert run_record.run_metadata["bridge"]["previous_messages_snapshot"]["items"][0]["message_id"] == "om_parent"
+    assert event_record.normalized_event["previous_messages_snapshot"]["items"][0]["speaker"] == "self"
+
+
+async def test_bridge_controller_steer_skips_previous_messages_snapshot(db_session: AsyncSession) -> None:
+    runtime_state = create_runtime_state()
+    controller = BridgeController()
+    settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
+    first = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        BridgeInboundMessage(
+            adapter=BridgeAdapterType.LARK,
+            tenant_key="tenant-1",
+            event_id="event-1",
+            message_id="om_1",
+            chat_id="oc_1",
+            content_text="first",
+        ),
+    )
+    assert first.run_id is not None
+    session = await db_session.get(SessionRecord, first.session_id)
+    run = await db_session.get(RunRecord, first.run_id)
+    assert isinstance(session, SessionRecord)
+    assert isinstance(run, RunRecord)
+    session.active_run_id = first.run_id
+    run.status = "running"
+    await db_session.commit()
+    snapshot = BridgePreviousMessagesSnapshot(
+        items=[
+            BridgePreviousMessageSnapshotItem(
+                speaker="self",
+                relation="parent",
+                message_id="om_parent",
+                content_text="context that steer should skip",
+            )
+        ]
+    )
+
+    result = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        BridgeInboundMessage(
+            adapter=BridgeAdapterType.LARK,
+            tenant_key="tenant-1",
+            event_id="event-2",
+            message_id="om_2",
+            chat_id="oc_1",
+            content_text="second",
+            metadata={"previous_messages_snapshot": snapshot.model_dump(mode="json")},
+        ),
+    )
+
+    handle = runtime_state.get_run_handle(first.run_id)
+    assert result.status == BridgeEventStatus.STEERED
+    assert handle is not None
+    steered_prompt = handle.steering_inputs[0][0]["text"]
+    assert "context that steer should skip" not in steered_prompt
+    assert "<previous_messages_snapshot" not in steered_prompt
 
 
 async def test_bridge_controller_reuses_chat_session(db_session: AsyncSession) -> None:

@@ -520,7 +520,7 @@ export type AgencyFireListResponse = {
 export type AgencyConfigResponse = {
   enabled: boolean
   profile_name: string
-  interval_seconds: number
+  timer_interval_seconds: number
   agency_session_id: string
   singleton_scope_key: string
   singleton_source_session_id: string

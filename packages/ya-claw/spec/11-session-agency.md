@@ -12,7 +12,7 @@ Agency is the product capability. Reflection is one phase inside the agency epis
 - Treat source conversations as fire context, with ownership held by the singleton agency session.
 - Convert timer, memory committed, and manual triggers into durable `agency_fires` records.
 - Route new fires to the active agency run through steer, merge fires into a queued agency run, and create a new run when idle.
-- Keep semantic memory, agency memory, action logs, and episode files as workspace files under `memory/`.
+- Keep semantic memory under `memory/` and agency state under workspace-level `AGENCY.md` and `agency/` files.
 - Make every agency episode auditable through run metadata, fire records, traces, workspace action logs, and episode files.
 - Use unattended deny mode for external actions and approval-gated operations.
 
@@ -60,46 +60,46 @@ flowchart TD
 
 ## Naming Model
 
-| Layer                 | Name                          | Responsibility                                                     |
-| --------------------- | ----------------------------- | ------------------------------------------------------------------ |
-| Product capability    | Agency                        | proactive assistance, intention maintenance, background work       |
-| Internal session type | `agency`                      | singleton session that serializes agency state and active episodes |
-| Trigger type          | `agency`                      | run category for agency episodes                                   |
-| Input unit            | agency fire                   | durable event that wakes, merges into, or steers agency work       |
-| Cognitive phase       | reflection                    | inspect context, assess fires, and choose useful local work        |
-| Workspace index       | `memory/AGENCY.md`            | compact active intentions and watchlist                            |
-| Workspace log         | `memory/agency/ACTION_LOG.md` | append-only recent agency action ledger                            |
+| Layer                 | Name                   | Responsibility                                                     |
+| --------------------- | ---------------------- | ------------------------------------------------------------------ |
+| Product capability    | Agency                 | proactive assistance, intention maintenance, background work       |
+| Internal session type | `agency`               | singleton session that serializes agency state and active episodes |
+| Trigger type          | `agency`               | run category for agency episodes                                   |
+| Input unit            | agency fire            | durable event that wakes, merges into, or steers agency work       |
+| Cognitive phase       | reflection             | inspect context, assess fires, and choose useful local work        |
+| Workspace index       | `AGENCY.md`            | compact active intentions and watchlist                            |
+| Workspace log         | `agency/ACTION_LOG.md` | append-only recent agency action ledger                            |
 
 Use `agency` in API, database, settings, modules, prompts, and UI. Use `fire` for durable wake/steer records, mirroring Heartbeat.
 
 ## Workspace Agency Layout
 
-Agency files live under the same `memory/` directory used by session memory.
+Agency files live at the workspace root, alongside the `memory/` directory used by session memory.
 
 ```text
 /workspace/
+├── AGENCY.md
+├── agency/
+│   ├── ACTION_LOG.md
+│   ├── episodes/
+│   │   └── 20260516-agency-episode.md
+│   ├── intentions/
+│   │   └── agency-20260516-001.md
+│   └── archive/
+│       └── 202605-agency-archive.md
 └── memory/
     ├── MEMORY.md
     ├── CHANGELOG.md
-    ├── AGENCY.md
-    ├── 20260501-event.md
-    └── agency/
-        ├── ACTION_LOG.md
-        ├── episodes/
-        │   └── 20260516-agency-episode.md
-        ├── intentions/
-        │   └── agency-20260516-001.md
-        └── archive/
-            └── 202605-agency-archive.md
+    └── 20260501-event.md
 ```
 
 Rules:
 
-- `memory/AGENCY.md` is the compact active agency index loaded for agency runs.
-- `memory/AGENCY.md` target size is 16 KB and hard cap is 32 KB.
-- Detailed intention material lives in `memory/agency/intentions/*.md`.
-- Episode records live in `memory/agency/episodes/*.md`.
-- `memory/agency/ACTION_LOG.md` records recent decisions, actions, deferrals, outcomes, and consumed fire IDs.
+- `AGENCY.md` is the compact active agency index loaded for agency runs.
+- `AGENCY.md` target size is 16 KB and hard cap is 32 KB.
+- Detailed intention material lives in `agency/intentions/*.md`.
+- Episode records live in `agency/episodes/*.md`.
+- `agency/ACTION_LOG.md` records recent decisions, actions, deferrals, outcomes, and consumed fire IDs.
 - Agency files use YAML frontmatter with at least `name`, `description`, `kind`, `status`, and `updated_at` when discovery matters.
 - Stable conclusions can later enter `memory/MEMORY.md` through the memory extraction lifecycle.
 
@@ -195,8 +195,8 @@ Example fire payloads:
 ```json
 {
   "kind": "timer",
-  "reason": "scheduled_tick",
-  "interval_seconds": 1800
+  "reason": "scheduled_timer",
+  "timer_interval_seconds": 3600
 }
 ```
 
@@ -205,7 +205,7 @@ Example fire payloads:
 ```mermaid
 flowchart TD
     T[Timer / memory committed / manual] --> F[Insert agency_fires]
-    F --> D[AgencyDispatcher tick or immediate dispatch]
+    F --> D[AgencyDispatcher check or immediate dispatch]
     D --> S[Ensure singleton agency session]
     S --> A{Agency session state}
     A -->|running| R[Steer active agency run]
@@ -224,7 +224,7 @@ Behavior:
 
 - `ensure_agency_session()` creates or returns the singleton session.
 - Manual and memory fires can dispatch immediately after insert.
-- Timer dispatch runs from `AgencyDispatcher` and uses `agency_tick_seconds` as the interval.
+- Timer dispatch runs from `AgencyDispatcher` and uses `agency_timer_interval_seconds` as the single timer interval.
 - Running agency run receives new fire input through the runtime steering queue and AGUI steer event.
 - Queued agency run receives appended `input_parts`; merged fires keep audit rows.
 - Idle agency session creates a new queued run with `restore_from_run_id=head_success_run_id`.
@@ -300,8 +300,8 @@ Agency runs use:
 - fixed `AGENCY_SYSTEM_PROMPT`;
 - regular workspace guidance from `AGENTS.md`;
 - stable memory from `memory/MEMORY.md`;
-- agency index from `memory/AGENCY.md`;
-- action history from `memory/agency/ACTION_LOG.md`;
+- agency index from `AGENCY.md`;
+- action history from `agency/ACTION_LOG.md`;
 - recent memory and agency file indexes;
 - source session tools for referenced conversations and traces;
 - fire payloads with source references and risk policy.
@@ -421,7 +421,7 @@ flowchart LR
     M[Memory extract or summary] --> W[Workspace memory files]
     W --> F[agency_fires kind=memory_committed]
     F --> A[Singleton agency session]
-    A --> IDX[memory/AGENCY.md and memory/agency/]
+    A --> IDX[AGENCY.md and agency/]
 ```
 
 Rules:
@@ -437,8 +437,8 @@ Settings:
 ```python
 agency_enabled: bool = True
 agency_profile: str | None = None
-agency_tick_seconds: int = 30
-agency_max_signals_per_tick: int = 20
+agency_timer_interval_seconds: int = 3600
+agency_fire_batch_limit: int = 20
 agency_memory_capture_enabled: bool = True
 agency_context_max_chars: int = 8000
 agency_index_target_chars: int = 16_000
@@ -447,7 +447,7 @@ agency_action_log_recent_chars: int = 32_000
 agency_unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = "extra_high"
 ```
 
-`agency_max_signals_per_tick` is retained as the fire batch limit setting name for compatibility.
+`agency_fire_batch_limit` is a backpressure safety limit for abnormal pending fire buildup. Normal operation usually has only a few pending fires per agency episode.
 
 ## Implementation Plan
 
@@ -474,5 +474,5 @@ The first shippable milestone is:
 - queued-run merge for new agency fires;
 - queued agency run creation when idle;
 - fixed agency prompt with deny-mode safety;
-- `memory/AGENCY.md` and `memory/agency/ACTION_LOG.md` context;
+- `AGENCY.md` and `agency/ACTION_LOG.md` context;
 - Agency Web UI with active/enabled status, fire history, and chat-like singleton agency session rendering.

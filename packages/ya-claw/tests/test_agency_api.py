@@ -25,7 +25,7 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
         "YA_CLAW_HEARTBEAT_ENABLED",
         "YA_CLAW_BRIDGE_DISPATCH_MODE",
         "YA_CLAW_AGENCY_ENABLED",
-        "YA_CLAW_AGENCY_TICK_SECONDS",
+        "YA_CLAW_AGENCY_TIMER_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -37,7 +37,7 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     monkeypatch.setenv("YA_CLAW_SCHEDULE_DISPATCH_ENABLED", "false")
     monkeypatch.setenv("YA_CLAW_HEARTBEAT_ENABLED", "false")
     monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
-    monkeypatch.setenv("YA_CLAW_AGENCY_TICK_SECONDS", "3600")
+    monkeypatch.setenv("YA_CLAW_AGENCY_TIMER_INTERVAL_SECONDS", "3600")
 
     get_settings.cache_clear()
     yield

@@ -200,7 +200,10 @@ class AgencyLifecycle:
             kind=AgencyFireKind.TIMER,
             scheduled_at=due_at,
             dedupe_key=f"agency:timer:{_as_utc_aware(due_at).isoformat()}",
-            payload={"reason": "scheduled_tick", "interval_seconds": self._settings.agency_tick_seconds},
+            payload={
+                "reason": "scheduled_timer",
+                "timer_interval_seconds": self._settings.agency_timer_interval_seconds,
+            },
             dispatch=True,
         )
 
@@ -217,14 +220,16 @@ class AgencyLifecycle:
         last_fire = result.scalars().first()
         if not isinstance(last_fire, AgencyFireRecord):
             return datetime.now(UTC)
-        return _as_utc_aware(last_fire.scheduled_at) + timedelta(seconds=max(self._settings.agency_tick_seconds, 1))
+        return _as_utc_aware(last_fire.scheduled_at) + timedelta(
+            seconds=max(self._settings.agency_timer_interval_seconds, 1)
+        )
 
     async def dispatch_pending(self, db_session: AsyncSession) -> AgencyFireDelivery:
         agency_session = await self.ensure_agency_session(db_session)
         fires = await _load_pending_fires(
             db_session,
             agency_session_id=agency_session.id,
-            limit=self._settings.agency_max_signals_per_tick,
+            limit=self._settings.agency_fire_batch_limit,
         )
         if not fires:
             raise HTTPException(status_code=404, detail="Agency fire was not found.")

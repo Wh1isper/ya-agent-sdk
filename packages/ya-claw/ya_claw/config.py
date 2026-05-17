@@ -147,6 +147,10 @@ class ClawSettings(BaseSettings):
     )
     bridge_lark_reply_identity: Literal["bot", "user"] = "bot"
     bridge_lark_domain: str = "https://open.feishu.cn"
+    bridge_lark_previous_messages_enabled: bool = True
+    bridge_lark_previous_messages_limit: PositiveInt = 6
+    bridge_lark_previous_messages_max_chars: PositiveInt = 4000
+    bridge_lark_previous_message_max_chars: PositiveInt = 800
     default_profile: str = "default"
     agent_stream_resume_on_error: bool = True
     agent_stream_resume_max_attempts: int = 2
@@ -173,9 +177,8 @@ class ClawSettings(BaseSettings):
     agency_idle_after_seconds: int = 600
     agency_cooldown_seconds: int = 1800
     agency_profile: str | None = None
-    agency_tick_seconds: int = 30
-    agency_max_signals_per_tick: int = 20
-    agency_max_sessions_per_tick: int = 10
+    agency_timer_interval_seconds: int = 3600
+    agency_fire_batch_limit: int = 20
     agency_memory_capture_enabled: bool = True
     agency_context_max_chars: int = 8000
     agency_recent_files_limit: int = 5

@@ -52,14 +52,14 @@ class AgencyController:
             profile_name=str(
                 metadata.get("profile_name") or agency_session.profile_name or settings.resolved_agency_profile
             ),
-            interval_seconds=settings.agency_tick_seconds,
+            timer_interval_seconds=settings.agency_timer_interval_seconds,
             agency_session_id=agency_session.id,
             singleton_scope_key=AGENCY_SINGLETON_SCOPE_KEY,
             singleton_source_session_id=agency_session.source_session_id or "",
             risk_policy=_resolved_risk_policy(settings, metadata),
             memory_files={
-                "index": "memory/AGENCY.md",
-                "action_log": "memory/agency/ACTION_LOG.md",
+                "index": "AGENCY.md",
+                "action_log": "agency/ACTION_LOG.md",
             },
             next_fire_at=await lifecycle.next_timer_fire_at(db_session),
         )

@@ -318,7 +318,7 @@ class AgencyFireListResponse(BaseModel):
 class AgencyConfigResponse(BaseModel):
     enabled: bool = True
     profile_name: str
-    interval_seconds: int
+    timer_interval_seconds: int
     agency_session_id: str
     singleton_scope_key: str
     singleton_source_session_id: str

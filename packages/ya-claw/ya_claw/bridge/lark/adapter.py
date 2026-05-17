@@ -13,9 +13,23 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ya_claw.bridge.base import BridgeAdapter, BridgeMessageHandler
+from ya_claw.bridge.context_snapshot import (
+    BridgePreviousMessageSnapshotItem,
+    BridgePreviousMessagesSnapshot,
+    BridgeSnapshotRelation,
+)
 from ya_claw.bridge.lark.card import build_hitl_card, build_recovery_card
 from ya_claw.bridge.lark.normalizer import normalize_lark_action, normalize_lark_event
-from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchResult, BridgeEventStatus
+from ya_claw.bridge.lark.snapshot import (
+    int_value,
+    lark_message_content_text,
+    limit_snapshot_items,
+    sort_snapshot_items,
+    speaker_for_lark_sender,
+    string_value,
+    truncate_text,
+)
+from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchResult, BridgeEventStatus, BridgeInboundMessage
 from ya_claw.config import ClawSettings
 from ya_claw.controller.hitl import HitlController
 from ya_claw.controller.models import ActiveInteraction
@@ -369,6 +383,7 @@ class LarkBridgeAdapter(BridgeAdapter):
         message = normalize_lark_event(raw_event)
         if message is None:
             return
+        self._enrich_message_context_snapshot(lark_module, message)
         logger.debug(
             "Accepted Lark bridge event event_id={} chat_id={} message_id={}",
             message.event_id,
@@ -376,6 +391,245 @@ class LarkBridgeAdapter(BridgeAdapter):
             message.message_id,
         )
         self._submit_from_sdk_thread(self._handler.handle_message(message))
+
+    def _enrich_message_context_snapshot(self, lark_module: LarkSdkObject, message: BridgeInboundMessage) -> None:
+        if not self._settings.bridge_lark_previous_messages_enabled:
+            return
+        if message.event_type != "im.message.receive_v1":
+            return
+        try:
+            snapshot = self._build_remote_previous_messages_snapshot(lark_module, message)
+        except Exception:
+            logger.exception("Failed to build Lark previous messages snapshot message_id={}", message.message_id)
+            return
+        if snapshot is not None:
+            message.metadata["previous_messages_snapshot"] = snapshot.model_dump(mode="json")
+
+    def _build_remote_previous_messages_snapshot(
+        self,
+        lark_module: LarkSdkObject,
+        message: BridgeInboundMessage,
+    ) -> BridgePreviousMessagesSnapshot | None:
+        client = self._openapi_client(lark_module)
+        limit = int(self._settings.bridge_lark_previous_messages_limit)
+        max_chars = int(self._settings.bridge_lark_previous_messages_max_chars)
+        item_max_chars = int(self._settings.bridge_lark_previous_message_max_chars)
+        candidates: list[BridgePreviousMessageSnapshotItem] = []
+        seen: set[str] = {message.message_id}
+
+        self._append_parent_snapshot_item(
+            lark_module,
+            client,
+            message=message,
+            seen=seen,
+            candidates=candidates,
+            item_max_chars=item_max_chars,
+        )
+        self._append_container_snapshot_items(
+            lark_module,
+            client,
+            message=message,
+            seen=seen,
+            candidates=candidates,
+            item_max_chars=item_max_chars,
+        )
+        candidates = sort_snapshot_items(candidates)
+        limited = candidates[-limit:]
+        limited, total_truncated = limit_snapshot_items(
+            limited,
+            max_chars=max_chars,
+            item_max_chars=item_max_chars,
+        )
+        if len(limited) == 0:
+            return None
+        return BridgePreviousMessagesSnapshot(
+            items=limited, truncated=len(candidates) > len(limited) or total_truncated
+        )
+
+    def _append_parent_snapshot_item(
+        self,
+        lark_module: LarkSdkObject,
+        client: LarkSdkObject,
+        *,
+        message: BridgeInboundMessage,
+        seen: set[str],
+        candidates: list[BridgePreviousMessageSnapshotItem],
+        item_max_chars: int,
+    ) -> None:
+        parent_id = message.parent_id or message.root_id
+        if not isinstance(parent_id, str) or not parent_id.strip() or parent_id == message.message_id:
+            return
+        parent_item = self._get_lark_message_snapshot_item(
+            lark_module,
+            client,
+            parent_id,
+            relation="parent",
+            item_max_chars=item_max_chars,
+        )
+        self._append_unique_snapshot_item(candidates, seen=seen, item=parent_item)
+
+    def _append_container_snapshot_items(
+        self,
+        lark_module: LarkSdkObject,
+        client: LarkSdkObject,
+        *,
+        message: BridgeInboundMessage,
+        seen: set[str],
+        candidates: list[BridgePreviousMessageSnapshotItem],
+        item_max_chars: int,
+    ) -> None:
+        container_id = message.thread_id or message.root_id
+        if isinstance(container_id, str) and container_id.strip():
+            thread_items = self._list_lark_message_snapshot_items(
+                lark_module,
+                client,
+                container_id=container_id,
+                container_id_type="thread",
+                relation="thread",
+                item_max_chars=item_max_chars,
+            )
+            for item in thread_items:
+                self._append_unique_snapshot_item(candidates, seen=seen, item=item)
+        chat_items = self._list_lark_message_snapshot_items(
+            lark_module,
+            client,
+            container_id=message.chat_id,
+            container_id_type="chat",
+            relation="chat_recent",
+            item_max_chars=item_max_chars,
+        )
+        current_create_time = int_value(message.create_time)
+        for item in chat_items:
+            item_create_time = int_value(item.create_time)
+            if (
+                current_create_time is not None
+                and item_create_time is not None
+                and item_create_time > current_create_time
+            ):
+                continue
+            self._append_unique_snapshot_item(candidates, seen=seen, item=item)
+
+    def _append_unique_snapshot_item(
+        self,
+        candidates: list[BridgePreviousMessageSnapshotItem],
+        *,
+        seen: set[str],
+        item: BridgePreviousMessageSnapshotItem | None,
+    ) -> None:
+        if item is None:
+            return
+        if item.message_id in seen:
+            return
+        candidates.append(item)
+        if item.message_id is not None:
+            seen.add(item.message_id)
+
+    def _get_lark_message_snapshot_item(
+        self,
+        lark_module: LarkSdkObject,
+        client: LarkSdkObject,
+        message_id: str,
+        *,
+        relation: BridgeSnapshotRelation,
+        item_max_chars: int,
+    ) -> BridgePreviousMessageSnapshotItem | None:
+        from lark_oapi.api.im.v1 import GetMessageRequest
+
+        request = GetMessageRequest.builder().message_id(message_id).build()
+        response = client.im.v1.message.get(request)
+        if not getattr(response, "success", lambda: False)():
+            logger.debug("Failed to get Lark message for snapshot message_id={} response={}", message_id, response)
+            return None
+        data = getattr(response, "data", None)
+        items = getattr(data, "items", None)
+        if not isinstance(items, list) or len(items) == 0:
+            return None
+        return self._snapshot_item_from_lark_message(
+            lark_module, items[0], relation=relation, item_max_chars=item_max_chars
+        )
+
+    def _list_lark_message_snapshot_items(
+        self,
+        lark_module: LarkSdkObject,
+        client: LarkSdkObject,
+        *,
+        container_id: str,
+        container_id_type: str,
+        relation: BridgeSnapshotRelation,
+        item_max_chars: int,
+    ) -> list[BridgePreviousMessageSnapshotItem]:
+        from lark_oapi.api.im.v1 import ListMessageRequest
+
+        page_size = max(int(self._settings.bridge_lark_previous_messages_limit) * 2, 10)
+        request = (
+            ListMessageRequest
+            .builder()
+            .container_id_type(container_id_type)
+            .container_id(container_id)
+            .sort_type("ByCreateTimeDesc")
+            .page_size(page_size)
+            .build()
+        )
+        response = client.im.v1.message.list(request)
+        if not getattr(response, "success", lambda: False)():
+            logger.debug(
+                "Failed to list Lark messages for snapshot container_id={} container_id_type={} response={}",
+                container_id,
+                container_id_type,
+                response,
+            )
+            return []
+        data = getattr(response, "data", None)
+        raw_items = getattr(data, "items", None)
+        if not isinstance(raw_items, list):
+            return []
+        items: list[BridgePreviousMessageSnapshotItem] = []
+        for raw_item in raw_items:
+            item = self._snapshot_item_from_lark_message(
+                lark_module,
+                raw_item,
+                relation=relation,
+                item_max_chars=item_max_chars,
+            )
+            if item is not None:
+                items.append(item)
+        return items
+
+    def _snapshot_item_from_lark_message(
+        self,
+        lark_module: LarkSdkObject,
+        raw_message: LarkSdkObject,
+        *,
+        relation: BridgeSnapshotRelation,
+        item_max_chars: int,
+    ) -> BridgePreviousMessageSnapshotItem | None:
+        message_id = string_value(getattr(raw_message, "message_id", None))
+        message_type = string_value(getattr(raw_message, "msg_type", None))
+        sender = getattr(raw_message, "sender", None)
+        sender_id = string_value(getattr(sender, "id", None))
+        sender_type = string_value(getattr(sender, "sender_type", None))
+        create_time = string_value(getattr(raw_message, "create_time", None))
+        body = getattr(raw_message, "body", None)
+        raw_content = string_value(getattr(body, "content", None))
+        content_text = lark_message_content_text(lark_module, message_type=message_type, raw_content=raw_content)
+        if content_text is None or content_text.strip() == "":
+            return None
+        content_text, truncated = truncate_text(content_text, item_max_chars)
+        return BridgePreviousMessageSnapshotItem(
+            speaker=speaker_for_lark_sender(
+                sender_id=sender_id,
+                sender_type=sender_type,
+                app_id=self._app_id or self._settings.bridge_lark_app_id,
+            ),
+            relation=relation,
+            message_id=message_id,
+            sender_id=sender_id,
+            sender_type=sender_type,
+            message_type=message_type,
+            create_time=create_time,
+            content_text=content_text,
+            truncated=truncated,
+        )
 
     def _install_card_action_handler(self, client: LarkSdkObject, lark_module: LarkSdkObject) -> None:
         async def handle_card_action_frame(frame: LarkSdkObject, headers: LarkSdkObject, payload: bytes) -> None:

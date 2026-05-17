@@ -48,7 +48,7 @@ def settings(tmp_path: Path) -> ClawSettings:
         data_dir=data_dir,
         workspace_dir=workspace_dir,
         agency_enabled=True,
-        agency_tick_seconds=30,
+        agency_timer_interval_seconds=3600,
         _env_file=None,
     )
 
@@ -409,7 +409,7 @@ async def test_next_timer_handles_sqlite_naive_datetimes(
     db_session: AsyncSession,
     settings: ClawSettings,
 ) -> None:
-    old_time = datetime.now(UTC) - timedelta(seconds=settings.agency_tick_seconds + 60)
+    old_time = datetime.now(UTC) - timedelta(seconds=settings.agency_timer_interval_seconds + 60)
     fire = AgencyFireRecord(
         id="fire-1",
         kind="timer",

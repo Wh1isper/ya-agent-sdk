@@ -98,7 +98,7 @@ class AgencyDispatcher:
             try:
                 await asyncio.wait_for(
                     self._stopping.wait(),
-                    timeout=max(self._settings.agency_tick_seconds, 1),
+                    timeout=max(self._settings.agency_timer_interval_seconds, 1),
                 )
             except TimeoutError:
                 continue

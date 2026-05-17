@@ -253,8 +253,22 @@ function AgencyDetails({
           mono
         />
         <InfoRow
+          label="Timer interval"
+          value={formatDuration(config?.timer_interval_seconds)}
+        />
+        <InfoRow
           label="Risk threshold"
           value={config?.risk_policy.max_auto_action_risk ?? 'pending'}
+        />
+        <InfoRow
+          label="Agency index"
+          value={config?.memory_files.index ?? 'AGENCY.md'}
+          mono
+        />
+        <InfoRow
+          label="Action log"
+          value={config?.memory_files.action_log ?? 'agency/ACTION_LOG.md'}
+          mono
         />
       </dl>
     </section>
@@ -593,4 +607,11 @@ function formatDate(value?: string | null) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))
+}
+
+function formatDuration(seconds?: number | null) {
+  if (!seconds) return 'pending'
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`
+  if (seconds % 60 === 0) return `${seconds / 60}m`
+  return `${seconds}s`
 }

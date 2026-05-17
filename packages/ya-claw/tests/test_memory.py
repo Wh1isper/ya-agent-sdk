@@ -575,6 +575,27 @@ async def test_memory_agent_prompts_keep_memory_md_compact() -> None:
     assert '<index path="memory/MEMORY.md">' not in combined_prompt
 
 
+async def test_workspace_memory_store_uses_workspace_level_agency_files(settings: ClawSettings) -> None:
+    provider = LocalWorkspaceProvider(settings.resolved_workspace_dir, virtual_workspace_path=Path("/workspace"))
+    binding = provider.resolve({"session_id": "session-1"})
+    store = WorkspaceMemoryStore(binding)
+
+    store.ensure_agency()
+
+    assert store.memory_md_path == binding.host_path / "memory" / "MEMORY.md"
+    assert store.agency_md_path == binding.host_path / "AGENCY.md"
+    assert store.agency_action_log_path == binding.host_path / "agency" / "ACTION_LOG.md"
+    assert (binding.host_path / "agency" / "episodes").is_dir()
+    assert (binding.host_path / "agency" / "intentions").is_dir()
+    assert (binding.host_path / "agency" / "archive").is_dir()
+    assert store.build_agency_index_context(max_chars=1000) is not None
+    assert '<agency-index-context path="/workspace/AGENCY.md">' in store.build_agency_index_context(max_chars=1000)
+    assert (
+        '<agency-action-log-context path="/workspace/agency/ACTION_LOG.md">'
+        in store.build_agency_action_log_context(max_chars=1000)
+    )
+
+
 async def test_workspace_memory_store_rejects_symlinked_memory_files(settings: ClawSettings, tmp_path: Path) -> None:
     provider = LocalWorkspaceProvider(settings.resolved_workspace_dir, virtual_workspace_path=Path("/workspace"))
     binding = provider.resolve({"session_id": "session-1"})

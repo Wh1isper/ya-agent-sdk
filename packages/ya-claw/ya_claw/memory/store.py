@@ -57,11 +57,19 @@ class WorkspaceMemoryStore:
 
     @property
     def agency_md_path(self) -> Path:
-        return self.root / AGENCY_INDEX_FILENAME
+        return self._binding.host_path / AGENCY_INDEX_FILENAME
+
+    @property
+    def agency_virtual_md_path(self) -> Path:
+        return self._binding.virtual_path / AGENCY_INDEX_FILENAME
 
     @property
     def agency_dir_path(self) -> Path:
-        return self.root / AGENCY_DIRNAME
+        return self._binding.host_path / AGENCY_DIRNAME
+
+    @property
+    def agency_virtual_dir_path(self) -> Path:
+        return self._binding.virtual_path / AGENCY_DIRNAME
 
     @property
     def agency_action_log_path(self) -> Path:
@@ -79,9 +87,11 @@ class WorkspaceMemoryStore:
         (self.agency_dir_path / "intentions").mkdir(parents=True, exist_ok=True)
         (self.agency_dir_path / "archive").mkdir(parents=True, exist_ok=True)
         _ensure_regular_memory_file(
-            self.root, self.agency_md_path, "# Agency\n\n## Active Intentions\n\n## Watchlist\n\n## Deferred Ideas\n\n"
+            self._binding.host_path,
+            self.agency_md_path,
+            "# Agency\n\n## Active Intentions\n\n## Watchlist\n\n## Deferred Ideas\n\n",
         )
-        _ensure_regular_memory_file(self.root, self.agency_action_log_path, "# Agency Action Log\n\n")
+        _ensure_regular_memory_file(self._binding.host_path, self.agency_action_log_path, "# Agency Action Log\n\n")
 
     def read_memory_md(self) -> str | None:
         return _read_memory_file(self.root, self.memory_md_path)
@@ -90,10 +100,10 @@ class WorkspaceMemoryStore:
         return _read_memory_file(self.root, self.changelog_path)
 
     def read_agency_md(self) -> str | None:
-        return _read_memory_file(self.root, self.agency_md_path)
+        return _read_memory_file(self._binding.host_path, self.agency_md_path)
 
     def read_agency_action_log(self) -> str | None:
-        return _read_memory_file(self.root, self.agency_action_log_path)
+        return _read_memory_file(self._binding.host_path, self.agency_action_log_path)
 
     def list_files(self, *, include_content: bool = False, limit: int = 50) -> list[MemoryFile]:
         if not self.root.exists():
@@ -180,12 +190,12 @@ class WorkspaceMemoryStore:
         if not agency_md or not agency_md.strip():
             return None
         payload = {
-            "path": str(self.virtual_root / AGENCY_INDEX_FILENAME),
+            "path": str(self.agency_virtual_md_path),
             "untrusted": True,
             "content": _truncate(agency_md.strip(), max_chars),
         }
         return "\n".join([
-            f'<agency-index-context path="{_xml_escape(str(self.virtual_root / AGENCY_INDEX_FILENAME))}">',
+            f'<agency-index-context path="{_xml_escape(str(self.agency_virtual_md_path))}">',
             _json_for_xml_text(payload),
             "</agency-index-context>",
         ])
@@ -194,13 +204,14 @@ class WorkspaceMemoryStore:
         action_log = self.read_agency_action_log()
         if not action_log or not action_log.strip():
             return None
+        action_log_virtual_path = self.agency_virtual_dir_path / AGENCY_ACTION_LOG_FILENAME
         payload = {
-            "path": str(self.virtual_root / AGENCY_DIRNAME / AGENCY_ACTION_LOG_FILENAME),
+            "path": str(action_log_virtual_path),
             "untrusted": True,
             "content": _truncate(action_log.strip(), max_chars),
         }
         return "\n".join([
-            f'<agency-action-log-context path="{_xml_escape(str(self.virtual_root / AGENCY_DIRNAME / AGENCY_ACTION_LOG_FILENAME))}">',
+            f'<agency-action-log-context path="{_xml_escape(str(action_log_virtual_path))}">',
             _json_for_xml_text(payload),
             "</agency-action-log-context>",
         ])
