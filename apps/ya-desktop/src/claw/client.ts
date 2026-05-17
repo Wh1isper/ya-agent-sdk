@@ -1,21 +1,25 @@
 import {
   EventStreamContentType,
   fetchEventSource,
-  type EventSourceMessage,
 } from '@microsoft/fetch-event-source'
 
 import type {
   ClawHealth,
   ClawInfo,
+  ClawNotificationEvent,
+  ClawNotificationHandlers,
+  ClawProfileSummary,
+  ClawRunSummary,
   ClawRunTraceResponse,
   ClawSessionGetResponse,
+  ClawSessionRunStreamInput,
   ClawSessionStreamInput,
   ClawSessionSummary,
   ClawSessionTurnsResponse,
   ClawStreamHandlers,
   DesktopClawConnection,
-  JsonObject,
 } from './types'
+import { parseStreamMessage } from './streamEvents'
 
 export class ClawClientError extends Error {
   readonly status: number
@@ -44,6 +48,10 @@ export class ClawHttpClient {
     return this.fetchJson<ClawInfo>('/api/v1/claw/info')
   }
 
+  listProfiles() {
+    return this.fetchJson<ClawProfileSummary[]>('/api/v1/profiles')
+  }
+
   listSessions() {
     return this.fetchJson<ClawSessionSummary[]>('/api/v1/sessions')
   }
@@ -53,57 +61,26 @@ export class ClawHttpClient {
     handlers: ClawStreamHandlers = {},
     signal?: AbortSignal,
   ) {
-    return fetchEventSource(
-      buildUrl(this.connection.baseUrl, '/api/v1/sessions:stream'),
-      {
-        method: 'POST',
-        headers: {
-          Accept: EventStreamContentType,
-          'Content-Type': 'application/json',
-          ...(this.connection.apiToken
-            ? { Authorization: `Bearer ${this.connection.apiToken}` }
-            : {}),
-        },
-        body: JSON.stringify(input),
-        openWhenHidden: true,
-        signal,
-        async onopen(response) {
-          if (!response.ok) {
-            const detail = await readResponseDetail(response)
-            throw new ClawClientError(
-              `Claw stream failed with HTTP ${response.status}`,
-              response.status,
-              detail,
-            )
-          }
+    return this.fetchStream('/api/v1/sessions:stream', input, handlers, signal)
+  }
 
-          const contentType = response.headers.get('content-type') ?? ''
-          if (!contentType.startsWith(EventStreamContentType)) {
-            throw new ClawClientError(
-              `Claw stream returned unsupported content type ${contentType || 'unknown'}`,
-              response.status,
-              contentType,
-            )
-          }
-
-          handlers.onOpen?.()
-        },
-        onmessage(message) {
-          handlers.onEvent?.(parseStreamMessage(message))
-        },
-        onclose() {
-          handlers.onClose?.()
-        },
-        onerror(error) {
-          throw error
-        },
-      },
+  createSessionRunStream(
+    sessionId: string,
+    input: ClawSessionRunStreamInput,
+    handlers: ClawStreamHandlers = {},
+    signal?: AbortSignal,
+  ) {
+    return this.fetchStream(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/runs:stream`,
+      input,
+      handlers,
+      signal,
     )
   }
 
   getSession(sessionId: string) {
     return this.fetchJson<ClawSessionGetResponse>(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}?runs_limit=20&include_input_parts=true`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}?runs_limit=20&include_message=true&include_input_parts=true`,
     )
   }
 
@@ -119,6 +96,12 @@ export class ClawHttpClient {
     )
   }
 
+  getRun(runId: string) {
+    return this.fetchJson<{ session: ClawSessionSummary; run: ClawRunSummary }>(
+      `/api/v1/runs/${encodeURIComponent(runId)}?include_state=false&include_message=false`,
+    )
+  }
+
   getRunTrace(runId: string, maxItemChars = 2000, maxTotalChars = 8000) {
     const searchParams = new URLSearchParams({
       max_item_chars: String(maxItemChars),
@@ -127,6 +110,115 @@ export class ClawHttpClient {
     return this.fetchJson<ClawRunTraceResponse>(
       `/api/v1/runs/${encodeURIComponent(runId)}/trace?${searchParams.toString()}`,
     )
+  }
+
+  cancelSession(sessionId: string) {
+    return this.fetchJson<ClawRunSummary>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/cancel`,
+      { method: 'POST' },
+    )
+  }
+
+  interruptSession(sessionId: string) {
+    return this.fetchJson<ClawRunSummary>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/interrupt`,
+      { method: 'POST' },
+    )
+  }
+
+  streamNotifications(
+    handlers: ClawNotificationHandlers = {},
+    signal?: AbortSignal,
+    lastEventId?: string | null,
+  ) {
+    const headers: Record<string, string> = {
+      Accept: EventStreamContentType,
+      ...(this.connection.apiToken
+        ? { Authorization: `Bearer ${this.connection.apiToken}` }
+        : {}),
+    }
+    if (lastEventId) headers['Last-Event-ID'] = lastEventId
+
+    return fetchEventSource(
+      buildUrl(this.connection.baseUrl, '/api/v1/claw/notifications'),
+      {
+        method: 'GET',
+        headers,
+        openWhenHidden: true,
+        signal,
+        async onopen(response) {
+          if (!response.ok) {
+            const detail = await readResponseDetail(response)
+            throw new ClawClientError(
+              `Claw notifications failed with HTTP ${response.status}`,
+              response.status,
+              detail,
+            )
+          }
+          handlers.onOpen?.()
+        },
+        onmessage(message) {
+          void handlers.onEvent?.(parseNotificationMessage(message))
+        },
+        onclose() {
+          handlers.onClose?.()
+        },
+        onerror(error) {
+          throw error
+        },
+      },
+    )
+  }
+
+  private fetchStream(
+    path: string,
+    input: unknown,
+    handlers: ClawStreamHandlers = {},
+    signal?: AbortSignal,
+  ) {
+    return fetchEventSource(buildUrl(this.connection.baseUrl, path), {
+      method: 'POST',
+      headers: {
+        Accept: EventStreamContentType,
+        'Content-Type': 'application/json',
+        ...(this.connection.apiToken
+          ? { Authorization: `Bearer ${this.connection.apiToken}` }
+          : {}),
+      },
+      body: JSON.stringify(input),
+      openWhenHidden: true,
+      signal,
+      async onopen(response) {
+        if (!response.ok) {
+          const detail = await readResponseDetail(response)
+          throw new ClawClientError(
+            `Claw stream failed with HTTP ${response.status}`,
+            response.status,
+            detail,
+          )
+        }
+
+        const contentType = response.headers.get('content-type') ?? ''
+        if (!contentType.startsWith(EventStreamContentType)) {
+          throw new ClawClientError(
+            `Claw stream returned unsupported content type ${contentType || 'unknown'}`,
+            response.status,
+            contentType,
+          )
+        }
+
+        handlers.onOpen?.()
+      },
+      onmessage(message) {
+        handlers.onEvent?.(parseStreamMessage(message))
+      },
+      onclose() {
+        handlers.onClose?.()
+      },
+      onerror(error) {
+        throw error
+      },
+    })
   }
 
   private async fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -158,33 +250,34 @@ export function createClawClient(connection: DesktopClawConnection) {
   return new ClawHttpClient(connection)
 }
 
+function parseNotificationMessage(message: { id: string; event: string; data: string }): ClawNotificationEvent {
+  try {
+    const parsedValue: unknown = JSON.parse(message.data)
+    if (isRecord(parsedValue)) {
+      return {
+        id: message.id || (typeof parsedValue.id === 'string' ? parsedValue.id : ''),
+        type: typeof parsedValue.type === 'string' ? parsedValue.type : message.event,
+        created_at:
+          typeof parsedValue.created_at === 'string'
+            ? parsedValue.created_at
+            : undefined,
+        payload: isRecord(parsedValue.payload) ? parsedValue.payload : {},
+      }
+    }
+  } catch {
+    // Keep reconnects alive for malformed notification payloads.
+  }
+  return { id: message.id, type: message.event || 'message', payload: {} }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
 function buildUrl(baseUrl: string, path: string) {
   const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
   return `${normalizedBaseUrl}${normalizedPath}`
-}
-
-function parseStreamMessage(message: EventSourceMessage) {
-  return {
-    id: message.id,
-    event: message.event || 'message',
-    data: message.data,
-    payload: parseJsonObject(message.data),
-  }
-}
-
-function parseJsonObject(value: string): JsonObject {
-  try {
-    const parsedValue: unknown = JSON.parse(value)
-    if (isJsonObject(parsedValue)) return parsedValue
-    return { value: parsedValue }
-  } catch {
-    return { value }
-  }
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 async function readResponseDetail(response: Response) {

@@ -66,10 +66,35 @@ export type ClawTextInputPart = {
   metadata?: JsonObject | null
 }
 
+export type ClawWorkspaceMount = {
+  id: string
+  name?: string
+  host_path: string
+  virtual_path: string
+  mode: 'rw' | 'ro'
+  docker_host_path?: string
+  metadata?: JsonObject
+}
+
+export type ClawWorkspaceBinding = {
+  mounts: ClawWorkspaceMount[]
+  default_mount_id: string
+  cwd: string
+  metadata?: JsonObject
+}
+
 export type ClawSessionStreamInput = {
   profile_name?: string | null
   metadata?: JsonObject
-  workspace?: JsonObject | null
+  workspace?: ClawWorkspaceBinding | JsonObject | null
+  input_parts: ClawInputPart[]
+}
+
+export type ClawSessionRunStreamInput = {
+  restore_from_run_id?: string | null
+  reset_state?: boolean
+  metadata?: JsonObject
+  workspace?: ClawWorkspaceBinding | JsonObject | null
   input_parts: ClawInputPart[]
 }
 
@@ -84,6 +109,34 @@ export type ClawStreamHandlers = {
   onOpen?: () => void
   onEvent?: (event: ClawStreamEvent) => void
   onClose?: () => void
+}
+
+export type ClawNotificationHandlers = {
+  onOpen?: () => void
+  onEvent?: (event: ClawNotificationEvent) => void | Promise<void>
+  onClose?: () => void
+}
+
+export type ClawNotificationEvent = {
+  id: string
+  type: string
+  created_at?: string
+  createdAt?: string
+  payload: JsonObject
+}
+
+export type ClawProfileSummary = {
+  name: string
+  model: string
+  workspace_backend_hint?: string | null
+  workspaceBackendHint?: string | null
+  enabled: boolean
+  source_type?: string | null
+  sourceType?: string | null
+  source_version?: string | null
+  sourceVersion?: string | null
+  updated_at?: string
+  updatedAt?: string
 }
 
 export type ClawRunSummary = {

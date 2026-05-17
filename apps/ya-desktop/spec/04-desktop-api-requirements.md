@@ -234,9 +234,9 @@ GET /api/v1/runs/{run_id}
 GET /api/v1/runs/{run_id}/trace
 ```
 
-The current Desktop client uses sessions, session detail, session turns, run trace, health, Claw info, and streamed session creation. Home submits typed commands to `POST /api/v1/sessions:stream` with `input_parts: [{"type":"text","text":"..."}]`, stores a Desktop source marker in session metadata, renders AGUI `TEXT_MESSAGE_CHUNK` events as inline output, and refreshes session lists when the stream settles.
+The current Desktop client uses sessions, session detail, session turns, run trace, health, Claw info, profiles, global notifications, streamed session creation, streamed session run creation, and session cancellation. Home submits typed commands to `POST /api/v1/sessions:stream` with `input_parts: [{"type":"text","text":"..."}]`, stores a Desktop source marker in session metadata, sends selected workspace bindings, renders AGUI `TEXT_MESSAGE_CHUNK` events as inline output, and refreshes session lists when the stream settles.
 
-Desktop depends on AGUI-aligned replay events for stream rendering and run replay. The first streaming slice targets new sessions from Home; Chats continuation should use `POST /api/v1/sessions/{session_id}/runs:stream` with the same event handling model.
+Chats continuation uses `POST /api/v1/sessions/{session_id}/runs:stream` with the same event handling model. Desktop depends on AGUI-aligned replay events for stream rendering and run replay.
 
 ## Global Notifications
 
@@ -248,7 +248,7 @@ GET /api/v1/claw/notifications
 
 Desktop should use SSE as the primary connection-level realtime channel. Future WebSocket support belongs to remote RPC workspace transport and richer bidirectional control-plane features.
 
-Desktop uses notifications to update session lists, tray state, pending interaction badges, and active run cards immediately.
+Desktop uses notifications to update session lists, selected chat details, session turns, profile lists, pending interaction badges, and active run cards immediately.
 
 Key notification payloads:
 
@@ -271,7 +271,7 @@ Key notification payloads:
 }
 ```
 
-Desktop should track `Last-Event-ID` per connection and refresh HTTP read models when replay gaps occur.
+Desktop tracks `Last-Event-ID` per active connection and refreshes HTTP read models when session, run, HITL, or profile events arrive.
 
 Detailed design lives in [07-websocket-notifications-and-hitl.md](07-websocket-notifications-and-hitl.md).
 
@@ -297,7 +297,7 @@ POST /api/v1/sessions/{session_id}/interrupt
 POST /api/v1/sessions/{session_id}/steer
 ```
 
-Desktop should render HITL through session status reasons: `status="running"` plus `status_reason="hitl_pending"`. `status_detail.active_interactions` provides compact prompt metadata for badges and approval cards.
+Desktop renders HITL through session status reasons: `status="running"` plus `status_reason="hitl_pending"`. `status_detail.active_interactions` provides compact prompt metadata for badges and approval cards. The current Inbox surfaces HITL-pending metadata and failed/interrupted work; response actions remain mapped to run interaction endpoints as the approval card UI matures.
 
 HITL response shape should align with the SDK `UserInteraction` model:
 

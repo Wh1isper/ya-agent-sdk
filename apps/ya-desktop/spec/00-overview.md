@@ -86,8 +86,10 @@ Current implementation:
 - Shows Local Claw runtime health when an active local connection exists.
 - Reads recent chats from `GET /api/v1/sessions` through the Desktop Claw client.
 - Creates a new chat from the command input through `POST /api/v1/sessions:stream`.
+- Lets users choose the active Claw profile and Desktop Space before session creation.
+- Sends the selected Space as a Claw workspace binding when the Space has a local folder path.
 - Streams AGUI run events into an inline Home preview, including assistant text chunks, stream lifecycle status, and stream errors.
-- Refreshes recent chats after the streamed run settles.
+- Refreshes recent chats after the streamed run settles and through global notification SSE cache updates.
 - Shows offline, loading, empty, and error states when Local Claw is stopped or unreachable.
 
 Capabilities:
@@ -109,19 +111,28 @@ Current implementation:
 - Selects a session and reads `GET /api/v1/sessions/{session_id}` with recent runs.
 - Reads completed turns from `GET /api/v1/sessions/{session_id}/turns`.
 - Reads compact run traces from `GET /api/v1/runs/{run_id}/trace` for recent runs.
-- Keeps streaming, continuation, rerun, and cancel actions in the next implementation slice.
+- Continues the selected chat through `POST /api/v1/sessions/{session_id}/runs:stream`.
+- Shows live streaming output in the conversation transcript.
+- Cancels an active selected-session run through `POST /api/v1/sessions/{session_id}/cancel`.
+- Continues chats with the session's existing Claw profile and optional workspace context.
 
 Capabilities:
 
 - Conversation list grouped by space and status.
 - Selected chat detail with messages, AGUI replay, run timeline, tool calls, shell output, diffs, and artifacts.
-- Profile and model selection at chat or space level.
+- Profile and model display at chat level, with selection handled before new chat creation.
 - Run cancellation, retry, rerun, and continuation flows.
 - Inline approval cards with command, diff, and workspace context.
 
 ### Board
 
 Board is the kanban organization surface over chats.
+
+Current implementation:
+
+- Reads live Claw sessions from the active local connection.
+- Groups chats into Active, Waiting, Done, and Failed lanes using session/run status and HITL status reasons.
+- Shows offline, loading, empty, and error states.
 
 Capabilities:
 
@@ -133,6 +144,12 @@ Capabilities:
 ### Spaces
 
 Spaces represent workspace folders or cloud workspaces plus runtime details.
+
+Current implementation:
+
+- Stores a browser-local Space registry with names, folder paths, runtime labels, trust labels, and active selection.
+- Allows users to add a local folder Space and select it for Home and Chats execution.
+- Maps the selected Space into a Claw workspace binding for session and run creation when the Space has a local path.
 
 Capabilities:
 
@@ -162,6 +179,12 @@ Desktop sends this mount set through Claw session and run creation APIs as the `
 ### Inbox
 
 Inbox is the primary user-decision surface.
+
+Current implementation:
+
+- Reads live Claw sessions and surfaces failed, interrupted, and HITL-pending work.
+- Shows approval and recovery entries derived from session status, status reason, latest run error, and active interaction metadata.
+- Opens the related chat when a live Inbox item is selected.
 
 Capabilities:
 

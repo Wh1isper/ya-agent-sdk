@@ -1,8 +1,17 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
+import {
+  type QueryClient,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 
 import { createClawClient } from './client'
 import { getActiveClawConnection } from './connection'
 import type {
+  ClawNotificationEvent,
+  ClawSessionRunStreamInput,
   ClawRunSummary,
   ClawSessionStreamInput,
   ClawStreamHandlers,
@@ -15,6 +24,8 @@ export const clawQueryKeys = {
     ['claw', connectionScope(connection), 'health'] as const,
   info: (connection?: DesktopClawConnection | null) =>
     ['claw', connectionScope(connection), 'info'] as const,
+  profiles: (connection?: DesktopClawConnection | null) =>
+    ['claw', connectionScope(connection), 'profiles'] as const,
   sessions: (connection?: DesktopClawConnection | null) =>
     ['claw', connectionScope(connection), 'sessions'] as const,
   session: (
@@ -63,6 +74,14 @@ export function useClawInfo(connection?: DesktopClawConnection | null) {
   })
 }
 
+export function useClawProfiles(connection?: DesktopClawConnection | null) {
+  return useQuery({
+    queryKey: clawQueryKeys.profiles(connection),
+    queryFn: () => createClawClient(requiredConnection(connection)).listProfiles(),
+    enabled: Boolean(connection),
+  })
+}
+
 export function useClawSessions(connection?: DesktopClawConnection | null) {
   return useQuery({
     queryKey: clawQueryKeys.sessions(connection),
@@ -100,6 +119,100 @@ export function useCreateClawSessionStream(
       })
     },
   })
+}
+
+export function useCreateClawSessionRunStream(
+  connection?: DesktopClawConnection | null,
+) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      input,
+      handlers,
+      signal,
+    }: {
+      sessionId: string
+      input: ClawSessionRunStreamInput
+      handlers?: ClawStreamHandlers
+      signal?: AbortSignal
+    }) => {
+      await createClawClient(requiredConnection(connection)).createSessionRunStream(
+        sessionId,
+        input,
+        handlers,
+        signal,
+      )
+    },
+    onSettled: async (_data, _error, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.sessions(connection),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.session(connection, variables?.sessionId ?? null),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.turns(connection, variables?.sessionId ?? null),
+        }),
+      ])
+    },
+  })
+}
+
+export function useCancelClawSession(connection?: DesktopClawConnection | null) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      createClawClient(requiredConnection(connection)).cancelSession(sessionId),
+    onSettled: async (_data, _error, sessionId) => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.sessions(connection),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.session(connection, sessionId ?? null),
+        }),
+      ])
+    },
+  })
+}
+
+export function useClawNotifications(connection?: DesktopClawConnection | null) {
+  const queryClient = useQueryClient()
+  const lastEventIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!connection) return
+    const activeConnection = connection
+    const abortController = new AbortController()
+
+    async function connect() {
+      while (!abortController.signal.aborted) {
+        try {
+          const client = createClawClient(activeConnection)
+          await client.streamNotifications(
+            {
+              onEvent: async (event) => {
+                lastEventIdRef.current = event.id || lastEventIdRef.current
+                await applyNotificationEvent(queryClient, activeConnection, event)
+              },
+            },
+            abortController.signal,
+            lastEventIdRef.current,
+          )
+        } catch {
+          if (abortController.signal.aborted) return
+        }
+        await delay(1_500, abortController.signal)
+      }
+    }
+
+    void connect()
+    return () => abortController.abort()
+  }, [connection, queryClient])
 }
 
 export function useClawSession(
@@ -141,6 +254,65 @@ export function useClawRunTraces(
         createClawClient(requiredConnection(connection)).getRunTrace(run.id),
       enabled: Boolean(connection && run.id),
     })),
+  })
+}
+
+async function applyNotificationEvent(
+  queryClient: QueryClient,
+  connection: DesktopClawConnection,
+  event: ClawNotificationEvent,
+) {
+  if (
+    event.type === 'session.created' ||
+    event.type === 'session.updated' ||
+    event.type === 'session.deleted' ||
+    event.type === 'run.created' ||
+    event.type === 'run.updated' ||
+    event.type === 'run.hitl.responded' ||
+    event.type === 'interaction.requested' ||
+    event.type === 'interaction.updated' ||
+    event.type === 'interaction.resolved' ||
+    event.type === 'interaction.expired'
+  ) {
+    await queryClient.invalidateQueries({
+      queryKey: clawQueryKeys.sessions(connection),
+    })
+    const sessionId = event.payload.session_id ?? event.payload.sessionId
+    if (typeof sessionId === 'string') {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.session(connection, sessionId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.turns(connection, sessionId),
+        }),
+      ])
+    }
+  }
+
+  if (
+    event.type === 'profile.created' ||
+    event.type === 'profile.updated' ||
+    event.type === 'profile.deleted' ||
+    event.type === 'profiles.seeded'
+  ) {
+    await queryClient.invalidateQueries({
+      queryKey: clawQueryKeys.profiles(connection),
+    })
+  }
+}
+
+function delay(milliseconds: number, signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const timeoutId = window.setTimeout(resolve, milliseconds)
+    signal.addEventListener(
+      'abort',
+      () => {
+        window.clearTimeout(timeoutId)
+        resolve()
+      },
+      { once: true },
+    )
   })
 }
 
