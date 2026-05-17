@@ -644,6 +644,7 @@ def test_list_sessions_include_internal_exposes_agency_session() -> None:
 
 def test_memory_api_enqueues_jobs_exposes_state_and_uses_filetree_for_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YA_CLAW_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
     get_settings.cache_clear()
     _create_schema()
 

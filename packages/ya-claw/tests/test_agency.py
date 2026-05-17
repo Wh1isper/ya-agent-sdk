@@ -299,6 +299,61 @@ async def test_agency_tick_creates_inactivity_signal_for_idle_session(
     assert signal.reason == AgencySignalReason.INACTIVITY.value
 
 
+async def test_agency_tick_handles_sqlite_naive_datetimes_for_idle_session(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    old_time = datetime.now(UTC) - timedelta(seconds=settings.agency_idle_after_seconds + 60)
+    async with session_factory() as db_session:
+        source_session = SessionRecord(
+            id="session-1",
+            profile_name="general",
+            session_metadata={},
+            updated_at=old_time,
+        )
+        source_run = RunRecord(
+            id="run-1",
+            session_id="session-1",
+            sequence_no=1,
+            status="completed",
+            trigger_type=TriggerType.API.value,
+            input_parts=[],
+            run_metadata={},
+            committed_at=old_time,
+        )
+        state = SessionAgencyStateRecord(
+            source_session_id="session-1",
+            enabled=True,
+            cooldown_until=old_time,
+            agency_metadata={},
+        )
+        db_session.add_all([source_session, source_run, state])
+        await db_session.commit()
+
+    submitted: list[str] = []
+    lifecycle = AgencyLifecycle(
+        settings=settings,
+        runtime_state=create_runtime_state(),
+        submit_run=lambda run_id: not submitted.append(run_id),
+    )
+
+    async with session_factory() as db_session:
+        reloaded_session = await db_session.get(SessionRecord, "session-1")
+        reloaded_state = await db_session.get(SessionAgencyStateRecord, "session-1")
+        assert isinstance(reloaded_session, SessionRecord)
+        assert isinstance(reloaded_state, SessionAgencyStateRecord)
+        assert reloaded_session.updated_at.tzinfo is None
+        assert reloaded_state.cooldown_until is not None
+        assert reloaded_state.cooldown_until.tzinfo is None
+
+        result = await lifecycle.tick(db_session)
+
+        assert len(result.created_signal_ids) == 1
+        assert len(result.submitted_run_ids) == 1
+        assert submitted == result.submitted_run_ids
+
+
 async def test_memory_run_commit_emits_memory_committed_agency_signal(
     db_engine: AsyncEngine,
     settings: ClawSettings,

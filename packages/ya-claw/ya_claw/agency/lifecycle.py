@@ -319,10 +319,11 @@ class AgencyLifecycle:
         reasons = agency.get("reasons")
         if isinstance(reasons, list) and reasons:
             state.last_agency_reason = str(reasons[0])
-        state.last_action_at = run_record.committed_at or datetime.now(UTC)
-        state.cooldown_until = (run_record.committed_at or datetime.now(UTC)) + timedelta(
-            seconds=max(0, self._settings.agency_cooldown_seconds)
+        committed_at = (
+            _ensure_utc(run_record.committed_at) if run_record.committed_at is not None else datetime.now(UTC)
         )
+        state.last_action_at = committed_at
+        state.cooldown_until = committed_at + timedelta(seconds=max(0, self._settings.agency_cooldown_seconds))
         state.pending_signal_count = await _count_pending_signals(db_session, source_session_id)
         current_sequence_no = agency.get("current_sequence_no")
         if isinstance(current_sequence_no, int):
@@ -458,7 +459,8 @@ class AgencyLifecycle:
         rows = await db_session.execute(statement)
         states = list(rows.scalars().all())
         for state in states:
-            if state.cooldown_until is not None and state.cooldown_until > now:
+            cooldown_until = _ensure_utc(state.cooldown_until) if state.cooldown_until is not None else None
+            if cooldown_until is not None and cooldown_until > now:
                 continue
             source_session = await db_session.get(SessionRecord, state.source_session_id)
             if not isinstance(source_session, SessionRecord) or source_session.session_type != "conversation":
@@ -466,7 +468,8 @@ class AgencyLifecycle:
             current_sequence_no = await _current_source_sequence_no(db_session, source_session.id)
             if current_sequence_no <= 0:
                 continue
-            if source_session.updated_at + timedelta(seconds=max(0, self._settings.agency_idle_after_seconds)) > now:
+            source_updated_at = _ensure_utc(source_session.updated_at)
+            if source_updated_at + timedelta(seconds=max(0, self._settings.agency_idle_after_seconds)) > now:
                 continue
             if current_sequence_no <= state.last_observed_sequence_no and state.last_action_at is not None:
                 continue
@@ -776,6 +779,12 @@ async def _mark_run_signals_failed(db_session: AsyncSession, run_id: str) -> Non
     )
     for signal in result.scalars().all():
         signal.status = AgencySignalStatus.FAILED.value
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _string_or_none(value: object) -> str | None:

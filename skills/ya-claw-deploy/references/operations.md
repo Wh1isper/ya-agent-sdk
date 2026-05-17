@@ -40,8 +40,25 @@ Look for:
 - seeded profile names
 - execution supervisor startup
 - runtime instance registration
+- agency dispatcher startup when session agency is enabled
 - bridge supervisor startup when embedded bridge is enabled
 - workspace container creation or reuse errors
+
+## Agency Checks
+
+Session agency uses paired internal agency sessions and durable agency signals. Use the dedicated operations guide for configuration, API checks, backup, and troubleshooting: [`agency.md`](agency.md).
+
+Quick manual signal check:
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer ${YA_CLAW_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"manual","client_token":"ops-check-1","prompt_override":"Run a short agency deployment check."}' \
+  http://127.0.0.1:9042/api/v1/sessions/${SESSION_ID}/agency:signal
+```
+
+Expected delivery is `submitted`, `steered`, or `duplicate`. Agency runs appear with `trigger_type="agency"`, and agency workspace state lives under `memory/AGENCY.md` and `memory/agency/**`.
 
 ## Bridge Checks
 
@@ -254,3 +271,7 @@ YA_CLAW_AUTO_SEED_PROFILES=true
 ```bash
 ya-claw profiles seed --seed-file /etc/ya-claw/profiles.yaml
 ```
+
+### Agency Signal Dispatch Errors
+
+Read [`agency.md`](agency.md) for agency-specific checks, including dispatcher logs, profile availability, pending signal state, and workspace permissions.

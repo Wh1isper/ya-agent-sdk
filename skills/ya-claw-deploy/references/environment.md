@@ -90,6 +90,27 @@ Use the same values for systemd or custom container deployments when memory resi
 
 Heartbeat guidance lives at `<YA_CLAW_WORKSPACE_DIR>/HEARTBEAT.md`. See [`schedules-heartbeat.md`](schedules-heartbeat.md) for deployment steps, API checks, and backup notes.
 
+## Session Agency Settings
+
+| Variable                                                | Default      | Purpose                                                         |
+| ------------------------------------------------------- | ------------ | --------------------------------------------------------------- |
+| `YA_CLAW_AGENCY_ENABLED`                                | `true`       | Default enablement for source conversation session agency state |
+| `YA_CLAW_AGENCY_IDLE_AFTER_SECONDS`                     | `600`        | Idle age before inactivity signals are created                  |
+| `YA_CLAW_AGENCY_COOLDOWN_SECONDS`                       | `1800`       | Minimum delay between automatic agency actions per source       |
+| `YA_CLAW_AGENCY_PROFILE`                                | unset        | Profile override for agency runs; falls back to source/default  |
+| `YA_CLAW_AGENCY_TICK_SECONDS`                           | `30`         | Agency dispatcher scan interval                                 |
+| `YA_CLAW_AGENCY_MAX_SIGNALS_PER_TICK`                   | `20`         | Maximum pending signals batched per dispatch                    |
+| `YA_CLAW_AGENCY_MAX_SESSIONS_PER_TICK`                  | `10`         | Maximum source sessions scanned per tick                        |
+| `YA_CLAW_AGENCY_MEMORY_CAPTURE_ENABLED`                 | `true`       | Allows agency output to feed session memory extraction          |
+| `YA_CLAW_AGENCY_CONTEXT_MAX_CHARS`                      | `8000`       | Maximum agency context block size                               |
+| `YA_CLAW_AGENCY_RECENT_FILES_LIMIT`                     | `5`          | Recent agency file index limit                                  |
+| `YA_CLAW_AGENCY_INDEX_TARGET_CHARS`                     | `16000`      | Target size for `memory/AGENCY.md`                              |
+| `YA_CLAW_AGENCY_INDEX_MAX_CHARS`                        | `32000`      | Hard size cap used by compaction guidance                       |
+| `YA_CLAW_AGENCY_ACTION_LOG_RECENT_CHARS`                | `32000`      | Recent action log window loaded into agency context             |
+| `YA_CLAW_AGENCY_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD` | `extra_high` | Agency-specific unattended shell review threshold               |
+
+Session agency creates paired internal `session_type="agency"` sessions and `trigger_type="agency"` runs. See [`agency.md`](agency.md) for behavior, API checks, safety policy, backup, and troubleshooting.
+
 ## Session and Run Pruning Settings
 
 | Variable                                             | Default | Purpose                                                                                                     |
@@ -174,6 +195,10 @@ YA_CLAW_SCHEDULE_DISPATCH_ENABLED=true
 YA_CLAW_HEARTBEAT_ENABLED=false
 YA_CLAW_HEARTBEAT_INTERVAL_SECONDS=300
 YA_CLAW_HEARTBEAT_PROFILE=default
+YA_CLAW_AGENCY_ENABLED=true
+YA_CLAW_AGENCY_IDLE_AFTER_SECONDS=600
+YA_CLAW_AGENCY_COOLDOWN_SECONDS=1800
+YA_CLAW_AGENCY_PROFILE=default
 YA_CLAW_SESSION_PRUNE_ENABLED=true
 YA_CLAW_SESSION_PRUNE_RUN_KEEP_RECENT=10
 YA_CLAW_SESSION_PRUNE_RUN_OLDER_THAN_DAYS=30
@@ -186,6 +211,7 @@ YA_CLAW_BRIDGE_LARK_APP_ID=cli_xxx
 YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE=default
 YA_CLAW_BRIDGE_LARK_EVENT_TYPES=im.chat.member.bot.added_v1,im.chat.member.user.added_v1,im.message.receive_v1,drive.notice.comment_add_v1,card.action.trigger
+YA_CLAW_AGENCY_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD=extra_high
 MALLOC_ARENA_MAX=2
 MALLOC_TRIM_THRESHOLD_=131072
 PYTHONMALLOC=malloc
