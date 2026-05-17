@@ -201,7 +201,6 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
     assert payload["session"]["memory_state"] is None
     assert sorted(payload["session"]) == snapshot([
         "active_run_id",
-        "agency_state",
         "created_at",
         "head_run_id",
         "head_success_run_id",
@@ -617,11 +616,17 @@ def test_list_sessions_include_internal_exposes_agency_session() -> None:
                 source_session = SessionRecord(id="source-session", profile_name="general", session_metadata={})
                 agency_session = SessionRecord(
                     id="agency-session",
-                    parent_session_id="source-session",
                     profile_name="general",
                     session_type="agency",
-                    source_session_id="source-session",
-                    session_metadata={"agency": {"source_session_id": "source-session"}},
+                    source_session_id="19aafc63e85a06fb38321a895de724d0",
+                    session_metadata={
+                        "agency": {
+                            "kind": "claw_agency_session",
+                            "scope": "global",
+                            "scope_key": "agency:global",
+                            "version": 1,
+                        }
+                    },
                 )
                 db_session.add_all([source_session, agency_session])
                 await db_session.commit()
@@ -639,7 +644,13 @@ def test_list_sessions_include_internal_exposes_agency_session() -> None:
     assert default_response.status_code == 200
     assert [session["id"] for session in default_response.json()] == ["source-session"]
     assert internal_response.status_code == 200
-    assert {session["id"] for session in internal_response.json()} == {"source-session", "agency-session"}
+    internal_ids = {session["id"] for session in internal_response.json()}
+    assert {"source-session", "agency-session"}.issubset(internal_ids)
+    assert any(
+        session["session_type"] == "agency"
+        and session["metadata"].get("agency", {}).get("scope_key") == "agency:global"
+        for session in internal_response.json()
+    )
 
 
 def test_memory_api_enqueues_jobs_exposes_state_and_uses_filetree_for_reads(monkeypatch: pytest.MonkeyPatch) -> None:

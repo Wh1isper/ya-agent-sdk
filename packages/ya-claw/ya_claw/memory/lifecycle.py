@@ -18,7 +18,7 @@ from ya_agent_sdk.agents.main import RuntimeReadyContext
 from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
-from ya_claw.controller.models import AgencySignalReason, AgencySignalRequest, DispatchMode, MemoryJobKind, TriggerType
+from ya_claw.controller.models import AgencyFireKind, DispatchMode, MemoryJobKind, TriggerType
 from ya_claw.execution.state_machine import queue_run
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -469,13 +469,8 @@ class MemoryLifecycle:
     async def _emit_memory_committed_signal(self, source_session_id: str, payload: dict[str, Any]) -> None:
         if not self._settings.agency_enabled:
             return
-        source_run_ids = [item for item in payload.get("source_run_ids", []) if isinstance(item, str)]
-        request = AgencySignalRequest(
-            reason=AgencySignalReason.MEMORY_COMMITTED,
-            client_token=str(payload.get("memory_run_id") or uuid4().hex),
-            source_run_ids=source_run_ids,
-            metadata={"memory_committed": payload},
-        )
+        memory_run_id = str(payload.get("memory_run_id") or uuid4().hex)
+        memory_kind = str(payload.get("memory_job_kind") or "extract")
         async with self._session_factory() as db_session:
             lifecycle = AgencyLifecycle(
                 settings=self._settings,
@@ -483,7 +478,14 @@ class MemoryLifecycle:
                 submit_run=self._agency_submit_run,
             )
             try:
-                await lifecycle.create_signal(db_session, source_session_id, request)
+                await lifecycle.create_fire(
+                    db_session,
+                    kind=AgencyFireKind.MEMORY_COMMITTED,
+                    source_session_id=source_session_id,
+                    source_run_id=memory_run_id,
+                    client_token=memory_run_id,
+                    payload={"memory_kind": memory_kind, "memory_committed": payload},
+                )
             except HTTPException as exc:
                 if exc.status_code != 409:
                     raise

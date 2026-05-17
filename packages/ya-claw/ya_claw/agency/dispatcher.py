@@ -35,11 +35,19 @@ class AgencyDispatcher:
         if not self._settings.agency_enabled:
             logger.info("Agency dispatcher disabled")
             return
+        await self.bootstrap()
         if self._task is not None:
             return
         self._stopping.clear()
         self._task = asyncio.create_task(self._run_loop(), name="ya-claw-agency-dispatcher")
         logger.info("Agency dispatcher started")
+
+    async def bootstrap(self) -> None:
+        lifecycle = AgencyLifecycle(settings=self._settings, runtime_state=self._runtime_state)
+        async with self._session_factory() as db_session:
+            agency_session = await lifecycle.ensure_agency_session(db_session)
+            await db_session.commit()
+        logger.info("Agency default coordinator ready agency_session_id={}", agency_session.id)
 
     async def shutdown(self) -> None:
         self._stopping.set()
@@ -59,8 +67,8 @@ class AgencyDispatcher:
         async with self._session_factory() as db_session:
             result = await lifecycle.tick(db_session)
         if self._notification_hub is not None:
-            for signal_id in result.created_signal_ids:
-                await self._notification_hub.publish("agency.signal.updated", {"signal_id": signal_id})
+            for fire_id in result.created_fire_ids:
+                await self._notification_hub.publish("agency.fire.updated", {"agency_fire_id": fire_id})
             for run_id in result.submitted_run_ids:
                 await self._notification_hub.publish("agency.episode.updated", {"run_id": run_id})
         return result
@@ -69,13 +77,19 @@ class AgencyDispatcher:
         while not self._stopping.is_set():
             try:
                 result = await self.dispatch_once()
-                total = len(result.created_signal_ids) + len(result.submitted_run_ids) + len(result.steered_signal_ids)
+                total = (
+                    len(result.created_fire_ids)
+                    + len(result.submitted_run_ids)
+                    + len(result.steered_fire_ids)
+                    + len(result.merged_fire_ids)
+                )
                 if total:
                     logger.info(
-                        "Agency dispatcher tick processed created_signals={} submitted_runs={} steered_signals={}",
-                        len(result.created_signal_ids),
+                        "Agency dispatcher tick processed created_fires={} submitted_runs={} steered_fires={} merged_fires={}",
+                        len(result.created_fire_ids),
                         len(result.submitted_run_ids),
-                        len(result.steered_signal_ids),
+                        len(result.steered_fire_ids),
+                        len(result.merged_fire_ids),
                     )
             except asyncio.CancelledError:
                 raise

@@ -84,7 +84,7 @@ const navItems: Array<{
   {
     route: 'agency',
     label: 'Agency',
-    helper: 'Session agency',
+    helper: 'Memory wake-up',
     icon: BrainCircuit,
   },
   { route: 'debug', label: 'Debug', helper: 'Sessions and runs', icon: Bug },
@@ -123,7 +123,7 @@ const navItems: Array<{
 const routeCopy: Record<AppRoute, { eyebrow: string; title: string }> = {
   overview: { eyebrow: 'Runtime', title: 'Overview' },
   chat: { eyebrow: 'Web', title: 'Chat' },
-  agency: { eyebrow: 'Automation', title: 'Agency Sessions' },
+  agency: { eyebrow: 'Automation', title: 'Agency' },
   debug: { eyebrow: 'AGUI', title: 'Debug Runtime' },
   schedules: { eyebrow: 'Automation', title: 'Schedules' },
   bridges: { eyebrow: 'Integrations', title: 'Bridges' },

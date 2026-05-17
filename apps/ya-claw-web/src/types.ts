@@ -485,76 +485,98 @@ export type AgencyBudget = {
   max_tool_calls: number
   max_runtime_seconds: number
   max_workspace_writes: number
-  external_actions: 'deny' | 'allow'
+  external_actions: 'deny'
 }
 
-export type AgencyStateSummary = {
-  source_session_id: string
-  agency_session_id?: string | null
-  enabled: boolean
-  last_observed_sequence_no: number
-  episode_count: number
-  pending_signal_count: number
-  last_agency_run_id?: string | null
-  last_agency_reason?: string | null
-  last_action_at?: string | null
-  cooldown_until?: string | null
-  metadata: Record<string, unknown>
-  created_at?: string | null
-  updated_at?: string | null
+export type AgencyRiskPolicy = {
+  max_auto_action_risk: 'low' | 'medium' | 'high' | 'extra_high'
+  denied_actions: string[]
 }
 
-export type AgencySignalSummary = {
+export type AgencyFireSummary = {
   id: string
-  source_session_id: string
-  agency_session_id?: string | null
-  reason: string
+  kind: 'manual' | 'timer' | 'memory_committed' | 'compact' | string
   status:
     | 'pending'
-    | 'steered'
     | 'submitted'
+    | 'steered'
+    | 'merged'
     | 'consumed'
     | 'skipped'
     | 'failed'
     | string
-  priority: number
+  scheduled_at: string
+  fired_at?: string | null
   dedupe_key: string
-  source_run_ids: string[]
-  metadata: Record<string, unknown>
-  created_at: string
-  consumed_at?: string | null
-  run_id?: string | null
-}
-
-export type AgencyGetResponse = {
-  state: AgencyStateSummary
-  signals: AgencySignalSummary[]
-  agency_session?: SessionSummary | null
-}
-
-export type AgencyUpdateRequest = {
-  enabled?: boolean | null
-  metadata?: Record<string, unknown> | null
-}
-
-export type AgencySignalRequest = {
-  reason?: string
-  client_token?: string | null
-  prompt_override?: string | null
-  budget?: AgencyBudget | null
-  metadata?: Record<string, unknown>
-  source_run_ids?: string[]
-}
-
-export type AgencySignalResponse = {
-  accepted: boolean
-  source_session_id: string
-  agency_session_id: string
-  signal: AgencySignalSummary
+  source_session_id?: string | null
+  source_run_id?: string | null
+  agency_session_id?: string | null
   run_id?: string | null
   active_run_id?: string | null
-  delivery: 'steered' | 'submitted' | 'pending' | 'duplicate'
-  state: AgencyStateSummary
+  run_status?: FireRunStatus | null
+  priority: number
+  payload: Record<string, unknown>
+  error_message?: string | null
+  created_at: string
+  updated_at: string
+  consumed_at?: string | null
+}
+
+export type AgencyFireListResponse = {
+  fires: AgencyFireSummary[]
+}
+
+export type AgencyConfigResponse = {
+  enabled: boolean
+  profile_name: string
+  interval_seconds: number
+  agency_session_id: string
+  singleton_scope_key: string
+  singleton_source_session_id: string
+  budget_defaults: Record<string, unknown>
+  risk_policy: AgencyRiskPolicy
+  deny_external_actions: boolean
+  memory_files: Record<string, string>
+  next_fire_at?: string | null
+}
+
+export type AgencyStatusResponse = {
+  enabled: boolean
+  agency_session_id: string
+  state: 'idle' | 'queued' | 'running'
+  active_run?: RunSummary | null
+  latest_run?: RunSummary | null
+  active_run_id?: string | null
+  latest_run_id?: string | null
+  next_fire_at?: string | null
+  pending_fire_count: number
+  last_fire?: AgencyFireSummary | null
+  agency_session: SessionSummary
+}
+
+export type AgencyTriggerRequest = {
+  kind?: 'manual' | 'timer' | 'memory_committed' | 'compact' | string
+  source_session_id?: string | null
+  source_run_id?: string | null
+  client_token?: string | null
+  prompt?: string | null
+  budget?: AgencyBudget | null
+  payload?: Record<string, unknown>
+}
+
+export type AgencyTriggerResponse = {
+  accepted: boolean
+  agency_session_id: string
+  fire: AgencyFireSummary
+  run_id?: string | null
+  active_run_id?: string | null
+  delivery:
+    | 'steered'
+    | 'submitted'
+    | 'merged'
+    | 'pending'
+    | 'duplicate'
+    | 'skipped'
 }
 
 export type SessionSummary = {
@@ -575,7 +597,6 @@ export type SessionSummary = {
   active_run_id?: string | null
   latest_run?: RunSummary | null
   memory_state?: MemoryStateSummary | null
-  agency_state?: AgencyStateSummary | null
   workspace_state?: SessionWorkspaceState | null
 }
 

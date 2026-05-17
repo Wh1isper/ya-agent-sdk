@@ -1,4 +1,4 @@
-"""Source-session tools for YA Claw agency runs."""
+"""Global agency tools for YA Claw agency runs."""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ from ya_claw.toolsets.session import ClawSelfClient, _get_self_client
 
 
 class ListSourceSessionTurnsTool(BaseTool):
-    """List completed turns from the source conversation session."""
+    """List completed turns from a source conversation session."""
 
     name = "list_source_session_turns"
-    description = "List completed turns from the source conversation session for an agency run."
+    description = "List completed turns from a source conversation session referenced by a global agency signal."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_self_client(ctx) is not None
@@ -25,6 +25,10 @@ class ListSourceSessionTurnsTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
+        source_session_id: Annotated[
+            str | None,
+            Field(description="Source conversation session ID. Defaults to the primary source session for the run."),
+        ] = None,
         limit: Annotated[int, Field(description="Maximum completed turns to fetch, clamped to 1..50")] = 10,
         before_sequence_no: Annotated[
             int | None, Field(description="Fetch turns with sequence_no lower than this value")
@@ -36,7 +40,10 @@ class ListSourceSessionTurnsTool(BaseTool):
             return "Error: YA Claw self-session client is unavailable."
         if isinstance(client, ClawSelfClient):
             payload = await client.list_source_session_turns(
-                limit=min(max(limit, 1), 50), before_sequence_no=before_sequence_no, cursor=cursor
+                source_session_id=source_session_id,
+                limit=min(max(limit, 1), 50),
+                before_sequence_no=before_sequence_no,
+                cursor=cursor,
             )
         else:
             payload = await client.list_session_turns(
@@ -49,7 +56,7 @@ class GetSourceRunTraceTool(BaseTool):
     """Get a source session run trace."""
 
     name = "get_source_run_trace"
-    description = "Get tool-call and tool-response trace for a run in the source conversation session."
+    description = "Get tool-call and tool-response trace for a run referenced by a global agency signal."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_self_client(ctx) is not None
@@ -80,10 +87,10 @@ class GetSourceRunTraceTool(BaseTool):
 
 
 class ListAgencyRunsTool(BaseTool):
-    """List recent agency runs for the source conversation session."""
+    """List recent global agency runs for the current agency session."""
 
     name = "list_agency_runs"
-    description = "List recent agency runs attached to the source conversation session."
+    description = "List recent runs from the global agency session that is coordinating proactive responses."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_self_client(ctx) is not None
@@ -98,7 +105,7 @@ class ListAgencyRunsTool(BaseTool):
             return "Error: YA Claw self-session client is unavailable."
         if not isinstance(client, ClawSelfClient):
             return json.dumps(
-                {"source_session_id": client.session_id, "agency_session_id": None, "runs": []},
+                {"agency_session_id": client.session_id, "runs": []},
                 ensure_ascii=False,
                 separators=(",", ":"),
             )

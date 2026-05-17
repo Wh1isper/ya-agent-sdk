@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
 from ya_claw.agency.dispatcher import AgencyDispatcher
+from ya_claw.api.agency import router as agency_router
 from ya_claw.api.bridges import router as bridges_router
 from ya_claw.api.claw import router as claw_router
 from ya_claw.api.health import router as health_router
@@ -95,6 +96,7 @@ class ClawApplication:
         )
         app.include_router(health_router)
         app.include_router(claw_router, prefix="/api/v1")
+        app.include_router(agency_router, prefix="/api/v1")
         app.include_router(profiles_router, prefix="/api/v1")
         app.include_router(sessions_router, prefix="/api/v1")
         app.include_router(runs_router, prefix="/api/v1")

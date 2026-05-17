@@ -68,21 +68,32 @@ class ClawSelfClient:
     async def list_source_session_turns(
         self,
         *,
+        source_session_id: str | None = None,
         limit: int,
         before_sequence_no: int | None,
         cursor: str | None,
     ) -> dict[str, Any]:
-        return await self.list_session_turns(limit=limit, before_sequence_no=before_sequence_no, cursor=cursor)
+        session_id = source_session_id.strip() if isinstance(source_session_id, str) else ""
+        if session_id == "":
+            session_id = self.session_id
+        params: dict[str, str] = {"limit": str(limit)}
+        if isinstance(cursor, str) and cursor.strip() != "":
+            params["cursor"] = cursor.strip()
+        elif isinstance(before_sequence_no, int):
+            params["before_sequence_no"] = str(before_sequence_no)
+        path = f"/api/v1/sessions/{urllib.parse.quote(session_id)}/turns"
+        return await self._get_json(path, params=params)
 
     async def get_source_run_trace(self, *, run_id: str, max_item_chars: int, max_total_chars: int) -> dict[str, Any]:
-        return await self.get_run_trace(run_id=run_id, max_item_chars=max_item_chars, max_total_chars=max_total_chars)
+        params = {
+            "max_item_chars": str(max_item_chars),
+            "max_total_chars": str(max_total_chars),
+        }
+        path = f"/api/v1/runs/{urllib.parse.quote(run_id)}/trace"
+        return await self._get_json(path, params=params)
 
     async def list_agency_runs(self, *, limit: int) -> dict[str, Any]:
-        payload = await self._get_json(f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/agency", params={})
-        agency_session = payload.get("agency_session") if isinstance(payload, dict) else None
-        agency_session_id = agency_session.get("id") if isinstance(agency_session, dict) else None
-        if not isinstance(agency_session_id, str) or agency_session_id.strip() == "":
-            return {"source_session_id": self.session_id, "agency_session_id": None, "runs": []}
+        agency_session_id = self.session_id
         detail = await self._get_json(
             f"/api/v1/sessions/{urllib.parse.quote(agency_session_id)}",
             params={"runs_limit": str(limit), "include_input_parts": "true", "include_message": "false"},
@@ -90,7 +101,6 @@ class ClawSelfClient:
         session = detail.get("session") if isinstance(detail, dict) else None
         runs = session.get("runs") if isinstance(session, dict) else []
         return {
-            "source_session_id": self.session_id,
             "agency_session_id": agency_session_id,
             "runs": runs if isinstance(runs, list) else [],
         }

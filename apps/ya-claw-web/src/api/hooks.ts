@@ -10,8 +10,7 @@ import { toast } from 'sonner'
 
 import { useConnectionStore } from '../stores/connectionStore'
 import type {
-  AgencySignalRequest,
-  AgencyUpdateRequest,
+  AgencyTriggerRequest,
   BridgeEventStatus,
   InputPart,
   ProfileUpsertRequest,
@@ -185,61 +184,66 @@ export function useSessionHistoryQuery(
   })
 }
 
-export function useSessionAgencyQuery(sessionId: string | null) {
+export function useAgencyConfigQuery() {
   const api = useApiClient()
   return useQuery({
-    queryKey: sessionId
-      ? queryKeys.sessionAgency(sessionId)
-      : ['session-agency', 'none'],
-    queryFn: () => api.getSessionAgency(sessionId ?? ''),
-    enabled: Boolean(sessionId),
+    queryKey: queryKeys.agencyConfig,
+    queryFn: () => api.getAgencyConfig(),
+    placeholderData: keepPreviousData,
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  })
+}
+
+export function useAgencyStatusQuery() {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: queryKeys.agencyStatus,
+    queryFn: () => api.getAgencyStatus(),
     placeholderData: keepPreviousData,
     refetchInterval: 5_000,
     staleTime: 2_000,
   })
 }
 
-export function useAgencyMutations(sessionId: string | null) {
+export function useAgencyFiresQuery() {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: queryKeys.agencyFires,
+    queryFn: () => api.listAgencyFires(),
+    placeholderData: keepPreviousData,
+    refetchInterval: 5_000,
+    staleTime: 2_000,
+  })
+}
+
+export function useAgencyMutations() {
   const api = useApiClient()
   const queryClient = useQueryClient()
-  const refresh = async () => {
+  const refresh = async (agencySessionId?: string | null) => {
     await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.agencyConfig }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.agencyStatus }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.agencyFires }),
       queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-      sessionId
+      agencySessionId
         ? queryClient.invalidateQueries({
-            queryKey: queryKeys.session(sessionId),
+            queryKey: queryKeys.session(agencySessionId),
           })
         : Promise.resolve(),
-      sessionId
+      agencySessionId
         ? queryClient.invalidateQueries({
-            queryKey: queryKeys.sessionAgency(sessionId),
+            queryKey: queryKeys.sessionHistoryBase(agencySessionId),
           })
         : Promise.resolve(),
     ])
   }
   return {
-    update: useMutation({
-      mutationFn: (payload: AgencyUpdateRequest) =>
-        api.updateSessionAgency(sessionId ?? '', payload),
-      onSuccess: async () => {
-        toast.success('Saved agency settings')
-        await refresh()
-      },
-    }),
-    signal: useMutation({
-      mutationFn: (payload: AgencySignalRequest) =>
-        api.signalSessionAgency(sessionId ?? '', payload),
+    trigger: useMutation({
+      mutationFn: (payload: AgencyTriggerRequest) => api.triggerAgency(payload),
       onSuccess: async (response) => {
-        toast.success(`Agency signal ${response.delivery}`)
-        await refresh()
-      },
-    }),
-    compact: useMutation({
-      mutationFn: (payload: AgencySignalRequest) =>
-        api.compactSessionAgency(sessionId ?? '', payload),
-      onSuccess: async (response) => {
-        toast.success(`Agency compaction ${response.delivery}`)
-        await refresh()
+        toast.success(`Agency fire ${response.delivery}`)
+        await refresh(response.agency_session_id)
       },
     }),
   }

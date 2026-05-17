@@ -118,6 +118,27 @@ def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
     assert "get_run_trace" in resolved_tool_names
 
 
+def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+
+    resolved_tool_names = [getattr(tool, "name", tool.__name__) for tool in builder._resolve_builtin_tools(["core"])]
+
+    assert "view" in resolved_tool_names
+    assert "write" in resolved_tool_names
+    assert "shell_exec" in resolved_tool_names
+    assert "delete" in resolved_tool_names
+    assert "spawn_delegate" in resolved_tool_names
+    assert "list_source_session_turns" in resolved_tool_names
+    assert "get_source_run_trace" in resolved_tool_names
+    assert "create_schedule" in resolved_tool_names
+
+
 def test_runtime_builder_resolves_runtime_mcp_toolsets_from_profile(tmp_path: Path) -> None:
     settings = ClawSettings(
         api_token="test-token",  # noqa: S106
@@ -533,3 +554,22 @@ def test_runtime_builder_uses_deny_policy_for_unattended_shell_review(tmp_path: 
     assert heartbeat_runtime.ctx.security.shell_review is not None
     assert heartbeat_runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
     assert heartbeat_runtime.ctx.security.shell_review.risk_threshold == "high"
+
+    agency_runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=None,
+        session_id="agency-session-1",
+        run_id="agency-run-1",
+        restore_from_run_id=None,
+        dispatch_mode="async",
+        source_kind="agency",
+        source_metadata={"agency": {"episode_id": "episode-1"}},
+        claw_metadata={},
+    )
+    assert agency_runtime.ctx.security.shell_review is not None
+    assert agency_runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
+    assert agency_runtime.ctx.security.shell_review.risk_threshold == "high"
+    assert agency_runtime.ctx.need_user_approve_tools == []
+    assert agency_runtime.ctx.need_user_approve_mcps == []

@@ -1,90 +1,76 @@
-# 11 - Session Agency
+# 11 - Singleton Agency
 
-YA Claw supports session agency as a workspace-native long-running agency loop. Each conversation session can own a paired internal agency session that receives signals, recalls memory, maintains open intentions, and performs useful bounded work over time.
+YA Claw supports Agency as a Heartbeat-style runtime capability. One Claw instance owns one singleton internal `session_type="agency"` session. Timer fires, memory committed fires, and manual fires wake that session, steer active work, or create a new bounded agency episode.
 
-Agency is the product and runtime capability. Reflection is one phase inside the agency loop: the agent inspects context, evaluates signals, and chooses the next useful step.
+Agency is the product capability. Reflection is one phase inside the agency episode: the agent inspects memory, referenced source sessions, run traces, workspace state, and pending fires, then chooses useful local work.
 
 ## Design Goals
 
-- Make proactive agency a first-class runtime feature built on sessions, runs, steering, and workspace state.
-- Reuse the queued-run execution model, active-run steering model, workspace binding, profile resolution, and tool surface already used by bridges, schedules, heartbeat, and memory jobs.
-- Keep semantic memory, episodic memory, and agency state as workspace files under `memory/`.
-- Give each conversation session a paired long-lived `session_type="agency"` session that serializes agency state and active work.
-- Let automatic triggers, scheduled triggers, memory events, failures, and manual triggers become agency signals.
-- Route new signals to the active agency run through steer, and create a new agency run when the agency session is idle.
-- Make every agency episode auditable through run metadata, structured output, workspace action logs, and episode files.
-- Bound agency work with explicit action budgets, risk levels, leases, and approval routing.
-- Keep `memory/AGENCY.md` compact as an active agency index; put detailed history under `memory/agency/`.
-- Leave room for workspace-level agency across sessions after session agency is stable.
+- Make proactive agency a first-class runtime feature built on sessions, runs, steering, restore state, and workspace files.
+- Keep the runtime shape close to Heartbeat: settings-driven config/status endpoints, durable fire history, dispatcher loop, and normal runs.
+- Maintain exactly one internal `session_type="agency"` session per Claw instance.
+- Treat source conversations as fire context, with ownership held by the singleton agency session.
+- Convert timer, memory committed, and manual triggers into durable `agency_fires` records.
+- Route new fires to the active agency run through steer, merge fires into a queued agency run, and create a new run when idle.
+- Keep semantic memory, agency memory, action logs, and episode files as workspace files under `memory/`.
+- Make every agency episode auditable through run metadata, fire records, traces, workspace action logs, and episode files.
+- Use unattended deny mode for external actions and approval-gated operations.
 
 ## Conceptual Model
 
-Agency models a lightweight human-like loop:
+Agency models a lightweight runtime loop:
 
-1. Wake from a signal or receive a signal while active.
+1. Wake from a fire or receive a fire while active.
 2. Recall stable memory and open intentions.
-3. Reflect on recent conversation, run traces, workspace state, schedules, approvals, and runtime signals.
+3. Reflect on recent source conversations, run traces, workspace state, schedules, and runtime fires.
 4. Update the working set of intentions and candidate directions.
-5. Plan a bounded action batch.
-6. Execute safe local work, prepare artifacts, defer work, or request approval.
-7. Record outcomes, checkpoints, and next wake hints.
+5. Plan a bounded local action batch.
+6. Execute safe local work, prepare artifacts, record deferred decisions, or sleep.
+7. Record outcomes, checkpoints, consumed fire IDs, and next wake hints.
 8. Sleep when the current episode is done.
 
 ```mermaid
 flowchart TD
-    SIG[Agency signal] --> G{Agency session active?}
-    G -->|active| ST[Steer active agency run]
+    FIRE[Agency fire] --> G{Agency session active?}
+    G -->|running| ST[Steer active agency run]
+    G -->|queued| M[Merge into queued agency run]
     G -->|idle| Q[Create queued agency run]
     ST --> W[Wake or update episode]
+    M --> W
     Q --> W
-    W --> M[Load stable memory]
-    M --> A[Load agency index]
-    A --> R[Reflect on source turns, traces, files, schedules, approvals, and signals]
-    R --> I[Update intentions]
-    I --> P[Plan bounded action batch]
+    W --> MEM[Load MEMORY.md]
+    MEM --> IDX[Load AGENCY.md and action log]
+    IDX --> R[Reflect on fires, source turns, traces, files, and runtime state]
+    R --> P[Plan bounded local actions]
     P --> X{Action kind}
     X -->|observe| O[Read and analyze]
-    X -->|organize| G2[Update agency state]
+    X -->|organize| ORG[Update agency files]
     X -->|prepare| D[Draft plan, spec, checklist, or patch proposal]
-    X -->|act| T[Execute safe local workspace action]
-    X -->|ask| H[Create approval or notification]
-    O --> L[Append agency action log]
-    G2 --> L
+    X -->|act| A[Execute safe local workspace action]
+    X -->|defer| DF[Record deferred user decision]
+    X -->|sleep| S[Record next wake hint]
+    O --> L[Append action log]
+    ORG --> L
     D --> L
-    T --> L
-    H --> L
+    A --> L
+    DF --> L
+    S --> L
     L --> C[Checkpoint episode]
-    C --> Z[Sleep with next wake hint]
 ```
-
-Agency and memory extraction share the same workspace-native foundation. Memory extraction decides what should be remembered. Agency decides what could be advanced next and performs bounded work that helps the human.
 
 ## Naming Model
 
-| Layer                 | Name                          | Responsibility                                                             |
-| --------------------- | ----------------------------- | -------------------------------------------------------------------------- |
-| Product capability    | Agency                        | proactive assistance, intention maintenance, background work, approvals    |
-| Internal session type | `agency`                      | long-lived paired session that serializes agency state and active episodes |
-| Trigger type          | `agency`                      | run category for agency episodes                                           |
-| Input unit            | agency signal                 | event that wakes or steers agency work                                     |
-| Cognitive phase       | reflection                    | inspect context, assess signals, and choose useful work                    |
-| Workspace index       | `memory/AGENCY.md`            | compact active intentions and watchlist                                    |
-| Workspace log         | `memory/agency/ACTION_LOG.md` | append-only recent agency action ledger                                    |
+| Layer                 | Name                          | Responsibility                                                     |
+| --------------------- | ----------------------------- | ------------------------------------------------------------------ |
+| Product capability    | Agency                        | proactive assistance, intention maintenance, background work       |
+| Internal session type | `agency`                      | singleton session that serializes agency state and active episodes |
+| Trigger type          | `agency`                      | run category for agency episodes                                   |
+| Input unit            | agency fire                   | durable event that wakes, merges into, or steers agency work       |
+| Cognitive phase       | reflection                    | inspect context, assess fires, and choose useful local work        |
+| Workspace index       | `memory/AGENCY.md`            | compact active intentions and watchlist                            |
+| Workspace log         | `memory/agency/ACTION_LOG.md` | append-only recent agency action ledger                            |
 
-Use `agency` in API, database, settings, modules, prompts, and UI. Use `reflection` inside the agency prompt and episode files as the inspect-and-decide phase.
-
-## Memory and Agency Model
-
-Workspace memory has four complementary layers.
-
-| Layer             | Files                                                     | Responsibility                                                                     |
-| ----------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Semantic memory   | `memory/MEMORY.md`                                        | stable facts, preferences, durable decisions, constraints, active long-lived goals |
-| Episodic memory   | `memory/YYYYMMDD-event.md`                                | source-grounded event notes with YAML frontmatter discovery metadata               |
-| Agency memory     | `memory/AGENCY.md`, `memory/agency/**`                    | open intentions, watchlist, action logs, episode records, next wake hints          |
-| Procedural memory | `AGENTS.md`, `.agents/skills/`, optional memory playbooks | project conventions, reusable workflows, task procedures                           |
-
-Agency reads all layers. Agency writes primarily to `memory/AGENCY.md` and `memory/agency/`. Stable conclusions can later enter `memory/MEMORY.md` through the memory extraction lifecycle.
+Use `agency` in API, database, settings, modules, prompts, and UI. Use `fire` for durable wake/steer records, mirroring Heartbeat.
 
 ## Workspace Agency Layout
 
@@ -111,560 +97,361 @@ Rules:
 
 - `memory/AGENCY.md` is the compact active agency index loaded for agency runs.
 - `memory/AGENCY.md` target size is 16 KB and hard cap is 32 KB.
-- `memory/AGENCY.md` should contain at most 20 active intentions, 20 watchlist items, and 30 deferred ideas.
 - Detailed intention material lives in `memory/agency/intentions/*.md`.
-- Episode records live in `memory/agency/episodes/YYYYMMDD-agency-episode.md` or topic-specific episode files.
-- `memory/agency/ACTION_LOG.md` records recent agency decisions, actions, approvals, deferrals, outcomes, and consumed signal IDs.
-- `memory/agency/archive/*.md` stores closed intentions, old action history, and compacted agency state.
-- Agency files use YAML frontmatter with at least `name`, `description`, `kind`, `status`, and `updated_at` when they need discovery.
-- `memory/MEMORY.md` remains the compact durable brief loaded for primary conversation runs.
-- `memory/CHANGELOG.md` records material memory and agency file changes.
+- Episode records live in `memory/agency/episodes/*.md`.
+- `memory/agency/ACTION_LOG.md` records recent decisions, actions, deferrals, outcomes, and consumed fire IDs.
+- Agency files use YAML frontmatter with at least `name`, `description`, `kind`, `status`, and `updated_at` when discovery matters.
+- Stable conclusions can later enter `memory/MEMORY.md` through the memory extraction lifecycle.
 
-Example `memory/AGENCY.md`:
+## Singleton Agency Session
 
-```markdown
-# Agency
+The singleton Agency session is stored in the existing `sessions` table.
 
-## Active Intentions
-
-- id: agency-20260516-001
-  title: Session agency architecture
-  status: active
-  priority: high
-  scope: session
-  detail: memory/agency/intentions/agency-20260516-001.md
-  evidence:
-    - User wants a long-running agency session that receives memory and schedule signals through steer.
-  next_action:
-    kind: prepare
-    description: Update the session agency spec with paired agency sessions and signal steering.
-  risk: low
-  updated_at: 2026-05-16T02:20:00Z
-
-## Watchlist
-
-- id: watch-20260516-001
-  title: Agency index growth
-  signal: AGENCY.md approaches the hard cap.
-  response: Run agency compaction into memory/agency/archive/.
-
-## Deferred Ideas
-
-- Workspace-level agency across sessions
-- Cross-session intention clustering
+```json
+{
+  "session_type": "agency",
+  "source_session_id": "19aafc63e85a06fb38321a895de724d0",
+  "metadata": {
+    "agency": {
+      "kind": "claw_agency_session",
+      "scope": "global",
+      "scope_key": "agency:global",
+      "version": 1,
+      "enabled": true,
+      "profile_name": "default"
+    }
+  }
+}
 ```
 
-Example agency episode file:
+Constants:
 
-```markdown
----
-name: Session Agency Episode
-description: Agency episode for session architecture discussion and spec update
-kind: agency_episode
-status: completed
-source_session_id: session-...
-signals:
-  - signal-...
-updated_at: 2026-05-16T02:20:00Z
----
-
-## Reflection
-
-- Memory already provides a paired internal session model.
-- Bridge dispatch already chooses between creating a new run and steering an active run.
-
-## Plan
-
-- Apply agency naming to the former reflection surface.
-- Use paired long-lived agency sessions.
-- Route signals to active agency runs through steer.
-
-## Actions
-
-- Updated `packages/ya-claw/spec/11-session-agency.md`.
-
-## Outcomes
-
-- The spec now treats reflection as an internal phase of agency.
-
-## Next Wake
-
-- Wake after user review or implementation planning.
+```python
+AGENCY_SINGLETON_SCOPE_KEY = "agency:global"
+AGENCY_SINGLETON_SOURCE_SESSION_ID = sha256(AGENCY_SINGLETON_SCOPE_KEY.encode()).hexdigest()[:32]
 ```
 
-## Agency Compaction
+The existing unique index on `(session_type, source_session_id)` enforces one singleton Agency session per Claw database.
 
-Agency compaction keeps `memory/AGENCY.md` useful and small.
+## Agency Fires Table
 
-Triggers:
+`agency_fires` is the durable trigger history and pending queue. It replaces the old per-source agency state and signal tables.
 
-- `memory/AGENCY.md` exceeds target size.
-- active intentions exceed the configured count.
-- action log exceeds recent-window target.
-- an agency episode ends with many closed or stale items.
-- manual `agency:compact` signal or future API.
+Fields:
 
-Compaction behavior:
+| Column              | Type              | Description                                                                  |
+| ------------------- | ----------------- | ---------------------------------------------------------------------------- |
+| `id`                | string32 PK       | fire id                                                                      |
+| `kind`              | string32          | `manual`, `timer`, `memory_committed`, or `compact`                          |
+| `status`            | string32          | `pending`, `submitted`, `steered`, `merged`, `consumed`, `skipped`, `failed` |
+| `scheduled_at`      | datetime          | due time; manual and memory use current time                                 |
+| `fired_at`          | datetime nullable | actual fire creation time                                                    |
+| `dedupe_key`        | string255 unique  | global dedupe key                                                            |
+| `source_session_id` | string32 nullable | referenced conversation session                                              |
+| `source_run_id`     | string32 nullable | memory run or source run that caused the fire                                |
+| `agency_session_id` | string32 nullable | singleton agency session id                                                  |
+| `run_id`            | string32 nullable | agency run that received the fire                                            |
+| `active_run_id`     | string32 nullable | steer target when status is `steered`                                        |
+| `priority`          | integer           | manual before memory committed before timer                                  |
+| `payload`           | JSON              | fire-specific structured payload                                             |
+| `error_message`     | text nullable     | failure detail                                                               |
+| `created_at`        | datetime          | creation time                                                                |
+| `updated_at`        | datetime          | update time                                                                  |
+| `consumed_at`       | datetime nullable | successful episode consumption time                                          |
 
-- keep active high-priority intentions in `memory/AGENCY.md`;
-- move detailed evidence into `memory/agency/intentions/*.md`;
-- move closed items into `memory/agency/archive/YYYYMM-agency-archive.md`;
-- keep `memory/agency/ACTION_LOG.md` as a recent ledger;
-- move older action log sections into archive files;
-- append material changes to `memory/CHANGELOG.md`.
+Indexes:
 
-## Paired Agency Session Model
+```python
+UniqueConstraint("dedupe_key", name="uq_agency_fires_dedupe")
+Index("ix_agency_fires_status_scheduled", "status", "scheduled_at")
+Index("ix_agency_fires_kind_created", "kind", "created_at")
+Index("ix_agency_fires_run", "run_id")
+Index("ix_agency_fires_source", "source_session_id")
+```
 
-Each conversation session may have a paired internal agency session.
+Example fire payloads:
 
-Initial model:
+```json
+{
+  "kind": "manual",
+  "source_session_id": "session-...",
+  "client_token": "manual-...",
+  "prompt": "Review recent memory changes and decide next useful work.",
+  "budget": {
+    "max_actions": 5,
+    "max_tool_calls": 80,
+    "max_runtime_seconds": 900,
+    "max_workspace_writes": 10,
+    "external_actions": "deny"
+  }
+}
+```
 
-- each conversation session may have one paired internal `session_type="agency"` session;
-- agency runs execute on the paired agency session with `trigger_type="agency"`;
-- agency state is serialized by the agency session active-run lock;
-- new agency signals steer the active agency run when one exists;
-- new agency signals create a queued agency run when the agency session is idle;
-- source conversation responsiveness stays independent from agency work;
-- source session list/detail responses expose `agency_state` as a compact projection.
+```json
+{
+  "kind": "memory_committed",
+  "source_session_id": "session-...",
+  "source_run_id": "memory-run-...",
+  "memory_kind": "extract",
+  "memory_committed": {
+    "changed_files": ["memory/MEMORY.md", "memory/20260517-event.md"]
+  }
+}
+```
 
-Future workspace-level model:
+```json
+{
+  "kind": "timer",
+  "reason": "scheduled_tick",
+  "interval_seconds": 1800
+}
+```
 
-- a workspace may own a `session_type="agency"` workspace agency session;
-- workspace agency can coordinate multiple conversation sessions in the same workspace;
-- session agency and workspace agency can share the same signal and episode primitives.
+## Dispatch Rules
 
 ```mermaid
-flowchart LR
-    C[Conversation session] --> M[Paired memory session]
-    C --> A[Paired agency session]
-    M --> MEM[memory/MEMORY.md and event files]
-    A --> IDX[memory/AGENCY.md]
-    A --> DIR[memory/agency/]
-    A --> I[Inbox approvals]
-    A --> W[Workspace actions]
+flowchart TD
+    T[Timer / memory committed / manual] --> F[Insert agency_fires]
+    F --> D[AgencyDispatcher tick or immediate dispatch]
+    D --> S[Ensure singleton agency session]
+    S --> A{Agency session state}
+    A -->|running| R[Steer active agency run]
+    A -->|queued| M[Merge fires into queued run input]
+    A -->|idle| C[Create agency run]
+    R --> RS[Mark fires steered]
+    M --> MS[Mark fires merged]
+    C --> CS[Mark fires submitted]
+    RS --> E[Agency episode consumes fires]
+    MS --> E
+    CS --> E
+    E --> X[Mark fires consumed]
 ```
 
-## Trigger Type, Session Type, and Run Metadata
+Behavior:
 
-`SessionType` includes `agency`.
+- `ensure_agency_session()` creates or returns the singleton session.
+- Manual and memory fires can dispatch immediately after insert.
+- Timer dispatch runs from `AgencyDispatcher` and uses `agency_tick_seconds` as the interval.
+- Running agency run receives new fire input through the runtime steering queue and AGUI steer event.
+- Queued agency run receives appended `input_parts`; merged fires keep audit rows.
+- Idle agency session creates a new queued run with `restore_from_run_id=head_success_run_id`.
+- Successful agency run commit marks run fire IDs as `consumed`.
+- Terminal failed/cancelled agency run marks submitted, merged, and steered fires as `failed`.
 
-`TriggerType` includes `agency`.
-
-Agency run metadata:
+## Agency Run Metadata
 
 ```json
 {
   "agency": {
-    "kind": "session_agency_episode",
-    "source_session_id": "...",
-    "agency_session_id": "...",
-    "signal_ids": ["signal-..."],
-    "reasons": ["manual", "memory_committed", "schedule"],
+    "kind": "episode",
+    "agency_session_id": "session-...",
+    "fire_ids": ["fire-..."],
+    "trigger_kinds": ["manual", "memory_committed"],
+    "sources": [
+      {
+        "fire_id": "fire-...",
+        "source_session_id": "session-...",
+        "source_run_id": "run-...",
+        "kind": "memory_committed"
+      }
+    ],
+    "source_session_ids": ["session-..."],
+    "primary_source_session_id": "session-...",
     "source_run_ids": ["run-..."],
-    "last_observed_sequence_no": 12,
-    "current_sequence_no": 16,
     "episode_id": "episode-...",
     "budget": {
       "max_actions": 5,
       "max_tool_calls": 80,
       "max_runtime_seconds": 900,
       "max_workspace_writes": 10,
-      "external_actions": "approval_required"
+      "external_actions": "deny"
     },
     "risk_policy": {
       "max_auto_action_risk": "low",
-      "approval_required_for": ["external_send", "delete", "deploy", "secret_access", "payment"]
+      "denied_actions": ["external_send", "delete", "deploy", "secret_access", "payment"]
     }
-  }
+  },
+  "restore_state": true
 }
 ```
 
-Manual agency signal metadata:
-
-```json
-{
-  "agency": {
-    "kind": "session_agency_signal",
-    "reason": "manual",
-    "source_session_id": "...",
-    "source_run_ids": [],
-    "client_token": "manual-...",
-    "budget_override": {
-      "max_actions": 5,
-      "max_tool_calls": 80,
-      "max_runtime_seconds": 900,
-      "max_workspace_writes": 10,
-      "external_actions": "approval_required"
-    }
-  }
-}
-```
-
-## Agency State
-
-`session_agency_states` stores orchestration state per source conversation session.
-
-Fields:
-
-- `source_session_id` primary key
-- `agency_session_id`
-- `enabled`
-- `last_observed_sequence_no`
-- `episode_count`
-- `pending_signal_count`
-- `last_agency_run_id`
-- `last_agency_reason`
-- `last_action_at`
-- `cooldown_until`
-- `metadata`
-- `created_at`
-- `updated_at`
-
-Optional future fields:
-
-- `workspace_scope_id`
-- `workspace_agency_session_id`
-- `last_workspace_agency_at`
-
-This table stores orchestration state. Agency content lives in workspace files, agency signal records, and run records.
-
-## Agency Signals
-
-Agency signals are durable wake or steer requests.
-
-`agency_signals` fields:
-
-- `id`
-- `source_session_id`
-- `agency_session_id`
-- `reason`
-- `status`: `pending`, `steered`, `submitted`, `consumed`, `skipped`, `failed`
-- `priority`
-- `dedupe_key`
-- `source_run_ids`
-- `signal_metadata`
-- `created_at`
-- `consumed_at`
-- `run_id`
-
-Signal reasons:
-
-| Reason                | Source                                                                              | Delivery behavior                            |
-| --------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------- |
-| `manual`              | API request                                                                         | steer active agency run or create agency run |
-| `inactivity`          | conversation session has new completed turns and has been idle for configured delay | steer active agency run or create agency run |
-| `memory_committed`    | memory extract or summary run completes for the source session                      | steer active agency run or create agency run |
-| `open_intention_due`  | active agency item has a due signal in `AGENCY.md` or state metadata                | steer active agency run or create agency run |
-| `failed_run_followup` | latest run failed or was interrupted and follow-up is enabled                       | steer active agency run or create agency run |
-| `schedule`            | agency schedule or user-created schedule fires                                      | steer active agency run or create agency run |
-
-Dedupe key examples:
-
-```text
-session:{source_session_id}:inactivity:{last_observed_sequence_no}:{current_sequence_no}
-session:{source_session_id}:memory:{memory_run_id}
-session:{source_session_id}:failed:{failed_run_id}
-session:{source_session_id}:intention:{intention_id}:{due_bucket}
-session:{source_session_id}:schedule:{schedule_fire_id}
-session:{source_session_id}:manual:{client_token}
-```
-
-Priority order:
-
-1. `manual`
-2. `failed_run_followup`
-3. `open_intention_due`
-4. `schedule`
-5. `memory_committed`
-6. `inactivity`
-
-Dispatcher behavior:
-
-```mermaid
-flowchart TD
-    P[Pending agency signals] --> G[Group by source_session_id]
-    G --> E[Ensure paired agency session]
-    E --> A{Agency session active_run_id?}
-    A -->|yes| S[Steer active agency run with signal payload]
-    A -->|no| R[Create queued agency run with pending signals]
-    S --> U[Mark signals steered]
-    R --> V[Mark signals submitted]
-```
-
-Agency runs mark signal IDs as consumed through terminal output metadata or lifecycle hooks.
-
-## Active Run Steering
-
-Agency uses the same consistency pattern as bridge-triggered sessions:
-
-- when the paired agency session has an active run, new signals are sent to that run through steer;
-- when the paired agency session is idle, pending signals become the initial input for a new queued agency run;
-- an active agency run can incorporate a signal immediately, record it in the watchlist, or defer it to the next episode;
-- all steering payloads are preserved as input parts or run metadata for replay and audit.
-
-Agency signal input part:
+Agency run input part:
 
 ```json
 {
   "type": "command",
-  "name": "agency_signal",
+  "name": "agency_fire",
   "params": {
-    "signal_id": "signal-...",
-    "reason": "memory_committed",
+    "fire_id": "fire-...",
+    "kind": "memory_committed",
     "source_session_id": "session-...",
-    "source_run_ids": ["run-..."],
+    "source_run_id": "memory-run-...",
     "payload": {
-      "memory_run_id": "run-...",
-      "changed_files": ["memory/MEMORY.md", "memory/20260516-event.md"]
+      "memory_kind": "extract",
+      "changed_files": ["memory/MEMORY.md"]
     }
   }
 }
 ```
 
-## Agency Episode Scope
+## Safety Model
 
-An agency session is long-lived. An agency run is one episode. An episode may perform a bounded action batch.
+Agency runs are unattended. The safety mode matches cron-style behavior:
 
-Episode rules:
+- external sends are denied;
+- destructive operations are denied;
+- deployments are denied;
+- secret access is denied;
+- payment and billing changes are denied;
+- security changes and irreversible external actions are denied;
+- shell review uses unattended mode and converts approval-needed outcomes to deny.
 
-- each episode has an explicit budget;
-- each action in the batch has an action kind, risk level, scope, status, and log entry;
-- long episodes checkpoint progress in run state and workspace files;
-- an episode ends by sleeping, waiting for approval, or yielding to the next wake condition;
-- new signals received during an active episode enter the current episode through steer.
-
-Action kinds:
-
-| Kind       | Examples                                                                | Default permission        |
-| ---------- | ----------------------------------------------------------------------- | ------------------------- |
-| `observe`  | read memory files, list turns, inspect traces                           | allowed                   |
-| `organize` | update `AGENCY.md`, append `agency/ACTION_LOG.md`, create episode notes | allowed with write budget |
-| `prepare`  | draft a spec, create a checklist, prepare a patch proposal              | allowed with write budget |
-| `act`      | run safe local checks, update docs, create local files                  | allowed up to low risk    |
-| `ask`      | create approval item, notify user, request decision                     | allowed                   |
-| `sleep`    | record no currently valuable action and next wake hint                  | allowed                   |
-
-Structured episode output:
-
-```json
-{
-  "episode_id": "episode-...",
-  "mode": "multi_step",
-  "consumed_signal_ids": ["signal-..."],
-  "human_value": "Reduced future user effort by preparing the next architecture decision.",
-  "actions": [
-    {
-      "id": "action-1",
-      "kind": "observe",
-      "status": "completed",
-      "risk_level": "low",
-      "scope": {"kind": "session", "source_session_id": "session-..."},
-      "summary": "Reviewed source session turns and memory files."
-    },
-    {
-      "id": "action-2",
-      "kind": "prepare",
-      "status": "completed",
-      "risk_level": "low",
-      "scope": {"kind": "workspace_file", "paths": ["packages/ya-claw/spec/11-session-agency.md"]},
-      "summary": "Updated the agency spec."
-    }
-  ],
-  "files_changed": ["memory/AGENCY.md", "memory/agency/ACTION_LOG.md"],
-  "approval_requested": null,
-  "next_wake_hint": {
-    "condition": "after_user_review_or_memory_commit",
-    "not_before": "2026-05-16T03:00:00Z"
-  }
-}
-```
-
-## Action Budget and Safety Model
-
-Agency is unattended by default. Every episode has a budget and risk policy.
-
-Approval is required for these action categories:
-
-- sending external messages on behalf of the user
-- deleting files or records
-- deploying services
-- accessing secrets
-- spending money or changing billing
-- changing security settings
-- performing irreversible external actions
-
-Tool risk review uses the same unattended shell review threshold as schedule and heartbeat runs, with an agency-specific override available through settings.
-
-Action leases provide conflict control for future workspace-level agency:
-
-- observe work can run concurrently;
-- session agency work is serialized by the paired agency session active-run lock;
-- agency state writes use an `agency:{source_session_id}` lease;
-- workspace writes can use `workspace:{workspace_id}:write` or path-level leases;
-- external actions route to approval and Inbox.
-
-The initial milestone can rely on paired agency session serialization. Workspace and path-level leases can land with workspace-level agency.
+Allowed autonomous work focuses on local observation, organization, drafting, safe file edits within budget, local checks, and deferred decision records.
 
 ## Runtime Context Assembly
 
-`ClawRuntimeBuilder` detects agency runs through `source_kind == "agency"` or agency run metadata.
-
 Agency runs use:
 
-- profile from `YA_CLAW_AGENCY_PROFILE`, source session profile, or default profile;
-- fixed XML-style agency system prompt;
-- the same workspace binding and sandbox metadata as the source session;
-- the same profile tool surface as the primary agent, filtered by unattended risk policy;
+- fixed `AGENCY_SYSTEM_PROMPT`;
 - regular workspace guidance from `AGENTS.md`;
 - stable memory from `memory/MEMORY.md`;
 - agency index from `memory/AGENCY.md`;
 - action history from `memory/agency/ACTION_LOG.md`;
-- recent event and agency file frontmatter indexes;
-- source session tools for recent turns and run traces;
-- signal payloads with reasons, source references, budget, and risk policy.
+- recent memory and agency file indexes;
+- source session tools for referenced conversations and traces;
+- fire payloads with source references, budget, and risk policy.
 
 Injected context blocks:
 
 ```xml
 <agency-context source="agency">
-  <episode-id>...</episode-id>
-  <source-session-id>...</source-session-id>
-  <signal-ids>signal-...</signal-ids>
-  <reasons>manual,memory_committed</reasons>
-  <last-observed-sequence-no>12</last-observed-sequence-no>
-  <current-sequence-no>16</current-sequence-no>
-  <budget max-actions="5" max-tool-calls="80" max-runtime-seconds="900" max-workspace-writes="10" external-actions="approval_required" />
+Episode ID: episode-...
+Agency session ID: session-...
+Agency scope: agency:global
+Source session IDs: session-a,session-b
+Fire IDs: fire-...
+Trigger kinds: manual,memory_committed
+Sources: [...]
+Budget: {...}
 </agency-context>
-
-<agency-index-context path="/workspace/memory/AGENCY.md">
-  {"path":"/workspace/memory/AGENCY.md","untrusted":true,"content":"..."}
-</agency-index-context>
-
-<agency-action-log-context path="/workspace/memory/agency/ACTION_LOG.md">
-  {"path":"/workspace/memory/agency/ACTION_LOG.md","untrusted":true,"content":"..."}
-</agency-action-log-context>
 ```
 
-`agency-context`, `agency-index-context`, `agency-action-log-context`, and `agency-file-index` are registered in `injected_context_tags` so SDK trim-mode handoff can strip historical agency context from user prompt history.
-
-## Agency Agent Prompt
-
-Agency agents use a fixed XML-style prompt module:
-
-- `ya_claw/agency/prompt.py` exports `AGENCY_SYSTEM_PROMPT`
-
-Prompt shape:
-
-```xml
-<agency-agent>
-  <role>You are the YA Claw workspace agency agent.</role>
-  <objective>Maintain useful long-running agency for the source conversation session, receive signals, reflect on context, and advance bounded work that helps the human.</objective>
-
-  <memory-files>
-    <stable path="memory/MEMORY.md" />
-    <agency-index path="memory/AGENCY.md" />
-    <action-log path="memory/agency/ACTION_LOG.md" />
-    <episode-files pattern="memory/agency/episodes/*.md" />
-    <intention-files pattern="memory/agency/intentions/*.md" />
-  </memory-files>
-
-  <decision-standard>
-    Choose work that reduces future human effort, preserves human control, and leaves an auditable workspace artifact.
-  </decision-standard>
-
-  <loop>
-    <step>Receive initial signals and any steered signals.</step>
-    <step>Read stable memory and agency index.</step>
-    <step>Inspect recent source session turns and traces when needed.</step>
-    <step>Reflect on open intentions, stale threads, and possible next actions.</step>
-    <step>Plan a bounded action batch with explicit risk and scope.</step>
-    <step>Execute safe work or create an approval item.</step>
-    <step>Update agency index, action log, and episode notes.</step>
-    <step>Return structured episode output with consumed signals and next wake hint.</step>
-  </loop>
-
-  <action-kinds>
-    <kind name="observe">Read memory, turns, traces, files, schedules, and runtime signals.</kind>
-    <kind name="organize">Update agency index, intention files, episode notes, and action logs.</kind>
-    <kind name="prepare">Draft a plan, spec, checklist, or patch proposal.</kind>
-    <kind name="act">Perform a safe local workspace action within the configured budget.</kind>
-    <kind name="ask">Create an approval request, notification, or user decision item.</kind>
-    <kind name="sleep">Record that no useful action is currently due.</kind>
-  </action-kinds>
-
-  <output>
-    <field name="episode_id">Stable episode identifier.</field>
-    <field name="consumed_signal_ids">Signals handled by this episode.</field>
-    <field name="human_value">How this work helps the human.</field>
-    <field name="actions">Bounded actions with kind, status, risk level, scope, and summary.</field>
-    <field name="files_changed">Workspace files changed.</field>
-    <field name="approval_requested">Approval or notification created.</field>
-    <field name="next_wake_hint">Suggested next agency condition.</field>
-  </output>
-</agency-agent>
-```
+`agency-context`, `agency-index-context`, `agency-action-log-context`, and `agency-file-index` are registered in `injected_context_tags` so SDK trim-mode handoff strips historical agency context from user prompt history.
 
 ## Source Session Tools
 
-The built-in session toolset currently scopes tools to the current session. Agency runs execute inside the paired agency session and need controlled access to the source conversation session.
+Agency runs execute inside the singleton agency session and receive referenced source conversation sessions through fire metadata.
 
-Recommended tool additions:
+Tools:
 
-- `list_source_session_turns`
-- `get_source_run_trace`
-- `list_agency_runs`
+- `list_source_session_turns` lists completed turns from an explicit referenced source session or from the primary source session by default.
+- `get_source_run_trace` reads a run trace referenced by agency fire metadata.
+- `list_agency_runs` lists recent episodes from the current singleton agency session.
 
-The internal client resource keeps `source_session_id` and bearer token hidden from the model. Source tools reject cross-session access outside the configured source session.
+The internal client resource keeps bearer tokens hidden from the model. Tool responses include source IDs for auditability.
 
 ## API Surface
 
-Agency endpoints live under sessions.
+Top-level endpoints:
 
-| Method  | Path                                           | Purpose                                 |
-| ------- | ---------------------------------------------- | --------------------------------------- |
-| `GET`   | `/api/v1/sessions/{session_id}/agency`         | read agency state and public metadata   |
-| `PATCH` | `/api/v1/sessions/{session_id}/agency`         | update enablement and optional metadata |
-| `POST`  | `/api/v1/sessions/{session_id}/agency:signal`  | enqueue or steer a manual agency signal |
-| `POST`  | `/api/v1/sessions/{session_id}/agency:compact` | request agency compaction               |
+| Method | Path                            | Purpose                                                                                    |
+| ------ | ------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET`  | `/api/v1/agency/config`         | read enabled state, profile, interval, singleton session id, budget defaults, risk policy  |
+| `GET`  | `/api/v1/agency/status`         | read active/idle/queued state, active run, latest run, pending fire count, next timer fire |
+| `GET`  | `/api/v1/agency/fires?limit=50` | list fire history                                                                          |
+| `POST` | `/api/v1/agency:trigger`        | create a manual fire and dispatch it                                                       |
+| `POST` | `/api/v1/agency:bootstrap`      | ensure the singleton agency session exists                                                 |
 
-Manual signal request:
+`GET /agency/status` example:
 
 ```json
 {
-  "reason": "manual",
+  "enabled": true,
+  "agency_session_id": "session-...",
+  "state": "running",
+  "active_run_id": "run-...",
+  "latest_run_id": "run-...",
+  "next_fire_at": "2026-05-17T13:30:00Z",
+  "pending_fire_count": 2,
+  "last_fire": {
+    "id": "fire-...",
+    "kind": "memory_committed",
+    "status": "steered",
+    "run_id": "run-..."
+  }
+}
+```
+
+`POST /agency:trigger` example:
+
+```json
+{
+  "kind": "manual",
+  "source_session_id": "session-...",
   "client_token": "manual-...",
-  "prompt_override": null,
+  "prompt": "Review current workspace memory and propose the next useful action.",
   "budget": {
     "max_actions": 5,
     "max_tool_calls": 80,
     "max_runtime_seconds": 900,
     "max_workspace_writes": 10,
-    "external_actions": "approval_required"
+    "external_actions": "deny"
   }
 }
 ```
 
-Session list and detail responses expose `agency_state`.
+## Web UI
 
-```json
-{
-  "agency_state": {
-    "enabled": true,
-    "agency_session_id": "...",
-    "last_observed_sequence_no": 42,
-    "episode_count": 8,
-    "pending_signal_count": 0,
-    "last_agency_run_id": "...",
-    "last_agency_reason": "manual",
-    "last_action_at": "2026-05-16T02:20:00Z",
-    "cooldown_until": "2026-05-16T02:50:00Z",
-    "metadata": {
-      "active_intention_count": 3,
-      "pending_approval_count": 1
-    }
-  }
-}
+The Agency page has three product areas:
+
+1. Top status strip:
+   - Agency active/disabled;
+   - state: idle, queued, or running;
+   - profile;
+   - singleton agency session id;
+   - active run id;
+   - pending fire count;
+   - next timer fire.
+2. Fire history sidebar:
+   - manual, timer, memory committed, and compact fires;
+   - status: submitted, steered, merged, consumed, failed;
+   - source session and source run references;
+   - run id or active run id target.
+3. Chat-like agency session flow:
+   - query `agency_session_id` from status/config;
+   - use existing session history API for the singleton agency session;
+   - render agency runs as episodes;
+   - render AGUI messages and tool calls as a chat-like flow;
+   - show fire IDs, trigger kinds, source session IDs, files changed, and next wake hints when present.
+
+```mermaid
+flowchart LR
+    C[GET /agency/config] --> P[Agency Page]
+    S[GET /agency/status] --> P
+    S --> SID[agency_session_id]
+    SID --> H[GET /sessions/{agency_session_id}]
+    H --> FLOW[Chat-like episode flow]
+    F[GET /agency/fires] --> HISTORY[Fire history]
+    T[POST /agency:trigger] --> REFRESH[Refresh status, fires, and session]
 ```
+
+## Interaction With Memory Lifecycle
+
+Memory extraction writes stable and episodic memory. Agency consumes memory committed fires.
+
+```mermaid
+flowchart LR
+    M[Memory extract or summary] --> W[Workspace memory files]
+    W --> F[agency_fires kind=memory_committed]
+    F --> A[Singleton agency session]
+    A --> IDX[memory/AGENCY.md and memory/agency/]
+```
+
+Rules:
+
+- Memory extract or summary completion creates a `memory_committed` fire.
+- The fire references the source conversation and memory run id.
+- Agency output can later be fed back into memory extraction through the existing memory lifecycle.
 
 ## Configuration
 
@@ -672,111 +459,43 @@ Settings:
 
 ```python
 agency_enabled: bool = True
-agency_idle_after_seconds: int = 600
-agency_cooldown_seconds: int = 1800
 agency_profile: str | None = None
 agency_tick_seconds: int = 30
 agency_max_signals_per_tick: int = 20
-agency_max_sessions_per_tick: int = 10
 agency_memory_capture_enabled: bool = True
 agency_context_max_chars: int = 8000
-agency_recent_files_limit: int = 5
 agency_index_target_chars: int = 16_000
 agency_index_max_chars: int = 32_000
 agency_action_log_recent_chars: int = 32_000
 agency_unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = "extra_high"
 ```
 
-Session metadata can override agency enablement:
-
-```json
-{
-  "agency": {
-    "enabled": true,
-    "cooldown_seconds": 1800,
-    "max_auto_action_risk": "low"
-  }
-}
-```
-
-## Observability
-
-Agency episodes are visible as normal runs:
-
-- agency runs carry `trigger_type="agency"`;
-- run metadata carries source session, agency session, signal IDs, reasons, budgets, and risk policy;
-- run trace API works for agency runs;
-- source session list/detail API exposes agency orchestration counters;
-- workspace memory files contain agency state, action logs, and episode records;
-- notifications can show agency signals, episode updates, actions, and approval requests.
-
-Recommended notification topics:
-
-- `agency.signal.updated`
-- `agency.episode.updated`
-- `agency.action.logged`
-- `agency.approval.requested`
-
-## Interaction With Memory Lifecycle
-
-Agency writes prospective and operational memory. Memory extraction writes stable and episodic memory.
-
-Flow:
-
-```mermaid
-flowchart LR
-    A[Agency episode]
-    AF[AGENCY.md and memory/agency/]
-    O[Structured episode output]
-    M[Memory extract]
-    S[MEMORY.md and event files]
-
-    A --> AF
-    A --> O
-    O -->|capture enabled| M
-    M --> S
-    M -->|memory_committed signal| A
-```
-
-Rules:
-
-- Agency updates `AGENCY.md`, `memory/agency/ACTION_LOG.md`, intention files, and episode files directly.
-- Stable facts discovered by agency can enter `MEMORY.md` through the memory extraction lifecycle.
-- `agency_memory_capture_enabled` controls whether successful agency runs trigger memory extraction.
-- Memory extraction treats agency output and changed agency files as source material with provenance.
-- Memory run completion can create an `agency_signals` record with reason `memory_committed`.
+`agency_max_signals_per_tick` is retained as the fire batch limit setting name for compatibility.
 
 ## Implementation Plan
 
-01. Rename the spec and public surface to session agency.
-02. Add `TriggerType.AGENCY = "agency"` and `SessionType.AGENCY = "agency"`.
-03. Add agency settings to `ClawSettings` and `packages/ya-claw/.env.example`.
-04. Add `session_agency_states` and `agency_signals` tables and migrations.
-05. Add agency Pydantic API models in `controller/models.py`.
-06. Add `ya_claw/agency/prompt.py` with `AGENCY_SYSTEM_PROMPT`.
-07. Extend `WorkspaceMemoryStore` with agency file helpers and injected context builders.
-08. Add source-session tools: `list_source_session_turns`, `get_source_run_trace`, and `list_agency_runs`.
-09. Add `AgencyLifecycle` for state ensure, signal creation, active-run steering, queued-run creation, and run completion updates.
-10. Add `AgencyDispatcher` and `AgencyController` for due signal dispatch and manual API calls.
-11. Register dispatcher startup and shutdown in `ya_claw/app.py`.
-12. Extend runtime assembly for `source_kind == "agency"`.
-13. Register agency injected context tags in lifecycle extension handling.
-14. Add session agency API endpoints and session response projection.
-15. Add notification topics for agency signals, episodes, actions, and approvals.
-16. Add tests for signal dedupe, steer-vs-create dispatch, runtime prompt assembly, state projection, compaction behavior, and memory capture interaction.
-17. Update README and operations docs after implementation lands.
+1. Keep `20260517_000007_session_agency.py` as the existing Agency migration and use `20260517_000008_singleton_agency_fires.py` to drop the old Agency tables and create `agency_fires`.
+2. Replace ORM records with `AgencyFireRecord`.
+3. Rewrite `AgencyLifecycle` around singleton session ensure, fire creation, dispatch, steer, merge, run creation, and terminal updates.
+4. Replace source-session agency endpoints with Heartbeat-like top-level config/status/fires/trigger/bootstrap endpoints.
+5. Update memory lifecycle to emit `memory_committed` fires.
+6. Update runtime context and prompt from signals/approval language to fires/deny language.
+7. Update Web UI to show active/enabled state and render the singleton agency session as chat-like episode flow.
+8. Add tests for singleton session, fire dedupe, submit/merge/steer/consume, timer fires, memory committed fires, API responses, and Web UI type safety.
+9. Run lint, check, tests, and code review.
 
 ## Initial Milestone
 
 The first shippable milestone is:
 
-- manual `agency:signal` endpoint;
-- paired internal `session_type="agency"` session;
-- active-run steering for new agency signals;
-- queued agency run creation when the agency session is idle;
-- fixed agency prompt;
-- `memory/AGENCY.md` and `memory/agency/ACTION_LOG.md` creation;
-- runtime context with `MEMORY.md`, agency files, and source session tools;
-- agency state projection in session detail.
-
-After the milestone, automatic due scanning can add inactivity, memory-commit, failed-run follow-up, schedule, and open-intention triggers.
+- singleton internal `session_type="agency"` session;
+- `agency_fires` table;
+- manual `agency:trigger` endpoint;
+- timer fire dispatch;
+- memory committed fire dispatch;
+- active-run steering for new agency fires;
+- queued-run merge for new agency fires;
+- queued agency run creation when idle;
+- fixed agency prompt with deny-mode safety;
+- `memory/AGENCY.md` and `memory/agency/ACTION_LOG.md` context;
+- Agency Web UI with active/enabled status, fire history, and chat-like singleton agency session rendering.

@@ -128,7 +128,7 @@ class ClawRuntimeBuilder:
             "source_metadata": dict(source_metadata or {}),
             "claw_metadata": dict(claw_metadata or {}),
         }
-        shell_review = self._resolve_shell_review(profile, source_kind=source_kind)
+        shell_review = self._resolve_shell_review(profile, source_kind=source_kind, source_metadata=source_metadata)
         if shell_review is not None:
             extra_context_kwargs["security"] = SecurityConfig(shell_review=shell_review)
         return create_agent(
@@ -143,7 +143,7 @@ class ClawRuntimeBuilder:
             need_user_approve_tools=self._resolve_need_user_approve_tools(profile, source_kind=source_kind),
             need_user_approve_mcps=self._resolve_need_user_approve_mcps(profile, source_kind=source_kind),
             tools=self._resolve_builtin_tools(profile.builtin_toolsets),
-            toolsets=self._resolve_runtime_toolsets(profile=profile, binding=binding) or None,
+            toolsets=self._resolve_runtime_toolsets(profile=profile, binding=binding, source_kind=source_kind) or None,
             subagent_configs=profile.subagent_configs,
             include_builtin_subagents=profile.include_builtin_subagents,
             unified_subagents=profile.unified_subagents,
@@ -159,13 +159,19 @@ class ClawRuntimeBuilder:
     def _build_model_config(self, profile: ResolvedProfile) -> ModelConfig:
         return ModelConfig.model_validate(dict(profile.model_config or {}))
 
-    def _resolve_shell_review(self, profile: ResolvedProfile, *, source_kind: str | None) -> ShellReviewConfig | None:
+    def _resolve_shell_review(
+        self,
+        profile: ResolvedProfile,
+        *,
+        source_kind: str | None,
+        source_metadata: dict[str, Any] | None,
+    ) -> ShellReviewConfig | None:
         if profile.shell_review is None:
             return None
         review = profile.shell_review.model_copy(deep=True)
         if _is_unattended_source(source_kind):
             review.risk_threshold = self._resolve_unattended_shell_review_risk_threshold(
-                profile, source_kind=source_kind
+                profile, source_kind=source_kind, source_metadata=source_metadata
             )
             if review.on_needs_approval == ShellReviewAction.DEFER:
                 review.on_needs_approval = ShellReviewAction.DENY
@@ -176,12 +182,16 @@ class ClawRuntimeBuilder:
         profile: ResolvedProfile,
         *,
         source_kind: str | None,
+        source_metadata: dict[str, Any] | None,
     ) -> ShellReviewRiskLevel:
         review = profile.shell_review
         if review is None:
             return ShellReviewRiskLevel.HIGH
         if review.unattended_risk_threshold is not None:
             return review.unattended_risk_threshold
+        agency_risk = _agency_max_auto_action_risk(source_metadata)
+        if source_kind == "agency" and agency_risk is not None:
+            return ShellReviewRiskLevel(agency_risk)
         if source_kind == "agency" and self._settings.agency_unattended_shell_review_risk_threshold is not None:
             return ShellReviewRiskLevel(self._settings.agency_unattended_shell_review_risk_threshold)
         if self._settings.unattended_shell_review_risk_threshold is not None:
@@ -220,6 +230,7 @@ class ClawRuntimeBuilder:
         *,
         profile: ResolvedProfile,
         binding: WorkspaceBinding,
+        source_kind: str | None = None,
     ) -> list[AbstractToolset[Any]]:
         toolsets: list[AbstractToolset[Any]] = [
             SkillToolset(toolset_id="skills", extra_dir_names=[SHARED_SKILLS_DIR_NAME]),
@@ -368,20 +379,25 @@ class ClawRuntimeBuilder:
     def _build_agency_context(self, source_metadata: dict[str, Any] | None) -> str:
         metadata = dict(source_metadata or {})
         agency = metadata.get("agency") if isinstance(metadata.get("agency"), dict) else {}
-        signal_ids = agency.get("signal_ids") if isinstance(agency, dict) else []
-        reasons = agency.get("reasons") if isinstance(agency, dict) else []
+        fire_ids = agency.get("fire_ids") if isinstance(agency, dict) else []
+        trigger_kinds = agency.get("trigger_kinds") if isinstance(agency, dict) else []
+        source_session_ids = agency.get("source_session_ids") if isinstance(agency, dict) else []
+        sources = agency.get("sources") if isinstance(agency, dict) else []
         budget = agency.get("budget") if isinstance(agency, dict) else {}
         return "\n".join([
             '<agency-context source="agency">',
             f"Episode ID: {agency.get('episode_id') if isinstance(agency, dict) else ''}",
-            f"Source session ID: {agency.get('source_session_id') if isinstance(agency, dict) else ''}",
-            f"Signal IDs: {','.join(str(item) for item in signal_ids) if isinstance(signal_ids, list) else ''}",
-            f"Reasons: {','.join(str(item) for item in reasons) if isinstance(reasons, list) else ''}",
-            f"Last observed sequence no: {agency.get('last_observed_sequence_no') if isinstance(agency, dict) else ''}",
-            f"Current sequence no: {agency.get('current_sequence_no') if isinstance(agency, dict) else ''}",
+            f"Agency session ID: {agency.get('agency_session_id') if isinstance(agency, dict) else ''}",
+            "Agency scope: agency:global",
+            f"Primary source session ID: {agency.get('primary_source_session_id') if isinstance(agency, dict) else ''}",
+            f"Source session IDs: {','.join(str(item) for item in source_session_ids) if isinstance(source_session_ids, list) else ''}",
+            f"Fire IDs: {','.join(str(item) for item in fire_ids) if isinstance(fire_ids, list) else ''}",
+            f"Trigger kinds: {','.join(str(item) for item in trigger_kinds) if isinstance(trigger_kinds, list) else ''}",
+            "Sources:",
+            json.dumps(sources if isinstance(sources, list) else [], ensure_ascii=False, sort_keys=True),
             "Budget:",
             json.dumps(budget if isinstance(budget, dict) else {}, ensure_ascii=False, sort_keys=True),
-            "This is an automated agency run. Operate within budget and leave auditable workspace artifacts.",
+            "This is an automated singleton agency run. Coordinate across referenced source sessions, operate within budget, deny external actions, and leave auditable workspace artifacts.",
             "</agency-context>",
         ])
 
@@ -419,3 +435,15 @@ class ClawRuntimeBuilder:
 
 def _is_unattended_source(source_kind: str | None) -> bool:
     return source_kind in _UNATTENDED_SOURCE_KINDS
+
+
+def _agency_max_auto_action_risk(source_metadata: dict[str, Any] | None) -> str | None:
+    agency = source_metadata.get("agency") if isinstance(source_metadata, dict) else None
+    if not isinstance(agency, dict):
+        return None
+    risk_policy = agency.get("risk_policy")
+    if isinstance(risk_policy, dict):
+        value = risk_policy.get("max_auto_action_risk")
+        return value if value in {"low", "medium", "high", "extra_high"} else None
+    value = agency.get("max_auto_action_risk")
+    return value if value in {"low", "medium", "high", "extra_high"} else None

@@ -17,6 +17,10 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
         "YA_CLAW_WEB_DIST_DIR",
         "YA_CLAW_WORKSPACE_DIR",
         "YA_CLAW_AUTO_SEED_PROFILES",
+        "YA_CLAW_SCHEDULE_DISPATCH_ENABLED",
+        "YA_CLAW_HEARTBEAT_ENABLED",
+        "YA_CLAW_AGENCY_ENABLED",
+        "YA_CLAW_BRIDGE_DISPATCH_MODE",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -25,6 +29,10 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YA_CLAW_WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local")
     monkeypatch.setenv("YA_CLAW_AUTO_SEED_PROFILES", "false")
+    monkeypatch.setenv("YA_CLAW_SCHEDULE_DISPATCH_ENABLED", "false")
+    monkeypatch.setenv("YA_CLAW_HEARTBEAT_ENABLED", "false")
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
+    monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
 
     get_settings.cache_clear()
     yield

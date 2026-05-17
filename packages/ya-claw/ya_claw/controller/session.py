@@ -23,7 +23,6 @@ from ya_claw.controller.models import (
     SessionSummary,
     SessionTurnsResponse,
     active_interactions_from_run_record,
-    agency_state_summary_from_record,
     memory_state_summary_from_record,
     run_summary_from_record,
     session_summary_from_record,
@@ -32,7 +31,7 @@ from ya_claw.controller.models import (
 from ya_claw.controller.run import RunController
 from ya_claw.controller.store import read_run_message_blob_if_exists, read_run_state_blob_if_exists
 from ya_claw.controller.workspace_runtime import reconcile_session_sandbox_metadata
-from ya_claw.orm.tables import RunRecord, SessionAgencyStateRecord, SessionMemoryStateRecord, SessionRecord
+from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.workspace.models import metadata_with_workspace
 
@@ -427,13 +426,6 @@ class SessionController:
         memory_states = {
             state.source_session_id: memory_state_summary_from_record(state) for state in memory_result.scalars().all()
         }
-        agency_result = await db_session.execute(
-            select(SessionAgencyStateRecord).where(SessionAgencyStateRecord.source_session_id.in_(session_ids))
-        )
-        agency_states = {
-            state.source_session_id: agency_state_summary_from_record(state) for state in agency_result.scalars().all()
-        }
-
         summaries: list[SessionSummary] = []
         for record in records:
             runs = grouped_runs.get(record.id, [])
@@ -448,7 +440,6 @@ class SessionController:
                     run_count=len(runs),
                     latest_run=latest_run,
                     memory_state=memory_states.get(record.id),
-                    agency_state=agency_states.get(record.id),
                     active_interactions=active_interactions,
                 )
             )

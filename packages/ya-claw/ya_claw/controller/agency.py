@@ -1,122 +1,266 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ya_claw.agency.lifecycle import AgencyLifecycle, build_signal_response
+from ya_claw.agency.lifecycle import AGENCY_SINGLETON_SCOPE_KEY, AgencyLifecycle
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (
-    AgencyGetResponse,
-    AgencySignalRequest,
-    AgencySignalResponse,
-    AgencySignalSummary,
-    AgencyStateSummary,
-    AgencyUpdateRequest,
-    agency_signal_summary_from_record,
-    agency_state_summary_from_record,
+    AgencyConfigResponse,
+    AgencyFireListResponse,
+    AgencyFireSummary,
+    AgencyRiskPolicy,
+    AgencyStatusResponse,
+    AgencyTriggerRequest,
+    AgencyTriggerResponse,
+    agency_fire_summary_from_record,
     run_summary_from_record,
     session_summary_from_record,
 )
-from ya_claw.orm.tables import AgencySignalRecord, RunRecord, SessionRecord
+from ya_claw.orm.tables import AgencyFireRecord, RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
 
 class AgencyController:
-    def __init__(self) -> None:
-        pass
-
-    async def get(
+    async def bootstrap(
         self,
         db_session: AsyncSession,
         settings: ClawSettings,
         runtime_state: InMemoryRuntimeState,
-        source_session_id: str,
-    ) -> AgencyGetResponse:
+    ) -> AgencyConfigResponse:
         lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state)
-        state_record = await lifecycle.get_state(db_session, source_session_id, ensure=True)
-        signals = await self._list_signals(db_session, source_session_id)
-        agency_session_summary = None
-        if isinstance(state_record.agency_session_id, str):
-            agency_session = await db_session.get(SessionRecord, state_record.agency_session_id)
-            if isinstance(agency_session, SessionRecord):
-                agency_session_summary = await self._build_session_summary(db_session, agency_session)
-        return AgencyGetResponse(
-            state=agency_state_summary_from_record(state_record),
-            signals=signals,
-            agency_session=agency_session_summary,
+        await lifecycle.ensure_agency_session(db_session)
+        await db_session.commit()
+        return await self.config(db_session, settings, runtime_state)
+
+    async def config(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+    ) -> AgencyConfigResponse:
+        lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state)
+        agency_session = await lifecycle.ensure_agency_session(db_session)
+        await db_session.commit()
+        await db_session.refresh(agency_session)
+        metadata = _agency_metadata(agency_session)
+        return AgencyConfigResponse(
+            enabled=bool(metadata.get("enabled", settings.agency_enabled)),
+            profile_name=str(
+                metadata.get("profile_name") or agency_session.profile_name or settings.resolved_agency_profile
+            ),
+            interval_seconds=settings.agency_tick_seconds,
+            agency_session_id=agency_session.id,
+            singleton_scope_key=AGENCY_SINGLETON_SCOPE_KEY,
+            singleton_source_session_id=agency_session.source_session_id or "",
+            budget_defaults=_budget_defaults(),
+            risk_policy=_resolved_risk_policy(settings, metadata),
+            deny_external_actions=True,
+            memory_files={
+                "index": "memory/AGENCY.md",
+                "action_log": "memory/agency/ACTION_LOG.md",
+            },
+            next_fire_at=await lifecycle.next_timer_fire_at(db_session),
         )
 
-    async def update(
+    async def status(
         self,
         db_session: AsyncSession,
         settings: ClawSettings,
         runtime_state: InMemoryRuntimeState,
-        source_session_id: str,
-        request: AgencyUpdateRequest,
-    ) -> AgencyStateSummary:
+    ) -> AgencyStatusResponse:
         lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state)
-        return await lifecycle.update_state(
-            db_session,
-            source_session_id,
-            enabled=request.enabled,
-            metadata=request.metadata,
+        agency_session = await lifecycle.ensure_agency_session(db_session)
+        await db_session.commit()
+        await db_session.refresh(agency_session)
+        latest_run = await _latest_run(db_session, agency_session.id)
+        active_run = await _active_run(db_session, agency_session)
+        pending_fire_count = await _fire_count(db_session, "pending")
+        return AgencyStatusResponse(
+            enabled=bool(_agency_metadata(agency_session).get("enabled", settings.agency_enabled)),
+            agency_session_id=agency_session.id,
+            state=_agency_state(agency_session, latest_run=latest_run),
+            active_run=run_summary_from_record(active_run) if active_run is not None else None,
+            latest_run=run_summary_from_record(latest_run) if latest_run is not None else None,
+            active_run_id=active_run.id if active_run is not None else None,
+            latest_run_id=latest_run.id if latest_run is not None else None,
+            next_fire_at=await lifecycle.next_timer_fire_at(db_session),
+            pending_fire_count=pending_fire_count,
+            last_fire=await self.last_fire(db_session),
+            agency_session=session_summary_from_record(
+                agency_session,
+                run_count=await _run_count(db_session, agency_session.id),
+                latest_run=run_summary_from_record(latest_run) if latest_run is not None else None,
+            ),
         )
 
-    async def signal(
+    async def list_fires(self, db_session: AsyncSession, *, limit: int = 50) -> AgencyFireListResponse:
+        normalized_limit = min(max(limit, 1), 200)
+        result = await db_session.execute(
+            select(AgencyFireRecord, RunRecord.status)
+            .outerjoin(RunRecord, AgencyFireRecord.run_id == RunRecord.id)
+            .order_by(AgencyFireRecord.created_at.desc())
+            .limit(normalized_limit)
+        )
+        return AgencyFireListResponse(
+            fires=[
+                agency_fire_summary_from_record(record, run_status=run_status)
+                for record, run_status in result.all()
+                if isinstance(record, AgencyFireRecord)
+            ]
+        )
+
+    async def last_fire(self, db_session: AsyncSession) -> AgencyFireSummary | None:
+        result = await db_session.execute(
+            select(AgencyFireRecord, RunRecord.status)
+            .outerjoin(RunRecord, AgencyFireRecord.run_id == RunRecord.id)
+            .order_by(AgencyFireRecord.created_at.desc())
+            .limit(1)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        record, run_status = row
+        return (
+            agency_fire_summary_from_record(record, run_status=run_status)
+            if isinstance(record, AgencyFireRecord)
+            else None
+        )
+
+    async def trigger(
         self,
         db_session: AsyncSession,
         settings: ClawSettings,
         runtime_state: InMemoryRuntimeState,
-        source_session_id: str,
-        request: AgencySignalRequest,
+        request: AgencyTriggerRequest,
         *,
         submit_run: Callable[[str], bool] | None = None,
-    ) -> AgencySignalResponse:
+    ) -> AgencyTriggerResponse:
         lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state, submit_run=submit_run)
-        delivery = await lifecycle.create_signal(db_session, source_session_id, request, dispatch=True)
-        return build_signal_response(delivery)
+        delivery = await lifecycle.create_fire(
+            db_session,
+            kind=request.kind,
+            source_session_id=request.source_session_id,
+            source_run_id=request.source_run_id,
+            client_token=request.client_token,
+            prompt=request.prompt,
+            budget=request.budget,
+            payload=request.payload,
+            dispatch=True,
+        )
+        return AgencyTriggerResponse(
+            accepted=True,
+            agency_session_id=delivery.agency_session.id,
+            fire=agency_fire_summary_from_record(delivery.fire),
+            run_id=delivery.run_id,
+            active_run_id=delivery.active_run_id,
+            delivery=delivery.delivery,
+        )
 
-    async def compact(
+    async def trigger_memory_committed(
         self,
         db_session: AsyncSession,
         settings: ClawSettings,
         runtime_state: InMemoryRuntimeState,
-        source_session_id: str,
-        request: AgencySignalRequest,
         *,
+        source_session_id: str,
+        memory_run_id: str,
+        memory_kind: str,
+        payload: dict[str, Any],
         submit_run: Callable[[str], bool] | None = None,
-    ) -> AgencySignalResponse:
-        payload = request.model_copy(update={"reason": "compact"})
-        return await self.signal(
+    ) -> AgencyTriggerResponse:
+        lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state, submit_run=submit_run)
+        delivery = await lifecycle.create_fire(
             db_session,
-            settings,
-            runtime_state,
-            source_session_id,
-            payload,
-            submit_run=submit_run,
+            kind="memory_committed",
+            source_session_id=source_session_id,
+            source_run_id=memory_run_id,
+            client_token=memory_run_id,
+            payload={"memory_kind": memory_kind, **payload},
+            dispatch=True,
+        )
+        return AgencyTriggerResponse(
+            accepted=True,
+            agency_session_id=delivery.agency_session.id,
+            fire=agency_fire_summary_from_record(delivery.fire),
+            run_id=delivery.run_id,
+            active_run_id=delivery.active_run_id,
+            delivery=delivery.delivery,
         )
 
-    async def _list_signals(self, db_session: AsyncSession, source_session_id: str) -> list[AgencySignalSummary]:
-        result = await db_session.execute(
-            select(AgencySignalRecord)
-            .where(AgencySignalRecord.source_session_id == source_session_id)
-            .order_by(AgencySignalRecord.created_at.desc())
-            .limit(50)
-        )
-        return [agency_signal_summary_from_record(record) for record in result.scalars().all()]
 
-    async def _build_session_summary(self, db_session: AsyncSession, session_record: SessionRecord):
-        result = await db_session.execute(
-            select(RunRecord)
-            .where(RunRecord.session_id == session_record.id)
-            .order_by(RunRecord.sequence_no.desc(), RunRecord.id.desc())
-        )
-        runs = list(result.scalars().all())
-        latest_run = run_summary_from_record(runs[0]) if runs else None
-        return session_summary_from_record(
-            session_record,
-            run_count=len(runs),
-            latest_run=latest_run,
-        )
+def _agency_metadata(agency_session: SessionRecord) -> dict[str, Any]:
+    metadata = agency_session.session_metadata if isinstance(agency_session.session_metadata, dict) else {}
+    agency = metadata.get("agency") if isinstance(metadata.get("agency"), dict) else {}
+    return dict(agency) if isinstance(agency, dict) else {}
+
+
+def _budget_defaults() -> dict[str, Any]:
+    return {
+        "max_actions": 5,
+        "max_tool_calls": 80,
+        "max_runtime_seconds": 900,
+        "max_workspace_writes": 10,
+        "external_actions": "deny",
+    }
+
+
+def _resolved_risk_policy(settings: ClawSettings, agency_metadata: dict[str, Any]) -> AgencyRiskPolicy:
+    risk_policy = agency_metadata.get("risk_policy")
+    if isinstance(risk_policy, dict):
+        return AgencyRiskPolicy.model_validate(risk_policy)
+    threshold = settings.agency_unattended_shell_review_risk_threshold
+    if threshold is None:
+        threshold = settings.unattended_shell_review_risk_threshold
+    return (
+        AgencyRiskPolicy(max_auto_action_risk=threshold)
+        if threshold in {"low", "medium", "high", "extra_high"}
+        else AgencyRiskPolicy()
+    )
+
+
+def _agency_state(
+    agency_session: SessionRecord,
+    *,
+    latest_run: RunRecord | None,
+) -> Literal["idle", "queued", "running"]:
+    if isinstance(agency_session.active_run_id, str):
+        return "running"
+    if latest_run is not None and latest_run.status == "queued":
+        return "queued"
+    return "idle"
+
+
+async def _latest_run(db_session: AsyncSession, session_id: str) -> RunRecord | None:
+    result = await db_session.execute(
+        select(RunRecord)
+        .where(RunRecord.session_id == session_id)
+        .order_by(RunRecord.sequence_no.desc(), RunRecord.id.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def _active_run(db_session: AsyncSession, agency_session: SessionRecord) -> RunRecord | None:
+    if isinstance(agency_session.active_run_id, str):
+        record = await db_session.get(RunRecord, agency_session.active_run_id)
+        if isinstance(record, RunRecord):
+            return record
+    if isinstance(agency_session.head_run_id, str):
+        record = await db_session.get(RunRecord, agency_session.head_run_id)
+        if isinstance(record, RunRecord) and record.status in {"queued", "running"}:
+            return record
+    return None
+
+
+async def _run_count(db_session: AsyncSession, session_id: str) -> int:
+    result = await db_session.execute(select(func.count()).where(RunRecord.session_id == session_id))
+    return int(result.scalar_one_or_none() or 0)
+
+
+async def _fire_count(db_session: AsyncSession, status: str) -> int:
+    result = await db_session.execute(select(func.count()).where(AgencyFireRecord.status == status))
+    return int(result.scalar_one_or_none() or 0)

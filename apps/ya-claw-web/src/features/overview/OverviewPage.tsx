@@ -47,6 +47,7 @@ export function OverviewPage() {
   const workspaceRuntime = useWorkspaceRuntimeQuery()
   const setRoute = useLayoutStore((state) => state.setRoute)
   const selectSession = useLayoutStore((state) => state.selectSession)
+  const selectRun = useLayoutStore((state) => state.selectRun)
   const rows = sessions.data ?? []
   const activeRuns = rows.filter(
     (session) => session.status === 'queued' || session.status === 'running',
@@ -200,7 +201,16 @@ export function OverviewPage() {
               <SessionRow
                 key={session.id}
                 session={session}
-                onOpen={() => selectSession(session.id)}
+                onOpen={() => {
+                  setRoute('debug')
+                  selectSession(session.id)
+                  selectRun(
+                    session.active_run_id ??
+                      session.head_run_id ??
+                      session.latest_run?.id ??
+                      null,
+                  )
+                }}
               />
             ))}
           </div>

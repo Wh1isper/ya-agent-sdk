@@ -7,13 +7,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AliasChoices, BaseModel, Field
 
 from ya_claw.json_types import JsonObject, JsonValue
-from ya_claw.orm.tables import (
-    AgencySignalRecord,
-    RunRecord,
-    SessionAgencyStateRecord,
-    SessionMemoryStateRecord,
-    SessionRecord,
-)
+from ya_claw.orm.tables import AgencyFireRecord, RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.workspace.models import WorkspaceBindingSpec
 from ya_claw.workspace.runtime_models import SessionWorkspaceState, build_session_workspace_state
 
@@ -60,20 +54,18 @@ class SessionType(StrEnum):
     AGENCY = "agency"
 
 
-class AgencySignalReason(StrEnum):
+class AgencyFireKind(StrEnum):
     MANUAL = "manual"
-    INACTIVITY = "inactivity"
+    TIMER = "timer"
     MEMORY_COMMITTED = "memory_committed"
-    OPEN_INTENTION_DUE = "open_intention_due"
-    FAILED_RUN_FOLLOWUP = "failed_run_followup"
-    SCHEDULE = "schedule"
     COMPACT = "compact"
 
 
-class AgencySignalStatus(StrEnum):
+class AgencyFireStatus(StrEnum):
     PENDING = "pending"
-    STEERED = "steered"
     SUBMITTED = "submitted"
+    STEERED = "steered"
+    MERGED = "merged"
     CONSUMED = "consumed"
     SKIPPED = "skipped"
     FAILED = "failed"
@@ -299,76 +291,94 @@ class AgencyBudget(BaseModel):
     max_tool_calls: int = 80
     max_runtime_seconds: int = 900
     max_workspace_writes: int = 10
-    external_actions: Literal["deny", "allow"] = "allow"
+    external_actions: Literal["deny"] = "deny"
 
 
 class AgencyRiskPolicy(BaseModel):
     max_auto_action_risk: Literal["low", "medium", "high", "extra_high"] = "low"
-    approval_required_for: list[str] = Field(
-        default_factory=lambda: ["external_send", "delete", "deploy", "secret_access", "payment"]
+    denied_actions: list[str] = Field(
+        default_factory=lambda: [
+            "external_send",
+            "delete",
+            "deploy",
+            "secret_access",
+            "payment",
+            "security_change",
+            "billing_change",
+        ]
     )
 
 
-class AgencyStateSummary(BaseModel):
-    source_session_id: str
-    agency_session_id: str | None = None
-    enabled: bool = False
-    last_observed_sequence_no: int = 0
-    episode_count: int = 0
-    pending_signal_count: int = 0
-    last_agency_run_id: str | None = None
-    last_agency_reason: str | None = None
-    last_action_at: datetime | None = None
-    cooldown_until: datetime | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class AgencySignalSummary(BaseModel):
+class AgencyFireSummary(BaseModel):
     id: str
-    source_session_id: str
-    agency_session_id: str | None = None
-    reason: AgencySignalReason | str
-    status: AgencySignalStatus | str
-    priority: int = 100
+    kind: AgencyFireKind | str
+    status: AgencyFireStatus | str
+    scheduled_at: datetime
+    fired_at: datetime | None = None
     dedupe_key: str
-    source_run_ids: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime
-    consumed_at: datetime | None = None
-    run_id: str | None = None
-
-
-class AgencyGetResponse(BaseModel):
-    state: AgencyStateSummary
-    signals: list[AgencySignalSummary] = Field(default_factory=list)
-    agency_session: SessionSummary | None = None
-
-
-class AgencyUpdateRequest(BaseModel):
-    enabled: bool | None = None
-    metadata: dict[str, Any] | None = None
-
-
-class AgencySignalRequest(BaseModel):
-    reason: AgencySignalReason = AgencySignalReason.MANUAL
-    client_token: str | None = None
-    prompt_override: str | None = None
-    budget: AgencyBudget | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    source_run_ids: list[str] = Field(default_factory=list)
-
-
-class AgencySignalResponse(BaseModel):
-    accepted: bool = True
-    source_session_id: str
-    agency_session_id: str
-    signal: AgencySignalSummary
+    source_session_id: str | None = None
+    source_run_id: str | None = None
+    agency_session_id: str | None = None
     run_id: str | None = None
     active_run_id: str | None = None
-    delivery: Literal["steered", "submitted", "pending", "duplicate"]
-    state: AgencyStateSummary
+    run_status: RunStatus | str | None = None
+    priority: int = 100
+    payload: dict[str, Any] = Field(default_factory=dict)
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    consumed_at: datetime | None = None
+
+
+class AgencyFireListResponse(BaseModel):
+    fires: list[AgencyFireSummary] = Field(default_factory=list)
+
+
+class AgencyConfigResponse(BaseModel):
+    enabled: bool = True
+    profile_name: str
+    interval_seconds: int
+    agency_session_id: str
+    singleton_scope_key: str
+    singleton_source_session_id: str
+    budget_defaults: dict[str, Any] = Field(default_factory=dict)
+    risk_policy: AgencyRiskPolicy = Field(default_factory=AgencyRiskPolicy)
+    deny_external_actions: bool = True
+    memory_files: dict[str, str] = Field(default_factory=dict)
+    next_fire_at: datetime | None = None
+
+
+class AgencyStatusResponse(BaseModel):
+    enabled: bool = True
+    agency_session_id: str
+    state: Literal["idle", "queued", "running"] = "idle"
+    active_run: RunSummary | None = None
+    latest_run: RunSummary | None = None
+    active_run_id: str | None = None
+    latest_run_id: str | None = None
+    next_fire_at: datetime | None = None
+    pending_fire_count: int = 0
+    last_fire: AgencyFireSummary | None = None
+    agency_session: SessionSummary
+
+
+class AgencyTriggerRequest(BaseModel):
+    kind: AgencyFireKind = AgencyFireKind.MANUAL
+    source_session_id: str | None = None
+    source_run_id: str | None = None
+    client_token: str | None = None
+    prompt: str | None = None
+    budget: AgencyBudget | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgencyTriggerResponse(BaseModel):
+    accepted: bool = True
+    agency_session_id: str
+    fire: AgencyFireSummary
+    run_id: str | None = None
+    active_run_id: str | None = None
+    delivery: Literal["steered", "submitted", "merged", "pending", "duplicate", "skipped"]
 
 
 class RunTraceItem(BaseModel):
@@ -410,7 +420,6 @@ class SessionSummary(BaseModel):
     active_run_id: str | None = None
     latest_run: RunSummary | None = None
     memory_state: MemoryStateSummary | None = None
-    agency_state: AgencyStateSummary | None = None
     workspace_state: SessionWorkspaceState | None = None
 
 
@@ -741,38 +750,30 @@ def memory_state_summary_from_record(record: SessionMemoryStateRecord) -> Memory
     )
 
 
-def agency_state_summary_from_record(record: SessionAgencyStateRecord) -> AgencyStateSummary:
-    return AgencyStateSummary(
+def agency_fire_summary_from_record(
+    record: AgencyFireRecord,
+    *,
+    run_status: str | None = None,
+) -> AgencyFireSummary:
+    return AgencyFireSummary(
+        id=record.id,
+        kind=record.kind,
+        status=record.status,
+        scheduled_at=record.scheduled_at,
+        fired_at=record.fired_at,
+        dedupe_key=record.dedupe_key,
         source_session_id=record.source_session_id,
+        source_run_id=record.source_run_id,
         agency_session_id=record.agency_session_id,
-        enabled=bool(record.enabled),
-        last_observed_sequence_no=record.last_observed_sequence_no,
-        episode_count=record.episode_count,
-        pending_signal_count=record.pending_signal_count,
-        last_agency_run_id=record.last_agency_run_id,
-        last_agency_reason=record.last_agency_reason,
-        last_action_at=record.last_action_at,
-        cooldown_until=record.cooldown_until,
-        metadata=public_metadata(dict(record.agency_metadata or {})),
+        run_id=record.run_id,
+        active_run_id=record.active_run_id,
+        run_status=run_status,
+        priority=record.priority,
+        payload=public_metadata(dict(record.payload or {})),
+        error_message=record.error_message,
         created_at=record.created_at,
         updated_at=record.updated_at,
-    )
-
-
-def agency_signal_summary_from_record(record: AgencySignalRecord) -> AgencySignalSummary:
-    return AgencySignalSummary(
-        id=record.id,
-        source_session_id=record.source_session_id,
-        agency_session_id=record.agency_session_id,
-        reason=record.reason,
-        status=record.status,
-        priority=record.priority,
-        dedupe_key=record.dedupe_key,
-        source_run_ids=[item for item in list(record.source_run_ids or []) if isinstance(item, str)],
-        metadata=public_metadata(dict(record.signal_metadata or {})),
-        created_at=record.created_at,
         consumed_at=record.consumed_at,
-        run_id=record.run_id,
     )
 
 
@@ -806,7 +807,6 @@ def session_summary_from_record(
     run_count: int,
     latest_run: RunSummary | None,
     memory_state: MemoryStateSummary | None = None,
-    agency_state: AgencyStateSummary | None = None,
     active_interactions: list[dict[str, Any]] | None = None,
     workspace_state: SessionWorkspaceState | None = None,
 ) -> SessionSummary:
@@ -828,7 +828,6 @@ def session_summary_from_record(
         active_run_id=record.active_run_id,
         latest_run=latest_run,
         memory_state=memory_state,
-        agency_state=agency_state,
         workspace_state=workspace_state
         if workspace_state is not None
         else build_session_workspace_state(record.session_metadata),

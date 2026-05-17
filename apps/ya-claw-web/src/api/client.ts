@@ -1,9 +1,9 @@
 import type {
-  AgencyGetResponse,
-  AgencySignalRequest,
-  AgencySignalResponse,
-  AgencyStateSummary,
-  AgencyUpdateRequest,
+  AgencyConfigResponse,
+  AgencyFireListResponse,
+  AgencyStatusResponse,
+  AgencyTriggerRequest,
+  AgencyTriggerResponse,
   BridgeConversationListResponse,
   BridgeEventListResponse,
   BridgeEventStatus,
@@ -215,40 +215,23 @@ export class ClawApiClient {
     })
   }
 
-  getSessionAgency(sessionId: string) {
-    return this.request<AgencyGetResponse>(
-      `/api/v1/sessions/${sessionId}/agency`,
-    )
+  getAgencyConfig() {
+    return this.request<AgencyConfigResponse>('/api/v1/agency/config')
   }
 
-  updateSessionAgency(sessionId: string, payload: AgencyUpdateRequest) {
-    return this.request<AgencyStateSummary>(
-      `/api/v1/sessions/${sessionId}/agency`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify(payload),
-      },
-    )
+  getAgencyStatus() {
+    return this.request<AgencyStatusResponse>('/api/v1/agency/status')
   }
 
-  signalSessionAgency(sessionId: string, payload: AgencySignalRequest) {
-    return this.request<AgencySignalResponse>(
-      `/api/v1/sessions/${sessionId}/agency:signal`,
-      {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      },
-    )
+  listAgencyFires() {
+    return this.request<AgencyFireListResponse>('/api/v1/agency/fires')
   }
 
-  compactSessionAgency(sessionId: string, payload: AgencySignalRequest) {
-    return this.request<AgencySignalResponse>(
-      `/api/v1/sessions/${sessionId}/agency:compact`,
-      {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      },
-    )
+  triggerAgency(payload: AgencyTriggerRequest) {
+    return this.request<AgencyTriggerResponse>('/api/v1/agency:trigger', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
   }
 
   getRun(runId: string) {

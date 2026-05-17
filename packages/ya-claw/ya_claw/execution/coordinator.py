@@ -10,6 +10,7 @@ from loguru import logger
 from pydantic import BaseModel
 from pydantic_ai import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
+from pydantic_ai.tools import ToolDenied
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -63,6 +64,13 @@ from ya_claw.workspace.models import (
     workspace_snapshot,
 )
 from ya_claw.workspace.runtime_models import build_session_sandbox_state_from_sandbox, session_sandbox_event_payload
+
+
+@dataclass(slots=True)
+class AgencyMemorySource:
+    source_session_id: str
+    source_run_id: str | None
+    source_sequence_no: int
 
 
 @dataclass(slots=True)
@@ -428,12 +436,11 @@ class RunCoordinator:
                         agency_metadata = (
                             run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
                         )
-                        source_session_id = _agency_source_session_id(agency_metadata)
-                        if source_session_id is not None:
+                        for source in await _agency_memory_sources(db_session, agency_metadata):
                             await lifecycle.on_run_committed(
-                                source_session_id=source_session_id,
-                                source_run_id=run_record.id,
-                                source_sequence_no=run_record.sequence_no,
+                                source_session_id=source.source_session_id,
+                                source_run_id=source.source_run_id or run_record.id,
+                                source_sequence_no=source.source_sequence_no,
                                 profile_name=run_record.profile_name,
                                 claw_metadata=buffers.claw_metadata,
                             )
@@ -570,7 +577,9 @@ class RunCoordinator:
         memory_metadata = run_metadata.get("memory") if isinstance(run_metadata, dict) else None
         agency_metadata = run_metadata.get("agency") if isinstance(run_metadata, dict) else None
         self_client_session_id = (
-            _memory_source_session_id(memory_metadata) or _agency_source_session_id(agency_metadata) or session_id
+            _memory_source_session_id(memory_metadata)
+            or _agency_primary_source_session_id(agency_metadata)
+            or session_id
         )
         environment.resources.set(
             CLAW_SELF_CLIENT_KEY,
@@ -747,6 +756,12 @@ class RunCoordinator:
         agui_adapter: AguiEventAdapter,
         run_metadata: dict[str, Any],
     ) -> DeferredToolResults | None:
+        if _trigger_type_from_run_metadata(run_metadata) == TriggerType.AGENCY.value:
+            return _deny_deferred_tool_requests(
+                deferred_requests,
+                reason="Agency runs use unattended deny mode for approval-required tool calls.",
+            )
+
         interactions = build_active_interactions(deferred_requests, run_id=run_id, session_id=session_id)
         bridge_metadata = run_metadata.get("bridge") if isinstance(run_metadata.get("bridge"), dict) else None
         if bridge_metadata is not None:
@@ -1325,11 +1340,102 @@ def _memory_source_session_id(memory_metadata: object) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _agency_source_session_id(agency_metadata: object) -> str | None:
+def _agency_source_session_ids(agency_metadata: object) -> list[str]:
+    if not isinstance(agency_metadata, dict):
+        return []
+    values = agency_metadata.get("source_session_ids")
+    if not isinstance(values, list):
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if isinstance(value, str) and value.strip() and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _agency_primary_source_session_id(agency_metadata: object) -> str | None:
     if not isinstance(agency_metadata, dict):
         return None
-    value = agency_metadata.get("source_session_id")
-    return value if isinstance(value, str) and value.strip() else None
+    value = agency_metadata.get("primary_source_session_id")
+    if isinstance(value, str) and value.strip():
+        return value
+    source_session_ids = _agency_source_session_ids(agency_metadata)
+    return source_session_ids[0] if source_session_ids else None
+
+
+async def _agency_memory_sources(db_session: AsyncSession, agency_metadata: object) -> list[AgencyMemorySource]:
+    if not isinstance(agency_metadata, dict):
+        return []
+    result: list[AgencyMemorySource] = []
+    seen: set[tuple[str, str | None]] = set()
+    for source in _agency_sources(agency_metadata):
+        source_session_id = source.get("source_session_id")
+        source_run_id = source.get("source_run_id")
+        if not isinstance(source_session_id, str) or not source_session_id.strip():
+            continue
+        if source_run_id is not None and not isinstance(source_run_id, str):
+            source_run_id = None
+        key = (source_session_id, source_run_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        sequence_no = await _source_sequence_no(
+            db_session, source_session_id=source_session_id, source_run_id=source_run_id
+        )
+        if sequence_no is None:
+            continue
+        result.append(
+            AgencyMemorySource(
+                source_session_id=source_session_id,
+                source_run_id=source_run_id,
+                source_sequence_no=sequence_no,
+            )
+        )
+    return result
+
+
+def _agency_sources(agency_metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    values = agency_metadata.get("sources")
+    if isinstance(values, list):
+        return [dict(item) for item in values if isinstance(item, dict)]
+    return [
+        {"source_session_id": source_session_id, "source_run_id": None}
+        for source_session_id in _agency_source_session_ids(agency_metadata)
+    ]
+
+
+async def _source_sequence_no(
+    db_session: AsyncSession,
+    *,
+    source_session_id: str,
+    source_run_id: str | None,
+) -> int | None:
+    if isinstance(source_run_id, str) and source_run_id.strip():
+        source_run = await db_session.get(RunRecord, source_run_id)
+        if isinstance(source_run, RunRecord) and source_run.session_id == source_session_id:
+            return source_run.sequence_no
+    result = await db_session.execute(
+        select(RunRecord.sequence_no)
+        .where(RunRecord.session_id == source_session_id)
+        .order_by(RunRecord.sequence_no.desc())
+        .limit(1)
+    )
+    value = result.scalar_one_or_none()
+    return value if isinstance(value, int) else None
+
+
+def _trigger_type_from_run_metadata(run_metadata: dict[str, Any]) -> str | None:
+    value = run_metadata.get("trigger_type")
+    return value if isinstance(value, str) else None
+
+
+def _deny_deferred_tool_requests(deferred_requests: DeferredToolRequests, *, reason: str) -> DeferredToolResults:
+    results = DeferredToolResults()
+    for request in deferred_requests.approvals:
+        results.approvals[request.tool_call_id] = ToolDenied(message=reason)
+    return results
 
 
 async def _publish_run_status_notification(
@@ -1341,7 +1447,7 @@ async def _publish_run_status_notification(
         return
     memory_metadata = run_record.run_metadata.get("memory") if isinstance(run_record.run_metadata, dict) else None
     agency_metadata = run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
-    source_session_id = _memory_source_session_id(memory_metadata) or _agency_source_session_id(agency_metadata)
+    source_session_id = _memory_source_session_id(memory_metadata) or _agency_primary_source_session_id(agency_metadata)
     active_interactions = _active_interactions_from_run(run_record)
     session_status_reason = _session_status_reason_from_run(run_record, active_interactions=active_interactions)
     session_status_detail = _session_status_detail_from_run(run_record, active_interactions=active_interactions)
