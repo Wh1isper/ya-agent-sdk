@@ -1,8 +1,13 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { createClawClient } from './client'
 import { getActiveClawConnection } from './connection'
-import type { ClawRunSummary, DesktopClawConnection } from './types'
+import type {
+  ClawRunSummary,
+  ClawSessionStreamInput,
+  ClawStreamHandlers,
+  DesktopClawConnection,
+} from './types'
 
 export const clawQueryKeys = {
   activeConnection: ['claw', 'active-connection'] as const,
@@ -65,6 +70,35 @@ export function useClawSessions(connection?: DesktopClawConnection | null) {
       createClawClient(requiredConnection(connection)).listSessions(),
     enabled: Boolean(connection),
     refetchInterval: connection ? 10_000 : false,
+  })
+}
+
+export function useCreateClawSessionStream(
+  connection?: DesktopClawConnection | null,
+) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({
+      input,
+      handlers,
+      signal,
+    }: {
+      input: ClawSessionStreamInput
+      handlers?: ClawStreamHandlers
+      signal?: AbortSignal
+    }) => {
+      await createClawClient(requiredConnection(connection)).createSessionStream(
+        input,
+        handlers,
+        signal,
+      )
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: clawQueryKeys.sessions(connection),
+      })
+    },
   })
 }
 

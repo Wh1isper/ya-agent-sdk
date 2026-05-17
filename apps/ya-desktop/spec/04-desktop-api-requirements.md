@@ -234,7 +234,9 @@ GET /api/v1/runs/{run_id}
 GET /api/v1/runs/{run_id}/trace
 ```
 
-The current P0 Desktop client uses the read-only subset: sessions, session detail, session turns, run trace, health, and Claw info. Desktop depends on AGUI-aligned replay events for stream rendering and run replay.
+The current Desktop client uses sessions, session detail, session turns, run trace, health, Claw info, and streamed session creation. Home submits typed commands to `POST /api/v1/sessions:stream` with `input_parts: [{"type":"text","text":"..."}]`, stores a Desktop source marker in session metadata, renders AGUI `TEXT_MESSAGE_CHUNK` events as inline output, and refreshes session lists when the stream settles.
+
+Desktop depends on AGUI-aligned replay events for stream rendering and run replay. The first streaming slice targets new sessions from Home; Chats continuation should use `POST /api/v1/sessions/{session_id}/runs:stream` with the same event handling model.
 
 ## Global Notifications
 

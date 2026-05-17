@@ -85,6 +85,9 @@ Current implementation:
 
 - Shows Local Claw runtime health when an active local connection exists.
 - Reads recent chats from `GET /api/v1/sessions` through the Desktop Claw client.
+- Creates a new chat from the command input through `POST /api/v1/sessions:stream`.
+- Streams AGUI run events into an inline Home preview, including assistant text chunks, stream lifecycle status, and stream errors.
+- Refreshes recent chats after the streamed run settles.
 - Shows offline, loading, empty, and error states when Local Claw is stopped or unreachable.
 
 Capabilities:

@@ -28,7 +28,14 @@ import {
   TerminalSquare,
   type LucideIcon,
 } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react'
 import { Toaster } from 'sonner'
 
 import {
@@ -39,12 +46,14 @@ import {
   useClawSession,
   useClawSessions,
   useClawSessionTurns,
+  useCreateClawSessionStream,
   type ClawRunStatus,
   type ClawRunSummary,
   type ClawRunTraceResponse,
   type ClawSessionStatus,
   type ClawSessionSummary,
   type ClawSessionTurn,
+  type ClawStreamEvent,
 } from '../claw'
 import { cn } from '../lib'
 import { RuntimeManagerPanel } from '../runtime/RuntimeManagerPanel'
@@ -55,6 +64,8 @@ type DesktopLayoutPreferences = {
   leftSidebarCollapsed: boolean
   rightPanelCollapsed: boolean
 }
+
+type HomeStreamStatus = 'idle' | 'connecting' | 'streaming' | 'completed' | 'failed'
 
 const defaultLayoutPreferences: DesktopLayoutPreferences = {
   leftSidebarCollapsed: false,
@@ -559,10 +570,101 @@ function HomePage() {
   const healthQuery = useClawHealth(connection)
   const infoQuery = useClawInfo(connection)
   const sessionsQuery = useClawSessions(connection)
+  const createSessionStream = useCreateClawSessionStream(connection)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const [prompt, setPrompt] = useState('')
+  const [streamStatus, setStreamStatus] = useState<HomeStreamStatus>('idle')
+  const [streamOutput, setStreamOutput] = useState('')
+  const [streamError, setStreamError] = useState<string | null>(null)
+  const [streamEventCount, setStreamEventCount] = useState(0)
+  const [lastRunLabel, setLastRunLabel] = useState<string | null>(null)
   const recentSessions = sessionsQuery.data?.slice(0, 3) ?? []
   const runtimeDetail = connection
     ? `${infoQuery.data?.serviceVersion ?? infoQuery.data?.version ?? 'Claw'} · ${healthQuery.data?.status ?? 'checking'}`
     : (activeConnectionQuery.data?.status.message ?? 'Local Claw is stopped')
+  const trimmedPrompt = prompt.trim()
+  const streamingActive =
+    streamStatus === 'connecting' || streamStatus === 'streaming'
+  const canStart = Boolean(connection && trimmedPrompt && !streamingActive)
+
+  useEffect(() => {
+    return () => abortControllerRef.current?.abort()
+  }, [])
+
+  async function handleStart(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!connection || !trimmedPrompt || streamingActive) return
+
+    const abortController = new AbortController()
+    abortControllerRef.current?.abort()
+    abortControllerRef.current = abortController
+    setStreamStatus('connecting')
+    setStreamOutput('')
+    setStreamError(null)
+    setStreamEventCount(0)
+    setLastRunLabel(null)
+
+    try {
+      await createSessionStream.mutateAsync({
+        input: {
+          metadata: {
+            title: trimmedPrompt.slice(0, 120),
+            desktop: {
+              source: 'home_command',
+            },
+          },
+          input_parts: [{ type: 'text', text: trimmedPrompt }],
+        },
+        signal: abortController.signal,
+        handlers: {
+          onOpen: () => setStreamStatus('streaming'),
+          onEvent: handleStreamEvent,
+          onClose: () => {
+            setStreamStatus((status) =>
+              status === 'failed' ? status : 'completed',
+            )
+          },
+        },
+      })
+      setPrompt('')
+      setStreamStatus((status) => (status === 'failed' ? status : 'completed'))
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        if (abortControllerRef.current === abortController) setStreamStatus('idle')
+        return
+      }
+      setStreamStatus('failed')
+      setStreamError(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (abortControllerRef.current === abortController) {
+        abortControllerRef.current = null
+      }
+    }
+  }
+
+  function handleStreamEvent(event: ClawStreamEvent) {
+    setStreamEventCount((count) => count + 1)
+    const runId = streamRunId(event)
+    if (runId) setLastRunLabel(runId.slice(0, 8))
+
+    const delta = streamTextDelta(event)
+    if (delta) setStreamOutput((output) => `${output}${delta}`)
+
+    if (isRunErrorEvent(event)) {
+      setStreamStatus('failed')
+      setStreamError(streamErrorMessage(event))
+      return
+    }
+
+    if (isRunFinishedEvent(event)) {
+      setStreamStatus((status) => (status === 'failed' ? status : 'completed'))
+      return
+    }
+
+    setStreamStatus((status) =>
+      status === 'failed' || status === 'completed' ? status : 'streaming',
+    )
+  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 py-3">
@@ -578,17 +680,33 @@ function HomePage() {
           Start a new conversation from selected text, clipboard, screenshots,
           active app context, or the current space.
         </p>
-        <div className="mx-auto mt-8 max-w-3xl rounded-[2rem] border border-black/[0.06] bg-white p-3 shadow-[0_24px_80px_rgba(15,23,42,0.10)]">
+        <form
+          className="mx-auto mt-8 max-w-3xl rounded-[2rem] border border-black/[0.06] bg-white p-3 shadow-[0_24px_80px_rgba(15,23,42,0.10)]"
+          onSubmit={handleStart}
+        >
           <div className="flex items-center gap-3 rounded-[1.35rem] bg-[#f7f7f4] px-4 py-4 ring-1 ring-black/[0.04]">
             <Command className="h-5 w-5 text-slate-400" />
             <input
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
               className="min-w-0 flex-1 bg-transparent text-lg text-slate-950 outline-none placeholder:text-slate-400"
               placeholder="Ask YA to ship, debug, explain, refactor, summarize..."
             />
-            <button className="rounded-2xl bg-[#111827] px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-slate-950/15">
-              Start
+            <button
+              className="rounded-2xl bg-[#111827] px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-slate-950/15 transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+              disabled={!canStart}
+              type="submit"
+            >
+              {streamingActive ? 'Running' : 'Start'}
             </button>
           </div>
+          <HomeStreamPreview
+            eventCount={streamEventCount}
+            error={streamError}
+            output={streamOutput}
+            runLabel={lastRunLabel}
+            status={streamStatus}
+          />
           <div className="mt-3 grid gap-3 md:grid-cols-3">
             <ContextPill
               icon={FileCode2}
@@ -606,7 +724,7 @@ function HomePage() {
               detail={runtimeDetail}
             />
           </div>
-        </div>
+        </form>
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[1fr_0.8fr]">
@@ -1166,6 +1284,62 @@ function Card({
   )
 }
 
+function HomeStreamPreview({
+  eventCount,
+  error,
+  output,
+  runLabel,
+  status,
+}: {
+  eventCount: number
+  error: string | null
+  output: string
+  runLabel: string | null
+  status: HomeStreamStatus
+}) {
+  if (status === 'idle') return null
+
+  const statusLabel = homeStreamStatusLabel(status)
+  const previewText =
+    error ??
+    (output.length > 0
+      ? output
+      : status === 'connecting'
+        ? 'Opening a Claw run stream...'
+        : 'Waiting for the first assistant chunk...')
+
+  return (
+    <div className="mt-3 rounded-[1.35rem] border border-black/[0.06] bg-[#fbfbf8] p-4 text-left ring-1 ring-black/[0.03]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+          <span
+            className={cn(
+              'h-2.5 w-2.5 rounded-full',
+              status === 'failed'
+                ? statusTone('amber')
+                : status === 'completed'
+                  ? statusTone('emerald')
+                  : statusTone('blue'),
+            )}
+          />
+          {statusLabel}
+        </div>
+        <p className="text-xs text-slate-400">
+          {runLabel ? `Run ${runLabel}` : `${eventCount} stream events`}
+        </p>
+      </div>
+      <p
+        className={cn(
+          'mt-3 max-h-40 overflow-auto whitespace-pre-wrap text-sm leading-6',
+          error ? 'text-amber-700' : 'text-slate-600',
+        )}
+      >
+        {previewText}
+      </p>
+    </div>
+  )
+}
+
 function ContextPill({
   icon: Icon,
   title,
@@ -1419,6 +1593,74 @@ function labelForStatus(status: ClawSessionStatus | ClawRunStatus) {
     normalized.charAt(0).toUpperCase() +
     normalized.slice(1).replaceAll('_', ' ')
   )
+}
+
+function homeStreamStatusLabel(status: HomeStreamStatus) {
+  if (status === 'connecting') return 'Connecting to Claw stream'
+  if (status === 'streaming') return 'Streaming run output'
+  if (status === 'completed') return 'Run completed'
+  if (status === 'failed') return 'Run needs attention'
+  return 'Ready'
+}
+
+function streamTextDelta(event: ClawStreamEvent) {
+  const payload = event.payload
+  const delta = payload.delta
+  if (typeof delta === 'string') return delta
+  const content = payload.content
+  if (typeof content === 'string' && event.event === 'TEXT_MESSAGE_CHUNK') {
+    return content
+  }
+  const value = payload.value
+  if (
+    isRecord(value) &&
+    value.name === 'ya_agent.final_result' &&
+    isRecord(value.payload) &&
+    typeof value.payload.output_text === 'string'
+  ) {
+    return value.payload.output_text
+  }
+  return ''
+}
+
+function streamRunId(event: ClawStreamEvent) {
+  const runId = event.payload.runId ?? event.payload.run_id
+  if (typeof runId === 'string') return runId
+  const value = event.payload.value
+  if (isRecord(value)) {
+    const nestedRunId = value.run_id ?? value.runId
+    if (typeof nestedRunId === 'string') return nestedRunId
+  }
+  return null
+}
+
+function isRunErrorEvent(event: ClawStreamEvent) {
+  return event.event === 'RUN_ERROR' || event.payload.type === 'RUN_ERROR'
+}
+
+function isRunFinishedEvent(event: ClawStreamEvent) {
+  return event.event === 'RUN_FINISHED' || event.payload.type === 'RUN_FINISHED'
+}
+
+function streamErrorMessage(event: ClawStreamEvent) {
+  const message = event.payload.message
+  if (typeof message === 'string') return message
+  const value = event.payload.value
+  if (isRecord(value)) {
+    if (typeof value.message === 'string') return value.message
+    if (typeof value.error === 'string') return value.error
+    if (
+      isRecord(value.payload) &&
+      typeof value.payload.message === 'string'
+    ) {
+      return value.payload.message
+    }
+  }
+  return 'The streamed run returned an error event.'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function statusToneName(status: ClawSessionStatus | ClawRunStatus) {

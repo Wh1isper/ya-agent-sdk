@@ -26,15 +26,15 @@ Keep YA Desktop product planning aligned across the visible UI, Tauri Desktop Co
 | Connection    | Active local connection              | Home, Chats, top bar            | UI wired                  | Desktop Core ready           | API contract documented      | Move bearer token exposure behind keychain-backed token references.         | P0       |
 | Connection    | Remote Claw connection               | Settings, Spaces                | UI direction              | API contract needed          | Claw HTTP ready in principle | Implement connection registry and token storage.                            | P2       |
 | Connection    | Cloud Claw connection                | Settings, Spaces                | UI direction              | Product model needed         | Product model needed         | Define account, org, project, and auth model.                               | P3       |
-| Home          | Command-first start                  | Home                            | UI mock                   | N/A                          | Stream routes ready          | Create session/run from command input.                                      | P1       |
-| Home          | Recent chats                         | Home                            | UI wired                  | N/A                          | Claw backend ready           | Add create-and-stream from command input.                                   | P0       |
+| Home          | Command-first start                  | Home                            | UI wired                  | N/A                          | Claw backend ready           | Add profile and workspace selection before session creation.                | P1       |
+| Home          | Recent chats                         | Home                            | UI wired                  | N/A                          | Claw backend ready           | Refresh from stream settlements and global notifications.                   | P0       |
 | Home          | Active runs                          | Home, right context             | UI mock                   | N/A                          | Claw backend ready           | Derive from session/run status and notifications.                           | P1       |
 | Home          | Current space summary                | Home                            | UI mock                   | Product model needed         | Workspace binding ready      | Add local folder registry and default workspace.                            | P1       |
 | Chats         | Chat list                            | Chats                           | UI wired                  | N/A                          | Claw backend ready           | Add search, filtering, and stable chat titles.                              | P0       |
 | Chats         | Chat detail                          | Chats                           | UI wired                  | N/A                          | Claw backend ready           | Add message replay and selected run drilldown.                              | P0       |
 | Chats         | Turns preview                        | Chats                           | UI wired                  | N/A                          | Claw backend ready           | Add pagination and richer input part rendering.                             | P0       |
 | Chats         | Run trace preview                    | Chats                           | UI wired                  | N/A                          | Claw backend ready           | Add trace item expansion and run-specific filters.                          | P0       |
-| Chats         | Streaming run output                 | Chats, Home                     | UI mock                   | N/A                          | Claw backend ready           | Add stream client for `sessions:stream` and session run stream.             | P1       |
+| Chats         | Streaming run output                 | Chats, Home                     | UI partial                | N/A                          | Claw backend ready           | Reuse Home stream client for Chats continuation and message replay.         | P1       |
 | Chats         | Continue chat                        | Chats                           | UI direction              | N/A                          | Claw backend ready           | Send input parts to session run stream endpoint.                            | P1       |
 | Chats         | Rerun failed/interrupted work        | Chats, Inbox                    | UI direction              | N/A                          | Claw backend ready           | Add rerun action with `restore_from_run_id`.                                | P1       |
 | Chats         | Cancel active run                    | Chats, Inbox                    | UI direction              | N/A                          | API contract needed          | Confirm cancel endpoint and state transition contract.                      | P1       |
@@ -88,7 +88,7 @@ P1 makes Desktop useful for day-to-day agent work.
 
 Deliverables:
 
-1. Home command creates a new session and streams the first run.
+1. Home command creates a new session and streams the first run. Done.
 2. Chats can continue an existing session, show streaming output, rerun recoverable work, and display run state transitions.
 3. Board renders from the shared Desktop chat read model.
 4. Spaces stores local folders, trust, default workspace, and mount presets.

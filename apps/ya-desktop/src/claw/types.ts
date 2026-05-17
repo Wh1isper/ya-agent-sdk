@@ -60,6 +60,32 @@ export type ClawInputPart = JsonObject & {
   text?: string
 }
 
+export type ClawTextInputPart = {
+  type: 'text'
+  text: string
+  metadata?: JsonObject | null
+}
+
+export type ClawSessionStreamInput = {
+  profile_name?: string | null
+  metadata?: JsonObject
+  workspace?: JsonObject | null
+  input_parts: ClawInputPart[]
+}
+
+export type ClawStreamEvent = {
+  id: string
+  event: string
+  data: string
+  payload: JsonObject
+}
+
+export type ClawStreamHandlers = {
+  onOpen?: () => void
+  onEvent?: (event: ClawStreamEvent) => void
+  onClose?: () => void
+}
+
 export type ClawRunSummary = {
   id: string
   session_id?: string
