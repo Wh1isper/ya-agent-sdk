@@ -20,6 +20,7 @@ from ya_agent_sdk.environment import SandboxEnvironment
 from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent
 from ya_agent_sdk.toolsets.core.base import UserInteraction as SdkUserInteraction
 
+from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
@@ -410,6 +411,26 @@ class RunCoordinator:
                 )
                 if session_record.session_type == "memory":
                     await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
+                elif session_record.session_type == "agency":
+                    agency_lifecycle = AgencyLifecycle(
+                        settings=self._settings,
+                        runtime_state=self._runtime_state,
+                        submit_run=self._submit_memory_run,
+                    )
+                    await agency_lifecycle.on_agency_run_committed(db_session, run_record)
+                    if self._settings.agency_memory_capture_enabled:
+                        agency_metadata = (
+                            run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
+                        )
+                        source_session_id = _agency_source_session_id(agency_metadata)
+                        if source_session_id is not None:
+                            await lifecycle.on_run_committed(
+                                source_session_id=source_session_id,
+                                source_run_id=run_record.id,
+                                source_sequence_no=run_record.sequence_no,
+                                profile_name=run_record.profile_name,
+                                claw_metadata=buffers.claw_metadata,
+                            )
                 else:
                     await lifecycle.on_run_committed(
                         source_session_id=session_record.id,
@@ -532,7 +553,10 @@ class RunCoordinator:
         background_monitor = BackgroundMonitor(run_id=run_id, runtime_state=self._runtime_state)
         environment.resources.set(BACKGROUND_MONITOR_KEY, background_monitor)
         memory_metadata = run_metadata.get("memory") if isinstance(run_metadata, dict) else None
-        self_client_session_id = _memory_source_session_id(memory_metadata) or session_id
+        agency_metadata = run_metadata.get("agency") if isinstance(run_metadata, dict) else None
+        self_client_session_id = (
+            _memory_source_session_id(memory_metadata) or _agency_source_session_id(agency_metadata) or session_id
+        )
         environment.resources.set(
             CLAW_SELF_CLIENT_KEY,
             ClawSelfClient(
@@ -549,6 +573,7 @@ class RunCoordinator:
             trigger_type=trigger_type,
             run_metadata=run_metadata,
             memory_metadata=memory_metadata,
+            agency_metadata=agency_metadata,
         )
         runtime = self._runtime_builder.build(
             profile=profile,
@@ -1268,10 +1293,13 @@ def _runtime_source_metadata(
     trigger_type: str,
     run_metadata: dict[str, Any],
     memory_metadata: Any,
+    agency_metadata: Any = None,
 ) -> dict[str, Any]:
     metadata = {"trigger_type": trigger_type, **run_metadata}
     if isinstance(memory_metadata, dict):
         metadata["memory"] = memory_metadata
+    if isinstance(agency_metadata, dict):
+        metadata["agency"] = agency_metadata
     return metadata
 
 
@@ -1279,6 +1307,13 @@ def _memory_source_session_id(memory_metadata: Any) -> str | None:
     if not isinstance(memory_metadata, dict):
         return None
     value = memory_metadata.get("source_session_id")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _agency_source_session_id(agency_metadata: Any) -> str | None:
+    if not isinstance(agency_metadata, dict):
+        return None
+    value = agency_metadata.get("source_session_id")
     return value if isinstance(value, str) and value.strip() else None
 
 
@@ -1290,7 +1325,8 @@ async def _publish_run_status_notification(
     if notification_hub is None:
         return
     memory_metadata = run_record.run_metadata.get("memory") if isinstance(run_record.run_metadata, dict) else None
-    source_session_id = _memory_source_session_id(memory_metadata)
+    agency_metadata = run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
+    source_session_id = _memory_source_session_id(memory_metadata) or _agency_source_session_id(agency_metadata)
     active_interactions = _active_interactions_from_run(run_record)
     session_status_reason = _session_status_reason_from_run(run_record, active_interactions=active_interactions)
     session_status_detail = _session_status_detail_from_run(run_record, active_interactions=active_interactions)

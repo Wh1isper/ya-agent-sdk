@@ -1,4 +1,9 @@
 import type {
+  AgencyGetResponse,
+  AgencySignalRequest,
+  AgencySignalResponse,
+  AgencyStateSummary,
+  AgencyUpdateRequest,
   BridgeConversationListResponse,
   BridgeEventListResponse,
   BridgeEventStatus,
@@ -208,6 +213,42 @@ export class ClawApiClient {
       method: 'POST',
       body: JSON.stringify(payload),
     })
+  }
+
+  getSessionAgency(sessionId: string) {
+    return this.request<AgencyGetResponse>(
+      `/api/v1/sessions/${sessionId}/agency`,
+    )
+  }
+
+  updateSessionAgency(sessionId: string, payload: AgencyUpdateRequest) {
+    return this.request<AgencyStateSummary>(
+      `/api/v1/sessions/${sessionId}/agency`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    )
+  }
+
+  signalSessionAgency(sessionId: string, payload: AgencySignalRequest) {
+    return this.request<AgencySignalResponse>(
+      `/api/v1/sessions/${sessionId}/agency:signal`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    )
+  }
+
+  compactSessionAgency(sessionId: string, payload: AgencySignalRequest) {
+    return this.request<AgencySignalResponse>(
+      `/api/v1/sessions/${sessionId}/agency:compact`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    )
   }
 
   getRun(runId: string) {

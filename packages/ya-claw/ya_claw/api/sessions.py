@@ -5,8 +5,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette.sse import EventSourceResponse
 
 from ya_claw.config import ClawSettings
+from ya_claw.controller.agency import AgencyController
 from ya_claw.controller.memory import MemoryController
 from ya_claw.controller.models import (
+    AgencyGetResponse,
+    AgencySignalRequest,
+    AgencySignalResponse,
+    AgencyStateSummary,
+    AgencyUpdateRequest,
     ControlResponse,
     DispatchMode,
     MemoryActionRequest,
@@ -32,6 +38,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 session_controller = SessionController()
 run_controller = RunController()
 memory_controller = MemoryController()
+agency_controller = AgencyController()
 
 
 @router.post("", response_model=SessionCreateResponse, status_code=201)
@@ -96,6 +103,83 @@ async def get_session(
             include_message=include_message,
             include_input_parts=include_input_parts,
         )
+
+
+@router.get("/{session_id}/agency", response_model=AgencyGetResponse)
+async def get_session_agency(request: Request, session_id: str) -> AgencyGetResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await agency_controller.get(db_session, settings, runtime_state, session_id)
+
+
+@router.patch("/{session_id}/agency", response_model=AgencyStateSummary)
+async def update_session_agency(
+    request: Request,
+    session_id: str,
+    payload: AgencyUpdateRequest,
+) -> AgencyStateSummary:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        state = await agency_controller.update(db_session, settings, runtime_state, session_id, payload)
+    await _get_notification_hub(request).publish(
+        "agency.state.updated",
+        state.model_dump(mode="json"),
+    )
+    return state
+
+
+@router.post("/{session_id}/agency:signal", response_model=AgencySignalResponse, status_code=202)
+async def signal_session_agency(
+    request: Request,
+    session_id: str,
+    payload: AgencySignalRequest,
+) -> AgencySignalResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        response = await agency_controller.signal(
+            db_session,
+            settings,
+            runtime_state,
+            session_id,
+            payload,
+            submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+        )
+    await _get_notification_hub(request).publish(
+        "agency.signal.updated",
+        response.model_dump(mode="json"),
+    )
+    return response
+
+
+@router.post("/{session_id}/agency:compact", response_model=AgencySignalResponse, status_code=202)
+async def compact_session_agency(
+    request: Request,
+    session_id: str,
+    payload: AgencySignalRequest,
+) -> AgencySignalResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        response = await agency_controller.compact(
+            db_session,
+            settings,
+            runtime_state,
+            session_id,
+            payload,
+            submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+        )
+    await _get_notification_hub(request).publish(
+        "agency.signal.updated",
+        response.model_dump(mode="json"),
+    )
+    return response
 
 
 @router.post("/{session_id}/memory:extract", response_model=MemoryActionResponse, status_code=202)
@@ -322,11 +406,12 @@ def _session_status_detail_from_run(run: RunDetail) -> dict[str, object]:
     return detail
 
 
-def _dispatch_run(request: Request, run_id: str, mode: DispatchMode, *, require_submission: bool) -> None:
+def _dispatch_run(request: Request, run_id: str, mode: DispatchMode, *, require_submission: bool) -> bool:
     dispatcher = RunDispatcher(_get_execution_supervisor(request))
     result = dispatcher.dispatch(run_id, mode)
     if require_submission and not result.submitted:
         raise HTTPException(status_code=503, detail="Execution supervisor is unavailable.")
+    return result.submitted
 
 
 def _get_settings(request: Request) -> ClawSettings:

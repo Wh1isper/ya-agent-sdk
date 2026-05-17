@@ -12,6 +12,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncEngine
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
+from ya_claw.agency.dispatcher import AgencyDispatcher
 from ya_claw.api.bridges import router as bridges_router
 from ya_claw.api.claw import router as claw_router
 from ya_claw.api.health import router as health_router
@@ -79,6 +80,7 @@ class ClawApplication:
         app.state.bridge_supervisor = None
         app.state.schedule_dispatcher = None
         app.state.heartbeat_dispatcher = None
+        app.state.agency_dispatcher = None
         app.state.session_prune_dispatcher = None
         app.state.docker_sandbox_ttl_dispatcher = None
         app.state.oauth_refresh_supervisor = None
@@ -207,6 +209,15 @@ class ClawApplication:
             )
             app.state.heartbeat_dispatcher = heartbeat_dispatcher
             await heartbeat_dispatcher.startup()
+            agency_dispatcher = AgencyDispatcher(
+                settings=self.settings,
+                session_factory=app.state.db_session_factory,
+                runtime_state=app.state.runtime_state,
+                run_dispatcher=RunDispatcher(supervisor),
+                notification_hub=app.state.notification_hub,
+            )
+            app.state.agency_dispatcher = agency_dispatcher
+            await agency_dispatcher.startup()
             session_prune_dispatcher = SessionPruneDispatcher(
                 settings=self.settings,
                 session_factory=app.state.db_session_factory,
@@ -252,6 +263,7 @@ class ClawApplication:
             bridge_supervisor = app.state.bridge_supervisor
             schedule_dispatcher = app.state.schedule_dispatcher
             heartbeat_dispatcher = app.state.heartbeat_dispatcher
+            agency_dispatcher = app.state.agency_dispatcher
             session_prune_dispatcher = app.state.session_prune_dispatcher
             docker_sandbox_ttl_dispatcher = app.state.docker_sandbox_ttl_dispatcher
             oauth_refresh_supervisor = app.state.oauth_refresh_supervisor
@@ -269,6 +281,7 @@ class ClawApplication:
             app.state.bridge_supervisor = None
             app.state.schedule_dispatcher = None
             app.state.heartbeat_dispatcher = None
+            app.state.agency_dispatcher = None
             app.state.session_prune_dispatcher = None
             app.state.docker_sandbox_ttl_dispatcher = None
             app.state.oauth_refresh_supervisor = None
@@ -281,6 +294,9 @@ class ClawApplication:
 
             if isinstance(session_prune_dispatcher, SessionPruneDispatcher):
                 await session_prune_dispatcher.shutdown()
+
+            if isinstance(agency_dispatcher, AgencyDispatcher):
+                await agency_dispatcher.shutdown()
 
             if isinstance(heartbeat_dispatcher, HeartbeatDispatcher):
                 await heartbeat_dispatcher.shutdown()

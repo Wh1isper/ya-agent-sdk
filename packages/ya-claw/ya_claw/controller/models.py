@@ -44,11 +44,32 @@ class TriggerType(StrEnum):
     SCHEDULE = "schedule"
     HEARTBEAT = "heartbeat"
     MEMORY = "memory"
+    AGENCY = "agency"
 
 
 class SessionType(StrEnum):
     CONVERSATION = "conversation"
     MEMORY = "memory"
+    AGENCY = "agency"
+
+
+class AgencySignalReason(StrEnum):
+    MANUAL = "manual"
+    INACTIVITY = "inactivity"
+    MEMORY_COMMITTED = "memory_committed"
+    OPEN_INTENTION_DUE = "open_intention_due"
+    FAILED_RUN_FOLLOWUP = "failed_run_followup"
+    SCHEDULE = "schedule"
+    COMPACT = "compact"
+
+
+class AgencySignalStatus(StrEnum):
+    PENDING = "pending"
+    STEERED = "steered"
+    SUBMITTED = "submitted"
+    CONSUMED = "consumed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 class MemoryJobKind(StrEnum):
@@ -266,6 +287,83 @@ class SessionTurnsResponse(BaseModel):
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
+class AgencyBudget(BaseModel):
+    max_actions: int = 5
+    max_tool_calls: int = 80
+    max_runtime_seconds: int = 900
+    max_workspace_writes: int = 10
+    external_actions: Literal["deny", "allow"] = "allow"
+
+
+class AgencyRiskPolicy(BaseModel):
+    max_auto_action_risk: Literal["low", "medium", "high", "extra_high"] = "low"
+    approval_required_for: list[str] = Field(
+        default_factory=lambda: ["external_send", "delete", "deploy", "secret_access", "payment"]
+    )
+
+
+class AgencyStateSummary(BaseModel):
+    source_session_id: str
+    agency_session_id: str | None = None
+    enabled: bool = False
+    last_observed_sequence_no: int = 0
+    episode_count: int = 0
+    pending_signal_count: int = 0
+    last_agency_run_id: str | None = None
+    last_agency_reason: str | None = None
+    last_action_at: datetime | None = None
+    cooldown_until: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AgencySignalSummary(BaseModel):
+    id: str
+    source_session_id: str
+    agency_session_id: str | None = None
+    reason: AgencySignalReason | str
+    status: AgencySignalStatus | str
+    priority: int = 100
+    dedupe_key: str
+    source_run_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    consumed_at: datetime | None = None
+    run_id: str | None = None
+
+
+class AgencyGetResponse(BaseModel):
+    state: AgencyStateSummary
+    signals: list[AgencySignalSummary] = Field(default_factory=list)
+    agency_session: SessionSummary | None = None
+
+
+class AgencyUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class AgencySignalRequest(BaseModel):
+    reason: AgencySignalReason = AgencySignalReason.MANUAL
+    client_token: str | None = None
+    prompt_override: str | None = None
+    budget: AgencyBudget | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    source_run_ids: list[str] = Field(default_factory=list)
+
+
+class AgencySignalResponse(BaseModel):
+    accepted: bool = True
+    source_session_id: str
+    agency_session_id: str
+    signal: AgencySignalSummary
+    run_id: str | None = None
+    active_run_id: str | None = None
+    delivery: Literal["steered", "submitted", "pending", "duplicate"]
+    state: AgencyStateSummary
+
+
 class RunTraceItem(BaseModel):
     sequence_no: int
     type: Literal["tool_call", "tool_response"]
@@ -305,6 +403,7 @@ class SessionSummary(BaseModel):
     active_run_id: str | None = None
     latest_run: RunSummary | None = None
     memory_state: MemoryStateSummary | None = None
+    agency_state: AgencyStateSummary | None = None
     workspace_state: SessionWorkspaceState | None = None
 
 
@@ -635,6 +734,41 @@ def memory_state_summary_from_record(record: Any) -> MemoryStateSummary:
     )
 
 
+def agency_state_summary_from_record(record: Any) -> AgencyStateSummary:
+    return AgencyStateSummary(
+        source_session_id=record.source_session_id,
+        agency_session_id=record.agency_session_id,
+        enabled=bool(record.enabled),
+        last_observed_sequence_no=record.last_observed_sequence_no,
+        episode_count=record.episode_count,
+        pending_signal_count=record.pending_signal_count,
+        last_agency_run_id=record.last_agency_run_id,
+        last_agency_reason=record.last_agency_reason,
+        last_action_at=record.last_action_at,
+        cooldown_until=record.cooldown_until,
+        metadata=public_metadata(dict(record.agency_metadata or {})),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def agency_signal_summary_from_record(record: Any) -> AgencySignalSummary:
+    return AgencySignalSummary(
+        id=record.id,
+        source_session_id=record.source_session_id,
+        agency_session_id=record.agency_session_id,
+        reason=record.reason,
+        status=record.status,
+        priority=record.priority,
+        dedupe_key=record.dedupe_key,
+        source_run_ids=[item for item in list(record.source_run_ids or []) if isinstance(item, str)],
+        metadata=public_metadata(dict(record.signal_metadata or {})),
+        created_at=record.created_at,
+        consumed_at=record.consumed_at,
+        run_id=record.run_id,
+    )
+
+
 def public_memory_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     pending_value = metadata.get("pending_requests")
     if not isinstance(pending_value, list):
@@ -665,6 +799,7 @@ def session_summary_from_record(
     run_count: int,
     latest_run: RunSummary | None,
     memory_state: MemoryStateSummary | None = None,
+    agency_state: AgencyStateSummary | None = None,
     active_interactions: list[dict[str, Any]] | None = None,
     workspace_state: SessionWorkspaceState | None = None,
 ) -> SessionSummary:
@@ -686,6 +821,7 @@ def session_summary_from_record(
         active_run_id=record.active_run_id,
         latest_run=latest_run,
         memory_state=memory_state,
+        agency_state=agency_state,
         workspace_state=workspace_state
         if workspace_state is not None
         else build_session_workspace_state(record.session_metadata),

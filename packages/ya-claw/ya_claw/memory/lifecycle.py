@@ -22,7 +22,13 @@ MEMORY_CONTEXT_TAG = "memory-context"
 MEMORY_MD_CONTEXT_TAG = "memory-md-context"
 MEMORY_FILE_INDEX_TAG = "memory-file-index"
 AUTO_TASK_CONTEXT_TAGS = ("heartbeat-guidance", "schedule-context", "heartbeat-context")
-_MEMORY_EXCLUDED_TRIGGER_TYPES = {TriggerType.HEARTBEAT.value, TriggerType.SCHEDULE.value, TriggerType.MEMORY.value}
+AGENCY_CONTEXT_TAGS = ("agency-context", "agency-index-context", "agency-action-log-context", "agency-file-index")
+_MEMORY_EXCLUDED_TRIGGER_TYPES = {
+    TriggerType.HEARTBEAT.value,
+    TriggerType.SCHEDULE.value,
+    TriggerType.MEMORY.value,
+    TriggerType.AGENCY.value,
+}
 _MEMORY_TRIGGER_KEY = "memory_triggers"
 _PENDING_MEMORY_REQUESTS_KEY = "pending_requests"
 
@@ -75,6 +81,15 @@ class ClawMemoryExtension(BaseLifecycleExtension[Any, Any]):
             missing_auto_tags = [tag for tag in AUTO_TASK_CONTEXT_TAGS if tag not in existing_tags]
             if missing_auto_tags:
                 runtime_ctx.injected_context_tags = (*existing_tags, *missing_auto_tags)
+            return
+        if source_kind == TriggerType.AGENCY.value:
+            missing_agency_tags = [
+                tag
+                for tag in (*AGENCY_CONTEXT_TAGS, MEMORY_MD_CONTEXT_TAG, MEMORY_FILE_INDEX_TAG)
+                if tag not in existing_tags
+            ]
+            if missing_agency_tags:
+                runtime_ctx.injected_context_tags = (*existing_tags, *missing_agency_tags)
             return
         if not self._settings.memory_enabled or not self._settings.memory_inject_enabled:
             return

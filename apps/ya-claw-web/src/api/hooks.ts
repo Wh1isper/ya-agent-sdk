@@ -10,6 +10,8 @@ import { toast } from 'sonner'
 
 import { useConnectionStore } from '../stores/connectionStore'
 import type {
+  AgencySignalRequest,
+  AgencyUpdateRequest,
   BridgeEventStatus,
   InputPart,
   ProfileUpsertRequest,
@@ -181,6 +183,66 @@ export function useSessionHistoryQuery(
     placeholderData: keepPreviousData,
     staleTime: 5_000,
   })
+}
+
+export function useSessionAgencyQuery(sessionId: string | null) {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: sessionId
+      ? queryKeys.sessionAgency(sessionId)
+      : ['session-agency', 'none'],
+    queryFn: () => api.getSessionAgency(sessionId ?? ''),
+    enabled: Boolean(sessionId),
+    placeholderData: keepPreviousData,
+    refetchInterval: 5_000,
+    staleTime: 2_000,
+  })
+}
+
+export function useAgencyMutations(sessionId: string | null) {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+      sessionId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.session(sessionId),
+          })
+        : Promise.resolve(),
+      sessionId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.sessionAgency(sessionId),
+          })
+        : Promise.resolve(),
+    ])
+  }
+  return {
+    update: useMutation({
+      mutationFn: (payload: AgencyUpdateRequest) =>
+        api.updateSessionAgency(sessionId ?? '', payload),
+      onSuccess: async () => {
+        toast.success('Saved agency settings')
+        await refresh()
+      },
+    }),
+    signal: useMutation({
+      mutationFn: (payload: AgencySignalRequest) =>
+        api.signalSessionAgency(sessionId ?? '', payload),
+      onSuccess: async (response) => {
+        toast.success(`Agency signal ${response.delivery}`)
+        await refresh()
+      },
+    }),
+    compact: useMutation({
+      mutationFn: (payload: AgencySignalRequest) =>
+        api.compactSessionAgency(sessionId ?? '', payload),
+      onSuccess: async (response) => {
+        toast.success(`Agency compaction ${response.delivery}`)
+        await refresh()
+      },
+    }),
+  }
 }
 
 export function useRunQuery(runId: string | null) {

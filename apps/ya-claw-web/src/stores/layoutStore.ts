@@ -14,6 +14,7 @@ export type AppRoute =
   | 'overview'
   | 'chat'
   | 'debug'
+  | 'agency'
   | 'schedules'
   | 'bridges'
   | 'heartbeat'
@@ -28,6 +29,7 @@ export type LayoutState = {
   selectedChatRunId: string | null
   selectedDebugSessionId: string | null
   selectedDebugRunId: string | null
+  selectedAgencySessionId: string | null
   selectedProfileName: string | null
   inspectorTab: string
   setRoute: (route: AppRoute) => void
@@ -62,6 +64,10 @@ export const useLayoutStore = create<LayoutState>()(
         initialUrlSelection.route === 'debug'
           ? initialUrlSelection.selectedRunId
           : null,
+      selectedAgencySessionId:
+        initialUrlSelection.route === 'agency'
+          ? initialUrlSelection.selectedSessionId
+          : null,
       selectedProfileName: initialUrlSelection.selectedProfileName,
       inspectorTab: 'summary',
       setRoute: (route) => {
@@ -71,7 +77,9 @@ export const useLayoutStore = create<LayoutState>()(
             ? state.selectedChatSessionId
             : route === 'debug'
               ? state.selectedDebugSessionId
-              : null
+              : route === 'agency'
+                ? state.selectedAgencySessionId
+                : null
         const selectedRunId =
           route === 'chat'
             ? state.selectedChatRunId
@@ -81,11 +89,27 @@ export const useLayoutStore = create<LayoutState>()(
         pushBrowserPath(
           route === 'chat' || route === 'debug'
             ? buildChatPath(selectedSessionId, selectedRunId, route)
-            : buildRoutePath(route),
+            : route === 'agency' && selectedSessionId
+              ? `/agency/sessions/${encodeURIComponent(selectedSessionId)}`
+              : buildRoutePath(route),
         )
         set({ route, selectedSessionId, selectedRunId })
       },
       selectSession: (selectedSessionId) => {
+        if (get().route === 'agency') {
+          pushBrowserPath(
+            selectedSessionId
+              ? `/agency/sessions/${encodeURIComponent(selectedSessionId)}`
+              : '/agency',
+          )
+          set({
+            selectedSessionId,
+            selectedRunId: null,
+            selectedAgencySessionId: selectedSessionId,
+            route: 'agency',
+          })
+          return
+        }
         const route = get().route === 'debug' ? 'debug' : 'chat'
         pushBrowserPath(buildChatPath(selectedSessionId, null, route))
         set((state) => {
@@ -142,6 +166,10 @@ export const useLayoutStore = create<LayoutState>()(
             next.route === 'debug'
               ? next.selectedRunId
               : get().selectedDebugRunId,
+          selectedAgencySessionId:
+            next.route === 'agency'
+              ? next.selectedSessionId
+              : get().selectedAgencySessionId,
         })
         replaceBrowserPath(
           next.route === 'chat' || next.route === 'debug'
@@ -150,9 +178,11 @@ export const useLayoutStore = create<LayoutState>()(
                 next.selectedRunId,
                 next.route,
               )
-            : next.route === 'profiles'
-              ? buildProfilePath(next.selectedProfileName)
-              : buildRoutePath(next.route),
+            : next.route === 'agency' && next.selectedSessionId
+              ? `/agency/sessions/${encodeURIComponent(next.selectedSessionId)}`
+              : next.route === 'profiles'
+                ? buildProfilePath(next.selectedProfileName)
+                : buildRoutePath(next.route),
         )
       },
     }),

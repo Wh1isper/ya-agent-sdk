@@ -11,6 +11,7 @@ export const queryKeys = {
     ['bridge-events', conversationId ?? 'all', status ?? 'all'] as const,
   sessions: ['sessions'] as const,
   session: (sessionId: string) => ['session', sessionId] as const,
+  sessionAgency: (sessionId: string) => ['session-agency', sessionId] as const,
   sessionHistoryBase: (sessionId: string) =>
     ['session-history', sessionId] as const,
   sessionHistory: (sessionId: string, runsLimit: number) =>

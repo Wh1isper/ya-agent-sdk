@@ -13,6 +13,9 @@ from ya_claw.workspace import WorkspaceBinding
 MEMORY_DIRNAME = "memory"
 MEMORY_INDEX_FILENAME = "MEMORY.md"
 MEMORY_CHANGELOG_FILENAME = "CHANGELOG.md"
+AGENCY_INDEX_FILENAME = "AGENCY.md"
+AGENCY_DIRNAME = "agency"
+AGENCY_ACTION_LOG_FILENAME = "ACTION_LOG.md"
 MAX_MEMORY_FILE_BYTES = 1_000_000
 MAX_MEMORY_FRONTMATTER_CHARS = 32_000
 
@@ -50,16 +53,45 @@ class WorkspaceMemoryStore:
     def changelog_path(self) -> Path:
         return self.root / MEMORY_CHANGELOG_FILENAME
 
+    @property
+    def agency_md_path(self) -> Path:
+        return self.root / AGENCY_INDEX_FILENAME
+
+    @property
+    def agency_dir_path(self) -> Path:
+        return self.root / AGENCY_DIRNAME
+
+    @property
+    def agency_action_log_path(self) -> Path:
+        return self.agency_dir_path / AGENCY_ACTION_LOG_FILENAME
+
     def ensure(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         _ensure_regular_memory_file(self.root, self.memory_md_path, "# Memory\n\n")
         _ensure_regular_memory_file(self.root, self.changelog_path, "# Memory Changelog\n\n")
+
+    def ensure_agency(self) -> None:
+        self.ensure()
+        self.agency_dir_path.mkdir(parents=True, exist_ok=True)
+        (self.agency_dir_path / "episodes").mkdir(parents=True, exist_ok=True)
+        (self.agency_dir_path / "intentions").mkdir(parents=True, exist_ok=True)
+        (self.agency_dir_path / "archive").mkdir(parents=True, exist_ok=True)
+        _ensure_regular_memory_file(
+            self.root, self.agency_md_path, "# Agency\n\n## Active Intentions\n\n## Watchlist\n\n## Deferred Ideas\n\n"
+        )
+        _ensure_regular_memory_file(self.root, self.agency_action_log_path, "# Agency Action Log\n\n")
 
     def read_memory_md(self) -> str | None:
         return _read_memory_file(self.root, self.memory_md_path)
 
     def read_changelog(self) -> str | None:
         return _read_memory_file(self.root, self.changelog_path)
+
+    def read_agency_md(self) -> str | None:
+        return _read_memory_file(self.root, self.agency_md_path)
+
+    def read_agency_action_log(self) -> str | None:
+        return _read_memory_file(self.root, self.agency_action_log_path)
 
     def list_files(self, *, include_content: bool = False, limit: int = 50) -> list[MemoryFile]:
         if not self.root.exists():
@@ -140,6 +172,36 @@ class WorkspaceMemoryStore:
             parts.append(f"<memory-file {' '.join(attrs)} />")
         parts.append("</memory-file-index>")
         return "\n".join(parts)
+
+    def build_agency_index_context(self, *, max_chars: int) -> str | None:
+        agency_md = self.read_agency_md()
+        if not agency_md or not agency_md.strip():
+            return None
+        payload = {
+            "path": str(self.virtual_root / AGENCY_INDEX_FILENAME),
+            "untrusted": True,
+            "content": _truncate(agency_md.strip(), max_chars),
+        }
+        return "\n".join([
+            f'<agency-index-context path="{_xml_escape(str(self.virtual_root / AGENCY_INDEX_FILENAME))}">',
+            _json_for_xml_text(payload),
+            "</agency-index-context>",
+        ])
+
+    def build_agency_action_log_context(self, *, max_chars: int) -> str | None:
+        action_log = self.read_agency_action_log()
+        if not action_log or not action_log.strip():
+            return None
+        payload = {
+            "path": str(self.virtual_root / AGENCY_DIRNAME / AGENCY_ACTION_LOG_FILENAME),
+            "untrusted": True,
+            "content": _truncate(action_log.strip(), max_chars),
+        }
+        return "\n".join([
+            f'<agency-action-log-context path="{_xml_escape(str(self.virtual_root / AGENCY_DIRNAME / AGENCY_ACTION_LOG_FILENAME))}">',
+            _json_for_xml_text(payload),
+            "</agency-action-log-context>",
+        ])
 
 
 def _ensure_regular_memory_file(root: Path, path: Path, default_content: str) -> None:

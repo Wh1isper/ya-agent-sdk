@@ -4,6 +4,7 @@ const routePaths: Record<AppRoute, string> = {
   overview: '/',
   chat: '/chat',
   debug: '/debug',
+  agency: '/agency',
   schedules: '/schedules',
   bridges: '/bridges',
   heartbeat: '/heartbeat',
@@ -28,6 +29,15 @@ export function parseUrlSelection(
       selectedSessionId:
         segments[1] === 'sessions' ? (segments[2] ?? null) : null,
       selectedRunId: segments[3] === 'runs' ? (segments[4] ?? null) : null,
+      selectedProfileName: null,
+    }
+  }
+  if (segments[0] === 'agency') {
+    return {
+      route: 'agency',
+      selectedSessionId:
+        segments[1] === 'sessions' ? (segments[2] ?? null) : null,
+      selectedRunId: null,
       selectedProfileName: null,
     }
   }
@@ -82,6 +92,7 @@ export function pushBrowserPath(path: string) {
 
 function routeFromSegment(segment: string | undefined): AppRoute {
   if (segment === 'debug') return 'debug'
+  if (segment === 'agency') return 'agency'
   if (segment === 'schedules') return 'schedules'
   if (segment === 'bridges') return 'bridges'
   if (segment === 'heartbeat') return 'heartbeat'

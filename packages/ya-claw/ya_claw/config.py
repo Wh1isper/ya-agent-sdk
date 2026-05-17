@@ -169,6 +169,20 @@ class ClawSettings(BaseSettings):
     heartbeat_prompt: str = "Run heartbeat according to HEARTBEAT.md."
     heartbeat_on_active: Literal["skip", "queue"] = "skip"
     unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = None
+    agency_enabled: bool = True
+    agency_idle_after_seconds: int = 600
+    agency_cooldown_seconds: int = 1800
+    agency_profile: str | None = None
+    agency_tick_seconds: int = 30
+    agency_max_signals_per_tick: int = 20
+    agency_max_sessions_per_tick: int = 10
+    agency_memory_capture_enabled: bool = True
+    agency_context_max_chars: int = 8000
+    agency_recent_files_limit: int = 5
+    agency_index_target_chars: int = 16_000
+    agency_index_max_chars: int = 32_000
+    agency_action_log_recent_chars: int = 32_000
+    agency_unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = "extra_high"
     memory_enabled: bool = True
     memory_extract_every_turns: int = 5
     memory_summary_every_extracts: int = 4
@@ -322,6 +336,12 @@ class ClawSettings(BaseSettings):
     def resolved_heartbeat_profile(self) -> str:
         if isinstance(self.heartbeat_profile, str) and self.heartbeat_profile.strip() != "":
             return self.heartbeat_profile.strip()
+        return self.default_profile
+
+    @property
+    def resolved_agency_profile(self) -> str:
+        if isinstance(self.agency_profile, str) and self.agency_profile.strip() != "":
+            return self.agency_profile.strip()
         return self.default_profile
 
     @property

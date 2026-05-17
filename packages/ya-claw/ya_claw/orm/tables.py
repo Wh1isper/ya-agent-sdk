@@ -20,8 +20,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ya_claw.orm.base import Base
 
 _ALLOWED_RUN_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
-_ALLOWED_SESSION_TYPES = ("conversation", "memory")
+_ALLOWED_SESSION_TYPES = ("conversation", "memory", "agency")
 _ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", "deferred", "duplicate", "failed")
+_ALLOWED_AGENCY_SIGNAL_STATUSES = ("pending", "steered", "submitted", "consumed", "skipped", "failed")
 _ALLOWED_HITL_BATCH_STATUSES = ("pending", "completed", "cancelled")
 _ALLOWED_HITL_INTERACTION_STATUSES = ("pending", "approved", "denied")
 _ALLOWED_HITL_DEFERRED_INPUT_STATUSES = ("pending", "consumed", "discarded")
@@ -150,6 +151,54 @@ class SessionMemoryStateRecord(Base):
     memory_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class SessionAgencyStateRecord(Base):
+    __tablename__ = "session_agency_states"
+
+    source_session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agency_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_observed_sequence_no: Mapped[int] = mapped_column(Integer, default=0)
+    episode_count: Mapped[int] = mapped_column(Integer, default=0)
+    pending_signal_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_agency_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_agency_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    agency_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class AgencySignalRecord(Base):
+    __tablename__ = "agency_signals"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_AGENCY_SIGNAL_STATUSES!s}",
+            name="ck_agency_signals_status",
+        ),
+        UniqueConstraint("source_session_id", "dedupe_key", name="uq_agency_signals_source_dedupe"),
+        Index("ix_agency_signals_status_created", "status", "created_at"),
+        Index("ix_agency_signals_source_status", "source_session_id", "status"),
+        Index("ix_agency_signals_run", "run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    source_session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    agency_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_run_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    signal_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class ScheduleRecord(Base):

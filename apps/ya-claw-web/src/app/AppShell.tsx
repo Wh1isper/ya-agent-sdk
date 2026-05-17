@@ -1,5 +1,6 @@
 import {
   Bot,
+  BrainCircuit,
   Bug,
   CalendarClock,
   Circle,
@@ -21,6 +22,11 @@ import { cn } from '../lib/utils'
 import { useConnectionStore } from '../stores/connectionStore'
 import { type AppRoute, useLayoutStore } from '../stores/layoutStore'
 
+const AgencyPage = lazy(() =>
+  import('../features/agency/AgencyPage').then((module) => ({
+    default: module.AgencyPage,
+  })),
+)
 const BridgesPage = lazy(() =>
   import('../features/bridges/BridgesPage').then((module) => ({
     default: module.BridgesPage,
@@ -75,6 +81,12 @@ const navItems: Array<{
     icon: Home,
   },
   { route: 'chat', label: 'Chat', helper: 'Web conversations', icon: Bot },
+  {
+    route: 'agency',
+    label: 'Agency',
+    helper: 'Session agency',
+    icon: BrainCircuit,
+  },
   { route: 'debug', label: 'Debug', helper: 'Sessions and runs', icon: Bug },
   {
     route: 'schedules',
@@ -111,6 +123,7 @@ const navItems: Array<{
 const routeCopy: Record<AppRoute, { eyebrow: string; title: string }> = {
   overview: { eyebrow: 'Runtime', title: 'Overview' },
   chat: { eyebrow: 'Web', title: 'Chat' },
+  agency: { eyebrow: 'Automation', title: 'Agency Sessions' },
   debug: { eyebrow: 'AGUI', title: 'Debug Runtime' },
   schedules: { eyebrow: 'Automation', title: 'Schedules' },
   bridges: { eyebrow: 'Integrations', title: 'Bridges' },
@@ -224,7 +237,7 @@ export function AppShell() {
         <main
           className={cn(
             'min-h-0 flex-1 overflow-hidden pb-16 lg:pb-0',
-            route === 'chat' || route === 'debug'
+            route === 'chat' || route === 'debug' || route === 'agency'
               ? 'overflow-hidden'
               : 'overflow-auto overscroll-contain',
           )}
@@ -330,6 +343,7 @@ function MobileNav({
 function renderRoute(route: AppRoute) {
   if (route === 'overview') return <OverviewPage />
   if (route === 'chat') return <ChatPage />
+  if (route === 'agency') return <AgencyPage />
   if (route === 'debug') return <DebugPage />
   if (route === 'schedules') return <SchedulesPage />
   if (route === 'bridges') return <BridgesPage />

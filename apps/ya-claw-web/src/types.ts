@@ -480,11 +480,88 @@ export type MemoryStateSummary = {
   updated_at?: string | null
 }
 
+export type AgencyBudget = {
+  max_actions: number
+  max_tool_calls: number
+  max_runtime_seconds: number
+  max_workspace_writes: number
+  external_actions: 'deny' | 'allow'
+}
+
+export type AgencyStateSummary = {
+  source_session_id: string
+  agency_session_id?: string | null
+  enabled: boolean
+  last_observed_sequence_no: number
+  episode_count: number
+  pending_signal_count: number
+  last_agency_run_id?: string | null
+  last_agency_reason?: string | null
+  last_action_at?: string | null
+  cooldown_until?: string | null
+  metadata: Record<string, unknown>
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type AgencySignalSummary = {
+  id: string
+  source_session_id: string
+  agency_session_id?: string | null
+  reason: string
+  status:
+    | 'pending'
+    | 'steered'
+    | 'submitted'
+    | 'consumed'
+    | 'skipped'
+    | 'failed'
+    | string
+  priority: number
+  dedupe_key: string
+  source_run_ids: string[]
+  metadata: Record<string, unknown>
+  created_at: string
+  consumed_at?: string | null
+  run_id?: string | null
+}
+
+export type AgencyGetResponse = {
+  state: AgencyStateSummary
+  signals: AgencySignalSummary[]
+  agency_session?: SessionSummary | null
+}
+
+export type AgencyUpdateRequest = {
+  enabled?: boolean | null
+  metadata?: Record<string, unknown> | null
+}
+
+export type AgencySignalRequest = {
+  reason?: string
+  client_token?: string | null
+  prompt_override?: string | null
+  budget?: AgencyBudget | null
+  metadata?: Record<string, unknown>
+  source_run_ids?: string[]
+}
+
+export type AgencySignalResponse = {
+  accepted: boolean
+  source_session_id: string
+  agency_session_id: string
+  signal: AgencySignalSummary
+  run_id?: string | null
+  active_run_id?: string | null
+  delivery: 'steered' | 'submitted' | 'pending' | 'duplicate'
+  state: AgencyStateSummary
+}
+
 export type SessionSummary = {
   id: string
   parent_session_id?: string | null
   profile_name?: string | null
-  session_type: 'conversation' | 'memory'
+  session_type: 'conversation' | 'memory' | 'agency'
   source_session_id?: string | null
   metadata: Record<string, unknown>
   created_at: string
@@ -498,6 +575,7 @@ export type SessionSummary = {
   active_run_id?: string | null
   latest_run?: RunSummary | null
   memory_state?: MemoryStateSummary | null
+  agency_state?: AgencyStateSummary | null
   workspace_state?: SessionWorkspaceState | null
 }
 

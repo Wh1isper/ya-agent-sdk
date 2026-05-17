@@ -201,6 +201,7 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
     assert payload["session"]["memory_state"] is None
     assert sorted(payload["session"]) == snapshot([
         "active_run_id",
+        "agency_state",
         "created_at",
         "head_run_id",
         "head_success_run_id",
@@ -555,7 +556,9 @@ def test_session_turns_return_completed_runs_with_raw_input_and_output() -> None
     assert page_2_cursor_payload["turns"][0]["output_text"] == "answer-1"
 
 
-def test_list_sessions_hides_memory_sessions_by_default() -> None:
+def test_list_sessions_hides_memory_sessions_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
+    get_settings.cache_clear()
     _create_schema()
 
     settings = get_settings()
@@ -599,6 +602,44 @@ def test_list_sessions_hides_memory_sessions_by_default() -> None:
     assert default_payload[0]["memory_state"]["turns_since_extract"] == 1
     assert internal_response.status_code == 200
     assert {session["id"] for session in internal_response.json()} == {"source-session", "memory-session"}
+
+
+def test_list_sessions_include_internal_exposes_agency_session() -> None:
+    _create_schema()
+
+    settings = get_settings()
+
+    async def _run() -> None:
+        engine = create_engine(settings.resolved_database_url)
+        session_factory = create_session_factory(engine)
+        try:
+            async with session_factory() as db_session:
+                source_session = SessionRecord(id="source-session", profile_name="general", session_metadata={})
+                agency_session = SessionRecord(
+                    id="agency-session",
+                    parent_session_id="source-session",
+                    profile_name="general",
+                    session_type="agency",
+                    source_session_id="source-session",
+                    session_metadata={"agency": {"source_session_id": "source-session"}},
+                )
+                db_session.add_all([source_session, agency_session])
+                await db_session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.agency_dispatcher = None
+        default_response = client.get("/api/v1/sessions", headers=_auth_headers())
+        internal_response = client.get("/api/v1/sessions?include_internal=true", headers=_auth_headers())
+
+    assert default_response.status_code == 200
+    assert [session["id"] for session in default_response.json()] == ["source-session"]
+    assert internal_response.status_code == 200
+    assert {session["id"] for session in internal_response.json()} == {"source-session", "agency-session"}
 
 
 def test_memory_api_enqueues_jobs_exposes_state_and_uses_filetree_for_reads(monkeypatch: pytest.MonkeyPatch) -> None:

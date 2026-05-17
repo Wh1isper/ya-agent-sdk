@@ -25,6 +25,7 @@ from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillTo
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
+from ya_claw.agency.prompt import AGENCY_SYSTEM_PROMPT
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext, ClawWorkspaceBindingSnapshot
 from ya_claw.execution.profile import ResolvedProfile
@@ -32,6 +33,7 @@ from ya_claw.mcp import build_profile_mcp_config
 from ya_claw.memory.lifecycle import ClawMemoryExtension
 from ya_claw.memory.prompts import MEMORY_EXTRACT_SYSTEM_PROMPT, MEMORY_SUMMARY_SYSTEM_PROMPT
 from ya_claw.memory.store import WorkspaceMemoryStore
+from ya_claw.toolsets.agency import GetSourceRunTraceTool, ListAgencyRunsTool, ListSourceSessionTurnsTool
 from ya_claw.toolsets.background import SpawnDelegateTool, SteerSubagentTool
 from ya_claw.toolsets.schedule import (
     CreateOnceScheduleTool,
@@ -69,6 +71,7 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
     "document": list(document_tools),
     "background": [SpawnDelegateTool, SteerSubagentTool],
     "session": [ListSessionTurnsTool, GetRunTraceTool],
+    "agency": [ListSourceSessionTurnsTool, GetSourceRunTraceTool, ListAgencyRunsTool],
     "schedule": [
         ListSchedulesTool,
         CreateScheduleTool,
@@ -79,9 +82,9 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
     ],
 }
 _BUILTIN_TOOLSET_ALIASES: dict[str, list[str]] = {
-    "core": ["filesystem", "shell", "background", "session", "schedule"],
+    "core": ["filesystem", "shell", "background", "session", "schedule", "agency"],
 }
-_UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "heartbeat"})
+_UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "heartbeat", "agency"})
 
 
 class ClawRuntimeBuilder:
@@ -178,6 +181,8 @@ class ClawRuntimeBuilder:
             return ShellReviewRiskLevel.HIGH
         if review.unattended_risk_threshold is not None:
             return review.unattended_risk_threshold
+        if source_kind == "agency" and self._settings.agency_unattended_shell_review_risk_threshold is not None:
+            return ShellReviewRiskLevel(self._settings.agency_unattended_shell_review_risk_threshold)
         if self._settings.unattended_shell_review_risk_threshold is not None:
             return ShellReviewRiskLevel(self._settings.unattended_shell_review_risk_threshold)
         return review.risk_threshold
@@ -257,6 +262,9 @@ class ClawRuntimeBuilder:
         if source_kind == "memory":
             WorkspaceMemoryStore(binding).ensure()
             return self._build_memory_system_prompt(profile=profile, source_metadata=source_metadata)
+        if source_kind == "agency":
+            WorkspaceMemoryStore(binding).ensure_agency()
+            return self._build_agency_system_prompt(profile=profile, binding=binding, source_metadata=source_metadata)
         prompt_lines = [profile.system_prompt or _DEFAULT_SYSTEM_PROMPT]
         prompt_lines.append("Workspace mounts:")
         for mount in binding.mounts:
@@ -315,6 +323,65 @@ class ClawRuntimeBuilder:
             f"Execution mode: {execution_mode}",
             "This is an automated scheduled run. Complete the scheduled task without updating conversation memory.",
             "</schedule-context>",
+        ])
+
+    def _build_agency_system_prompt(
+        self,
+        *,
+        profile: ResolvedProfile,
+        binding: WorkspaceBinding,
+        source_metadata: dict[str, Any] | None,
+    ) -> str:
+        memory_store = WorkspaceMemoryStore(binding)
+        prompt_lines = [AGENCY_SYSTEM_PROMPT]
+        prompt_lines.append("Workspace mounts:")
+        for mount in binding.mounts:
+            access = "writable" if mount.mode == "rw" else "read-only"
+            name = f" ({mount.name})" if mount.name else ""
+            prompt_lines.append(f"- {mount.id}{name}: {mount.virtual_path}, {access}")
+        prompt_lines.append(f"Workspace virtual root: {binding.virtual_path}")
+        prompt_lines.append(f"Default working directory: {binding.cwd}")
+        prompt_lines.append(f"Readable paths: {', '.join(str(path) for path in binding.readable_paths)}")
+        prompt_lines.append(f"Writable paths: {', '.join(str(path) for path in binding.writable_paths)}")
+        guidance = load_workspace_guidance(binding)
+        if guidance is not None:
+            prompt_lines.append(format_workspace_guidance(guidance))
+        prompt_lines.append(self._build_agency_context(source_metadata))
+        memory_block = memory_store.build_memory_md_context(summary_max_chars=self._settings.memory_context_max_chars)
+        if memory_block is not None:
+            prompt_lines.append(memory_block)
+        file_index = memory_store.build_memory_file_index_context()
+        if file_index is not None:
+            prompt_lines.append(file_index)
+        agency_index = memory_store.build_agency_index_context(max_chars=self._settings.agency_context_max_chars)
+        if agency_index is not None:
+            prompt_lines.append(agency_index)
+        action_log = memory_store.build_agency_action_log_context(
+            max_chars=self._settings.agency_action_log_recent_chars
+        )
+        if action_log is not None:
+            prompt_lines.append(action_log)
+        prompt_lines.append(f"Profile: {profile.name}")
+        return "\n".join(prompt_lines)
+
+    def _build_agency_context(self, source_metadata: dict[str, Any] | None) -> str:
+        metadata = dict(source_metadata or {})
+        agency = metadata.get("agency") if isinstance(metadata.get("agency"), dict) else {}
+        signal_ids = agency.get("signal_ids") if isinstance(agency, dict) else []
+        reasons = agency.get("reasons") if isinstance(agency, dict) else []
+        budget = agency.get("budget") if isinstance(agency, dict) else {}
+        return "\n".join([
+            '<agency-context source="agency">',
+            f"Episode ID: {agency.get('episode_id') if isinstance(agency, dict) else ''}",
+            f"Source session ID: {agency.get('source_session_id') if isinstance(agency, dict) else ''}",
+            f"Signal IDs: {','.join(str(item) for item in signal_ids) if isinstance(signal_ids, list) else ''}",
+            f"Reasons: {','.join(str(item) for item in reasons) if isinstance(reasons, list) else ''}",
+            f"Last observed sequence no: {agency.get('last_observed_sequence_no') if isinstance(agency, dict) else ''}",
+            f"Current sequence no: {agency.get('current_sequence_no') if isinstance(agency, dict) else ''}",
+            "Budget:",
+            json.dumps(budget if isinstance(budget, dict) else {}, ensure_ascii=False, sort_keys=True),
+            "This is an automated agency run. Operate within budget and leave auditable workspace artifacts.",
+            "</agency-context>",
         ])
 
     def _build_memory_system_prompt(

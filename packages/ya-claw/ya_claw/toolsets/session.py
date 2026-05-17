@@ -63,6 +63,36 @@ class ClawSelfClient:
     def get_toolsets(self) -> list[Any]:
         return []
 
+    async def list_source_session_turns(
+        self,
+        *,
+        limit: int,
+        before_sequence_no: int | None,
+        cursor: str | None,
+    ) -> dict[str, Any]:
+        return await self.list_session_turns(limit=limit, before_sequence_no=before_sequence_no, cursor=cursor)
+
+    async def get_source_run_trace(self, *, run_id: str, max_item_chars: int, max_total_chars: int) -> dict[str, Any]:
+        return await self.get_run_trace(run_id=run_id, max_item_chars=max_item_chars, max_total_chars=max_total_chars)
+
+    async def list_agency_runs(self, *, limit: int) -> dict[str, Any]:
+        payload = await self._get_json(f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/agency", params={})
+        agency_session = payload.get("agency_session") if isinstance(payload, dict) else None
+        agency_session_id = agency_session.get("id") if isinstance(agency_session, dict) else None
+        if not isinstance(agency_session_id, str) or agency_session_id.strip() == "":
+            return {"source_session_id": self.session_id, "agency_session_id": None, "runs": []}
+        detail = await self._get_json(
+            f"/api/v1/sessions/{urllib.parse.quote(agency_session_id)}",
+            params={"runs_limit": str(limit), "include_input_parts": "true", "include_message": "false"},
+        )
+        session = detail.get("session") if isinstance(detail, dict) else None
+        runs = session.get("runs") if isinstance(session, dict) else []
+        return {
+            "source_session_id": self.session_id,
+            "agency_session_id": agency_session_id,
+            "runs": runs if isinstance(runs, list) else [],
+        }
+
     async def list_session_turns(
         self,
         *,
