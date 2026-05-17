@@ -746,7 +746,7 @@ class ModelConfig(BaseModel):
     context_window: int | None = None
     """Total context window size in tokens."""
 
-    proactive_context_management_threshold: float | None = Field(default=0.5, ge=0.0, le=1.0)
+    proactive_context_management_threshold: float | None = Field(default=0.65, ge=0.0, le=1.0)
     """Proactive context management threshold. When token usage exceeds this ratio, reminders are triggered."""
 
     compact_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
