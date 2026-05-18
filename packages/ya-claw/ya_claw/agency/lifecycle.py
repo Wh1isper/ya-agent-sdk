@@ -132,8 +132,9 @@ class AgencyLifecycle:
     async def clear_agency_session(self, db_session: AsyncSession) -> AgencyClearResult:
         record = await self.load_agency_session(db_session)
         cleared_at = datetime.now(UTC)
-        delete_result = await db_session.execute(delete(AgencyFireRecord))
-        deleted_fire_count = int(delete_result.rowcount or 0)
+        fire_count_result = await db_session.execute(select(func.count()).select_from(AgencyFireRecord))
+        deleted_fire_count = int(fire_count_result.scalar_one_or_none() or 0)
+        await db_session.execute(delete(AgencyFireRecord))
         if not isinstance(record, SessionRecord):
             await db_session.commit()
             return AgencyClearResult(
