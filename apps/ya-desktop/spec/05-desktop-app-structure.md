@@ -2,9 +2,9 @@
 
 ## App Package
 
-YA Desktop should live under `apps/ya-desktop` as an independent desktop application.
+YA Desktop lives under `apps/ya-desktop` as an independent desktop application.
 
-Suggested structure:
+Current frontend structure:
 
 ```text
 apps/ya-desktop/
@@ -15,54 +15,33 @@ apps/ya-desktop/
   src/
     app/
       App.tsx
-      routes.ts
-      stores.ts
-    claw/
-      ClawClient.ts
-      ClawRealtimeClient.ts
-      ConnectionRegistry.ts
+      Shell.tsx
+      routes.tsx
+      constants.ts
+      storage.ts
       types.ts
-    home/
-      HomePage.tsx
-      CommandBox.tsx
-      RecentChats.tsx
-      CurrentSpaceCard.tsx
-    chats/
-      ChatsPage.tsx
-      ChatList.tsx
-      ChatSurface.tsx
-      MessageStream.tsx
-      RunTimeline.tsx
-      ToolTimeline.tsx
-      ShellOutput.tsx
-      DiffViewer.tsx
-      ArtifactCards.tsx
-    board/
-      BoardPage.tsx
-      BoardColumn.tsx
-      BoardCard.tsx
-    spaces/
-      SpacesPage.tsx
-      SpaceCard.tsx
-      SpaceSwitcher.tsx
-      FolderRegistry.tsx
-      MountSetEditor.tsx
-      DefaultWorkspacePicker.tsx
-      SpaceTrustCard.tsx
-      RuntimeLocationCard.tsx
-    inbox/
-      InboxPage.tsx
-      ApprovalCard.tsx
-      AlertCard.tsx
-      inboxStore.ts
-    settings/
-      SettingsPage.tsx
-      DesktopSettings.tsx
-      DefaultWorkspaceSettings.tsx
-      HotkeySettings.tsx
-      VoiceSettings.tsx
-      AdvancedRuntime.tsx
-      DiagnosticsPanel.tsx
+      ui.tsx
+      utils.ts
+      chat/
+        ConversationPanels.tsx
+      pages/
+        HomePage.tsx
+        ChatsPage.tsx
+        BoardPage.tsx
+        SpacesPage.tsx
+        InboxPage.tsx
+        SettingsPage.tsx
+    claw/
+      client.ts
+      connection.ts
+      index.ts
+      queries.ts
+      streamEvents.ts
+      streamEvents.test.ts
+      types.ts
+    lib/
+      index.ts
+    main.tsx
   src-tauri/
     tauri.conf.json
     Cargo.toml
@@ -89,13 +68,97 @@ apps/ya-desktop/
     08-ui-technology-decision.md
 ```
 
+Target domain structure as the product grows:
+
+```text
+src/
+  app/
+    App.tsx
+    Shell.tsx
+    routes.tsx
+    providers.tsx
+    stores.ts
+    layout/
+      Sidebar.tsx
+      TopBar.tsx
+      DetailPanel.tsx
+    ui/
+      IconButton.tsx
+      PanelCard.tsx
+      StatusPill.tsx
+  claw/
+    ClawClient.ts
+    ClawRealtimeClient.ts
+    ConnectionRegistry.ts
+    types.ts
+  home/
+    HomePage.tsx
+    CommandBox.tsx
+    RecentChats.tsx
+    CurrentSpaceCard.tsx
+  chats/
+    ChatsPage.tsx
+    ChatList.tsx
+    ChatSurface.tsx
+    MessageStream.tsx
+    RunTimeline.tsx
+    ToolTimeline.tsx
+    ShellOutput.tsx
+    DiffViewer.tsx
+    ArtifactCards.tsx
+  board/
+    BoardPage.tsx
+    BoardColumn.tsx
+    BoardCard.tsx
+  spaces/
+    SpacesPage.tsx
+    SpaceCard.tsx
+    SpaceSwitcher.tsx
+    FolderRegistry.tsx
+    MountSetEditor.tsx
+    DefaultWorkspacePicker.tsx
+    SpaceTrustCard.tsx
+    RuntimeLocationCard.tsx
+  inbox/
+    InboxPage.tsx
+    ApprovalCard.tsx
+    AlertCard.tsx
+    inboxStore.ts
+  settings/
+    SettingsPage.tsx
+    DesktopSettings.tsx
+    DefaultWorkspaceSettings.tsx
+    HotkeySettings.tsx
+    VoiceSettings.tsx
+    AdvancedRuntime.tsx
+    DiagnosticsPanel.tsx
+```
+
 ## Frontend Modules
 
 ### `app/`
 
-Owns root routing, layout, and shared providers.
+Owns root routing, layout, shared providers, and the current product shell.
 
-Responsibilities:
+Current responsibilities:
+
+- `App.tsx` wraps application providers.
+- `Shell.tsx` owns the desktop shell, left navigation, top bar, Details panel, and layout preference persistence.
+- `routes.tsx` exports `AppRouteOutlet`, a component switch over Home, Chats, Board, Spaces, Inbox, and Settings.
+- `pages/*` contains the current page-level implementations.
+- `chat/ConversationPanels.tsx` contains chat-detail and run-detail panels shared by the Chats page.
+- `constants.ts`, `storage.ts`, `types.ts`, and `utils.ts` hold app-wide data definitions and helpers.
+- `ui.tsx` holds shared UI primitives until the UI surface is large enough to split into `app/ui/*`.
+
+Current `claw/` responsibilities:
+
+- `client.ts` owns the HTTP client and endpoint mapping.
+- `connection.ts` owns local connection discovery and active connection state helpers.
+- `queries.ts` owns React Query hooks for sessions, runs, approvals, Spaces data, runtime metadata, and notifications.
+- `streamEvents.ts` owns SSE/AGUI stream parsing helpers with focused tests in `streamEvents.test.ts`.
+- `types.ts` owns frontend-facing Claw API types.
+
+Product responsibilities:
 
 - active connection provider
 - active space provider
@@ -104,8 +167,8 @@ Responsibilities:
 - global run notification state
 - pending interaction state and routing
 - top-level navigation between Home, Chats, Board, Spaces, Inbox, and Settings
-- collapsible left navigation and right context panels so users can focus on the main content surface
-- persistent layout preferences for collapsed sidebars when settings storage is available
+- calm ChatGPT-like shell with a quiet collapsible left navigation, dominant main work area, and optional Details panel
+- persistent layout preferences for collapsed navigation and Details panel state when settings storage is available
 
 ### `claw/`
 
@@ -128,12 +191,11 @@ Owns the command-first default surface.
 
 Responsibilities:
 
-- central command input for starting conversations
+- centered command input for starting conversations
+- compact profile, current space, runtime, default workspace, and selected mount-set chips inside the composer
 - selected text and clipboard preview
 - screenshot and active app context preview
-- current space summary
-- default workspace and selected mount-set preview
-- recent chats and active runs
+- recent chats and active runs below the composer
 - pending approval summary
 - shortcuts into Chats, Board, Spaces, Inbox, and diagnostics
 
@@ -144,10 +206,10 @@ Owns conversation-first work management.
 Responsibilities:
 
 - chat list grouped by space and status
-- selected chat detail surface
+- selected chat detail surface optimized for reading and continuing one conversation
 - per-chat workspace mount-set display and edit flow before creating the next run
-- message stream and AGUI replay
-- run timeline and run controls
+- message stream and AGUI replay as the default focus
+- run timeline, run controls, and compact traces in progressive details
 - tool-call timeline
 - shell output viewer
 - file diff viewer
@@ -263,24 +325,24 @@ Initial context fields:
 
 ```ts
 type DesktopContextDraft = {
-  source: "global_hotkey" | "home" | "chat" | "tray_action";
+  source: 'global_hotkey' | 'home' | 'chat' | 'tray_action'
   activeApp?: {
-    name?: string;
-    windowTitle?: string;
-  };
+    name?: string
+    windowTitle?: string
+  }
   selection?: {
-    text?: string;
-  };
+    text?: string
+  }
   clipboard?: {
-    mime: string;
-    text?: string;
-  };
+    mime: string
+    text?: string
+  }
   screenshots?: Array<{
-    mime: string;
-    dataRef: string;
-  }>;
-  spaceHint?: string;
-};
+    mime: string
+    dataRef: string
+  }>
+  spaceHint?: string
+}
 ```
 
 ## Implementation Phases
@@ -292,7 +354,7 @@ type DesktopContextDraft = {
 03. Build a Tauri dev app that starts local Claw through `uv run`.
 04. Add connection registry and local runtime status.
 05. Add Home with command input and recent chat placeholders.
-06. Add Chats with conversation list and selected chat detail shell.
+06. Add Chats with a quiet conversation rail, focused chat detail surface, and progressive run details.
 07. Add Board with kanban columns over chats.
 08. Add Spaces with workspace folder cards, runtime location, trust, and local runtime status.
 09. Add Inbox with approval and alert placeholders.

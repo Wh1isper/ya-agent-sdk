@@ -75,15 +75,17 @@ Desktop is the preferred HITL surface for approvals because it can show native n
 
 ## Product Surfaces
 
-The main application shell supports a focus mode through collapsible side panels. The left navigation can collapse to icon-only width, and the right context panel can hide entirely, giving Home, Chats, Board, Spaces, Inbox, and Settings more horizontal room for focused work. The top bar exposes both controls so users can move between navigation, context, and main content without changing routes.
+The main application shell uses a calm, ChatGPT-like focus layout. The left navigation is quiet and collapsible, the main content area stays visually dominant, and the optional Details panel opens only when the user wants runtime context. The top bar keeps global actions lightweight: details and new chat.
 
 ### Home
 
-Home is the command-first default surface.
+Home is the command-first default surface and should feel like a focused starting point for one request.
 
 Current implementation:
 
-- Shows Local Claw runtime health when an active local connection exists.
+- Uses a centered hero prompt and large composer as the primary action.
+- Keeps workspace, profile, and runtime as compact chips inside the composer.
+- Shows Local Claw runtime health through compact status copy when an active local connection exists.
 - Reads recent chats from `GET /api/v1/sessions` through the Desktop Claw client.
 - Creates a new chat from the command input through `POST /api/v1/sessions:stream`.
 - Lets users choose the active Claw profile and Desktop Space before session creation.
@@ -107,19 +109,20 @@ Chats are the primary work management surface.
 
 Current implementation:
 
-- Lists real Claw sessions from the active local connection.
+- Lists real Claw sessions from the active local connection in a quiet conversation rail.
 - Selects a session and reads `GET /api/v1/sessions/{session_id}` with recent runs.
 - Reads completed turns from `GET /api/v1/sessions/{session_id}/turns`.
 - Reads compact run traces from `GET /api/v1/runs/{run_id}/trace` for recent runs.
 - Continues the selected chat through `POST /api/v1/sessions/{session_id}/runs:stream`.
-- Shows live streaming output in the conversation transcript.
+- Shows messages and live streaming output in the conversation transcript.
+- Keeps run traces and timeline under a `Run details` disclosure so the chat remains readable.
 - Cancels an active selected-session run through `POST /api/v1/sessions/{session_id}/cancel`.
 - Continues chats with the session's existing Claw profile and optional workspace context.
 
 Capabilities:
 
 - Conversation list grouped by space and status.
-- Selected chat detail with messages, AGUI replay, run timeline, tool calls, shell output, diffs, and artifacts.
+- Selected chat detail with messages and AGUI replay as the default view; run timeline, tool calls, shell output, diffs, and artifacts live in progressive details.
 - Profile and model display at chat level, with selection handled before new chat creation.
 - Run cancellation, retry, rerun, and continuation flows.
 - Inline approval cards with command, diff, and workspace context.
