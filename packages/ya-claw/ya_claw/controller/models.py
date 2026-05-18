@@ -341,6 +341,16 @@ class AgencyStatusResponse(BaseModel):
     agency_session: SessionSummary
 
 
+class AgencyClearResponse(BaseModel):
+    accepted: bool = True
+    cleared_session_id: str | None = None
+    new_agency_session_id: str
+    archived_run_ids: list[str] = Field(default_factory=list)
+    deleted_fire_count: int = 0
+    cleared_at: datetime
+    agency_session: SessionSummary
+
+
 class AgencyTriggerRequest(BaseModel):
     kind: AgencyFireKind = AgencyFireKind.MANUAL
     source_session_id: str | None = None

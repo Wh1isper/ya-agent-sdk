@@ -89,6 +89,104 @@ def test_agency_config_status_and_fires() -> None:
         assert isinstance(fires_response.json()["fires"], list)
 
 
+def test_clear_agency_resets_singleton_session_and_workspace_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
+    get_settings.cache_clear()
+    _create_schema()
+
+    workspace_dir = tmp_path / "workspace"
+    agency_md = workspace_dir / "AGENCY.md"
+    agency_action_log = workspace_dir / "agency" / "ACTION_LOG.md"
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.execution_supervisor = None
+        trigger_response = client.post(
+            "/api/v1/agency:trigger",
+            headers=_auth_headers(),
+            json={"kind": "manual", "client_token": "clear-1", "prompt": "Seed agency."},
+        )
+        assert trigger_response.status_code == 409
+
+        config_response = client.get("/api/v1/agency/config", headers=_auth_headers())
+        assert config_response.status_code == 200
+        old_session_id = config_response.json()["agency_session_id"]
+        agency_action_log.parent.mkdir(parents=True, exist_ok=True)
+        agency_md.write_text("old agency index", encoding="utf-8")
+        agency_action_log.write_text("old agency log", encoding="utf-8")
+
+        clear_response = client.post("/api/v1/agency:clear", headers=_auth_headers())
+        assert clear_response.status_code == 202
+        clear_payload = clear_response.json()
+        assert clear_payload["accepted"] is True
+        assert clear_payload["cleared_session_id"] == old_session_id
+        assert clear_payload["new_agency_session_id"] != old_session_id
+        assert clear_payload["archived_run_ids"] == []
+        assert clear_payload["deleted_fire_count"] == 0
+        assert clear_payload["agency_session"]["id"] == clear_payload["new_agency_session_id"]
+        assert "# Agency" in agency_md.read_text(encoding="utf-8")
+        assert "# Agency Action Log" in agency_action_log.read_text(encoding="utf-8")
+
+        status_response = client.get("/api/v1/agency/status", headers=_auth_headers())
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        assert status_payload["agency_session_id"] == clear_payload["new_agency_session_id"]
+        assert status_payload["agency_session"]["run_count"] == 0
+        assert status_payload["pending_fire_count"] == 0
+
+        fires_response = client.get("/api/v1/agency/fires", headers=_auth_headers())
+        assert fires_response.status_code == 200
+        assert fires_response.json()["fires"] == []
+
+
+def test_clear_agency_cancels_active_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
+    get_settings.cache_clear()
+    _create_schema()
+
+    async def _seed_active_run() -> None:
+        from ya_claw.agency.lifecycle import AgencyLifecycle
+        from ya_claw.controller.models import TriggerType
+        from ya_claw.db.engine import create_session_factory
+        from ya_claw.orm.tables import RunRecord
+        from ya_claw.runtime_state import InMemoryRuntimeState
+
+        settings = get_settings()
+        engine = create_engine(settings.resolved_database_url)
+        try:
+            session_factory = create_session_factory(engine)
+            async with session_factory() as db_session:
+                lifecycle = AgencyLifecycle(settings=settings, runtime_state=InMemoryRuntimeState())
+                agency_session = await lifecycle.ensure_agency_session(db_session)
+                run = RunRecord(
+                    id="activeagencyrun000000000000000001",
+                    session_id=agency_session.id,
+                    sequence_no=1,
+                    status="running",
+                    trigger_type=TriggerType.AGENCY.value,
+                    input_parts=[],
+                    run_metadata={"agency": {"kind": "episode"}},
+                )
+                db_session.add(run)
+                agency_session.head_run_id = run.id
+                await db_session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_seed_active_run())
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.execution_supervisor = None
+        clear_response = client.post("/api/v1/agency:clear", headers=_auth_headers())
+        assert clear_response.status_code == 202
+        payload = clear_response.json()
+        assert payload["cleared_session_id"] is not None
+        assert "activeagencyrun000000000000000001" in payload["archived_run_ids"]
+
+
 def test_agency_trigger_uses_optional_source_session_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
     get_settings.cache_clear()

@@ -1,4 +1,5 @@
 import type {
+  AgencyClearResponse,
   AgencyConfigResponse,
   AgencyFireListResponse,
   AgencyStatusResponse,
@@ -231,6 +232,12 @@ export class ClawApiClient {
     return this.request<AgencyTriggerResponse>('/api/v1/agency:trigger', {
       method: 'POST',
       body: JSON.stringify(payload),
+    })
+  }
+
+  clearAgency() {
+    return this.request<AgencyClearResponse>('/api/v1/agency:clear', {
+      method: 'POST',
     })
   }
 

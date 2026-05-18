@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -8,7 +9,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +60,14 @@ class AgencyTickResult:
     skipped_fire_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class AgencyClearResult:
+    cleared_session_id: str | None
+    archived_run_ids: list[str] = field(default_factory=list)
+    deleted_fire_count: int = 0
+    cleared_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 class AgencyLifecycle:
     def __init__(
         self,
@@ -71,14 +80,17 @@ class AgencyLifecycle:
         self._runtime_state = runtime_state
         self._submit_run = submit_run
 
-    async def ensure_agency_session(self, db_session: AsyncSession) -> SessionRecord:
-        profile_name = self._settings.resolved_agency_profile
+    async def load_agency_session(self, db_session: AsyncSession) -> SessionRecord | None:
         statement = select(SessionRecord).where(
             SessionRecord.session_type == "agency",
             SessionRecord.source_session_id == AGENCY_SINGLETON_SOURCE_SESSION_ID,
         )
         result = await db_session.execute(statement)
-        record = result.scalars().first()
+        return result.scalars().first()
+
+    async def ensure_agency_session(self, db_session: AsyncSession) -> SessionRecord:
+        profile_name = self._settings.resolved_agency_profile
+        record = await self.load_agency_session(db_session)
         if isinstance(record, SessionRecord):
             record.profile_name = profile_name
             metadata = dict(record.session_metadata or {})
@@ -112,11 +124,55 @@ class AgencyLifecycle:
             return record
         except IntegrityError:
             await db_session.rollback()
-            result = await db_session.execute(statement)
-            existing = result.scalars().first()
+            existing = await self.load_agency_session(db_session)
             if isinstance(existing, SessionRecord):
                 return existing
             raise
+
+    async def clear_agency_session(self, db_session: AsyncSession) -> AgencyClearResult:
+        record = await self.load_agency_session(db_session)
+        cleared_at = datetime.now(UTC)
+        delete_result = await db_session.execute(delete(AgencyFireRecord))
+        deleted_fire_count = int(delete_result.rowcount or 0)
+        if not isinstance(record, SessionRecord):
+            await db_session.commit()
+            return AgencyClearResult(
+                cleared_session_id=None,
+                deleted_fire_count=deleted_fire_count,
+                cleared_at=cleared_at,
+            )
+
+        runs_result = await db_session.execute(select(RunRecord).where(RunRecord.session_id == record.id))
+        archived_runs = [run for run in runs_result.scalars().all() if isinstance(run, RunRecord)]
+        archived_run_ids = [run.id for run in archived_runs]
+        for run in archived_runs:
+            if run.status in {"queued", "running"}:
+                with contextlib.suppress(KeyError):
+                    await self._runtime_state.request_stop(run.id, "clear_agency")
+                run.status = "cancelled"
+                run.termination_reason = "clear_agency"
+                run.finished_at = cleared_at
+        metadata = dict(record.session_metadata or {})
+        agency = dict(metadata.get("agency") or {}) if isinstance(metadata.get("agency"), dict) else {}
+        agency.update({
+            "archived": True,
+            "cleared_at": cleared_at.isoformat(),
+            "cleared_from_source_session_id": record.source_session_id,
+        })
+        metadata["agency"] = agency
+        record.session_metadata = metadata
+        record.source_session_id = uuid4().hex
+        record.head_run_id = None
+        record.head_success_run_id = None
+        record.active_run_id = None
+        record.updated_at = cleared_at
+        await db_session.commit()
+        return AgencyClearResult(
+            cleared_session_id=record.id,
+            archived_run_ids=archived_run_ids,
+            deleted_fire_count=deleted_fire_count,
+            cleared_at=cleared_at,
+        )
 
     async def create_fire(
         self,

@@ -344,6 +344,7 @@ Top-level endpoints:
 | `GET`  | `/api/v1/agency/status`         | read active/idle/queued state, active run, latest run, pending fire count, next timer fire |
 | `GET`  | `/api/v1/agency/fires?limit=50` | list fire history                                                                          |
 | `POST` | `/api/v1/agency:trigger`        | create a manual fire and dispatch it                                                       |
+| `POST` | `/api/v1/agency:clear`          | archive the current singleton agency session, clear fires and workspace agency files       |
 | `POST` | `/api/v1/agency:bootstrap`      | ensure the singleton agency session exists                                                 |
 
 `GET /agency/status` example:
@@ -376,6 +377,13 @@ Top-level endpoints:
   "prompt": "Review current workspace memory and propose the next useful action."
 }
 ```
+
+`POST /agency:clear` behavior:
+
+- Archives the current singleton session by moving its `source_session_id` away from `AGENCY_SINGLETON_SOURCE_SESSION_ID`.
+- Clears durable `agency_fires` rows and cancels queued/running agency runs from the archived session.
+- Resets workspace agency files by recreating `AGENCY.md`, `agency/ACTION_LOG.md`, `agency/episodes/`, `agency/intentions/`, and `agency/archive/`.
+- Ensures the next agency start uses a newly initialized singleton session with a fresh `agency_session_id`.
 
 ## Web UI
 
@@ -410,6 +418,8 @@ flowchart LR
     H --> FLOW[Chat-like episode flow]
     F[GET /agency/fires] --> HISTORY[Fire history]
     T[POST /agency:trigger] --> REFRESH[Refresh status, fires, and session]
+    CLR[POST /agency:clear] --> FRESH[Fresh singleton session]
+    FRESH --> REFRESH
 ```
 
 ## Interaction With Memory Lifecycle

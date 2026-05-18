@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_claw.config import ClawSettings
 from ya_claw.controller.agency import AgencyController
 from ya_claw.controller.models import (
+    AgencyClearResponse,
     AgencyConfigResponse,
     AgencyFireListResponse,
     AgencyFireSummary,
@@ -65,6 +66,23 @@ async def trigger_agency(request: Request, payload: AgencyTriggerRequest) -> Age
             submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
         )
     await _publish_fire_notification(request, response.fire)
+    return response
+
+
+@router.post(":clear", response_model=AgencyClearResponse, status_code=202)
+async def clear_agency(request: Request) -> AgencyClearResponse:
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        response = await controller.clear(db_session, _get_settings(request), _get_runtime_state(request))
+    await _get_notification_hub(request).publish(
+        "agency.cleared",
+        {
+            "cleared_session_id": response.cleared_session_id,
+            "new_agency_session_id": response.new_agency_session_id,
+            "deleted_fire_count": response.deleted_fire_count,
+            "cleared_at": response.cleared_at.isoformat(),
+        },
+    )
     return response
 
 

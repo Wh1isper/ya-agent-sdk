@@ -220,22 +220,26 @@ export function useAgencyFiresQuery() {
 export function useAgencyMutations() {
   const api = useApiClient()
   const queryClient = useQueryClient()
-  const refresh = async (agencySessionId?: string | null) => {
+  const refresh = async (
+    ...agencySessionIds: Array<string | null | undefined>
+  ) => {
+    const sessionIds = agencySessionIds.filter((value): value is string =>
+      Boolean(value),
+    )
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.agencyConfig }),
       queryClient.invalidateQueries({ queryKey: queryKeys.agencyStatus }),
       queryClient.invalidateQueries({ queryKey: queryKeys.agencyFires }),
       queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-      agencySessionId
-        ? queryClient.invalidateQueries({
-            queryKey: queryKeys.session(agencySessionId),
-          })
-        : Promise.resolve(),
-      agencySessionId
-        ? queryClient.invalidateQueries({
-            queryKey: queryKeys.sessionHistoryBase(agencySessionId),
-          })
-        : Promise.resolve(),
+      queryClient.invalidateQueries({ queryKey: ['session-history'] }),
+      ...sessionIds.flatMap((agencySessionId) => [
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.session(agencySessionId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.sessionHistoryBase(agencySessionId),
+        }),
+      ]),
     ])
   }
   return {
@@ -244,6 +248,16 @@ export function useAgencyMutations() {
       onSuccess: async (response) => {
         toast.success(`Agency fire ${response.delivery}`)
         await refresh(response.agency_session_id)
+      },
+    }),
+    clear: useMutation({
+      mutationFn: () => api.clearAgency(),
+      onSuccess: async (response) => {
+        toast.success('Agency cleared')
+        await refresh(
+          response.cleared_session_id,
+          response.new_agency_session_id,
+        )
       },
     }),
   }

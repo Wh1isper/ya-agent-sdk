@@ -543,6 +543,16 @@ export type AgencyStatusResponse = {
   agency_session: SessionSummary
 }
 
+export type AgencyClearResponse = {
+  accepted: boolean
+  cleared_session_id?: string | null
+  new_agency_session_id: string
+  archived_run_ids: string[]
+  deleted_fire_count: number
+  cleared_at: string
+  agency_session: SessionSummary
+}
+
 export type AgencyTriggerRequest = {
   kind?: 'manual' | 'timer' | 'memory_committed' | 'compact' | string
   source_session_id?: string | null

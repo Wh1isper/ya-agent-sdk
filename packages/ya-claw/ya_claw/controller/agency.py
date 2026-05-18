@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ya_claw.agency.lifecycle import AGENCY_SINGLETON_SCOPE_KEY, AgencyLifecycle
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (
+    AgencyClearResponse,
     AgencyConfigResponse,
     AgencyFireListResponse,
     AgencyFireSummary,
@@ -20,8 +21,10 @@ from ya_claw.controller.models import (
     run_summary_from_record,
     session_summary_from_record,
 )
+from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.orm.tables import AgencyFireRecord, RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
+from ya_claw.workspace.models import WorkspaceBinding, WorkspaceMountBinding
 
 
 class AgencyController:
@@ -109,6 +112,45 @@ class AgencyController:
                 for record, run_status in result.all()
                 if isinstance(record, AgencyFireRecord)
             ]
+        )
+
+    async def clear(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+    ) -> AgencyClearResponse:
+        lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state)
+        clear_result = await lifecycle.clear_agency_session(db_session)
+        for run_id in clear_result.archived_run_ids:
+            runtime_state.clear_run(run_id)
+        workspace_dir = settings.resolved_workspace_dir
+        WorkspaceMemoryStore(
+            WorkspaceBinding(
+                host_path=workspace_dir,
+                virtual_path=workspace_dir,
+                cwd=workspace_dir,
+                readable_paths=[workspace_dir],
+                writable_paths=[workspace_dir],
+                mounts=[WorkspaceMountBinding(id="default", host_path=workspace_dir, virtual_path=workspace_dir)],
+                fingerprint="agency-clear",
+            )
+        ).reset_agency()
+        agency_session = await lifecycle.ensure_agency_session(db_session)
+        await db_session.commit()
+        await db_session.refresh(agency_session)
+        return AgencyClearResponse(
+            accepted=True,
+            cleared_session_id=clear_result.cleared_session_id,
+            new_agency_session_id=agency_session.id,
+            archived_run_ids=clear_result.archived_run_ids,
+            deleted_fire_count=clear_result.deleted_fire_count,
+            cleared_at=clear_result.cleared_at,
+            agency_session=session_summary_from_record(
+                agency_session,
+                run_count=await _run_count(db_session, agency_session.id),
+                latest_run=None,
+            ),
         )
 
     async def last_fire(self, db_session: AsyncSession) -> AgencyFireSummary | None:

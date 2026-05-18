@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -92,6 +93,12 @@ class WorkspaceMemoryStore:
             "# Agency\n\n## Active Intentions\n\n## Watchlist\n\n## Deferred Ideas\n\n",
         )
         _ensure_regular_memory_file(self._binding.host_path, self.agency_action_log_path, "# Agency Action Log\n\n")
+
+    def reset_agency(self) -> None:
+        self.ensure()
+        _delete_safe_child(self._binding.host_path, self.agency_md_path)
+        _delete_safe_child(self._binding.host_path, self.agency_dir_path)
+        self.ensure_agency()
 
     def read_memory_md(self) -> str | None:
         return _read_memory_file(self.root, self.memory_md_path)
@@ -225,6 +232,21 @@ def _ensure_regular_memory_file(root: Path, path: Path, default_content: str) ->
             path.unlink()
         if not path.exists():
             path.write_text(default_content, encoding="utf-8")
+    except OSError:
+        return
+
+
+def _delete_safe_child(root: Path, path: Path) -> None:
+    try:
+        root_resolved = root.resolve()
+        path_resolved = path.resolve(strict=False)
+        if not path_resolved.is_relative_to(root_resolved):
+            return
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+            return
+        if path.is_dir():
+            shutil.rmtree(path)
     except OSError:
         return
 

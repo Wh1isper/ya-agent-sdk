@@ -1,4 +1,4 @@
-import { BrainCircuit, RefreshCcw } from 'lucide-react'
+import { BrainCircuit, RefreshCcw, RotateCcw } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Group, Panel } from 'react-resizable-panels'
 
@@ -171,6 +171,19 @@ export function AgencyPage() {
     setPrompt('')
   }
 
+  async function clearAgency() {
+    if (mutations.clear.isPending) return
+    const confirmed = window.confirm(
+      'Clear agency state and start a fresh singleton session on the next agency run?',
+    )
+    if (!confirmed) return
+    const response = await mutations.clear.mutateAsync()
+    setSelectedRunId(null)
+    if (response.new_agency_session_id) {
+      await sessionHistory.refetch()
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-100">
       <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 bg-white px-3 py-3 sm:h-16 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-0">
@@ -195,6 +208,16 @@ export function AgencyPage() {
             status={streamStatus}
             eventCount={effectiveLiveEvents.length}
           />
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 py-2 font-medium text-rose-700 shadow-sm transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => void clearAgency()}
+            disabled={mutations.clear.isPending}
+            title="Clear agency state and start fresh on the next agency run."
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            {mutations.clear.isPending ? 'Clearing' : 'Clear agency'}
+          </button>
           <button
             type="button"
             className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
