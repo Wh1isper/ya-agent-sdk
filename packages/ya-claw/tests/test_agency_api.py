@@ -70,7 +70,7 @@ def test_agency_config_status_and_fires() -> None:
         config_response = client.get("/api/v1/agency/config", headers=_auth_headers())
         assert config_response.status_code == 200
         config = config_response.json()
-        assert config["enabled"] is True
+        assert config["enabled"] is False
         assert config["singleton_scope_key"] == "agency:global"
         assert "budget_defaults" not in config
         assert "deny_external_actions" not in config
@@ -81,7 +81,7 @@ def test_agency_config_status_and_fires() -> None:
         status = status_response.json()
         assert status["agency_session_id"] == config["agency_session_id"]
         assert status["state"] in {"idle", "queued", "running"}
-        assert status["next_fire_at"] is not None
+        assert status["next_fire_at"] is None
         assert isinstance(status["pending_fire_count"], int)
 
         fires_response = client.get("/api/v1/agency/fires", headers=_auth_headers())
@@ -89,7 +89,9 @@ def test_agency_config_status_and_fires() -> None:
         assert isinstance(fires_response.json()["fires"], list)
 
 
-def test_agency_trigger_uses_optional_source_session_context() -> None:
+def test_agency_trigger_uses_optional_source_session_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
+    get_settings.cache_clear()
     _create_schema()
 
     app = create_app()

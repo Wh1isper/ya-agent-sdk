@@ -106,6 +106,12 @@ def test_settings_service_build_metadata_can_be_configured() -> None:
     assert settings.resolved_service_revision == "dev+abcdef123456"
 
 
+def test_settings_agency_disabled_by_default() -> None:
+    settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
+
+    assert settings.agency_enabled is False
+
+
 def test_settings_session_prune_defaults() -> None:
     settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
 

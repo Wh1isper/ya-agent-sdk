@@ -60,7 +60,7 @@ Every deployment needs:
 - SQLite path: `~/.ya-claw/ya_claw.sqlite3`
 - run store: `~/.ya-claw/data/run-store`
 - workspace dir: `~/.ya-claw/data/workspace`
-- session agency: enabled by default; inactivity scan after 600 seconds with 1800-second cooldown
+- session agency: disabled by default; when enabled, inactivity scan runs after 600 seconds with 1800-second cooldown
 - session prune: disabled by default; safe disk-only mode keeps latest 10 runs per session when enabled
 - default profile: `default`
 - profile shell review threshold default: `extra_high`
@@ -80,7 +80,7 @@ Every deployment needs:
 08. Verify `/healthz`.
 09. Verify authenticated API or web shell access.
 10. Start a test session and confirm model credentials, workspace tools, and profile behavior.
-11. Verify session agency state or set `YA_CLAW_AGENCY_ENABLED=false` for deployments that want manual rollout.
+11. Enable session agency with `YA_CLAW_AGENCY_ENABLED=true` for deployments that want proactive agency rollout.
 
 ## Reference Routing
 

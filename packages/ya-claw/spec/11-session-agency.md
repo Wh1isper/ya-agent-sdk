@@ -435,7 +435,7 @@ Rules:
 Settings:
 
 ```python
-agency_enabled: bool = True
+agency_enabled: bool = False
 agency_profile: str | None = None
 agency_timer_interval_seconds: int = 3600
 agency_fire_batch_limit: int = 20

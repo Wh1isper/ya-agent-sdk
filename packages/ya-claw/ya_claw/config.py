@@ -173,7 +173,7 @@ class ClawSettings(BaseSettings):
     heartbeat_prompt: str = "Run heartbeat according to HEARTBEAT.md."
     heartbeat_on_active: Literal["skip", "queue"] = "skip"
     unattended_shell_review_risk_threshold: Literal["low", "medium", "high", "extra_high"] | None = None
-    agency_enabled: bool = True
+    agency_enabled: bool = False
     agency_idle_after_seconds: int = 600
     agency_cooldown_seconds: int = 1800
     agency_profile: str | None = None
