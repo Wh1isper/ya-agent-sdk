@@ -20,9 +20,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from ya_claw.orm.base import Base
 
 _ALLOWED_RUN_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
-_ALLOWED_SESSION_TYPES = ("conversation", "memory", "agency")
+_ALLOWED_SESSION_TYPES = ("conversation", "memory", "agency", "async_task")
 _ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", "deferred", "duplicate", "failed")
 _ALLOWED_AGENCY_FIRE_STATUSES = ("pending", "submitted", "steered", "merged", "consumed", "skipped", "failed")
+_ALLOWED_ASYNC_TASK_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
+_ALLOWED_ASYNC_TASK_WAKE_POLICIES = ("steer_or_run", "record_only")
 _ALLOWED_HITL_BATCH_STATUSES = ("pending", "completed", "cancelled")
 _ALLOWED_HITL_INTERACTION_STATUSES = ("pending", "approved", "denied")
 _ALLOWED_HITL_DEFERRED_INPUT_STATUSES = ("pending", "consumed", "discarded")
@@ -130,6 +132,44 @@ class RunRecord(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     session: Mapped[SessionRecord] = relationship(back_populates="runs")
+
+
+class SessionAsyncTaskRecord(Base):
+    __tablename__ = "session_async_tasks"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_ASYNC_TASK_STATUSES!s}",
+            name="ck_session_async_tasks_status",
+        ),
+        CheckConstraint(
+            f"wake_policy IN {_ALLOWED_ASYNC_TASK_WAKE_POLICIES!s}",
+            name="ck_session_async_tasks_wake_policy",
+        ),
+        UniqueConstraint("parent_session_id", "name", name="uq_session_async_tasks_parent_name"),
+        Index("ix_session_async_tasks_parent_status", "parent_session_id", "status"),
+        Index("ix_session_async_tasks_task_session", "task_session_id"),
+        Index("ix_session_async_tasks_task_run", "task_run_id"),
+        Index("ix_session_async_tasks_name", "parent_session_id", "name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    parent_session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    parent_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    parent_agent_id: Mapped[str] = mapped_column(String(255), default="main")
+    task_session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    task_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    subagent_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    wake_policy: Mapped[str] = mapped_column(String(32), default="steer_or_run")
+    input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    result_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    task_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SessionMemoryStateRecord(Base):

@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_environment import Environment
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.coordinator import ExecutionSupervisor
 from ya_claw.execution.profile import ResolvedProfile
-from ya_claw.execution.state_machine import mark_run_running
+from ya_claw.execution.state_machine import complete_run, mark_run_running
 from ya_claw.orm.base import Base
-from ya_claw.orm.tables import RunRecord, SessionRecord
+from ya_claw.orm.tables import RunRecord, SessionAsyncTaskRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
 from ya_claw.workspace import LocalWorkspaceProvider, WorkspaceBinding
 
@@ -175,3 +177,92 @@ async def test_supervisor_startup_recovery_cancels_orphan_running_and_submits_qu
     if task is not None:
         task.cancel()
         await runtime_state.aclose()
+
+
+async def test_supervisor_startup_recovery_processes_terminal_async_task_run(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    parent_session = SessionRecord(id="parent-session", profile_name="default", session_metadata={})
+    child_session = SessionRecord(
+        id="child-session",
+        parent_session_id="parent-session",
+        profile_name="default",
+        session_type="async_task",
+        session_metadata={"async_task": {"task_id": "task-1"}},
+    )
+    previous_parent_run = RunRecord(
+        id="parent-run-previous",
+        session_id="parent-session",
+        sequence_no=1,
+        status="completed",
+        trigger_type="api",
+        profile_name="default",
+        input_parts=[],
+        run_metadata={},
+        output_text="previous",
+        output_summary="previous",
+    )
+    child_run = RunRecord(
+        id="child-run-terminal",
+        session_id="child-session",
+        sequence_no=1,
+        status="queued",
+        trigger_type="async_task",
+        profile_name="default",
+        input_parts=[],
+        run_metadata={"async_task": {"task_id": "task-1"}},
+        output_text="done",
+        output_summary="child summary",
+    )
+    task_record = SessionAsyncTaskRecord(
+        id="task-1",
+        parent_session_id="parent-session",
+        parent_run_id="parent-run-previous",
+        parent_agent_id="main",
+        task_session_id="child-session",
+        task_run_id="child-run-terminal",
+        subagent_name="executor",
+        name="executor",
+        status="running",
+        wake_policy="steer_or_run",
+        input_parts=[],
+        task_metadata={"task_id": "task-1"},
+    )
+    db_session.add_all([parent_session, child_session, previous_parent_run, child_run, task_record])
+    complete_run(parent_session, previous_parent_run, committed_at=datetime(2026, 5, 18, tzinfo=UTC))
+    complete_run(child_session, child_run, committed_at=datetime(2026, 5, 18, 1, tzinfo=UTC))
+    task_record.status = "running"
+    task_record.result_run_id = None
+    task_record.result_summary = None
+    task_record.completed_at = None
+    await db_session.commit()
+    supervisor = _build_supervisor(settings=settings, db_engine=db_engine, runtime_state=runtime_state)
+
+    result = await supervisor.startup_recover()
+
+    await db_session.refresh(task_record)
+    assert result["recovered_async_tasks"] == ["child-run-terminal"]
+    assert task_record.status == "completed"
+    assert task_record.result_run_id == "child-run-terminal"
+    assert task_record.result_summary == "child summary"
+    assert task_record.completed_at is not None
+
+    wake_result = await db_session.execute(
+        select(RunRecord).where(
+            RunRecord.session_id == "parent-session",
+            RunRecord.trigger_type == "async_task",
+        )
+    )
+    wake_run = wake_result.scalar_one()
+    assert wake_run.status in {"queued", "running"}
+    assert wake_run.restore_from_run_id == "parent-run-previous"
+    assert wake_run.run_metadata["async_task_wake"]["task_id"] == "task-1"
+    assert runtime_state.get_background_task(wake_run.id) is not None
+
+    task = runtime_state.get_background_task(wake_run.id)
+    if task is not None:
+        task.cancel()
+    await runtime_state.aclose()

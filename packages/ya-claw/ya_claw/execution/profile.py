@@ -29,6 +29,8 @@ class InlineSubagentDefinition(BaseModel):
     name: str
     description: str
     system_prompt: str
+    tools: list[str] | None = None
+    optional_tools: list[str] | None = None
     model: str | None = None
     model_settings_preset: str | None = None
     model_settings_override: dict[str, Any] | None = None
@@ -44,6 +46,7 @@ class ResolvedProfile:
     model_config: dict[str, Any] | None
     system_prompt: str | None = None
     builtin_toolsets: list[str] = field(default_factory=lambda: list(_DEFAULT_BUILTIN_TOOLSETS))
+    builtin_tool_allowlist: list[str] | None = None
     subagent_configs: list[SubagentConfig] = field(default_factory=list)
     include_builtin_subagents: bool = False
     unified_subagents: bool = False
@@ -174,8 +177,8 @@ class ProfileResolver:
                         resolve_model_cfg(inline.model_config_preset),
                         inline.model_config_override,
                     ),
-                    tools=None,
-                    optional_tools=None,
+                    tools=inline.tools,
+                    optional_tools=inline.optional_tools,
                 )
             )
         return resolved_configs

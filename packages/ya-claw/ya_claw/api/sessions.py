@@ -5,8 +5,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette.sse import EventSourceResponse
 
 from ya_claw.config import ClawSettings
+from ya_claw.controller.async_task import AsyncTaskController, ProfileResolverProtocol
 from ya_claw.controller.memory import MemoryController
 from ya_claw.controller.models import (
+    AsyncTaskCancelRequest,
+    AsyncTaskListResponse,
+    AsyncTaskResponse,
+    AsyncTaskSpawnRequest,
+    AsyncTaskSteerRequest,
     ControlResponse,
     DispatchMode,
     MemoryActionRequest,
@@ -32,6 +38,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 session_controller = SessionController()
 run_controller = RunController()
 memory_controller = MemoryController()
+async_task_controller = AsyncTaskController()
 
 
 @router.post("", response_model=SessionCreateResponse, status_code=201)
@@ -128,6 +135,103 @@ async def summarize_session_memory(
         request=payload,
         submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
     )
+
+
+@router.get("/{session_id}/async-tasks", response_model=AsyncTaskListResponse)
+async def list_session_async_tasks(
+    request: Request,
+    session_id: str,
+    include_terminal: bool = True,
+) -> AsyncTaskListResponse:
+    settings = _get_settings(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await async_task_controller.list_tasks(
+            db_session,
+            settings,
+            parent_session_id=session_id,
+            include_terminal=include_terminal,
+        )
+
+
+@router.post("/{session_id}/async-tasks:spawn", response_model=AsyncTaskResponse, status_code=202)
+async def spawn_session_async_task(
+    request: Request,
+    session_id: str,
+    payload: AsyncTaskSpawnRequest,
+) -> AsyncTaskResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        response = await async_task_controller.spawn_delegate(
+            db_session,
+            settings,
+            runtime_state,
+            parent_session_id=session_id,
+            parent_run_id=payload.parent_run_id,
+            parent_agent_id=payload.parent_agent_id,
+            request=payload,
+            profile_resolver=_get_profile_resolver(request),
+        )
+    if isinstance(response.task.task_run_id, str) and response.task.delivery in {"submitted", "resumed"}:
+        _dispatch_run(request, response.task.task_run_id, DispatchMode.ASYNC, require_submission=False)
+    return response
+
+
+@router.get("/{session_id}/async-tasks/{task_id_or_name}", response_model=AsyncTaskResponse)
+async def get_session_async_task(request: Request, session_id: str, task_id_or_name: str) -> AsyncTaskResponse:
+    settings = _get_settings(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await async_task_controller.get_task(
+            db_session,
+            settings,
+            parent_session_id=session_id,
+            task_id_or_name=task_id_or_name,
+        )
+
+
+@router.post("/{session_id}/async-tasks/{task_id_or_name}:steer", response_model=AsyncTaskResponse)
+async def steer_session_async_task(
+    request: Request,
+    session_id: str,
+    task_id_or_name: str,
+    payload: AsyncTaskSteerRequest,
+) -> AsyncTaskResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await async_task_controller.steer_task(
+            db_session,
+            settings,
+            runtime_state,
+            parent_session_id=session_id,
+            task_id_or_name=task_id_or_name,
+            request=payload,
+        )
+
+
+@router.post("/{session_id}/async-tasks/{task_id_or_name}:cancel", response_model=AsyncTaskResponse)
+async def cancel_session_async_task(
+    request: Request,
+    session_id: str,
+    task_id_or_name: str,
+    payload: AsyncTaskCancelRequest,
+) -> AsyncTaskResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await async_task_controller.cancel_task(
+            db_session,
+            settings,
+            runtime_state,
+            parent_session_id=session_id,
+            task_id_or_name=task_id_or_name,
+            request=payload,
+        )
 
 
 @router.get("/{session_id}/turns", response_model=SessionTurnsResponse)
@@ -356,6 +460,13 @@ def _get_execution_supervisor(request: Request) -> ExecutionSupervisor | None:
     if supervisor is None or isinstance(supervisor, ExecutionSupervisor):
         return supervisor
     raise TypeError("Execution supervisor is unavailable.")
+
+
+def _get_profile_resolver(request: Request) -> ProfileResolverProtocol | None:
+    resolver = getattr(request.app.state, "profile_resolver", None)
+    if resolver is None or isinstance(resolver, ProfileResolverProtocol):
+        return resolver
+    raise TypeError("Profile resolver is unavailable.")
 
 
 def _get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:

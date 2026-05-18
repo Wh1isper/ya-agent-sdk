@@ -19,12 +19,16 @@ from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, AgentStream
 from ya_agent_sdk.context import BusMessage, ResumableState
 from ya_agent_sdk.environment import SandboxEnvironment
 from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent
+from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
+from ya_agent_sdk.subagents import get_builtin_subagent_configs
+from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import UserInteraction as SdkUserInteraction
 
 from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
+from ya_claw.controller.async_task import AsyncTaskController
 from ya_claw.controller.hitl import HitlController
 from ya_claw.controller.models import (
     ActiveInteraction,
@@ -46,7 +50,7 @@ from ya_claw.hitl import build_active_interactions
 from ya_claw.json_types import JsonValue
 from ya_claw.memory.lifecycle import MemoryLifecycle
 from ya_claw.notifications import NotificationHub
-from ya_claw.orm.tables import RunRecord, SessionRecord
+from ya_claw.orm.tables import RunRecord, SessionAsyncTaskRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY, ClawSelfClient
 from ya_claw.workspace import (
@@ -85,6 +89,10 @@ class ExecutionBuffers:
 
 class _AgentRunMessages(Protocol):
     def all_messages(self) -> list[ModelMessage]: ...
+
+
+_TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_ACTIVE_ASYNC_TASK_STATUSES = frozenset({"queued", "running"})
 
 
 class ExecutionSupervisor:
@@ -203,19 +211,71 @@ class ExecutionSupervisor:
                 run_record.error_message = "Run was marked interrupted during YA Claw startup recovery."
                 interrupt_run(session_record, run_record)
                 cancelled_ids.append(run_record.id)
+            await db_session.flush()
+            await self._process_recovered_async_task_runs(db_session, records)
             await db_session.commit()
             logger.info("Cancelled orphaned running runs count={} run_ids={}", len(cancelled_ids), cancelled_ids)
             return cancelled_ids
 
+    async def _process_recovered_async_task_runs(
+        self,
+        db_session: AsyncSession,
+        records: list[RunRecord],
+    ) -> list[str]:
+        async_task_controller = AsyncTaskController()
+        recovered_ids: list[str] = []
+        for run_record in records:
+            if run_record.status not in _TERMINAL_RUN_STATUSES:
+                continue
+            result = await db_session.execute(
+                select(SessionAsyncTaskRecord.id)
+                .where(
+                    SessionAsyncTaskRecord.task_run_id == run_record.id,
+                    SessionAsyncTaskRecord.status.in_(list(_ACTIVE_ASYNC_TASK_STATUSES)),
+                )
+                .limit(1)
+            )
+            if result.scalar_one_or_none() is None:
+                continue
+            await async_task_controller.on_run_terminal(
+                db_session,
+                self._settings,
+                self._runtime_state,
+                run_record=run_record,
+                submit_run=self.submit_run,
+            )
+            recovered_ids.append(run_record.id)
+        return recovered_ids
+
+    async def recover_stale_async_task_runs(self) -> list[str]:
+        async with self._session_factory() as db_session:
+            statement = (
+                select(RunRecord)
+                .join(SessionAsyncTaskRecord, SessionAsyncTaskRecord.task_run_id == RunRecord.id)
+                .where(
+                    SessionAsyncTaskRecord.status.in_(list(_ACTIVE_ASYNC_TASK_STATUSES)),
+                    RunRecord.status.in_(list(_TERMINAL_RUN_STATUSES)),
+                )
+                .order_by(RunRecord.finished_at.asc(), RunRecord.created_at.asc())
+            )
+            result = await db_session.execute(statement)
+            records = list(result.scalars().all())
+            recovered_ids = await self._process_recovered_async_task_runs(db_session, records)
+            await db_session.commit()
+        logger.info("Recovered stale async task runs count={} run_ids={}", len(recovered_ids), recovered_ids)
+        return recovered_ids
+
     async def startup_recover(self) -> dict[str, list[str]]:
         try:
             cancelled_running = await self.cancel_orphaned_running_runs()
+            recovered_async_tasks = await self.recover_stale_async_task_runs()
             submitted_queued = await self.recover_queued_runs()
         except SQLAlchemyError:
             logger.warning("Run tables are unavailable; skipping startup recovery.")
-            return {"cancelled_running": [], "submitted_queued": []}
+            return {"cancelled_running": [], "recovered_async_tasks": [], "submitted_queued": []}
         return {
             "cancelled_running": cancelled_running,
+            "recovered_async_tasks": recovered_async_tasks,
             "submitted_queued": submitted_queued,
         }
 
@@ -330,6 +390,7 @@ class RunCoordinator:
                     return
 
                 profile = await self._profile_resolver.resolve(run_record.profile_name or session_record.profile_name)
+                profile = self._derive_async_task_profile(profile, run_record)
                 workspace_binding = self._resolve_workspace_binding(run_record, session_record, profile)
                 self._persist_run_workspace_snapshot(run_record, workspace_binding)
                 await db_session.commit()
@@ -430,8 +491,18 @@ class RunCoordinator:
                     submit_run=self._submit_memory_run,
                     agency_submit_run=self._submit_memory_run,
                 )
+                async_task_controller = AsyncTaskController()
+                await async_task_controller.on_run_terminal(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    run_record=run_record,
+                    submit_run=self._submit_memory_run,
+                )
                 if session_record.session_type == "memory":
                     await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
+                elif session_record.session_type == "async_task":
+                    logger.debug("Skipping memory capture for async task session run_id={}", run_record.id)
                 elif session_record.session_type == "agency":
                     agency_lifecycle = AgencyLifecycle(
                         settings=self._settings,
@@ -501,6 +572,14 @@ class RunCoordinator:
                 run_record.output_summary = buffers.output_summary
                 await db_session.commit()
                 await db_session.refresh(run_record)
+                async_task_controller = AsyncTaskController()
+                await async_task_controller.on_run_terminal(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    run_record=run_record,
+                    submit_run=self._submit_memory_run,
+                )
                 if session_record.session_type == "memory":
                     lifecycle = MemoryLifecycle(
                         settings=self._settings,
@@ -617,6 +696,7 @@ class RunCoordinator:
             dispatch_mode=dispatch_mode,
             source_kind=trigger_type,
             source_metadata=source_metadata,
+            async_subagents_context=None,
             claw_metadata={
                 "profile": profile.metadata,
                 "trigger_type": trigger_type,
@@ -915,6 +995,80 @@ class RunCoordinator:
 
             await asyncio.sleep(0.1)
 
+    def _derive_async_task_profile(self, profile: ResolvedProfile, run_record: RunRecord) -> ResolvedProfile:
+        metadata = run_record.run_metadata if isinstance(run_record.run_metadata, dict) else {}
+        async_task = metadata.get("async_task") if isinstance(metadata.get("async_task"), dict) else None
+        if not isinstance(async_task, dict):
+            return profile
+        subagent_name = async_task.get("subagent_name")
+        if not isinstance(subagent_name, str) or subagent_name.strip() == "":
+            return profile
+        config = next((item for item in profile.subagent_configs if item.name == subagent_name), None)
+        if config is None and profile.include_builtin_subagents:
+            config = get_builtin_subagent_configs().get(subagent_name)
+        if config is None:
+            raise ValueError(f"Subagent '{subagent_name}' is not configured for profile '{profile.name}'.")
+        return ResolvedProfile(
+            name=profile.name,
+            model=config.model if config.model is not None and config.model != INHERIT else profile.model,
+            model_settings=self._resolve_async_subagent_model_settings(config, profile),
+            model_config=self._resolve_async_subagent_model_config(config, profile),
+            system_prompt=config.system_prompt,
+            builtin_toolsets=profile.builtin_toolsets,
+            builtin_tool_allowlist=self._async_task_tool_allowlist(profile, config),
+            subagent_configs=profile.subagent_configs,
+            include_builtin_subagents=profile.include_builtin_subagents,
+            unified_subagents=profile.unified_subagents,
+            need_user_approve_tools=profile.need_user_approve_tools,
+            need_user_approve_mcps=profile.need_user_approve_mcps,
+            shell_review=profile.shell_review,
+            enabled_mcps=profile.enabled_mcps,
+            disabled_mcps=profile.disabled_mcps,
+            mcp_servers=profile.mcp_servers,
+            workspace_backend_hint=profile.workspace_backend_hint,
+            metadata={**profile.metadata, "async_subagent_name": subagent_name},
+        )
+
+    def _resolve_async_subagent_model_settings(
+        self,
+        config: SubagentConfig,
+        profile: ResolvedProfile,
+    ) -> dict[str, Any] | None:
+        if config.model_settings is not None and config.model_settings != INHERIT:
+            return resolve_model_settings(config.model_settings)
+        return profile.model_settings
+
+    def _resolve_async_subagent_model_config(
+        self,
+        config: SubagentConfig,
+        profile: ResolvedProfile,
+    ) -> dict[str, Any] | None:
+        if config.model_cfg is not None and config.model_cfg != INHERIT:
+            return resolve_model_cfg(config.model_cfg)
+        return profile.model_config
+
+    def _async_task_tool_allowlist(self, profile: ResolvedProfile, config: SubagentConfig) -> list[str] | None:
+        if config.tools is None and config.optional_tools is None:
+            return None
+        selected = set(config.tools or []) | set(config.optional_tools or [])
+        parent_tool_names = {
+            getattr(tool, "name", tool.__name__)
+            for tool in self._runtime_builder._resolve_builtin_tools(profile.builtin_toolsets)
+        }
+        management_tools = {
+            "spawn_delegate",
+            "list_async_subagents",
+            "get_async_subagent",
+            "steer_async_subagent",
+            "cancel_async_subagent",
+        }
+        inherited_management_tools = parent_tool_names & management_tools
+        return sorted((selected & parent_tool_names) | inherited_management_tools)
+
+    async def _build_async_subagents_context(self, parent_session_id: str) -> str | None:
+        async with self._session_factory() as db_session:
+            return await AsyncTaskController().build_injected_context(db_session, parent_session_id=parent_session_id)
+
     def _resolve_workspace_binding(
         self,
         run_record: RunRecord,
@@ -1159,6 +1313,11 @@ class RunCoordinator:
             state_messages = restore_point.state.get("message_history")
             if isinstance(state_messages, list):
                 raw_messages = state_messages
+        if not isinstance(raw_messages, list) and isinstance(restore_point.message, list):
+            message_events = restore_point.message
+            message_history = self._message_history_from_replay_events(message_events)
+            if isinstance(message_history, list):
+                raw_messages = message_history
 
         if not isinstance(raw_messages, list):
             return None
@@ -1247,6 +1406,14 @@ class RunCoordinator:
             "messages": events,
             "message_count": len(messages) if isinstance(messages, list) else None,
         }
+
+    def _message_history_from_replay_events(self, events: list[dict[str, Any]]) -> list[Any] | None:
+        if len(events) == 1:
+            payload = events[0]
+            message_history = payload.get("message_history")
+            if isinstance(message_history, list):
+                return message_history
+        return None
 
     def _build_message_payload_from_messages(
         self,

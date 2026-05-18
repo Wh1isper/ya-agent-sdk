@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ya_claw.execution.store import RunStore
 from ya_claw.orm.tables import RunRecord, SessionRecord
 
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
 
 @dataclass(slots=True)
 class ResolvedRestorePoint:
@@ -36,6 +38,11 @@ async def resolve_restore_run(
         raise HTTPException(
             status_code=422,
             detail=f"Run '{restore_run_id}' does not belong to session '{session.id}'.",
+        )
+    if record.status not in _TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Run '{restore_run_id}' is not a terminal restore source for session '{session.id}'.",
         )
     return record
 

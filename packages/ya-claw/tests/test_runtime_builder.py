@@ -98,6 +98,99 @@ def test_runtime_builder_propagates_container_id_from_workspace_metadata(
     assert runtime.ctx.container_id == "container-xyz"
     assert runtime.ctx.workspace_binding is not None
     assert runtime.ctx.workspace_binding.metadata["sandbox"]["container_id"] == "container-xyz"
+    assert runtime.ctx.is_async_subagent is False
+
+
+def test_runtime_builder_sets_async_subagent_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-gateway-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.example.test")
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    host_path.mkdir(parents=True, exist_ok=True)
+    binding = _build_workspace_binding(host_path)
+    environment = SandboxEnvironment(
+        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
+        work_dir="/workspace",
+        container_id="container-xyz",
+    )
+    profile = ResolvedProfile(
+        name="default",
+        model="gateway@openai-responses:gpt-5.5",
+        model_settings=None,
+        model_config=None,
+    )
+
+    runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=None,
+        session_id="child-session",
+        run_id="child-run",
+        restore_from_run_id=None,
+        dispatch_mode="async",
+        source_kind="async_task",
+        source_metadata={"async_task": {"parent_session_id": "parent-session"}},
+        claw_metadata={},
+    )
+
+    assert runtime.ctx.is_async_subagent is True
+    assert "async_parent_session_id" not in runtime.ctx.get_wrapper_metadata()
+
+
+def test_runtime_builder_keeps_parent_wake_runs_in_parent_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-gateway-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.example.test")
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    host_path.mkdir(parents=True, exist_ok=True)
+    binding = _build_workspace_binding(host_path)
+    environment = SandboxEnvironment(
+        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
+        work_dir="/workspace",
+        container_id="container-xyz",
+    )
+    profile = ResolvedProfile(
+        name="default",
+        model="gateway@openai-responses:gpt-5.5",
+        model_settings=None,
+        model_config=None,
+        builtin_toolsets=["core"],
+        include_builtin_subagents=True,
+    )
+
+    runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=None,
+        session_id="parent-session",
+        run_id="parent-wake-run",
+        restore_from_run_id="parent-previous-run",
+        dispatch_mode="async",
+        source_kind="async_task",
+        source_metadata={"async_task_wake": {"task_id": "task-1"}},
+        claw_metadata={},
+    )
+    toolset = runtime.agent._user_toolsets[0]
+
+    assert runtime.ctx.is_async_subagent is False
+    assert "spawn_delegate" in toolset._tool_classes
+    assert "get_async_subagent" in toolset._tool_classes
+    assert "steer_async_subagent" in toolset._tool_classes
+    assert any(isinstance(toolset, SkillToolset) for toolset in runtime.agent._user_toolsets)
 
 
 def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
@@ -114,6 +207,10 @@ def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
     assert "view" in resolved_tool_names
     assert "shell_exec" in resolved_tool_names
     assert "spawn_delegate" in resolved_tool_names
+    assert "list_async_subagents" in resolved_tool_names
+    assert "get_async_subagent" in resolved_tool_names
+    assert "steer_async_subagent" in resolved_tool_names
+    assert "cancel_async_subagent" in resolved_tool_names
     assert "list_session_turns" in resolved_tool_names
     assert "get_run_trace" in resolved_tool_names
 
@@ -137,6 +234,56 @@ def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_
     assert "list_source_session_turns" in resolved_tool_names
     assert "get_source_run_trace" in resolved_tool_names
     assert "create_schedule" in resolved_tool_names
+
+
+def test_runtime_builder_filters_async_subagent_management_tools(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    tools = builder._filter_builtin_tools(
+        builder._resolve_builtin_tools(["core"]),
+        None,
+        is_async_subagent=True,
+    )
+    resolved_tool_names = [getattr(tool, "name", tool.__name__) for tool in tools]
+
+    assert "spawn_delegate" not in resolved_tool_names
+    assert "list_async_subagents" not in resolved_tool_names
+    assert "get_async_subagent" not in resolved_tool_names
+    assert "steer_async_subagent" not in resolved_tool_names
+    assert "cancel_async_subagent" not in resolved_tool_names
+    assert "view" in resolved_tool_names
+    assert "shell_exec" in resolved_tool_names
+
+
+def test_runtime_builder_skips_skill_toolset_for_async_subagents(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    binding = _build_workspace_binding(tmp_path / "workspace")
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+    )
+
+    toolsets = builder._resolve_runtime_toolsets(
+        profile=profile,
+        binding=binding,
+        source_kind="async_task",
+        is_async_subagent=True,
+    )
+
+    assert toolsets == []
 
 
 def test_runtime_builder_resolves_runtime_mcp_toolsets_from_profile(tmp_path: Path) -> None:

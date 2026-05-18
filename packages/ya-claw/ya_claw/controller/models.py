@@ -7,7 +7,12 @@ from typing import Annotated, Any, Literal
 from pydantic import AliasChoices, BaseModel, Field
 
 from ya_claw.json_types import JsonObject, JsonValue
-from ya_claw.orm.tables import AgencyFireRecord, RunRecord, SessionMemoryStateRecord, SessionRecord
+from ya_claw.orm.tables import (
+    AgencyFireRecord,
+    RunRecord,
+    SessionMemoryStateRecord,
+    SessionRecord,
+)
 from ya_claw.workspace.models import WorkspaceBindingSpec
 from ya_claw.workspace.runtime_models import SessionWorkspaceState, build_session_workspace_state
 
@@ -46,12 +51,27 @@ class TriggerType(StrEnum):
     HEARTBEAT = "heartbeat"
     MEMORY = "memory"
     AGENCY = "agency"
+    ASYNC_TASK = "async_task"
 
 
 class SessionType(StrEnum):
     CONVERSATION = "conversation"
     MEMORY = "memory"
     AGENCY = "agency"
+    ASYNC_TASK = "async_task"
+
+
+class AsyncTaskStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AsyncTaskWakePolicy(StrEnum):
+    STEER_OR_RUN = "steer_or_run"
+    RECORD_ONLY = "record_only"
 
 
 class AgencyFireKind(StrEnum):
@@ -234,6 +254,66 @@ class RunCreateRequest(BaseModel):
 
 class SteerRequest(BaseModel):
     input_parts: list[InputPart] = Field(default_factory=list)
+
+
+class AsyncTaskSpawnRequest(BaseModel):
+    subagent_name: str
+    prompt: str
+    name: str | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+    wake_policy: AsyncTaskWakePolicy = AsyncTaskWakePolicy.STEER_OR_RUN
+    parent_run_id: str | None = None
+    parent_agent_id: str = "main"
+
+
+class AsyncTaskSteerRequest(BaseModel):
+    input_parts: list[InputPart] = Field(default_factory=list)
+    prompt: str | None = None
+
+
+class AsyncTaskCancelRequest(BaseModel):
+    reason: str | None = None
+
+
+class AsyncTaskSummary(BaseModel):
+    name: str
+    task_session_id: str
+    status: AsyncTaskStatus | str
+
+
+class AsyncTaskDetail(AsyncTaskSummary):
+    task_id: str
+    parent_session_id: str
+    parent_run_id: str | None = None
+    parent_agent_id: str = "main"
+    task_run_id: str | None = None
+    subagent_name: str
+    wake_policy: AsyncTaskWakePolicy | str = AsyncTaskWakePolicy.STEER_OR_RUN
+    result_run_id: str | None = None
+    result_summary: str | None = None
+    error_message: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    child_session: dict[str, Any] | None = None
+    latest_run: dict[str, Any] | None = None
+    output_text: str | None = None
+    output_summary: str | None = None
+    trace_ref: dict[str, Any] | None = None
+    delivery: Literal["submitted", "existing_active", "resumed", "recorded", "steered", "cancelled", "idle"] | None = (
+        None
+    )
+    instruction: str | None = None
+
+
+class AsyncTaskListResponse(BaseModel):
+    parent_session_id: str
+    subagents: list[AsyncTaskSummary] = Field(default_factory=list)
+
+
+class AsyncTaskResponse(BaseModel):
+    task: AsyncTaskDetail
 
 
 class RunSummary(BaseModel):
@@ -477,6 +557,8 @@ class ProfileSubagent(BaseModel):
     name: str
     description: str
     system_prompt: str
+    tools: list[str] | None = None
+    optional_tools: list[str] | None = None
     model: str | None = None
     model_settings_preset: str | None = None
     model_settings_override: dict[str, Any] | None = None

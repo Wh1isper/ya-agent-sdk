@@ -1,11 +1,27 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+from xml.etree.ElementTree import Element, SubElement, tostring
 
+from loguru import logger
 from pydantic import BaseModel, Field
-from ya_agent_sdk.context import AgentContext
+from pydantic_ai.tools import RunContext
+from ya_agent_sdk.context import ENVIRONMENT_CONTEXT_TAG, RUNTIME_CONTEXT_TAG, AgentContext
 
 from ya_claw.workspace import WorkspaceBinding
+
+ASYNC_SUBAGENTS_CONTEXT_TAG = "async-subagents"
+CLAW_INJECTED_CONTEXT_TAGS = (
+    RUNTIME_CONTEXT_TAG,
+    ENVIRONMENT_CONTEXT_TAG,
+    ASYNC_SUBAGENTS_CONTEXT_TAG,
+)
+_CLAW_SELF_CLIENT_KEY = "claw_self_client"
+
+
+@runtime_checkable
+class AsyncSubagentListClient(Protocol):
+    async def list_async_subagents(self, *, include_terminal: bool) -> dict[str, Any]: ...
 
 
 class ClawWorkspaceMountSnapshot(BaseModel):
@@ -58,6 +74,7 @@ class ClawWorkspaceBindingSnapshot(BaseModel):
 class ClawAgentContext(AgentContext):
     session_id: str | None = None
     claw_run_id: str | None = None
+    is_async_subagent: bool = False
     profile_name: str | None = None
     restore_from_run_id: str | None = None
     dispatch_mode: str | None = None
@@ -67,6 +84,33 @@ class ClawAgentContext(AgentContext):
     source_metadata: dict[str, Any] = Field(default_factory=dict)
     claw_metadata: dict[str, Any] = Field(default_factory=dict)
 
+    async def get_context_instructions(
+        self,
+        run_context: RunContext[AgentContext] | None = None,
+        *,
+        is_user_prompt: bool = True,
+    ) -> str:
+        instructions = await super().get_context_instructions(run_context, is_user_prompt=is_user_prompt)
+        if not is_user_prompt or self.is_async_subagent:
+            return instructions
+        async_subagents_context = await self._fetch_async_subagents_context()
+        if async_subagents_context is None:
+            return instructions
+        return f"{instructions}\n\n{async_subagents_context}" if instructions else async_subagents_context
+
+    async def _fetch_async_subagents_context(self) -> str | None:
+        if self.resources is None:
+            return None
+        resource = self.resources.get(_CLAW_SELF_CLIENT_KEY)
+        if not isinstance(resource, AsyncSubagentListClient):
+            return None
+        try:
+            payload = await resource.list_async_subagents(include_terminal=True)
+        except Exception as exc:
+            logger.debug("Failed to fetch async subagents context session_id={} error={}", self.session_id, exc)
+            return None
+        return _async_subagents_context_from_payload(payload, session_id=self.session_id)
+
     def get_wrapper_metadata(self) -> dict[str, Any]:
         return {
             **super().get_wrapper_metadata(),
@@ -74,4 +118,37 @@ class ClawAgentContext(AgentContext):
             "claw_run_id": self.claw_run_id,
             "profile_name": self.profile_name,
             "container_id": self.container_id,
+            "is_async_subagent": self.is_async_subagent,
         }
+
+
+def _async_subagents_context_from_payload(payload: dict[str, Any], *, session_id: str | None) -> str | None:
+    raw_items = payload.get("subagents")
+    if not isinstance(raw_items, list) or not raw_items:
+        return None
+
+    root = Element(ASYNC_SUBAGENTS_CONTEXT_TAG)
+    if isinstance(session_id, str) and session_id.strip() != "":
+        root.set("session-id", session_id)
+    root.set(
+        "hint",
+        "Use list_async_subagents or get_async_subagent for details; use steer_async_subagent for active child runs.",
+    )
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        child = SubElement(root, "subagent")
+        for source_key, attr_name in (
+            ("name", "name"),
+            ("task_session_id", "session-id"),
+            ("status", "status"),
+        ):
+            value = item.get(source_key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text != "":
+                child.set(attr_name, text[:1000])
+    if len(root) == 0:
+        return None
+    return tostring(root, encoding="unicode")

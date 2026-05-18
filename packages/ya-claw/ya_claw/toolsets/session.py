@@ -132,6 +132,56 @@ class ClawSelfClient:
             raise RuntimeError("Requested run does not belong to the current session.")
         return payload
 
+    async def spawn_delegate(
+        self,
+        *,
+        subagent_name: str,
+        prompt: str,
+        name: str | None,
+        context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks:spawn"
+        payload = {
+            "subagent_name": subagent_name,
+            "prompt": prompt,
+            "name": name,
+            "context": dict(context or {}),
+            "parent_run_id": self.run_id or None,
+            "parent_agent_id": "main",
+        }
+        return await self._send_json(path, method="POST", payload=payload)
+
+    async def list_async_subagents(self, *, include_terminal: bool) -> dict[str, Any]:
+        path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks"
+        return await self._get_json(
+            path,
+            params={"include_terminal": "true" if include_terminal else "false"},
+        )
+
+    async def get_async_subagent(self, *, name_or_task_id: str) -> dict[str, Any]:
+        path = (
+            f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks/{urllib.parse.quote(name_or_task_id)}"
+        )
+        return await self._get_json(path, params={})
+
+    async def steer_async_subagent(
+        self,
+        *,
+        name_or_task_id: str,
+        prompt: str | None,
+        input_parts: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks/{urllib.parse.quote(name_or_task_id)}:steer"
+        return await self._send_json(
+            path,
+            method="POST",
+            payload={"prompt": prompt, "input_parts": list(input_parts or [])},
+        )
+
+    async def cancel_async_subagent(self, *, name_or_task_id: str, reason: str | None) -> dict[str, Any]:
+        path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks/{urllib.parse.quote(name_or_task_id)}:cancel"
+        return await self._send_json(path, method="POST", payload={"reason": reason})
+
     async def list_schedules(
         self,
         *,
