@@ -31,6 +31,7 @@ class SessionPruneResult(BaseModel):
     deleted_orphan_run_dirs: int = 0
     deleted_schedule_fires: int = 0
     deleted_heartbeat_fires: int = 0
+    hidden_once_schedules: int = 0
     reclaimed_bytes: int = 0
     failed_run_store_paths: list[str] = Field(default_factory=list)
 
@@ -41,6 +42,7 @@ class SessionPruneResult(BaseModel):
         self.deleted_orphan_run_dirs += other.deleted_orphan_run_dirs
         self.deleted_schedule_fires += other.deleted_schedule_fires
         self.deleted_heartbeat_fires += other.deleted_heartbeat_fires
+        self.hidden_once_schedules += other.hidden_once_schedules
         self.reclaimed_bytes += other.reclaimed_bytes
         self.failed_run_store_paths.extend(other.failed_run_store_paths)
 
@@ -48,20 +50,23 @@ class SessionPruneResult(BaseModel):
 class SessionPruneController:
     async def prune_once(self, db_session: AsyncSession, settings: ClawSettings) -> SessionPruneResult:
         result = SessionPruneResult()
-        if settings.session_prune_generated_sessions_enabled:
-            generated_session_ids = await self._select_generated_session_ids(db_session, settings)
-            result.merge(await self._delete_sessions(db_session, settings, generated_session_ids))
+        if settings.session_prune_enabled:
+            if settings.session_prune_generated_sessions_enabled:
+                generated_session_ids = await self._select_generated_session_ids(db_session, settings)
+                result.merge(await self._delete_sessions(db_session, settings, generated_session_ids))
 
-        run_ids = await self._select_prunable_run_ids(db_session, settings)
-        result.merge(await self._prune_run_store_dirs(settings, run_ids))
+            run_ids = await self._select_prunable_run_ids(db_session, settings)
+            result.merge(await self._prune_run_store_dirs(settings, run_ids))
 
-        if settings.session_prune_fire_records_older_than_days > 0:
-            fire_result = await self._prune_fire_records(db_session, settings)
-            result.deleted_schedule_fires += fire_result.deleted_schedule_fires
-            result.deleted_heartbeat_fires += fire_result.deleted_heartbeat_fires
+            if settings.session_prune_fire_records_older_than_days > 0:
+                fire_result = await self._prune_fire_records(db_session, settings)
+                result.deleted_schedule_fires += fire_result.deleted_schedule_fires
+                result.deleted_heartbeat_fires += fire_result.deleted_heartbeat_fires
 
-        if settings.session_prune_orphans_enabled:
-            result.merge(await self._prune_orphan_run_store_dirs(db_session, settings))
+            if settings.session_prune_orphans_enabled:
+                result.merge(await self._prune_orphan_run_store_dirs(db_session, settings))
+
+        result.merge(await self._hide_expired_once_schedules(db_session, settings))
 
         return result
 
@@ -358,6 +363,77 @@ class SessionPruneController:
             prunable_ids.append(record.id)
         return prunable_ids
 
+    async def _hide_expired_once_schedules(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+    ) -> SessionPruneResult:
+        cutoff = _cutoff_from_days(settings.session_prune_once_schedules_hide_after_days)
+        if cutoff is None:
+            return SessionPruneResult()
+        schedule_ids = await self._select_expired_once_schedule_ids(db_session, settings, cutoff)
+        if not schedule_ids:
+            return SessionPruneResult()
+        now = utc_now()
+        result = await db_session.execute(select(ScheduleRecord).where(ScheduleRecord.id.in_(schedule_ids)))
+        records = [record for record in result.scalars().all() if isinstance(record, ScheduleRecord)]
+        for record in records:
+            metadata = dict(record.schedule_metadata or {})
+            metadata["auto_hidden"] = True
+            metadata["auto_hidden_reason"] = "expired_once_schedule"
+            metadata["auto_hidden_at"] = now.isoformat()
+            record.status = "deleted"
+            record.next_fire_at = None
+            record.schedule_metadata = metadata
+            record.updated_at = now
+        await db_session.commit()
+        return SessionPruneResult(hidden_once_schedules=len(records))
+
+    async def _select_expired_once_schedule_ids(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        cutoff: datetime,
+    ) -> list[str]:
+        batch_size = max(settings.session_prune_batch_size, 1)
+        result = await db_session.execute(
+            select(ScheduleRecord).where(ScheduleRecord.trigger_kind == "once", ScheduleRecord.status == "completed")
+        )
+        records = [record for record in result.scalars().all() if isinstance(record, ScheduleRecord)]
+        ordered_candidates = sorted(
+            (record for record in records if _is_older_than(_schedule_finished_at(record), cutoff)),
+            key=lambda item: (_as_utc_aware(_schedule_finished_at(item)), item.id),
+        )
+        if not ordered_candidates:
+            return []
+        candidate_ids = [record.id for record in ordered_candidates]
+        protected_ids = await self._protected_once_schedule_ids(db_session, candidate_ids)
+        return [schedule_id for schedule_id in candidate_ids if schedule_id not in protected_ids][:batch_size]
+
+    async def _protected_once_schedule_ids(self, db_session: AsyncSession, schedule_ids: list[str]) -> set[str]:
+        if not schedule_ids:
+            return set()
+        protected_ids: set[str] = set()
+        pending_result = await db_session.execute(
+            select(ScheduleFireRecord.schedule_id)
+            .where(ScheduleFireRecord.schedule_id.in_(schedule_ids), ScheduleFireRecord.status == "pending")
+            .distinct()
+        )
+        protected_ids.update(
+            schedule_id for schedule_id in pending_result.scalars().all() if isinstance(schedule_id, str)
+        )
+
+        active_result = await db_session.execute(
+            select(ScheduleFireRecord.schedule_id)
+            .join(RunRecord, ScheduleFireRecord.run_id == RunRecord.id)
+            .where(ScheduleFireRecord.schedule_id.in_(schedule_ids), RunRecord.status.in_(tuple(_ACTIVE_RUN_STATUSES)))
+            .distinct()
+        )
+        protected_ids.update(
+            schedule_id for schedule_id in active_result.scalars().all() if isinstance(schedule_id, str)
+        )
+        return protected_ids
+
     async def _prune_orphan_run_store_dirs(
         self,
         db_session: AsyncSession,
@@ -481,6 +557,13 @@ def _cutoff_from_days(days: int) -> datetime | None:
 
 def _is_older_than(value: datetime, cutoff: datetime) -> bool:
     return _as_utc_aware(value) < cutoff
+
+
+def _schedule_finished_at(record: ScheduleRecord) -> datetime:
+    for value in (record.last_fire_at, record.run_at, record.updated_at, record.created_at):
+        if isinstance(value, datetime):
+            return value
+    return utc_now()
 
 
 def _as_utc_aware(value: datetime) -> datetime:

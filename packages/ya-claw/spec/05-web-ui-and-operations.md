@@ -43,7 +43,7 @@ Shows session lineage, latest state, workspace/sandbox state, continuation entry
 
 ### Schedules
 
-Shows schedule definitions and fire history.
+Shows schedule definitions and fire history. The default schedule list hides `deleted` schedules. The schedule console can expose a hidden view that calls `/api/v1/schedules?include_deleted=true` for auto-hidden expired one-time schedules and operator-deleted schedules.
 
 Important fields:
 

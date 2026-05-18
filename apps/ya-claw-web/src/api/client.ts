@@ -306,8 +306,13 @@ export class ClawApiClient {
     })
   }
 
-  listSchedules() {
-    return this.request<ScheduleListResponse>('/api/v1/schedules')
+  listSchedules(options?: { includeDeleted?: boolean }) {
+    const params = new URLSearchParams()
+    if (options?.includeDeleted) params.set('include_deleted', 'true')
+    const query = params.toString()
+    return this.request<ScheduleListResponse>(
+      `/api/v1/schedules${query ? `?${query}` : ''}`,
+    )
   }
 
   getSchedule(scheduleId: string) {

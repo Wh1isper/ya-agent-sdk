@@ -119,6 +119,7 @@ def test_settings_session_prune_defaults() -> None:
     assert settings.session_prune_run_keep_recent == 10
     assert settings.session_prune_generated_sessions_enabled is False
     assert settings.session_prune_schedule_keep_recent == 10
+    assert settings.session_prune_once_schedules_hide_after_days == 7
     assert settings.session_prune_heartbeat_keep_recent == 10
     assert settings.session_prune_fire_records_older_than_days == 0
     assert settings.session_prune_orphans_enabled is True

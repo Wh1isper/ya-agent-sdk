@@ -306,7 +306,7 @@ class ScheduleController:
         *,
         limit: int = 50,
     ) -> ScheduleFireListResponse:
-        await self._get_schedule_record(db_session, schedule_id)
+        await self._get_schedule_record(db_session, schedule_id, include_deleted=True)
         normalized_limit = min(max(limit, 1), 200)
         statement = (
             select(ScheduleFireRecord, RunRecord.status)
@@ -680,9 +680,15 @@ class ScheduleController:
             updated_at=record.updated_at,
         )
 
-    async def _get_schedule_record(self, db_session: AsyncSession, schedule_id: str) -> ScheduleRecord:
+    async def _get_schedule_record(
+        self,
+        db_session: AsyncSession,
+        schedule_id: str,
+        *,
+        include_deleted: bool = False,
+    ) -> ScheduleRecord:
         record = await db_session.get(ScheduleRecord, schedule_id)
-        if not isinstance(record, ScheduleRecord) or record.status == "deleted":
+        if not isinstance(record, ScheduleRecord) or (record.status == "deleted" and not include_deleted):
             raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' was not found.")
         return record
 

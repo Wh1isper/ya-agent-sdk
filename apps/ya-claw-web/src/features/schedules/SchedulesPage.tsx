@@ -1,4 +1,4 @@
-import { Play, Plus, RefreshCcw, Save, Trash2 } from 'lucide-react'
+import { EyeOff, Play, Plus, RefreshCcw, Save, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 
@@ -66,7 +66,8 @@ const checkClass =
   'inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700'
 
 export function SchedulesPage() {
-  const schedules = useSchedulesQuery()
+  const [showHidden, setShowHidden] = useState(false)
+  const schedules = useSchedulesQuery({ includeDeleted: showHidden })
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<ScheduleStatusFilter>('all')
@@ -77,6 +78,11 @@ export function SchedulesPage() {
   const scheduleRows = useMemo(
     () => schedules.data?.schedules ?? [],
     [schedules.data?.schedules],
+  )
+  const hiddenScheduleCount = useMemo(
+    () =>
+      scheduleRows.filter((schedule) => schedule.status === 'deleted').length,
+    [scheduleRows],
   )
   const filteredSchedules = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -116,8 +122,22 @@ export function SchedulesPage() {
   )
 
   useEffect(() => {
+    if (!showHidden && statusFilter === 'deleted') {
+      setStatusFilter('all')
+    }
+  }, [showHidden, statusFilter])
+
+  useEffect(() => {
     if (!selectedId && scheduleRows[0]) {
       setSelectedId(scheduleRows[0].id)
+      return
+    }
+    if (
+      selectedId &&
+      selectedId !== '__new__' &&
+      !scheduleRows.some((schedule) => schedule.id === selectedId)
+    ) {
+      setSelectedId(scheduleRows[0]?.id ?? null)
     }
   }, [scheduleRows, selectedId])
 
@@ -160,7 +180,7 @@ export function SchedulesPage() {
                 <option value="active">Active</option>
                 <option value="paused">Paused</option>
                 <option value="completed">Completed</option>
-                <option value="deleted">Deleted</option>
+                {showHidden ? <option value="deleted">Deleted</option> : null}
               </select>
               <select
                 className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-xs text-slate-700 outline-none ring-blue-600 focus:ring-2"
@@ -185,8 +205,20 @@ export function SchedulesPage() {
                 <option value="once">Once</option>
               </select>
             </div>
+            <label className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              <span className="inline-flex items-center gap-2">
+                <EyeOff className="h-3.5 w-3.5" />
+                Show hidden
+              </span>
+              <input
+                type="checkbox"
+                checked={showHidden}
+                onChange={(event) => setShowHidden(event.target.checked)}
+              />
+            </label>
             <p className="text-xs text-slate-400">
               Showing {filteredSchedules.length} of {scheduleRows.length}
+              {showHidden ? ` · ${hiddenScheduleCount} hidden` : ''}
             </p>
           </div>
         </div>
@@ -257,7 +289,14 @@ function ScheduleListItem({
             {formatTrigger(schedule)}
           </p>
         </div>
-        <StatusBadge status={schedule.status} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isAutoHiddenSchedule(schedule) ? (
+            <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              Hidden
+            </span>
+          ) : null}
+          <StatusBadge status={schedule.status} />
+        </div>
       </div>
       <p className="mt-2 line-clamp-2 text-xs text-slate-500">
         {schedule.prompt}
@@ -284,6 +323,7 @@ function ScheduleEditor({
   const updateSchedule = useUpdateScheduleMutation()
   const deleteSchedule = useDeleteScheduleMutation()
   const triggerSchedule = useTriggerScheduleMutation()
+  const isDeleted = schedule?.status === 'deleted'
   const fires = useScheduleFiresQuery(schedule?.id ?? null)
   const form = useForm<ScheduleFormValues>({
     defaultValues: createBlankSchedule(),
@@ -365,7 +405,7 @@ function ScheduleEditor({
           </h2>
         </div>
         <div className="flex gap-2">
-          {schedule ? (
+          {schedule && schedule.status !== 'deleted' ? (
             <button
               type="button"
               className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
@@ -377,7 +417,7 @@ function ScheduleEditor({
               Trigger
             </button>
           ) : null}
-          {schedule ? (
+          {schedule && schedule.status !== 'deleted' ? (
             <button
               type="button"
               className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm font-medium text-rose-700 shadow-sm transition hover:bg-rose-50"
@@ -390,111 +430,122 @@ function ScheduleEditor({
         </div>
       </div>
 
+      {schedule && isAutoHiddenSchedule(schedule) ? (
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+          This one-time schedule was hidden automatically after it expired.
+        </div>
+      ) : null}
+
       <form
         className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
         onSubmit={onSubmit}
       >
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Name">
-            <input
-              className={inputClass}
-              {...form.register('name', { required: true })}
+        <fieldset disabled={isDeleted} className="contents">
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Name">
+              <input
+                className={inputClass}
+                {...form.register('name', { required: true })}
+              />
+            </Field>
+            <Field label="Trigger">
+              <select className={inputClass} {...form.register('trigger_kind')}>
+                <option value="cron">Recurring cron</option>
+                <option value="once">One-time</option>
+              </select>
+            </Field>
+            {triggerKind === 'cron' ? (
+              <Field
+                label="Cron"
+                hint={`Evaluated in ${timezone || getBrowserTimeZone()}. Example: 0 9 * * * runs at 09:00 in that timezone.`}
+              >
+                <input
+                  className={`${inputClass} mono`}
+                  {...form.register('cron', {
+                    required: triggerKind === 'cron',
+                  })}
+                />
+              </Field>
+            ) : (
+              <Field
+                label="Run at"
+                hint={`Interpreted as wall-clock time in ${timezone || getBrowserTimeZone()}.`}
+              >
+                <input
+                  type="datetime-local"
+                  className={inputClass}
+                  {...form.register('run_at', {
+                    required: triggerKind === 'once',
+                  })}
+                />
+              </Field>
+            )}
+            <Field
+              label={triggerKind === 'cron' ? 'Cron timezone' : 'Run timezone'}
+              hint="Changing this timezone keeps the same wall-clock input and updates the stored fire time."
+            >
+              {supportedTimeZones.length > 0 ? (
+                <select
+                  className={inputClass}
+                  {...form.register('timezone', { required: true })}
+                >
+                  {supportedTimeZones.map((timeZone) => (
+                    <option key={timeZone} value={timeZone}>
+                      {timeZone}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={inputClass}
+                  {...form.register('timezone', { required: true })}
+                />
+              )}
+            </Field>
+            <Field label="Description">
+              <input className={inputClass} {...form.register('description')} />
+            </Field>
+          </div>
+          <Field label="Prompt">
+            <textarea
+              className={`${textareaClass} mt-2 min-h-40`}
+              {...form.register('prompt', { required: true })}
             />
           </Field>
-          <Field label="Trigger">
-            <select className={inputClass} {...form.register('trigger_kind')}>
-              <option value="cron">Recurring cron</option>
-              <option value="once">One-time</option>
-            </select>
-          </Field>
-          {triggerKind === 'cron' ? (
-            <Field
-              label="Cron"
-              hint={`Evaluated in ${timezone || getBrowserTimeZone()}. Example: 0 9 * * * runs at 09:00 in that timezone.`}
+          <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+            <label className={checkClass}>
+              <input type="checkbox" {...form.register('enabled')} /> Enabled
+            </label>
+            <label className={checkClass}>
+              <input
+                type="checkbox"
+                {...form.register('continue_current_session')}
+              />{' '}
+              Continue current session
+            </label>
+            <label className={checkClass}>
+              <input
+                type="checkbox"
+                {...form.register('start_from_current_session')}
+              />{' '}
+              Start from current session
+            </label>
+            <label className={checkClass}>
+              <input type="checkbox" {...form.register('steer_when_running')} />{' '}
+              Steer when running
+            </label>
+          </div>
+          <div className="mt-5 flex justify-end">
+            <button
+              type="submit"
+              disabled={isDeleted}
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              <input
-                className={`${inputClass} mono`}
-                {...form.register('cron', { required: triggerKind === 'cron' })}
-              />
-            </Field>
-          ) : (
-            <Field
-              label="Run at"
-              hint={`Interpreted as wall-clock time in ${timezone || getBrowserTimeZone()}.`}
-            >
-              <input
-                type="datetime-local"
-                className={inputClass}
-                {...form.register('run_at', {
-                  required: triggerKind === 'once',
-                })}
-              />
-            </Field>
-          )}
-          <Field
-            label={triggerKind === 'cron' ? 'Cron timezone' : 'Run timezone'}
-            hint="Changing this timezone keeps the same wall-clock input and updates the stored fire time."
-          >
-            {supportedTimeZones.length > 0 ? (
-              <select
-                className={inputClass}
-                {...form.register('timezone', { required: true })}
-              >
-                {supportedTimeZones.map((timeZone) => (
-                  <option key={timeZone} value={timeZone}>
-                    {timeZone}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                className={inputClass}
-                {...form.register('timezone', { required: true })}
-              />
-            )}
-          </Field>
-          <Field label="Description">
-            <input className={inputClass} {...form.register('description')} />
-          </Field>
-        </div>
-        <Field label="Prompt">
-          <textarea
-            className={`${textareaClass} mt-2 min-h-40`}
-            {...form.register('prompt', { required: true })}
-          />
-        </Field>
-        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-          <label className={checkClass}>
-            <input type="checkbox" {...form.register('enabled')} /> Enabled
-          </label>
-          <label className={checkClass}>
-            <input
-              type="checkbox"
-              {...form.register('continue_current_session')}
-            />{' '}
-            Continue current session
-          </label>
-          <label className={checkClass}>
-            <input
-              type="checkbox"
-              {...form.register('start_from_current_session')}
-            />{' '}
-            Start from current session
-          </label>
-          <label className={checkClass}>
-            <input type="checkbox" {...form.register('steer_when_running')} />{' '}
-            Steer when running
-          </label>
-        </div>
-        <div className="mt-5 flex justify-end">
-          <button
-            type="submit"
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-          >
-            <Save className="h-4 w-4" />
-            Save
-          </button>
-        </div>
+              <Save className="h-4 w-4" />
+              Save
+            </button>
+          </div>
+        </fieldset>
       </form>
 
       {schedule ? (
@@ -571,6 +622,10 @@ function ScheduleListSkeleton() {
       ))}
     </div>
   )
+}
+
+function isAutoHiddenSchedule(schedule: ScheduleSummary) {
+  return schedule.status === 'deleted' && schedule.metadata.auto_hidden === true
 }
 
 function formatTrigger(schedule: ScheduleSummary) {

@@ -212,6 +212,7 @@ class ClawSettings(BaseSettings):
     session_prune_generated_sessions_enabled: bool = False
     session_prune_schedule_keep_recent: int = 10
     session_prune_schedule_older_than_days: int = 30
+    session_prune_once_schedules_hide_after_days: int = 7
     session_prune_heartbeat_keep_recent: int = 10
     session_prune_heartbeat_older_than_days: int = 7
     session_prune_fire_records_older_than_days: int = 0

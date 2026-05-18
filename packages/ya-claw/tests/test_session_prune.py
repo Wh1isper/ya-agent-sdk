@@ -327,6 +327,200 @@ async def test_prune_fire_records_keeps_pending_and_latest(
     assert heartbeat_fire_ids == {"heartbeat-fire-latest"}
 
 
+async def test_prune_hides_expired_once_schedules(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    settings.session_prune_once_schedules_hide_after_days = 1
+    settings.session_prune_orphans_enabled = False
+    controller = SessionPruneController()
+    old = datetime(2026, 4, 20, 5, 30, tzinfo=UTC)
+    db_session.add(
+        ScheduleRecord(
+            id="once-old",
+            name="old once",
+            trigger_kind="once",
+            run_at=old,
+            timezone="UTC",
+            execution_mode="isolate_session",
+            input_parts_template=[],
+            status="completed",
+            last_fire_at=old,
+            schedule_metadata={"source": "test"},
+            updated_at=old,
+        )
+    )
+    db_session.add(
+        ScheduleFireRecord(
+            id="once-old-fire",
+            schedule_id="once-old",
+            scheduled_at=old,
+            fired_at=old,
+            status="submitted",
+            dedupe_key="once-old-fire",
+            input_parts=[],
+            fire_metadata={},
+            created_at=old,
+        )
+    )
+    await db_session.commit()
+
+    result = await controller.prune_once(db_session, settings)
+
+    record = await db_session.get(ScheduleRecord, "once-old")
+    assert isinstance(record, ScheduleRecord)
+    assert result.hidden_once_schedules == 1
+    assert record.status == "deleted"
+    assert record.next_fire_at is None
+    assert record.schedule_metadata["source"] == "test"
+    assert record.schedule_metadata["auto_hidden"] is True
+    assert record.schedule_metadata["auto_hidden_reason"] == "expired_once_schedule"
+    assert isinstance(record.schedule_metadata["auto_hidden_at"], str)
+
+
+async def test_prune_hides_expired_once_schedules_preserves_recent_pending_and_active_runs(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    settings.session_prune_once_schedules_hide_after_days = 1
+    settings.session_prune_orphans_enabled = False
+    settings.session_prune_batch_size = 10
+    controller = SessionPruneController()
+    old = datetime(2026, 4, 20, 5, 30, tzinfo=UTC)
+    recent = datetime.now(UTC)
+    db_session.add(SessionRecord(id="session-active", profile_name="default"))
+    db_session.add(
+        RunRecord(
+            id="run-active",
+            session_id="session-active",
+            sequence_no=1,
+            status="running",
+            trigger_type="schedule",
+            input_parts=[],
+            run_metadata={},
+            created_at=old,
+        )
+    )
+    schedules = [
+        ScheduleRecord(
+            id="once-recent",
+            name="recent once",
+            trigger_kind="once",
+            run_at=recent,
+            timezone="UTC",
+            execution_mode="isolate_session",
+            input_parts_template=[],
+            status="completed",
+            last_fire_at=recent,
+            schedule_metadata={},
+        ),
+        ScheduleRecord(
+            id="once-pending",
+            name="pending once",
+            trigger_kind="once",
+            run_at=old,
+            timezone="UTC",
+            execution_mode="isolate_session",
+            input_parts_template=[],
+            status="completed",
+            last_fire_at=old,
+            schedule_metadata={},
+        ),
+        ScheduleRecord(
+            id="once-active-run",
+            name="active run once",
+            trigger_kind="once",
+            run_at=old,
+            timezone="UTC",
+            execution_mode="isolate_session",
+            input_parts_template=[],
+            status="completed",
+            last_fire_at=old,
+            schedule_metadata={},
+        ),
+        ScheduleRecord(
+            id="cron-old",
+            name="cron old",
+            trigger_kind="cron",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            execution_mode="isolate_session",
+            input_parts_template=[],
+            status="completed",
+            last_fire_at=old,
+            schedule_metadata={},
+        ),
+    ]
+    db_session.add_all(schedules)
+    db_session.add_all([
+        ScheduleFireRecord(
+            id="once-pending-fire",
+            schedule_id="once-pending",
+            scheduled_at=old,
+            status="pending",
+            dedupe_key="once-pending-fire",
+            input_parts=[],
+            fire_metadata={},
+            created_at=old,
+        ),
+        ScheduleFireRecord(
+            id="once-active-run-fire",
+            schedule_id="once-active-run",
+            scheduled_at=old,
+            status="submitted",
+            dedupe_key="once-active-run-fire",
+            run_id="run-active",
+            input_parts=[],
+            fire_metadata={},
+            created_at=old,
+        ),
+    ])
+    await db_session.commit()
+
+    result = await controller.prune_once(db_session, settings)
+
+    statuses = dict((await db_session.execute(select(ScheduleRecord.id, ScheduleRecord.status))).all())
+    assert result.hidden_once_schedules == 0
+    assert statuses == {
+        "once-recent": "completed",
+        "once-pending": "completed",
+        "once-active-run": "completed",
+        "cron-old": "completed",
+    }
+
+
+async def test_prune_once_schedule_hiding_can_be_disabled(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    settings.session_prune_once_schedules_hide_after_days = 0
+    settings.session_prune_orphans_enabled = False
+    controller = SessionPruneController()
+    old = datetime(2026, 4, 20, 5, 30, tzinfo=UTC)
+    db_session.add(
+        ScheduleRecord(
+            id="once-old-disabled",
+            name="old once disabled",
+            trigger_kind="once",
+            run_at=old,
+            timezone="UTC",
+            execution_mode="isolate_session",
+            input_parts_template=[],
+            status="completed",
+            last_fire_at=old,
+            schedule_metadata={},
+        )
+    )
+    await db_session.commit()
+
+    result = await controller.prune_once(db_session, settings)
+
+    record = await db_session.get(ScheduleRecord, "once-old-disabled")
+    assert isinstance(record, ScheduleRecord)
+    assert result.hidden_once_schedules == 0
+    assert record.status == "completed"
+
+
 async def test_prune_preserves_head_success_run_for_future_continuation(
     db_session: AsyncSession,
     settings: ClawSettings,

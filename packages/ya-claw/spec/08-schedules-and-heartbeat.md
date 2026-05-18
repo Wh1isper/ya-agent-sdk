@@ -121,6 +121,8 @@ Manual fire is an action created through `trigger_schedule` or `/api/v1/schedule
 
 The runtime stores `next_fire_at` as an absolute timestamp. Cron and one-time parsing happens in the schedule controller. Dispatcher scans use `next_fire_at` only. A one-time schedule moves to `completed` after terminal delivery and preserves its fire history.
 
+Completed one-time schedules older than `YA_CLAW_SESSION_PRUNE_ONCE_SCHEDULES_HIDE_AFTER_DAYS` are automatically marked `deleted` by the session prune dispatcher. The default threshold is 7 days, and this metadata-only hiding runs independently from run-store pruning. The schedule metadata records `auto_hidden=true`, `auto_hidden_reason="expired_once_schedule"`, and `auto_hidden_at`. Default schedule list APIs and the web console hide deleted schedules, while `include_deleted=true` exposes them for audit and debugging. The automatic hiding step keeps schedule definitions and fire history in the database until explicit fire-record retention applies.
+
 ## Schedule Data Model
 
 ### `schedules`

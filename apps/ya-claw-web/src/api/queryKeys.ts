@@ -22,7 +22,7 @@ export const queryKeys = {
   runTrace: (runId: string) => ['run-trace', runId] as const,
   profiles: ['profiles'] as const,
   profile: (profileName: string) => ['profile', profileName] as const,
-  schedules: ['schedules'] as const,
+  schedules: (includeDeleted = false) => ['schedules', includeDeleted] as const,
   schedule: (scheduleId: string) => ['schedule', scheduleId] as const,
   scheduleFires: (scheduleId: string) =>
     ['schedule-fires', scheduleId] as const,

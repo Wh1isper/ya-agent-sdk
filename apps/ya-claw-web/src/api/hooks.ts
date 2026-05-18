@@ -436,13 +436,15 @@ export function useSeedProfilesMutation() {
   })
 }
 
-export function useSchedulesQuery() {
+export function useSchedulesQuery(options?: { includeDeleted?: boolean }) {
   const api = useApiClient()
+  const includeDeleted = options?.includeDeleted ?? false
   return useQuery({
-    queryKey: queryKeys.schedules,
-    queryFn: () => api.listSchedules(),
+    queryKey: queryKeys.schedules(includeDeleted),
+    queryFn: () => api.listSchedules({ includeDeleted }),
     placeholderData: keepPreviousData,
     staleTime: 10_000,
+    refetchInterval: 30_000,
   })
 }
 
@@ -479,7 +481,7 @@ export function useCreateScheduleMutation() {
     mutationFn: (payload: ScheduleCreateRequest) => api.createSchedule(payload),
     onSuccess: async (schedule) => {
       toast.success(`Created schedule ${schedule.name}`)
-      await queryClient.invalidateQueries({ queryKey: queryKeys.schedules })
+      await queryClient.invalidateQueries({ queryKey: ['schedules'] })
     },
   })
 }
@@ -498,7 +500,7 @@ export function useUpdateScheduleMutation() {
     onSuccess: async (schedule) => {
       toast.success(`Saved schedule ${schedule.name}`)
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.schedules }),
+        queryClient.invalidateQueries({ queryKey: ['schedules'] }),
         queryClient.invalidateQueries({
           queryKey: queryKeys.schedule(schedule.id),
         }),
@@ -514,7 +516,7 @@ export function useDeleteScheduleMutation() {
     mutationFn: (scheduleId: string) => api.deleteSchedule(scheduleId),
     onSuccess: async (schedule) => {
       toast.success(`Deleted schedule ${schedule.name}`)
-      await queryClient.invalidateQueries({ queryKey: queryKeys.schedules })
+      await queryClient.invalidateQueries({ queryKey: ['schedules'] })
     },
   })
 }
@@ -533,7 +535,7 @@ export function useTriggerScheduleMutation() {
     onSuccess: async (fire) => {
       toast.success(`Triggered schedule ${fire.schedule_id.slice(0, 8)}`)
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.schedules }),
+        queryClient.invalidateQueries({ queryKey: ['schedules'] }),
         queryClient.invalidateQueries({
           queryKey: queryKeys.scheduleFires(fire.schedule_id),
         }),
