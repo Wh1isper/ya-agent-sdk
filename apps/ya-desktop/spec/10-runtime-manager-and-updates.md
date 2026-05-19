@@ -240,9 +240,31 @@ get_local_claw_status()
 start_local_claw()
 stop_local_claw()
 restart_local_claw()
+get_local_claw_launch_config()
+update_local_claw_launch_config(config: LocalClawLaunchConfig)
+reset_local_claw_launch_config()
+import_local_claw_launch_preset(raw: String)
 ```
 
-`start_local_claw()` reads `runtimes/claw/active.json` and launches its `entrypoint`.
+`start_local_claw()` reads `runtimes/claw/active.json`, reads `local-claw/launch-config.json`, and launches the active `entrypoint` with Desktop-managed startup environment variables.
+
+Launch config shape:
+
+```json
+{
+  "presetName": "Desktop default",
+  "agencyEnabled": true,
+  "memoryEnabled": true,
+  "env": [
+    {
+      "key": "YA_CLAW_AGENCY_TIMER_INTERVAL_SECONDS",
+      "value": "3600"
+    }
+  ]
+}
+```
+
+Desktop always manages `YA_CLAW_API_TOKEN` itself. Presets can provide JSON or dotenv-style environment variables. `YA_CLAW_AGENCY_ENABLED` and `YA_CLAW_MEMORY_ENABLED` map to first-class toggle fields so the Settings UI can keep Agency and Memory visible.
 
 ## UI Surfaces
 
@@ -256,6 +278,7 @@ Settings > Runtime:
 - Python version.
 - uv version and path.
 - Auto-update status, last check time, candidate version, update-ready state, and failure logs.
+- Launch preset import, Agency and Memory startup toggles, and editable Local Claw startup environment variables.
 - Update, repair, restart-to-apply, rollback, and remove actions.
 
 Spaces:
@@ -323,6 +346,7 @@ Phase 2: latest update flow
 Phase 3: UI and diagnostics
 
 - Add Settings > Runtime page.
+- Add launch preset import and startup environment variable UI.
 - Add install/update progress UI.
 - Add repair and rollback actions.
 - Add first-launch onboarding for runtime installation.

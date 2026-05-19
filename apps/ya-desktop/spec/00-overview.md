@@ -10,6 +10,7 @@ The core product shape combines:
 - Chats as the primary work management model
 - Board as the kanban view over chats and runs
 - Spaces for workspace folders, cloud workspaces, runtime connections, trust, execution location, and mount-set presets
+- Agency for proactive work visibility, singleton Agency runs, recent fires, and memory-session activity
 - Inbox for HITL decisions, alerts, failed background work, and user actions
 - Settings for preferences, hotkeys, secrets, advanced runtime, logs, and diagnostics
 - tray or menu bar presence
@@ -29,6 +30,7 @@ flowchart TB
     Product --> Chats[Chats<br/>Conversation work surface]
     Product --> Board[Board<br/>Kanban over chats]
     Product --> Spaces[Spaces<br/>Workspace folders + runtimes]
+    Product --> Agency[Agency<br/>Proactive work + memory]
     Product --> Inbox[Inbox<br/>Approvals + alerts]
     Product --> Settings[Settings<br/>Preferences + advanced runtime]
 
@@ -179,6 +181,30 @@ A chat carries one mount set:
 
 Desktop sends this mount set through Claw session and run creation APIs as the `workspace` field. Claw stores the session binding in session metadata and resolves it into the runtime `WorkspaceBinding`.
 
+### Agency
+
+Agency is the proactive work and memory visibility surface.
+
+Current implementation:
+
+- Adds Agency to the main Desktop navigation.
+- Reads `GET /api/v1/agency/config`, `GET /api/v1/agency/status`, and `GET /api/v1/agency/fires` from the active Local Claw connection.
+- Shows the singleton Agency session, profile, timer interval, risk policy, pending fire count, durable Agency files, active/latest Agency runs, and recent fires.
+- Lists memory sessions from `GET /api/v1/sessions` so users can see background extract and summary jobs alongside Agency activity.
+- Opens Agency or memory sessions in Chats for full session history.
+- Updates through notification SSE events for Agency config, fires, and clear operations.
+
+Desktop launch defaults enable both Agency and Memory for Local Claw. Settings exposes a launch preset editor so users can import preset JSON or dotenv-style variables and control startup environment variables passed to `ya-clawd`.
+
+Capabilities:
+
+- Singleton Agency status and run inspection.
+- Recent copied message and memory completion fire list.
+- Memory session list with open-in-chat navigation.
+- Durable Agency file index and action log links when file browsing lands.
+- Agency clear and maintenance actions behind explicit user controls.
+- Runtime launch preset import for Agency, Memory, profiles, bridge, and advanced Claw env settings.
+
 ### Inbox
 
 Inbox is the primary user-decision surface.
@@ -213,6 +239,7 @@ Capabilities:
 - Tokens and keychain.
 - Autostart and always-on behavior.
 - Advanced Runtime: profiles, schedules, bridges, heartbeat, runtime instances, logs, storage, and diagnostics.
+- Local Claw launch presets with Agency and Memory enabled by default plus editable startup environment variables.
 
 ### Tray / Menu Bar
 

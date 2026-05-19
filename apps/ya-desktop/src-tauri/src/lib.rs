@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -57,6 +58,44 @@ struct LocalClawStatus {
     lock_file: Option<String>,
     api_token: Option<String>,
     message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalClawEnvVar {
+    key: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalClawLaunchConfig {
+    #[serde(default = "default_true")]
+    agency_enabled: bool,
+    #[serde(default = "default_true")]
+    memory_enabled: bool,
+    #[serde(default)]
+    preset_name: Option<String>,
+    #[serde(default)]
+    env: Vec<LocalClawEnvVar>,
+    #[serde(default)]
+    config_file: Option<String>,
+}
+
+impl Default for LocalClawLaunchConfig {
+    fn default() -> Self {
+        Self {
+            agency_enabled: true,
+            memory_enabled: true,
+            preset_name: Some("Desktop default".to_string()),
+            env: Vec::new(),
+            config_file: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,6 +297,7 @@ fn start_local_claw(
 
     let layout = ensure_local_claw_layout(&app)?;
     let api_token = ensure_local_api_token(&layout.env_file)?;
+    let launch_config = read_local_claw_launch_config(&layout.launch_config_file)?;
     let command_spec = resolve_clawd_command(&app)?;
     let mut command = Command::new(&command_spec.program);
     command.args(&command_spec.args);
@@ -277,7 +317,6 @@ fn start_local_claw(
         layout.lock_file.to_string_lossy().as_ref(),
         "--ready-json",
     ]);
-    command.env("YA_CLAW_API_TOKEN", api_token);
     command.env("YA_CLAW_ENVIRONMENT", "desktop-local");
     command.env(
         "YA_CLAW_ALLOW_ORIGINS",
@@ -286,6 +325,18 @@ fn start_local_claw(
     command.env("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual");
     command.env("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local");
     command.env("YA_CLAW_AUTO_SEED_PROFILES", "true");
+    command.env(
+        "YA_CLAW_AGENCY_ENABLED",
+        bool_env(launch_config.agency_enabled),
+    );
+    command.env(
+        "YA_CLAW_MEMORY_ENABLED",
+        bool_env(launch_config.memory_enabled),
+    );
+    for entry in &launch_config.env {
+        command.env(&entry.key, &entry.value);
+    }
+    command.env("YA_CLAW_API_TOKEN", api_token);
     if let Some(seed_file) = resolve_profile_seed_file(&app) {
         command.env("YA_CLAW_PROFILE_SEED_FILE", seed_file);
     }
@@ -507,6 +558,42 @@ fn apply_ready_claw_runtime_update(
     update_state.last_error = None;
     write_runtime_update_state(&layout, &update_state)?;
     start_local_claw(app, local_claw)
+}
+
+#[tauri::command]
+fn get_local_claw_launch_config(app: AppHandle) -> Result<LocalClawLaunchConfig, String> {
+    let layout = ensure_local_claw_layout(&app)?;
+    read_local_claw_launch_config(&layout.launch_config_file)
+}
+
+#[tauri::command]
+fn update_local_claw_launch_config(
+    app: AppHandle,
+    config: LocalClawLaunchConfig,
+) -> Result<LocalClawLaunchConfig, String> {
+    let layout = ensure_local_claw_layout(&app)?;
+    let config = normalize_launch_config(config)?;
+    write_local_claw_launch_config(&layout.launch_config_file, &config)?;
+    read_local_claw_launch_config(&layout.launch_config_file)
+}
+
+#[tauri::command]
+fn reset_local_claw_launch_config(app: AppHandle) -> Result<LocalClawLaunchConfig, String> {
+    let layout = ensure_local_claw_layout(&app)?;
+    let config = with_config_file(LocalClawLaunchConfig::default(), &layout.launch_config_file);
+    write_local_claw_launch_config(&layout.launch_config_file, &config)?;
+    Ok(config)
+}
+
+#[tauri::command]
+fn import_local_claw_launch_preset(
+    app: AppHandle,
+    raw: String,
+) -> Result<LocalClawLaunchConfig, String> {
+    let layout = ensure_local_claw_layout(&app)?;
+    let config = parse_launch_preset(&raw)?;
+    write_local_claw_launch_config(&layout.launch_config_file, &config)?;
+    read_local_claw_launch_config(&layout.launch_config_file)
 }
 
 #[tauri::command]
@@ -1130,6 +1217,7 @@ fn unix_timestamp() -> Result<u64, String> {
 #[derive(Debug)]
 struct LocalClawLayout {
     env_file: PathBuf,
+    launch_config_file: PathBuf,
     data_dir: PathBuf,
     workspace_dir: PathBuf,
     sqlite_path: PathBuf,
@@ -1158,6 +1246,7 @@ fn ensure_local_claw_layout(app: &AppHandle) -> Result<LocalClawLayout, String> 
     fs::create_dir_all(&logs_dir).map_err(|error| error.to_string())?;
     Ok(LocalClawLayout {
         env_file: root.join(".env"),
+        launch_config_file: root.join("launch-config.json"),
         sqlite_path: root.join("ya_claw.sqlite3"),
         lock_file: root.join("runtime.json"),
         log_file: logs_dir.join("ya-clawd.log"),
@@ -1185,6 +1274,243 @@ fn ensure_local_api_token(env_file: &Path) -> Result<String, String> {
     }
     write_token_file(env_file, &token)?;
     Ok(token)
+}
+
+fn read_local_claw_launch_config(config_file: &Path) -> Result<LocalClawLaunchConfig, String> {
+    if !config_file.exists() {
+        let config = with_config_file(LocalClawLaunchConfig::default(), config_file);
+        write_local_claw_launch_config(config_file, &config)?;
+        return Ok(config);
+    }
+    let raw = fs::read_to_string(config_file).map_err(|error| error.to_string())?;
+    let config: LocalClawLaunchConfig =
+        serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    Ok(with_config_file(
+        normalize_launch_config(config)?,
+        config_file,
+    ))
+}
+
+fn write_local_claw_launch_config(
+    config_file: &Path,
+    config: &LocalClawLaunchConfig,
+) -> Result<(), String> {
+    if let Some(parent) = config_file.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut persisted = config.clone();
+    persisted.config_file = None;
+    let raw = serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())?;
+    fs::write(config_file, format!("{}\n", raw)).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn with_config_file(
+    mut config: LocalClawLaunchConfig,
+    config_file: &Path,
+) -> LocalClawLaunchConfig {
+    config.config_file = Some(config_file.to_string_lossy().to_string());
+    config
+}
+
+fn normalize_launch_config(
+    mut config: LocalClawLaunchConfig,
+) -> Result<LocalClawLaunchConfig, String> {
+    let mut normalized_env = Vec::new();
+    for entry in config.env {
+        let key = entry.key.trim().to_string();
+        let value = entry.value.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        validate_env_key(&key)?;
+        validate_env_value(&value)?;
+        match key.as_str() {
+            "YA_CLAW_AGENCY_ENABLED" => {
+                config.agency_enabled = parse_bool_env(&value)?;
+            }
+            "YA_CLAW_MEMORY_ENABLED" => {
+                config.memory_enabled = parse_bool_env(&value)?;
+            }
+            "YA_CLAW_API_TOKEN" => {
+                return Err(
+                    "YA_CLAW_API_TOKEN is managed by Desktop and cannot be overridden".to_string(),
+                );
+            }
+            _ => normalized_env.push(LocalClawEnvVar { key, value }),
+        }
+    }
+    normalized_env.sort_by(|left, right| left.key.cmp(&right.key));
+    normalized_env.dedup_by(|left, right| left.key == right.key);
+    config.env = normalized_env;
+    config.preset_name = config
+        .preset_name
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .or_else(|| Some("Desktop default".to_string()));
+    config.config_file = None;
+    Ok(config)
+}
+
+fn parse_launch_preset(raw: &str) -> Result<LocalClawLaunchConfig, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Launch preset cannot be empty".to_string());
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return parse_launch_preset_json(value);
+    }
+    parse_launch_preset_env(trimmed)
+}
+
+fn parse_launch_preset_json(value: serde_json::Value) -> Result<LocalClawLaunchConfig, String> {
+    let Some(object) = value.as_object() else {
+        return Err("Launch preset JSON must be an object".to_string());
+    };
+    let mut config = LocalClawLaunchConfig::default();
+    if let Some(name) = object.get("name").and_then(|value| value.as_str()) {
+        config.preset_name = Some(name.to_string());
+    }
+    if let Some(name) = object.get("presetName").and_then(|value| value.as_str()) {
+        config.preset_name = Some(name.to_string());
+    }
+    if let Some(value) = object
+        .get("agencyEnabled")
+        .and_then(|value| value.as_bool())
+    {
+        config.agency_enabled = value;
+    }
+    if let Some(value) = object
+        .get("memoryEnabled")
+        .and_then(|value| value.as_bool())
+    {
+        config.memory_enabled = value;
+    }
+    for key in ["env", "environment", "variables"] {
+        if let Some(env_value) = object.get(key) {
+            append_json_env(env_value, &mut config.env)?;
+        }
+    }
+    normalize_launch_config(config)
+}
+
+fn append_json_env(
+    value: &serde_json::Value,
+    env: &mut Vec<LocalClawEnvVar>,
+) -> Result<(), String> {
+    if let Some(object) = value.as_object() {
+        let ordered: BTreeMap<_, _> = object.iter().collect();
+        for (key, value) in ordered {
+            env.push(LocalClawEnvVar {
+                key: key.to_string(),
+                value: json_env_value(value)?,
+            });
+        }
+        return Ok(());
+    }
+    if let Some(items) = value.as_array() {
+        for item in items {
+            let Some(object) = item.as_object() else {
+                return Err("Launch preset env array items must be objects".to_string());
+            };
+            let key = object
+                .get("key")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "Launch preset env item is missing key".to_string())?;
+            let value = object
+                .get("value")
+                .map(json_env_value)
+                .transpose()?
+                .unwrap_or_default();
+            env.push(LocalClawEnvVar {
+                key: key.to_string(),
+                value,
+            });
+        }
+        return Ok(());
+    }
+    Err("Launch preset env must be an object or array".to_string())
+}
+
+fn json_env_value(value: &serde_json::Value) -> Result<String, String> {
+    if let Some(string) = value.as_str() {
+        return Ok(string.to_string());
+    }
+    if value.is_boolean() || value.is_number() {
+        return Ok(value.to_string());
+    }
+    Err("Launch preset env values must be strings, booleans, or numbers".to_string())
+}
+
+fn parse_launch_preset_env(raw: &str) -> Result<LocalClawLaunchConfig, String> {
+    let mut config = LocalClawLaunchConfig {
+        preset_name: Some("Imported env preset".to_string()),
+        ..Default::default()
+    };
+    let mut saw_env = false;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("Invalid preset line: {}", line));
+        };
+        saw_env = true;
+        config.env.push(LocalClawEnvVar {
+            key: key.trim().to_string(),
+            value: value.trim().trim_matches('"').to_string(),
+        });
+    }
+    if !saw_env {
+        return Err("Launch preset did not contain any environment variables".to_string());
+    }
+    normalize_launch_config(config)
+}
+
+fn validate_env_key(key: &str) -> Result<(), String> {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return Err("Environment variable key cannot be empty".to_string());
+    };
+    if !(first == '_' || first.is_ascii_uppercase()) {
+        return Err(format!(
+            "Environment variable key must start with A-Z or _: {}",
+            key
+        ));
+    }
+    if !chars.all(|ch| ch == '_' || ch.is_ascii_uppercase() || ch.is_ascii_digit()) {
+        return Err(format!(
+            "Environment variable key must contain only A-Z, 0-9, and _: {}",
+            key
+        ));
+    }
+    Ok(())
+}
+
+fn validate_env_value(value: &str) -> Result<(), String> {
+    if value.contains('\0') || value.contains('\n') || value.contains('\r') {
+        return Err("Environment variable values cannot contain NUL or newlines".to_string());
+    }
+    Ok(())
+}
+
+fn parse_bool_env(value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(format!("Invalid boolean environment value: {}", value)),
+    }
+}
+
+fn bool_env(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 fn generate_local_token() -> Result<String, String> {
@@ -1503,6 +1829,10 @@ pub fn run() {
             start_local_claw,
             stop_local_claw,
             restart_local_claw,
+            get_local_claw_launch_config,
+            update_local_claw_launch_config,
+            reset_local_claw_launch_config,
+            import_local_claw_launch_preset,
             get_runtime_manager_status,
             install_latest_claw_runtime,
             update_claw_runtime,

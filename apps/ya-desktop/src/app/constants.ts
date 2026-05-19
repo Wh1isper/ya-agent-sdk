@@ -1,6 +1,7 @@
 import {
   BriefcaseBusiness,
   Home,
+  BrainCircuit,
   Inbox,
   LayoutDashboard,
   MessageSquareText,
@@ -48,6 +49,12 @@ export const navItems: NavItem[] = [
     label: 'Spaces',
     helper: 'Workspaces',
     icon: BriefcaseBusiness,
+  },
+  {
+    route: 'agency',
+    label: 'Agency',
+    helper: 'Proactive work',
+    icon: BrainCircuit,
   },
   { route: 'inbox', label: 'Inbox', helper: 'Decisions', icon: Inbox },
 ]

@@ -1,6 +1,7 @@
 import type { DesktopSpace, AppRoute } from './types'
 import { BoardPage } from './pages/BoardPage'
 import { ChatsPage } from './pages/ChatsPage'
+import { AgencyPage } from './pages/AgencyPage'
 import { HomePage } from './pages/HomePage'
 import { InboxPage } from './pages/InboxPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -53,6 +54,8 @@ export function AppRouteOutlet({
           onSelectSpace={onSelectSpace}
         />
       )
+    case 'agency':
+      return <AgencyPage onOpenSession={onOpenSession} />
     case 'inbox':
       return <InboxPage onOpenSession={onOpenSession} />
     case 'settings':

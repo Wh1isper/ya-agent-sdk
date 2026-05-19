@@ -47,6 +47,12 @@ export const clawQueryKeys = {
     connection: DesktopClawConnection | null | undefined,
     runId: string | null,
   ) => ['claw', connectionScope(connection), 'runs', runId, 'trace'] as const,
+  agencyConfig: (connection?: DesktopClawConnection | null) =>
+    ['claw', connectionScope(connection), 'agency', 'config'] as const,
+  agencyStatus: (connection?: DesktopClawConnection | null) =>
+    ['claw', connectionScope(connection), 'agency', 'status'] as const,
+  agencyFires: (connection?: DesktopClawConnection | null) =>
+    ['claw', connectionScope(connection), 'agency', 'fires'] as const,
 }
 
 export function useActiveClawConnection() {
@@ -155,6 +161,56 @@ export function useCreateClawSessionRunStream(
         }),
         queryClient.invalidateQueries({
           queryKey: clawQueryKeys.turns(connection, variables?.sessionId ?? null),
+        }),
+      ])
+    },
+  })
+}
+
+export function useClawAgencyConfig(connection?: DesktopClawConnection | null) {
+  return useQuery({
+    queryKey: clawQueryKeys.agencyConfig(connection),
+    queryFn: () => createClawClient(requiredConnection(connection)).getAgencyConfig(),
+    enabled: Boolean(connection),
+  })
+}
+
+export function useClawAgencyStatus(connection?: DesktopClawConnection | null) {
+  return useQuery({
+    queryKey: clawQueryKeys.agencyStatus(connection),
+    queryFn: () => createClawClient(requiredConnection(connection)).getAgencyStatus(),
+    enabled: Boolean(connection),
+    refetchInterval: connection ? 10_000 : false,
+  })
+}
+
+export function useClawAgencyFires(connection?: DesktopClawConnection | null) {
+  return useQuery({
+    queryKey: clawQueryKeys.agencyFires(connection),
+    queryFn: () => createClawClient(requiredConnection(connection)).listAgencyFires(),
+    enabled: Boolean(connection),
+    refetchInterval: connection ? 10_000 : false,
+  })
+}
+
+export function useClearClawAgency(connection?: DesktopClawConnection | null) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => createClawClient(requiredConnection(connection)).clearAgency(),
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.agencyConfig(connection),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.agencyStatus(connection),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.agencyFires(connection),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.sessions(connection),
         }),
       ])
     },
@@ -288,6 +344,24 @@ async function applyNotificationEvent(
         }),
       ])
     }
+  }
+
+  if (
+    event.type === 'agency.config.updated' ||
+    event.type === 'agency.fire.updated' ||
+    event.type === 'agency.cleared'
+  ) {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: clawQueryKeys.agencyConfig(connection),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: clawQueryKeys.agencyStatus(connection),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: clawQueryKeys.agencyFires(connection),
+      }),
+    ])
   }
 
   if (

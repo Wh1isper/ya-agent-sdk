@@ -296,6 +296,108 @@ export type ClawRunTraceItem = {
   truncated?: boolean
 }
 
+export type ClawAgencyRiskPolicy = {
+  max_auto_action_risk?: string
+  maxAutoActionRisk?: string
+}
+
+export type ClawAgencyConfig = {
+  enabled: boolean
+  profile_name?: string
+  profileName?: string
+  timer_interval_seconds?: number
+  timerIntervalSeconds?: number
+  agency_session_id?: string
+  agencySessionId?: string
+  singleton_scope_key?: string
+  singletonScopeKey?: string
+  singleton_source_session_id?: string
+  singletonSourceSessionId?: string
+  risk_policy?: ClawAgencyRiskPolicy
+  riskPolicy?: ClawAgencyRiskPolicy
+  memory_files?: Record<string, string>
+  memoryFiles?: Record<string, string>
+  next_fire_at?: string | null
+  nextFireAt?: string | null
+}
+
+export type ClawAgencyFire = {
+  id: string
+  kind: string
+  status: string
+  scheduled_at?: string
+  scheduledAt?: string
+  fired_at?: string | null
+  firedAt?: string | null
+  dedupe_key?: string
+  dedupeKey?: string
+  source_session_id?: string | null
+  sourceSessionId?: string | null
+  source_run_id?: string | null
+  sourceRunId?: string | null
+  agency_session_id?: string | null
+  agencySessionId?: string | null
+  run_id?: string | null
+  runId?: string | null
+  active_run_id?: string | null
+  activeRunId?: string | null
+  run_status?: string | null
+  runStatus?: string | null
+  priority?: number
+  payload?: JsonObject
+  error_message?: string | null
+  errorMessage?: string | null
+  created_at?: string
+  createdAt?: string
+  updated_at?: string
+  updatedAt?: string
+  consumed_at?: string | null
+  consumedAt?: string | null
+}
+
+export type ClawAgencyFireListResponse = {
+  fires: ClawAgencyFire[]
+}
+
+export type ClawAgencyStatus = {
+  enabled: boolean
+  agency_session_id?: string
+  agencySessionId?: string
+  state: 'idle' | 'queued' | 'running' | string
+  active_run?: ClawRunSummary | null
+  activeRun?: ClawRunSummary | null
+  latest_run?: ClawRunSummary | null
+  latestRun?: ClawRunSummary | null
+  active_run_id?: string | null
+  activeRunId?: string | null
+  latest_run_id?: string | null
+  latestRunId?: string | null
+  next_fire_at?: string | null
+  nextFireAt?: string | null
+  pending_fire_count?: number
+  pendingFireCount?: number
+  last_fire?: ClawAgencyFire | null
+  lastFire?: ClawAgencyFire | null
+  agency_session?: ClawSessionSummary
+  agencySession?: ClawSessionSummary
+}
+
+export type ClawAgencyClearResponse = {
+  accepted: boolean
+  cleared_session_id?: string | null
+  clearedSessionId?: string | null
+  new_agency_session_id?: string
+  newAgencySessionId?: string
+  archived_run_ids?: string[]
+  archivedRunIds?: string[]
+  deleted_fire_count?: number
+  deletedFireCount?: number
+  cleared_at?: string
+  clearedAt?: string
+  agency_session?: ClawSessionSummary
+  agencySession?: ClawSessionSummary
+}
+
 export type ClawRunTraceResponse = {
   run_id?: string
   runId?: string

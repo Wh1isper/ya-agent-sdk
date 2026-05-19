@@ -3,6 +3,7 @@ import {
   Activity,
   Download,
   FileText,
+  Import,
   Play,
   RefreshCw,
   RotateCcw,
@@ -15,17 +16,22 @@ import { cn } from '../lib'
 import {
   applyReadyClawRuntimeUpdate,
   checkClawRuntimeUpdate,
+  getLocalClawLaunchConfig,
   getLocalClawStatus,
   getRuntimeInstallLog,
   getRuntimeManagerStatus,
+  importLocalClawLaunchPreset,
   installLatestClawRuntime,
   removeClawRuntime,
   repairClawRuntime,
+  resetLocalClawLaunchConfig,
   restartLocalClaw,
   startLocalClaw,
   stopLocalClaw,
   updateClawRuntime,
+  updateLocalClawLaunchConfig,
   type InstalledClawRuntime,
+  type LocalClawEnvVar,
 } from './index'
 
 const runtimeStatusKey = ['runtime-manager-status']
@@ -34,6 +40,9 @@ const localClawStatusKey = ['local-claw-status']
 export function RuntimeManagerPanel() {
   const queryClient = useQueryClient()
   const [installLog, setInstallLog] = useState('')
+  const [presetText, setPresetText] = useState(defaultPresetText)
+  const [extraEnvKey, setExtraEnvKey] = useState('')
+  const [extraEnvValue, setExtraEnvValue] = useState('')
 
   const runtimeStatus = useQuery({
     queryKey: runtimeStatusKey,
@@ -43,11 +52,16 @@ export function RuntimeManagerPanel() {
     queryKey: localClawStatusKey,
     queryFn: getLocalClawStatus,
   })
+  const launchConfig = useQuery({
+    queryKey: ['local-claw-launch-config'],
+    queryFn: getLocalClawLaunchConfig,
+  })
 
   const invalidate = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: runtimeStatusKey }),
       queryClient.invalidateQueries({ queryKey: localClawStatusKey }),
+      queryClient.invalidateQueries({ queryKey: ['local-claw-launch-config'] }),
     ])
   }
 
@@ -56,6 +70,9 @@ export function RuntimeManagerPanel() {
   const repairMutation = useRuntimeMutation(() => repairClawRuntime(), invalidate)
   const startMutation = useRuntimeMutation(startLocalClaw, invalidate)
   const stopMutation = useRuntimeMutation(stopLocalClaw, invalidate)
+  const launchConfigMutation = useRuntimeMutation(updateLocalClawLaunchConfig, invalidate)
+  const resetLaunchConfigMutation = useRuntimeMutation(resetLocalClawLaunchConfig, invalidate)
+  const importPresetMutation = useRuntimeMutation(importLocalClawLaunchPreset, invalidate)
   const restartMutation = useRuntimeMutation(restartLocalClaw, invalidate)
   const removeMutation = useRuntimeMutation(removeClawRuntime, invalidate)
   const checkUpdateMutation = useRuntimeMutation(checkClawRuntimeUpdate, invalidate)
@@ -68,6 +85,7 @@ export function RuntimeManagerPanel() {
 
   const active = runtimeStatus.data?.active
   const updateState = runtimeStatus.data?.updateState
+  const currentLaunchConfig = launchConfig.data
   const running = localStatus.data?.running ?? false
   const busy =
     installMutation.isPending ||
@@ -76,6 +94,9 @@ export function RuntimeManagerPanel() {
     startMutation.isPending ||
     stopMutation.isPending ||
     restartMutation.isPending ||
+    launchConfigMutation.isPending ||
+    resetLaunchConfigMutation.isPending ||
+    importPresetMutation.isPending ||
     removeMutation.isPending ||
     checkUpdateMutation.isPending ||
     applyUpdateMutation.isPending
@@ -151,6 +172,135 @@ export function RuntimeManagerPanel() {
           value={runtimeStatus.data?.uvPath ? 'Configured' : 'Resolving'}
           detail={runtimeStatus.data?.uvPath ?? 'Bundled or PATH uv'}
         />
+      </div>
+
+      <div className="mt-6 rounded-3xl border border-black/[0.06] bg-[#f7f7f4] p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-950">Launch preset</p>
+            <p className="mt-1 text-sm leading-6 text-slate-500">
+              Desktop starts Local Claw with Agency and Memory enabled by default. Import a preset or add environment variables for local daemon startup.
+            </p>
+            <p className="mt-2 truncate text-xs text-slate-400">
+              {currentLaunchConfig?.configFile ?? 'Launch config file'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <ToggleButton
+              active={currentLaunchConfig?.agencyEnabled ?? true}
+              label="Agency"
+              disabled={busy || !currentLaunchConfig}
+              onClick={() => {
+                if (currentLaunchConfig) {
+                  launchConfigMutation.mutate({
+                    ...currentLaunchConfig,
+                    agencyEnabled: !currentLaunchConfig.agencyEnabled,
+                  })
+                }
+              }}
+            />
+            <ToggleButton
+              active={currentLaunchConfig?.memoryEnabled ?? true}
+              label="Memory"
+              disabled={busy || !currentLaunchConfig}
+              onClick={() => {
+                if (currentLaunchConfig) {
+                  launchConfigMutation.mutate({
+                    ...currentLaunchConfig,
+                    memoryEnabled: !currentLaunchConfig.memoryEnabled,
+                  })
+                }
+              }}
+            />
+          </div>
+        </div>
+        <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_0.9fr]">
+          <div>
+            <div className="flex gap-2">
+              <input
+                className="min-w-0 flex-1 rounded-2xl border border-black/[0.06] bg-white px-3 py-2 text-sm outline-none focus:border-blue-300"
+                placeholder="YA_CLAW_AGENT_STREAM_RESUME_MAX_ATTEMPTS"
+                value={extraEnvKey}
+                onChange={(event) => setExtraEnvKey(event.target.value)}
+              />
+              <input
+                className="min-w-0 flex-1 rounded-2xl border border-black/[0.06] bg-white px-3 py-2 text-sm outline-none focus:border-blue-300"
+                placeholder="value"
+                value={extraEnvValue}
+                onChange={(event) => setExtraEnvValue(event.target.value)}
+              />
+              <button
+                type="button"
+                className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-slate-700 ring-1 ring-black/[0.06] disabled:cursor-not-allowed disabled:text-slate-400"
+                disabled={busy || !currentLaunchConfig || !extraEnvKey.trim()}
+                onClick={() => {
+                  if (!currentLaunchConfig) return
+                  const entry: LocalClawEnvVar = { key: extraEnvKey.trim(), value: extraEnvValue.trim() }
+                  launchConfigMutation.mutate({
+                    ...currentLaunchConfig,
+                    env: upsertEnv(currentLaunchConfig.env, entry),
+                  })
+                  setExtraEnvKey('')
+                  setExtraEnvValue('')
+                }}
+              >
+                Add env
+              </button>
+            </div>
+            <div className="mt-3 space-y-2">
+              {(currentLaunchConfig?.env ?? []).map((entry) => (
+                <div key={entry.key} className="flex items-center gap-2 rounded-2xl bg-white px-3 py-2 text-sm ring-1 ring-black/[0.05]">
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-700">
+                    {entry.key}={entry.value}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded-xl px-2 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50"
+                    disabled={busy || !currentLaunchConfig}
+                    onClick={() => {
+                      if (currentLaunchConfig) {
+                        launchConfigMutation.mutate({
+                          ...currentLaunchConfig,
+                          env: currentLaunchConfig.env.filter((item) => item.key !== entry.key),
+                        })
+                      }
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              {currentLaunchConfig?.env.length === 0 && (
+                <p className="rounded-2xl bg-white px-3 py-2 text-sm text-slate-500 ring-1 ring-black/[0.05]">
+                  No extra environment variables.
+                </p>
+              )}
+            </div>
+          </div>
+          <div>
+            <textarea
+              className="h-40 w-full resize-none rounded-2xl border border-black/[0.06] bg-white p-3 font-mono text-xs leading-5 text-slate-700 outline-none focus:border-blue-300"
+              value={presetText}
+              onChange={(event) => setPresetText(event.target.value)}
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <ActionButton
+                icon={Import}
+                label="Import preset"
+                busy={importPresetMutation.isPending}
+                disabled={busy || !presetText.trim()}
+                onClick={() => importPresetMutation.mutate(presetText)}
+              />
+              <ActionButton
+                icon={RotateCcw}
+                label="Reset preset"
+                busy={resetLaunchConfigMutation.isPending}
+                disabled={busy}
+                onClick={() => resetLaunchConfigMutation.mutate()}
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
@@ -259,6 +409,21 @@ function useRuntimeMutation<TArgs, TResult>(
   })
 }
 
+const defaultPresetText = `{
+  "presetName": "Desktop default",
+  "agencyEnabled": true,
+  "memoryEnabled": true,
+  "env": {
+    "YA_CLAW_AGENCY_TIMER_INTERVAL_SECONDS": "3600"
+  }
+}`
+
+function upsertEnv(env: LocalClawEnvVar[], entry: LocalClawEnvVar) {
+  return [...env.filter((item) => item.key !== entry.key), entry].sort((left, right) =>
+    left.key.localeCompare(right.key),
+  )
+}
+
 function showError(error: unknown) {
   toast.error(error instanceof Error ? error.message : String(error))
 }
@@ -285,6 +450,34 @@ type RuntimeManagerStatusUpdateState = NonNullable<
 
 function formatUnixTime(value: number) {
   return new Date(value * 1000).toLocaleString()
+}
+
+function ToggleButton({
+  active,
+  label,
+  disabled,
+  onClick,
+}: {
+  active: boolean
+  label: string
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        'rounded-2xl px-4 py-2 text-sm font-semibold ring-1 transition disabled:cursor-not-allowed disabled:opacity-60',
+        active
+          ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+          : 'bg-white text-slate-600 ring-black/[0.06]',
+      )}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {label} {active ? 'On' : 'Off'}
+    </button>
+  )
 }
 
 function StatusCard({ label, value, detail }: { label: string; value: string; detail: string }) {

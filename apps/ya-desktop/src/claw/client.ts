@@ -4,6 +4,10 @@ import {
 } from '@microsoft/fetch-event-source'
 
 import type {
+  ClawAgencyClearResponse,
+  ClawAgencyConfig,
+  ClawAgencyFireListResponse,
+  ClawAgencyStatus,
   ClawHealth,
   ClawInfo,
   ClawNotificationEvent,
@@ -54,6 +58,24 @@ export class ClawHttpClient {
 
   listSessions() {
     return this.fetchJson<ClawSessionSummary[]>('/api/v1/sessions')
+  }
+
+  getAgencyConfig() {
+    return this.fetchJson<ClawAgencyConfig>('/api/v1/agency/config')
+  }
+
+  getAgencyStatus() {
+    return this.fetchJson<ClawAgencyStatus>('/api/v1/agency/status')
+  }
+
+  listAgencyFires() {
+    return this.fetchJson<ClawAgencyFireListResponse>('/api/v1/agency/fires')
+  }
+
+  clearAgency() {
+    return this.fetchJson<ClawAgencyClearResponse>('/api/v1/agency:clear', {
+      method: 'POST',
+    })
   }
 
   createSessionStream(

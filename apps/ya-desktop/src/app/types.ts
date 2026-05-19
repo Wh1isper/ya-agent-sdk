@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
 
-export type AppRoute = 'home' | 'chats' | 'board' | 'spaces' | 'inbox' | 'settings'
+export type AppRoute = 'home' | 'chats' | 'board' | 'spaces' | 'agency' | 'inbox' | 'settings'
 
 export type DesktopLayoutPreferences = {
   leftSidebarCollapsed: boolean
