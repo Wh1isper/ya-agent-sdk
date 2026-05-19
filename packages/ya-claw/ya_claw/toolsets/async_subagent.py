@@ -48,6 +48,7 @@ class SpawnDelegateTool(BaseTool):
     """Spawn or resume a named session-backed async subagent."""
 
     name = "spawn_delegate"
+    blocks_async_subagent = True
     description = "Spawn or resume a named YA Claw async subagent session. Returns immediately."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
@@ -85,6 +86,7 @@ class SpawnDelegateTool(BaseTool):
 
 class ListAsyncSubagentsTool(BaseTool):
     name = "list_async_subagents"
+    blocks_async_subagent = True
     description = "List async subagents for the current YA Claw parent session."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
@@ -108,6 +110,7 @@ class ListAsyncSubagentsTool(BaseTool):
 
 class GetAsyncSubagentTool(BaseTool):
     name = "get_async_subagent"
+    blocks_async_subagent = True
     description = "Get async subagent metadata, result summary, child session, latest run, and trace references."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
@@ -129,6 +132,7 @@ class GetAsyncSubagentTool(BaseTool):
 
 class SteerAsyncSubagentTool(BaseTool):
     name = "steer_async_subagent"
+    blocks_async_subagent = True
     description = "Send input to a running async subagent. Queued or idle children return status and instructions."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
@@ -156,6 +160,7 @@ class SteerAsyncSubagentTool(BaseTool):
 
 class CancelAsyncSubagentTool(BaseTool):
     name = "cancel_async_subagent"
+    blocks_async_subagent = True
     description = "Request cancellation for a queued or running async subagent."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:

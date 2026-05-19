@@ -53,6 +53,18 @@ def _text(value: str) -> TextPart:
     return TextPart(type="text", text=value)
 
 
+def test_agency_source_session_submit_request_accepts_session_id_aliases() -> None:
+    from ya_claw.controller.models import AgencySourceSessionSubmitRequest
+
+    modern = AgencySourceSessionSubmitRequest(session_id="session-1", prompt="hello")
+    legacy = AgencySourceSessionSubmitRequest(source_session_id="session-2", prompt="hello")
+
+    assert modern.session_id == "session-1"
+    assert legacy.session_id == "session-2"
+    assert modern.handoff_kind == "reminder"
+    assert modern.handoff_tags == ["agency-reminder"]
+
+
 async def test_message_observed_creates_singleton_agency_session_and_run(
     db_session: AsyncSession,
     settings: ClawSettings,
@@ -451,7 +463,7 @@ async def test_heartbeat_due_creates_and_dispatches_fire(
     assert fire.payload["reason"] == "idle_proactive_review"
     assert fire.payload["review_scope"]["pending_intentions"] is True
     instructions = " ".join(fire.payload["instructions"])
-    assert "submit_to_source_session" in instructions
+    assert "submit_to_session" in instructions
     assert "make no file changes" in instructions
     run = await db_session.get(RunRecord, result.submitted_run_ids[0])
     assert isinstance(run, RunRecord)
@@ -617,7 +629,7 @@ async def test_session_submit_creates_merges_and_steers(
     assert runtime_state.consume_steering_inputs(run.id)[0][0]["text"] == "third"
 
 
-async def test_agency_submit_to_source_session_creates_handoff_run(
+async def test_agency_submit_to_session_creates_handoff_run(
     db_session: AsyncSession,
     settings: ClawSettings,
 ) -> None:
@@ -648,14 +660,16 @@ async def test_agency_submit_to_source_session_creates_handoff_run(
     runtime_state = create_runtime_state()
     runtime_state.register_run("agency-session", "agency-run", dispatch_mode="async")
 
-    response = await AgencyController().submit_to_source_session(
+    response = await AgencyController().submit_to_session(
         db_session,
         settings,
         runtime_state,
         AgencySourceSessionSubmitRequest(
-            source_session_id="source-session",
+            session_id="source-session",
             prompt="Review the async findings and update the user.",
             metadata={"fire_ids": ["fire-1"]},
+            handoff_kind="async_result",
+            handoff_tags=["agency-reminder", "async-result"],
             agency_session_id="agency-session",
             agency_run_id="agency-run",
         ),
@@ -669,15 +683,19 @@ async def test_agency_submit_to_source_session_creates_handoff_run(
     assert run.trigger_type == TriggerType.AGENCY_HANDOFF.value
     assert run.input_parts[0]["text"] == "Review the async findings and update the user."
     assert run.input_parts[0]["metadata"]["source"] == "agency_handoff"
+    assert run.input_parts[0]["metadata"]["handoff_kind"] == "async_result"
+    assert run.input_parts[0]["metadata"]["handoff_tags"] == ["agency-reminder", "async-result"]
     handoff = run.run_metadata["agency_handoff"]
     assert handoff["latest"]["agency_session_id"] == "agency-session"
     assert handoff["latest"]["agency_run_id"] == "agency-run"
     assert handoff["latest"]["source_session_id"] == "source-session"
+    assert handoff["latest"]["kind"] == "async_result"
+    assert handoff["latest"]["tags"] == ["agency-reminder", "async-result"]
     assert handoff["latest"]["metadata"] == {"fire_ids": ["fire-1"]}
     assert handoff["handoffs"] == [handoff["latest"]]
 
 
-async def test_agency_submit_to_source_session_merges_queued_source_run(
+async def test_agency_submit_to_session_merges_queued_source_run(
     db_session: AsyncSession,
     settings: ClawSettings,
 ) -> None:
@@ -723,12 +741,12 @@ async def test_agency_submit_to_source_session_merges_queued_source_run(
     runtime_state = create_runtime_state()
     runtime_state.register_run("agency-session", "agency-run", dispatch_mode="async")
 
-    response = await AgencyController().submit_to_source_session(
+    response = await AgencyController().submit_to_session(
         db_session,
         settings,
         runtime_state,
         AgencySourceSessionSubmitRequest(
-            source_session_id="source-session",
+            session_id="source-session",
             prompt="Add agency context.",
             metadata={"source_run_ids": ["run-1"]},
             agency_session_id="agency-session",
@@ -744,7 +762,7 @@ async def test_agency_submit_to_source_session_merges_queued_source_run(
     assert len(source_run.run_metadata["agency_handoff"]["handoffs"]) == 1
 
 
-async def test_agency_submit_to_source_session_steers_running_source_run(
+async def test_agency_submit_to_session_steers_running_source_run(
     db_session: AsyncSession,
     settings: ClawSettings,
 ) -> None:
@@ -791,12 +809,12 @@ async def test_agency_submit_to_source_session_steers_running_source_run(
     runtime_state.register_run("source-session", "source-run", dispatch_mode="async")
     runtime_state.register_run("agency-session", "agency-run", dispatch_mode="async")
 
-    response = await AgencyController().submit_to_source_session(
+    response = await AgencyController().submit_to_session(
         db_session,
         settings,
         runtime_state,
         AgencySourceSessionSubmitRequest(
-            source_session_id="source-session",
+            session_id="source-session",
             prompt="Steer with agency context.",
             metadata={"async_task_ids": ["task-1"]},
             agency_session_id="agency-session",
@@ -810,10 +828,12 @@ async def test_agency_submit_to_source_session_steers_running_source_run(
     assert steering[0][0]["text"] == "Steer with agency context."
     await db_session.refresh(source_run)
     assert [part["text"] for part in source_run.input_parts] == ["original", "Steer with agency context."]
+    assert source_run.run_metadata["agency_handoff"]["latest"]["kind"] == "reminder"
+    assert source_run.run_metadata["agency_handoff"]["latest"]["tags"] == ["agency-reminder"]
     assert source_run.run_metadata["agency_handoff"]["latest"]["metadata"] == {"async_task_ids": ["task-1"]}
 
 
-async def test_agency_submit_to_source_session_rejects_invalid_callers_and_targets(
+async def test_agency_submit_to_session_rejects_invalid_callers_and_targets(
     db_session: AsyncSession,
     settings: ClawSettings,
 ) -> None:
@@ -850,12 +870,12 @@ async def test_agency_submit_to_source_session_rejects_invalid_callers_and_targe
     await db_session.commit()
 
     with pytest.raises(HTTPException) as queued_exc:
-        await controller.submit_to_source_session(
+        await controller.submit_to_session(
             db_session,
             settings,
             create_runtime_state(),
             AgencySourceSessionSubmitRequest(
-                source_session_id="source-session",
+                session_id="source-session",
                 prompt="hello",
                 agency_session_id="agency-session",
                 agency_run_id="agency-run",
@@ -869,12 +889,12 @@ async def test_agency_submit_to_source_session_rejects_invalid_callers_and_targe
     runtime_state = create_runtime_state()
     runtime_state.register_run("agency-session", "agency-run", dispatch_mode="async")
     with pytest.raises(HTTPException) as target_exc:
-        await controller.submit_to_source_session(
+        await controller.submit_to_session(
             db_session,
             settings,
             runtime_state,
             AgencySourceSessionSubmitRequest(
-                source_session_id="memory-session",
+                session_id="memory-session",
                 prompt="hello",
                 agency_session_id="agency-session",
                 agency_run_id="agency-run",

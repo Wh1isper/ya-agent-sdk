@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -85,45 +87,67 @@ class GetSourceRunTraceTool(BaseTool):
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-class SubmitToSourceSessionTool(BaseTool):
-    """Submit a prompt handoff from Agency to a source conversation session."""
+class SubmitToSessionTool(BaseTool):
+    """Submit a proactive Agency nudge to a conversation session."""
 
-    name = "submit_to_source_session"
+    name = "submit_to_session"
+    agency_only = True
     description = (
-        "Submit an Agency handoff prompt to a chosen source conversation session. "
-        "The target session will submit, merge, or steer automatically."
+        "Submit an Agency proactive nudge to a chosen conversation session. "
+        "Use it to remind the session agent, share useful cross-session context, suggest a person to ask, "
+        "or prompt a lightweight next action. The target session will submit, merge, or steer automatically."
     )
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_agency_self_client(ctx) is not None
 
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        if not self.is_available(ctx):
+            return None
+        return _submit_to_session_instructions()
+
     async def call(
         self,
         ctx: RunContext[AgentContext],
-        source_session_id: Annotated[
+        session_id: Annotated[
             str,
-            Field(description="Target source conversation session ID that should receive the handoff"),
+            Field(description="Target conversation session ID that should receive the proactive nudge"),
         ],
-        prompt: Annotated[str, Field(description="Complete handoff prompt for the source session agent")],
+        prompt: Annotated[
+            str,
+            Field(description="Natural-language proactive guidance for the session agent to interpret freely"),
+        ],
         metadata: Annotated[
             dict[str, Any] | None,
             Field(
-                description="Optional compact provenance such as fire_ids, source_run_ids, async_task_ids, and artifact_paths"
+                description="Optional compact provenance such as fire_ids, source_run_ids, async_task_ids, people, groups, and artifact_paths"
             ),
+        ] = None,
+        handoff_kind: Annotated[
+            str,
+            Field(
+                description="Lightweight engineering tag for this nudge, such as reminder, context, task, risk, or async_result"
+            ),
+        ] = "reminder",
+        handoff_tags: Annotated[
+            list[str] | None,
+            Field(description="Optional engineering tags. agency-reminder is added automatically."),
         ] = None,
     ) -> str:
         client = _get_agency_self_client(ctx)
         if client is None:
-            return "Error: YA Claw source-session submit client is unavailable."
+            return "Error: YA Claw submit-to-session client is unavailable."
         try:
-            payload = await client.submit_to_source_session(
-                source_session_id=source_session_id,
+            payload = await client.submit_to_session(
+                session_id=session_id,
                 prompt=prompt,
                 metadata=metadata,
+                handoff_kind=handoff_kind,
+                handoff_tags=handoff_tags,
             )
         except Exception as exc:
             return f"Error: {exc}"
-        return _format_source_session_submit_response(payload)
+        return _format_session_submit_response(payload)
 
 
 class ListAgencyRunsTool(BaseTool):
@@ -147,13 +171,19 @@ class ListAgencyRunsTool(BaseTool):
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def _format_source_session_submit_response(payload: dict[str, Any]) -> str:
-    source_session_id = payload.get("source_session_id")
+@lru_cache(maxsize=1)
+def _submit_to_session_instructions() -> str:
+    path = Path(__file__).with_name("submit_to_session_instructions.md")
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _format_session_submit_response(payload: dict[str, Any]) -> str:
+    session_id = payload.get("source_session_id")
     delivery = payload.get("delivery")
     run_id = payload.get("run_id")
     status = payload.get("status")
     attrs = {
-        "source-session-id": source_session_id,
+        "session-id": session_id,
         "delivery": delivery,
         "run-id": run_id,
         "status": status,
@@ -161,7 +191,7 @@ def _format_source_session_submit_response(payload: dict[str, Any]) -> str:
     attr_text = " ".join(
         f'{key}="{_xml_escape(value)}"' for key, value in attrs.items() if isinstance(value, str) and value
     )
-    return f"<source-session-submit {attr_text}>\nSubmitted Agency handoff to source session.\n</source-session-submit>"
+    return f"<submit-to-session {attr_text}>\nSubmitted Agency proactive nudge to session.\n</submit-to-session>"
 
 
 def _xml_escape(value: object) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -214,7 +215,7 @@ def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
     assert "cancel_async_subagent" in resolved_tool_names
     assert "list_session_turns" in resolved_tool_names
     assert "get_run_trace" in resolved_tool_names
-    assert "submit_to_source_session" in resolved_tool_names
+    assert "submit_to_session" in resolved_tool_names
 
 
 def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_path: Path) -> None:
@@ -235,7 +236,7 @@ def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_
     assert "spawn_delegate" in resolved_tool_names
     assert "list_source_session_turns" in resolved_tool_names
     assert "get_source_run_trace" in resolved_tool_names
-    assert "submit_to_source_session" in resolved_tool_names
+    assert "submit_to_session" in resolved_tool_names
     assert "create_schedule" in resolved_tool_names
 
 
@@ -244,7 +245,7 @@ def test_agency_prompt_instructs_async_subagent_orchestration() -> None:
     assert "Spawn subagents with stable names" in AGENCY_SYSTEM_PROMPT
     assert "Keep ownership of proactive strategy" in AGENCY_SYSTEM_PROMPT
     assert "Use `list_async_subagents` and `get_async_subagent`" in AGENCY_SYSTEM_PROMPT
-    assert "submit_to_source_session" in AGENCY_SYSTEM_PROMPT
+    assert "submit_to_session" in AGENCY_SYSTEM_PROMPT
 
 
 def test_agency_prompt_allows_noop_heartbeat_without_file_writes() -> None:
@@ -564,8 +565,8 @@ def test_runtime_builder_system_prompt_loads_agency_handoff_context(tmp_path: Pa
         },
     )
 
-    assert '<agency-handoff-context source="agency_handoff">' in system_prompt
-    assert "global Agency session" in system_prompt
+    assert '<agency-handoff-context source="agency_handoff" tag="agency-reminder">' in system_prompt
+    assert "proactive nudge" in system_prompt
     assert '"agency_run_id": "agency-run"' in system_prompt
     assert '<memory-md-context path="/workspace/memory/MEMORY.md">' in system_prompt
 
@@ -787,7 +788,7 @@ def test_agency_global_tools_are_available_only_for_agency_runs(tmp_path: Path) 
         GetSourceRunTraceTool,
         ListAgencyRunsTool,
         ListSourceSessionTurnsTool,
-        SubmitToSourceSessionTool,
+        SubmitToSessionTool,
     )
     from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY, ClawSelfClient
 
@@ -864,10 +865,25 @@ def test_agency_global_tools_are_available_only_for_agency_runs(tmp_path: Path) 
         ListSourceSessionTurnsTool(),
         GetSourceRunTraceTool(),
         ListAgencyRunsTool(),
-        SubmitToSourceSessionTool(),
+        SubmitToSessionTool(),
     ]
     api_ctx = _RunContext(api_runtime.ctx)
     agency_ctx = _RunContext(agency_runtime.ctx)
 
     assert [tool.is_available(api_ctx) for tool in tools] == [False, False, False, False]  # type: ignore[arg-type]
     assert [tool.is_available(agency_ctx) for tool in tools] == [True, True, True, True]  # type: ignore[arg-type]
+    submit_instruction = asyncio.run(tools[-1].get_instruction(agency_ctx))  # type: ignore[arg-type]
+    assert submit_instruction is not None
+    assert '<tool-instruction name="submit_to_session">' in submit_instruction
+    assert "proactive reminder or nudge" in submit_instruction
+
+    api_tool_names = [
+        getattr(tool, "name", tool.__name__)
+        for tool in builder._filter_builtin_tools(builder._resolve_builtin_tools(["core"]), None, source_kind="api")
+    ]
+    agency_tool_names = [
+        getattr(tool, "name", tool.__name__)
+        for tool in builder._filter_builtin_tools(builder._resolve_builtin_tools(["core"]), None, source_kind="agency")
+    ]
+    assert "submit_to_session" not in api_tool_names
+    assert "submit_to_session" in agency_tool_names

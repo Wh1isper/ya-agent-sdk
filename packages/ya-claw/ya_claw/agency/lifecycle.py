@@ -703,7 +703,7 @@ def _heartbeat_payload(*, settings: ClawSettings, now: datetime, next_fire_at: d
             "Review Agency files for stale intentions, open loops, and deferred decisions.",
             "Inspect recent source sessions or run traces only when they clarify an actionable loop.",
             "Prefer low-risk synthesis, preparation, and cross-session connection work.",
-            "Use submit_to_source_session when a specific source conversation session should act or decide.",
+            "Use submit_to_session when global context can help a specific conversation session answer better, coordinate people, remind a group, route work, or decide a next action.",
             "Record useful findings and next trigger conditions only when they change Agency state.",
             "When no action, handoff, file update, or durable insight is useful, make no file changes and end with a brief no-op report.",
         ],

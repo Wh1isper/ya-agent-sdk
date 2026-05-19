@@ -60,7 +60,7 @@ async def submit_agency_handoff_to_source_session(
 ) -> AgencySourceSessionSubmitResponse:
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
-        response = await controller.submit_to_source_session(
+        response = await controller.submit_to_session(
             db_session,
             _get_settings(request),
             _get_runtime_state(request),

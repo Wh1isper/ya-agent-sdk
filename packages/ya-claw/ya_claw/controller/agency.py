@@ -33,6 +33,17 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.workspace.models import WorkspaceBinding, WorkspaceMountBinding
 
 
+def _normalize_handoff_tags(tags: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for tag in tags:
+        clean = tag.strip()
+        if clean and clean not in normalized:
+            normalized.append(clean)
+    if "agency-reminder" not in normalized:
+        normalized.insert(0, "agency-reminder")
+    return normalized
+
+
 class AgencyController:
     def __init__(self) -> None:
         self._session_controller = SessionController()
@@ -123,7 +134,7 @@ class AgencyController:
             ]
         )
 
-    async def submit_to_source_session(
+    async def submit_to_session(
         self,
         db_session: AsyncSession,
         settings: ClawSettings,
@@ -131,7 +142,7 @@ class AgencyController:
         request: AgencySourceSessionSubmitRequest,
     ) -> AgencySourceSessionSubmitResponse:
         if not settings.agency_enabled:
-            raise HTTPException(status_code=403, detail="Agency source-session submit requires agency to be enabled.")
+            raise HTTPException(status_code=403, detail="Agency submit-to-session requires agency to be enabled.")
         if not request.prompt.strip():
             raise HTTPException(status_code=422, detail="prompt is required.")
         if not isinstance(request.agency_session_id, str) or not request.agency_session_id.strip():
@@ -141,7 +152,7 @@ class AgencyController:
 
         agency_session = await db_session.get(SessionRecord, request.agency_session_id)
         if not isinstance(agency_session, SessionRecord) or agency_session.session_type != "agency":
-            raise HTTPException(status_code=403, detail="Agency source-session submit requires an agency session.")
+            raise HTTPException(status_code=403, detail="Agency submit-to-session requires an agency session.")
         agency_run = await db_session.get(RunRecord, request.agency_run_id)
         if (
             not isinstance(agency_run, RunRecord)
@@ -152,19 +163,23 @@ class AgencyController:
             or runtime_state.get_run_handle(agency_run.id) is None
         ):
             raise HTTPException(
-                status_code=403, detail="Agency source-session submit requires the active agency runtime run."
+                status_code=403, detail="Agency submit-to-session requires the active agency runtime run."
             )
 
-        source_session = await db_session.get(SessionRecord, request.source_session_id)
+        source_session = await db_session.get(SessionRecord, request.session_id)
         if not isinstance(source_session, SessionRecord):
-            raise HTTPException(status_code=404, detail=f"Session '{request.source_session_id}' was not found.")
+            raise HTTPException(status_code=404, detail=f"Session '{request.session_id}' was not found.")
         if source_session.session_type != "conversation":
-            raise HTTPException(status_code=422, detail="source_session_id must reference a conversation session.")
+            raise HTTPException(status_code=422, detail="session_id must reference a conversation session.")
 
+        handoff_kind = request.handoff_kind.strip() or "reminder"
+        handoff_tags = _normalize_handoff_tags(request.handoff_tags)
         handoff = {
             "agency_session_id": agency_session.id,
             "agency_run_id": agency_run.id,
             "source_session_id": source_session.id,
+            "kind": handoff_kind,
+            "tags": handoff_tags,
             "metadata": dict(request.metadata),
         }
         agency_handoff_metadata = {"latest": handoff, "handoffs": [handoff]}
@@ -180,6 +195,8 @@ class AgencyController:
                         text=request.prompt,
                         metadata={
                             "source": "agency_handoff",
+                            "handoff_kind": handoff_kind,
+                            "handoff_tags": handoff_tags,
                             "agency_session_id": agency_session.id,
                             "agency_run_id": agency_run.id,
                         },

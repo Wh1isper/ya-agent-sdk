@@ -450,9 +450,11 @@ class AgencyClearResponse(BaseModel):
 
 
 class AgencySourceSessionSubmitRequest(BaseModel):
-    source_session_id: str
+    session_id: str = Field(validation_alias=AliasChoices("session_id", "source_session_id"))
     prompt: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    handoff_kind: str = "reminder"
+    handoff_tags: list[str] = Field(default_factory=lambda: ["agency-reminder"])
     agency_session_id: str | None = None
     agency_run_id: str | None = None
 

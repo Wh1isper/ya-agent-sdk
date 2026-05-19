@@ -38,7 +38,7 @@ from ya_claw.toolsets.agency import (
     GetSourceRunTraceTool,
     ListAgencyRunsTool,
     ListSourceSessionTurnsTool,
-    SubmitToSourceSessionTool,
+    SubmitToSessionTool,
 )
 from ya_claw.toolsets.async_subagent import (
     CancelAsyncSubagentTool,
@@ -89,7 +89,7 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
         CancelAsyncSubagentTool,
     ],
     "session": [ListSessionTurnsTool, GetRunTraceTool],
-    "agency": [ListSourceSessionTurnsTool, GetSourceRunTraceTool, ListAgencyRunsTool, SubmitToSourceSessionTool],
+    "agency": [ListSourceSessionTurnsTool, GetSourceRunTraceTool, ListAgencyRunsTool, SubmitToSessionTool],
     "schedule": [
         ListSchedulesTool,
         CreateScheduleTool,
@@ -168,6 +168,7 @@ class ClawRuntimeBuilder:
                 self._resolve_builtin_tools(profile.builtin_toolsets),
                 profile.builtin_tool_allowlist,
                 is_async_subagent=is_async_subagent,
+                source_kind=source_kind,
             ),
             toolsets=self._resolve_runtime_toolsets(
                 profile=profile,
@@ -263,20 +264,16 @@ class ClawRuntimeBuilder:
         allowlist: list[str] | None,
         *,
         is_async_subagent: bool = False,
+        source_kind: str | None = None,
     ) -> list[type[BaseTool]]:
         selected = tools
         if allowlist is not None:
             allowed = set(allowlist)
             selected = [tool for tool in selected if getattr(tool, "name", tool.__name__) in allowed]
+        if source_kind != "agency":
+            selected = [tool for tool in selected if not getattr(tool, "agency_only", False)]
         if is_async_subagent:
-            blocked = {
-                "spawn_delegate",
-                "list_async_subagents",
-                "get_async_subagent",
-                "steer_async_subagent",
-                "cancel_async_subagent",
-            }
-            selected = [tool for tool in selected if getattr(tool, "name", tool.__name__) not in blocked]
+            selected = [tool for tool in selected if not getattr(tool, "blocks_async_subagent", False)]
         return selected
 
     def _resolve_runtime_toolsets(
@@ -398,12 +395,18 @@ class ClawRuntimeBuilder:
     def _build_agency_handoff_context(self, source_metadata: dict[str, Any] | None) -> str:
         metadata = dict(source_metadata or {})
         handoff = metadata.get("agency_handoff") if isinstance(metadata.get("agency_handoff"), dict) else {}
+        latest = handoff.get("latest") if isinstance(handoff, dict) and isinstance(handoff.get("latest"), dict) else {}
+        handoff_kind = latest.get("kind") if isinstance(latest, dict) else None
+        handoff_tags = latest.get("tags") if isinstance(latest, dict) else None
         return "\n".join([
-            '<agency-handoff-context source="agency_handoff">',
-            "This run was awakened by the global Agency session.",
-            "The user prompt contains an Agency handoff prompt.",
+            '<agency-handoff-context source="agency_handoff" tag="agency-reminder">',
+            "This run was awakened by the global Agency session as a proactive nudge.",
+            f"Handoff kind: {handoff_kind if isinstance(handoff_kind, str) and handoff_kind else 'reminder'}",
+            "Handoff tags: "
+            + json.dumps(handoff_tags if isinstance(handoff_tags, list) else ["agency-reminder"], ensure_ascii=False),
+            "The user prompt contains Agency-authored natural-language guidance.",
             "You are the source conversation agent and own the action, user-facing response, and workspace execution.",
-            "Use the handoff as advisory background with provenance. Decide whether to act, ask the user, or record it quietly.",
+            "Use the guidance as advisory context. Apply judgment in this session: answer better, remind the group, ask a named person, create or update a task, route to an owner, reconcile context, or record it quietly.",
             "Agency handoff metadata:",
             json.dumps(handoff if isinstance(handoff, dict) else {}, ensure_ascii=False, sort_keys=True),
             "</agency-handoff-context>",
