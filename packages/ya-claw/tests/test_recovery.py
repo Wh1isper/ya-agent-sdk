@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -240,6 +241,20 @@ async def test_supervisor_startup_recovery_processes_terminal_async_task_run(
     task_record.completed_at = None
     await db_session.commit()
     supervisor = _build_supervisor(settings=settings, db_engine=db_engine, runtime_state=runtime_state)
+    submitted_run_ids: list[str] = []
+
+    async def _hold_submitted_run() -> None:
+        await asyncio.Event().wait()
+
+    def _record_submission(run_id: str) -> bool:
+        if runtime_state.get_background_task(run_id) is not None:
+            return False
+        submitted_run_ids.append(run_id)
+        task = asyncio.create_task(_hold_submitted_run(), name=f"test-recovered-wake-{run_id}")
+        runtime_state.register_background_task(run_id, task)
+        return True
+
+    supervisor.submit_run = _record_submission  # type: ignore[method-assign]
 
     result = await supervisor.startup_recover()
 
@@ -257,12 +272,10 @@ async def test_supervisor_startup_recovery_processes_terminal_async_task_run(
         )
     )
     wake_run = wake_result.scalar_one()
-    assert wake_run.status in {"queued", "running"}
+    assert submitted_run_ids == [wake_run.id]
+    assert wake_run.status == "queued"
     assert wake_run.restore_from_run_id == "parent-run-previous"
     assert wake_run.run_metadata["async_task_wake"]["task_id"] == "task-1"
     assert runtime_state.get_background_task(wake_run.id) is not None
 
-    task = runtime_state.get_background_task(wake_run.id)
-    if task is not None:
-        task.cancel()
     await runtime_state.aclose()

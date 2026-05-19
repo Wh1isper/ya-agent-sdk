@@ -10,6 +10,7 @@ from ya_agent_sdk.environment import SandboxEnvironment, VirtualMount
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.skills.toolset import SkillToolset
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
+from ya_claw.agency.prompt import AGENCY_SYSTEM_PROMPT
 from ya_claw.config import ClawSettings
 from ya_claw.execution.profile import ClawShellReviewConfig, ResolvedProfile
 from ya_claw.execution.runtime import ClawRuntimeBuilder
@@ -234,6 +235,13 @@ def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_
     assert "list_source_session_turns" in resolved_tool_names
     assert "get_source_run_trace" in resolved_tool_names
     assert "create_schedule" in resolved_tool_names
+
+
+def test_agency_prompt_instructs_async_subagent_orchestration() -> None:
+    assert "<async-subagent-policy>" in AGENCY_SYSTEM_PROMPT
+    assert "Spawn subagents with stable names" in AGENCY_SYSTEM_PROMPT
+    assert "Keep ownership of proactive strategy" in AGENCY_SYSTEM_PROMPT
+    assert "Use list_async_subagents and get_async_subagent" in AGENCY_SYSTEM_PROMPT
 
 
 def test_runtime_builder_filters_async_subagent_management_tools(tmp_path: Path) -> None:
