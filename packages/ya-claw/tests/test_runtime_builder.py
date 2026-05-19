@@ -214,6 +214,7 @@ def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
     assert "cancel_async_subagent" in resolved_tool_names
     assert "list_session_turns" in resolved_tool_names
     assert "get_run_trace" in resolved_tool_names
+    assert "submit_to_source_session" in resolved_tool_names
 
 
 def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_path: Path) -> None:
@@ -234,6 +235,7 @@ def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_
     assert "spawn_delegate" in resolved_tool_names
     assert "list_source_session_turns" in resolved_tool_names
     assert "get_source_run_trace" in resolved_tool_names
+    assert "submit_to_source_session" in resolved_tool_names
     assert "create_schedule" in resolved_tool_names
 
 
@@ -242,6 +244,7 @@ def test_agency_prompt_instructs_async_subagent_orchestration() -> None:
     assert "Spawn subagents with stable names" in AGENCY_SYSTEM_PROMPT
     assert "Keep ownership of proactive strategy" in AGENCY_SYSTEM_PROMPT
     assert "Use list_async_subagents and get_async_subagent" in AGENCY_SYSTEM_PROMPT
+    assert "submit_to_source_session" in AGENCY_SYSTEM_PROMPT
 
 
 def test_runtime_builder_filters_async_subagent_management_tools(tmp_path: Path) -> None:
@@ -518,6 +521,49 @@ def test_runtime_builder_system_prompt_skips_memory_for_schedule_and_loads_sched
     assert '<memory-file-index path="/workspace/memory">' not in system_prompt
 
 
+def test_runtime_builder_system_prompt_loads_agency_handoff_context(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        memory_enabled=True,
+        memory_inject_enabled=True,
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    memory_path = host_path / "memory"
+    memory_path.mkdir(parents=True, exist_ok=True)
+    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
+    binding = _build_workspace_binding(host_path)
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+    )
+
+    system_prompt = builder._build_system_prompt(
+        profile=profile,
+        binding=binding,
+        source_kind="agency_handoff",
+        source_metadata={
+            "agency_handoff": {
+                "latest": {
+                    "agency_session_id": "agency-session",
+                    "agency_run_id": "agency-run",
+                    "source_session_id": "source-session",
+                }
+            }
+        },
+    )
+
+    assert '<agency-handoff-context source="agency_handoff">' in system_prompt
+    assert "global Agency session" in system_prompt
+    assert '"agency_run_id": "agency-run"' in system_prompt
+    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' in system_prompt
+
+
 def test_runtime_builder_memory_system_prompt_loads_source_identity(tmp_path: Path) -> None:
     settings = ClawSettings(
         api_token="test-token",  # noqa: S106
@@ -728,3 +774,94 @@ def test_runtime_builder_uses_deny_policy_for_unattended_shell_review(tmp_path: 
     assert agency_runtime.ctx.security.shell_review.risk_threshold == "high"
     assert agency_runtime.ctx.need_user_approve_tools == []
     assert agency_runtime.ctx.need_user_approve_mcps == []
+
+
+def test_agency_global_tools_are_available_only_for_agency_runs(tmp_path: Path) -> None:
+    from ya_claw.toolsets.agency import (
+        GetSourceRunTraceTool,
+        ListAgencyRunsTool,
+        ListSourceSessionTurnsTool,
+        SubmitToSourceSessionTool,
+    )
+    from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY, ClawSelfClient
+
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    binding = _build_workspace_binding(tmp_path / "workspace")
+    environment = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+        builtin_toolsets=["core"],
+    )
+
+    api_runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=None,
+        session_id="session-1",
+        run_id="run-1",
+        restore_from_run_id=None,
+        dispatch_mode="async",
+        source_kind="api",
+        source_metadata={},
+        claw_metadata={},
+    )
+    assert api_runtime.ctx.resources is not None
+    api_runtime.ctx.resources.set(
+        CLAW_SELF_CLIENT_KEY,
+        ClawSelfClient(
+            base_url="http://example.test",
+            api_token="test-token",  # noqa: S106
+            session_id="session-1",
+            run_id="run-1",
+        ),
+    )
+
+    agency_runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=None,
+        session_id="agency-session",
+        run_id="agency-run",
+        restore_from_run_id=None,
+        dispatch_mode="async",
+        source_kind="agency",
+        source_metadata={"agency": {"episode_id": "episode-1"}},
+        claw_metadata={},
+    )
+    assert agency_runtime.ctx.resources is not None
+    agency_runtime.ctx.resources.set(
+        CLAW_SELF_CLIENT_KEY,
+        ClawSelfClient(
+            base_url="http://example.test",
+            api_token="test-token",  # noqa: S106
+            session_id="agency-session",
+            run_id="agency-run",
+        ),
+    )
+
+    class _RunContext:
+        def __init__(self, deps: object) -> None:
+            self.deps = deps
+
+    tools = [
+        ListSourceSessionTurnsTool(),
+        GetSourceRunTraceTool(),
+        ListAgencyRunsTool(),
+        SubmitToSourceSessionTool(),
+    ]
+    api_ctx = _RunContext(api_runtime.ctx)
+    agency_ctx = _RunContext(agency_runtime.ctx)
+
+    assert [tool.is_available(api_ctx) for tool in tools] == [False, False, False, False]  # type: ignore[arg-type]
+    assert [tool.is_available(agency_ctx) for tool in tools] == [True, True, True, True]  # type: ignore[arg-type]

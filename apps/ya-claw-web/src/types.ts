@@ -516,6 +516,14 @@ export type AgencyFireListResponse = {
   fires: AgencyFireSummary[]
 }
 
+export type AgencySourceSessionSubmitResponse = {
+  source_session_id: string
+  delivery: 'submitted' | 'queued' | 'merged' | 'steered' | string
+  run_id: string
+  status: RunStatus | string
+  session_submit: SessionSubmitResponse
+}
+
 export type AgencyConfigResponse = {
   enabled: boolean
   profile_name: string
@@ -556,7 +564,7 @@ export type SessionSummary = {
   id: string
   parent_session_id?: string | null
   profile_name?: string | null
-  session_type: 'conversation' | 'memory' | 'agency'
+  session_type: 'conversation' | 'memory' | 'agency' | 'async_task'
   source_session_id?: string | null
   metadata: Record<string, unknown>
   created_at: string

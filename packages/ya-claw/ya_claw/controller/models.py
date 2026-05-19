@@ -51,6 +51,7 @@ class TriggerType(StrEnum):
     HEARTBEAT = "heartbeat"
     MEMORY = "memory"
     AGENCY = "agency"
+    AGENCY_HANDOFF = "agency_handoff"
     ASYNC_TASK = "async_task"
 
 
@@ -444,6 +445,22 @@ class AgencyClearResponse(BaseModel):
     deleted_fire_count: int = 0
     cleared_at: datetime
     agency_session: SessionSummary
+
+
+class AgencySourceSessionSubmitRequest(BaseModel):
+    source_session_id: str
+    prompt: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    agency_session_id: str | None = None
+    agency_run_id: str | None = None
+
+
+class AgencySourceSessionSubmitResponse(BaseModel):
+    source_session_id: str
+    delivery: Literal["steered", "merged", "submitted", "queued"]
+    run_id: str
+    status: RunStatus | str
+    session_submit: SessionSubmitResponse
 
 
 class RunTraceItem(BaseModel):

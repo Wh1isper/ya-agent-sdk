@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import Field
 from pydantic_ai import RunContext
@@ -13,6 +13,17 @@ from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_claw.toolsets.session import ClawSelfClient, _get_self_client
 
 
+def _is_agency_run(ctx: RunContext[AgentContext]) -> bool:
+    return getattr(ctx.deps, "source_kind", None) == "agency"
+
+
+def _get_agency_self_client(ctx: RunContext[AgentContext]) -> ClawSelfClient | None:
+    client = _get_self_client(ctx)
+    if isinstance(client, ClawSelfClient) and _is_agency_run(ctx):
+        return client
+    return None
+
+
 class ListSourceSessionTurnsTool(BaseTool):
     """List completed turns from a source conversation session."""
 
@@ -20,7 +31,7 @@ class ListSourceSessionTurnsTool(BaseTool):
     description = "List completed turns from a source conversation session referenced by a global agency signal."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
-        return _get_self_client(ctx) is not None
+        return _get_agency_self_client(ctx) is not None
 
     async def call(
         self,
@@ -35,20 +46,15 @@ class ListSourceSessionTurnsTool(BaseTool):
         ] = None,
         cursor: Annotated[str | None, Field(description="Fetch turns older than this run ID cursor")] = None,
     ) -> str:
-        client = _get_self_client(ctx)
+        client = _get_agency_self_client(ctx)
         if client is None:
-            return "Error: YA Claw self-session client is unavailable."
-        if isinstance(client, ClawSelfClient):
-            payload = await client.list_source_session_turns(
-                source_session_id=source_session_id,
-                limit=min(max(limit, 1), 50),
-                before_sequence_no=before_sequence_no,
-                cursor=cursor,
-            )
-        else:
-            payload = await client.list_session_turns(
-                limit=min(max(limit, 1), 50), before_sequence_no=before_sequence_no, cursor=cursor
-            )
+            return "Error: YA Claw agency source-session client is unavailable."
+        payload = await client.list_source_session_turns(
+            source_session_id=source_session_id,
+            limit=min(max(limit, 1), 50),
+            before_sequence_no=before_sequence_no,
+            cursor=cursor,
+        )
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -59,7 +65,7 @@ class GetSourceRunTraceTool(BaseTool):
     description = "Get tool-call and tool-response trace for a run referenced by a global agency signal."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
-        return _get_self_client(ctx) is not None
+        return _get_agency_self_client(ctx) is not None
 
     async def call(
         self,
@@ -68,22 +74,56 @@ class GetSourceRunTraceTool(BaseTool):
         max_item_chars: Annotated[int, Field(description="Maximum characters per trace item")] = 2000,
         max_total_chars: Annotated[int, Field(description="Maximum total characters across trace items")] = 8000,
     ) -> str:
-        client = _get_self_client(ctx)
+        client = _get_agency_self_client(ctx)
         if client is None:
-            return "Error: YA Claw self-session client is unavailable."
-        if isinstance(client, ClawSelfClient):
-            payload = await client.get_source_run_trace(
-                run_id=run_id,
-                max_item_chars=min(max(max_item_chars, 256), 20000),
-                max_total_chars=min(max(max_total_chars, max_item_chars), 100000),
-            )
-        else:
-            payload = await client.get_run_trace(
-                run_id=run_id,
-                max_item_chars=min(max(max_item_chars, 256), 20000),
-                max_total_chars=min(max(max_total_chars, max_item_chars), 100000),
-            )
+            return "Error: YA Claw agency source-run trace client is unavailable."
+        payload = await client.get_source_run_trace(
+            run_id=run_id,
+            max_item_chars=min(max(max_item_chars, 256), 20000),
+            max_total_chars=min(max(max_total_chars, max_item_chars), 100000),
+        )
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+class SubmitToSourceSessionTool(BaseTool):
+    """Submit a prompt handoff from Agency to a source conversation session."""
+
+    name = "submit_to_source_session"
+    description = (
+        "Submit an Agency handoff prompt to a chosen source conversation session. "
+        "The target session will submit, merge, or steer automatically."
+    )
+
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        return _get_agency_self_client(ctx) is not None
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        source_session_id: Annotated[
+            str,
+            Field(description="Target source conversation session ID that should receive the handoff"),
+        ],
+        prompt: Annotated[str, Field(description="Complete handoff prompt for the source session agent")],
+        metadata: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="Optional compact provenance such as fire_ids, source_run_ids, async_task_ids, and artifact_paths"
+            ),
+        ] = None,
+    ) -> str:
+        client = _get_agency_self_client(ctx)
+        if client is None:
+            return "Error: YA Claw source-session submit client is unavailable."
+        try:
+            payload = await client.submit_to_source_session(
+                source_session_id=source_session_id,
+                prompt=prompt,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            return f"Error: {exc}"
+        return _format_source_session_submit_response(payload)
 
 
 class ListAgencyRunsTool(BaseTool):
@@ -93,21 +133,36 @@ class ListAgencyRunsTool(BaseTool):
     description = "List recent runs from the global agency session that is coordinating proactive responses."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
-        return _get_self_client(ctx) is not None
+        return _get_agency_self_client(ctx) is not None
 
     async def call(
         self,
         ctx: RunContext[AgentContext],
         limit: Annotated[int, Field(description="Maximum agency runs to fetch, clamped to 1..50")] = 10,
     ) -> str:
-        client = _get_self_client(ctx)
+        client = _get_agency_self_client(ctx)
         if client is None:
-            return "Error: YA Claw self-session client is unavailable."
-        if not isinstance(client, ClawSelfClient):
-            return json.dumps(
-                {"agency_session_id": client.session_id, "runs": []},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            return "Error: YA Claw agency run list client is unavailable."
         payload = await client.list_agency_runs(limit=min(max(limit, 1), 50))
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _format_source_session_submit_response(payload: dict[str, Any]) -> str:
+    source_session_id = payload.get("source_session_id")
+    delivery = payload.get("delivery")
+    run_id = payload.get("run_id")
+    status = payload.get("status")
+    attrs = {
+        "source-session-id": source_session_id,
+        "delivery": delivery,
+        "run-id": run_id,
+        "status": status,
+    }
+    attr_text = " ".join(
+        f'{key}="{_xml_escape(value)}"' for key, value in attrs.items() if isinstance(value, str) and value
+    )
+    return f"<source-session-submit {attr_text}>\nSubmitted Agency handoff to source session.\n</source-session-submit>"
+
+
+def _xml_escape(value: object) -> str:
+    return str(value).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")

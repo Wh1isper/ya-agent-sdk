@@ -218,7 +218,8 @@ function invalidateForNotification(
   if (
     event.type.startsWith('session.') ||
     event.type.startsWith('run.') ||
-    event.type.startsWith('workspace.')
+    event.type.startsWith('workspace.') ||
+    event.type === 'agency.source_session.submitted'
   ) {
     patchSessionStatusFromNotification(queryClient, event, sessionId, runId)
     patchSessionWorkspaceFromNotification(queryClient, event, sessionId)
@@ -228,16 +229,23 @@ function invalidateForNotification(
         queryKey: queryKeys.session(sessionId),
       })
       void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessionHistoryBase(sessionId),
+      })
+      void queryClient.invalidateQueries({
         queryKey: queryKeys.sessionWorkspace(sessionId),
       })
       void queryClient.invalidateQueries({
         queryKey: queryKeys.sessionSandbox(sessionId),
       })
     }
-    if (sourceSessionId && sourceSessionId !== sessionId)
+    if (sourceSessionId && sourceSessionId !== sessionId) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.session(sourceSessionId),
       })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessionHistoryBase(sourceSessionId),
+      })
+    }
     if (event.type.startsWith('workspace.')) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.workspaceRuntime,
@@ -249,6 +257,12 @@ function invalidateForNotification(
         queryKey: queryKeys.runTrace(runId),
       })
     }
+  }
+
+  if (event.type.startsWith('agency.')) {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.agencyConfig })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.agencyStatus })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.agencyFires })
   }
 
   if (event.type.startsWith('profile.') || event.type === 'profiles.seeded') {

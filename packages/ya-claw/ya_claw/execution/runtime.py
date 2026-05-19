@@ -34,7 +34,12 @@ from ya_claw.mcp import build_profile_mcp_config
 from ya_claw.memory.lifecycle import ClawMemoryExtension
 from ya_claw.memory.prompts import MEMORY_EXTRACT_SYSTEM_PROMPT, MEMORY_SUMMARY_SYSTEM_PROMPT
 from ya_claw.memory.store import WorkspaceMemoryStore
-from ya_claw.toolsets.agency import GetSourceRunTraceTool, ListAgencyRunsTool, ListSourceSessionTurnsTool
+from ya_claw.toolsets.agency import (
+    GetSourceRunTraceTool,
+    ListAgencyRunsTool,
+    ListSourceSessionTurnsTool,
+    SubmitToSourceSessionTool,
+)
 from ya_claw.toolsets.async_subagent import (
     CancelAsyncSubagentTool,
     GetAsyncSubagentTool,
@@ -84,7 +89,7 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
         CancelAsyncSubagentTool,
     ],
     "session": [ListSessionTurnsTool, GetRunTraceTool],
-    "agency": [ListSourceSessionTurnsTool, GetSourceRunTraceTool, ListAgencyRunsTool],
+    "agency": [ListSourceSessionTurnsTool, GetSourceRunTraceTool, ListAgencyRunsTool, SubmitToSourceSessionTool],
     "schedule": [
         ListSchedulesTool,
         CreateScheduleTool,
@@ -97,7 +102,7 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
 _BUILTIN_TOOLSET_ALIASES: dict[str, list[str]] = {
     "core": ["filesystem", "shell", "background", "session", "schedule", "agency"],
 }
-_UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "heartbeat", "agency"})
+_UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "heartbeat", "agency", "agency_handoff"})
 
 
 class ClawRuntimeBuilder:
@@ -353,6 +358,8 @@ class ClawRuntimeBuilder:
             memory_context = self._build_memory_context(binding)
             if memory_context is not None:
                 prompt_lines.append(memory_context)
+            if source_kind == "agency_handoff":
+                prompt_lines.append(self._build_agency_handoff_context(source_metadata))
         prompt_lines.append(f"Profile: {profile.name}")
         return "\n".join(prompt_lines)
 
@@ -386,6 +393,20 @@ class ClawRuntimeBuilder:
             f"Execution mode: {execution_mode}",
             "This is an automated scheduled run. Complete the scheduled task without updating conversation memory.",
             "</schedule-context>",
+        ])
+
+    def _build_agency_handoff_context(self, source_metadata: dict[str, Any] | None) -> str:
+        metadata = dict(source_metadata or {})
+        handoff = metadata.get("agency_handoff") if isinstance(metadata.get("agency_handoff"), dict) else {}
+        return "\n".join([
+            '<agency-handoff-context source="agency_handoff">',
+            "This run was awakened by the global Agency session.",
+            "The user prompt contains an Agency handoff prompt.",
+            "You are the source conversation agent and own the action, user-facing response, and workspace execution.",
+            "Use the handoff as advisory background with provenance. Decide whether to act, ask the user, or record it quietly.",
+            "Agency handoff metadata:",
+            json.dumps(handoff if isinstance(handoff, dict) else {}, ensure_ascii=False, sort_keys=True),
+            "</agency-handoff-context>",
         ])
 
     def _build_agency_system_prompt(

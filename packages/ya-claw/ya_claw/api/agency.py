@@ -9,8 +9,13 @@ from ya_claw.controller.models import (
     AgencyClearResponse,
     AgencyConfigResponse,
     AgencyFireListResponse,
+    AgencySourceSessionSubmitRequest,
+    AgencySourceSessionSubmitResponse,
     AgencyStatusResponse,
+    DispatchMode,
 )
+from ya_claw.execution.coordinator import ExecutionSupervisor
+from ya_claw.execution.dispatcher import RunDispatcher
 from ya_claw.notifications import NotificationHub
 from ya_claw.runtime_state import InMemoryRuntimeState
 
@@ -45,6 +50,32 @@ async def bootstrap_agency(request: Request) -> AgencyConfigResponse:
     async with session_factory() as db_session:
         response = await controller.bootstrap(db_session, _get_settings(request), _get_runtime_state(request))
     await _get_notification_hub(request).publish("agency.config.updated", response.model_dump(mode="json"))
+    return response
+
+
+@router.post("/source-session:submit", response_model=AgencySourceSessionSubmitResponse, status_code=202)
+async def submit_agency_handoff_to_source_session(
+    request: Request,
+    payload: AgencySourceSessionSubmitRequest,
+) -> AgencySourceSessionSubmitResponse:
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        response = await controller.submit_to_source_session(
+            db_session,
+            _get_settings(request),
+            _get_runtime_state(request),
+            payload,
+        )
+    if response.session_submit.run is not None:
+        _dispatch_run(request, response.session_submit.run.id, DispatchMode.ASYNC, require_submission=False)
+    await _get_notification_hub(request).publish(
+        "agency.source_session.submitted",
+        {
+            **response.model_dump(mode="json"),
+            "session_id": response.source_session_id,
+            "run_id": response.run_id,
+        },
+    )
     return response
 
 
@@ -84,6 +115,21 @@ def _get_notification_hub(request: Request) -> NotificationHub:
     if not isinstance(notification_hub, NotificationHub):
         raise TypeError("Notification hub is unavailable.")
     return notification_hub
+
+
+def _dispatch_run(request: Request, run_id: str, mode: DispatchMode, *, require_submission: bool) -> bool:
+    dispatcher = RunDispatcher(_get_execution_supervisor(request))
+    result = dispatcher.dispatch(run_id, mode)
+    if require_submission and not result.submitted:
+        raise HTTPException(status_code=503, detail="Execution supervisor is unavailable.")
+    return result.submitted
+
+
+def _get_execution_supervisor(request: Request) -> ExecutionSupervisor | None:
+    supervisor = request.app.state.execution_supervisor
+    if supervisor is None or isinstance(supervisor, ExecutionSupervisor):
+        return supervisor
+    raise TypeError("Execution supervisor is unavailable.")
 
 
 def _get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:

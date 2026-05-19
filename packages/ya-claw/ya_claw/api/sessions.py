@@ -524,6 +524,8 @@ async def _observe_session_message(
     metadata: dict[str, object],
     submit_run,
 ) -> None:
+    if source_kind == "agency_handoff":
+        return
     if not settings.agency_enabled:
         return
     lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state, submit_run=submit_run)

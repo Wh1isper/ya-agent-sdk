@@ -176,6 +176,12 @@ class SessionController:
                     status=active_run.status,
                     run=run_detail_from_record(active_run),
                 )
+            input_payload = [part.model_dump(mode="json") for part in request.input_parts]
+            active_run.input_parts = [*list(active_run.input_parts or []), *input_payload]
+            if request.metadata:
+                active_run.run_metadata = _merge_submit_metadata(active_run.run_metadata, request.metadata)
+            await db_session.commit()
+            await db_session.refresh(active_run)
             control = await self._run_controller.steer(
                 db_session,
                 runtime_state,
@@ -565,6 +571,8 @@ def _merge_submit_metadata(existing: dict[str, Any] | None, incoming: dict[str, 
                 else:
                     merged[agency_key] = agency_value
             metadata["agency"] = merged
+        elif key == "agency_handoff" and isinstance(value, dict):
+            metadata["agency_handoff"] = _merge_agency_handoff_metadata(metadata.get("agency_handoff"), value)
         else:
             metadata[key] = value
     return metadata
@@ -580,6 +588,28 @@ def _append_unique_values(existing: object, values: list[object]) -> list[object
         seen.add(marker)
         result.append(value)
     return result
+
+
+def _merge_agency_handoff_metadata(existing: object, incoming: dict[str, Any]) -> dict[str, Any]:
+    current = dict(existing) if isinstance(existing, dict) else {}
+    incoming_copy = dict(incoming)
+    existing_handoffs = current.get("handoffs")
+    incoming_handoffs = incoming_copy.get("handoffs")
+    merged_handoffs: list[object] = []
+    if isinstance(existing_handoffs, list):
+        merged_handoffs.extend(existing_handoffs)
+    elif current:
+        merged_handoffs.append(current.get("latest", current))
+    if isinstance(incoming_handoffs, list):
+        merged_handoffs.extend(incoming_handoffs)
+    else:
+        merged_handoffs.append(incoming_copy.get("latest", incoming_copy))
+    return {
+        **current,
+        **incoming_copy,
+        "latest": incoming_copy.get("latest", incoming_copy),
+        "handoffs": _append_unique_values([], merged_handoffs),
+    }
 
 
 def _append_unique_sources(existing: object, values: list[object]) -> list[object]:

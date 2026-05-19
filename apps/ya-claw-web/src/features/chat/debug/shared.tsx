@@ -1,4 +1,4 @@
-import { Bot } from 'lucide-react'
+import { Bot, BrainCircuit } from 'lucide-react'
 
 import { JsonView } from '../../../components/JsonView'
 import type { InputPart } from '../../../types'
@@ -53,12 +53,27 @@ export function Card({
 }
 
 export function InputPartView({ part }: { part: InputPart }) {
-  if (part.type === 'text')
+  if (part.type === 'text') {
+    const isAgencyHandoff = part.metadata?.source === 'agency_handoff'
     return (
-      <div className="whitespace-pre-wrap rounded-xl bg-blue-50 p-3 text-sm leading-7 text-slate-800">
+      <div
+        className={cn(
+          'whitespace-pre-wrap rounded-xl p-3 text-sm leading-7 text-slate-800',
+          isAgencyHandoff
+            ? 'border border-violet-200 bg-violet-50'
+            : 'bg-blue-50',
+        )}
+      >
+        {isAgencyHandoff ? (
+          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700">
+            <BrainCircuit className="h-3.5 w-3.5" />
+            Agency handoff
+          </div>
+        ) : null}
         {part.text}
       </div>
     )
+  }
   return <JsonView value={part} height="160px" />
 }
 

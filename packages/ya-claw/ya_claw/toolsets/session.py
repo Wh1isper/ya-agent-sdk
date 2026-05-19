@@ -105,6 +105,25 @@ class ClawSelfClient:
             "runs": runs if isinstance(runs, list) else [],
         }
 
+    async def submit_to_source_session(
+        self,
+        *,
+        source_session_id: str,
+        prompt: str,
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return await self._send_json(
+            "/api/v1/agency/source-session:submit",
+            method="POST",
+            payload={
+                "source_session_id": source_session_id,
+                "prompt": prompt,
+                "metadata": dict(metadata or {}),
+                "agency_session_id": self.session_id,
+                "agency_run_id": self.run_id or None,
+            },
+        )
+
     async def list_session_turns(
         self,
         *,

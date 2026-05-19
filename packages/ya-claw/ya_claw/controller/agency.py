@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,11 +14,19 @@ from ya_claw.controller.models import (
     AgencyFireListResponse,
     AgencyFireSummary,
     AgencyRiskPolicy,
+    AgencySourceSessionSubmitRequest,
+    AgencySourceSessionSubmitResponse,
     AgencyStatusResponse,
+    DispatchMode,
+    RunStatus,
+    SessionSubmitRequest,
+    TextPart,
+    TriggerType,
     agency_fire_summary_from_record,
     run_summary_from_record,
     session_summary_from_record,
 )
+from ya_claw.controller.session import SessionController
 from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.orm.tables import AgencyFireRecord, RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -25,6 +34,9 @@ from ya_claw.workspace.models import WorkspaceBinding, WorkspaceMountBinding
 
 
 class AgencyController:
+    def __init__(self) -> None:
+        self._session_controller = SessionController()
+
     async def bootstrap(
         self,
         db_session: AsyncSession,
@@ -80,7 +92,7 @@ class AgencyController:
         return AgencyStatusResponse(
             enabled=settings.agency_enabled,
             agency_session_id=agency_session.id,
-            state=_agency_state(agency_session, latest_run=latest_run),
+            state=_agency_state(agency_session, active_run=active_run, latest_run=latest_run),
             active_run=run_summary_from_record(active_run) if active_run is not None else None,
             latest_run=run_summary_from_record(latest_run) if latest_run is not None else None,
             active_run_id=active_run.id if active_run is not None else None,
@@ -109,6 +121,81 @@ class AgencyController:
                 for record, run_status in result.all()
                 if isinstance(record, AgencyFireRecord)
             ]
+        )
+
+    async def submit_to_source_session(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        request: AgencySourceSessionSubmitRequest,
+    ) -> AgencySourceSessionSubmitResponse:
+        if not settings.agency_enabled:
+            raise HTTPException(status_code=403, detail="Agency source-session submit requires agency to be enabled.")
+        if not request.prompt.strip():
+            raise HTTPException(status_code=422, detail="prompt is required.")
+        if not isinstance(request.agency_session_id, str) or not request.agency_session_id.strip():
+            raise HTTPException(status_code=422, detail="agency_session_id is required.")
+        if not isinstance(request.agency_run_id, str) or not request.agency_run_id.strip():
+            raise HTTPException(status_code=422, detail="agency_run_id is required.")
+
+        agency_session = await db_session.get(SessionRecord, request.agency_session_id)
+        if not isinstance(agency_session, SessionRecord) or agency_session.session_type != "agency":
+            raise HTTPException(status_code=403, detail="Agency source-session submit requires an agency session.")
+        agency_run = await db_session.get(RunRecord, request.agency_run_id)
+        if (
+            not isinstance(agency_run, RunRecord)
+            or agency_run.session_id != agency_session.id
+            or agency_run.trigger_type != TriggerType.AGENCY.value
+            or agency_run.status != RunStatus.RUNNING.value
+            or agency_session.active_run_id != agency_run.id
+            or runtime_state.get_run_handle(agency_run.id) is None
+        ):
+            raise HTTPException(
+                status_code=403, detail="Agency source-session submit requires the active agency runtime run."
+            )
+
+        source_session = await db_session.get(SessionRecord, request.source_session_id)
+        if not isinstance(source_session, SessionRecord):
+            raise HTTPException(status_code=404, detail=f"Session '{request.source_session_id}' was not found.")
+        if source_session.session_type != "conversation":
+            raise HTTPException(status_code=422, detail="source_session_id must reference a conversation session.")
+
+        handoff = {
+            "agency_session_id": agency_session.id,
+            "agency_run_id": agency_run.id,
+            "source_session_id": source_session.id,
+            "metadata": dict(request.metadata),
+        }
+        agency_handoff_metadata = {"latest": handoff, "handoffs": [handoff]}
+        response = await self._session_controller.submit_input(
+            db_session,
+            settings,
+            runtime_state,
+            source_session.id,
+            SessionSubmitRequest(
+                input_parts=[
+                    TextPart(
+                        type="text",
+                        text=request.prompt,
+                        metadata={
+                            "source": "agency_handoff",
+                            "agency_session_id": agency_session.id,
+                            "agency_run_id": agency_run.id,
+                        },
+                    )
+                ],
+                metadata={"agency_handoff": agency_handoff_metadata},
+                dispatch_mode=DispatchMode.ASYNC,
+                trigger_type=TriggerType.AGENCY_HANDOFF,
+            ),
+        )
+        return AgencySourceSessionSubmitResponse(
+            source_session_id=source_session.id,
+            delivery=response.delivery,
+            run_id=response.run_id,
+            status=response.status,
+            session_submit=response,
         )
 
     async def clear(
@@ -188,11 +275,14 @@ def _resolved_risk_policy(settings: ClawSettings, agency_metadata: dict[str, Any
 def _agency_state(
     agency_session: SessionRecord,
     *,
+    active_run: RunRecord | None,
     latest_run: RunRecord | None,
 ) -> Literal["idle", "queued", "running"]:
-    if isinstance(agency_session.active_run_id, str):
+    if active_run is not None and active_run.status == RunStatus.RUNNING.value:
         return "running"
-    if latest_run is not None and latest_run.status == "queued":
+    if active_run is not None and active_run.status == RunStatus.QUEUED.value:
+        return "queued"
+    if latest_run is not None and latest_run.status == RunStatus.QUEUED.value:
         return "queued"
     return "idle"
 
@@ -210,11 +300,11 @@ async def _latest_run(db_session: AsyncSession, session_id: str) -> RunRecord | 
 async def _active_run(db_session: AsyncSession, agency_session: SessionRecord) -> RunRecord | None:
     if isinstance(agency_session.active_run_id, str):
         record = await db_session.get(RunRecord, agency_session.active_run_id)
-        if isinstance(record, RunRecord):
+        if isinstance(record, RunRecord) and record.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
             return record
     if isinstance(agency_session.head_run_id, str):
         record = await db_session.get(RunRecord, agency_session.head_run_id)
-        if isinstance(record, RunRecord) and record.status in {"queued", "running"}:
+        if isinstance(record, RunRecord) and record.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
             return record
     return None
 

@@ -9,8 +9,9 @@ YA Claw supports Agency as one global internal session. One Claw database owns o
 - Copy every completed memory session into Agency with memory run `output_text` and `output_summary`.
 - Use one unified session submit path for normal sessions and Agency.
 - Let Agency use session-backed async subagents from its own singleton session.
-- Keep Agency state auditable through `agency_fires`, run metadata, traces, workspace action logs, and episode files.
-- Preserve the current Web UI API shape for config, status, fires, bootstrap, and clear while backend semantics settle.
+- Let Agency wake a specific source conversation session with a prompt handoff when outward work should happen.
+- Keep Agency state auditable through `agency_fires`, target source runs, run metadata, traces, workspace action logs, and episode files.
+- Preserve a compact Web UI API shape for config, status, fires, bootstrap, clear, and source-session handoff inspection.
 
 ## Non-Goals
 
@@ -18,6 +19,7 @@ YA Claw supports Agency as one global internal session. One Claw database owns o
 - Agency does not receive product manual trigger fires.
 - Agency does not receive broad automatic fires for run commits, async task completion, compact events, or separate bridge-event categories.
 - Agency does not receive automatic source memory injection in its system prompt.
+- Agency does not own final user-facing action for source conversations; the awakened source session owns that step.
 
 ## Conceptual Model
 
@@ -49,8 +51,13 @@ flowchart TD
     R --> A[Agency episode]
     Q --> A
     T --> A
-    A --> LOG[Write Agency files and structured output]
-    A --> DONE[Mark consumed fires on successful commit]
+    A --> REVIEW[Review context and async subagent results]
+    REVIEW --> H{Source session should act?}
+    H -->|yes| SUB[submit_to_source_session]
+    SUB --> SRC[Source conversation run: agency_handoff]
+    H -->|later| LOG[Write Agency files and deferred decision]
+    SRC --> LOG
+    LOG --> DONE[Mark consumed fires on successful commit]
 ```
 
 ## Singleton Agency Session
@@ -165,11 +172,52 @@ When a memory run completes, `MemoryLifecycle.on_memory_run_committed()` updates
 
 Agency uses the copied output directly. It can inspect source turns and run traces through explicit session tools when it needs additional context.
 
+## Source Session Handoff Path
+
+Agency uses the `submit_to_source_session` tool to wake a real conversation session. The tool requires an explicit `source_session_id` because Agency is global and observes every conversation session in the Claw instance. The tool input is intentionally compact:
+
+```json
+{
+  "source_session_id": "conversation-session-id",
+  "prompt": "Complete handoff prompt for the source conversation agent.",
+  "metadata": {
+    "fire_ids": ["agency-fire-id"],
+    "source_run_ids": ["source-run-id"],
+    "async_task_ids": ["agency-async-task-id"],
+    "artifact_paths": ["agency/episodes/episode.md"]
+  }
+}
+```
+
+The tool is backed by:
+
+```http
+POST /api/v1/agency/source-session:submit
+```
+
+The self-call injects `agency_session_id` and `agency_run_id` from the active Agency run. The controller validates that the caller is a running `session_type="agency"` run and that the target is a `session_type="conversation"` session.
+
+Delivery reuses `SessionController.submit_input()`:
+
+1. Idle source session creates a new queued run with `trigger_type="agency_handoff"`.
+2. Queued source session receives appended `input_parts` and merged `metadata.agency_handoff`.
+3. Running source session receives runtime steering and merged `metadata.agency_handoff` on the active run.
+
+The durable handoff record lives on the target source run:
+
+- `runs.input_parts`: the Agency handoff prompt as a normal text input part with metadata `source="agency_handoff"`.
+- `runs.trigger_type`: `agency_handoff` for newly created handoff runs.
+- `runs.metadata.agency_handoff.latest`: the latest Agency handoff provenance.
+- `runs.metadata.agency_handoff.handoffs`: accumulated provenance when multiple handoffs merge into one target run.
+- `run-store/{run_id}/message.json`: the source conversation execution replay after commit.
+
+`agency_handoff` submissions skip the Agency observation path, so Agency-to-source delivery forms a one-way handoff into the source conversation session. Source conversation runtime prompts receive an `agency-handoff-context` block with provenance and keep normal workspace guidance and memory injection.
+
 ## Runtime Context
 
 Agency runs use `AGENCY_SYSTEM_PROMPT` from `ya_claw/agency/prompt.py`. The configured agency profile supplies model, model settings, model config, builtin toolsets, MCP configuration, approval policy, subagents, and workspace backend hint.
 
-Agency self-client scope is the Agency session. Async subagents spawned by Agency attach to the Agency session and wake Agency on completion through the existing async-subagent parent wake behavior.
+Agency self-client scope is the Agency session. Async subagents spawned by Agency attach to the Agency session and wake Agency on completion through the existing async-subagent parent wake behavior. Agency outbound handoffs target source conversation sessions through `submit_to_source_session`.
 
 Agency system prompt includes:
 
@@ -203,16 +251,17 @@ Rules:
 
 ## API
 
-| Method | Path                           | Purpose                                      |
-| ------ | ------------------------------ | -------------------------------------------- |
-| `GET`  | `/api/v1/agency/config`        | read singleton Agency config                 |
-| `GET`  | `/api/v1/agency/status`        | read session state and pending fire count    |
-| `GET`  | `/api/v1/agency/fires`         | inspect recent fire audit rows               |
-| `POST` | `/api/v1/agency:bootstrap`     | ensure singleton Agency session exists       |
-| `POST` | `/api/v1/agency:clear`         | cancel active Agency work and reset files    |
-| `POST` | `/api/v1/sessions/{id}/submit` | submit, merge, or steer source session input |
-| `GET`  | `/api/v1/sessions/{id}/events` | stream active session events                 |
-| `GET`  | `/api/v1/runs/{run_id}/events` | stream active run events                     |
+| Method | Path                                   | Purpose                                      |
+| ------ | -------------------------------------- | -------------------------------------------- |
+| `GET`  | `/api/v1/agency/config`                | read singleton Agency config                 |
+| `GET`  | `/api/v1/agency/status`                | read session state and pending fire count    |
+| `GET`  | `/api/v1/agency/fires`                 | inspect recent fire audit rows               |
+| `POST` | `/api/v1/agency:bootstrap`             | ensure singleton Agency session exists       |
+| `POST` | `/api/v1/agency:clear`                 | cancel active Agency work and reset files    |
+| `POST` | `/api/v1/agency/source-session:submit` | internal Agency self-call for source handoff |
+| `POST` | `/api/v1/sessions/{id}/submit`         | submit, merge, or steer source session input |
+| `GET`  | `/api/v1/sessions/{id}/events`         | stream active session events                 |
+| `GET`  | `/api/v1/runs/{run_id}/events`         | stream active run events                     |
 
 Manual Agency injection belongs to development tooling when needed. It is not a product API surface.
 
@@ -224,9 +273,11 @@ Backend tests should cover:
 - `message_observed` fire creation and delivery;
 - `memory_session_completed` fire creation with output text and summary;
 - idle create, queued merge, and running steer via `SessionController.submit_input()`;
+- Agency source-session handoff creates, merges, and steers target conversation sessions with `trigger_type="agency_handoff"` where applicable;
+- Agency handoff submissions skip new `agency_fires` creation;
 - bridge message delivery through unified submit and Agency copy;
 - Agency disabled behavior produces no Agency delivery side effects;
 - API config/status/fires/clear surfaces;
 - legacy run/steer route compatibility where retained.
 
-Agency is a singleton session that observes messages and memory completions through durable fires, then uses the same session submit machinery as every other Claw session.
+Agency is a singleton session that observes messages and memory completions through durable fires, then wakes source conversation sessions through the same session submit machinery used by every Claw session.

@@ -233,3 +233,59 @@ def test_session_submit_copies_message_to_agency(monkeypatch: pytest.MonkeyPatch
         assert fire["source_run_id"] == submit_response.json()["run_id"]
         assert fire["payload"]["input_parts"][0]["text"] == "hello agency"
         assert _fire_kinds() == ["message_observed"]
+
+
+def test_agency_source_session_submit_api_rejects_completed_agency_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
+    get_settings.cache_clear()
+    _create_schema()
+
+    async def _seed() -> tuple[str, str, str]:
+        from ya_claw.agency.lifecycle import AgencyLifecycle
+        from ya_claw.controller.models import TriggerType
+        from ya_claw.orm.tables import RunRecord, SessionRecord
+        from ya_claw.runtime_state import InMemoryRuntimeState
+
+        settings = get_settings()
+        engine = create_engine(settings.resolved_database_url)
+        try:
+            session_factory = create_session_factory(engine)
+            async with session_factory() as db_session:
+                source_session = SessionRecord(id="source-session", profile_name="general", session_metadata={})
+                lifecycle = AgencyLifecycle(settings=settings, runtime_state=InMemoryRuntimeState())
+                agency_session = await lifecycle.ensure_agency_session(db_session)
+                agency_run = RunRecord(
+                    id="agencycompletedrun0000000000001",
+                    session_id=agency_session.id,
+                    sequence_no=1,
+                    status="completed",
+                    trigger_type=TriggerType.AGENCY.value,
+                    input_parts=[],
+                    run_metadata={"agency": {"fire_ids": ["fire-1"]}},
+                )
+                db_session.add_all([source_session, agency_run])
+                agency_session.active_run_id = agency_run.id
+                agency_session.head_run_id = agency_run.id
+                await db_session.commit()
+                return source_session.id, agency_session.id, agency_run.id
+        finally:
+            await engine.dispose()
+
+    source_session_id, agency_session_id, agency_run_id = asyncio.run(_seed())
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.execution_supervisor = None
+        response = client.post(
+            "/api/v1/agency/source-session:submit",
+            headers=_auth_headers(),
+            json={
+                "source_session_id": source_session_id,
+                "prompt": "Please review Agency findings and update the thread.",
+                "metadata": {"fire_ids": ["fire-1"]},
+                "agency_session_id": agency_session_id,
+                "agency_run_id": agency_run_id,
+            },
+        )
+
+    assert response.status_code == 403
