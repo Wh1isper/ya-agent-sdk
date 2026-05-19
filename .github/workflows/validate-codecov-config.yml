@@ -6,11 +6,14 @@ on:
   push:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   validate-codecov-config:
     name: Validate Codecov Config
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Validate codecov configuration
         run: curl -sSL --fail-with-body --data-binary @codecov.yaml https://codecov.io/validate

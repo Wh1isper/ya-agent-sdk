@@ -24,6 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DESKTOP_RELEASE_PREFIX: desktop-v
 
 jobs:
@@ -79,17 +80,17 @@ jobs:
             os: windows-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -138,7 +139,7 @@ jobs:
           sha256sum * > "SHA256SUMS-${{ matrix.platform.name }}"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ya-desktop-${{ needs.prepare.outputs.version }}-${{ matrix.platform.name }}
           path: desktop-artifacts/*
@@ -150,13 +151,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
       - name: Download desktop artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: ya-desktop-${{ needs.prepare.outputs.version }}-*
           path: desktop-artifacts
