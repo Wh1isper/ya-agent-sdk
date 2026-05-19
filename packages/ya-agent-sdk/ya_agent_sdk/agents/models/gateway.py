@@ -142,7 +142,7 @@ def _build_gateway_http_client(
     *,
     extra_headers: dict[str, str] | None,
 ) -> httpx.AsyncClient:
-    # Only google-gla/bedrock need extra_headers via http_client (their providers don't support direct header injection)
+    # Google Cloud and Bedrock gateway providers need extra headers through the shared http_client.
     needs_extra_headers_patch = provider_name in ("google-vertex", "google-gla", "bedrock", "converse")
 
     if extra_headers and needs_extra_headers_patch:
@@ -190,9 +190,9 @@ def _build_gateway_provider(
             region_name=gateway_name,  # Fake region name to avoid NoRegionError
         )
     if provider_name in ("google-vertex", "google-gla"):
-        from pydantic_ai.providers.google import GoogleProvider
+        from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 
-        return GoogleProvider(vertexai=True, api_key=api_key, base_url=base_url, http_client=http_client)
+        return GoogleCloudProvider(api_key=api_key, base_url=base_url, http_client=http_client)
     raise KeyError(f"Unknown upstream provider: {provider_name}")
 
 
