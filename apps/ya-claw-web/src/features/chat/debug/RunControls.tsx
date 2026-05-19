@@ -9,9 +9,9 @@ import {
 import { toast } from 'sonner'
 
 import {
-  useCreateSessionRunMutation,
   useRunControlMutations,
   useSessionSandboxMutations,
+  useSubmitSessionInputMutation,
 } from '../../../api/hooks'
 import { StatusBadge } from '../../../components/StatusBadge'
 import { cn, formatShortId } from '../../../lib/utils'
@@ -197,7 +197,7 @@ export function RunControlBar({
   onSelectRun: (runId: string | null) => void
 }) {
   const runControls = useRunControlMutations(run?.id ?? null)
-  const createRun = useCreateSessionRunMutation(sessionId)
+  const submitInput = useSubmitSessionInputMutation(sessionId)
   if (!run) return null
 
   const isActive = run.status === 'queued' || run.status === 'running'
@@ -209,7 +209,7 @@ export function RunControlBar({
   async function recover(mode: 'retry' | 'reset_and_retry') {
     if (!run || !sessionId || !run.input_parts?.length) return
     try {
-      const createdRun = await createRun.mutateAsync({
+      const response = await submitInput.mutateAsync({
         input_parts: run.input_parts,
         reset_state: mode === 'reset_and_retry',
         metadata: {
@@ -221,7 +221,7 @@ export function RunControlBar({
           },
         },
       })
-      onSelectRun(createdRun.id)
+      onSelectRun(response.run_id)
       toast.success(
         mode === 'retry' ? 'Retry submitted' : 'Reset and retry submitted',
       )
@@ -274,7 +274,7 @@ export function RunControlBar({
               type="button"
               className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:opacity-60"
               onClick={() => void recover('retry')}
-              disabled={createRun.isPending}
+              disabled={submitInput.isPending}
             >
               <RefreshCcw className="h-3.5 w-3.5" />
               Retry
@@ -283,7 +283,7 @@ export function RunControlBar({
               type="button"
               className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
               onClick={() => void recover('reset_and_retry')}
-              disabled={createRun.isPending}
+              disabled={submitInput.isPending}
             >
               <ArchiveX className="h-3.5 w-3.5" />
               Reset and retry

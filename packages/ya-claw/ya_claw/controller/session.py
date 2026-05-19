@@ -138,8 +138,6 @@ class SessionController:
         runtime_state: InMemoryRuntimeState,
         session_id: str,
         request: SessionSubmitRequest,
-        *,
-        require_new_run: bool = False,
     ) -> SessionSubmitResponse:
         async with runtime_state.session_lock(session_id):
             return await self.submit_input_locked(
@@ -148,7 +146,6 @@ class SessionController:
                 runtime_state,
                 session_id,
                 request,
-                require_new_run=require_new_run,
             )
 
     async def submit_input_locked(
@@ -158,8 +155,6 @@ class SessionController:
         runtime_state: InMemoryRuntimeState,
         session_id: str,
         request: SessionSubmitRequest,
-        *,
-        require_new_run: bool = False,
     ) -> SessionSubmitResponse:
         if not request.input_parts:
             raise HTTPException(status_code=422, detail="input_parts must not be empty for session input submission.")
@@ -167,11 +162,6 @@ class SessionController:
         if not isinstance(record, SessionRecord):
             raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
         active_run = await self._active_run_record(db_session, record)
-        if require_new_run and isinstance(active_run, RunRecord):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Session '{session_id}' already has an active run '{active_run.id}'.",
-            )
         if isinstance(active_run, RunRecord):
             if active_run.status == RunStatus.QUEUED:
                 input_payload = [part.model_dump(mode="json") for part in request.input_parts]

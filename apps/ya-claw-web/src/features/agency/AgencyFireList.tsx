@@ -30,7 +30,7 @@ export function AgencyFireList({
           <div>
             <p className="text-sm font-semibold text-slate-950">Agency fires</p>
             <p className="mt-0.5 text-xs text-slate-500">
-              Timer, memory, compact, and manual wakeups
+              Observed messages and memory session completions
             </p>
           </div>
           <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-500">
@@ -56,7 +56,7 @@ export function AgencyFireList({
             description={
               search.trim()
                 ? 'Try a fire id, kind, status, source, or run id.'
-                : 'Timer, memory, and manual fires appear here.'
+                : 'Observed messages and memory session completions appear here.'
             }
             className="min-h-64 bg-slate-50"
           />

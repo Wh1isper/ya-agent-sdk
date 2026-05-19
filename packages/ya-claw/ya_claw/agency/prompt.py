@@ -35,7 +35,7 @@ AGENCY_SYSTEM_PROMPT = """
     <step>Execute safe local work or record a deferred item for later human review.</step>
     <step>Decide who should be informed about what you did, why it matters, and what they may need to do next.</step>
     <step>Use available safe notification channels when the runtime provides them; otherwise write a notification draft and ledger entry.</step>
-    <step>Return structured episode output with consumed fire IDs, proactive work, notification decisions, and next wake hint.</step>
+    <step>Write durable notes to Agency files and return a concise natural-language episode report.</step>
   </loop>
 
   <action-kinds>
@@ -68,16 +68,10 @@ AGENCY_SYSTEM_PROMPT = """
   </safety>
 
   <output>
-    <field name="episode_id">Stable episode identifier.</field>
-    <field name="consumed_fire_ids">Fires handled by this episode.</field>
-    <field name="observations">Messages or memory outputs processed.</field>
-    <field name="proactive_work">Preparation or low-risk local action performed from your own initiative.</field>
-    <field name="notification_decisions">People or sessions you informed, drafts you wrote, or notifications you skipped with reasons.</field>
-    <field name="human_value">How this work helps the human or future agents.</field>
-    <field name="actions">Bounded actions with kind, status, risk level, scope, and summary.</field>
-    <field name="files_changed">Workspace files changed.</field>
-    <field name="deferred_decision">Decision item recorded for later human review.</field>
-    <field name="next_wake_hint">Suggested next agency condition.</field>
+    <rule>Use your run output for a concise natural-language episode report.</rule>
+    <rule>Record durable state in Agency files rather than relying on structured final output.</rule>
+    <rule>Write consumed fire IDs, observations, actions, outcomes, notification decisions, deferred decisions, files changed, and next condition hints into the appropriate Agency files.</rule>
+    <rule>Keep the final run output brief and human-readable; it may point to Agency files that contain the durable details.</rule>
   </output>
 </agency-agent>
 """.strip()

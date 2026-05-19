@@ -186,7 +186,7 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
     assert "ya_claw.run_interrupted" in run_events_response.text
 
 
-def test_stream_and_run_create_reject_active_session_without_submit_side_effects() -> None:
+def test_submit_uses_session_events_for_streaming_and_run_create_rejects_running_session() -> None:
     _create_schema()
 
     app = create_app()
@@ -202,12 +202,15 @@ def test_stream_and_run_create_reject_active_session_without_submit_side_effects
         session_id = create_session_response.json()["session"]["id"]
         run_id = create_session_response.json()["run"]["id"]
 
-        submit_stream_response = client.post(
-            f"/api/v1/sessions/{session_id}/submit:stream",
+        submit_response = client.post(
+            f"/api/v1/sessions/{session_id}/submit",
             headers=_auth_headers(),
-            json={"input_parts": [{"type": "text", "text": "stream should reject"}]},
+            json={"input_parts": [{"type": "text", "text": "second"}]},
         )
-        assert submit_stream_response.status_code == 409
+        assert submit_response.status_code == 202
+        assert submit_response.json()["delivery"] == "merged"
+        assert app.state.runtime_state.get_session_run_handle(session_id) is not None
+        assert app.state.runtime_state.get_run_handle(run_id) is not None
 
         async def _mark_running() -> None:
             session_factory = app.state.db_session_factory
@@ -247,7 +250,10 @@ def test_stream_and_run_create_reject_active_session_without_submit_side_effects
                 )
                 assert len(runs) == 1
                 assert runs[0].id == run_id
-                assert runs[0].input_parts == [{"type": "text", "text": "first", "metadata": None}]
+                assert runs[0].input_parts == [
+                    {"type": "text", "text": "first", "metadata": None},
+                    {"type": "text", "text": "second", "metadata": None},
+                ]
                 assert app.state.runtime_state.consume_steering_inputs(run_id) == []
         finally:
             await engine.dispose()

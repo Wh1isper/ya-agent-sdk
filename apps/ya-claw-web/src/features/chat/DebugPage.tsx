@@ -22,7 +22,6 @@ import {
 } from './sessionClassification'
 import { mergeSessionHistoryPages } from './sessionHistory'
 import { Composer } from './debug/Composer'
-import { EventDevToolsPanel } from './debug/EventDevToolsPanel'
 import { LivePill } from './debug/LivePill'
 import {
   MemoryStatusBar,
@@ -170,7 +169,6 @@ export function DebugPage() {
   const runs = history.runs.length
     ? history.runs
     : (activeSessionData?.session.runs ?? [])
-  const runEvents = history.events
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-100">
@@ -283,16 +281,6 @@ export function DebugPage() {
                   }
                 />
               </div>
-            </Panel>
-            <ResizeHandle />
-            <Panel defaultSize="32%" minSize="260px">
-              <EventDevToolsPanel
-                events={runEvents}
-                streamStatus={streamStatus}
-                liveEventCount={effectiveLiveEvents.length}
-                loading={contentLoading}
-                artifactsPruned={selectedRunArtifactsPruned}
-              />
             </Panel>
           </Group>
         </Panel>

@@ -12,7 +12,6 @@ import type {
   RunTraceItem,
   RunTraceResponse,
 } from '../../types'
-import { EventDevToolsPanel } from '../chat/debug/EventDevToolsPanel'
 import { formatDate } from './utils'
 
 export function AgencyInspectorPanel({
@@ -23,11 +22,6 @@ export function AgencyInspectorPanel({
   detail,
   trace,
   traceLoading,
-  events,
-  streamStatus,
-  liveEventCount,
-  loading,
-  artifactsPruned,
 }: {
   config?: AgencyConfigResponse
   status?: AgencyStatusResponse
@@ -36,11 +30,6 @@ export function AgencyInspectorPanel({
   detail: RunGetResponse | null
   trace: RunTraceResponse | null
   traceLoading: boolean
-  events: RunSummary['message']
-  streamStatus: Parameters<typeof EventDevToolsPanel>[0]['streamStatus']
-  liveEventCount: number
-  loading: boolean
-  artifactsPruned: boolean
 }) {
   const selectedRunFires = useMemo(() => {
     if (!run) return []
@@ -200,15 +189,6 @@ export function AgencyInspectorPanel({
             </PanelCard>
           ) : null}
         </div>
-      </div>
-      <div className="hidden min-h-0 h-[42%] border-t border-slate-200 xl:block">
-        <EventDevToolsPanel
-          events={events ?? []}
-          streamStatus={streamStatus}
-          liveEventCount={liveEventCount}
-          loading={loading}
-          artifactsPruned={artifactsPruned}
-        />
       </div>
     </aside>
   )

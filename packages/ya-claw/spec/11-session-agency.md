@@ -108,7 +108,8 @@ The high-level session input API is:
 
 ```http
 POST /api/v1/sessions/{session_id}/submit
-POST /api/v1/sessions/{session_id}/submit:stream
+GET /api/v1/sessions/{session_id}/events
+GET /api/v1/runs/{run_id}/events
 ```
 
 `SessionController.submit_input()` serializes each session through an in-memory per-session lock:
@@ -126,12 +127,12 @@ async with runtime_state.session_lock(session_id):
 
 The response reports delivery:
 
-- `submitted`: a new async/stream run was created.
+- `submitted`: a new async run was created.
 - `queued`: a new queue-mode run was created.
 - `merged`: input was durably appended to a queued run.
 - `steered`: input was sent to a running runtime.
 
-Existing session run and steer routes may remain as compatibility aliases. Product-facing clients should prefer `/submit` for user input.
+Existing session run and steer routes may remain as compatibility aliases. Product-facing clients should prefer `/submit` for user input and use the GET event streams to follow the active session or run.
 
 ## Message Copy Path
 
@@ -202,15 +203,16 @@ Rules:
 
 ## API
 
-| Method | Path                                  | Purpose                                      |
-| ------ | ------------------------------------- | -------------------------------------------- |
-| `GET`  | `/api/v1/agency/config`               | read singleton Agency config                 |
-| `GET`  | `/api/v1/agency/status`               | read session state and pending fire count    |
-| `GET`  | `/api/v1/agency/fires`                | inspect recent fire audit rows               |
-| `POST` | `/api/v1/agency:bootstrap`            | ensure singleton Agency session exists       |
-| `POST` | `/api/v1/agency:clear`                | cancel active Agency work and reset files    |
-| `POST` | `/api/v1/sessions/{id}/submit`        | submit, merge, or steer source session input |
-| `POST` | `/api/v1/sessions/{id}/submit:stream` | stream a newly created idle-session run      |
+| Method | Path                           | Purpose                                      |
+| ------ | ------------------------------ | -------------------------------------------- |
+| `GET`  | `/api/v1/agency/config`        | read singleton Agency config                 |
+| `GET`  | `/api/v1/agency/status`        | read session state and pending fire count    |
+| `GET`  | `/api/v1/agency/fires`         | inspect recent fire audit rows               |
+| `POST` | `/api/v1/agency:bootstrap`     | ensure singleton Agency session exists       |
+| `POST` | `/api/v1/agency:clear`         | cancel active Agency work and reset files    |
+| `POST` | `/api/v1/sessions/{id}/submit` | submit, merge, or steer source session input |
+| `GET`  | `/api/v1/sessions/{id}/events` | stream active session events                 |
+| `GET`  | `/api/v1/runs/{run_id}/events` | stream active run events                     |
 
 Manual Agency injection belongs to development tooling when needed. It is not a product API surface.
 

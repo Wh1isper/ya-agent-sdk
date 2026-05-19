@@ -315,43 +315,6 @@ async def submit_session_input(
     return response
 
 
-@router.post("/{session_id}/submit:stream")
-async def submit_session_input_stream(
-    request: Request, session_id: str, payload: SessionSubmitRequest
-) -> EventSourceResponse:
-    settings = _get_settings(request)
-    runtime_state = _get_runtime_state(request)
-    session_factory = _get_session_factory(request)
-    payload.dispatch_mode = DispatchMode.STREAM
-    async with session_factory() as db_session:
-        response = await session_controller.submit_input(
-            db_session,
-            settings,
-            runtime_state,
-            session_id,
-            payload,
-            require_new_run=True,
-        )
-        await _observe_session_message(
-            db_session,
-            settings,
-            runtime_state,
-            session_id=session_id,
-            run_id=response.run_id,
-            input_parts=payload.input_parts,
-            source_kind=payload.trigger_type.value
-            if hasattr(payload.trigger_type, "value")
-            else str(payload.trigger_type),
-            metadata=payload.metadata,
-            submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
-        )
-    if response.delivery != "submitted" or response.run is None:
-        raise HTTPException(status_code=409, detail="Stream submission requires an idle session that creates a run.")
-    await _publish_run_notification(request, "run.created", response.run)
-    _dispatch_run(request, response.run.id, payload.dispatch_mode, require_submission=True)
-    return EventSourceResponse(runtime_state.stream_run_events(response.run.id))
-
-
 @router.post("/{session_id}/runs", response_model=RunDetail, status_code=201)
 async def create_session_run(request: Request, session_id: str, payload: SessionRunCreateRequest) -> RunDetail:
     settings = _get_settings(request)

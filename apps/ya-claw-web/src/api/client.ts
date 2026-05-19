@@ -3,8 +3,6 @@ import type {
   AgencyConfigResponse,
   AgencyFireListResponse,
   AgencyStatusResponse,
-  AgencyTriggerRequest,
-  AgencyTriggerResponse,
   BridgeConversationListResponse,
   BridgeEventListResponse,
   BridgeEventStatus,
@@ -30,8 +28,9 @@ import type {
   ScheduleUpdateRequest,
   SessionCreateResponse,
   SessionGetResponse,
-  SessionRunCreateRequest,
   SessionSandboxState,
+  SessionSubmitRequest,
+  SessionSubmitResponse,
   SessionSummary,
   SessionWorkspaceState,
   WorkspaceResolveResponse,
@@ -209,11 +208,14 @@ export class ClawApiClient {
     })
   }
 
-  createSessionRun(sessionId: string, payload: SessionRunCreateRequest) {
-    return this.request<RunDetail>(`/api/v1/sessions/${sessionId}/runs`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    })
+  submitSessionInput(sessionId: string, payload: SessionSubmitRequest) {
+    return this.request<SessionSubmitResponse>(
+      `/api/v1/sessions/${sessionId}/submit`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    )
   }
 
   getAgencyConfig() {
@@ -226,13 +228,6 @@ export class ClawApiClient {
 
   listAgencyFires() {
     return this.request<AgencyFireListResponse>('/api/v1/agency/fires')
-  }
-
-  triggerAgency(payload: AgencyTriggerRequest) {
-    return this.request<AgencyTriggerResponse>('/api/v1/agency:trigger', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    })
   }
 
   clearAgency() {
@@ -249,13 +244,6 @@ export class ClawApiClient {
 
   getRunTrace(runId: string) {
     return this.request<RunTraceResponse>(`/api/v1/runs/${runId}/trace`)
-  }
-
-  steerRun(runId: string, inputParts: InputPart[]) {
-    return this.request(`/api/v1/runs/${runId}/steer`, {
-      method: 'POST',
-      body: JSON.stringify({ input_parts: inputParts }),
-    })
   }
 
   interruptRun(runId: string) {

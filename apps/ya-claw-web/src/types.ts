@@ -486,14 +486,13 @@ export type AgencyRiskPolicy = {
 
 export type AgencyFireSummary = {
   id: string
-  kind: 'manual' | 'timer' | 'memory_committed' | 'compact' | string
+  kind: 'message_observed' | 'memory_session_completed' | string
   status:
     | 'pending'
     | 'submitted'
     | 'steered'
     | 'merged'
     | 'consumed'
-    | 'skipped'
     | 'failed'
     | string
   scheduled_at: string
@@ -553,30 +552,6 @@ export type AgencyClearResponse = {
   agency_session: SessionSummary
 }
 
-export type AgencyTriggerRequest = {
-  kind?: 'manual' | 'timer' | 'memory_committed' | 'compact' | string
-  source_session_id?: string | null
-  source_run_id?: string | null
-  client_token?: string | null
-  prompt?: string | null
-  payload?: Record<string, unknown>
-}
-
-export type AgencyTriggerResponse = {
-  accepted: boolean
-  agency_session_id: string
-  fire: AgencyFireSummary
-  run_id?: string | null
-  active_run_id?: string | null
-  delivery:
-    | 'steered'
-    | 'submitted'
-    | 'merged'
-    | 'pending'
-    | 'duplicate'
-    | 'skipped'
-}
-
 export type SessionSummary = {
   id: string
   parent_session_id?: string | null
@@ -613,6 +588,22 @@ export type SessionGetResponse = {
 
 export type SessionCreateResponse = {
   session: SessionSummary
+  run?: RunDetail | null
+}
+
+export type SessionSubmitRequest = {
+  restore_from_run_id?: string | null
+  reset_state?: boolean
+  input_parts: InputPart[]
+  metadata?: Record<string, unknown>
+  trigger_type?: string
+}
+
+export type SessionSubmitResponse = {
+  session_id: string
+  run_id: string
+  delivery: 'submitted' | 'queued' | 'merged' | 'steered'
+  status: RunStatus | string
   run?: RunDetail | null
 }
 

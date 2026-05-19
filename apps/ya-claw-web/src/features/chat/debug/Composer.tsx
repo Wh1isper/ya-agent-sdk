@@ -4,9 +4,8 @@ import { toast } from 'sonner'
 
 import {
   useCreateSessionMutation,
-  useCreateSessionRunMutation,
   useProfilesQuery,
-  useRunControlMutations,
+  useSubmitSessionInputMutation,
 } from '../../../api/hooks'
 import { cn } from '../../../lib/utils'
 import { useLayoutStore } from '../../../stores/layoutStore'
@@ -24,8 +23,7 @@ export function Composer({
 }) {
   const [text, setText] = useState('')
   const createSession = useCreateSessionMutation()
-  const createRun = useCreateSessionRunMutation(selectedSessionId)
-  const runControls = useRunControlMutations(activeRun?.id ?? null)
+  const submitInput = useSubmitSessionInputMutation(selectedSessionId)
   const profiles = useProfilesQuery()
   const profileOptions = profiles.data ?? []
   const defaultProfileName = profileOptions[0]?.name ?? ''
@@ -34,32 +32,27 @@ export function Composer({
   )
   const selectSession = useLayoutStore((store) => store.selectSession)
   const selectRun = useLayoutStore((store) => store.selectRun)
+  const canAppend = activeRun?.status === 'queued'
   const canSteer = activeRun?.status === 'running'
-  const queuedLocked = activeRun?.status === 'queued'
 
   useEffect(() => {
     setProfileName(selectedProfile ?? defaultProfileName)
   }, [defaultProfileName, selectedProfile])
 
-  const isPending =
-    createSession.isPending ||
-    createRun.isPending ||
-    runControls.steer.isPending
-  const canSend = text.trim().length > 0 && !isPending && !queuedLocked
+  const isPending = createSession.isPending || submitInput.isPending
+  const canSend = text.trim().length > 0 && !isPending
 
   async function send() {
     const normalizedText = text.trim()
     if (!normalizedText) return
     const inputParts: InputPart[] = [{ type: 'text', text: normalizedText }]
     try {
-      if (canSteer && activeRun) {
-        await runControls.steer.mutateAsync(inputParts)
-      } else if (selectedSessionId) {
-        const run = await createRun.mutateAsync({
+      if (selectedSessionId) {
+        const response = await submitInput.mutateAsync({
           input_parts: inputParts,
           metadata: DEBUG_METADATA,
         })
-        selectRun(run.id)
+        selectRun(response.run_id)
       } else {
         const response = await createSession.mutateAsync({
           profile_name: profileName.trim() || null,
@@ -96,7 +89,7 @@ export function Composer({
           >
             {canSteer
               ? 'Active run is streaming. New input will steer the current run.'
-              : 'This session is queued. Interrupt or cancel before sending a new turn.'}
+              : 'This session is queued. New input will be appended to the queued run.'}
           </div>
         ) : null}
         <div className="rounded-3xl border border-slate-200 bg-white p-3 shadow-sm ring-1 ring-slate-100 transition focus-within:border-blue-200 focus-within:ring-blue-100">
@@ -107,11 +100,10 @@ export function Composer({
             placeholder={
               canSteer
                 ? 'Steer the active run...'
-                : queuedLocked
-                  ? 'Run queued. Controls are available above the replay.'
+                : canAppend
+                  ? 'Append to the queued run...'
                   : 'Send a debug prompt to YA Claw...'
             }
-            disabled={queuedLocked}
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                 void send()
@@ -167,7 +159,9 @@ export function Composer({
                 : canSteer
                   ? 'Steer run'
                   : selectedSessionId
-                    ? 'Send'
+                    ? canAppend
+                      ? 'Append'
+                      : 'Send'
                     : 'New debug run'}
             </button>
           </div>

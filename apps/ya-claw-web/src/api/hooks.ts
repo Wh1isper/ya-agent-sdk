@@ -10,13 +10,12 @@ import { toast } from 'sonner'
 
 import { useConnectionStore } from '../stores/connectionStore'
 import type {
-  AgencyTriggerRequest,
   BridgeEventStatus,
   InputPart,
   ProfileUpsertRequest,
   ScheduleCreateRequest,
   ScheduleUpdateRequest,
-  SessionRunCreateRequest,
+  SessionSubmitRequest,
 } from '../types'
 import { ClawApiClient } from './client'
 import { queryKeys } from './queryKeys'
@@ -243,13 +242,6 @@ export function useAgencyMutations() {
     ])
   }
   return {
-    trigger: useMutation({
-      mutationFn: (payload: AgencyTriggerRequest) => api.triggerAgency(payload),
-      onSuccess: async (response) => {
-        toast.success(`Agency fire ${response.delivery}`)
-        await refresh(response.agency_session_id)
-      },
-    }),
     clear: useMutation({
       mutationFn: () => api.clearAgency(),
       onSuccess: async (response) => {
@@ -331,13 +323,13 @@ export function useCreateSessionMutation() {
   })
 }
 
-export function useCreateSessionRunMutation(sessionId: string | null) {
+export function useSubmitSessionInputMutation(sessionId: string | null) {
   const api = useApiClient()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (payload: SessionRunCreateRequest) =>
-      api.createSessionRun(sessionId ?? '', payload),
-    onSuccess: async (run) => {
+    mutationFn: (payload: SessionSubmitRequest) =>
+      api.submitSessionInput(sessionId ?? '', payload),
+    onSuccess: async (response) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
         sessionId
@@ -350,7 +342,9 @@ export function useCreateSessionRunMutation(sessionId: string | null) {
               queryKey: queryKeys.sessionWorkspace(sessionId),
             })
           : Promise.resolve(),
-        queryClient.invalidateQueries({ queryKey: queryKeys.run(run.id) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.run(response.run_id),
+        }),
       ])
     },
   })
@@ -368,11 +362,6 @@ export function useRunControlMutations(runId: string | null) {
     ])
   }
   return {
-    steer: useMutation({
-      mutationFn: (inputParts: InputPart[]) =>
-        api.steerRun(runId ?? '', inputParts),
-      onSuccess: refresh,
-    }),
     interrupt: useMutation({
       mutationFn: () => api.interruptRun(runId ?? ''),
       onSuccess: refresh,

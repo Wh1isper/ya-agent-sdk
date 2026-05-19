@@ -10,11 +10,9 @@ import {
   useRunQuery,
   useRunTraceQuery,
   useSessionHistoryQuery,
-  useSessionsQuery,
 } from '../../api/hooks'
 import type { StreamStatus } from '../../lib/status'
 import { formatShortId } from '../../lib/utils'
-import type { RunSummary } from '../../types'
 import { buildTimelineFromRuns } from '../chat/agui/eventReducer'
 import { LivePill } from '../chat/debug/LivePill'
 import { ResizeHandle } from '../chat/debug/ResizeHandle'
@@ -26,17 +24,13 @@ import { useRunEventStream } from '../chat/useRunEventStream'
 import { AgencyFireList } from './AgencyFireList'
 import { AgencyInspectorPanel } from './AgencyInspectorPanel'
 import { AgencyConfigBar, AgencyStatusBar } from './AgencyStatusBars'
-import { ManualFireComposer } from './ManualFireComposer'
 import { dedupeRuns, orderRuns } from './utils'
 
 export function AgencyPage() {
   const config = useAgencyConfigQuery()
   const status = useAgencyStatusQuery()
   const fires = useAgencyFiresQuery()
-  const sessions = useSessionsQuery()
   const mutations = useAgencyMutations()
-  const [sourceSessionId, setSourceSessionId] = useState('')
-  const [prompt, setPrompt] = useState('')
   const [fireSearch, setFireSearch] = useState('')
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
 
@@ -138,9 +132,6 @@ export function AgencyPage() {
     : buildTimelineFromRuns(selectedRun ? [selectedRun] : [], {
         includeRuntimeEvents: false,
       })
-  const runEvents = history.events.length
-    ? history.events
-    : [...replayEvents, ...effectiveLiveEvents]
   const contentLoading =
     Boolean(agencySessionId && sessionHistory.isLoading) ||
     Boolean(selectedRunId && selectedRunQuery.isLoading)
@@ -151,26 +142,6 @@ export function AgencyPage() {
       selectedRunDetail?.run.has_message === false &&
       replayEvents.length === 0,
   )
-  const conversationSessions = useMemo(
-    () =>
-      (sessions.data ?? []).filter(
-        (session) => session.session_type === 'conversation',
-      ),
-    [sessions.data],
-  )
-  const activeAgencyRun = resolveActiveRun(status.data?.active_run, selectedRun)
-
-  async function sendManualFire() {
-    if (mutations.trigger.isPending) return
-    await mutations.trigger.mutateAsync({
-      kind: 'manual',
-      source_session_id: sourceSessionId || null,
-      client_token: `web-${Date.now()}`,
-      prompt: prompt.trim() || null,
-    })
-    setPrompt('')
-  }
-
   async function clearAgency() {
     if (mutations.clear.isPending) return
     const confirmed = window.confirm(
@@ -272,16 +243,6 @@ export function AgencyPage() {
                   loadingOlder={sessionHistory.isFetchingNextPage}
                   onLoadOlder={() => sessionHistory.fetchNextPage()}
                 />
-                <ManualFireComposer
-                  sessions={conversationSessions}
-                  selectedSourceSessionId={sourceSessionId}
-                  prompt={prompt}
-                  activeRun={activeAgencyRun}
-                  pending={mutations.trigger.isPending}
-                  onSourceSessionChange={setSourceSessionId}
-                  onPromptChange={setPrompt}
-                  onSubmit={sendManualFire}
-                />
               </div>
             </Panel>
             <ResizeHandle />
@@ -298,11 +259,6 @@ export function AgencyPage() {
                   selectedRunTrace.isFetching &&
                   !selectedTrace
                 }
-                events={runEvents}
-                streamStatus={streamStatus}
-                liveEventCount={effectiveLiveEvents.length}
-                loading={contentLoading}
-                artifactsPruned={selectedRunArtifactsPruned}
               />
             </Panel>
           </Group>
@@ -351,37 +307,11 @@ export function AgencyPage() {
                   selectedRunTrace.isFetching &&
                   !selectedTrace
                 }
-                events={runEvents}
-                streamStatus={streamStatus}
-                liveEventCount={effectiveLiveEvents.length}
-                loading={contentLoading}
-                artifactsPruned={selectedRunArtifactsPruned}
               />
             </div>
-            <ManualFireComposer
-              sessions={conversationSessions}
-              selectedSourceSessionId={sourceSessionId}
-              prompt={prompt}
-              activeRun={activeAgencyRun}
-              pending={mutations.trigger.isPending}
-              onSourceSessionChange={setSourceSessionId}
-              onPromptChange={setPrompt}
-              onSubmit={sendManualFire}
-            />
           </div>
         </div>
       </div>
     </div>
   )
-}
-
-function resolveActiveRun(
-  activeRun: RunSummary | null | undefined,
-  selectedRun: RunSummary | null,
-) {
-  if (activeRun) return activeRun
-  if (selectedRun?.status === 'running' || selectedRun?.status === 'queued') {
-    return selectedRun
-  }
-  return null
 }
