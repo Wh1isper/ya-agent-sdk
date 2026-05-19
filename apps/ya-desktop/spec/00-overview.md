@@ -194,7 +194,7 @@ Current implementation:
 - Opens Agency or memory sessions in Chats for full session history.
 - Updates through notification SSE events for Agency config, fires, and clear operations.
 
-Desktop launch defaults enable both Agency and Memory for Local Claw. Settings exposes a launch preset editor so users can import preset JSON or dotenv-style variables and control startup environment variables passed to `ya-clawd`.
+Desktop launch defaults enable both Agency and Memory for Local Claw. Settings exposes a launch preset editor so users can import preset JSON or dotenv-style variables and control startup environment variables passed to `ya-clawd`. Desktop reserves the sidecar port and sets `YA_CLAW_PUBLIC_BASE_URL` to the same local URL so Claw selfcall tools and async subagents target the active Local Claw process.
 
 Capabilities:
 

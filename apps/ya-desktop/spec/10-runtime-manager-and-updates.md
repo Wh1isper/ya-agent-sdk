@@ -246,7 +246,7 @@ reset_local_claw_launch_config()
 import_local_claw_launch_preset(raw: String)
 ```
 
-`start_local_claw()` reads `runtimes/claw/active.json`, reads `local-claw/launch-config.json`, and launches the active `entrypoint` with Desktop-managed startup environment variables.
+`start_local_claw()` reads `runtimes/claw/active.json`, reads `local-claw/launch-config.json`, reserves a localhost port, and launches the active `entrypoint` with matching `--port <port>` plus `YA_CLAW_PUBLIC_BASE_URL=http://127.0.0.1:<port>`. This keeps Claw selfcall tools, async subagents, Agency source-session inspection, and notification links pointed at the active Desktop sidecar.
 
 Launch config shape:
 
@@ -264,7 +264,7 @@ Launch config shape:
 }
 ```
 
-Desktop always manages `YA_CLAW_API_TOKEN` itself. Presets can provide JSON or dotenv-style environment variables. `YA_CLAW_AGENCY_ENABLED` and `YA_CLAW_MEMORY_ENABLED` map to first-class toggle fields so the Settings UI can keep Agency and Memory visible.
+Desktop always manages `YA_CLAW_API_TOKEN` and `YA_CLAW_PUBLIC_BASE_URL` itself. Presets can provide JSON or dotenv-style environment variables. `YA_CLAW_AGENCY_ENABLED` and `YA_CLAW_MEMORY_ENABLED` map to first-class toggle fields so the Settings UI can keep Agency and Memory visible.
 
 ## UI Surfaces
 

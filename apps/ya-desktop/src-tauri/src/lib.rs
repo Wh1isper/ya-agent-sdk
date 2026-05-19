@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -298,6 +299,8 @@ fn start_local_claw(
     let layout = ensure_local_claw_layout(&app)?;
     let api_token = ensure_local_api_token(&layout.env_file)?;
     let launch_config = read_local_claw_launch_config(&layout.launch_config_file)?;
+    let local_port = reserve_local_claw_port()?;
+    let public_base_url = format!("http://127.0.0.1:{}", local_port);
     let command_spec = resolve_clawd_command(&app)?;
     let mut command = Command::new(&command_spec.program);
     command.args(&command_spec.args);
@@ -306,7 +309,7 @@ fn start_local_claw(
         "--host",
         "127.0.0.1",
         "--port",
-        "0",
+        &local_port.to_string(),
         "--data-dir",
         layout.data_dir.to_string_lossy().as_ref(),
         "--sqlite-path",
@@ -336,6 +339,7 @@ fn start_local_claw(
     for entry in &launch_config.env {
         command.env(&entry.key, &entry.value);
     }
+    command.env("YA_CLAW_PUBLIC_BASE_URL", &public_base_url);
     command.env("YA_CLAW_API_TOKEN", api_token);
     if let Some(seed_file) = resolve_profile_seed_file(&app) {
         command.env("YA_CLAW_PROFILE_SEED_FILE", seed_file);
@@ -1332,10 +1336,11 @@ fn normalize_launch_config(
             "YA_CLAW_MEMORY_ENABLED" => {
                 config.memory_enabled = parse_bool_env(&value)?;
             }
-            "YA_CLAW_API_TOKEN" => {
-                return Err(
-                    "YA_CLAW_API_TOKEN is managed by Desktop and cannot be overridden".to_string(),
-                );
+            "YA_CLAW_API_TOKEN" | "YA_CLAW_PUBLIC_BASE_URL" => {
+                return Err(format!(
+                    "{} is managed by Desktop and cannot be overridden",
+                    key
+                ));
             }
             _ => normalized_env.push(LocalClawEnvVar { key, value }),
         }
@@ -1511,6 +1516,17 @@ fn bool_env(value: bool) -> &'static str {
     } else {
         "false"
     }
+}
+
+fn reserve_local_claw_port() -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("Failed to reserve a Local Claw port: {}", error))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Failed to inspect reserved Local Claw port: {}", error))?
+        .port();
+    drop(listener);
+    Ok(port)
 }
 
 fn generate_local_token() -> Result<String, String> {
