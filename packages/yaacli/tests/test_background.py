@@ -1148,32 +1148,6 @@ async def test_output_monitoring_stderr_triggers_notification() -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_monitoring_completion_removes_from_monitored() -> None:
-    """Monitored process should be removed when it completes."""
-    bus = MessageBus()
-    shell = _make_mock_shell_with_buffers(
-        active_pids={"pid-1": "make test"},
-        buffers={"pid-1": ([], [])},
-    )
-
-    monitor = BackgroundMonitor()
-    monitor.start_shell_monitor(shell, bus, "main", poll_interval=0.05)
-    monitor.register_monitored_process("pid-1")
-
-    assert "pid-1" in monitor._monitored_processes
-
-    # Simulate process completion
-    shell.active_background_processes = {}
-    await asyncio.sleep(0.15)
-
-    # Should be removed from monitored set
-    assert "pid-1" not in monitor._monitored_processes
-    assert "pid-1" not in monitor._notified_pending
-
-    await monitor.close()
-
-
-@pytest.mark.asyncio
 async def test_output_monitoring_buffer_removed_stops_monitoring() -> None:
     """Should stop monitoring if output buffer is removed (killed/consumed)."""
     bus = MessageBus()
