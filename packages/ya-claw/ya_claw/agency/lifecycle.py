@@ -704,7 +704,8 @@ def _heartbeat_payload(*, settings: ClawSettings, now: datetime, next_fire_at: d
             "Inspect recent source sessions or run traces only when they clarify an actionable loop.",
             "Prefer low-risk synthesis, preparation, and cross-session connection work.",
             "Use submit_to_source_session when a specific source conversation session should act or decide.",
-            "Record skipped routes, useful findings, and the next trigger condition in Agency files.",
+            "Record useful findings and next trigger conditions only when they change Agency state.",
+            "When no action, handoff, file update, or durable insight is useful, make no file changes and end with a brief no-op report.",
         ],
     }
 

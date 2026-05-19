@@ -450,7 +450,9 @@ async def test_heartbeat_due_creates_and_dispatches_fire(
     assert fire.kind == AgencyFireKind.HEARTBEAT.value
     assert fire.payload["reason"] == "idle_proactive_review"
     assert fire.payload["review_scope"]["pending_intentions"] is True
-    assert "submit_to_source_session" in " ".join(fire.payload["instructions"])
+    instructions = " ".join(fire.payload["instructions"])
+    assert "submit_to_source_session" in instructions
+    assert "make no file changes" in instructions
     run = await db_session.get(RunRecord, result.submitted_run_ids[0])
     assert isinstance(run, RunRecord)
     assert run.run_metadata["agency"]["trigger_kinds"] == [AgencyFireKind.HEARTBEAT.value]

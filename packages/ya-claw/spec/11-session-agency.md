@@ -12,7 +12,8 @@ YA Claw supports Agency as one global internal session. One Claw database owns o
 - Use one unified session submit path for normal sessions and Agency.
 - Let Agency use session-backed async subagents from its own singleton session.
 - Let Agency wake a specific source conversation session with a prompt handoff when outward work should happen.
-- Keep Agency state auditable through `agency_fires`, target source runs, run metadata, traces, workspace action logs, and episode files.
+- Keep material Agency state auditable through `agency_fires`, target source runs, run metadata, traces, workspace action logs, and episode files.
+- Allow no-op heartbeat episodes to finish with a brief report and no workspace file writes.
 - Preserve a compact Web UI API shape for config, status, fires, bootstrap, clear, and source-session handoff inspection.
 
 ## Non-Goals
@@ -62,9 +63,11 @@ flowchart TD
     REVIEW --> H{Source session should act?}
     H -->|yes| SUB[submit_to_source_session]
     SUB --> SRC[Source conversation run: agency_handoff]
-    H -->|later| LOG[Write Agency files and deferred decision]
+    H -->|later| LOG[Write material Agency files and deferred decision]
+    H -->|no useful action| NOOP[Brief no-op report]
     SRC --> LOG
     LOG --> DONE[Mark consumed fires on successful commit]
+    NOOP --> DONE
 ```
 
 ## Singleton Agency Session
@@ -226,6 +229,8 @@ The durable handoff record lives on the target source run:
 
 Agency runs use `AGENCY_SYSTEM_PROMPT` from `ya_claw/agency/prompt.py`. The configured agency profile supplies model, model settings, model config, builtin toolsets, MCP configuration, approval policy, subagents, and workspace backend hint.
 
+The prompt uses a material-write policy. Agency writes workspace files when an episode creates durable value: a source-session handoff, local artifact, changed intention, auditable decision, cross-session connection, or finding that should affect future behavior. Heartbeat reviews may complete with a brief no-op run output and no workspace file changes when they find no useful action, handoff, state change, or durable insight.
+
 Agency self-client scope is the Agency session. Async subagents spawned by Agency attach to the Agency session and wake Agency on completion through the existing async-subagent parent wake behavior. Agency outbound handoffs target source conversation sessions through `submit_to_source_session`.
 
 Agency system prompt includes:
@@ -254,9 +259,10 @@ Agency system prompt does not include automatic memory injection. Source facts a
 Rules:
 
 - `AGENCY.md` is the compact active Agency index.
-- `agency/ACTION_LOG.md` records recent decisions, actions, deferrals, outcomes, async task references, and consumed fire IDs.
-- Episode records live in `agency/episodes/*.md`.
+- `agency/ACTION_LOG.md` records material decisions, actions, deferrals, outcomes, async task references, and consumed fire IDs.
+- Episode records live in `agency/episodes/*.md` for substantive investigations, async-subagent integrations, multi-fire synthesis, and handoff-producing work.
 - Intention records live in `agency/intentions/*.md`.
+- No-op heartbeat reviews can rely on the final run output and leave Agency files unchanged.
 
 ## API
 

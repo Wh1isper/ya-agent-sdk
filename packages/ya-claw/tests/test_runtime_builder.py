@@ -240,11 +240,17 @@ def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_
 
 
 def test_agency_prompt_instructs_async_subagent_orchestration() -> None:
-    assert "<async-subagent-policy>" in AGENCY_SYSTEM_PROMPT
+    assert "<async_subagents>" in AGENCY_SYSTEM_PROMPT
     assert "Spawn subagents with stable names" in AGENCY_SYSTEM_PROMPT
     assert "Keep ownership of proactive strategy" in AGENCY_SYSTEM_PROMPT
-    assert "Use list_async_subagents and get_async_subagent" in AGENCY_SYSTEM_PROMPT
+    assert "Use `list_async_subagents` and `get_async_subagent`" in AGENCY_SYSTEM_PROMPT
     assert "submit_to_source_session" in AGENCY_SYSTEM_PROMPT
+
+
+def test_agency_prompt_allows_noop_heartbeat_without_file_writes() -> None:
+    assert "<durable_file_policy>" in AGENCY_SYSTEM_PROMPT
+    assert "Make no file changes" in AGENCY_SYSTEM_PROMPT
+    assert "brief no-op episode report" in AGENCY_SYSTEM_PROMPT
 
 
 def test_runtime_builder_filters_async_subagent_management_tools(tmp_path: Path) -> None:
