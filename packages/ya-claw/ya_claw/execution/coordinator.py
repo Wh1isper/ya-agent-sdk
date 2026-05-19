@@ -85,6 +85,9 @@ class ExecutionBuffers:
     output_text: str | None = None
     output_summary: str | None = None
     claw_metadata: dict[str, Any] = field(default_factory=dict)
+    success_committed: bool = False
+    terminal_event_emitted: bool = False
+    clear_runtime_handle: bool = False
 
 
 class _AgentRunMessages(Protocol):
@@ -375,9 +378,6 @@ class RunCoordinator:
 
     async def execute(self, run_id: str) -> None:  # noqa: C901
         buffers = ExecutionBuffers()
-        terminal_event_emitted = False
-        clear_runtime_handle = False
-
         logger.info("Executing run run_id={}", run_id)
         try:
             async with self._session_factory() as db_session:
@@ -426,116 +426,15 @@ class RunCoordinator:
                 buffers=buffers,
             )
 
-            async with self._session_factory() as db_session:
-                session_record, run_record = await _load_run_scope(db_session, run_id)
-                if run_record.status == "cancelled":
-                    await db_session.commit()
-                    return
-
-                effective_message_payload = buffers.latest_message_payload or {
-                    "events": self._runtime_state.get_replay_events(run_id),
-                    "message_history": [],
-                    "messages": [],
-                    "message_count": 0,
-                }
-                effective_state_payload = buffers.latest_state_payload or {
-                    "container_id": None,
-                    "context_state": {},
-                    "resumable_state": {},
-                    "message_history": list(effective_message_payload["message_history"]),
-                    "message_count": effective_message_payload["message_count"],
-                    "version": 3,
-                }
-                complete_run(session_record, run_record)
-                run_record.output_text = buffers.output_text
-                run_record.output_summary = buffers.output_summary
-                agui_adapter = AguiEventAdapter(session_id=session_record.id, run_id=run_id)
-                buffers.terminal_event = agui_adapter.build_run_finished_event(
-                    result={
-                        "termination_reason": run_record.termination_reason,
-                        "committed_at": run_record.committed_at.isoformat() if run_record.committed_at else None,
-                        "output_summary": run_record.output_summary,
-                    }
-                )
-                commit_run_artifacts(
-                    self._run_store,
-                    run_id=run_record.id,
-                    session_id=session_record.id,
-                    state=effective_state_payload,
-                    message=self._extract_replay_events(
-                        effective_message_payload,
-                        terminal_event=buffers.terminal_event,
-                    ),
-                )
-                await db_session.commit()
-                await db_session.refresh(run_record)
-                await _publish_run_status_notification(
-                    self._notification_hub,
-                    "run.updated",
-                    run_record,
-                )
-
-                await self._runtime_state.append_run_event(
-                    run_id,
-                    buffers.terminal_event,
-                    terminal=True,
-                )
-                terminal_event_emitted = True
-                clear_runtime_handle = dispatch_mode != "stream"
-                if not clear_runtime_handle:
-                    self._runtime_state.schedule_run_cleanup(run_id)
-                lifecycle = MemoryLifecycle(
-                    settings=self._settings,
-                    session_factory=self._session_factory,
-                    runtime_state=self._runtime_state,
-                    submit_run=self._submit_memory_run,
-                    agency_submit_run=self._submit_background_run,
-                )
-                async_task_controller = AsyncTaskController()
-                await async_task_controller.on_run_terminal(
-                    db_session,
-                    self._settings,
-                    self._runtime_state,
-                    run_record=run_record,
-                    submit_run=self._submit_memory_run,
-                )
-                if session_record.session_type == "memory":
-                    await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
-                elif session_record.session_type == "async_task":
-                    logger.debug("Skipping memory capture for async task session run_id={}", run_record.id)
-                elif session_record.session_type == "agency":
-                    agency_lifecycle = AgencyLifecycle(
-                        settings=self._settings,
-                        runtime_state=self._runtime_state,
-                        submit_run=self._submit_background_run,
+            if not buffers.success_committed:
+                async with self._runtime_state.session_lock(session_record.id):
+                    await self._commit_successful_run(
+                        run_id=run_id,
+                        session_id=session_record.id,
+                        dispatch_mode=dispatch_mode,
+                        buffers=buffers,
                     )
-                    await agency_lifecycle.on_agency_run_committed(db_session, run_record)
-                    if self._settings.agency_memory_capture_enabled:
-                        agency_metadata = (
-                            run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
-                        )
-                        for source in await _agency_memory_sources(db_session, agency_metadata):
-                            await lifecycle.on_run_committed(
-                                source_session_id=source.source_session_id,
-                                source_run_id=source.source_run_id or run_record.id,
-                                source_sequence_no=source.source_sequence_no,
-                                profile_name=run_record.profile_name,
-                                claw_metadata=buffers.claw_metadata,
-                            )
-                else:
-                    await lifecycle.on_run_committed(
-                        source_session_id=session_record.id,
-                        source_run_id=run_record.id,
-                        source_sequence_no=run_record.sequence_no,
-                        profile_name=run_record.profile_name,
-                        claw_metadata=buffers.claw_metadata,
-                    )
-                logger.info(
-                    "Run completed run_id={} session_id={} output_summary_chars={}",
-                    run_id,
-                    session_record.id,
-                    len(run_record.output_summary or ""),
-                )
+
         except AgentInterrupted:
             logger.info("Run interrupted by agent runtime run_id={}", run_id)
             async with self._session_factory() as db_session:
@@ -617,21 +516,171 @@ class RunCoordinator:
                     ),
                     terminal=True,
                 )
-                terminal_event_emitted = True
-                clear_runtime_handle = self._resolve_dispatch_mode(run_id) != "stream"
-                if not clear_runtime_handle:
+                buffers.terminal_event_emitted = True
+                buffers.clear_runtime_handle = self._resolve_dispatch_mode(run_id) != "stream"
+                if not buffers.clear_runtime_handle:
                     self._runtime_state.schedule_run_cleanup(run_id)
         finally:
-            if not terminal_event_emitted:
+            if not buffers.terminal_event_emitted:
                 await self._runtime_state.close_run(run_id)
-                clear_runtime_handle = self._resolve_dispatch_mode(run_id) != "stream"
-                if not clear_runtime_handle:
+                buffers.clear_runtime_handle = self._resolve_dispatch_mode(run_id) != "stream"
+                if not buffers.clear_runtime_handle:
                     self._runtime_state.schedule_run_cleanup(run_id)
                 logger.debug(
-                    "Run runtime state closed run_id={} terminal_event_emitted={}", run_id, terminal_event_emitted
+                    "Run runtime state closed run_id={} terminal_event_emitted={}",
+                    run_id,
+                    buffers.terminal_event_emitted,
                 )
-            if clear_runtime_handle:
+            if buffers.clear_runtime_handle:
                 self._runtime_state.clear_run(run_id)
+
+    async def _commit_successful_run(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        dispatch_mode: str,
+        buffers: ExecutionBuffers,
+    ) -> None:
+        async with self._session_factory() as db_session:
+            session_record, run_record = await _load_run_scope(db_session, run_id)
+            if run_record.status == "cancelled":
+                await db_session.commit()
+                return
+
+            effective_message_payload = buffers.latest_message_payload or {
+                "events": self._runtime_state.get_replay_events(run_id),
+                "message_history": [],
+                "messages": [],
+                "message_count": 0,
+            }
+            effective_state_payload = buffers.latest_state_payload or {
+                "container_id": None,
+                "context_state": {},
+                "resumable_state": {},
+                "message_history": list(effective_message_payload["message_history"]),
+                "message_count": effective_message_payload["message_count"],
+                "version": 3,
+            }
+            complete_run(session_record, run_record)
+            run_record.output_text = buffers.output_text
+            run_record.output_summary = buffers.output_summary
+            agui_adapter = AguiEventAdapter(session_id=session_record.id, run_id=run_id)
+            buffers.terminal_event = agui_adapter.build_run_finished_event(
+                result={
+                    "termination_reason": run_record.termination_reason,
+                    "committed_at": run_record.committed_at.isoformat() if run_record.committed_at else None,
+                    "output_summary": run_record.output_summary,
+                }
+            )
+            commit_run_artifacts(
+                self._run_store,
+                run_id=run_record.id,
+                session_id=session_record.id,
+                state=effective_state_payload,
+                message=self._extract_replay_events(
+                    effective_message_payload,
+                    terminal_event=buffers.terminal_event,
+                ),
+            )
+            await db_session.commit()
+            await db_session.refresh(run_record)
+            await _publish_run_status_notification(
+                self._notification_hub,
+                "run.updated",
+                run_record,
+            )
+
+            await self._runtime_state.append_run_event(
+                run_id,
+                buffers.terminal_event,
+                terminal=True,
+            )
+            buffers.success_committed = True
+            buffers.terminal_event_emitted = True
+            buffers.clear_runtime_handle = dispatch_mode != "stream"
+            if not buffers.clear_runtime_handle:
+                self._runtime_state.schedule_run_cleanup(run_id)
+            lifecycle = MemoryLifecycle(
+                settings=self._settings,
+                session_factory=self._session_factory,
+                runtime_state=self._runtime_state,
+                submit_run=self._submit_memory_run,
+                agency_submit_run=self._submit_background_run,
+            )
+            async_task_controller = AsyncTaskController()
+            await async_task_controller.on_run_terminal(
+                db_session,
+                self._settings,
+                self._runtime_state,
+                run_record=run_record,
+                submit_run=self._submit_memory_run,
+            )
+            if session_record.session_type == "memory":
+                await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
+            elif session_record.session_type == "async_task":
+                logger.debug("Skipping memory capture for async task session run_id={}", run_record.id)
+            elif session_record.session_type == "agency":
+                agency_lifecycle = AgencyLifecycle(
+                    settings=self._settings,
+                    runtime_state=self._runtime_state,
+                    submit_run=self._submit_background_run,
+                )
+                await agency_lifecycle.on_agency_run_committed(db_session, run_record)
+                if self._settings.agency_memory_capture_enabled:
+                    agency_metadata = (
+                        run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
+                    )
+                    for source in await _agency_memory_sources(db_session, agency_metadata):
+                        await lifecycle.on_run_committed(
+                            source_session_id=source.source_session_id,
+                            source_run_id=source.source_run_id or run_record.id,
+                            source_sequence_no=source.source_sequence_no,
+                            profile_name=run_record.profile_name,
+                            claw_metadata=buffers.claw_metadata,
+                        )
+            else:
+                await lifecycle.on_run_committed(
+                    source_session_id=session_record.id,
+                    source_run_id=run_record.id,
+                    source_sequence_no=run_record.sequence_no,
+                    profile_name=run_record.profile_name,
+                    claw_metadata=buffers.claw_metadata,
+                )
+            logger.info(
+                "Run completed run_id={} session_id={} output_summary_chars={}",
+                run_id,
+                session_id,
+                len(run_record.output_summary or ""),
+            )
+
+    async def _build_steering_prompt_from_batches(
+        self,
+        batches: list[list[dict[str, Any]]],
+        *,
+        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
+    ) -> str | list[Any]:
+        prompts: list[str | list[Any]] = []
+        for raw_batch in batches:
+            logger.debug("Forwarding terminal-gate steering input input_parts={}", len(raw_batch))
+            parts = parse_input_parts(list(raw_batch))
+            mapping = await map_input_parts(parts, file_operator=runtime.ctx.file_operator)
+            prompts.append(self._build_user_prompt(mapping))
+        if len(prompts) == 1:
+            return prompts[0]
+        text_items: list[str] = []
+        mixed_items: list[Any] = []
+        has_mixed = False
+        for prompt in prompts:
+            if isinstance(prompt, str):
+                text_items.append(prompt)
+                mixed_items.append(prompt)
+            else:
+                has_mixed = True
+                mixed_items.extend(prompt)
+        if has_mixed:
+            return mixed_items
+        return "\n\n".join(text_items)
 
     async def _execute_agent_run(  # noqa: C901
         self,
@@ -723,12 +772,16 @@ class RunCoordinator:
                         session_id,
                         runtime.ctx.container_id,
                     )
+                    next_user_prompt: str | list[Any] | None = None
                     while True:
+                        current_user_prompt = next_user_prompt
+                        next_user_prompt = None
                         async with stream_agent(
                             runtime,
+                            user_prompt=current_user_prompt,
                             user_prompt_factory=(
                                 (lambda runtime_obj: self._build_initial_prompt(runtime_obj, input_parts))
-                                if use_initial_prompt
+                                if use_initial_prompt and current_user_prompt is None
                                 else None
                             ),
                             message_history=message_history,
@@ -815,11 +868,38 @@ class RunCoordinator:
                                 else None,
                                 len(buffers.output_summary or ""),
                             )
-                            break
+                            async with self._runtime_state.session_lock(session_id):
+                                pending_steering = self._runtime_state.consume_steering_inputs(run_id)
+                                if not pending_steering:
+                                    drained_background = await background_monitor.drain_or_cancel(timeout=10.0)
+                                    if not drained_background:
+                                        logger.warning(
+                                            "YA Claw background subagents cancelled after drain timeout run_id={}",
+                                            run_id,
+                                        )
+                                    pending_steering = self._runtime_state.consume_steering_inputs(run_id)
+                                if not pending_steering:
+                                    await self._commit_successful_run(
+                                        run_id=run_id,
+                                        session_id=session_id,
+                                        dispatch_mode=dispatch_mode,
+                                        buffers=buffers,
+                                    )
+                                    break
+                            message_history = list(streamer.run.all_messages())
+                            deferred_tool_results = None
+                            use_initial_prompt = False
+                            next_user_prompt = await self._build_steering_prompt_from_batches(
+                                pending_steering,
+                                runtime=runtime,
+                            )
+                            logger.info(
+                                "Continuing run after terminal-gate steering run_id={} batch_count={}",
+                                run_id,
+                                len(pending_steering),
+                            )
+                            continue
 
-                    drained_background = await background_monitor.drain_or_cancel(timeout=10.0)
-                    if not drained_background:
-                        logger.warning("YA Claw background subagents cancelled after drain timeout run_id={}", run_id)
                 finally:
                     if refresh_task is not None:
                         refresh_task.cancel()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_environment import Environment
 from ya_claw.config import ClawSettings
+from ya_claw.controller.models import SessionSubmitRequest, TextPart
+from ya_claw.controller.session import SessionController
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution import coordinator as coordinator_module
 from ya_claw.execution.coordinator import (
@@ -80,6 +83,64 @@ class StubEnvironmentFactory:
 class StubRuntimeBuilder:
     def build(self, **_: object) -> object:
         return object()
+
+
+class TerminalGateRuntimeContext:
+    def __init__(self) -> None:
+        self.file_operator = None
+        self.container_id = None
+        self.claw_metadata: dict[str, Any] = {}
+        self.session_id = "session-1"
+        self.claw_run_id = "run-1"
+        self.profile_name = "general"
+        self.restore_from_run_id = None
+        self.dispatch_mode = "async"
+        self.source_kind = "api"
+        self.source_metadata: dict[str, Any] = {}
+        self.workspace_binding = None
+
+    def export_state(self) -> Any:
+        class ExportedState:
+            def model_dump(self, *, mode: str) -> dict[str, Any]:
+                return {
+                    "notes": {},
+                    "tasks": [],
+                    "tool_search_loaded_tools": [],
+                    "tool_search_loaded_namespaces": [],
+                    "subagent_history": {},
+                    "extra_usages": [],
+                    "user_prompts": None,
+                    "steering_messages": [],
+                    "handoff_message": None,
+                    "deferred_tool_metadata": {},
+                    "agent_registry": {},
+                    "need_user_approve_tools": [],
+                    "need_user_approve_mcps": [],
+                    "auto_load_files": [],
+                }
+
+        return ExportedState()
+
+    def send_message(self, message: object) -> None:
+        return None
+
+
+class TerminalGateRuntime:
+    core_toolset = None
+
+    def __init__(self) -> None:
+        self.ctx = TerminalGateRuntimeContext()
+
+    async def __aenter__(self) -> TerminalGateRuntime:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+
+class TerminalGateRuntimeBuilder:
+    def build(self, **_: object) -> TerminalGateRuntime:
+        return TerminalGateRuntime()
 
 
 class StubRunCoordinator(RunCoordinator):
@@ -177,6 +238,55 @@ class StubRunCoordinator(RunCoordinator):
         buffers.output_summary = f"completed {run_id}"
         if self.failure is not None:
             raise self.failure
+
+
+class BlockingCommitRunCoordinator(StubRunCoordinator):
+    def __init__(self, *args: Any, entered_gate: asyncio.Event, release_gate: asyncio.Event, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.entered_gate = entered_gate
+        self.release_gate = release_gate
+
+    async def _commit_successful_run(self, **kwargs: Any) -> None:
+        self.entered_gate.set()
+        await self.release_gate.wait()
+        await super()._commit_successful_run(**kwargs)
+
+
+class DummyRuntimeContext:
+    file_operator = None
+
+
+class DummyRuntime:
+    def __init__(self) -> None:
+        self.ctx = DummyRuntimeContext()
+
+
+class DummyRun:
+    result = None
+
+    def all_messages(self) -> list[Any]:
+        return []
+
+
+class DummyStreamer:
+    run = DummyRun()
+
+    def __aiter__(self) -> DummyStreamer:
+        return self
+
+    async def __anext__(self) -> Any:
+        raise StopAsyncIteration
+
+    def raise_if_exception(self) -> None:
+        return None
+
+    def recoverable_messages(self) -> list[Any]:
+        return []
+
+
+@asynccontextmanager
+async def terminal_gate_stream_agent(*_: Any, **__: Any):
+    yield DummyStreamer()
 
 
 class InterruptingFailureRunCoordinator(StubRunCoordinator):
@@ -650,6 +760,138 @@ async def test_run_coordinator_loads_restore_point_from_previous_run(
 
     assert coordinator.restore_run_ids == ["run-1"]
     refreshed_run = await db_session.get(RunRecord, "run-2")
+    assert isinstance(refreshed_run, RunRecord)
+    await db_session.refresh(refreshed_run)
+    assert refreshed_run.status == "completed"
+
+
+async def test_execute_agent_run_terminal_gate_continues_late_steering(
+    monkeypatch: pytest.MonkeyPatch,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    runtime_state.register_run("session-1", "run-1")
+    coordinator = RunCoordinator(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=TerminalGateRuntimeBuilder(),
+    )
+    buffers = ExecutionBuffers()
+    commit_calls = 0
+    prompts: list[str | list[Any] | None] = []
+
+    async def fake_stream_agent(runtime: object, *args: Any, **kwargs: Any):
+        prompts.append(kwargs.get("user_prompt"))
+        if len(prompts) == 1:
+            await runtime_state.record_steering(
+                "run-1",
+                [TextPart(type="text", text="late steer").model_dump(mode="json")],
+            )
+        async with terminal_gate_stream_agent(runtime, *args, **kwargs) as streamer:
+            yield streamer
+
+    async def fake_commit_successful_run(**_: Any) -> None:
+        nonlocal commit_calls
+        commit_calls += 1
+        buffers.success_committed = True
+        buffers.terminal_event_emitted = True
+        buffers.clear_runtime_handle = True
+
+    monkeypatch.setattr(coordinator_module, "stream_agent", asynccontextmanager(fake_stream_agent))
+    monkeypatch.setattr(coordinator, "_commit_successful_run", fake_commit_successful_run)
+
+    await coordinator._execute_agent_run(
+        run_id="run-1",
+        session_id="session-1",
+        dispatch_mode="async",
+        workspace_binding=StubWorkspaceProvider(settings.resolved_workspace_dir).resolve(),
+        restore_point=None,
+        input_parts=[TextPart(type="text", text="hello")],
+        profile=ResolvedProfile(name="general", model="stub-model", model_settings=None, model_config=None),
+        profile_name="general",
+        trigger_type="api",
+        run_metadata={},
+        buffers=buffers,
+    )
+
+    assert len(prompts) == 2
+    assert prompts[0] is None
+    assert prompts[1] == "late steer"
+    assert commit_calls == 1
+    assert runtime_state.consume_steering_inputs("run-1") == []
+
+
+async def test_run_coordinator_terminal_gate_blocks_submit_until_completion(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    session_record = SessionRecord(id="session-1", profile_name="general", session_metadata={})
+    run_record = RunRecord(
+        id="run-1",
+        session_id="session-1",
+        sequence_no=1,
+        restore_from_run_id=None,
+        status="queued",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[{"type": "text", "text": "hello"}],
+        run_metadata={},
+    )
+    db_session.add(session_record)
+    db_session.add(run_record)
+    mark_run_running(session_record, run_record)
+    await db_session.commit()
+
+    runtime_state.register_run("session-1", "run-1")
+    entered_gate = asyncio.Event()
+    release_gate = asyncio.Event()
+    coordinator = BlockingCommitRunCoordinator(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        entered_gate=entered_gate,
+        release_gate=release_gate,
+    )
+
+    execute_task = asyncio.create_task(coordinator.execute("run-1"))
+    await asyncio.wait_for(entered_gate.wait(), timeout=2)
+
+    submit_done = asyncio.Event()
+    submit_result: dict[str, object] = {}
+
+    async def submit_after_terminal_gate() -> None:
+        session_factory = create_session_factory(db_engine)
+        async with session_factory() as submit_session:
+            response = await SessionController().submit_input(
+                submit_session,
+                settings,
+                runtime_state,
+                "session-1",
+                SessionSubmitRequest(input_parts=[TextPart(type="text", text="after gate")]),
+            )
+            submit_result["delivery"] = response.delivery
+            submit_result["run_id"] = response.run_id
+        submit_done.set()
+
+    submit_task = asyncio.create_task(submit_after_terminal_gate())
+    await asyncio.sleep(0.05)
+    assert not submit_done.is_set()
+
+    release_gate.set()
+    await execute_task
+    await asyncio.wait_for(submit_task, timeout=2)
+
+    assert submit_result["delivery"] == "submitted"
+    assert submit_result["run_id"] != "run-1"
+    refreshed_run = await db_session.get(RunRecord, "run-1")
     assert isinstance(refreshed_run, RunRecord)
     await db_session.refresh(refreshed_run)
     assert refreshed_run.status == "completed"
