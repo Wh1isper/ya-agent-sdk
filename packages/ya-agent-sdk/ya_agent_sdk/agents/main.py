@@ -19,7 +19,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
-from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, UsageLimits, UserError
+from pydantic_ai import Agent, AgentRetries, DeferredToolRequests, DeferredToolResults, UsageLimits, UserError
 from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.messages import (
@@ -144,6 +144,21 @@ def _restore_task_cancellation(task: asyncio.Task[Any] | None, count: int) -> No
 
     for _ in range(count):
         task.cancel()
+
+
+def _resolve_agent_retries(retries: int | AgentRetries | None, output_retries: int | None) -> int | AgentRetries:
+    """Resolve SDK retry defaults into Pydantic AI's unified AgentRetries form."""
+    if isinstance(retries, dict):
+        resolved: AgentRetries = {**retries}
+    elif retries is None:
+        resolved = {"tools": 1, "output": 3}
+    else:
+        resolved = {"tools": retries, "output": retries}
+
+    if output_retries is not None:
+        resolved["output"] = output_retries
+
+    return resolved
 
 
 # =============================================================================
@@ -393,8 +408,8 @@ def create_agent(
     agent_name: str = "main",
     system_prompt: str | None = None,
     system_prompt_template_vars: dict[str, Any] | None = None,
-    retries: int = 1,
-    output_retries: int = 3,
+    retries: int | AgentRetries | None = None,
+    output_retries: int | None = None,
     defer_model_check: bool = False,
     end_strategy: str = "exhaustive",
     lifecycle_extensions: Sequence[BaseLifecycleExtension[AgentDepsT, EnvT]] | None = None,
@@ -463,8 +478,9 @@ def create_agent(
             rendered as a Jinja2 template, supporting conditionals and default values.
         system_prompt_template_vars: Variables for Jinja2 template rendering. Works with
             both custom system_prompt strings and the default template file.
-        retries: Number of retries for agent run. Defaults to 1.
-        output_retries: Number of retries for output parsing. Defaults to 3.
+        retries: Retry budget for tools and structured output. Int sets both budgets;
+            AgentRetries can set tools and output independently. Defaults to tools=1, output=3.
+        output_retries: Deprecated compatibility override for output retries.
         defer_model_check: Defer model validation. Defaults to False.
         end_strategy: Strategy for ending agent run. Defaults to "exhaustive".
     Returns:
@@ -651,6 +667,7 @@ def create_agent(
 
     # --- Create Agent ---
     logger.debug("Creating agent with model=%s, output_type=%s", model, output_type)
+    agent_retries = _resolve_agent_retries(retries, output_retries)
     agent: Agent[AgentDepsT, OutputT] = add_toolset_instructions(
         Agent(
             model=effective_model,
@@ -664,8 +681,7 @@ def create_agent(
                 *all_capabilities,
                 ProcessHistory(create_system_prompt_filter(system_prompt=effective_system_prompt)),
             ],
-            tool_retries=retries,
-            output_retries=output_retries,
+            retries=agent_retries,
             defer_model_check=defer_model_check,
             end_strategy=end_strategy,  # type: ignore[arg-type]
             name=agent_name,

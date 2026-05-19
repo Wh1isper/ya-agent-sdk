@@ -308,7 +308,7 @@ def create_tui_runtime(
     output_type: OutputSpec[str | DeferredToolRequests] = [str, DeferredToolRequests]
     # Create runtime using SDK factory
     # Use unified_subagents=True to create single 'delegate' tool for all subagents
-    # output_retries must be large enough to support loop iterations + normal retries
+    # Output retry budget must be large enough to support loop iterations + normal retries
     max_loop = config.general.max_loop_iterations
     output_retries = max_loop + 5
 
@@ -338,7 +338,7 @@ def create_tui_runtime(
         need_user_approve_mcps=config.tools.need_approval_mcps or None,
         subagent_configs=subagent_configs if subagent_configs else None,
         unified_subagents=True,
-        output_retries=output_retries,
+        retries={"output": output_retries},
         extra_context_kwargs=extra_ctx_kwargs,
     )
 

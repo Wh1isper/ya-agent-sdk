@@ -257,7 +257,7 @@ async def test_hook_no_approval_needed(mock_context: MagicMock, mock_call_tool: 
     result = await hook(mock_context, mock_call_tool, "read_file", {"path": "/home/user/test.txt"})
 
     assert result == "tool result"
-    mock_call_tool.assert_called_once_with("read_file", {"path": "/home/user/test.txt"}, None)
+    mock_call_tool.assert_called_once_with("read_file", {"path": "/home/user/test.txt"}, metadata=None)
 
 
 @pytest.mark.asyncio
@@ -286,7 +286,7 @@ async def test_hook_already_approved(mock_context: MagicMock, mock_call_tool: As
     result = await hook(mock_context, mock_call_tool, "write_file", {"path": "/home/user/test.txt"})
 
     assert result == "tool result"
-    mock_call_tool.assert_called_once_with("write_file", {"path": "/home/user/test.txt"}, None)
+    mock_call_tool.assert_called_once_with("write_file", {"path": "/home/user/test.txt"}, metadata=None)
 
 
 @pytest.mark.asyncio

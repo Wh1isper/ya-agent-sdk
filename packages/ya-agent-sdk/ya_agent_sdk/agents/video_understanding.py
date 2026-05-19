@@ -218,8 +218,7 @@ def get_video_understanding_agent(
         output_type=VideoDescription,
         system_prompt=system_prompt,
         model_settings=model_settings,
-        retries=3,
-        output_retries=3,
+        retries={"tools": 3, "output": 3},
     )
 
 

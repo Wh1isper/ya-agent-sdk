@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -25,7 +25,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, Field
 from pydantic_ai import ApprovalRequired, RunContext
-from pydantic_ai.mcp import MCPServer, MCPServerStdio, MCPServerStreamableHTTP
+from pydantic_ai.mcp import MCPServer, MCPServerStdio, MCPServerStreamableHTTP, ProcessToolCallback
 
 from ya_agent_sdk._logger import get_logger
 
@@ -35,12 +35,6 @@ if TYPE_CHECKING:
     from ya_agent_sdk.context import AgentContext
 
 logger = get_logger(__name__)
-
-# Type alias matching pydantic-ai's ProcessToolCallback
-ProcessToolCallback = Callable[
-    ["RunContext[Any]", "CallToolFunc", str, dict[str, Any]],
-    Awaitable["ToolResult"],
-]
 
 
 class MCPServerSpec(BaseModel):
@@ -143,7 +137,7 @@ def create_mcp_approval_hook(server_name: str) -> ProcessToolCallback:
             logger.debug("MCP tool %r requires approval", full_name)
             raise ApprovalRequired(metadata={"mcp_server": server_name, "mcp_tool": name, "full_name": full_name})
 
-        return await call_tool(name, tool_args, None)
+        return await call_tool(name, tool_args, metadata=None)
 
     return hook
 
