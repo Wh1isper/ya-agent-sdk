@@ -22,7 +22,7 @@ from ya_claw.orm.base import Base
 _ALLOWED_RUN_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
 _ALLOWED_SESSION_TYPES = ("conversation", "memory", "agency", "async_task")
 _ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", "deferred", "duplicate", "failed")
-_ALLOWED_AGENCY_FIRE_STATUSES = ("pending", "submitted", "steered", "merged", "consumed", "skipped", "failed")
+_ALLOWED_AGENCY_FIRE_STATUSES = ("pending", "submitted", "steered", "merged", "consumed", "failed")
 _ALLOWED_ASYNC_TASK_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
 _ALLOWED_ASYNC_TASK_WAKE_POLICIES = ("steer_or_run", "record_only")
 _ALLOWED_HITL_BATCH_STATUSES = ("pending", "completed", "cancelled")

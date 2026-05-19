@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.bridge.context_snapshot import BridgePreviousMessagesSnapshot
 from ya_claw.bridge.models import (
     BridgeAdapterType,
@@ -24,12 +25,11 @@ from ya_claw.controller.models import (
     InteractionRespondRequest,
     SessionCreateRequest,
     SessionRunCreateRequest,
-    SteerRequest,
+    SessionSubmitRequest,
     TextPart,
     TriggerType,
     parse_input_parts,
 )
-from ya_claw.controller.run import RunController
 from ya_claw.controller.session import SessionController
 from ya_claw.execution.dispatcher import RunDispatcher
 from ya_claw.orm.tables import BridgeConversationRecord, BridgeEventRecord, RunRecord, SessionRecord
@@ -38,7 +38,6 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 
 class BridgeController:
     def __init__(self) -> None:
-        self._run_controller = RunController()
         self._session_controller = SessionController()
         self._hitl_controller = HitlController()
 
@@ -104,6 +103,17 @@ class BridgeController:
                         input_parts=[part.model_dump(mode="json") for part in input_parts],
                         source_metadata={"bridge": metadata},
                     )
+                    await self._observe_agency_message(
+                        db_session,
+                        settings,
+                        runtime_state,
+                        dispatcher,
+                        source_session_id=conversation.session_id,
+                        source_run_id=session_record.active_run_id,
+                        input_parts=input_parts,
+                        metadata={"bridge": metadata},
+                        client_token=message.event_id,
+                    )
                     event_record.conversation_id = conversation.id
                     event_record.session_id = conversation.session_id
                     event_record.run_id = session_record.active_run_id
@@ -121,53 +131,55 @@ class BridgeController:
                         run_id=session_record.active_run_id,
                         queued_count=queued_count,
                     )
-                input_parts: list[InputPart] = [TextPart(type="text", text=self._build_agent_prompt(message))]
-                await self._run_controller.steer(
-                    db_session,
-                    runtime_state,
-                    session_record.active_run_id,
-                    SteerRequest(input_parts=input_parts),
-                )
-                event_record.conversation_id = conversation.id
-                event_record.session_id = conversation.session_id
-                event_record.run_id = session_record.active_run_id
-                event_record.status = BridgeEventStatus.STEERED
-                conversation.last_event_at = datetime.now(UTC)
-                conversation.updated_at = datetime.now(UTC)
-                await db_session.commit()
-                return BridgeDispatchResult(
-                    status=BridgeEventStatus.STEERED,
-                    adapter=message.adapter,
-                    event_id=message.event_id,
-                    message_id=message.message_id,
-                    chat_id=message.chat_id,
-                    session_id=conversation.session_id,
-                    run_id=session_record.active_run_id,
-                )
-
             snapshot = self._snapshot_from_message(message)
+            active_run = (
+                await db_session.get(RunRecord, session_record.active_run_id)
+                if isinstance(session_record.active_run_id, str)
+                else None
+            )
+            prompt_snapshot = None if isinstance(active_run, RunRecord) and active_run.status == "running" else snapshot
             input_parts: list[InputPart] = [
-                TextPart(type="text", text=self._build_agent_prompt(message, snapshot=snapshot))
+                TextPart(type="text", text=self._build_agent_prompt(message, snapshot=prompt_snapshot))
             ]
             self._attach_snapshot(event_record, snapshot)
-            run = await self._session_controller.create_run(
+            metadata = self._bridge_metadata(message, snapshot=snapshot)
+            response = await self._session_controller.submit_input(
                 db_session,
                 settings,
                 runtime_state,
                 conversation.session_id,
-                SessionRunCreateRequest(
+                SessionSubmitRequest(
                     input_parts=input_parts,
-                    metadata={"bridge": self._bridge_metadata(message, snapshot=snapshot)},
+                    metadata={"bridge": metadata},
                     dispatch_mode=DispatchMode.ASYNC,
                     trigger_type=TriggerType.BRIDGE,
                 ),
             )
-            dispatch_result = dispatcher.dispatch(run.id, DispatchMode.ASYNC)
+            if response.delivery == "submitted" and response.run is not None:
+                dispatch_result = dispatcher.dispatch(response.run.id, DispatchMode.ASYNC)
+                status = BridgeEventStatus.SUBMITTED if dispatch_result.submitted else BridgeEventStatus.QUEUED
+            elif response.delivery == "steered":
+                status = BridgeEventStatus.STEERED
+            elif response.delivery == "merged":
+                status = BridgeEventStatus.QUEUED
+            else:
+                status = BridgeEventStatus.QUEUED
+            await self._observe_agency_message(
+                db_session,
+                settings,
+                runtime_state,
+                dispatcher,
+                source_session_id=conversation.session_id,
+                source_run_id=response.run_id,
+                input_parts=input_parts,
+                metadata={"bridge": metadata},
+                client_token=message.event_id,
+            )
 
             event_record.conversation_id = conversation.id
             event_record.session_id = conversation.session_id
-            event_record.run_id = run.id
-            event_record.status = BridgeEventStatus.SUBMITTED if dispatch_result.submitted else BridgeEventStatus.QUEUED
+            event_record.run_id = response.run_id
+            event_record.status = status
             conversation.last_event_at = datetime.now(UTC)
             conversation.updated_at = datetime.now(UTC)
             await db_session.commit()
@@ -178,7 +190,7 @@ class BridgeController:
                 message_id=message.message_id,
                 chat_id=message.chat_id,
                 session_id=conversation.session_id,
-                run_id=run.id,
+                run_id=response.run_id,
             )
         except Exception as exc:
             event_record.status = BridgeEventStatus.FAILED
@@ -360,6 +372,38 @@ class BridgeController:
             session_id=session_id,
             run_id=retry_run.id,
         )
+
+    async def _observe_agency_message(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        dispatcher: RunDispatcher,
+        *,
+        source_session_id: str,
+        source_run_id: str | None,
+        input_parts: list[InputPart],
+        metadata: dict[str, object],
+        client_token: str,
+    ) -> None:
+        lifecycle = AgencyLifecycle(
+            settings=settings,
+            runtime_state=runtime_state,
+            submit_run=lambda run_id: dispatcher.dispatch(run_id, DispatchMode.ASYNC).submitted,
+        )
+        try:
+            await lifecycle.observe_message(
+                db_session,
+                source_session_id=source_session_id,
+                source_run_id=source_run_id,
+                input_parts=input_parts,
+                source_kind=TriggerType.BRIDGE.value,
+                client_token=client_token,
+                metadata=metadata,
+            )
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
 
     async def _find_existing_event(
         self,

@@ -75,10 +75,8 @@ class AsyncTaskWakePolicy(StrEnum):
 
 
 class AgencyFireKind(StrEnum):
-    MANUAL = "manual"
-    TIMER = "timer"
-    MEMORY_COMMITTED = "memory_committed"
-    COMPACT = "compact"
+    MESSAGE_OBSERVED = "message_observed"
+    MEMORY_SESSION_COMPLETED = "memory_session_completed"
 
 
 class AgencyFireStatus(StrEnum):
@@ -87,7 +85,6 @@ class AgencyFireStatus(StrEnum):
     STEERED = "steered"
     MERGED = "merged"
     CONSUMED = "consumed"
-    SKIPPED = "skipped"
     FAILED = "failed"
 
 
@@ -254,6 +251,24 @@ class RunCreateRequest(BaseModel):
 
 class SteerRequest(BaseModel):
     input_parts: list[InputPart] = Field(default_factory=list)
+
+
+class SessionSubmitRequest(BaseModel):
+    input_parts: list[InputPart] = Field(default_factory=list)
+    restore_from_run_id: str | None = None
+    reset_state: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    workspace: WorkspaceBindingSpec | None = None
+    dispatch_mode: DispatchMode = DispatchMode.ASYNC
+    trigger_type: TriggerType = TriggerType.API
+
+
+class SessionSubmitResponse(BaseModel):
+    session_id: str
+    run_id: str
+    delivery: Literal["steered", "merged", "submitted", "queued"]
+    status: RunStatus | str
+    run: RunDetail | None = None
 
 
 class AsyncTaskSpawnRequest(BaseModel):
@@ -429,24 +444,6 @@ class AgencyClearResponse(BaseModel):
     deleted_fire_count: int = 0
     cleared_at: datetime
     agency_session: SessionSummary
-
-
-class AgencyTriggerRequest(BaseModel):
-    kind: AgencyFireKind = AgencyFireKind.MANUAL
-    source_session_id: str | None = None
-    source_run_id: str | None = None
-    client_token: str | None = None
-    prompt: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgencyTriggerResponse(BaseModel):
-    accepted: bool = True
-    agency_session_id: str
-    fire: AgencyFireSummary
-    run_id: str | None = None
-    active_run_id: str | None = None
-    delivery: Literal["steered", "submitted", "merged", "pending", "duplicate", "skipped"]
 
 
 class RunTraceItem(BaseModel):

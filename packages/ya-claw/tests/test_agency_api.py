@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
-from ya_claw.db.engine import create_engine
+from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.orm.base import Base
 
 
@@ -37,7 +37,6 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     monkeypatch.setenv("YA_CLAW_SCHEDULE_DISPATCH_ENABLED", "false")
     monkeypatch.setenv("YA_CLAW_HEARTBEAT_ENABLED", "false")
     monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
-    monkeypatch.setenv("YA_CLAW_AGENCY_TIMER_INTERVAL_SECONDS", "3600")
 
     get_settings.cache_clear()
     yield
@@ -61,7 +60,25 @@ def _create_schema() -> None:
     asyncio.run(_run())
 
 
-def test_agency_config_status_and_fires() -> None:
+def _fire_kinds() -> list[str]:
+    async def _run() -> list[str]:
+        from sqlalchemy import select
+        from ya_claw.orm.tables import AgencyFireRecord
+
+        settings = get_settings()
+        engine = create_engine(settings.resolved_database_url)
+        try:
+            session_factory = create_session_factory(engine)
+            async with session_factory() as db_session:
+                result = await db_session.execute(select(AgencyFireRecord.kind).order_by(AgencyFireRecord.created_at))
+                return [str(item) for item in result.scalars().all()]
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(_run())
+
+
+def test_agency_config_status_fires_and_no_product_trigger() -> None:
     _create_schema()
 
     app = create_app()
@@ -72,9 +89,8 @@ def test_agency_config_status_and_fires() -> None:
         config = config_response.json()
         assert config["enabled"] is False
         assert config["singleton_scope_key"] == "agency:global"
-        assert "budget_defaults" not in config
-        assert "deny_external_actions" not in config
         assert config["risk_policy"] == {"max_auto_action_risk": "extra_high"}
+        assert config["next_fire_at"] is None
 
         status_response = client.get("/api/v1/agency/status", headers=_auth_headers())
         assert status_response.status_code == 200
@@ -87,6 +103,13 @@ def test_agency_config_status_and_fires() -> None:
         fires_response = client.get("/api/v1/agency/fires", headers=_auth_headers())
         assert fires_response.status_code == 200
         assert isinstance(fires_response.json()["fires"], list)
+
+        trigger_response = client.post(
+            "/api/v1/agency:trigger",
+            headers=_auth_headers(),
+            json={"kind": "message_observed"},
+        )
+        assert trigger_response.status_code == 404
 
 
 def test_clear_agency_resets_singleton_session_and_workspace_files(
@@ -103,13 +126,6 @@ def test_clear_agency_resets_singleton_session_and_workspace_files(
     app = create_app()
     with TestClient(app) as client:
         app.state.execution_supervisor = None
-        trigger_response = client.post(
-            "/api/v1/agency:trigger",
-            headers=_auth_headers(),
-            json={"kind": "manual", "client_token": "clear-1", "prompt": "Seed agency."},
-        )
-        assert trigger_response.status_code == 409
-
         config_response = client.get("/api/v1/agency/config", headers=_auth_headers())
         assert config_response.status_code == 200
         old_session_id = config_response.json()["agency_session_id"]
@@ -187,7 +203,7 @@ def test_clear_agency_cancels_active_run(monkeypatch: pytest.MonkeyPatch) -> Non
         assert "activeagencyrun000000000000000001" in payload["archived_run_ids"]
 
 
-def test_agency_trigger_uses_optional_source_session_context(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_session_submit_copies_message_to_agency(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
     get_settings.cache_clear()
     _create_schema()
@@ -197,37 +213,23 @@ def test_agency_trigger_uses_optional_source_session_context(monkeypatch: pytest
         app.state.execution_supervisor = None
         create_session = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
         assert create_session.status_code == 201
-        source_session_id = create_session.json()["session"]["id"]
+        session_id = create_session.json()["session"]["id"]
 
-        trigger_response = client.post(
-            "/api/v1/agency:trigger",
+        submit_response = client.post(
+            f"/api/v1/sessions/{session_id}/submit",
             headers=_auth_headers(),
-            json={
-                "kind": "manual",
-                "source_session_id": source_session_id,
-                "client_token": "manual-1",
-                "prompt": "Review memory changes.",
-            },
+            json={"input_parts": [{"type": "text", "text": "hello agency"}]},
         )
-        assert trigger_response.status_code == 202
-        trigger_payload = trigger_response.json()
-        assert trigger_payload["delivery"] in {"submitted", "merged", "steered"}
-        assert trigger_payload["fire"]["source_session_id"] == source_session_id
-        assert trigger_payload["fire"]["payload"]["prompt"] == "Review memory changes."
+        assert submit_response.status_code == 202
+        assert submit_response.json()["delivery"] == "submitted"
 
         fires_response = client.get("/api/v1/agency/fires", headers=_auth_headers())
         assert fires_response.status_code == 200
         fires = fires_response.json()["fires"]
-        fire = next(item for item in fires if item["id"] == trigger_payload["fire"]["id"])
-        assert fire["kind"] == "manual"
-        assert fire["source_session_id"] == source_session_id
-        if trigger_payload["run_id"] is not None:
-            assert fire["run_id"] == trigger_payload["run_id"]
-        else:
-            assert fire["run_id"] is None or isinstance(fire["run_id"], str)
-
-        status_response = client.get("/api/v1/agency/status", headers=_auth_headers())
-        assert status_response.status_code == 200
-        status = status_response.json()
-        assert status["state"] in {"idle", "queued", "running"}
-        assert status["agency_session"]["id"] == trigger_payload["agency_session_id"]
+        assert len(fires) == 1
+        fire = fires[0]
+        assert fire["kind"] == "message_observed"
+        assert fire["source_session_id"] == session_id
+        assert fire["source_run_id"] == submit_response.json()["run_id"]
+        assert fire["payload"]["input_parts"][0]["text"] == "hello agency"
+        assert _fire_kinds() == ["message_observed"]

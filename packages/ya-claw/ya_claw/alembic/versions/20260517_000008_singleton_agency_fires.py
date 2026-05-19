@@ -17,7 +17,7 @@ down_revision = "20260517_000007"
 branch_labels = None
 depends_on = None
 
-_ALLOWED_AGENCY_FIRE_STATUSES = ("pending", "submitted", "steered", "merged", "consumed", "skipped", "failed")
+_ALLOWED_AGENCY_FIRE_STATUSES = ("pending", "submitted", "steered", "merged", "consumed", "failed")
 
 
 def upgrade() -> None:

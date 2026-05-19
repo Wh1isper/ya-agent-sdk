@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from inline_snapshot import snapshot
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
@@ -183,6 +184,75 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
     assert run_detail_response.json()["message"] is None or isinstance(run_detail_response.json()["message"], list)
     assert "ya_claw.run_queued" in run_events_response.text
     assert "ya_claw.run_interrupted" in run_events_response.text
+
+
+def test_stream_and_run_create_reject_active_session_without_submit_side_effects() -> None:
+    _create_schema()
+
+    app = create_app()
+    settings = get_settings()
+    with TestClient(app) as client:
+        app.state.execution_supervisor = None
+        create_session_response = client.post(
+            "/api/v1/sessions",
+            headers=_auth_headers(),
+            json={"input_parts": [{"type": "text", "text": "first"}]},
+        )
+        assert create_session_response.status_code == 201
+        session_id = create_session_response.json()["session"]["id"]
+        run_id = create_session_response.json()["run"]["id"]
+
+        submit_stream_response = client.post(
+            f"/api/v1/sessions/{session_id}/submit:stream",
+            headers=_auth_headers(),
+            json={"input_parts": [{"type": "text", "text": "stream should reject"}]},
+        )
+        assert submit_stream_response.status_code == 409
+
+        async def _mark_running() -> None:
+            session_factory = app.state.db_session_factory
+            async with session_factory() as db_session:
+                run_record = await db_session.get(RunRecord, run_id)
+                assert isinstance(run_record, RunRecord)
+                session_record = await db_session.get(SessionRecord, session_id)
+                assert isinstance(session_record, SessionRecord)
+                run_record.status = "running"
+                session_record.active_run_id = run_id
+                await db_session.commit()
+
+        asyncio.run(_mark_running())
+
+        create_run_response = client.post(
+            f"/api/v1/sessions/{session_id}/runs",
+            headers=_auth_headers(),
+            json={"input_parts": [{"type": "text", "text": "run should reject"}]},
+        )
+        create_run_stream_response = client.post(
+            f"/api/v1/sessions/{session_id}/runs:stream",
+            headers=_auth_headers(),
+            json={"input_parts": [{"type": "text", "text": "run stream should reject"}]},
+        )
+        assert create_run_response.status_code == 409
+        assert create_run_stream_response.status_code == 409
+
+    async def _assert_no_side_effects() -> None:
+        engine = create_engine(settings.resolved_database_url)
+        session_factory = create_session_factory(engine)
+        try:
+            async with session_factory() as db_session:
+                runs = (
+                    (await db_session.execute(select(RunRecord).where(RunRecord.session_id == session_id)))
+                    .scalars()
+                    .all()
+                )
+                assert len(runs) == 1
+                assert runs[0].id == run_id
+                assert runs[0].input_parts == [{"type": "text", "text": "first", "metadata": None}]
+                assert app.state.runtime_state.consume_steering_inputs(run_id) == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_assert_no_side_effects())
 
 
 def test_session_create_uses_single_workspace_response_shape() -> None:

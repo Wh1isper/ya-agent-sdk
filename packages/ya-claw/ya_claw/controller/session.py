@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -20,10 +21,14 @@ from ya_claw.controller.models import (
     SessionForkRequest,
     SessionGetResponse,
     SessionRunCreateRequest,
+    SessionSubmitRequest,
+    SessionSubmitResponse,
     SessionSummary,
     SessionTurnsResponse,
+    SteerRequest,
     active_interactions_from_run_record,
     memory_state_summary_from_record,
+    run_detail_from_record,
     run_summary_from_record,
     session_summary_from_record,
     session_turn_from_record,
@@ -124,17 +129,115 @@ class SessionController:
         record = await db_session.get(SessionRecord, session_id)
         if not isinstance(record, SessionRecord):
             raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
+        return await self._create_run_for_session(db_session, settings, runtime_state, record, request)
 
+    async def submit_input(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        session_id: str,
+        request: SessionSubmitRequest,
+        *,
+        require_new_run: bool = False,
+    ) -> SessionSubmitResponse:
+        async with runtime_state.session_lock(session_id):
+            return await self.submit_input_locked(
+                db_session,
+                settings,
+                runtime_state,
+                session_id,
+                request,
+                require_new_run=require_new_run,
+            )
+
+    async def submit_input_locked(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        session_id: str,
+        request: SessionSubmitRequest,
+        *,
+        require_new_run: bool = False,
+    ) -> SessionSubmitResponse:
+        if not request.input_parts:
+            raise HTTPException(status_code=422, detail="input_parts must not be empty for session input submission.")
+        record = await db_session.get(SessionRecord, session_id)
+        if not isinstance(record, SessionRecord):
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
+        active_run = await self._active_run_record(db_session, record)
+        if require_new_run and isinstance(active_run, RunRecord):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session '{session_id}' already has an active run '{active_run.id}'.",
+            )
+        if isinstance(active_run, RunRecord):
+            if active_run.status == RunStatus.QUEUED:
+                input_payload = [part.model_dump(mode="json") for part in request.input_parts]
+                active_run.input_parts = [*list(active_run.input_parts or []), *input_payload]
+                active_run.run_metadata = _merge_submit_metadata(active_run.run_metadata, request.metadata)
+                await db_session.commit()
+                await db_session.refresh(active_run)
+                return SessionSubmitResponse(
+                    session_id=active_run.session_id,
+                    run_id=active_run.id,
+                    delivery="merged",
+                    status=active_run.status,
+                    run=run_detail_from_record(active_run),
+                )
+            control = await self._run_controller.steer(
+                db_session,
+                runtime_state,
+                active_run.id,
+                SteerRequest(input_parts=request.input_parts),
+            )
+            return SessionSubmitResponse(
+                session_id=control.session_id,
+                run_id=control.run_id,
+                delivery="steered",
+                status=control.status,
+            )
+        run = await self._create_run_for_session(
+            db_session,
+            settings,
+            runtime_state,
+            record,
+            SessionRunCreateRequest(
+                restore_from_run_id=request.restore_from_run_id,
+                reset_state=request.reset_state,
+                input_parts=request.input_parts,
+                metadata=request.metadata,
+                workspace=request.workspace,
+                dispatch_mode=request.dispatch_mode,
+                trigger_type=request.trigger_type,
+            ),
+        )
+        return SessionSubmitResponse(
+            session_id=session_id,
+            run_id=run.id,
+            delivery="queued" if request.dispatch_mode == "queue" else "submitted",
+            status=run.status,
+            run=run,
+        )
+
+    async def _create_run_for_session(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        record: SessionRecord,
+        request: SessionRunCreateRequest,
+    ) -> RunDetail:
         run_metadata = dict(request.metadata)
         if request.reset_state:
             run_metadata["reset_state"] = True
-
         return await self._run_controller.create(
             db_session,
             settings,
             runtime_state,
             RunCreateRequest(
-                session_id=session_id,
+                session_id=record.id,
                 restore_from_run_id=request.restore_from_run_id,
                 reset_state=request.reset_state,
                 profile_name=record.profile_name,
@@ -145,6 +248,17 @@ class SessionController:
                 dispatch_mode=request.dispatch_mode,
             ),
         )
+
+    async def _active_run_record(self, db_session: AsyncSession, record: SessionRecord) -> RunRecord | None:
+        if isinstance(record.active_run_id, str):
+            active = await db_session.get(RunRecord, record.active_run_id)
+            if isinstance(active, RunRecord) and active.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
+                return active
+        if isinstance(record.head_run_id, str):
+            head = await db_session.get(RunRecord, record.head_run_id)
+            if isinstance(head, RunRecord) and head.status in {RunStatus.QUEUED, RunStatus.RUNNING}:
+                return head
+        return None
 
     async def list(
         self,
@@ -445,3 +559,49 @@ class SessionController:
             )
 
         return summaries
+
+
+def _merge_submit_metadata(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(existing or {})
+    for key, value in incoming.items():
+        if key == "agency" and isinstance(value, dict):
+            current = metadata.get("agency")
+            merged = dict(current) if isinstance(current, dict) else {}
+            for agency_key, agency_value in value.items():
+                if agency_key == "sources" and isinstance(agency_value, list):
+                    merged[agency_key] = _append_unique_sources(merged.get(agency_key), agency_value)
+                elif isinstance(agency_value, list):
+                    merged[agency_key] = _append_unique_values(merged.get(agency_key), agency_value)
+                else:
+                    merged[agency_key] = agency_value
+            metadata["agency"] = merged
+        else:
+            metadata[key] = value
+    return metadata
+
+
+def _append_unique_values(existing: object, values: list[object]) -> list[object]:
+    result = list(existing) if isinstance(existing, list) else []
+    seen = {repr(item) for item in result}
+    for value in values:
+        marker = repr(value)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(value)
+    return result
+
+
+def _append_unique_sources(existing: object, values: list[object]) -> list[object]:
+    result_dicts = [dict(item) for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    seen = {item.get("fire_id") for item in result_dicts if isinstance(item.get("fire_id"), str)}
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        fire_id = value.get("fire_id")
+        if isinstance(fire_id, str) and fire_id in seen:
+            continue
+        if isinstance(fire_id, str):
+            seen.add(fire_id)
+        result_dicts.append(dict(value))
+    return list(result_dicts)

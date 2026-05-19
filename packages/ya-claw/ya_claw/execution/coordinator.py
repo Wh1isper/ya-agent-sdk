@@ -489,7 +489,7 @@ class RunCoordinator:
                     session_factory=self._session_factory,
                     runtime_state=self._runtime_state,
                     submit_run=self._submit_memory_run,
-                    agency_submit_run=self._submit_memory_run,
+                    agency_submit_run=self._submit_background_run,
                 )
                 async_task_controller = AsyncTaskController()
                 await async_task_controller.on_run_terminal(
@@ -507,7 +507,7 @@ class RunCoordinator:
                     agency_lifecycle = AgencyLifecycle(
                         settings=self._settings,
                         runtime_state=self._runtime_state,
-                        submit_run=self._submit_memory_run,
+                        submit_run=self._submit_background_run,
                     )
                     await agency_lifecycle.on_agency_run_committed(db_session, run_record)
                     if self._settings.agency_memory_capture_enabled:
@@ -592,7 +592,7 @@ class RunCoordinator:
                     agency_lifecycle = AgencyLifecycle(
                         settings=self._settings,
                         runtime_state=self._runtime_state,
-                        submit_run=self._submit_memory_run,
+                        submit_run=self._submit_background_run,
                     )
                     await agency_lifecycle.on_agency_run_terminal(db_session, run_record)
                     await db_session.commit()
@@ -662,11 +662,7 @@ class RunCoordinator:
         environment.resources.set(BACKGROUND_MONITOR_KEY, background_monitor)
         memory_metadata = run_metadata.get("memory") if isinstance(run_metadata, dict) else None
         agency_metadata = run_metadata.get("agency") if isinstance(run_metadata, dict) else None
-        self_client_session_id = (
-            _memory_source_session_id(memory_metadata)
-            or _agency_primary_source_session_id(agency_metadata)
-            or session_id
-        )
+        self_client_session_id = _memory_source_session_id(memory_metadata) or session_id
         environment.resources.set(
             CLAW_SELF_CLIENT_KEY,
             ClawSelfClient(
@@ -1451,7 +1447,7 @@ class RunCoordinator:
             value = repr(exc)
         return value[:4000]
 
-    def _submit_memory_run(self, run_id: str) -> bool:
+    def _submit_background_run(self, run_id: str) -> bool:
         supervisor = ExecutionSupervisor(
             settings=self._settings,
             session_factory=self._session_factory,
@@ -1463,6 +1459,9 @@ class RunCoordinator:
             notification_hub=self._notification_hub,
         )
         return supervisor.submit_run(run_id)
+
+    def _submit_memory_run(self, run_id: str) -> bool:
+        return self._submit_background_run(run_id)
 
     def _serialize_value(self, value: object) -> JsonValue:
         if value is None or isinstance(value, (str, int, float, bool)):

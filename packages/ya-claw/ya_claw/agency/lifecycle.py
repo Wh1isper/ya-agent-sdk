@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Literal
 from uuid import uuid4
@@ -13,7 +13,6 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (
     AgencyFireKind,
@@ -21,6 +20,7 @@ from ya_claw.controller.models import (
     AgencyRiskPolicy,
     CommandPart,
     DispatchMode,
+    SessionSubmitRequest,
     TriggerType,
 )
 from ya_claw.orm.tables import AgencyFireRecord, RunRecord, SessionRecord
@@ -29,10 +29,8 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 AGENCY_SINGLETON_SCOPE_KEY = "agency:global"
 AGENCY_SINGLETON_SOURCE_SESSION_ID = sha256(AGENCY_SINGLETON_SCOPE_KEY.encode("utf-8")).hexdigest()[:32]
 _FIRE_PRIORITIES: dict[str, int] = {
-    AgencyFireKind.MANUAL.value: 10,
-    AgencyFireKind.MEMORY_COMMITTED.value: 30,
-    AgencyFireKind.TIMER.value: 50,
-    AgencyFireKind.COMPACT.value: 70,
+    AgencyFireKind.MESSAGE_OBSERVED.value: 20,
+    AgencyFireKind.MEMORY_SESSION_COMPLETED.value: 30,
 }
 
 
@@ -42,7 +40,7 @@ class AgencyFireDelivery:
     agency_session: SessionRecord
     run_id: str | None = None
     active_run_id: str | None = None
-    delivery: Literal["pending", "submitted", "steered", "merged", "duplicate", "skipped"] = "pending"
+    delivery: Literal["pending", "submitted", "steered", "merged", "duplicate"] = "pending"
 
 
 @dataclass(slots=True)
@@ -57,7 +55,6 @@ class AgencyTickResult:
     submitted_run_ids: list[str] = field(default_factory=list)
     steered_fire_ids: list[str] = field(default_factory=list)
     merged_fire_ids: list[str] = field(default_factory=list)
-    skipped_fire_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -185,33 +182,17 @@ class AgencyLifecycle:
         client_token: str | None = None,
         prompt: str | None = None,
         payload: dict[str, Any] | None = None,
+        context_bundle: dict[str, Any] | None = None,
         scheduled_at: datetime | None = None,
         dedupe_key: str | None = None,
         dispatch: bool = True,
     ) -> AgencyFireDelivery:
+        if not self._settings.agency_enabled:
+            raise HTTPException(status_code=409, detail="Agency is disabled.")
         agency_session = await self.ensure_agency_session(db_session)
         fire_kind = kind.value if isinstance(kind, AgencyFireKind) else str(kind)
         if source_session_id is not None:
             await _load_source_conversation_session(db_session, source_session_id)
-        if not self._settings.agency_enabled:
-            if fire_kind == AgencyFireKind.MANUAL.value:
-                raise HTTPException(status_code=409, detail="Agency is disabled.")
-            fire = await self._insert_fire(
-                db_session,
-                agency_session=agency_session,
-                kind=fire_kind,
-                source_session_id=source_session_id,
-                source_run_id=source_run_id,
-                client_token=client_token,
-                prompt=prompt,
-                payload=payload,
-                scheduled_at=scheduled_at,
-                dedupe_key=dedupe_key,
-                status=AgencyFireStatus.SKIPPED.value,
-            )
-            await db_session.commit()
-            return AgencyFireDelivery(fire=fire.fire, agency_session=agency_session, delivery="skipped")
-
         insert_result = await self._insert_fire(
             db_session,
             agency_session=agency_session,
@@ -220,7 +201,7 @@ class AgencyLifecycle:
             source_run_id=source_run_id,
             client_token=client_token,
             prompt=prompt,
-            payload=payload,
+            payload=_payload_with_context_bundle(payload, context_bundle),
             scheduled_at=scheduled_at,
             dedupe_key=dedupe_key,
             status=AgencyFireStatus.PENDING.value,
@@ -243,122 +224,160 @@ class AgencyLifecycle:
             return AgencyFireDelivery(fire=fire, agency_session=agency_session, delivery="pending")
         return await self.dispatch_pending(db_session)
 
-    async def dispatch_due(self, db_session: AsyncSession) -> AgencyFireDelivery | None:
-        await self.ensure_agency_session(db_session)
-        if not self._settings.agency_enabled:
-            await db_session.commit()
-            return None
-        due_at = await self.next_timer_fire_at(db_session)
-        if due_at is None or _as_utc_aware(due_at) > datetime.now(UTC):
-            await db_session.commit()
+    async def observe_message(
+        self,
+        db_session: AsyncSession,
+        *,
+        source_session_id: str,
+        source_run_id: str | None,
+        input_parts: list[Any],
+        source_kind: str,
+        client_token: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        dispatch: bool = True,
+    ) -> AgencyFireDelivery | None:
+        source_session = await db_session.get(SessionRecord, source_session_id)
+        if not isinstance(source_session, SessionRecord) or source_session.session_type != "conversation":
             return None
         return await self.create_fire(
             db_session,
-            kind=AgencyFireKind.TIMER,
-            scheduled_at=due_at,
-            dedupe_key=f"agency:timer:{_as_utc_aware(due_at).isoformat()}",
+            kind=AgencyFireKind.MESSAGE_OBSERVED,
+            source_session_id=source_session_id,
+            source_run_id=source_run_id,
+            client_token=client_token,
             payload={
-                "reason": "scheduled_timer",
-                "timer_interval_seconds": self._settings.agency_timer_interval_seconds,
+                "source_kind": source_kind,
+                "source_session_id": source_session_id,
+                "source_run_id": source_run_id,
+                "input_parts": [_dump_input_part(part) for part in input_parts],
+                "metadata": dict(metadata or {}),
             },
-            dispatch=True,
+            dispatch=dispatch,
         )
+
+    async def on_memory_session_completed(
+        self,
+        db_session: AsyncSession,
+        *,
+        source_session_id: str,
+        memory_run_id: str,
+        memory_session_id: str | None,
+        memory_job_kind: str,
+        output_text: str | None,
+        output_summary: str | None,
+        payload: dict[str, Any] | None = None,
+        dispatch: bool = True,
+    ) -> AgencyFireDelivery | None:
+        source_session = await db_session.get(SessionRecord, source_session_id)
+        if not isinstance(source_session, SessionRecord) or source_session.session_type != "conversation":
+            return None
+        return await self.create_fire(
+            db_session,
+            kind=AgencyFireKind.MEMORY_SESSION_COMPLETED,
+            source_session_id=source_session_id,
+            source_run_id=memory_run_id,
+            client_token=memory_run_id,
+            payload={
+                "source_session_id": source_session_id,
+                "memory_session_id": memory_session_id,
+                "memory_run_id": memory_run_id,
+                "memory_job_kind": memory_job_kind,
+                "output_text": output_text,
+                "output_summary": output_summary,
+                "memory": dict(payload or {}),
+            },
+            dispatch=dispatch,
+        )
+
+    async def dispatch_due(self, db_session: AsyncSession) -> AgencyFireDelivery | None:
+        await self.ensure_agency_session(db_session)
+        await db_session.commit()
+        return None
 
     async def next_timer_fire_at(self, db_session: AsyncSession) -> datetime | None:
         await self.ensure_agency_session(db_session)
-        if not self._settings.agency_enabled:
-            return None
-        result = await db_session.execute(
-            select(AgencyFireRecord)
-            .where(AgencyFireRecord.kind == AgencyFireKind.TIMER.value)
-            .order_by(AgencyFireRecord.scheduled_at.desc(), AgencyFireRecord.created_at.desc())
-            .limit(1)
-        )
-        last_fire = result.scalars().first()
-        if not isinstance(last_fire, AgencyFireRecord):
-            return datetime.now(UTC)
-        return _as_utc_aware(last_fire.scheduled_at) + timedelta(
-            seconds=max(self._settings.agency_timer_interval_seconds, 1)
-        )
+        return None
 
     async def dispatch_pending(self, db_session: AsyncSession) -> AgencyFireDelivery:
         agency_session = await self.ensure_agency_session(db_session)
-        fires = await _load_pending_fires(
-            db_session,
-            agency_session_id=agency_session.id,
-            limit=self._settings.agency_fire_batch_limit,
-        )
-        if not fires:
-            raise HTTPException(status_code=404, detail="Agency fire was not found.")
+        async with self._runtime_state.session_lock(agency_session.id):
+            fires = await _load_pending_fires(
+                db_session,
+                agency_session_id=agency_session.id,
+                limit=self._settings.agency_fire_batch_limit,
+            )
+            if not fires:
+                raise HTTPException(status_code=404, detail="Agency fire was not found.")
 
-        active_run = await _blocking_agency_run(db_session, agency_session)
-        if isinstance(active_run, RunRecord):
-            input_payload = [_fire_input_part(fire).model_dump(mode="json") for fire in fires]
-            _append_fires_to_run_metadata(active_run, fires, steered=active_run.status == "running")
-            if active_run.status == "queued":
-                active_run.input_parts = [*list(active_run.input_parts or []), *input_payload]
-                for fire in fires:
-                    fire.status = AgencyFireStatus.MERGED.value
-                    fire.run_id = active_run.id
-                    fire.active_run_id = None
-                    fire.agency_session_id = agency_session.id
-                delivery_kind: Literal["merged", "steered"] = "merged"
-            else:
-                await self._runtime_state.record_steering(active_run.id, input_payload)
-                agui_adapter = AguiEventAdapter(session_id=active_run.session_id, run_id=active_run.id)
-                await self._runtime_state.append_run_event(
-                    active_run.id,
-                    agui_adapter.build_run_steered_event({
-                        "run_id": active_run.id,
-                        "session_id": active_run.session_id,
-                        "input_parts": input_payload,
-                    }),
-                )
+            from ya_claw.controller.session import SessionController
+
+            response = await SessionController().submit_input_locked(
+                db_session,
+                self._settings,
+                self._runtime_state,
+                agency_session.id,
+                SessionSubmitRequest(
+                    input_parts=[_fire_input_part(fire) for fire in fires],
+                    metadata=_episode_metadata(
+                        agency_session=agency_session,
+                        run_id=None,
+                        fires=fires,
+                        risk_policy=_resolve_risk_policy(settings=self._settings, agency_session=agency_session),
+                    ),
+                    dispatch_mode=DispatchMode.ASYNC,
+                    trigger_type=TriggerType.AGENCY,
+                ),
+            )
+            if response.delivery == "steered":
+                _append_fires_to_run_metadata(await _require_run(db_session, response.run_id), fires, steered=True)
                 for fire in fires:
                     fire.status = AgencyFireStatus.STEERED.value
-                    fire.run_id = active_run.id
-                    fire.active_run_id = active_run.id
+                    fire.run_id = response.run_id
+                    fire.active_run_id = response.run_id
                     fire.agency_session_id = agency_session.id
-                delivery_kind = "steered"
-            await db_session.commit()
-            await db_session.refresh(fires[0])
-            await db_session.refresh(agency_session)
-            return AgencyFireDelivery(
-                fire=fires[0],
-                agency_session=agency_session,
-                run_id=active_run.id if delivery_kind == "merged" else None,
-                active_run_id=active_run.id if delivery_kind == "steered" else None,
-                delivery=delivery_kind,
-            )
-
-        run_record = await self._create_agency_run(db_session, agency_session, fires)
-        for fire in fires:
-            fire.status = AgencyFireStatus.SUBMITTED.value
-            fire.run_id = run_record.id
-            fire.active_run_id = None
-            fire.agency_session_id = agency_session.id
-        try:
-            await db_session.commit()
-        except IntegrityError:
-            await db_session.rollback()
-            return await self.dispatch_pending(db_session)
+                delivery_kind: Literal["merged", "steered", "submitted"] = "steered"
+            elif response.delivery == "merged":
+                run_record = await _require_run(db_session, response.run_id)
+                for fire in fires:
+                    fire.status = AgencyFireStatus.MERGED.value
+                    fire.run_id = run_record.id
+                    fire.active_run_id = None
+                    fire.agency_session_id = agency_session.id
+                delivery_kind = "merged"
+            else:
+                run_record = await _require_run(db_session, response.run_id)
+                for fire in fires:
+                    fire.status = AgencyFireStatus.SUBMITTED.value
+                    fire.run_id = run_record.id
+                    fire.active_run_id = None
+                    fire.agency_session_id = agency_session.id
+                delivery_kind = "submitted"
+            try:
+                await db_session.commit()
+            except IntegrityError:
+                await db_session.rollback()
+                return await self.dispatch_pending(db_session)
         await db_session.refresh(fires[0])
         await db_session.refresh(agency_session)
-        await db_session.refresh(run_record)
-        if self._submit_run is not None:
-            self._submit_run(run_record.id)
+        if self._submit_run is not None and response.delivery == "submitted":
+            self._submit_run(response.run_id)
         return AgencyFireDelivery(
             fire=fires[0],
             agency_session=agency_session,
-            run_id=run_record.id,
-            delivery="submitted",
+            run_id=response.run_id if delivery_kind != "steered" else None,
+            active_run_id=response.run_id if delivery_kind == "steered" else None,
+            delivery=delivery_kind,
         )
 
     async def tick(self, db_session: AsyncSession) -> AgencyTickResult:
         result = AgencyTickResult()
-        delivery = await self.dispatch_due(db_session)
-        if delivery is None:
-            return result
+        try:
+            delivery = await self.dispatch_pending(db_session)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                await db_session.commit()
+                return result
+            raise
         result.created_fire_ids.append(delivery.fire.id)
         if delivery.delivery == "submitted" and delivery.run_id is not None:
             result.submitted_run_ids.append(delivery.run_id)
@@ -366,8 +385,6 @@ class AgencyLifecycle:
             result.steered_fire_ids.append(delivery.fire.id)
         elif delivery.delivery == "merged":
             result.merged_fire_ids.append(delivery.fire.id)
-        elif delivery.delivery == "skipped":
-            result.skipped_fire_ids.append(delivery.fire.id)
         return result
 
     async def on_agency_run_committed(self, db_session: AsyncSession, run_record: RunRecord) -> None:
@@ -442,45 +459,6 @@ class AgencyLifecycle:
                 raise
             return AgencyFireInsertResult(fire=existing, created=False)
 
-    async def _create_agency_run(
-        self,
-        db_session: AsyncSession,
-        agency_session: SessionRecord,
-        fires: list[AgencyFireRecord],
-    ) -> RunRecord:
-        sequence_no = await _next_sequence_no(db_session, agency_session.id)
-        run_id = uuid4().hex
-        risk_policy = _resolve_risk_policy(settings=self._settings, agency_session=agency_session)
-        metadata = _episode_metadata(
-            agency_session=agency_session,
-            run_id=run_id,
-            fires=fires,
-            risk_policy=risk_policy,
-        )
-        run_record = RunRecord(
-            id=run_id,
-            session_id=agency_session.id,
-            sequence_no=sequence_no,
-            restore_from_run_id=agency_session.head_success_run_id,
-            status="queued",
-            trigger_type=TriggerType.AGENCY.value,
-            profile_name=agency_session.profile_name,
-            input_parts=[_fire_input_part(fire).model_dump(mode="json") for fire in fires],
-            run_metadata=metadata,
-        )
-        db_session.add(run_record)
-        _queue_run(agency_session, run_record)
-        self._runtime_state.register_run(agency_session.id, run_id, dispatch_mode=DispatchMode.ASYNC)
-        return run_record
-
-
-def _queue_run(session: SessionRecord, run: RunRecord) -> None:
-    effective_time = datetime.now(UTC)
-    session.head_run_id = run.id
-    session.profile_name = run.profile_name
-    session.updated_at = effective_time
-    run.status = "queued"
-
 
 def _agency_session_metadata(*, profile_name: str, risk_policy: AgencyRiskPolicy) -> dict[str, Any]:
     return {
@@ -535,28 +513,6 @@ async def _load_pending_fires(
     return list(result.scalars().all())
 
 
-async def _blocking_agency_run(db_session: AsyncSession, agency_session: SessionRecord) -> RunRecord | None:
-    for run_id in (agency_session.active_run_id, agency_session.head_run_id):
-        if not isinstance(run_id, str):
-            continue
-        record = await db_session.get(RunRecord, run_id)
-        if isinstance(record, RunRecord) and record.status in {"queued", "running"}:
-            return record
-    result = await db_session.execute(
-        select(RunRecord)
-        .where(RunRecord.session_id == agency_session.id, RunRecord.status.in_(["queued", "running"]))
-        .order_by(RunRecord.sequence_no.asc())
-        .limit(1)
-    )
-    return result.scalars().first()
-
-
-async def _next_sequence_no(db_session: AsyncSession, session_id: str) -> int:
-    result = await db_session.execute(select(func.max(RunRecord.sequence_no)).where(RunRecord.session_id == session_id))
-    value = result.scalar_one_or_none()
-    return value + 1 if isinstance(value, int) else 1
-
-
 async def _load_fire_by_dedupe(db_session: AsyncSession, dedupe_key: str) -> AgencyFireRecord | None:
     result = await db_session.execute(select(AgencyFireRecord).where(AgencyFireRecord.dedupe_key == dedupe_key))
     return result.scalars().first()
@@ -570,24 +526,32 @@ def _dedupe_key(
     client_token: str,
     scheduled_at: datetime,
 ) -> str:
-    if kind == AgencyFireKind.TIMER.value:
-        return f"agency:timer:{_as_utc_aware(scheduled_at).isoformat()}"
-    if kind == AgencyFireKind.MEMORY_COMMITTED.value and isinstance(source_run_id, str):
-        return f"agency:memory_committed:{source_run_id}"
+    if kind == AgencyFireKind.MEMORY_SESSION_COMPLETED.value and isinstance(source_run_id, str):
+        return f"agency:memory_session_completed:{source_run_id}"
     source_part = source_session_id or "global"
     return f"agency:{kind}:{source_part}:{client_token}"
 
 
 def _fire_input_part(fire: AgencyFireRecord) -> CommandPart:
+    payload = dict(fire.payload or {})
     return CommandPart(
         type="command",
         name="agency_fire",
         params={
             "fire_id": fire.id,
             "kind": fire.kind,
+            "source": {
+                "session_id": fire.source_session_id,
+                "run_id": fire.source_run_id,
+                "fire_id": fire.id,
+                "kind": fire.kind,
+            },
             "source_session_id": fire.source_session_id,
             "source_run_id": fire.source_run_id,
-            "payload": dict(fire.payload or {}),
+            "context_bundle": payload.get("context_bundle")
+            if isinstance(payload.get("context_bundle"), dict)
+            else None,
+            "payload": payload,
         },
     )
 
@@ -595,7 +559,7 @@ def _fire_input_part(fire: AgencyFireRecord) -> CommandPart:
 def _episode_metadata(
     *,
     agency_session: SessionRecord,
-    run_id: str,
+    run_id: str | None,
     fires: list[AgencyFireRecord],
     risk_policy: AgencyRiskPolicy,
 ) -> dict[str, Any]:
@@ -620,7 +584,7 @@ def _episode_metadata(
             "source_session_ids": source_session_ids,
             "primary_source_session_id": source_session_ids[0] if source_session_ids else None,
             "source_run_ids": source_run_ids,
-            "episode_id": f"episode-{run_id}",
+            "episode_id": f"episode-{run_id}" if run_id is not None else None,
             "risk_policy": risk_policy.model_dump(mode="json"),
         },
         "restore_state": True,
@@ -727,3 +691,30 @@ def _as_utc_aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _dump_input_part(part: Any) -> dict[str, Any]:
+    if hasattr(part, "model_dump"):
+        value = part.model_dump(mode="json")
+        return dict(value) if isinstance(value, dict) else {"type": "value", "value": value}
+    if isinstance(part, dict):
+        return dict(part)
+    return {"type": "value", "value": part}
+
+
+async def _require_run(db_session: AsyncSession, run_id: str) -> RunRecord:
+    record = await db_session.get(RunRecord, run_id)
+    if not isinstance(record, RunRecord):
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' was not found.")
+    return record
+
+
+def _payload_with_context_bundle(
+    payload: dict[str, Any] | None,
+    context_bundle: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if context_bundle is None:
+        return payload
+    effective = dict(payload or {})
+    effective["context_bundle"] = dict(context_bundle)
+    return effective

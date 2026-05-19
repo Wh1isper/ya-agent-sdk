@@ -310,11 +310,14 @@ async def test_bridge_controller_reuses_chat_session(db_session: AsyncSession) -
     )
 
     assert first.session_id == second.session_id
-    assert first.run_id != second.run_id
+    assert second.run_id == first.run_id
     assert second.run_id is not None
     run_record = await db_session.get(RunRecord, second.run_id)
     assert isinstance(run_record, RunRecord)
     assert run_record.trigger_type == "bridge"
+    assert len(run_record.input_parts) == 2
+    assert "<content>first</content>" in run_record.input_parts[0]["text"]
+    assert "<content>second</content>" in run_record.input_parts[1]["text"]
 
 
 async def test_bridge_controller_steers_active_conversation_session(db_session: AsyncSession) -> None:

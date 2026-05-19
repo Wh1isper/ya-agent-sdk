@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from fastapi import APIRouter, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette.sse import EventSourceResponse
 
+from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.config import ClawSettings
 from ya_claw.controller.async_task import AsyncTaskController, ProfileResolverProtocol
 from ya_claw.controller.memory import MemoryController
@@ -23,6 +26,8 @@ from ya_claw.controller.models import (
     SessionForkRequest,
     SessionGetResponse,
     SessionRunCreateRequest,
+    SessionSubmitRequest,
+    SessionSubmitResponse,
     SessionSummary,
     SessionTurnsResponse,
     SteerRequest,
@@ -49,6 +54,20 @@ async def create_session(request: Request, payload: SessionCreateRequest) -> Ses
     payload.dispatch_mode = DispatchMode.ASYNC
     async with session_factory() as db_session:
         response = await session_controller.create(db_session, settings, runtime_state, payload)
+        if response.run is not None and payload.input_parts:
+            await _observe_session_message(
+                db_session,
+                settings,
+                runtime_state,
+                session_id=response.session.id,
+                run_id=response.run.id,
+                input_parts=payload.input_parts,
+                source_kind=payload.trigger_type.value
+                if hasattr(payload.trigger_type, "value")
+                else str(payload.trigger_type),
+                metadata=payload.metadata,
+                submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+            )
 
     await _publish_session_notification(request, "session.created", response.session)
     if response.run is not None:
@@ -65,6 +84,20 @@ async def create_session_stream(request: Request, payload: SessionCreateRequest)
     payload.dispatch_mode = DispatchMode.STREAM
     async with session_factory() as db_session:
         response = await session_controller.create(db_session, settings, runtime_state, payload)
+        if response.run is not None and payload.input_parts:
+            await _observe_session_message(
+                db_session,
+                settings,
+                runtime_state,
+                session_id=response.session.id,
+                run_id=response.run.id,
+                input_parts=payload.input_parts,
+                source_kind=payload.trigger_type.value
+                if hasattr(payload.trigger_type, "value")
+                else str(payload.trigger_type),
+                metadata=payload.metadata,
+                submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+            )
 
     await _publish_session_notification(request, "session.created", response.session)
     if response.run is None:
@@ -253,6 +286,72 @@ async def list_session_turns(
         )
 
 
+@router.post("/{session_id}/submit", response_model=SessionSubmitResponse, status_code=202)
+async def submit_session_input(
+    request: Request, session_id: str, payload: SessionSubmitRequest
+) -> SessionSubmitResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    payload.dispatch_mode = DispatchMode.ASYNC
+    async with session_factory() as db_session:
+        response = await session_controller.submit_input(db_session, settings, runtime_state, session_id, payload)
+        await _observe_session_message(
+            db_session,
+            settings,
+            runtime_state,
+            session_id=session_id,
+            run_id=response.run_id,
+            input_parts=payload.input_parts,
+            source_kind=payload.trigger_type.value
+            if hasattr(payload.trigger_type, "value")
+            else str(payload.trigger_type),
+            metadata=payload.metadata,
+            submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+        )
+    if response.run is not None:
+        await _publish_run_notification(request, "run.created", response.run)
+        _dispatch_run(request, response.run.id, payload.dispatch_mode, require_submission=False)
+    return response
+
+
+@router.post("/{session_id}/submit:stream")
+async def submit_session_input_stream(
+    request: Request, session_id: str, payload: SessionSubmitRequest
+) -> EventSourceResponse:
+    settings = _get_settings(request)
+    runtime_state = _get_runtime_state(request)
+    session_factory = _get_session_factory(request)
+    payload.dispatch_mode = DispatchMode.STREAM
+    async with session_factory() as db_session:
+        response = await session_controller.submit_input(
+            db_session,
+            settings,
+            runtime_state,
+            session_id,
+            payload,
+            require_new_run=True,
+        )
+        await _observe_session_message(
+            db_session,
+            settings,
+            runtime_state,
+            session_id=session_id,
+            run_id=response.run_id,
+            input_parts=payload.input_parts,
+            source_kind=payload.trigger_type.value
+            if hasattr(payload.trigger_type, "value")
+            else str(payload.trigger_type),
+            metadata=payload.metadata,
+            submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+        )
+    if response.delivery != "submitted" or response.run is None:
+        raise HTTPException(status_code=409, detail="Stream submission requires an idle session that creates a run.")
+    await _publish_run_notification(request, "run.created", response.run)
+    _dispatch_run(request, response.run.id, payload.dispatch_mode, require_submission=True)
+    return EventSourceResponse(runtime_state.stream_run_events(response.run.id))
+
+
 @router.post("/{session_id}/runs", response_model=RunDetail, status_code=201)
 async def create_session_run(request: Request, session_id: str, payload: SessionRunCreateRequest) -> RunDetail:
     settings = _get_settings(request)
@@ -261,7 +360,19 @@ async def create_session_run(request: Request, session_id: str, payload: Session
     payload.dispatch_mode = DispatchMode.ASYNC
     async with session_factory() as db_session:
         run = await session_controller.create_run(db_session, settings, runtime_state, session_id, payload)
-
+        await _observe_session_message(
+            db_session,
+            settings,
+            runtime_state,
+            session_id=session_id,
+            run_id=run.id,
+            input_parts=payload.input_parts,
+            source_kind=payload.trigger_type.value
+            if hasattr(payload.trigger_type, "value")
+            else str(payload.trigger_type),
+            metadata=payload.metadata,
+            submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+        )
     await _publish_run_notification(request, "run.created", run)
     _dispatch_run(request, run.id, payload.dispatch_mode, require_submission=False)
     return run
@@ -277,7 +388,19 @@ async def create_session_run_stream(
     payload.dispatch_mode = DispatchMode.STREAM
     async with session_factory() as db_session:
         run = await session_controller.create_run(db_session, settings, runtime_state, session_id, payload)
-
+        await _observe_session_message(
+            db_session,
+            settings,
+            runtime_state,
+            session_id=session_id,
+            run_id=run.id,
+            input_parts=payload.input_parts,
+            source_kind=payload.trigger_type.value
+            if hasattr(payload.trigger_type, "value")
+            else str(payload.trigger_type),
+            metadata=payload.metadata,
+            submit_run=lambda run_id: _dispatch_run(request, run_id, DispatchMode.ASYNC, require_submission=False),
+        )
     await _publish_run_notification(request, "run.created", run)
     _dispatch_run(request, run.id, payload.dispatch_mode, require_submission=True)
     return EventSourceResponse(runtime_state.stream_run_events(run.id))
@@ -424,6 +547,36 @@ def _session_status_detail_from_run(run: RunDetail) -> dict[str, object]:
         detail["active_interactions"] = active_interactions
         detail["active_interaction_count"] = len(active_interactions)
     return detail
+
+
+async def _observe_session_message(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+    *,
+    session_id: str,
+    run_id: str | None,
+    input_parts: Sequence[object],
+    source_kind: str,
+    metadata: dict[str, object],
+    submit_run,
+) -> None:
+    if not settings.agency_enabled:
+        return
+    lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state, submit_run=submit_run)
+    try:
+        await lifecycle.observe_message(
+            db_session,
+            source_session_id=session_id,
+            source_run_id=run_id,
+            input_parts=list(input_parts),
+            source_kind=source_kind,
+            client_token=None,
+            metadata=metadata,
+        )
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
 
 
 def _dispatch_run(request: Request, run_id: str, mode: DispatchMode, *, require_submission: bool) -> bool:

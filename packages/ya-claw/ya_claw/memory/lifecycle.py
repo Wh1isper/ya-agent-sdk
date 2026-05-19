@@ -18,7 +18,7 @@ from ya_agent_sdk.agents.main import RuntimeReadyContext
 from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
-from ya_claw.controller.models import AgencyFireKind, DispatchMode, MemoryJobKind, TriggerType
+from ya_claw.controller.models import DispatchMode, MemoryJobKind, TriggerType
 from ya_claw.execution.state_machine import queue_run
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -235,7 +235,7 @@ class MemoryLifecycle:
             scope = await self._load_memory_run_scope(db_session, memory_run_id)
             if scope is None:
                 return []
-            _run, source_session, state, kind, memory = scope
+            run_record, source_session, state, kind, memory = scope
             if kind == MemoryJobKind.EXTRACT:
                 state.last_extracted_sequence_no = max(
                     state.last_extracted_sequence_no,
@@ -267,6 +267,7 @@ class MemoryLifecycle:
             agency_signal = (
                 source_session.id,
                 {
+                    "memory_session_id": run_record.session_id,
                     "memory_run_id": memory_run_id,
                     "memory_job_kind": kind.value,
                     "memory_reason": memory.get("reason"),
@@ -275,6 +276,8 @@ class MemoryLifecycle:
                     else [],
                     "source_sequence_start": memory.get("source_sequence_start"),
                     "source_sequence_end": memory.get("source_sequence_end"),
+                    "output_text": run_record.output_text,
+                    "output_summary": run_record.output_summary,
                 },
             )
 
@@ -285,7 +288,7 @@ class MemoryLifecycle:
             await db_session.commit()
 
         if agency_signal is not None:
-            await self._emit_memory_committed_signal(*agency_signal)
+            await self._emit_memory_session_completed_signal(*agency_signal)
         self._submit_all(queued_run_ids)
         return queued_run_ids
 
@@ -466,7 +469,7 @@ class MemoryLifecycle:
             return None
         return await self._enqueue_or_mark_pending(db_session, state, source_session, request)
 
-    async def _emit_memory_committed_signal(self, source_session_id: str, payload: dict[str, Any]) -> None:
+    async def _emit_memory_session_completed_signal(self, source_session_id: str, payload: dict[str, Any]) -> None:
         if not self._settings.agency_enabled:
             return
         memory_run_id = str(payload.get("memory_run_id") or uuid4().hex)
@@ -478,13 +481,19 @@ class MemoryLifecycle:
                 submit_run=self._agency_submit_run,
             )
             try:
-                await lifecycle.create_fire(
+                await lifecycle.on_memory_session_completed(
                     db_session,
-                    kind=AgencyFireKind.MEMORY_COMMITTED,
                     source_session_id=source_session_id,
-                    source_run_id=memory_run_id,
-                    client_token=memory_run_id,
-                    payload={"memory_kind": memory_kind, "memory_committed": payload},
+                    memory_run_id=memory_run_id,
+                    memory_session_id=payload.get("memory_session_id")
+                    if isinstance(payload.get("memory_session_id"), str)
+                    else None,
+                    memory_job_kind=memory_kind,
+                    output_text=payload.get("output_text") if isinstance(payload.get("output_text"), str) else None,
+                    output_summary=payload.get("output_summary")
+                    if isinstance(payload.get("output_summary"), str)
+                    else None,
+                    payload=payload,
                 )
             except HTTPException as exc:
                 if exc.status_code != 409:

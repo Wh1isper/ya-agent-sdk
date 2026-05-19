@@ -62,7 +62,15 @@ class InMemoryRuntimeState:
     background_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     hitl_states: dict[str, HitlRunState] = field(default_factory=dict)
     cleanup_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    session_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     subscribers: int = 0
+
+    def session_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self.session_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.session_locks[session_id] = lock
+        return lock
 
     def register_run(self, session_id: str, run_id: str, *, dispatch_mode: str = "async") -> ActiveRunHandle:
         self.prune_closed_runs()

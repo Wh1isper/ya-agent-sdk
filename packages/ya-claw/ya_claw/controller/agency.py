@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -15,8 +14,6 @@ from ya_claw.controller.models import (
     AgencyFireSummary,
     AgencyRiskPolicy,
     AgencyStatusResponse,
-    AgencyTriggerRequest,
-    AgencyTriggerResponse,
     agency_fire_summary_from_record,
     run_summary_from_record,
     session_summary_from_record,
@@ -168,66 +165,6 @@ class AgencyController:
             agency_fire_summary_from_record(record, run_status=run_status)
             if isinstance(record, AgencyFireRecord)
             else None
-        )
-
-    async def trigger(
-        self,
-        db_session: AsyncSession,
-        settings: ClawSettings,
-        runtime_state: InMemoryRuntimeState,
-        request: AgencyTriggerRequest,
-        *,
-        submit_run: Callable[[str], bool] | None = None,
-    ) -> AgencyTriggerResponse:
-        lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state, submit_run=submit_run)
-        delivery = await lifecycle.create_fire(
-            db_session,
-            kind=request.kind,
-            source_session_id=request.source_session_id,
-            source_run_id=request.source_run_id,
-            client_token=request.client_token,
-            prompt=request.prompt,
-            payload=request.payload,
-            dispatch=True,
-        )
-        return AgencyTriggerResponse(
-            accepted=True,
-            agency_session_id=delivery.agency_session.id,
-            fire=agency_fire_summary_from_record(delivery.fire),
-            run_id=delivery.run_id,
-            active_run_id=delivery.active_run_id,
-            delivery=delivery.delivery,
-        )
-
-    async def trigger_memory_committed(
-        self,
-        db_session: AsyncSession,
-        settings: ClawSettings,
-        runtime_state: InMemoryRuntimeState,
-        *,
-        source_session_id: str,
-        memory_run_id: str,
-        memory_kind: str,
-        payload: dict[str, Any],
-        submit_run: Callable[[str], bool] | None = None,
-    ) -> AgencyTriggerResponse:
-        lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state, submit_run=submit_run)
-        delivery = await lifecycle.create_fire(
-            db_session,
-            kind="memory_committed",
-            source_session_id=source_session_id,
-            source_run_id=memory_run_id,
-            client_token=memory_run_id,
-            payload={"memory_kind": memory_kind, **payload},
-            dispatch=True,
-        )
-        return AgencyTriggerResponse(
-            accepted=True,
-            agency_session_id=delivery.agency_session.id,
-            fire=agency_fire_summary_from_record(delivery.fire),
-            run_id=delivery.run_id,
-            active_run_id=delivery.active_run_id,
-            delivery=delivery.delivery,
         )
 
 

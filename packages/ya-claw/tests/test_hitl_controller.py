@@ -137,7 +137,7 @@ async def test_hitl_controller_persists_batch_and_advances_interactions(db_sessi
 
 async def test_bridge_message_during_hitl_is_deferred_and_consumed(db_session: AsyncSession) -> None:
     from ya_claw.bridge.controller import BridgeController
-    from ya_claw.orm.tables import BridgeConversationRecord
+    from ya_claw.orm.tables import AgencyFireRecord, BridgeConversationRecord
 
     await _seed_running_run(db_session)
     db_session.add(
@@ -169,7 +169,7 @@ async def test_bridge_message_during_hitl_is_deferred_and_consumed(db_session: A
 
     result = await BridgeController().handle_inbound_message(
         db_session,
-        ClawSettings(api_token="test-token", _env_file=None),  # noqa: S106
+        ClawSettings(api_token="test-token", agency_enabled=True, _env_file=None),  # noqa: S106
         create_runtime_state(),
         RunDispatcher(None),
         BridgeInboundMessage(
@@ -189,6 +189,12 @@ async def test_bridge_message_during_hitl_is_deferred_and_consumed(db_session: A
     assert deferred_rows[0].status == "pending"
     assert deferred_rows[0].input_parts[0]["type"] == TextPart(type="text", text="x").type
     assert "continue after approval" in deferred_rows[0].input_parts[0]["text"]
+    agency_fires = (await db_session.execute(select(AgencyFireRecord))).scalars().all()
+    assert len(agency_fires) == 1
+    assert agency_fires[0].kind == "message_observed"
+    assert agency_fires[0].source_session_id == "session-1"
+    assert agency_fires[0].source_run_id == "run-1"
+    assert agency_fires[0].payload["metadata"]["bridge"]["event_id"] == "event-1"
 
     payloads = await controller.consume_deferred_inputs(db_session, run_id="run-1", batch_id=deferred_rows[0].batch_id)
     await db_session.commit()

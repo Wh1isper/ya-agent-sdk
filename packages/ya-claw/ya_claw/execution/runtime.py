@@ -410,12 +410,6 @@ class ClawRuntimeBuilder:
         if guidance is not None:
             prompt_lines.append(format_workspace_guidance(guidance))
         prompt_lines.append(self._build_agency_context(source_metadata))
-        memory_block = memory_store.build_memory_md_context(summary_max_chars=self._settings.memory_context_max_chars)
-        if memory_block is not None:
-            prompt_lines.append(memory_block)
-        file_index = memory_store.build_memory_file_index_context()
-        if file_index is not None:
-            prompt_lines.append(file_index)
         agency_index = memory_store.build_agency_index_context(max_chars=self._settings.agency_context_max_chars)
         if agency_index is not None:
             prompt_lines.append(agency_index)
