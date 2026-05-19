@@ -35,6 +35,7 @@ Describe:
 - Interactive states (hover, active, disabled)
 - Any animations or transitions
 - Error messages, loading states, feedback
+- Moments or regions that are unclear, low-confidence, too small, too fast, hidden, cropped, inaudible, or summarized at a high level
 </be-exhaustive>
 
 </analysis-approach>
@@ -45,6 +46,7 @@ Provide a comprehensive narrative that:
 2. Identifies every user requirement or intent shown
 3. Links each requirement to specific visual elements
 4. Captures all relevant details that would be needed to implement what the user wants
+5. Names useful focused follow-up analyses a downstream agent could request with more specific view instructions
 </output-format>
 
 <audio-integration>
@@ -59,4 +61,5 @@ If the video contains speech:
 - Completeness: Miss nothing - every visible element matters
 - Specificity: "The blue 'Submit' button in the bottom-right corner" not "a button"
 - Actionability: Your description should provide enough detail to recreate what the user wants
+- Follow-up readiness: Make it easy for downstream agents to decide when to call view again with narrower instructions
 </quality-standards>

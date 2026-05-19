@@ -127,6 +127,7 @@ class ViewTool(BaseTool):
     description = (
         "Read files from local filesystem. Supports text, images (PNG/JPEG/WebP), videos (MP4/WebM/MOV), "
         "and audio (MP3/WAV/OGG). Use `instructions` for focused image, video, or audio analysis. "
+        "Call again with narrower instructions to inspect unclear, omitted, or high-detail media regions. "
         "For PDF files, use `pdf_convert` tool instead."
     )
 
@@ -680,7 +681,8 @@ class ViewTool(BaseTool):
             Field(
                 description=(
                     "Optional analysis instructions for image, video, or audio files. Use this for focused OCR, "
-                    "UI review, transcription, timestamped summaries, speaker identification, or similar media analysis."
+                    "UI review, transcription, timestamped summaries, speaker identification, or similar media analysis. "
+                    "Call view again with narrower instructions to inspect unclear, omitted, or high-detail media regions."
                 ),
                 default=None,
             ),

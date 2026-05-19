@@ -94,8 +94,10 @@ Include:
 - For web/UI designs, provide CSS code snippets for key visual styles
 - The context, purpose, or intent behind what's shown
 - Any notable details or observations
+- Details that are unclear, low-confidence, hidden, cropped, blurred, or summarized at a high level
+- Useful follow-up focuses a downstream agent could request with more specific view instructions
 
-Be thorough and comprehensive. The more detail, the better.
+Be thorough and comprehensive. The more detail, the better. Explicitly name any areas where a focused second pass could reveal more detail.
 """
 
 

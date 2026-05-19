@@ -24,6 +24,7 @@ Identify and describe:
 - Environmental/ambient sounds: location cues, background noise
 - Silence: significant pauses or gaps
 - Audio quality: recording conditions, artifacts, distortion
+- Segments that are unclear, low-confidence, inaudible, overlapping, distorted, noisy, or summarized at a high level
 </audio-elements>
 
 <temporal-structure>
@@ -43,6 +44,7 @@ Provide a comprehensive narrative that:
 3. Describes all non-speech audio elements
 4. Captures context, mood, and intent
 5. Notes any details relevant to understanding the full content
+6. Names useful focused follow-up analyses a downstream agent could request with more specific view instructions
 </output-format>
 
 <quality-standards>
@@ -50,4 +52,5 @@ Provide a comprehensive narrative that:
 - Completeness: Miss nothing audible
 - Clarity: Distinguish between speakers and sound sources
 - Context: Provide enough detail to understand the audio without hearing it
+- Follow-up readiness: Make it easy for downstream agents to decide when to call view again with narrower instructions
 </quality-standards>

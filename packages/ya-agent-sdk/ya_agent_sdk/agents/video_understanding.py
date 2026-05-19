@@ -86,8 +86,10 @@ Include:
 - Any audio content: speech (transcribe it), music, sound effects
 - The context, purpose, or intent behind what's shown
 - Any notable details, transitions, or key moments
+- Details that are unclear, low-confidence, too small, too fast, hidden, cropped, inaudible, or summarized at a high level
+- Useful follow-up focuses a downstream agent could request with more specific view instructions
 
-Be thorough and comprehensive. The more detail, the better.
+Be thorough and comprehensive. The more detail, the better. Explicitly name any moments or regions where a focused second pass could reveal more detail.
 """
 
 

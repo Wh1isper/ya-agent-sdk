@@ -40,7 +40,12 @@ Inferred purpose, source, or intent behind the image.
 
 <observations>
 Notable details, issues, patterns, or important elements worth highlighting.
+Also name visible areas that are unclear, low-confidence, hidden, cropped, blurred, or summarized at a high level.
 </observations>
+
+<follow_up_focuses>
+List useful focused follow-up analyses a downstream agent could request with more specific view instructions, especially for dense text, small UI regions, ambiguous objects, or partially visible content.
+</follow_up_focuses>
 
 </what_to_include>
 
@@ -49,4 +54,5 @@ Notable details, issues, patterns, or important elements worth highlighting.
 <accuracy>Extract text precisely, describe what you actually see</accuracy>
 <specificity>Use detailed descriptions, not vague generalizations</specificity>
 <actionability>Provide information useful for downstream tasks like recreation or implementation</actionability>
+<follow_up_readiness>Make it easy for downstream agents to decide when to call view again with narrower instructions</follow_up_readiness>
 </quality_standards>
