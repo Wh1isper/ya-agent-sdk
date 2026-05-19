@@ -93,4 +93,42 @@ describe('AGUI event reducer', () => {
       content: 'Done',
     })
   })
+
+  it('renders steering delivery and SDK message injection events', () => {
+    const timeline = buildTimeline(
+      [
+        custom('ya_claw.run_steered', {
+          input_parts: [{ type: 'text', text: 'please continue' }],
+        }),
+        custom('ya_agent.message_received', {
+          messages: [
+            {
+              source: 'user',
+              target: 'main',
+              content_text: 'please continue',
+              rendered_content: 'please continue',
+            },
+          ],
+        }),
+      ],
+      [],
+      'run-a',
+      { includeRuntimeEvents: false },
+    )
+
+    expect(timeline.blocks).toHaveLength(2)
+    expect(timeline.blocks[0]).toMatchObject({
+      kind: 'steering',
+      title: 'Steer delivered',
+      status: 'delivered',
+      delivery: 'runtime_state',
+    })
+    expect(timeline.blocks[1]).toMatchObject({
+      kind: 'steering',
+      title: 'Steer injected',
+      status: 'injected',
+      delivery: 'message_bus',
+      prompt: 'please continue',
+    })
+  })
 })

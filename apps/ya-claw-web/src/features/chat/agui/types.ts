@@ -12,6 +12,7 @@ export type TimelineBlock =
   | SubagentBlock
   | FileChangeBlock
   | NoteSnapshotBlock
+  | SteeringBlock
   | RawCustomBlock
 
 export type UserInputBlock = {
@@ -110,6 +111,17 @@ export type NoteSnapshotBlock = {
   kind: 'note_snapshot'
   id: string
   entries: Record<string, string>
+}
+
+export type SteeringBlock = {
+  kind: 'steering'
+  id: string
+  title: string
+  status: 'delivered' | 'injected'
+  inputParts: InputPart[]
+  prompt?: unknown
+  delivery?: string
+  payload: unknown
 }
 
 export type RawCustomBlock = {

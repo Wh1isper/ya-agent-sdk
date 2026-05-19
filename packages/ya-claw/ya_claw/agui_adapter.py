@@ -36,7 +36,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import RetryPromptPart, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart
 from ya_agent_sdk.context.agent import StreamEvent
-from ya_agent_sdk.events import ModelRequestStartEvent, UsageSnapshotEvent
+from ya_agent_sdk.events import MessageReceivedEvent, ModelRequestStartEvent, UsageSnapshotEvent
 
 from ya_claw.json_types import JsonObject, JsonValue
 
@@ -243,6 +243,14 @@ class AguiEventAdapter:
                     event_name="usage_snapshot",
                     stream_event=stream_event,
                     payload=_serialize_value(event.snapshot) if event.snapshot is not None else None,
+                )
+            ]
+        if isinstance(event, MessageReceivedEvent):
+            return [
+                self._custom_agent_event(
+                    event_name="message_received",
+                    stream_event=stream_event,
+                    payload={"messages": _serialize_value(event.messages)},
                 )
             ]
         return [
@@ -517,14 +525,29 @@ class AguiEventAdapter:
         stream_event: StreamEvent,
         payload: JsonValue,
     ) -> dict[str, Any]:
+        return self._custom_agent_event_from_payload(
+            event_name,
+            payload,
+            agent_id=stream_event.agent_id,
+            agent_name=stream_event.agent_name,
+        )
+
+    def _custom_agent_event_from_payload(
+        self,
+        event_name: str,
+        payload: JsonValue,
+        *,
+        agent_id: str = "main",
+        agent_name: str = "main",
+    ) -> dict[str, Any]:
         return _dump_agui_event(
             CustomEvent(
                 name=f"{_AGENT_CUSTOM_EVENT_PREFIX}.{event_name}",
                 value={
                     "run_id": self._run_id,
                     "session_id": self._session_id,
-                    "agent_id": stream_event.agent_id,
-                    "agent_name": stream_event.agent_name,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
                     "payload": _serialize_value(payload),
                 },
             )

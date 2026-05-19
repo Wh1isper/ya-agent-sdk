@@ -7,6 +7,7 @@ import type {
   NoteSnapshotBlock,
   RawCustomBlock,
   RuntimeEventBlock,
+  SteeringBlock,
   SubagentBlock,
   TaskBoardBlock,
   TaskInfo,
@@ -331,6 +332,20 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       entries: entries as Record<string, string>,
     } satisfies NoteSnapshotBlock
   }
+  if (name === 'ya_claw.run_steered') {
+    return steeringBlockFromPayload({
+      id,
+      title: 'Steer delivered',
+      status: 'delivered',
+      payload: { delivery: 'runtime_state', ...payload },
+    })
+  }
+  if (name === 'ya_agent.message_received') {
+    return steeringBlockFromMessageReceivedPayload({
+      id,
+      payload,
+    })
+  }
   if (name.startsWith('ya_agent.') || name.startsWith('ya_claw.')) {
     return {
       kind: 'runtime_event',
@@ -342,6 +357,61 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
     } satisfies RuntimeEventBlock
   }
   return { kind: 'raw_custom', id, name, payload } satisfies RawCustomBlock
+}
+
+function steeringBlockFromPayload({
+  id,
+  title,
+  status,
+  payload,
+}: {
+  id: string
+  title: string
+  status: SteeringBlock['status']
+  payload: Record<string, unknown>
+}): SteeringBlock {
+  return {
+    kind: 'steering',
+    id,
+    title,
+    status,
+    inputParts: Array.isArray(payload.input_parts)
+      ? (payload.input_parts as SteeringBlock['inputParts'])
+      : [],
+    prompt: payload.prompt,
+    delivery: stringField(payload, 'delivery') ?? undefined,
+    payload,
+  }
+}
+
+function steeringBlockFromMessageReceivedPayload({
+  id,
+  payload,
+}: {
+  id: string
+  payload: Record<string, unknown>
+}): SteeringBlock {
+  const messages = Array.isArray(payload.messages)
+    ? (payload.messages as Array<Record<string, unknown>>)
+    : []
+  const renderedMessages = messages
+    .map((message) => message.rendered_content ?? message.content_text)
+    .filter((message) => message !== undefined)
+  return {
+    kind: 'steering',
+    id,
+    title: 'Steer injected',
+    status: 'injected',
+    inputParts: [],
+    prompt:
+      renderedMessages.length === 1
+        ? renderedMessages[0]
+        : renderedMessages.length > 1
+          ? renderedMessages
+          : undefined,
+    delivery: 'message_bus',
+    payload,
+  }
 }
 
 function extractCustomPayload(value: unknown): Record<string, unknown> {

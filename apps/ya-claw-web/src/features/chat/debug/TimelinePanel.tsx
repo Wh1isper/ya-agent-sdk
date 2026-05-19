@@ -7,6 +7,7 @@ import {
   FilePenLine,
   Files,
   MessageSquare,
+  Send,
   TerminalSquare,
   User,
   Wrench,
@@ -29,6 +30,7 @@ export function TimelinePanel({
   history,
   loadingOlder,
   onLoadOlder,
+  historyLoadingDisabled = false,
 }: {
   timeline: AguiTimelineState
   loading: boolean
@@ -36,6 +38,7 @@ export function TimelinePanel({
   history: SessionHistoryState
   loadingOlder: boolean
   onLoadOlder: () => Promise<unknown>
+  historyLoadingDisabled?: boolean
 }) {
   const scrollRef = useRef<HTMLElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
@@ -62,7 +65,8 @@ export function TimelinePanel({
 
   async function loadOlder() {
     const element = scrollRef.current
-    if (!element || loadingOlder || !history.hasMore) return
+    if (!element || loadingOlder || !history.hasMore || historyLoadingDisabled)
+      return
     previousScrollHeightRef.current = element.scrollHeight
     stickToBottomRef.current = false
     await onLoadOlder()
@@ -78,9 +82,6 @@ export function TimelinePanel({
         const distanceFromBottom =
           element.scrollHeight - element.scrollTop - element.clientHeight
         stickToBottomRef.current = distanceFromBottom < 160
-        if (element.scrollTop < 96 && history.hasMore && !loadingOlder) {
-          void loadOlder()
-        }
       }}
     >
       <div className="mx-auto mb-4 flex max-w-4xl flex-col gap-3 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 shadow-sm backdrop-blur sm:flex-row sm:items-center sm:justify-between">
@@ -115,7 +116,7 @@ export function TimelinePanel({
         )
       ) : null}
       <div className="mx-auto max-w-4xl space-y-4">
-        {!loading && timeline.blocks.length > 0 ? (
+        {!loading && timeline.blocks.length > 0 && !historyLoadingDisabled ? (
           <DebugHistoryBoundary
             history={history}
             loadingOlder={loadingOlder}
@@ -339,6 +340,47 @@ export function TimelineCard({ block }: { block: TimelineBlock }) {
     return (
       <Card icon={FilePenLine} title="Notes" accent="blue">
         <JsonView value={block.entries} height="220px" />
+      </Card>
+    )
+  }
+  if (block.kind === 'steering') {
+    return (
+      <Card
+        icon={Send}
+        title={block.title}
+        accent={block.status === 'injected' ? 'emerald' : 'blue'}
+      >
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
+            <span className="rounded-full bg-slate-100 px-2 py-0.5">
+              {block.status}
+            </span>
+            {block.delivery ? (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5">
+                {block.delivery}
+              </span>
+            ) : null}
+          </div>
+          {block.inputParts.length > 0 ? (
+            <div className="space-y-2">
+              {block.inputParts.map((part, index) => (
+                <InputPartView key={index} part={part} />
+              ))}
+            </div>
+          ) : null}
+          {typeof block.prompt === 'string' ? (
+            <CodeBlock
+              label={
+                block.status === 'injected'
+                  ? 'Injected prompt'
+                  : 'Delivered prompt'
+              }
+              value={block.prompt}
+            />
+          ) : block.prompt !== undefined ? (
+            <JsonView value={block.prompt} height="180px" />
+          ) : null}
+        </div>
       </Card>
     )
   }

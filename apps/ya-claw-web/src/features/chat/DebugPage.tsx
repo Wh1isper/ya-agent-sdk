@@ -13,7 +13,7 @@ import {
 import type { StreamStatus } from '../../lib/status'
 import { formatShortId } from '../../lib/utils'
 import { useLayoutStore } from '../../stores/layoutStore'
-import { buildTimelineFromRuns } from './agui/eventReducer'
+import { buildTimelineFromRuns, reduceAguiEvent } from './agui/eventReducer'
 import { isTerminalAguiEvent } from './eventUtils'
 import {
   channelLabel,
@@ -161,11 +161,17 @@ export function DebugPage() {
     () => mergeSessionHistoryPages(historyPages, effectiveLiveEvents),
     [effectiveLiveEvents, historyPages],
   )
-  const timeline = history.timeline.blocks.length
-    ? history.timeline
-    : buildTimelineFromRuns(activeRun ? [activeRun] : [], {
-        includeRuntimeEvents: false,
-      })
+  const selectedRunTimeline = useMemo(() => {
+    const baseTimeline = buildTimelineFromRuns(activeRun ? [activeRun] : [], {
+      includeRuntimeEvents: false,
+    })
+    return effectiveLiveEvents.reduce(
+      (state, event) =>
+        reduceAguiEvent(state, event, { includeRuntimeEvents: false }),
+      baseTimeline,
+    )
+  }, [activeRun, effectiveLiveEvents])
+  const timeline = resolvedRunId ? selectedRunTimeline : history.timeline
   const runs = history.runs.length
     ? history.runs
     : (activeSessionData?.session.runs ?? [])
@@ -270,6 +276,7 @@ export function DebugPage() {
                   history={history}
                   loadingOlder={sessionHistory.isFetchingNextPage}
                   onLoadOlder={() => sessionHistory.fetchNextPage()}
+                  historyLoadingDisabled={Boolean(resolvedRunId)}
                 />
                 <Composer
                   selectedSessionId={selectedSessionId}
@@ -335,6 +342,7 @@ export function DebugPage() {
               history={history}
               loadingOlder={sessionHistory.isFetchingNextPage}
               onLoadOlder={() => sessionHistory.fetchNextPage()}
+              historyLoadingDisabled={Boolean(resolvedRunId)}
             />
             <Composer
               selectedSessionId={selectedSessionId}

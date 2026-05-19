@@ -13,7 +13,10 @@ import {
 } from '../../api/hooks'
 import type { StreamStatus } from '../../lib/status'
 import { formatShortId } from '../../lib/utils'
-import { buildTimelineFromRuns } from '../chat/agui/eventReducer'
+import {
+  buildTimelineFromRuns,
+  reduceAguiEvent,
+} from '../chat/agui/eventReducer'
 import { LivePill } from '../chat/debug/LivePill'
 import { ResizeHandle } from '../chat/debug/ResizeHandle'
 import { RunStrip } from '../chat/debug/RunControls'
@@ -127,11 +130,20 @@ export function AgencyPage() {
     [effectiveLiveEvents, historyPages],
   )
   const runs = history.runs.length ? history.runs : agencyRuns
-  const timeline = history.timeline.blocks.length
-    ? history.timeline
-    : buildTimelineFromRuns(selectedRun ? [selectedRun] : [], {
+  const selectedRunTimeline = useMemo(() => {
+    const baseTimeline = buildTimelineFromRuns(
+      selectedRun ? [selectedRun] : [],
+      {
         includeRuntimeEvents: false,
-      })
+      },
+    )
+    return effectiveLiveEvents.reduce(
+      (state, event) =>
+        reduceAguiEvent(state, event, { includeRuntimeEvents: false }),
+      baseTimeline,
+    )
+  }, [effectiveLiveEvents, selectedRun])
+  const timeline = selectedRunId ? selectedRunTimeline : history.timeline
   const contentLoading =
     Boolean(agencySessionId && sessionHistory.isLoading) ||
     Boolean(selectedRunId && selectedRunQuery.isLoading)
@@ -242,6 +254,7 @@ export function AgencyPage() {
                   history={history}
                   loadingOlder={sessionHistory.isFetchingNextPage}
                   onLoadOlder={() => sessionHistory.fetchNextPage()}
+                  historyLoadingDisabled={Boolean(selectedRunId)}
                 />
               </div>
             </Panel>
@@ -293,6 +306,7 @@ export function AgencyPage() {
               history={history}
               loadingOlder={sessionHistory.isFetchingNextPage}
               onLoadOlder={() => sessionHistory.fetchNextPage()}
+              historyLoadingDisabled={Boolean(selectedRunId)}
             />
             <div className="min-h-[22rem] shrink-0 border-t border-slate-200">
               <AgencyInspectorPanel
