@@ -1,10 +1,11 @@
 <view-tool>
-Read files from local filesystem. Supports text, images (PNG/JPEG/WebP), and videos (MP4/WebM/MOV).
+Read files from local filesystem. Supports text, images (PNG/JPEG/WebP), videos (MP4/WebM/MOV), and audio (MP3/WAV/OGG).
 
 <best-practices>
 - For large files: use line_offset to read in chunks
 - Increase line_limit if you need more context (default: 300)
 - For PDF files: use `pdf_convert` tool instead
-- Video files automatically use image understanding if model doesn't support video
+- For image, video, or audio files, pass `instructions` when you need focused analysis such as OCR, transcription, timestamped review, UI QA, speaker labels, or extracting specific details
+- Video and audio files automatically use a fallback understanding agent when the active model lacks the matching media capability
 </best-practices>
 </view-tool>

@@ -126,7 +126,8 @@ class ViewTool(BaseTool):
     name = "view"
     description = (
         "Read files from local filesystem. Supports text, images (PNG/JPEG/WebP), videos (MP4/WebM/MOV), "
-        "and audio (MP3/WAV/OGG). For PDF files, use `pdf_convert` tool instead."
+        "and audio (MP3/WAV/OGG). Use `instructions` for focused image, video, or audio analysis. "
+        "For PDF files, use `pdf_convert` tool instead."
     )
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
@@ -237,6 +238,7 @@ class ViewTool(BaseTool):
         image_data: bytes,
         media_type: str,
         image_url: str | None,
+        instructions: str | None,
     ) -> str:
         """Describe an image via the fallback image-understanding agent."""
         try:
@@ -253,6 +255,7 @@ class ViewTool(BaseTool):
                 image_url=image_url,
                 image_data=None if image_url else image_data,
                 media_type=media_type,
+                instruction=instructions,
                 model=model,
                 model_settings=model_settings,
                 model_wrapper=ctx.deps.model_wrapper,
@@ -282,6 +285,7 @@ class ViewTool(BaseTool):
         video_data: bytes,
         media_type: str,
         video_url: str | None,
+        instructions: str | None,
     ) -> str:
         """Describe a video via the fallback video-understanding agent."""
         try:
@@ -298,6 +302,7 @@ class ViewTool(BaseTool):
                 video_url=video_url,
                 video_data=None if video_url else video_data,
                 media_type=media_type,
+                instruction=instructions,
                 model=model,
                 model_settings=model_settings,
                 model_wrapper=ctx.deps.model_wrapper,
@@ -327,6 +332,7 @@ class ViewTool(BaseTool):
         audio_data: bytes,
         media_type: str,
         audio_url: str | None,
+        instructions: str | None,
     ) -> str:
         """Describe audio via the fallback audio-understanding agent."""
         try:
@@ -343,6 +349,7 @@ class ViewTool(BaseTool):
                 audio_url=audio_url,
                 audio_data=None if audio_url else audio_data,
                 media_type=media_type,
+                instruction=instructions,
                 model=model,
                 model_settings=model_settings,
                 model_wrapper=ctx.deps.model_wrapper,
@@ -372,24 +379,30 @@ class ViewTool(BaseTool):
         media_url: str | None,
         data: bytes,
         media_type: str,
+        instructions: str | None,
     ) -> ToolReturn:
         """Build the ToolReturn payload for inline media."""
+        return_value = f"The {kind} is attached in the user message."
+        if instructions and instructions.strip():
+            return_value = f"{return_value}\n\nAnalysis instructions:\n{instructions.strip()}"
+
         if kind == "image":
             content = [ImageUrl(url=media_url)] if media_url else [BinaryContent(data=data, media_type=media_type)]
-            return ToolReturn(return_value="The image is attached in the user message.", content=content)
+            return ToolReturn(return_value=return_value, content=content)
 
         if kind == "audio":
             content = [AudioUrl(url=media_url)] if media_url else [BinaryContent(data=data, media_type=media_type)]
-            return ToolReturn(return_value="The audio is attached in the user message.", content=content)
+            return ToolReturn(return_value=return_value, content=content)
 
         content = [VideoUrl(url=media_url)] if media_url else [BinaryContent(data=data, media_type=media_type)]
-        return ToolReturn(return_value="The video is attached in the user message.", content=content)
+        return ToolReturn(return_value=return_value, content=content)
 
     async def _read_image_with_fallback(
         self,
         file_operator: FileOperator,
         file_path: str,
         ctx: RunContext[AgentContext],
+        instructions: str | None,
     ) -> str | ToolReturn:
         """Read image file, falling back to description if vision not supported."""
         if error := await self._check_inline_size(
@@ -424,15 +437,17 @@ class ViewTool(BaseTool):
                 media_url=image_url,
                 data=image_data,
                 media_type=media_type,
+                instructions=instructions,
             )
 
-        return await self._describe_image(ctx, file_path, image_data, media_type, image_url)
+        return await self._describe_image(ctx, file_path, image_data, media_type, image_url, instructions)
 
     async def _read_video_with_fallback(
         self,
         file_operator: FileOperator,
         file_path: str,
         ctx: RunContext[AgentContext],
+        instructions: str | None,
     ) -> str | ToolReturn:
         """Read video file, falling back to video understanding agent if not supported."""
         if error := await self._check_inline_size(
@@ -462,15 +477,17 @@ class ViewTool(BaseTool):
                 media_url=video_url,
                 data=video_data,
                 media_type=media_type,
+                instructions=instructions,
             )
 
-        return await self._describe_video(ctx, file_path, video_data, media_type, video_url)
+        return await self._describe_video(ctx, file_path, video_data, media_type, video_url, instructions)
 
     async def _read_audio_with_fallback(
         self,
         file_operator: FileOperator,
         file_path: str,
         ctx: RunContext[AgentContext],
+        instructions: str | None,
     ) -> str | ToolReturn:
         """Read audio file, falling back to audio understanding agent if not supported."""
         if error := await self._check_inline_size(
@@ -500,9 +517,10 @@ class ViewTool(BaseTool):
                 media_url=audio_url,
                 data=audio_data,
                 media_type=media_type,
+                instructions=instructions,
             )
 
-        return await self._describe_audio(ctx, file_path, audio_data, media_type, audio_url)
+        return await self._describe_audio(ctx, file_path, audio_data, media_type, audio_url, instructions)
 
     def _build_text_metadata_response(
         self,
@@ -657,6 +675,16 @@ class ViewTool(BaseTool):
                 default=2000,
             ),
         ] = 2000,
+        instructions: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional analysis instructions for image, video, or audio files. Use this for focused OCR, "
+                    "UI review, transcription, timestamped summaries, speaker identification, or similar media analysis."
+                ),
+                default=None,
+            ),
+        ] = None,
     ) -> str | dict[str, Any] | ToolReturn:
         """Read a file from the filesystem."""
         file_operator = cast(FileOperator, ctx.deps.file_operator)
@@ -668,13 +696,13 @@ class ViewTool(BaseTool):
             return f"Error: Path is a directory, not a file: {file_path}"
 
         if self._is_image_file(file_path):
-            return await self._read_image_with_fallback(file_operator, file_path, ctx)
+            return await self._read_image_with_fallback(file_operator, file_path, ctx, instructions)
 
         if self._is_video_file(file_path):
-            return await self._read_video_with_fallback(file_operator, file_path, ctx)
+            return await self._read_video_with_fallback(file_operator, file_path, ctx, instructions)
 
         if self._is_audio_file(file_path):
-            return await self._read_audio_with_fallback(file_operator, file_path, ctx)
+            return await self._read_audio_with_fallback(file_operator, file_path, ctx, instructions)
 
         return await self._read_text_file(ctx, file_operator, file_path, line_offset, line_limit, max_line_length)
 

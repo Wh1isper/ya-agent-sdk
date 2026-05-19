@@ -86,7 +86,7 @@ async def test_view_text_file_simple(tmp_path: Path) -> None:
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
 
-        result = await tool.call(mock_run_ctx, file_path="test.txt")
+        result = await tool.call(mock_run_ctx, file_path="test.txt", instructions="Analyze this text differently")
         assert result == "Hello, World!\nLine 2\nLine 3"
 
 
@@ -290,9 +290,15 @@ async def test_view_image_file(tmp_path: Path) -> None:
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
 
-        result = await tool.call(mock_run_ctx, file_path="test.png")
+        result = await tool.call(
+            mock_run_ctx,
+            file_path="test.png",
+            instructions="Extract all visible text.",
+        )
         assert isinstance(result, ToolReturn)
         assert "image is attached" in result.return_value
+        assert "Analysis instructions" in result.return_value
+        assert "Extract all visible text." in result.return_value
         assert len(result.content) == 1
         assert isinstance(result.content[0], BinaryContent)
         assert result.content[0].media_type == "image/png"
@@ -402,10 +408,16 @@ async def test_view_video_file_with_video_model(tmp_path: Path) -> None:
         mock_run_ctx.deps = ctx
         mock_run_ctx.tool_call_id = "test-id"
 
-        result = await tool.call(mock_run_ctx, file_path="test.mp4")
+        result = await tool.call(
+            mock_run_ctx,
+            file_path="test.mp4",
+            instructions="Give timestamped UI issues.",
+        )
 
         assert isinstance(result, ToolReturn)
         assert "video is attached" in result.return_value
+        assert "Analysis instructions" in result.return_value
+        assert "Give timestamped UI issues." in result.return_value
         assert len(result.content) == 1
         assert result.content[0].media_type == "video/mp4"
 
@@ -428,7 +440,8 @@ async def test_view_video_file_fallback_to_image_understanding(tmp_path: Path) -
         mock_run_ctx.tool_call_id = "test-id"
 
         # Mock _read_video_with_fallback to simulate fallback behavior
-        async def mock_fallback(path, file_path, run_ctx):
+        async def mock_fallback(path, file_path, run_ctx, instructions):
+            assert instructions is None
             return "Video description (via image analysis):\nThis video shows a test scene."
 
         with patch.object(tool, "_read_video_with_fallback", side_effect=mock_fallback):
@@ -475,9 +488,14 @@ async def test_view_video_fallback_passes_model_wrapper(tmp_path: Path) -> None:
             "ya_agent_sdk.agents.video_understanding.get_video_description",
             side_effect=mock_get_video_description,
         ):
-            result = await tool.call(mock_run_ctx, file_path="test.mp4")
+            result = await tool.call(
+                mock_run_ctx,
+                file_path="test.mp4",
+                instructions="Give timestamped UI issues.",
+            )
 
     assert "This video shows a test scene" in result
+    assert captured_kwargs["instruction"] == "Give timestamped UI issues."
     assert captured_kwargs["model"] == "openai-chat:gpt-4o"
     assert captured_kwargs["model_wrapper"] is model_wrapper
     assert captured_kwargs["wrapper_metadata"]["run_id"] == ctx.run_id
@@ -503,7 +521,8 @@ async def test_view_video_fallback_failure(tmp_path: Path) -> None:
         mock_run_ctx.tool_call_id = "test-id"
 
         # Mock _read_video_with_fallback to simulate fallback failure
-        async def mock_fallback_failure(path, file_path, run_ctx):
+        async def mock_fallback_failure(path, file_path, run_ctx, instructions):
+            assert instructions is None
             return f"Video file: {file_path}. Model does not support video understanding and fallback analysis failed."
 
         with patch.object(tool, "_read_video_with_fallback", side_effect=mock_fallback_failure):
