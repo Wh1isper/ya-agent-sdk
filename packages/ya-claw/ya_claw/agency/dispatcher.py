@@ -67,7 +67,11 @@ class AgencyDispatcher:
         async with self._session_factory() as db_session:
             result = await lifecycle.tick(db_session)
         if self._notification_hub is not None:
-            for fire_id in result.created_fire_ids:
+            notified_fire_ids: set[str] = set()
+            for fire_id in [*result.heartbeat_fire_ids, *result.created_fire_ids]:
+                if fire_id in notified_fire_ids:
+                    continue
+                notified_fire_ids.add(fire_id)
                 await self._notification_hub.publish("agency.fire.updated", {"agency_fire_id": fire_id})
             for run_id in result.submitted_run_ids:
                 await self._notification_hub.publish("agency.episode.updated", {"run_id": run_id})

@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, Literal
 from uuid import uuid4
@@ -30,7 +30,9 @@ AGENCY_SINGLETON_SCOPE_KEY = "agency:global"
 AGENCY_SINGLETON_SOURCE_SESSION_ID = sha256(AGENCY_SINGLETON_SCOPE_KEY.encode("utf-8")).hexdigest()[:32]
 _FIRE_PRIORITIES: dict[str, int] = {
     AgencyFireKind.MESSAGE_OBSERVED.value: 20,
+    AgencyFireKind.RUN_OUTPUT_OBSERVED.value: 25,
     AgencyFireKind.MEMORY_SESSION_COMPLETED.value: 30,
+    AgencyFireKind.HEARTBEAT.value: 90,
 }
 
 
@@ -55,6 +57,7 @@ class AgencyTickResult:
     submitted_run_ids: list[str] = field(default_factory=list)
     steered_fire_ids: list[str] = field(default_factory=list)
     merged_fire_ids: list[str] = field(default_factory=list)
+    heartbeat_fire_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -255,6 +258,44 @@ class AgencyLifecycle:
             dispatch=dispatch,
         )
 
+    async def observe_run_output(
+        self,
+        db_session: AsyncSession,
+        *,
+        source_session_id: str,
+        source_run_id: str,
+        source_sequence_no: int,
+        trigger_type: str,
+        output_text: str | None,
+        output_summary: str | None,
+        source_kind: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        dispatch: bool = True,
+    ) -> AgencyFireDelivery | None:
+        if not output_text and not output_summary:
+            return None
+        source_session = await db_session.get(SessionRecord, source_session_id)
+        if not isinstance(source_session, SessionRecord) or source_session.session_type != "conversation":
+            return None
+        return await self.create_fire(
+            db_session,
+            kind=AgencyFireKind.RUN_OUTPUT_OBSERVED,
+            source_session_id=source_session_id,
+            source_run_id=source_run_id,
+            client_token=source_run_id,
+            payload={
+                "source_kind": source_kind or trigger_type,
+                "source_session_id": source_session_id,
+                "source_run_id": source_run_id,
+                "source_sequence_no": source_sequence_no,
+                "trigger_type": trigger_type,
+                "output_text": output_text,
+                "output_summary": output_summary,
+                "metadata": dict(metadata or {}),
+            },
+            dispatch=dispatch,
+        )
+
     async def on_memory_session_completed(
         self,
         db_session: AsyncSession,
@@ -290,13 +331,60 @@ class AgencyLifecycle:
         )
 
     async def dispatch_due(self, db_session: AsyncSession) -> AgencyFireDelivery | None:
-        await self.ensure_agency_session(db_session)
-        await db_session.commit()
-        return None
+        if not self._settings.agency_enabled:
+            return None
+        agency_session = await self.ensure_agency_session(db_session)
+        if await _has_pending_fire(db_session, agency_session_id=agency_session.id):
+            return None
+        if await _active_agency_run(db_session, agency_session) is not None:
+            return None
+        now = datetime.now(UTC)
+        next_fire_at = await self.next_timer_fire_at(db_session, now=now)
+        if next_fire_at is None or _as_utc_aware(next_fire_at) > now:
+            return None
+        heartbeat_token = _heartbeat_token(next_fire_at)
+        delivery = await self.create_fire(
+            db_session,
+            kind=AgencyFireKind.HEARTBEAT,
+            client_token=heartbeat_token,
+            payload=_heartbeat_payload(
+                settings=self._settings,
+                now=now,
+                next_fire_at=next_fire_at,
+            ),
+            scheduled_at=next_fire_at,
+            dedupe_key=f"agency:heartbeat:{heartbeat_token}",
+            dispatch=False,
+        )
+        if delivery.delivery == "duplicate":
+            return None
+        return delivery
 
-    async def next_timer_fire_at(self, db_session: AsyncSession) -> datetime | None:
-        await self.ensure_agency_session(db_session)
-        return None
+    async def next_timer_fire_at(self, db_session: AsyncSession, *, now: datetime | None = None) -> datetime | None:
+        if not self._settings.agency_enabled:
+            return None
+        agency_session = await self.ensure_agency_session(db_session)
+        if await _has_pending_fire(db_session, agency_session_id=agency_session.id):
+            return None
+        if await _active_agency_run(db_session, agency_session) is not None:
+            return None
+        current = now or datetime.now(UTC)
+        last_activity_at = await _last_agency_activity_at(db_session, agency_session_id=agency_session.id)
+        if last_activity_at is None:
+            last_activity_at = _as_utc_aware(agency_session.created_at)
+        idle_due_at = _as_utc_aware(last_activity_at) + timedelta(
+            seconds=max(self._settings.agency_idle_after_seconds, 1)
+        )
+        last_heartbeat_at = await _last_heartbeat_at(db_session, agency_session_id=agency_session.id)
+        if last_heartbeat_at is not None:
+            cooldown_due_at = _as_utc_aware(last_heartbeat_at) + timedelta(
+                seconds=max(self._settings.agency_cooldown_seconds, 1)
+            )
+            timer_due_at = _as_utc_aware(last_heartbeat_at) + timedelta(
+                seconds=max(self._settings.agency_timer_interval_seconds, 1)
+            )
+            return max(idle_due_at, cooldown_due_at, timer_due_at)
+        return idle_due_at if idle_due_at > current else current
 
     async def dispatch_pending(self, db_session: AsyncSession) -> AgencyFireDelivery:
         agency_session = await self.ensure_agency_session(db_session)
@@ -375,9 +463,14 @@ class AgencyLifecycle:
             delivery = await self.dispatch_pending(db_session)
         except HTTPException as exc:
             if exc.status_code == 404:
-                await db_session.commit()
-                return result
-            raise
+                due_delivery = await self.dispatch_due(db_session)
+                if due_delivery is None:
+                    await db_session.commit()
+                    return result
+                result.heartbeat_fire_ids.append(due_delivery.fire.id)
+                delivery = await self.dispatch_pending(db_session)
+            else:
+                raise
         result.created_fire_ids.append(delivery.fire.id)
         if delivery.delivery == "submitted" and delivery.run_id is not None:
             result.submitted_run_ids.append(delivery.run_id)
@@ -518,6 +611,104 @@ async def _load_fire_by_dedupe(db_session: AsyncSession, dedupe_key: str) -> Age
     return result.scalars().first()
 
 
+async def _has_pending_fire(db_session: AsyncSession, *, agency_session_id: str) -> bool:
+    result = await db_session.execute(
+        select(AgencyFireRecord.id)
+        .where(
+            AgencyFireRecord.agency_session_id == agency_session_id,
+            AgencyFireRecord.status == AgencyFireStatus.PENDING.value,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _active_agency_run(db_session: AsyncSession, agency_session: SessionRecord) -> RunRecord | None:
+    if not isinstance(agency_session.active_run_id, str):
+        return None
+    run = await db_session.get(RunRecord, agency_session.active_run_id)
+    if isinstance(run, RunRecord) and run.status in {"queued", "running"}:
+        return run
+    return None
+
+
+async def _last_agency_activity_at(db_session: AsyncSession, *, agency_session_id: str) -> datetime | None:
+    fire_result = await db_session.execute(
+        select(AgencyFireRecord.created_at)
+        .where(
+            AgencyFireRecord.agency_session_id == agency_session_id,
+            AgencyFireRecord.kind != AgencyFireKind.HEARTBEAT.value,
+        )
+        .order_by(AgencyFireRecord.created_at.desc())
+        .limit(1)
+    )
+    run_result = await db_session.execute(
+        select(RunRecord.committed_at, RunRecord.finished_at, RunRecord.created_at)
+        .where(RunRecord.session_id == agency_session_id)
+        .order_by(RunRecord.created_at.desc())
+        .limit(1)
+    )
+    candidates: list[datetime] = []
+    fire_created_at = fire_result.scalar_one_or_none()
+    if isinstance(fire_created_at, datetime):
+        candidates.append(_as_utc_aware(fire_created_at))
+    run_row = run_result.first()
+    if run_row is not None:
+        for value in run_row:
+            if isinstance(value, datetime):
+                candidates.append(_as_utc_aware(value))
+                break
+    return max(candidates) if candidates else None
+
+
+async def _last_heartbeat_at(db_session: AsyncSession, *, agency_session_id: str) -> datetime | None:
+    result = await db_session.execute(
+        select(AgencyFireRecord.created_at)
+        .where(
+            AgencyFireRecord.agency_session_id == agency_session_id,
+            AgencyFireRecord.kind == AgencyFireKind.HEARTBEAT.value,
+        )
+        .order_by(AgencyFireRecord.created_at.desc())
+        .limit(1)
+    )
+    value = result.scalar_one_or_none()
+    return _as_utc_aware(value) if isinstance(value, datetime) else None
+
+
+def _heartbeat_token(next_fire_at: datetime) -> str:
+    return _as_utc_aware(next_fire_at).strftime("%Y%m%d%H%M")
+
+
+def _heartbeat_payload(*, settings: ClawSettings, now: datetime, next_fire_at: datetime) -> dict[str, Any]:
+    return {
+        "source_kind": "agency_heartbeat",
+        "reason": "idle_proactive_review",
+        "created_at": now.isoformat(),
+        "scheduled_at": next_fire_at.isoformat(),
+        "idle_after_seconds": settings.agency_idle_after_seconds,
+        "cooldown_seconds": settings.agency_cooldown_seconds,
+        "timer_interval_seconds": settings.agency_timer_interval_seconds,
+        "review_scope": {
+            "agency_index": "AGENCY.md",
+            "action_log": "agency/ACTION_LOG.md",
+            "episode_files": "agency/episodes/*.md",
+            "intention_files": "agency/intentions/*.md",
+            "recent_source_sessions": True,
+            "recent_run_outputs": True,
+            "recent_memory_outputs": True,
+            "pending_intentions": True,
+            "deferred_decisions": True,
+        },
+        "instructions": [
+            "Review Agency files for stale intentions, open loops, and deferred decisions.",
+            "Inspect recent source sessions or run traces only when they clarify an actionable loop.",
+            "Prefer low-risk synthesis, preparation, and cross-session connection work.",
+            "Use submit_to_source_session when a specific source conversation session should act or decide.",
+            "Record skipped routes, useful findings, and the next trigger condition in Agency files.",
+        ],
+    }
+
+
 def _dedupe_key(
     *,
     kind: str,
@@ -526,6 +717,8 @@ def _dedupe_key(
     client_token: str,
     scheduled_at: datetime,
 ) -> str:
+    if kind == AgencyFireKind.RUN_OUTPUT_OBSERVED.value and isinstance(source_run_id, str):
+        return f"agency:run_output_observed:{source_run_id}"
     if kind == AgencyFireKind.MEMORY_SESSION_COMPLETED.value and isinstance(source_run_id, str):
         return f"agency:memory_session_completed:{source_run_id}"
     source_part = source_session_id or "global"

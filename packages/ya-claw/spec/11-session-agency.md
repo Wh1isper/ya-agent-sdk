@@ -1,12 +1,14 @@
 # 11 - Singleton Agency
 
-YA Claw supports Agency as one global internal session. One Claw database owns one `session_type="agency"` session keyed by `agency:global`. Agency receives copied conversation messages and completed memory-session output as durable fires. The fires are submitted through the same session input path used by normal sessions, so Agency follows standard run, queued-merge, and runtime-steer behavior.
+YA Claw supports Agency as one global internal session. One Claw database owns one `session_type="agency"` session keyed by `agency:global`. Agency receives copied conversation messages, successful conversation run output, completed memory-session output, and idle heartbeat review prompts as durable fires. The fires are submitted through the same session input path used by normal sessions, so Agency follows standard run, queued-merge, and runtime-steer behavior.
 
 ## Design Goals
 
 - Maintain exactly one internal `session_type="agency"` session per Claw instance.
 - Copy every user/API/bridge conversation message into Agency with source session and run provenance.
+- Copy every successful conversation run output into Agency with `output_text` and `output_summary`.
 - Copy every completed memory session into Agency with memory run `output_text` and `output_summary`.
+- Create low-priority heartbeat fires when Agency has been idle long enough for proactive review.
 - Use one unified session submit path for normal sessions and Agency.
 - Let Agency use session-backed async subagents from its own singleton session.
 - Let Agency wake a specific source conversation session with a prompt handoff when outward work should happen.
@@ -15,18 +17,19 @@ YA Claw supports Agency as one global internal session. One Claw database owns o
 
 ## Non-Goals
 
-- Agency does not receive idle timer fires.
 - Agency does not receive product manual trigger fires.
-- Agency does not receive broad automatic fires for run commits, async task completion, compact events, or separate bridge-event categories.
+- Agency does not receive broad automatic fires for failed run commits, async task completion, compact events, or separate bridge-event categories.
 - Agency does not receive automatic source memory injection in its system prompt.
 - Agency does not own final user-facing action for source conversations; the awakened source session owns that step.
 
 ## Conceptual Model
 
-Agency receives two durable fire kinds:
+Agency receives four durable fire kinds:
 
 1. `message_observed`: a copy of a source session message.
-2. `memory_session_completed`: a copy of a completed memory run output.
+2. `run_output_observed`: a copy of a successful source conversation run output.
+3. `memory_session_completed`: a copy of a completed memory run output.
+4. `heartbeat`: a low-priority idle proactive review prompt.
 
 Dispatch uses unified session submit semantics:
 
@@ -41,9 +44,13 @@ Dispatch uses unified session submit semantics:
 ```mermaid
 flowchart TD
     MSG[Conversation message] --> MF[agency_fires: message_observed]
+    OUT[Conversation run completed] --> OF[agency_fires: run_output_observed]
     MEM[Memory session completed] --> FF[agency_fires: memory_session_completed]
+    HB[Agency idle heartbeat] --> HF[agency_fires: heartbeat]
     MF --> P[Dispatch pending fires]
+    OF --> P
     FF --> P
+    HF --> P
     P --> S{Agency session state}
     S -->|idle| R[Create queued agency run]
     S -->|queued| Q[Merge into queued run input_parts and metadata]
@@ -93,12 +100,14 @@ The unique index on `(session_type, source_session_id)` enforces one singleton a
 
 ## Fire Kinds
 
-| Kind                       | Source                                | Required payload                                                                         |
-| -------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `message_observed`         | Session submit/create, API, bridge    | `source_kind`, `source_session_id`, `source_run_id`, copied `input_parts`, metadata      |
-| `memory_session_completed` | Completed `session_type="memory"` run | `memory_session_id`, `memory_run_id`, `memory_job_kind`, `output_text`, `output_summary` |
+| Kind                       | Source                                                                            | Required payload                                                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `message_observed`         | Session submit/create, API, bridge                                                | `source_kind`, `source_session_id`, `source_run_id`, copied `input_parts`, metadata                                        |
+| `run_output_observed`      | Successful source `session_type="conversation"` run, except `agency_handoff` runs | `source_kind`, `source_session_id`, `source_run_id`, `source_sequence_no`, `trigger_type`, `output_text`, `output_summary` |
+| `memory_session_completed` | Completed `session_type="memory"` run                                             | `memory_session_id`, `memory_run_id`, `memory_job_kind`, `output_text`, `output_summary`                                   |
+| `heartbeat`                | Agency idle timer                                                                 | `reason`, `created_at`, `scheduled_at`, timer settings, review scope, proactive review instructions                        |
 
-`message_observed` priority is higher than `memory_session_completed` so fresh user-visible input reaches Agency quickly. `agency_fires` is a durable delivery record for audit, dedupe, ordering, and status inspection. The message payload reaches Agency through `SessionController.submit_input()` and is delivered with the same semantics as source sessions: create a run when idle, append to a queued run, and steer a running runtime.
+`message_observed` priority is higher than `run_output_observed`, `run_output_observed` priority is higher than `memory_session_completed`, and `heartbeat` has the lowest priority. Fresh user-visible input reaches Agency quickly, final source-agent output closes the loop before memory synthesis arrives, and heartbeat reviews run only during quiet periods. `agency_fires` is a durable delivery record for audit, dedupe, ordering, and status inspection. The payload reaches Agency through `SessionController.submit_input()` and is delivered with the same semantics as source sessions: create a run when idle, append to a queued run, and steer a running runtime.
 
 Fire status transitions:
 
@@ -272,6 +281,7 @@ Backend tests should cover:
 - singleton session creation and reuse;
 - `message_observed` fire creation and delivery;
 - `memory_session_completed` fire creation with output text and summary;
+- heartbeat due-time calculation, pending-fire suppression, and idle proactive review payload;
 - idle create, queued merge, and running steer via `SessionController.submit_input()`;
 - Agency source-session handoff creates, merges, and steers target conversation sessions with `trigger_type="agency_handoff"` where applicable;
 - Agency handoff submissions skip new `agency_fires` creation;

@@ -486,7 +486,12 @@ export type AgencyRiskPolicy = {
 
 export type AgencyFireSummary = {
   id: string
-  kind: 'message_observed' | 'memory_session_completed' | string
+  kind:
+    | 'message_observed'
+    | 'run_output_observed'
+    | 'memory_session_completed'
+    | 'heartbeat'
+    | string
   status:
     | 'pending'
     | 'submitted'

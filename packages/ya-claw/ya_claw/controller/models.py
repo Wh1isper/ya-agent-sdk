@@ -77,7 +77,9 @@ class AsyncTaskWakePolicy(StrEnum):
 
 class AgencyFireKind(StrEnum):
     MESSAGE_OBSERVED = "message_observed"
+    RUN_OUTPUT_OBSERVED = "run_output_observed"
     MEMORY_SESSION_COMPLETED = "memory_session_completed"
+    HEARTBEAT = "heartbeat"
 
 
 class AgencyFireStatus(StrEnum):

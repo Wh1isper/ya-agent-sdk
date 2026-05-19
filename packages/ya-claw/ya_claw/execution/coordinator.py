@@ -647,6 +647,27 @@ class RunCoordinator:
                     profile_name=run_record.profile_name,
                     claw_metadata=buffers.claw_metadata,
                 )
+                if self._settings.agency_enabled and run_record.trigger_type != TriggerType.AGENCY_HANDOFF.value:
+                    agency_lifecycle = AgencyLifecycle(
+                        settings=self._settings,
+                        runtime_state=self._runtime_state,
+                        submit_run=self._submit_background_run,
+                    )
+                    await agency_lifecycle.observe_run_output(
+                        db_session,
+                        source_session_id=session_record.id,
+                        source_run_id=run_record.id,
+                        source_sequence_no=run_record.sequence_no,
+                        trigger_type=run_record.trigger_type,
+                        source_kind=run_record.trigger_type,
+                        output_text=run_record.output_text,
+                        output_summary=run_record.output_summary,
+                        metadata={
+                            "profile_name": run_record.profile_name,
+                            "termination_reason": run_record.termination_reason,
+                            "head_success_run_id": session_record.head_success_run_id,
+                        },
+                    )
             logger.info(
                 "Run completed run_id={} session_id={} output_summary_chars={}",
                 run_id,
