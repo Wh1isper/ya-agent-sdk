@@ -941,28 +941,28 @@ def _gemini_thinking_budget_settings(
 GEMINI_THINKING_BUDGET_DEFAULT: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=16 * K_TOKENS,
     max_tokens=16 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 2.5 default: 16K thinking budget, balanced reasoning."""
 
 GEMINI_THINKING_BUDGET_HIGH: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=32 * K_TOKENS,
     max_tokens=21 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 2.5 high: 32K thinking budget, maximum reasoning depth."""
 
 GEMINI_THINKING_BUDGET_MEDIUM: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=16 * K_TOKENS,
     max_tokens=16 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 2.5 medium: 16K thinking budget, balanced reasoning."""
 
 GEMINI_THINKING_BUDGET_LOW: dict[str, Any] = _gemini_thinking_budget_settings(
     thinking_budget=4 * K_TOKENS,
     max_tokens=8 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 2.5 low: 4K thinking budget, minimal reasoning overhead."""
 
@@ -1001,35 +1001,35 @@ def _gemini_thinking_level_settings(
 GEMINI_THINKING_LEVEL_DEFAULT: dict[str, Any] = _gemini_thinking_level_settings(
     thinking_level="LOW",
     max_tokens=16 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 3 default: MEDIUM thinking level, balanced reasoning."""
 
 GEMINI_THINKING_LEVEL_HIGH: dict[str, Any] = _gemini_thinking_level_settings(
     thinking_level="HIGH",
     max_tokens=21 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 3 high: HIGH thinking level, maximum reasoning depth."""
 
 GEMINI_THINKING_LEVEL_MEDIUM: dict[str, Any] = _gemini_thinking_level_settings(
     thinking_level="MEDIUM",
     max_tokens=16 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 3 medium: MEDIUM thinking level, balanced reasoning."""
 
 GEMINI_THINKING_LEVEL_LOW: dict[str, Any] = _gemini_thinking_level_settings(
     thinking_level="LOW",
     max_tokens=8 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 3 low: LOW thinking level, minimal reasoning overhead."""
 
 GEMINI_THINKING_LEVEL_MINIMAL: dict[str, Any] = _gemini_thinking_level_settings(
     thinking_level="MINIMAL",
     max_tokens=4 * K_TOKENS,
-    include_thoughts=False,
+    include_thoughts=True,
 )
 """Gemini 3 minimal: MINIMAL thinking level (Flash only, may still think for complex tasks)."""
 
