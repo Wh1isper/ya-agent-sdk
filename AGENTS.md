@@ -121,6 +121,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - memory content lives in workspace files: `memory/MEMORY.md`, `memory/CHANGELOG.md`, and `memory/YYYYMMDD-event.md` files with YAML frontmatter (`name`, `description`)
 - `memory/MEMORY.md` is a compact durable brief for stable facts loaded into the main agent system prompt; detailed chronology, file catalogs, and event lists belong in event files and `memory/CHANGELOG.md`
 - primary conversation runs load `AGENTS.md` through workspace guidance and load memory in the system prompt via `WorkspaceMemoryStore` from `memory/MEMORY.md` plus event file frontmatter
+- Agency heartbeat fires follow a fixed interval from `agency_timer_interval_seconds`; `submit_to_session` requires an explicit handoff kind (`context`, `exchange`, `reminder`, `task`, `risk`, `async_result`, `decision`, `conflict`), wraps prompts in a fixed `<system-reminder>` reference block, and uses kind-specific hints so target sessions can apply context or stay silent when useful
 - `memory-context` is registered in `injected_context_tags` so SDK trim-mode handoff strips historical memory context from user prompt history
 - memory orchestration state lives in `session_memory_states`; memory content lives in workspace files; session list/detail responses expose `memory_state`; file browsing uses workspace filetree APIs and agent filesystem tools; manual endpoints are `memory:extract` and `memory:summarize`
 

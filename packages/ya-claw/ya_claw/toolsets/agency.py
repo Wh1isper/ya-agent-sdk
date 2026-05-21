@@ -93,8 +93,8 @@ class SubmitToSessionTool(BaseTool):
     name = "submit_to_session"
     agency_only = True
     description = (
-        "Submit an Agency proactive nudge to a chosen conversation session. "
-        "Use it to remind the session agent, share useful cross-session context, suggest a person to ask, "
+        "Submit Agency proactive context or a nudge to a chosen conversation session. "
+        "Use it to exchange useful cross-session context, remind the session agent, suggest a person to ask, "
         "or prompt a lightweight next action. The target session will submit, merge, or steer automatically."
     )
 
@@ -115,7 +115,15 @@ class SubmitToSessionTool(BaseTool):
         ],
         prompt: Annotated[
             str,
-            Field(description="Natural-language proactive guidance for the session agent to interpret freely"),
+            Field(
+                description="Natural-language proactive context or guidance for the session agent to interpret freely"
+            ),
+        ],
+        handoff_kind: Annotated[
+            str,
+            Field(
+                description="Required engineering tag for this handoff: context, exchange, reminder, task, risk, async_result, decision, or conflict"
+            ),
         ],
         metadata: Annotated[
             dict[str, Any] | None,
@@ -123,12 +131,6 @@ class SubmitToSessionTool(BaseTool):
                 description="Optional compact provenance such as fire_ids, source_run_ids, async_task_ids, people, groups, and artifact_paths"
             ),
         ] = None,
-        handoff_kind: Annotated[
-            str,
-            Field(
-                description="Lightweight engineering tag for this nudge, such as reminder, context, task, risk, or async_result"
-            ),
-        ] = "reminder",
         handoff_tags: Annotated[
             list[str] | None,
             Field(description="Optional engineering tags. agency-reminder is added automatically."),

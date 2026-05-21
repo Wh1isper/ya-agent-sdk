@@ -29,6 +29,7 @@ from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 from ya_claw.agency.prompt import AGENCY_SYSTEM_PROMPT
 from ya_claw.config import ClawSettings
 from ya_claw.context import CLAW_INJECTED_CONTEXT_TAGS, ClawAgentContext, ClawWorkspaceBindingSnapshot
+from ya_claw.controller.models import AgencyHandoffKind
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.mcp import build_profile_mcp_config
 from ya_claw.memory.lifecycle import ClawMemoryExtension
@@ -67,6 +68,34 @@ from ya_claw.workspace import (
 
 if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
+
+
+def _agency_handoff_kind(value: object) -> AgencyHandoffKind:
+    if isinstance(value, str):
+        try:
+            return AgencyHandoffKind(value)
+        except ValueError:
+            return AgencyHandoffKind.REMINDER
+    return AgencyHandoffKind.REMINDER
+
+
+def _agency_handoff_context_hint(kind: AgencyHandoffKind) -> str:
+    hints = {
+        AgencyHandoffKind.CONTEXT: "Use this background context when it improves the next answer.",
+        AgencyHandoffKind.EXCHANGE: "Use this cross-session context when it improves local judgment.",
+        AgencyHandoffKind.REMINDER: "Use this timely nudge when it helps the current session.",
+        AgencyHandoffKind.TASK: "Consider whether this should become a task, follow-up, or owner handoff.",
+        AgencyHandoffKind.RISK: "Review this before taking a sensitive or irreversible action.",
+        AgencyHandoffKind.ASYNC_RESULT: "Integrate this completed background work when useful.",
+        AgencyHandoffKind.DECISION: "Align with this decision context or ask for confirmation.",
+        AgencyHandoffKind.CONFLICT: "Reconcile this conflicting context before acting.",
+    }
+    return hints[kind]
+
+
+def _xml_text_escape(value: object) -> str:
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 _DEFAULT_SYSTEM_PROMPT = """
 You are the YA Claw execution agent.
@@ -396,19 +425,21 @@ class ClawRuntimeBuilder:
         metadata = dict(source_metadata or {})
         handoff = metadata.get("agency_handoff") if isinstance(metadata.get("agency_handoff"), dict) else {}
         latest = handoff.get("latest") if isinstance(handoff, dict) and isinstance(handoff.get("latest"), dict) else {}
-        handoff_kind = latest.get("kind") if isinstance(latest, dict) else None
+        handoff_kind_value = latest.get("kind") if isinstance(latest, dict) else None
+        handoff_kind = _agency_handoff_kind(handoff_kind_value)
         handoff_tags = latest.get("tags") if isinstance(latest, dict) else None
+        hint = _agency_handoff_context_hint(handoff_kind)
+        normalized_tags = handoff_tags if isinstance(handoff_tags, list) else ["agency-reminder"]
         return "\n".join([
-            '<agency-handoff-context source="agency_handoff" tag="agency-reminder">',
-            "This run was awakened by the global Agency session as a proactive nudge.",
-            f"Handoff kind: {handoff_kind if isinstance(handoff_kind, str) and handoff_kind else 'reminder'}",
-            "Handoff tags: "
-            + json.dumps(handoff_tags if isinstance(handoff_tags, list) else ["agency-reminder"], ensure_ascii=False),
-            "The user prompt contains Agency-authored natural-language guidance.",
-            "You are the source conversation agent and own the action, user-facing response, and workspace execution.",
-            "Use the guidance as advisory context. Apply judgment in this session: answer better, remind the group, ask a named person, create or update a task, route to an owner, reconcile context, or record it quietly.",
-            "Agency handoff metadata:",
-            json.dumps(handoff if isinstance(handoff, dict) else {}, ensure_ascii=False, sort_keys=True),
+            f'<agency-handoff-context source="agency_handoff" kind="{handoff_kind.value}" tag="agency-reminder">',
+            f"<hint>{_xml_text_escape(hint)}</hint>",
+            f"<tags>{_xml_text_escape(json.dumps(normalized_tags, ensure_ascii=False))}</tags>",
+            "The user prompt contains Agency-authored guidance and may be reference-only. The source conversation agent owns the action, user-facing response, and workspace execution. Use judgment: answer, exchange context, remind the group, ask a person, create a task, route, reconcile, record quietly, or stay silent when response value is low.",
+            "<metadata>",
+            _xml_text_escape(
+                json.dumps(handoff if isinstance(handoff, dict) else {}, ensure_ascii=False, sort_keys=True)
+            ),
+            "</metadata>",
             "</agency-handoff-context>",
         ])
 

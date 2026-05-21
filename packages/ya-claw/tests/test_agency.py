@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_claw.agency.lifecycle import AGENCY_SINGLETON_SOURCE_SESSION_ID, AgencyLifecycle
@@ -53,16 +54,43 @@ def _text(value: str) -> TextPart:
     return TextPart(type="text", text=value)
 
 
-def test_agency_source_session_submit_request_accepts_session_id_aliases() -> None:
-    from ya_claw.controller.models import AgencySourceSessionSubmitRequest
+def test_agency_source_session_submit_request_accepts_session_id_aliases_and_requires_kind() -> None:
+    from ya_claw.controller.models import AgencyHandoffKind, AgencySourceSessionSubmitRequest
 
-    modern = AgencySourceSessionSubmitRequest(session_id="session-1", prompt="hello")
-    legacy = AgencySourceSessionSubmitRequest(source_session_id="session-2", prompt="hello")
+    modern = AgencySourceSessionSubmitRequest(
+        session_id="session-1",
+        prompt="hello",
+        handoff_kind=AgencyHandoffKind.REMINDER,
+    )
+    legacy = AgencySourceSessionSubmitRequest(
+        source_session_id="session-2",
+        prompt="hello",
+        handoff_kind=AgencyHandoffKind.EXCHANGE,
+    )
 
     assert modern.session_id == "session-1"
     assert legacy.session_id == "session-2"
-    assert modern.handoff_kind == "reminder"
+    assert modern.handoff_kind == AgencyHandoffKind.REMINDER
+    assert legacy.handoff_kind == AgencyHandoffKind.EXCHANGE
     assert modern.handoff_tags == ["agency-reminder"]
+    assert (
+        AgencySourceSessionSubmitRequest(
+            session_id="session-4",
+            prompt="hello",
+            handoff_kind="decision",
+        ).handoff_kind
+        == AgencyHandoffKind.DECISION
+    )
+    assert (
+        AgencySourceSessionSubmitRequest(
+            session_id="session-5",
+            prompt="hello",
+            handoff_kind="conflict",
+        ).handoff_kind
+        == AgencyHandoffKind.CONFLICT
+    )
+    with pytest.raises(ValidationError):
+        AgencySourceSessionSubmitRequest(session_id="session-3", prompt="hello")
 
 
 async def test_message_observed_creates_singleton_agency_session_and_run(
@@ -452,7 +480,9 @@ async def test_heartbeat_due_creates_and_dispatches_fire(
     fire = await db_session.get(AgencyFireRecord, result.heartbeat_fire_ids[0])
     assert isinstance(fire, AgencyFireRecord)
     assert fire.kind == AgencyFireKind.HEARTBEAT.value
-    assert fire.payload["reason"] == "idle_proactive_review"
+    assert fire.scheduled_at.replace(tzinfo=UTC) == datetime(2026, 5, 19, 7, 1, tzinfo=UTC)
+    assert fire.payload["reason"] == "scheduled_timer_review"
+    assert fire.payload["schedule_policy"] == "fixed_interval"
     assert fire.payload["review_scope"]["pending_intentions"] is True
     instructions = " ".join(fire.payload["instructions"])
     assert "submit_to_session" in instructions
@@ -460,6 +490,58 @@ async def test_heartbeat_due_creates_and_dispatches_fire(
     run = await db_session.get(RunRecord, result.submitted_run_ids[0])
     assert isinstance(run, RunRecord)
     assert run.run_metadata["agency"]["trigger_kinds"] == [AgencyFireKind.HEARTBEAT.value]
+
+
+async def test_heartbeat_uses_fixed_interval_schedule(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    settings.agency_idle_after_seconds = 1
+    settings.agency_cooldown_seconds = 3600
+    settings.agency_timer_interval_seconds = 120
+    lifecycle = AgencyLifecycle(settings=settings, runtime_state=create_runtime_state())
+    agency_session = await lifecycle.ensure_agency_session(db_session)
+    agency_session.created_at = datetime(2026, 5, 19, 7, 0, tzinfo=UTC)
+    await db_session.commit()
+
+    first_due_at = await lifecycle.next_timer_fire_at(
+        db_session,
+        now=datetime(2026, 5, 19, 7, 0, 30, tzinfo=UTC),
+    )
+    assert first_due_at == datetime(2026, 5, 19, 7, 2, tzinfo=UTC)
+
+    db_session.add(
+        AgencyFireRecord(
+            id="heartbeat-fire-1",
+            kind=AgencyFireKind.HEARTBEAT.value,
+            status="consumed",
+            scheduled_at=datetime(2026, 5, 19, 7, 2, tzinfo=UTC),
+            fired_at=datetime(2026, 5, 19, 7, 2, 5, tzinfo=UTC),
+            dedupe_key="agency:heartbeat:20260519070200",
+            agency_session_id=agency_session.id,
+            payload={},
+            created_at=datetime(2026, 5, 19, 7, 2, 5, tzinfo=UTC),
+        )
+    )
+    db_session.add(
+        RunRecord(
+            id="recent-agency-run",
+            session_id=agency_session.id,
+            sequence_no=1,
+            status=RunStatus.COMPLETED.value,
+            trigger_type=TriggerType.AGENCY.value,
+            input_parts=[],
+            run_metadata={},
+            committed_at=datetime(2026, 5, 19, 7, 3, 30, tzinfo=UTC),
+        )
+    )
+    await db_session.commit()
+
+    next_due_at = await lifecycle.next_timer_fire_at(
+        db_session,
+        now=datetime(2026, 5, 19, 7, 3, 45, tzinfo=UTC),
+    )
+    assert next_due_at == datetime(2026, 5, 19, 7, 4, tzinfo=UTC)
 
 
 async def test_heartbeat_waits_for_pending_fire(
@@ -673,7 +755,14 @@ async def test_agency_submit_to_session_creates_handoff_run(
     assert isinstance(run, RunRecord)
     assert run.session_id == "source-session"
     assert run.trigger_type == TriggerType.AGENCY_HANDOFF.value
-    assert run.input_parts[0]["text"] == "Review the async findings and update the user."
+    handoff_text = run.input_parts[0]["text"]
+    assert handoff_text.startswith('<system-reminder>\n<agency-handoff-reference kind="async_result">')
+    assert "Use this as advisory reference from the global Agency session." in handoff_text
+    assert "You may stay silent when a user-facing response adds little value." in handoff_text
+    assert (
+        '<agency-handoff kind="async_result">\nReview the async findings and update the user.\n</agency-handoff>'
+        in handoff_text
+    )
     assert run.input_parts[0]["metadata"]["source"] == "agency_handoff"
     assert run.input_parts[0]["metadata"]["handoff_kind"] == "async_result"
     assert run.input_parts[0]["metadata"]["handoff_tags"] == ["agency-reminder", "async-result"]
@@ -741,6 +830,7 @@ async def test_agency_submit_to_session_merges_queued_source_run(
             session_id="source-session",
             prompt="Add agency context.",
             metadata={"source_run_ids": ["run-1"]},
+            handoff_kind="exchange",
             agency_session_id="agency-session",
             agency_run_id="agency-run",
         ),
@@ -749,7 +839,11 @@ async def test_agency_submit_to_session_merges_queued_source_run(
     assert response.delivery == "merged"
     assert response.run_id == "source-run"
     await db_session.refresh(source_run)
-    assert [part["text"] for part in source_run.input_parts] == ["original", "Add agency context."]
+    assert source_run.input_parts[0]["text"] == "original"
+    assert source_run.input_parts[1]["text"].startswith('<system-reminder>\n<agency-handoff-reference kind="exchange">')
+    assert (
+        '<agency-handoff kind="exchange">\nAdd agency context.\n</agency-handoff>' in source_run.input_parts[1]["text"]
+    )
     assert source_run.run_metadata["agency_handoff"]["latest"]["metadata"] == {"source_run_ids": ["run-1"]}
     assert len(source_run.run_metadata["agency_handoff"]["handoffs"]) == 1
 
@@ -809,6 +903,7 @@ async def test_agency_submit_to_session_steers_running_source_run(
             session_id="source-session",
             prompt="Steer with agency context.",
             metadata={"async_task_ids": ["task-1"]},
+            handoff_kind="exchange",
             agency_session_id="agency-session",
             agency_run_id="agency-run",
         ),
@@ -817,10 +912,16 @@ async def test_agency_submit_to_session_steers_running_source_run(
     assert response.delivery == "steered"
     assert response.run_id == "source-run"
     steering = runtime_state.consume_steering_inputs("source-run")
-    assert steering[0][0]["text"] == "Steer with agency context."
+    assert steering[0][0]["text"].startswith('<system-reminder>\n<agency-handoff-reference kind="exchange">')
+    assert '<agency-handoff kind="exchange">\nSteer with agency context.\n</agency-handoff>' in steering[0][0]["text"]
     await db_session.refresh(source_run)
-    assert [part["text"] for part in source_run.input_parts] == ["original", "Steer with agency context."]
-    assert source_run.run_metadata["agency_handoff"]["latest"]["kind"] == "reminder"
+    assert source_run.input_parts[0]["text"] == "original"
+    assert source_run.input_parts[1]["text"].startswith('<system-reminder>\n<agency-handoff-reference kind="exchange">')
+    assert (
+        '<agency-handoff kind="exchange">\nSteer with agency context.\n</agency-handoff>'
+        in source_run.input_parts[1]["text"]
+    )
+    assert source_run.run_metadata["agency_handoff"]["latest"]["kind"] == "exchange"
     assert source_run.run_metadata["agency_handoff"]["latest"]["tags"] == ["agency-reminder"]
     assert source_run.run_metadata["agency_handoff"]["latest"]["metadata"] == {"async_task_ids": ["task-1"]}
 
@@ -869,6 +970,7 @@ async def test_agency_submit_to_session_rejects_invalid_callers_and_targets(
             AgencySourceSessionSubmitRequest(
                 session_id="source-session",
                 prompt="hello",
+                handoff_kind="reminder",
                 agency_session_id="agency-session",
                 agency_run_id="agency-run",
             ),
@@ -888,6 +990,7 @@ async def test_agency_submit_to_session_rejects_invalid_callers_and_targets(
             AgencySourceSessionSubmitRequest(
                 session_id="memory-session",
                 prompt="hello",
+                handoff_kind="reminder",
                 agency_session_id="agency-session",
                 agency_run_id="agency-run",
             ),

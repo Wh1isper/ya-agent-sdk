@@ -6,9 +6,9 @@ YA Claw supports Agency as one global internal session. One Claw database owns o
 
 - Maintain exactly one internal `session_type="agency"` session per Claw instance.
 - Copy every user/API/bridge conversation message into Agency with source session and run provenance.
-- Copy every successful conversation run output into Agency with `output_text`.
-- Copy every completed memory session into Agency with memory run `output_text`.
-- Create low-priority heartbeat fires when Agency has been idle long enough for proactive review.
+- Copy every successful conversation run output into Agency with `output_text` and `output_summary`.
+- Copy every completed memory session into Agency with memory run `output_text` and `output_summary`.
+- Create low-priority heartbeat fires on the configured fixed interval when Agency is ready for proactive review.
 - Use one unified session submit path for normal sessions and Agency.
 - Let Agency use session-backed async subagents from its own singleton session.
 - Let Agency wake a specific source conversation session with a prompt handoff when outward work should happen.
@@ -30,7 +30,7 @@ Agency receives four durable fire kinds:
 1. `message_observed`: a copy of a source session message.
 2. `run_output_observed`: a copy of a successful source conversation run output.
 3. `memory_session_completed`: a copy of a completed memory run output.
-4. `heartbeat`: a low-priority idle proactive review prompt.
+4. `heartbeat`: a low-priority scheduled proactive review prompt.
 
 Dispatch uses unified session submit semantics:
 
@@ -103,14 +103,14 @@ The unique index on `(session_type, source_session_id)` enforces one singleton a
 
 ## Fire Kinds
 
-| Kind                       | Source                                                                            | Required payload                                                                                         |
-| -------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `message_observed`         | Session submit/create, API, bridge                                                | `source_kind`, `source_session_id`, `source_run_id`, copied `input_parts`, metadata                      |
-| `run_output_observed`      | Successful source `session_type="conversation"` run, except `agency_handoff` runs | `source_kind`, `source_session_id`, `source_run_id`, `source_sequence_no`, `trigger_type`, `output_text` |
-| `memory_session_completed` | Completed `session_type="memory"` run                                             | `memory_session_id`, `memory_run_id`, `memory_job_kind`, `output_text`                                   |
-| `heartbeat`                | Agency idle timer                                                                 | `reason`, `created_at`, `scheduled_at`, timer settings, review scope, proactive review instructions      |
+| Kind                       | Source                                                                            | Required payload                                                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `message_observed`         | Session submit/create, API, bridge                                                | `source_kind`, `source_session_id`, `source_run_id`, copied `input_parts`, metadata                                        |
+| `run_output_observed`      | Successful source `session_type="conversation"` run, except `agency_handoff` runs | `source_kind`, `source_session_id`, `source_run_id`, `source_sequence_no`, `trigger_type`, `output_text`, `output_summary` |
+| `memory_session_completed` | Completed `session_type="memory"` run                                             | `memory_session_id`, `memory_run_id`, `memory_job_kind`, `output_text`, `output_summary`                                   |
+| `heartbeat`                | Agency fixed interval timer                                                       | `reason`, `created_at`, `scheduled_at`, timer interval, schedule policy, review scope, proactive review instructions       |
 
-`message_observed` priority is higher than `run_output_observed`, `run_output_observed` priority is higher than `memory_session_completed`, and `heartbeat` has the lowest priority. Fresh user-visible input reaches Agency quickly, final source-agent output closes the loop before memory synthesis arrives, and heartbeat reviews run only during quiet periods. `agency_fires` is a durable delivery record for audit, dedupe, ordering, and status inspection. The payload reaches Agency through `SessionController.submit_input()` and is delivered with the same semantics as source sessions: create a run when idle, append to a queued run, and steer a running runtime.
+`message_observed` priority is higher than `run_output_observed`, `run_output_observed` priority is higher than `memory_session_completed`, and `heartbeat` has the lowest priority. Fresh user-visible input reaches Agency quickly, final source-agent output closes the loop before memory synthesis arrives, and heartbeat reviews run on the configured fixed interval when Agency has no pending fire or active run. `agency_fires` is a durable delivery record for audit, dedupe, ordering, and status inspection. The payload reaches Agency through `SessionController.submit_input()` and is delivered with the same semantics as source sessions: create a run when idle, append to a queued run, and steer a running runtime.
 
 Fire status transitions:
 
@@ -185,13 +185,13 @@ Agency uses the copied output directly. It can inspect source turns and run trac
 
 ## Source Session Handoff Path
 
-Agency uses the `submit_to_session` tool to send a proactive nudge to a real conversation session. The tool requires an explicit `session_id` because Agency is global and observes every conversation session in the Claw instance. The tool input keeps engineering tags lightweight while the prompt body stays Agency-authored natural language:
+Agency uses the `submit_to_session` tool to send proactive context or a nudge to a real conversation session. The tool requires an explicit `session_id` because Agency is global and observes every conversation session in the Claw instance. The tool also requires an explicit `handoff_kind` so the source runtime and UI can render the right hint. The prompt body stays Agency-authored natural language:
 
 ```json
 {
   "session_id": "conversation-session-id",
   "prompt": "Agency noticed a useful cross-session signal. You may ask Alice to confirm the current default, remind the group about the release-path update, or turn Bob's commitment into a lightweight task if that helps this session move forward.",
-  "handoff_kind": "reminder",
+  "handoff_kind": "exchange",
   "handoff_tags": ["agency-reminder", "ask-person", "tell-group"],
   "metadata": {
     "fire_ids": ["agency-fire-id"],
@@ -209,7 +209,7 @@ The tool is backed by:
 POST /api/v1/agency/source-session:submit
 ```
 
-The self-call injects `agency_session_id` and `agency_run_id` from the active Agency run. The controller validates that the caller is a running `session_type="agency"` run and that the target is a `session_type="conversation"` session.
+The supported handoff kinds are `context`, `exchange`, `reminder`, `task`, `risk`, `async_result`, `decision`, and `conflict`. `exchange` moves useful context between sessions, groups, runs, memory outputs, or async results. `decision` carries decision context for alignment or confirmation. `conflict` carries conflicting context that should be reconciled before action. The self-call injects `agency_session_id` and `agency_run_id` from the active Agency run. The controller validates that the caller is a running `session_type="agency"` run and that the target is a `session_type="conversation"` session.
 
 Delivery reuses `SessionController.submit_input()`:
 
@@ -219,19 +219,19 @@ Delivery reuses `SessionController.submit_input()`:
 
 The durable handoff record lives on the target source run:
 
-- `runs.input_parts`: the Agency handoff prompt as a normal text input part with metadata `source="agency_handoff"`.
+- `runs.input_parts`: the Agency handoff prompt as a normal text input part with metadata `source="agency_handoff"`; the text is wrapped in a fixed `<system-reminder>` reference block plus an `<agency-handoff kind="...">` block.
 - `runs.trigger_type`: `agency_handoff` for newly created handoff runs.
 - `runs.metadata.agency_handoff.latest`: the latest Agency handoff provenance.
 - `runs.metadata.agency_handoff.handoffs`: accumulated provenance when multiple handoffs merge into one target run.
 - `run-store/{run_id}/message.json`: the source conversation execution replay after commit.
 
-`agency_handoff` submissions skip the Agency observation path, so Agency-to-session delivery forms a one-way proactive nudge into the target conversation session. Source conversation runtime prompts receive an `agency-handoff-context` block with the `agency-reminder` tag, handoff kind, handoff tags, and provenance, while keeping normal workspace guidance and memory injection.
+`agency_handoff` submissions skip the Agency observation path, so Agency-to-session delivery forms a one-way proactive context handoff into the target conversation session. Source conversation runtime prompts receive a compact `<agency-handoff-context>` block with the `agency-reminder` tag, handoff kind, one kind-specific `<hint>`, handoff tags, and provenance, while keeping normal workspace guidance and memory injection. The fixed `<system-reminder>` reference block tells the target source session that the message is advisory reference material and that it may stay silent when a user-facing response adds little value.
 
 ## Runtime Context
 
 Agency runs use `AGENCY_SYSTEM_PROMPT` from `ya_claw/agency/prompt.py`. The configured agency profile supplies model, model settings, model config, builtin toolsets, MCP configuration, approval policy, subagents, and workspace backend hint.
 
-The prompt uses a material-write policy. Agency writes workspace files when an episode creates durable value: a proactive session nudge, local artifact, changed intention, auditable decision, cross-session connection, or finding that should affect future behavior. Heartbeat reviews may complete with a brief no-op run output and no workspace file changes when they find no useful action, handoff, state change, or durable insight.
+The prompt uses a material-write policy. Agency writes workspace files when an episode creates durable value: a proactive session nudge, local artifact, changed intention, auditable decision, cross-session connection, context exchange, or finding that should affect future behavior. Scheduled heartbeat reviews may complete with a brief no-op run output and no workspace file changes when they find no useful action, handoff, state change, or durable insight.
 
 Agency self-client scope is the Agency session. Async subagents spawned by Agency attach to the Agency session and wake Agency on completion through the existing async-subagent parent wake behavior. Agency outbound nudges target conversation sessions through `submit_to_session`. The `submit_to_session` tool is marked Agency-only and is filtered out of non-Agency runtime tool lists.
 
@@ -289,7 +289,7 @@ Backend tests should cover:
 - singleton session creation and reuse;
 - `message_observed` fire creation and delivery;
 - `memory_session_completed` fire creation with output text and summary;
-- heartbeat due-time calculation, pending-fire suppression, and idle proactive review payload;
+- heartbeat fixed-interval due-time calculation, pending-fire suppression, and scheduled proactive review payload;
 - idle create, queued merge, and running steer via `SessionController.submit_input()`;
 - Agency proactive session nudges create, merge, and steer target conversation sessions with `trigger_type="agency_handoff"` where applicable;
 - Agency handoff submissions skip new `agency_fires` creation;

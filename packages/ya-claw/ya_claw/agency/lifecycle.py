@@ -364,23 +364,11 @@ class AgencyLifecycle:
             return None
         if await _active_agency_run(db_session, agency_session) is not None:
             return None
-        current = now or datetime.now(UTC)
-        last_activity_at = await _last_agency_activity_at(db_session, agency_session_id=agency_session.id)
-        if last_activity_at is None:
-            last_activity_at = _as_utc_aware(agency_session.created_at)
-        idle_due_at = _as_utc_aware(last_activity_at) + timedelta(
-            seconds=max(self._settings.agency_idle_after_seconds, 1)
-        )
-        last_heartbeat_at = await _last_heartbeat_at(db_session, agency_session_id=agency_session.id)
+        interval = timedelta(seconds=max(self._settings.agency_timer_interval_seconds, 1))
+        last_heartbeat_at = await _last_heartbeat_scheduled_at(db_session, agency_session_id=agency_session.id)
         if last_heartbeat_at is not None:
-            cooldown_due_at = _as_utc_aware(last_heartbeat_at) + timedelta(
-                seconds=max(self._settings.agency_cooldown_seconds, 1)
-            )
-            timer_due_at = _as_utc_aware(last_heartbeat_at) + timedelta(
-                seconds=max(self._settings.agency_timer_interval_seconds, 1)
-            )
-            return max(idle_due_at, cooldown_due_at, timer_due_at)
-        return idle_due_at if idle_due_at > current else current
+            return _as_utc_aware(last_heartbeat_at) + interval
+        return _as_utc_aware(agency_session.created_at) + interval
 
     async def dispatch_pending(self, db_session: AsyncSession) -> AgencyFireDelivery:
         agency_session = await self.ensure_agency_session(db_session)
@@ -628,43 +616,14 @@ async def _active_agency_run(db_session: AsyncSession, agency_session: SessionRe
     return None
 
 
-async def _last_agency_activity_at(db_session: AsyncSession, *, agency_session_id: str) -> datetime | None:
-    fire_result = await db_session.execute(
-        select(AgencyFireRecord.created_at)
-        .where(
-            AgencyFireRecord.agency_session_id == agency_session_id,
-            AgencyFireRecord.kind != AgencyFireKind.HEARTBEAT.value,
-        )
-        .order_by(AgencyFireRecord.created_at.desc())
-        .limit(1)
-    )
-    run_result = await db_session.execute(
-        select(RunRecord.committed_at, RunRecord.finished_at, RunRecord.created_at)
-        .where(RunRecord.session_id == agency_session_id)
-        .order_by(RunRecord.created_at.desc())
-        .limit(1)
-    )
-    candidates: list[datetime] = []
-    fire_created_at = fire_result.scalar_one_or_none()
-    if isinstance(fire_created_at, datetime):
-        candidates.append(_as_utc_aware(fire_created_at))
-    run_row = run_result.first()
-    if run_row is not None:
-        for value in run_row:
-            if isinstance(value, datetime):
-                candidates.append(_as_utc_aware(value))
-                break
-    return max(candidates) if candidates else None
-
-
-async def _last_heartbeat_at(db_session: AsyncSession, *, agency_session_id: str) -> datetime | None:
+async def _last_heartbeat_scheduled_at(db_session: AsyncSession, *, agency_session_id: str) -> datetime | None:
     result = await db_session.execute(
-        select(AgencyFireRecord.created_at)
+        select(AgencyFireRecord.scheduled_at)
         .where(
             AgencyFireRecord.agency_session_id == agency_session_id,
             AgencyFireRecord.kind == AgencyFireKind.HEARTBEAT.value,
         )
-        .order_by(AgencyFireRecord.created_at.desc())
+        .order_by(AgencyFireRecord.scheduled_at.desc())
         .limit(1)
     )
     value = result.scalar_one_or_none()
@@ -672,18 +631,17 @@ async def _last_heartbeat_at(db_session: AsyncSession, *, agency_session_id: str
 
 
 def _heartbeat_token(next_fire_at: datetime) -> str:
-    return _as_utc_aware(next_fire_at).strftime("%Y%m%d%H%M")
+    return _as_utc_aware(next_fire_at).strftime("%Y%m%d%H%M%S")
 
 
 def _heartbeat_payload(*, settings: ClawSettings, now: datetime, next_fire_at: datetime) -> dict[str, Any]:
     return {
         "source_kind": "agency_heartbeat",
-        "reason": "idle_proactive_review",
+        "reason": "scheduled_timer_review",
         "created_at": now.isoformat(),
         "scheduled_at": next_fire_at.isoformat(),
-        "idle_after_seconds": settings.agency_idle_after_seconds,
-        "cooldown_seconds": settings.agency_cooldown_seconds,
         "timer_interval_seconds": settings.agency_timer_interval_seconds,
+        "schedule_policy": "fixed_interval",
         "review_scope": {
             "agency_index": "AGENCY.md",
             "action_log": "agency/ACTION_LOG.md",
@@ -698,8 +656,9 @@ def _heartbeat_payload(*, settings: ClawSettings, now: datetime, next_fire_at: d
         "instructions": [
             "Review Agency files for stale intentions, open loops, and deferred decisions.",
             "Inspect recent source sessions or run traces only when they clarify an actionable loop.",
-            "Prefer low-risk synthesis, preparation, and cross-session connection work.",
+            "Prefer low-risk synthesis, preparation, and cross-session context exchange.",
             "Use submit_to_session when global context can help a specific conversation session answer better, coordinate people, remind a group, route work, or decide a next action.",
+            "Share context that helps the target session, and treat the handoff as advisory reference material for that session agent.",
             "Record useful findings and next trigger conditions only when they change Agency state.",
             "When no action, handoff, file update, or durable insight is useful, make no file changes and end with a brief no-op report.",
         ],

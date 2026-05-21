@@ -560,13 +560,15 @@ def test_runtime_builder_system_prompt_loads_agency_handoff_context(tmp_path: Pa
                     "agency_session_id": "agency-session",
                     "agency_run_id": "agency-run",
                     "source_session_id": "source-session",
+                    "kind": "exchange",
                 }
             }
         },
     )
 
-    assert '<agency-handoff-context source="agency_handoff" tag="agency-reminder">' in system_prompt
-    assert "proactive nudge" in system_prompt
+    assert '<agency-handoff-context source="agency_handoff" kind="exchange" tag="agency-reminder">' in system_prompt
+    assert "<hint>Use this cross-session context when it improves local judgment.</hint>" in system_prompt
+    assert '<tags>["agency-reminder"]</tags>' in system_prompt
     assert '"agency_run_id": "agency-run"' in system_prompt
     assert '<memory-md-context path="/workspace/memory/MEMORY.md">' in system_prompt
 
@@ -875,7 +877,8 @@ def test_agency_global_tools_are_available_only_for_agency_runs(tmp_path: Path) 
     submit_instruction = asyncio.run(tools[-1].get_instruction(agency_ctx))  # type: ignore[arg-type]
     assert submit_instruction is not None
     assert '<tool-instruction name="submit_to_session">' in submit_instruction
-    assert "proactive reminder or nudge" in submit_instruction
+    assert "proactive context, reminders, or nudges" in submit_instruction
+    assert "`exchange`" in submit_instruction
 
     api_tool_names = [
         getattr(tool, "name", tool.__name__)

@@ -55,6 +55,17 @@ class TriggerType(StrEnum):
     ASYNC_TASK = "async_task"
 
 
+class AgencyHandoffKind(StrEnum):
+    CONTEXT = "context"
+    EXCHANGE = "exchange"
+    REMINDER = "reminder"
+    TASK = "task"
+    RISK = "risk"
+    ASYNC_RESULT = "async_result"
+    DECISION = "decision"
+    CONFLICT = "conflict"
+
+
 class SessionType(StrEnum):
     CONVERSATION = "conversation"
     MEMORY = "memory"
@@ -449,7 +460,7 @@ class AgencySourceSessionSubmitRequest(BaseModel):
     session_id: str = Field(validation_alias=AliasChoices("session_id", "source_session_id"))
     prompt: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-    handoff_kind: str = "reminder"
+    handoff_kind: AgencyHandoffKind
     handoff_tags: list[str] = Field(default_factory=lambda: ["agency-reminder"])
     agency_session_id: str | None = None
     agency_run_id: str | None = None

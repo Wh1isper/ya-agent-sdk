@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -100,9 +101,17 @@ class AgencyDispatcher:
             except Exception as exc:
                 logger.exception("Agency dispatcher tick failed error={}", exc)
             try:
-                await asyncio.wait_for(
-                    self._stopping.wait(),
-                    timeout=max(self._settings.agency_timer_interval_seconds, 1),
-                )
+                timeout = await self._next_tick_timeout()
+                await asyncio.wait_for(self._stopping.wait(), timeout=timeout)
             except TimeoutError:
                 continue
+
+    async def _next_tick_timeout(self) -> float:
+        interval = max(self._settings.agency_timer_interval_seconds, 1)
+        lifecycle = AgencyLifecycle(settings=self._settings, runtime_state=self._runtime_state)
+        async with self._session_factory() as db_session:
+            next_fire_at = await lifecycle.next_timer_fire_at(db_session)
+        if next_fire_at is None:
+            return float(interval)
+        delay = (next_fire_at.astimezone(UTC) - datetime.now(UTC)).total_seconds()
+        return max(min(delay, float(interval)), 0.0)

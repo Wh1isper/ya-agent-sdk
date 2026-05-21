@@ -13,6 +13,7 @@ from ya_claw.controller.models import (
     AgencyConfigResponse,
     AgencyFireListResponse,
     AgencyFireSummary,
+    AgencyHandoffKind,
     AgencyRiskPolicy,
     AgencySourceSessionSubmitRequest,
     AgencySourceSessionSubmitResponse,
@@ -31,6 +32,34 @@ from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.orm.tables import AgencyFireRecord, RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.workspace.models import WorkspaceBinding, WorkspaceMountBinding
+
+AGENCY_HANDOFF_HINTS: dict[AgencyHandoffKind, str] = {
+    AgencyHandoffKind.CONTEXT: "Use this background context when it improves the next answer.",
+    AgencyHandoffKind.EXCHANGE: "Use this cross-session context when it improves local judgment.",
+    AgencyHandoffKind.REMINDER: "Use this timely nudge when it helps the current session.",
+    AgencyHandoffKind.TASK: "Consider whether this should become a task, follow-up, or owner handoff.",
+    AgencyHandoffKind.RISK: "Review this before taking a sensitive or irreversible action.",
+    AgencyHandoffKind.ASYNC_RESULT: "Integrate this completed background work when useful.",
+    AgencyHandoffKind.DECISION: "Align with this decision context or ask for confirmation.",
+    AgencyHandoffKind.CONFLICT: "Reconcile this conflicting context before acting.",
+}
+
+AGENCY_HANDOFF_SYSTEM_REMINDER_TEMPLATE = """<system-reminder>
+<agency-handoff-reference kind="{handoff_kind}">
+<hint>{hint}</hint>
+Use this as advisory reference from the global Agency session. You may stay silent when a user-facing response adds little value.
+</agency-handoff-reference>
+</system-reminder>"""
+
+
+def _agency_handoff_prompt(*, prompt: str, handoff_kind: AgencyHandoffKind) -> str:
+    hint = _xml_text_escape(AGENCY_HANDOFF_HINTS[handoff_kind])
+    reminder = AGENCY_HANDOFF_SYSTEM_REMINDER_TEMPLATE.format(handoff_kind=handoff_kind.value, hint=hint)
+    return f'{reminder}\n\n<agency-handoff kind="{handoff_kind.value}">\n{_xml_text_escape(prompt.strip())}\n</agency-handoff>'
+
+
+def _xml_text_escape(value: object) -> str:
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _normalize_handoff_tags(tags: list[str]) -> list[str]:
@@ -172,13 +201,13 @@ class AgencyController:
         if source_session.session_type != "conversation":
             raise HTTPException(status_code=422, detail="session_id must reference a conversation session.")
 
-        handoff_kind = request.handoff_kind.strip() or "reminder"
+        handoff_kind = request.handoff_kind
         handoff_tags = _normalize_handoff_tags(request.handoff_tags)
         handoff = {
             "agency_session_id": agency_session.id,
             "agency_run_id": agency_run.id,
             "source_session_id": source_session.id,
-            "kind": handoff_kind,
+            "kind": handoff_kind.value,
             "tags": handoff_tags,
             "metadata": dict(request.metadata),
         }
@@ -192,10 +221,10 @@ class AgencyController:
                 input_parts=[
                     TextPart(
                         type="text",
-                        text=request.prompt,
+                        text=_agency_handoff_prompt(prompt=request.prompt, handoff_kind=handoff_kind),
                         metadata={
                             "source": "agency_handoff",
-                            "handoff_kind": handoff_kind,
+                            "handoff_kind": handoff_kind.value,
                             "handoff_tags": handoff_tags,
                             "agency_session_id": agency_session.id,
                             "agency_run_id": agency_run.id,

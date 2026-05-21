@@ -283,6 +283,7 @@ def test_agency_source_session_submit_api_rejects_completed_agency_run(monkeypat
                 "source_session_id": source_session_id,
                 "prompt": "Please review Agency findings and update the thread.",
                 "metadata": {"fire_ids": ["fire-1"]},
+                "handoff_kind": "reminder",
                 "agency_session_id": agency_session_id,
                 "agency_run_id": agency_run_id,
             },

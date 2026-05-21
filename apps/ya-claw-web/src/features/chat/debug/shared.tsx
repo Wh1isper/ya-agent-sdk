@@ -56,6 +56,11 @@ export function Card({
 export function InputPartView({ part }: { part: InputPart }) {
   if (part.type === 'text') {
     const isAgencyHandoff = part.metadata?.source === 'agency_handoff'
+    const handoffKind =
+      typeof part.metadata?.handoff_kind === 'string'
+        ? part.metadata.handoff_kind
+        : 'reminder'
+    const handoffHint = getAgencyHandoffHint(handoffKind)
     return (
       <div
         className={cn(
@@ -66,9 +71,12 @@ export function InputPartView({ part }: { part: InputPart }) {
         )}
       >
         {isAgencyHandoff ? (
-          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700">
-            <BrainCircuit className="h-3.5 w-3.5" />
-            Agency handoff
+          <div className="mb-2 rounded-lg border border-violet-200 bg-white/70 px-2.5 py-2 text-xs text-violet-800">
+            <div className="mb-1 flex items-center gap-2 font-semibold uppercase tracking-wide">
+              <BrainCircuit className="h-3.5 w-3.5" />
+              Agency {handoffKind.replace(/_/g, ' ')}
+            </div>
+            <div className="leading-5 text-violet-700">{handoffHint}</div>
           </div>
         ) : null}
         {part.text}
@@ -106,6 +114,20 @@ function recordValue(value: unknown): Record<string, unknown> | null {
 
 function stringValue(value: unknown) {
   return typeof value === 'string' && value.trim() ? value : null
+}
+
+function getAgencyHandoffHint(kind: string) {
+  const hints: Record<string, string> = {
+    context: 'Use this background context when it improves the next answer.',
+    exchange: 'Use this cross-session context when it improves local judgment.',
+    reminder: 'Use this timely nudge when it helps the current session.',
+    task: 'Consider whether this should become a task, follow-up, or owner handoff.',
+    risk: 'Review this before taking a sensitive or irreversible action.',
+    async_result: 'Integrate this completed background work when useful.',
+    decision: 'Align with this decision context or ask for confirmation.',
+    conflict: 'Reconcile this conflicting context before acting.',
+  }
+  return hints[kind] ?? hints.reminder
 }
 
 export function CodeBlock({ label, value }: { label: string; value: string }) {

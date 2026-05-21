@@ -111,7 +111,7 @@ class ClawSelfClient:
         session_id: str,
         prompt: str,
         metadata: dict[str, Any] | None,
-        handoff_kind: str = "reminder",
+        handoff_kind: str,
         handoff_tags: list[str] | None = None,
     ) -> dict[str, Any]:
         return await self._send_json(
