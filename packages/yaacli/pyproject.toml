@@ -44,7 +44,7 @@ dependencies = [
     "pillow>=10.0.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
-    "pydantic-ai>=1.98.0",
+    "pydantic-ai>=1.100.0,<2",
     "pyobjc-framework-Cocoa>=10.0; platform_system == 'Darwin'",
     "python-dotenv>=1.0.0",
     "ya-agent-environment=={{ version }}",

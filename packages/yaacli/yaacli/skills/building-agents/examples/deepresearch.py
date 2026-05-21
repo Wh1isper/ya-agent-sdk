@@ -47,6 +47,8 @@ from pydantic_ai.messages import (
     FunctionToolResultEvent,
     ModelMessage,
     ModelMessagesTypeAdapter,
+    OutputToolCallEvent,
+    OutputToolResultEvent,
     PartDeltaEvent,
     TextPartDelta,
 )
@@ -185,20 +187,20 @@ def truncate(text: str, max_length: int = MAX_TOOL_CONTENT_LENGTH) -> str:
     return text[: max_length - 3] + "..."
 
 
-def format_tool_call(event: FunctionToolCallEvent) -> str:
+def format_tool_call(event: FunctionToolCallEvent | OutputToolCallEvent) -> str:
     """Format a tool call event for display."""
     tool_name = event.part.tool_name
     args_str = json.dumps(event.part.args, ensure_ascii=False) if event.part.args else "{}"
     return f"[ToolCall] {tool_name}({truncate(args_str)})"
 
 
-def format_tool_result(event: FunctionToolResultEvent) -> str:
+def format_tool_result(event: FunctionToolResultEvent | OutputToolResultEvent) -> str:
     """Format a tool result event for display."""
-    result = event.result
-    tool_name = getattr(result, "tool_name", "unknown")
-    content = event.content
+    part = event.part
+    tool_name = getattr(part, "tool_name", "unknown")
+    content = event.content if isinstance(event, FunctionToolResultEvent) else None
     if content is None:
-        content = getattr(result, "content", "")
+        content = getattr(part, "content", "")
     content_str = str(content) if content else ""
     return f"[ToolResult] {tool_name}: {truncate(content_str)}"
 
@@ -212,10 +214,10 @@ def print_stream_event(event: StreamEvent) -> None:
         print(message_event.delta.content_delta, end="", flush=True)
     if isinstance(message_event, PartEndEvent) and isinstance(message_event.part, TextPart):
         print()
-    elif isinstance(message_event, FunctionToolCallEvent):
+    elif isinstance(message_event, FunctionToolCallEvent | OutputToolCallEvent):
         print(format_tool_call(message_event))
         print()
-    elif isinstance(message_event, FunctionToolResultEvent):
+    elif isinstance(message_event, FunctionToolResultEvent | OutputToolResultEvent):
         print(format_tool_result(message_event))
         print()
 
@@ -288,7 +290,7 @@ async def main() -> None:
 
     # Create and run the agent
     runtime = create_agent(
-        model="gemini@google-vertex:gemini-3-pro-preview",
+        model="gemini@google-cloud:gemini-3-pro-preview",
         model_settings=cast(ModelSettings, GEMINI_THINKING_LEVEL_HIGH),
         system_prompt=system_prompt,
         tools=[

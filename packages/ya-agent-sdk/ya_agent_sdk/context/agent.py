@@ -83,6 +83,7 @@ from pydantic_ai import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelSettings,
+    OutputToolResultEvent,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
@@ -424,7 +425,7 @@ class ToolIdWrapper:
         match event:
             case FunctionToolCallEvent():
                 event.part.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
-            case FunctionToolResultEvent():
+            case FunctionToolResultEvent() | OutputToolResultEvent():
                 event.part.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
             case PartStartEvent() | PartEndEvent():
                 if isinstance(
@@ -1115,7 +1116,7 @@ class AgentContext(BaseModel):
 
     When a server name is in this list, all tools from that server will
     trigger the HITL approval flow before execution. The server name
-    corresponds to the tool_prefix used when creating the MCPServer.
+    corresponds to the tool_prefix used when creating the MCP toolset.
 
     Example:
         ctx.need_user_approve_mcps = ["filesystem", "github"]

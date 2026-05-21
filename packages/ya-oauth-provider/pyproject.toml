@@ -43,7 +43,7 @@ bump = true
 dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.12.0",
-    "pydantic-ai>=1.98.0",
+    "pydantic-ai>=1.100.0,<2",
     "tenacity>=9.0.0",
     "ya-oauth=={{ version }}",
 ]

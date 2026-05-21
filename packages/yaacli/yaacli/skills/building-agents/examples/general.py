@@ -51,6 +51,8 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelResponse,
+    OutputToolCallEvent,
+    OutputToolResultEvent,
     PartDeltaEvent,
     TextPartDelta,
     ToolCallPart,
@@ -233,22 +235,22 @@ def truncate(text: str, max_length: int = MAX_TOOL_CONTENT_LENGTH) -> str:
     return text[:max_length] + "..."
 
 
-def format_tool_call(event: FunctionToolCallEvent) -> str:
+def format_tool_call(event: FunctionToolCallEvent | OutputToolCallEvent) -> str:
     """Format a tool call event for display."""
     tool_name = event.part.tool_name
     args_str = json.dumps(event.part.args, ensure_ascii=False) if event.part.args else "{}"
     return f"[ToolCall] {tool_name}({truncate(args_str)})"
 
 
-def format_tool_result(event: FunctionToolResultEvent) -> str:
+def format_tool_result(event: FunctionToolResultEvent | OutputToolResultEvent) -> str:
     """Format a tool result event for display."""
-    result = event.result
+    part = event.part
     # Get tool name from the result part
-    tool_name = getattr(result, "tool_name", "unknown")
-    # Get content - prefer event.content, fallback to result.content
-    content = event.content
+    tool_name = getattr(part, "tool_name", "unknown")
+    # Get content - prefer event.content for function tools, fallback to part.content
+    content = event.content if isinstance(event, FunctionToolResultEvent) else None
     if content is None:
-        content = getattr(result, "content", "")
+        content = getattr(part, "content", "")
     content_str = str(content) if content else ""
     return f"[ToolResult] {tool_name}: {truncate(content_str)}"
 
@@ -272,11 +274,11 @@ def print_stream_event(event: StreamEvent) -> None:
     if isinstance(message_event, PartEndEvent) and isinstance(message_event.part, TextPart):
         # Text streaming - print directly without newline
         print()
-    elif isinstance(message_event, FunctionToolCallEvent):
+    elif isinstance(message_event, FunctionToolCallEvent | OutputToolCallEvent):
         # Tool call - print on new line
         print(format_tool_call(message_event))
         print()
-    elif isinstance(message_event, FunctionToolResultEvent):
+    elif isinstance(message_event, FunctionToolResultEvent | OutputToolResultEvent):
         # Tool result - print on new line
         print(format_tool_result(message_event))
         print()

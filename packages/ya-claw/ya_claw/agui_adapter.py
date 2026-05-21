@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from pydantic_ai import (
     FinalResultEvent,
     FunctionToolResultEvent,
+    OutputToolResultEvent,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
@@ -224,7 +225,7 @@ class AguiEventAdapter:
             return self._adapt_part_delta(stream_event, cursor)
         if isinstance(event, PartEndEvent):
             return self._adapt_part_end(stream_event, cursor)
-        if isinstance(event, FunctionToolResultEvent):
+        if isinstance(event, FunctionToolResultEvent | OutputToolResultEvent):
             return self._adapt_function_tool_result(stream_event)
         if isinstance(event, FinalResultEvent):
             return [
@@ -435,17 +436,19 @@ class AguiEventAdapter:
         return [self._custom_agent_event("part_end", stream_event=stream_event, payload=_serialize_value(event))]
 
     def _adapt_function_tool_result(self, stream_event: StreamEvent) -> list[dict[str, Any]]:
-        event = cast(FunctionToolResultEvent, stream_event.event)
-        if isinstance(event.result, ToolReturnPart):
-            return [self._tool_result_event(event.result, content=event.content)]
-        if isinstance(event.result, RetryPromptPart):
+        event = cast(FunctionToolResultEvent | OutputToolResultEvent, stream_event.event)
+        part = event.part
+        content = event.content if isinstance(event, FunctionToolResultEvent) else None
+        if isinstance(part, ToolReturnPart):
+            return [self._tool_result_event(part, content=content)]
+        if isinstance(part, RetryPromptPart):
             return [
                 self._custom_agent_event(
                     event_name="retry_prompt_part",
                     stream_event=stream_event,
                     payload={
-                        "result": _serialize_value(event.result),
-                        "content": _serialize_value(event.content),
+                        "part": _serialize_value(part),
+                        "content": _serialize_value(content),
                     },
                 )
             ]

@@ -7,7 +7,6 @@ This module keeps the old import path stable for internal and external users.
 from ya_agent_sdk.mcp import (
     MCPConfig,
     MCPServerConfig,
-    QuietMCPServerStdio,
     build_mcp_server,
     build_mcp_servers,
     create_mcp_approval_hook,
@@ -20,7 +19,6 @@ from ya_agent_sdk.mcp import (
 __all__ = [
     "MCPConfig",
     "MCPServerConfig",
-    "QuietMCPServerStdio",
     "build_mcp_server",
     "build_mcp_servers",
     "create_mcp_approval_hook",

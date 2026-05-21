@@ -143,7 +143,14 @@ def _build_gateway_http_client(
     extra_headers: dict[str, str] | None,
 ) -> httpx.AsyncClient:
     # Google Cloud and Bedrock gateway providers need extra headers through the shared http_client.
-    needs_extra_headers_patch = provider_name in ("google-vertex", "google-gla", "bedrock", "converse")
+    needs_extra_headers_patch = provider_name in (
+        "google-cloud",
+        "google",
+        "google-vertex",
+        "google-gla",
+        "bedrock",
+        "converse",
+    )
 
     if extra_headers and needs_extra_headers_patch:
         http_client = create_async_http_client(extra_headers=extra_headers)
@@ -189,7 +196,7 @@ def _build_gateway_provider(
             base_url=base_url,
             region_name=gateway_name,  # Fake region name to avoid NoRegionError
         )
-    if provider_name in ("google-vertex", "google-gla"):
+    if provider_name in ("google-cloud", "google", "google-vertex", "google-gla"):
         from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 
         return GoogleCloudProvider(api_key=api_key, base_url=base_url, http_client=http_client)
@@ -211,10 +218,10 @@ def make_gateway_provider(
 
     Usage:
         # With extra headers for sticky routing
-        model = infer_model("google-gla:...", extra_headers={"x-session-id": session_id})
+        model = infer_model("google-cloud:...", extra_headers={"x-session-id": session_id})
 
         # Without extra headers
-        model = infer_model("google-gla:...")
+        model = infer_model("google-cloud:...")
     """
     gateway_prefix = gateway_name.upper()
     api_key_env_var = f"{gateway_prefix}_API_KEY"

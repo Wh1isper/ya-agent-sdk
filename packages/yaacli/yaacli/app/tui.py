@@ -62,6 +62,8 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessagesTypeAdapter,
+    OutputToolCallEvent,
+    OutputToolResultEvent,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
@@ -2127,7 +2129,7 @@ class TUIApp:
             elif isinstance(message_event.part, ThinkingPart):
                 self._finalize_streaming_thinking()
 
-        elif isinstance(message_event, FunctionToolCallEvent):
+        elif isinstance(message_event, FunctionToolCallEvent | OutputToolCallEvent):
             # Finalize any streaming text before tool call
             self._finalize_streaming_text()
             self._finalize_streaming_thinking()
@@ -2143,7 +2145,7 @@ class TUIApp:
             rendered = self._event_renderer.render_tool_call_start(tool_name, tool_call_id)
             self._append_output(rendered.rstrip())
 
-        elif isinstance(message_event, FunctionToolResultEvent):
+        elif isinstance(message_event, FunctionToolResultEvent | OutputToolResultEvent):
             tool_call_id = message_event.tool_call_id
             if tool_call_id in self._tool_messages:
                 tool_msg = self._tool_messages[tool_call_id]
@@ -2338,19 +2340,19 @@ class TUIApp:
         self._agent_task = asyncio.create_task(self._run_agent(text, attachments))
         self._agent_task.add_done_callback(self._on_agent_task_done)
 
-    def _extract_tool_result(self, event: FunctionToolResultEvent) -> str:
+    def _extract_tool_result(self, event: FunctionToolResultEvent | OutputToolResultEvent) -> str:
         """Extract result content from tool result event."""
         try:
-            result = event.result
-            if hasattr(result, "content"):
-                content = result.content
+            part = event.part
+            if hasattr(part, "content"):
+                content = part.content
                 if isinstance(content, str):
                     return content
                 rv = getattr(content, "return_value", None)
                 if rv is not None:
                     return str(rv)
                 return str(content)
-            return str(result)
+            return str(part)
         except Exception:
             return "<result>"
 

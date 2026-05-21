@@ -27,18 +27,17 @@ See official docs: [pydantic-ai Models](https://ai.pydantic.dev/models/)
 
 **Common formats:**
 
-| Provider         | Format                                             | Example                                |
-| ---------------- | -------------------------------------------------- | -------------------------------------- |
-| OpenAI           | `openai-chat:<model>` / `openai-responses:<model>` | `openai-chat:gpt-4o`                   |
-| Anthropic        | `anthropic:<model>`                                | `anthropic:claude-3-5-sonnet-20241022` |
-| Google           | `gemini:<model>`                                   | `gemini:gemini-1.5-pro`                |
-| Google           | `google-gla:<model>`                               | `google-gla:gemini-2.5-pro`            |
-| Google Vertex AI | `google-vertex:<model>`                            | `google-vertex:gemini-2.5-pro`         |
-| Groq             | `groq:<model>`                                     | `groq:llama-3.1-70b-versatile`         |
+| Provider     | Format                                             | Example                                |
+| ------------ | -------------------------------------------------- | -------------------------------------- |
+| OpenAI       | `openai-chat:<model>` / `openai-responses:<model>` | `openai-chat:gpt-4o`                   |
+| Anthropic    | `anthropic:<model>`                                | `anthropic:claude-3-5-sonnet-20241022` |
+| Google       | `google:<model>`                                   | `google:gemini-2.5-pro`                |
+| Google Cloud | `google-cloud:<model>`                             | `google-cloud:gemini-2.5-pro`          |
+| Groq         | `groq:<model>`                                     | `groq:llama-3.1-70b-versatile`         |
 
 ## Google Vertex AI Configuration
 
-Google Vertex AI requires additional configuration via environment variables. pydantic-ai automatically reads these variables when using `google-vertex:` prefix.
+Google Cloud Vertex AI requires additional configuration via environment variables. pydantic-ai automatically reads these variables when using the `google-cloud:` prefix.
 
 ### Environment Variables
 
@@ -58,7 +57,7 @@ export GOOGLE_API_KEY=your-api-key
 ```
 
 ```python
-model = infer_model("google-vertex:gemini-2.5-pro")
+model = infer_model("google-cloud:gemini-2.5-pro")
 ```
 
 **Method 2: Application Default Credentials (ADC)**
@@ -73,7 +72,7 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
 ```python
-model = infer_model("google-vertex:gemini-2.5-pro")
+model = infer_model("google-cloud:gemini-2.5-pro")
 ```
 
 **Method 3: Service Account**
@@ -85,7 +84,7 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
 ```python
-model = infer_model("google-vertex:gemini-2.5-pro")
+model = infer_model("google-cloud:gemini-2.5-pro")
 ```
 
 ### Available Regions
