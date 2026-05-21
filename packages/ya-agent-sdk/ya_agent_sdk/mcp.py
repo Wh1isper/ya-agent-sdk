@@ -22,6 +22,7 @@ from fastmcp.client.transports import StdioTransport
 from pydantic import BaseModel, Field
 from pydantic_ai import ApprovalRequired, RunContext
 from pydantic_ai.mcp import MCPToolset, ProcessToolCallback
+from pydantic_ai.toolsets import AbstractToolset
 
 from ya_agent_sdk._logger import get_logger
 
@@ -131,7 +132,7 @@ def build_mcp_server(
     name: str,
     config: MCPServerConfig,
     need_approval: bool = False,
-) -> MCPToolset | None:
+) -> AbstractToolset[Any] | None:
     """Build a single MCP toolset instance from configuration."""
 
     process_tool_call = create_mcp_approval_hook(name) if need_approval else None
@@ -169,10 +170,10 @@ def build_mcp_server(
 def build_mcp_servers(
     mcp_config: MCPConfig,
     need_approval_mcps: list[str] | None = None,
-) -> list[MCPToolset]:
+) -> list[AbstractToolset[Any]]:
     """Build MCP toolset instances from MCPConfig."""
 
-    servers: list[MCPToolset] = []
+    servers: list[AbstractToolset[Any]] = []
     approval_names = _normalize_namespace_names(need_approval_mcps)
 
     for name, config in mcp_config.servers.items():
