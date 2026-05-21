@@ -308,7 +308,6 @@ class AsyncTaskDetail(AsyncTaskSummary):
     subagent_name: str
     wake_policy: AsyncTaskWakePolicy | str = AsyncTaskWakePolicy.STEER_OR_RUN
     result_run_id: str | None = None
-    result_summary: str | None = None
     error_message: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -317,7 +316,6 @@ class AsyncTaskDetail(AsyncTaskSummary):
     child_session: dict[str, Any] | None = None
     latest_run: dict[str, Any] | None = None
     output_text: str | None = None
-    output_summary: str | None = None
     trace_ref: dict[str, Any] | None = None
     delivery: Literal["submitted", "existing_active", "resumed", "recorded", "steered", "cancelled", "idle"] | None = (
         None
@@ -345,7 +343,6 @@ class RunSummary(BaseModel):
     input_preview: str | None = None
     input_parts: list[InputPart] | None = None
     output_text: str | None = None
-    output_summary: str | None = None
     error_message: str | None = None
     termination_reason: TerminationReason | None = None
     created_at: datetime
@@ -370,7 +367,6 @@ class SessionTurn(BaseModel):
     input_preview: str | None = None
     input_parts: list[InputPart] = Field(default_factory=list)
     output_text: str | None = None
-    output_summary: str | None = None
     created_at: datetime
     committed_at: datetime | None = None
 
@@ -722,7 +718,6 @@ def run_summary_from_record(
         input_preview=extract_input_preview(input_parts),
         input_parts=input_parts if include_input_parts else None,
         output_text=record.output_text,
-        output_summary=record.output_summary,
         error_message=record.error_message,
         termination_reason=termination_reason,
         created_at=record.created_at,
@@ -753,7 +748,6 @@ def session_turn_from_record(record: RunRecord) -> SessionTurn:
         input_preview=extract_input_preview(input_parts),
         input_parts=input_parts,
         output_text=record.output_text,
-        output_summary=record.output_summary,
         created_at=record.created_at,
         committed_at=record.committed_at,
     )

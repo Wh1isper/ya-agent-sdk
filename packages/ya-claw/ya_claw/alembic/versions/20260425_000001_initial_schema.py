@@ -68,7 +68,6 @@ def upgrade() -> None:
         sa.Column("input_parts", sa.JSON(), nullable=False),
         sa.Column("metadata", sa.JSON(), nullable=False),
         sa.Column("output_text", sa.Text(), nullable=True),
-        sa.Column("output_summary", sa.Text(), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("termination_reason", sa.String(length=64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),

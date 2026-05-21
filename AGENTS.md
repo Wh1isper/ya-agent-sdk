@@ -93,13 +93,13 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - committed continuity blobs live in `run-store/{run_id}/state.json` and `run-store/{run_id}/message.json`
 - `message.json` stores the compacted replay list of AGUI-aligned events as a top-level JSON array
 - session GET exposes paginated runs with optional raw `input_parts` and compacted message replay lists, returns optional top-level committed state/message from `head_success_run_id`, and derives session status from the latest run
-- session turns API returns successful completed turns with raw `input_parts`, `output_text`, and `output_summary`
+- session turns API returns successful completed turns with raw `input_parts` and `output_text`
 - run GET returns `session + run + optional state + optional message`; run trace API returns compact tool-call/tool-response projections from `message.json`
 - built-in `session` toolset lets agents inspect only their current session via internal HTTP client tools `list_session_turns` and `get_run_trace`; session ID and bearer token stay inside the client resource
 - runtime instance heartbeat lives in `runtime_instances`; run records carry claim ownership through `claimed_by` and `claimed_at`
 - rerun can explicitly target failed or interrupted runs through `restore_from_run_id`
 - input payloads use `input_parts` rather than a single `input_text`; run records preserve `input_parts` as original JSON-compatible payloads for replay/UI reconstruction
-- successful run records store final `output_text` directly in the database and keep `output_summary` for compact displays
+- successful run records store final `output_text` directly in the database for replay and UI rendering
 - foundational execution modules live under `ya_claw/execution/`
 - workspace provider modules live under `ya_claw/workspace/`
 - `LocalWorkspaceProvider` uses `LocalFileOperator` plus `LocalShell` over the real workspace path

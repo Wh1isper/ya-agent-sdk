@@ -6,8 +6,8 @@ YA Claw supports Agency as one global internal session. One Claw database owns o
 
 - Maintain exactly one internal `session_type="agency"` session per Claw instance.
 - Copy every user/API/bridge conversation message into Agency with source session and run provenance.
-- Copy every successful conversation run output into Agency with `output_text` and `output_summary`.
-- Copy every completed memory session into Agency with memory run `output_text` and `output_summary`.
+- Copy every successful conversation run output into Agency with `output_text`.
+- Copy every completed memory session into Agency with memory run `output_text`.
 - Create low-priority heartbeat fires when Agency has been idle long enough for proactive review.
 - Use one unified session submit path for normal sessions and Agency.
 - Let Agency use session-backed async subagents from its own singleton session.
@@ -103,12 +103,12 @@ The unique index on `(session_type, source_session_id)` enforces one singleton a
 
 ## Fire Kinds
 
-| Kind                       | Source                                                                            | Required payload                                                                                                           |
-| -------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `message_observed`         | Session submit/create, API, bridge                                                | `source_kind`, `source_session_id`, `source_run_id`, copied `input_parts`, metadata                                        |
-| `run_output_observed`      | Successful source `session_type="conversation"` run, except `agency_handoff` runs | `source_kind`, `source_session_id`, `source_run_id`, `source_sequence_no`, `trigger_type`, `output_text`, `output_summary` |
-| `memory_session_completed` | Completed `session_type="memory"` run                                             | `memory_session_id`, `memory_run_id`, `memory_job_kind`, `output_text`, `output_summary`                                   |
-| `heartbeat`                | Agency idle timer                                                                 | `reason`, `created_at`, `scheduled_at`, timer settings, review scope, proactive review instructions                        |
+| Kind                       | Source                                                                            | Required payload                                                                                         |
+| -------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `message_observed`         | Session submit/create, API, bridge                                                | `source_kind`, `source_session_id`, `source_run_id`, copied `input_parts`, metadata                      |
+| `run_output_observed`      | Successful source `session_type="conversation"` run, except `agency_handoff` runs | `source_kind`, `source_session_id`, `source_run_id`, `source_sequence_no`, `trigger_type`, `output_text` |
+| `memory_session_completed` | Completed `session_type="memory"` run                                             | `memory_session_id`, `memory_run_id`, `memory_job_kind`, `output_text`                                   |
+| `heartbeat`                | Agency idle timer                                                                 | `reason`, `created_at`, `scheduled_at`, timer settings, review scope, proactive review instructions      |
 
 `message_observed` priority is higher than `run_output_observed`, `run_output_observed` priority is higher than `memory_session_completed`, and `heartbeat` has the lowest priority. Fresh user-visible input reaches Agency quickly, final source-agent output closes the loop before memory synthesis arrives, and heartbeat reviews run only during quiet periods. `agency_fires` is a durable delivery record for audit, dedupe, ordering, and status inspection. The payload reaches Agency through `SessionController.submit_input()` and is delivered with the same semantics as source sessions: create a run when idle, append to a queued run, and steer a running runtime.
 
@@ -177,8 +177,7 @@ When a memory run completes, `MemoryLifecycle.on_memory_run_committed()` updates
   "source_run_ids": ["source-run-id"],
   "source_sequence_start": 1,
   "source_sequence_end": 3,
-  "output_text": "full memory agent output",
-  "output_summary": "compact memory result summary"
+  "output_text": "full memory agent output"
 }
 ```
 

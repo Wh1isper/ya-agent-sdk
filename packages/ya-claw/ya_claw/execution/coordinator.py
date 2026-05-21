@@ -83,7 +83,6 @@ class ExecutionBuffers:
     latest_message_payload: dict[str, Any] | None = None
     terminal_event: dict[str, Any] | None = None
     output_text: str | None = None
-    output_summary: str | None = None
     claw_metadata: dict[str, Any] = field(default_factory=dict)
     success_committed: bool = False
     terminal_event_emitted: bool = False
@@ -468,7 +467,6 @@ class RunCoordinator:
                 fail_run(session_record, run_record)
                 run_record.error_message = self._stringify_error(exc)
                 run_record.output_text = buffers.output_text
-                run_record.output_summary = buffers.output_summary
                 await db_session.commit()
                 await db_session.refresh(run_record)
                 async_task_controller = AsyncTaskController()
@@ -564,13 +562,12 @@ class RunCoordinator:
             }
             complete_run(session_record, run_record)
             run_record.output_text = buffers.output_text
-            run_record.output_summary = buffers.output_summary
             agui_adapter = AguiEventAdapter(session_id=session_record.id, run_id=run_id)
             buffers.terminal_event = agui_adapter.build_run_finished_event(
                 result={
                     "termination_reason": run_record.termination_reason,
                     "committed_at": run_record.committed_at.isoformat() if run_record.committed_at else None,
-                    "output_summary": run_record.output_summary,
+                    "output_text": run_record.output_text,
                 }
             )
             commit_run_artifacts(
@@ -661,7 +658,6 @@ class RunCoordinator:
                         trigger_type=run_record.trigger_type,
                         source_kind=run_record.trigger_type,
                         output_text=run_record.output_text,
-                        output_summary=run_record.output_summary,
                         metadata={
                             "profile_name": run_record.profile_name,
                             "termination_reason": run_record.termination_reason,
@@ -669,10 +665,10 @@ class RunCoordinator:
                         },
                     )
             logger.info(
-                "Run completed run_id={} session_id={} output_summary_chars={}",
+                "Run completed run_id={} session_id={} output_text_chars={}",
                 run_id,
                 session_id,
-                len(run_record.output_summary or ""),
+                len(run_record.output_text or ""),
             )
 
     async def _build_steering_prompt_from_batches(
@@ -826,7 +822,6 @@ class RunCoordinator:
                                     if streamer.run is not None:
                                         output = streamer.run.result.output if streamer.run.result else None
                                         buffers.output_text = self._stringify_output(output)
-                                        buffers.output_summary = self._summarize_output(output)
                                         if isinstance(
                                             stream_event.event,
                                             (ModelRequestStartEvent, ModelRequestCompleteEvent),
@@ -880,14 +875,13 @@ class RunCoordinator:
                                 continue
 
                             buffers.output_text = self._stringify_output(output)
-                            buffers.output_summary = self._summarize_output(output)
                             logger.debug(
-                                "Agent run artifacts prepared run_id={} message_count={} output_summary_chars={}",
+                                "Agent run artifacts prepared run_id={} message_count={} output_text_chars={}",
                                 run_id,
                                 buffers.latest_message_payload.get("message_count")
                                 if isinstance(buffers.latest_message_payload, dict)
                                 else None,
-                                len(buffers.output_summary or ""),
+                                len(buffers.output_text or ""),
                             )
                             async with self._runtime_state.session_lock(session_id):
                                 pending_steering = self._runtime_state.consume_steering_inputs(run_id)
@@ -1535,12 +1529,6 @@ class RunCoordinator:
             return value or None
         return str(output)
 
-    def _summarize_output(self, output: object) -> str | None:
-        value = self._stringify_output(output)
-        if value is None:
-            return None
-        return value[:4000]
-
     def _stringify_error(self, exc: Exception) -> str:
         try:
             value = str(exc)
@@ -1734,7 +1722,6 @@ async def _publish_run_status_notification(
         "profile_name": run_record.profile_name,
         "termination_reason": run_record.termination_reason,
         "error_message": run_record.error_message,
-        "output_summary": run_record.output_summary,
         "session_status": run_record.status,
         "session_status_reason": session_status_reason,
         "session_status_detail": session_status_detail,

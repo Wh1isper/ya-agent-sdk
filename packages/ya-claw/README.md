@@ -78,9 +78,9 @@ This section is the maintainer index for implementation details that affect code
 - Committed continuity blobs live in `run-store/{run_id}/state.json` and `run-store/{run_id}/message.json`.
 - `message.json` stores the compacted replay list of AGUI-aligned events as a top-level JSON array.
 - Input payloads use `input_parts`; run records preserve `input_parts` as original JSON-compatible payloads for replay and UI reconstruction.
-- Successful run records store final `output_text` directly in the database and keep `output_summary` for compact displays.
+- Successful run records store final `output_text` directly in the database.
 - Session GET exposes paginated runs with optional raw `input_parts` and compacted message replay lists, returns optional top-level committed state/message from `head_success_run_id`, and derives session status from the latest run.
-- Session turns API returns successful completed turns with raw `input_parts`, `output_text`, and `output_summary`.
+- Session turns API returns successful completed turns with raw `input_parts`, `output_text`,.
 - Run GET returns `session + run + optional state + optional message`.
 - Run trace API returns compact tool-call/tool-response projections from `message.json`.
 - Rerun can explicitly target failed or interrupted runs through `restore_from_run_id`.

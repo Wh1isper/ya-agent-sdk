@@ -128,7 +128,6 @@ async def test_run_output_observed_fire_carries_output(
         source_sequence_no=7,
         trigger_type=TriggerType.API.value,
         output_text="source output text",
-        output_summary="source summary",
         source_kind=TriggerType.API.value,
         metadata={"profile_name": "general"},
         dispatch=False,
@@ -144,7 +143,6 @@ async def test_run_output_observed_fire_carries_output(
     assert fire.payload["source_sequence_no"] == 7
     assert fire.payload["trigger_type"] == TriggerType.API.value
     assert fire.payload["output_text"] == "source output text"
-    assert fire.payload["output_summary"] == "source summary"
     assert fire.payload["metadata"] == {"profile_name": "general"}
 
 
@@ -163,7 +161,6 @@ async def test_run_output_observed_skips_empty_output(
         source_sequence_no=1,
         trigger_type=TriggerType.API.value,
         output_text=None,
-        output_summary=None,
         dispatch=False,
     )
 
@@ -185,7 +182,6 @@ async def test_memory_session_completed_fire_carries_output(
         memory_run_id="memory-run-1",
         memory_job_kind="extract",
         output_text="memory output text",
-        output_summary="memory summary",
         payload={"source_run_ids": ["run-1"]},
         dispatch=False,
     )
@@ -200,7 +196,6 @@ async def test_memory_session_completed_fire_carries_output(
     assert fire.payload["memory_session_id"] == "memory-session-1"
     assert fire.payload["memory_run_id"] == "memory-run-1"
     assert fire.payload["output_text"] == "memory output text"
-    assert fire.payload["output_summary"] == "memory summary"
 
 
 async def test_pending_fires_batch_into_new_agency_run(
@@ -235,7 +230,6 @@ async def test_pending_fires_batch_into_new_agency_run(
         memory_run_id="memory-run-1",
         memory_job_kind="summary",
         output_text="summary output",
-        output_summary="summary",
         dispatch=False,
     )
     delivery = await lifecycle.dispatch_pending(db_session)
@@ -269,7 +263,6 @@ async def test_pending_fires_prioritize_message_output_then_memory(
         memory_run_id="memory-run-1",
         memory_job_kind="summary",
         output_text="memory output",
-        output_summary="memory summary",
         dispatch=False,
     )
     await lifecycle.observe_run_output(
@@ -279,7 +272,6 @@ async def test_pending_fires_prioritize_message_output_then_memory(
         source_sequence_no=1,
         trigger_type=TriggerType.API.value,
         output_text="source output",
-        output_summary="source summary",
         dispatch=False,
     )
     await lifecycle.observe_message(

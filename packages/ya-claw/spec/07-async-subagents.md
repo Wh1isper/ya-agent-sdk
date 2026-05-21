@@ -78,7 +78,6 @@ Fields:
 | `wake_policy`       | string32          | `steer_or_run`, `record_only`                           |
 | `input_parts`       | JSON              | initial task input                                      |
 | `result_run_id`     | string32 nullable | completed child run that produced the wake result       |
-| `result_summary`    | text nullable     | compact child output summary                            |
 | `error_message`     | text nullable     | terminal error summary                                  |
 | `metadata`          | JSON              | source context, profile info, UI hints                  |
 | `created_at`        | datetime          | creation time                                           |
@@ -261,7 +260,6 @@ Completion wake input:
     "subagent_name": "explorer",
     "name": "repo-map",
     "status": "completed",
-    "output_summary": "...",
     "result_available": true
   }
 }

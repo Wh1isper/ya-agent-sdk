@@ -78,7 +78,6 @@ Suggested run fields:
 - `input_parts`
 - `metadata` including optional run-level `workspace` override
 - `output_text`
-- `output_summary`
 - `error_message`
 - `termination_reason`
 - `created_at`
@@ -235,7 +234,7 @@ A successful commit should:
 
 1. persist `state.json` for the run
 2. persist compacted AGUI replay events to `message.json`
-3. persist final `output_text` and `output_summary` on the run record
+3. persist final `output_text` on the run record
 4. set `committed_at`
 5. set session `head_success_run_id`
 6. clear session `active_run_id`

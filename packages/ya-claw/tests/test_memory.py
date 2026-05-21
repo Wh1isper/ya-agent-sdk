@@ -963,7 +963,6 @@ def _completed_run(
         input_parts=[{"type": "text", "text": f"hello {sequence_no}"}],
         run_metadata={},
         output_text=f"completed {run_id}",
-        output_summary=f"completed {run_id}",
         started_at=now,
         finished_at=now,
         committed_at=now,

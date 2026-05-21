@@ -79,7 +79,6 @@ def _mark_run_completed(session_id: str, run_id: str, *, output_text: str | None
                     assert isinstance(run_record, RunRecord)
                     run_record.status = "completed"
                     run_record.output_text = output_text
-                    run_record.output_summary = output_text[:4000] if isinstance(output_text, str) else None
                     run_record.started_at = now - timedelta(seconds=2)
                     run_record.finished_at = now - timedelta(seconds=1)
                     run_record.committed_at = now
@@ -307,7 +306,6 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
         "input_preview",
         "message",
         "metadata",
-        "output_summary",
         "output_text",
         "profile_name",
         "restore_from_run_id",
@@ -614,7 +612,6 @@ def test_session_turns_return_completed_runs_with_raw_input_and_output() -> None
     assert page_1_payload["turns"][0]["run_id"] == second_run_id
     assert page_1_payload["turns"][0]["input_parts"] == [{"type": "text", "text": "completed-2", "metadata": None}]
     assert page_1_payload["turns"][0]["output_text"] == "answer-2"
-    assert page_1_payload["turns"][0]["output_summary"] == "answer-2"
 
     assert page_2_response.status_code == 200
     page_2_payload = page_2_response.json()

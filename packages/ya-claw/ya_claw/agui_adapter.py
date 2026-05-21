@@ -186,11 +186,11 @@ class AguiEventAdapter:
         )
 
     def build_run_finished_event(self, result: JsonValue = None) -> dict[str, Any]:
-        _ = result
         return _dump_agui_event(
             RunFinishedEvent(
                 thread_id=self._session_id,
                 run_id=self._run_id,
+                result=result,
             )
         )
 

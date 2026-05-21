@@ -267,12 +267,11 @@ class AgencyLifecycle:
         source_sequence_no: int,
         trigger_type: str,
         output_text: str | None,
-        output_summary: str | None,
         source_kind: str | None = None,
         metadata: dict[str, Any] | None = None,
         dispatch: bool = True,
     ) -> AgencyFireDelivery | None:
-        if not output_text and not output_summary:
+        if not output_text:
             return None
         source_session = await db_session.get(SessionRecord, source_session_id)
         if not isinstance(source_session, SessionRecord) or source_session.session_type != "conversation":
@@ -290,7 +289,6 @@ class AgencyLifecycle:
                 "source_sequence_no": source_sequence_no,
                 "trigger_type": trigger_type,
                 "output_text": output_text,
-                "output_summary": output_summary,
                 "metadata": dict(metadata or {}),
             },
             dispatch=dispatch,
@@ -305,7 +303,6 @@ class AgencyLifecycle:
         memory_session_id: str | None,
         memory_job_kind: str,
         output_text: str | None,
-        output_summary: str | None,
         payload: dict[str, Any] | None = None,
         dispatch: bool = True,
     ) -> AgencyFireDelivery | None:
@@ -324,7 +321,6 @@ class AgencyLifecycle:
                 "memory_run_id": memory_run_id,
                 "memory_job_kind": memory_job_kind,
                 "output_text": output_text,
-                "output_summary": output_summary,
                 "memory": dict(payload or {}),
             },
             dispatch=dispatch,

@@ -235,7 +235,6 @@ class StubRunCoordinator(RunCoordinator):
             "version": 4,
         }
         buffers.output_text = f"completed {run_id}"
-        buffers.output_summary = f"completed {run_id}"
         if self.failure is not None:
             raise self.failure
 
@@ -670,7 +669,6 @@ async def test_run_coordinator_completes_run_and_commits_artifacts(
     message_payload = run_store.read_message("run-1")
     assert refreshed_run.status == "completed"
     assert refreshed_run.output_text == "completed run-1"
-    assert refreshed_run.output_summary == "completed run-1"
     assert refreshed_session.head_success_run_id == "run-1"
     assert refreshed_session.active_run_id is None
     assert state_payload is not None

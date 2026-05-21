@@ -6,6 +6,7 @@ export type TimelineBlock =
   | ReasoningBlock
   | ToolCallBlock
   | RuntimeEventBlock
+  | RunCompleteBlock
   | TaskBoardBlock
   | ContextMeterBlock
   | UsageBlock
@@ -55,6 +56,13 @@ export type RuntimeEventBlock = {
   title: string
   status: 'info' | 'running' | 'success' | 'warning' | 'error'
   payload: unknown
+}
+
+export type RunCompleteBlock = {
+  kind: 'run_complete'
+  id: string
+  outputText: string
+  result: unknown
 }
 
 export type TaskInfo = {

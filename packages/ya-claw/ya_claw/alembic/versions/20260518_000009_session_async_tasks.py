@@ -50,7 +50,6 @@ def upgrade() -> None:
         sa.Column("wake_policy", sa.String(length=32), nullable=False),
         sa.Column("input_parts", sa.JSON(), nullable=False),
         sa.Column("result_run_id", sa.String(length=32), nullable=True),
-        sa.Column("result_summary", sa.Text(), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("metadata", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),

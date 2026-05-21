@@ -1,4 +1,5 @@
 import { Bot, BrainCircuit } from 'lucide-react'
+import type { ReactNode } from 'react'
 
 import { JsonView } from '../../../components/JsonView'
 import type { InputPart } from '../../../types'
@@ -17,7 +18,7 @@ export function Card({
   accent: 'blue' | 'emerald' | 'amber' | 'rose' | 'violet' | 'slate'
   subtle?: boolean
   compact?: boolean
-  children: React.ReactNode
+  children: ReactNode
 }) {
   const accentClass = {
     blue: 'bg-blue-50 text-blue-600',
@@ -74,7 +75,37 @@ export function InputPartView({ part }: { part: InputPart }) {
       </div>
     )
   }
+  if (part.type === 'command' && part.name === 'agency_fire') {
+    const payload = recordValue(part.params?.payload)
+    const outputText = stringValue(payload?.output_text)
+    const memory = recordValue(payload?.memory)
+    const finalOutput = outputText ?? stringValue(memory?.output_text)
+
+    if (finalOutput) {
+      return (
+        <div className="space-y-3 rounded-xl border border-violet-200 bg-violet-50 p-3 text-sm leading-7 text-slate-800">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700">
+            <BrainCircuit className="h-3.5 w-3.5" />
+            Agency fire · {stringValue(part.params?.kind) ?? 'observed output'}
+          </div>
+          <pre className="scrollbar-thin max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-white p-3 text-sm leading-6 text-slate-800">
+            {finalOutput}
+          </pre>
+        </div>
+      )
+    }
+  }
   return <JsonView value={part} height="160px" />
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : null
 }
 
 export function CodeBlock({ label, value }: { label: string; value: string }) {

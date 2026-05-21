@@ -237,7 +237,7 @@ async def test_async_task_terminal_wakes_idle_parent_from_last_run(
     child_run = await db_session.get(RunRecord, spawned.task.task_run_id)
     assert isinstance(child_session, SessionRecord)
     assert isinstance(child_run, RunRecord)
-    child_run.output_summary = "child done"
+    child_run.output_text = "child done"
     complete_run(child_session, child_run, committed_at=datetime.now(UTC))
     submitted: list[str] = []
 
@@ -253,7 +253,6 @@ async def test_async_task_terminal_wakes_idle_parent_from_last_run(
     task_record = await db_session.get(SessionAsyncTaskRecord, spawned.task.task_id)
     assert isinstance(task_record, SessionAsyncTaskRecord)
     assert task_record.status == "completed"
-    assert task_record.result_summary == "child done"
     assert submitted
     wake_run = await db_session.get(RunRecord, submitted[0])
     assert isinstance(wake_run, RunRecord)

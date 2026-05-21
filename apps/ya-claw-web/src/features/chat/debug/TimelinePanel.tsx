@@ -7,6 +7,7 @@ import {
   FilePenLine,
   Files,
   MessageSquare,
+  PackageCheck,
   Send,
   TerminalSquare,
   User,
@@ -226,6 +227,13 @@ export function TimelineCard({ block }: { block: TimelineBlock }) {
         <div className="whitespace-pre-wrap text-sm leading-7 text-slate-700">
           {block.content}
         </div>
+      </Card>
+    )
+  }
+  if (block.kind === 'run_complete') {
+    return (
+      <Card icon={PackageCheck} title="Run complete" accent="emerald">
+        <MarkdownMessage content={block.outputText} />
       </Card>
     )
   }

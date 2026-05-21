@@ -55,12 +55,12 @@ def test_agui_adapter_maps_text_stream_events_and_compacts_replay() -> None:
         "TEXT_MESSAGE_END",
     ]
 
-    replay.append(adapter.build_run_finished_event(result={"output_summary": "hello world"}))
+    replay.append(adapter.build_run_finished_event(result={"output_text": "hello world"}))
 
     compacted = replay.snapshot()
     assert [event["type"] for event in compacted] == ["CUSTOM", "TEXT_MESSAGE_CHUNK", "RUN_FINISHED"]
     assert compacted[1]["delta"] == "hello world"
-    assert "result" not in compacted[2]
+    assert compacted[2]["result"] == {"output_text": "hello world"}
 
 
 def test_agui_replay_buffer_merges_tool_call_chunks() -> None:
@@ -105,7 +105,7 @@ def test_agui_adapter_maps_run_lifecycle_events() -> None:
 
     queued = adapter.build_run_queued_event({"status": "queued"})
     started = adapter.build_run_started_event()
-    finished = adapter.build_run_finished_event(result={"output_summary": "done"})
+    finished = adapter.build_run_finished_event(result={"output_text": "done"})
     errored = adapter.build_run_error_event(message="boom", code="error")
 
     assert queued["type"] == "CUSTOM"
@@ -113,6 +113,6 @@ def test_agui_adapter_maps_run_lifecycle_events() -> None:
     assert started["type"] == "RUN_STARTED"
     assert started["runId"] == "run-1"
     assert finished["type"] == "RUN_FINISHED"
-    assert "result" not in finished
+    assert finished["result"] == {"output_text": "done"}
     assert errored["type"] == "RUN_ERROR"
     assert errored["message"] == "boom"

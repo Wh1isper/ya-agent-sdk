@@ -447,7 +447,6 @@ export type RunSummary = {
   input_preview?: string | null
   input_parts?: InputPart[] | null
   output_text?: string | null
-  output_summary?: string | null
   error_message?: string | null
   termination_reason?: string | null
   created_at: string

@@ -196,7 +196,6 @@ Suggested run summary fields:
 - `input_preview`
 - `input_parts` when `include_input_parts=true`
 - `output_text`
-- `output_summary`
 - `error_message`
 - `termination_reason`
 - `created_at`
@@ -246,7 +245,7 @@ Session and run GET endpoints should return the structured record plus committed
 
 `GET /api/v1/sessions/{session_id}/turns?limit=20&cursor=run_2`
 
-Returns completed runs only. Each turn includes the original `input_parts`, `output_text`, and `output_summary`.
+Returns completed runs only. Each turn includes the original `input_parts`, `output_text`,.
 The endpoint paginates newest-first by descending `(sequence_no, run_id)`. Use `next_cursor` as the next request's `cursor` to load older turns for chatbox history. `before_sequence_no` remains available for sequence-number based callers.
 
 ```json

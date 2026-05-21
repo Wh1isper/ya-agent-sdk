@@ -277,7 +277,6 @@ class MemoryLifecycle:
                     "source_sequence_start": memory.get("source_sequence_start"),
                     "source_sequence_end": memory.get("source_sequence_end"),
                     "output_text": run_record.output_text,
-                    "output_summary": run_record.output_summary,
                 },
             )
 
@@ -490,9 +489,6 @@ class MemoryLifecycle:
                     else None,
                     memory_job_kind=memory_kind,
                     output_text=payload.get("output_text") if isinstance(payload.get("output_text"), str) else None,
-                    output_summary=payload.get("output_summary")
-                    if isinstance(payload.get("output_summary"), str)
-                    else None,
                     payload=payload,
                 )
             except HTTPException as exc:
@@ -823,7 +819,6 @@ async def _source_run_material(db_session: AsyncSession, request: MemoryRunReque
             },
             "input_parts": record.input_parts,
             "output_text": record.output_text,
-            "output_summary": record.output_summary,
             "committed_at": record.committed_at.isoformat() if record.committed_at is not None else None,
         }
         for record in await _source_run_records(db_session, request)

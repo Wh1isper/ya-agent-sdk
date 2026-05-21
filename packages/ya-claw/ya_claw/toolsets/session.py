@@ -468,7 +468,6 @@ def _compact_turn(
         "input_truncated": input_truncated,
         "output_text": output_text,
         "output_truncated": output_truncated,
-        "output_summary": turn.get("output_summary"),
         "created_at": turn.get("created_at"),
         "committed_at": turn.get("committed_at"),
     }

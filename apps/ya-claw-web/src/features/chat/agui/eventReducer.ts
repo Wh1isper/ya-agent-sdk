@@ -7,6 +7,7 @@ import type {
   NoteSnapshotBlock,
   RawCustomBlock,
   RuntimeEventBlock,
+  RunCompleteBlock,
   SteeringBlock,
   SubagentBlock,
   TaskBoardBlock,
@@ -93,11 +94,19 @@ export function reduceAguiEvent(
   if (eventType === 'TOOL_CALL_RESULT') {
     return mergeToolResult(nextState, event)
   }
-  if (
-    eventType === 'RUN_STARTED' ||
-    eventType === 'RUN_FINISHED' ||
-    eventType === 'RUN_ERROR'
-  ) {
+  if (eventType === 'RUN_FINISHED') {
+    const runCompleteBlock = runCompleteBlockFromAgui(event)
+    const withRunCompleteBlock = runCompleteBlock
+      ? appendBlock(nextState, runCompleteBlock)
+      : nextState
+    return options.includeRuntimeEvents === false
+      ? withRunCompleteBlock
+      : appendBlock(
+          withRunCompleteBlock,
+          runtimeEventFromAgui(eventType, event),
+        )
+  }
+  if (eventType === 'RUN_STARTED' || eventType === 'RUN_ERROR') {
     return options.includeRuntimeEvents === false
       ? nextState
       : appendBlock(nextState, runtimeEventFromAgui(eventType, event))
@@ -241,6 +250,25 @@ function mergeToolResult(
     result: content,
     status: event.error ? 'failed' : 'completed',
   })
+}
+
+function runCompleteBlockFromAgui(event: AguiEvent): RunCompleteBlock | null {
+  const result = recordField(event.result)
+  if (!result) return null
+  const outputText = stringField(result, 'output_text') ?? undefined
+  if (!outputText) return null
+  return {
+    kind: 'run_complete',
+    id: `run-complete:${event.runId ?? event.run_id ?? event.timestamp ?? Date.now()}`,
+    outputText,
+    result,
+  }
+}
+
+function recordField(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
 }
 
 function runtimeEventFromAgui(

@@ -204,7 +204,6 @@ async def test_supervisor_startup_recovery_processes_terminal_async_task_run(
         input_parts=[],
         run_metadata={},
         output_text="previous",
-        output_summary="previous",
     )
     child_run = RunRecord(
         id="child-run-terminal",
@@ -216,7 +215,6 @@ async def test_supervisor_startup_recovery_processes_terminal_async_task_run(
         input_parts=[],
         run_metadata={"async_task": {"task_id": "task-1"}},
         output_text="done",
-        output_summary="child summary",
     )
     task_record = SessionAsyncTaskRecord(
         id="task-1",
@@ -237,7 +235,6 @@ async def test_supervisor_startup_recovery_processes_terminal_async_task_run(
     complete_run(child_session, child_run, committed_at=datetime(2026, 5, 18, 1, tzinfo=UTC))
     task_record.status = "running"
     task_record.result_run_id = None
-    task_record.result_summary = None
     task_record.completed_at = None
     await db_session.commit()
     supervisor = _build_supervisor(settings=settings, db_engine=db_engine, runtime_state=runtime_state)
@@ -262,7 +259,6 @@ async def test_supervisor_startup_recovery_processes_terminal_async_task_run(
     assert result["recovered_async_tasks"] == ["child-run-terminal"]
     assert task_record.status == "completed"
     assert task_record.result_run_id == "child-run-terminal"
-    assert task_record.result_summary == "child summary"
     assert task_record.completed_at is not None
 
     wake_result = await db_session.execute(

@@ -252,7 +252,6 @@ class AsyncTaskController:
         now = datetime.now(UTC)
         record.status = status
         record.result_run_id = run_record.id
-        record.result_summary = run_record.output_summary
         record.error_message = run_record.error_message
         record.completed_at = now
         record.updated_at = now
@@ -422,7 +421,6 @@ class AsyncTaskController:
         refreshed.wake_policy = wake_policy
         refreshed.input_parts = [part.model_dump(mode="json") for part in _input_parts(prompt, context)]
         refreshed.result_run_id = None
-        refreshed.result_summary = None
         refreshed.error_message = None
         refreshed.completed_at = None
         refreshed.task_metadata = task_metadata
@@ -452,7 +450,6 @@ class AsyncTaskController:
                 "subagent_name": record.subagent_name,
                 "name": record.name,
                 "status": record.status,
-                "output_summary": record.result_summary,
                 "result_available": record.result_run_id is not None,
             },
         )
@@ -510,7 +507,6 @@ class AsyncTaskController:
             if run_record.status in _TERMINAL_STATUSES:
                 record.completed_at = run_record.finished_at or record.updated_at
                 record.result_run_id = run_record.id
-                record.result_summary = run_record.output_summary
                 record.error_message = run_record.error_message
 
     async def _build_detail(
@@ -536,15 +532,12 @@ class AsyncTaskController:
             read_run_message_blob_if_exists(settings, record.result_run_id or "") if record.result_run_id else None
         )
         summary = _detail_summary_from_record(record)
-        payload = summary.model_dump(
-            exclude={"child_session", "latest_run", "output_text", "output_summary", "trace_ref"}
-        )
+        payload = summary.model_dump(exclude={"child_session", "latest_run", "output_text", "trace_ref"})
         return AsyncTaskDetail(
             **payload,
             child_session=child_session_summary.model_dump(mode="json") if child_session_summary is not None else None,
             latest_run=run_payload,
             output_text=latest_run.output_text if isinstance(latest_run, RunRecord) else None,
-            output_summary=latest_run.output_summary if isinstance(latest_run, RunRecord) else None,
             trace_ref={
                 "run_id": record.result_run_id,
                 "trace_path": f"/api/v1/runs/{record.result_run_id}/trace",
@@ -684,7 +677,6 @@ def _detail_summary_from_record(record: SessionAsyncTaskRecord) -> AsyncTaskDeta
         subagent_name=record.subagent_name,
         wake_policy=record.wake_policy,
         result_run_id=record.result_run_id,
-        result_summary=record.result_summary,
         error_message=record.error_message,
         metadata=dict(record.task_metadata or {}),
         created_at=record.created_at,
