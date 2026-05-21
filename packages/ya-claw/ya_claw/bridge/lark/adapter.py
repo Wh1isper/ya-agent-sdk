@@ -23,11 +23,9 @@ from ya_claw.bridge.lark.normalizer import normalize_lark_action, normalize_lark
 from ya_claw.bridge.lark.snapshot import (
     int_value,
     lark_message_content_text,
-    limit_snapshot_items,
     sort_snapshot_items,
     speaker_for_lark_sender,
     string_value,
-    truncate_text,
 )
 from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchResult, BridgeEventStatus, BridgeInboundMessage
 from ya_claw.config import ClawSettings
@@ -412,8 +410,6 @@ class LarkBridgeAdapter(BridgeAdapter):
     ) -> BridgePreviousMessagesSnapshot | None:
         client = self._openapi_client(lark_module)
         limit = int(self._settings.bridge_lark_previous_messages_limit)
-        max_chars = int(self._settings.bridge_lark_previous_messages_max_chars)
-        item_max_chars = int(self._settings.bridge_lark_previous_message_max_chars)
         candidates: list[BridgePreviousMessageSnapshotItem] = []
         seen: set[str] = {message.message_id}
 
@@ -423,7 +419,6 @@ class LarkBridgeAdapter(BridgeAdapter):
             message=message,
             seen=seen,
             candidates=candidates,
-            item_max_chars=item_max_chars,
         )
         self._append_container_snapshot_items(
             lark_module,
@@ -431,20 +426,12 @@ class LarkBridgeAdapter(BridgeAdapter):
             message=message,
             seen=seen,
             candidates=candidates,
-            item_max_chars=item_max_chars,
         )
         candidates = sort_snapshot_items(candidates)
         limited = candidates[-limit:]
-        limited, total_truncated = limit_snapshot_items(
-            limited,
-            max_chars=max_chars,
-            item_max_chars=item_max_chars,
-        )
         if len(limited) == 0:
             return None
-        return BridgePreviousMessagesSnapshot(
-            items=limited, truncated=len(candidates) > len(limited) or total_truncated
-        )
+        return BridgePreviousMessagesSnapshot(items=limited, truncated=len(candidates) > len(limited))
 
     def _append_parent_snapshot_item(
         self,
@@ -454,7 +441,6 @@ class LarkBridgeAdapter(BridgeAdapter):
         message: BridgeInboundMessage,
         seen: set[str],
         candidates: list[BridgePreviousMessageSnapshotItem],
-        item_max_chars: int,
     ) -> None:
         parent_id = message.parent_id or message.root_id
         if not isinstance(parent_id, str) or not parent_id.strip() or parent_id == message.message_id:
@@ -464,7 +450,6 @@ class LarkBridgeAdapter(BridgeAdapter):
             client,
             parent_id,
             relation="parent",
-            item_max_chars=item_max_chars,
         )
         self._append_unique_snapshot_item(candidates, seen=seen, item=parent_item)
 
@@ -476,7 +461,6 @@ class LarkBridgeAdapter(BridgeAdapter):
         message: BridgeInboundMessage,
         seen: set[str],
         candidates: list[BridgePreviousMessageSnapshotItem],
-        item_max_chars: int,
     ) -> None:
         container_id = message.thread_id or message.root_id
         if isinstance(container_id, str) and container_id.strip():
@@ -486,7 +470,6 @@ class LarkBridgeAdapter(BridgeAdapter):
                 container_id=container_id,
                 container_id_type="thread",
                 relation="thread",
-                item_max_chars=item_max_chars,
             )
             for item in thread_items:
                 self._append_unique_snapshot_item(candidates, seen=seen, item=item)
@@ -496,7 +479,6 @@ class LarkBridgeAdapter(BridgeAdapter):
             container_id=message.chat_id,
             container_id_type="chat",
             relation="chat_recent",
-            item_max_chars=item_max_chars,
         )
         current_create_time = int_value(message.create_time)
         for item in chat_items:
@@ -531,7 +513,6 @@ class LarkBridgeAdapter(BridgeAdapter):
         message_id: str,
         *,
         relation: BridgeSnapshotRelation,
-        item_max_chars: int,
     ) -> BridgePreviousMessageSnapshotItem | None:
         from lark_oapi.api.im.v1 import GetMessageRequest
 
@@ -544,9 +525,7 @@ class LarkBridgeAdapter(BridgeAdapter):
         items = getattr(data, "items", None)
         if not isinstance(items, list) or len(items) == 0:
             return None
-        return self._snapshot_item_from_lark_message(
-            lark_module, items[0], relation=relation, item_max_chars=item_max_chars
-        )
+        return self._snapshot_item_from_lark_message(lark_module, items[0], relation=relation)
 
     def _list_lark_message_snapshot_items(
         self,
@@ -556,7 +535,6 @@ class LarkBridgeAdapter(BridgeAdapter):
         container_id: str,
         container_id_type: str,
         relation: BridgeSnapshotRelation,
-        item_max_chars: int,
     ) -> list[BridgePreviousMessageSnapshotItem]:
         from lark_oapi.api.im.v1 import ListMessageRequest
 
@@ -585,12 +563,7 @@ class LarkBridgeAdapter(BridgeAdapter):
             return []
         items: list[BridgePreviousMessageSnapshotItem] = []
         for raw_item in raw_items:
-            item = self._snapshot_item_from_lark_message(
-                lark_module,
-                raw_item,
-                relation=relation,
-                item_max_chars=item_max_chars,
-            )
+            item = self._snapshot_item_from_lark_message(lark_module, raw_item, relation=relation)
             if item is not None:
                 items.append(item)
         return items
@@ -601,7 +574,6 @@ class LarkBridgeAdapter(BridgeAdapter):
         raw_message: LarkSdkObject,
         *,
         relation: BridgeSnapshotRelation,
-        item_max_chars: int,
     ) -> BridgePreviousMessageSnapshotItem | None:
         message_id = string_value(getattr(raw_message, "message_id", None))
         message_type = string_value(getattr(raw_message, "msg_type", None))
@@ -614,7 +586,6 @@ class LarkBridgeAdapter(BridgeAdapter):
         content_text = lark_message_content_text(lark_module, message_type=message_type, raw_content=raw_content)
         if content_text is None or content_text.strip() == "":
             return None
-        content_text, truncated = truncate_text(content_text, item_max_chars)
         return BridgePreviousMessageSnapshotItem(
             speaker=speaker_for_lark_sender(
                 sender_id=sender_id,
@@ -628,7 +599,7 @@ class LarkBridgeAdapter(BridgeAdapter):
             message_type=message_type,
             create_time=create_time,
             content_text=content_text,
-            truncated=truncated,
+            truncated=False,
         )
 
     def _install_card_action_handler(self, client: LarkSdkObject, lark_module: LarkSdkObject) -> None:

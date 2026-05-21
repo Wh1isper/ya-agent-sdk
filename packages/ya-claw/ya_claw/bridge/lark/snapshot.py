@@ -11,31 +11,6 @@ def sort_snapshot_items(items: list[BridgePreviousMessageSnapshotItem]) -> list[
     return sorted(items, key=lambda item: int_value(item.create_time) or 0)
 
 
-def limit_snapshot_items(
-    items: list[BridgePreviousMessageSnapshotItem],
-    *,
-    max_chars: int,
-    item_max_chars: int,
-) -> tuple[list[BridgePreviousMessageSnapshotItem], bool]:
-    total = 0
-    kept: list[BridgePreviousMessageSnapshotItem] = []
-    truncated = False
-    for item in items:
-        remaining = max_chars - total
-        if remaining <= 0:
-            truncated = True
-            break
-        content = item.content_text
-        item_truncated = item.truncated
-        if len(content) > remaining:
-            content, _ = truncate_text(content, min(item_max_chars, remaining))
-            item_truncated = True
-            truncated = True
-        kept.append(item.model_copy(update={"content_text": content, "truncated": item_truncated}))
-        total += len(content)
-    return kept, truncated
-
-
 def speaker_for_lark_sender(
     *,
     sender_id: str | None,
@@ -87,14 +62,6 @@ def placeholder_for_message_type(message_type: str | None) -> str | None:
     if message_type == "sticker":
         return "[sticker message]"
     return None
-
-
-def truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
-    if len(value) <= max_chars:
-        return value, False
-    if max_chars <= 1:
-        return "…"[:max_chars], True
-    return value[: max_chars - 1] + "…", True
 
 
 def string_value(value: object) -> str | None:

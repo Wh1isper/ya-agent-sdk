@@ -134,10 +134,11 @@ def test_lark_bridge_adapter_builds_remote_previous_messages_snapshot() -> None:
     assert snapshot.items[1].relation == "chat_recent"
 
 
-def test_lark_bridge_adapter_truncates_remote_snapshot() -> None:
+def test_lark_bridge_adapter_keeps_full_remote_snapshot_message_content() -> None:
+    content = "x" * 50
     parent = _message(
         message_id="om_parent",
-        content="x" * 50,
+        content=content,
         create_time=1000,
         sender_id="cli_app",
         sender_type="app",
@@ -149,8 +150,6 @@ def test_lark_bridge_adapter_truncates_remote_snapshot() -> None:
             api_token="test-token",  # noqa: S106
             bridge_lark_app_id="cli_app",
             bridge_lark_app_secret="test-secret",  # noqa: S106
-            bridge_lark_previous_message_max_chars=10,
-            bridge_lark_previous_messages_max_chars=10,
             _env_file=None,
         ),
     )
@@ -170,5 +169,5 @@ def test_lark_bridge_adapter_truncates_remote_snapshot() -> None:
 
     assert snapshot is not None
     assert snapshot.truncated is False
-    assert snapshot.items[0].truncated is True
-    assert snapshot.items[0].content_text == "xxxxxxxxx…"
+    assert snapshot.items[0].truncated is False
+    assert snapshot.items[0].content_text == content

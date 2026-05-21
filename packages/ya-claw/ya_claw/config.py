@@ -149,8 +149,6 @@ class ClawSettings(BaseSettings):
     bridge_lark_domain: str = "https://open.feishu.cn"
     bridge_lark_previous_messages_enabled: bool = True
     bridge_lark_previous_messages_limit: PositiveInt = 6
-    bridge_lark_previous_messages_max_chars: PositiveInt = 4000
-    bridge_lark_previous_message_max_chars: PositiveInt = 800
     default_profile: str = "default"
     agent_stream_resume_on_error: bool = True
     agent_stream_resume_max_attempts: int = 2
