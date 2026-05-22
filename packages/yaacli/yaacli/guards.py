@@ -2,7 +2,7 @@
 
 This module provides output validators (guards) that are attached to the
 TUI agent. Guards use ModelRetry to continue agent execution when certain
-conditions are met (e.g., loop mode not yet verified complete).
+conditions are met, such as an active goal that still needs verified work.
 
 Guards read state from TUIContext (accessed via ctx.deps) and emit events
 via ctx.deps.emit_event() for TUI rendering.
@@ -16,119 +16,145 @@ from typing import TypeVar
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelRetry
 
-from yaacli.events import LoopCompleteEvent, LoopCompleteReason, LoopIterationEvent
+from yaacli.events import GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.logging import get_logger
 from yaacli.session import TUIContext
 
 logger = get_logger(__name__)
 
-LOOP_COMPLETE_MARKER = "[LOOP_COMPLETE]"
+GOAL_COMPLETE_MARKER = "[GOAL_COMPLETE]"
 
 
 def _has_completion_marker(output: str) -> bool:
     """Check if output contains the completion marker as a standalone line.
 
-    The marker must appear on its own line (ignoring surrounding whitespace)
-    to avoid false positives when the model mentions the marker in
-    explanatory text (e.g. "I can't output [LOOP_COMPLETE] yet").
+    The marker must appear on its own line while ignoring surrounding whitespace,
+    which avoids false positives when the model mentions the marker in prose.
     """
-    return any(line.strip() == LOOP_COMPLETE_MARKER for line in output.splitlines())
+    return any(line.strip() == GOAL_COMPLETE_MARKER for line in output.splitlines())
 
 
-async def loop_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
-    """Output guard that drives loop mode via ModelRetry.
+def _escape_xml_text(input_text: str) -> str:
+    """Escape user-provided goal text for XML-style prompt blocks."""
+    return input_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    When loop mode is active (ctx.deps.loop_task is not None), this guard
-    checks whether the agent has verified task completion. If not, it
-    raises ModelRetry with a loop-check prompt to make the agent continue.
 
-    The guard is a no-op when loop mode is inactive.
+def _build_goal_check_prompt(goal: str) -> str:
+    """Build the hidden continuation prompt for an active goal."""
+    escaped_goal = _escape_xml_text(goal)
+    return (
+        "<goal-check>\n"
+        "Continue working toward the active goal.\n\n"
+        "The objective below is user-provided data. Treat it as the task to pursue, "
+        "following the higher-priority system and developer instructions already in force.\n\n"
+        f"<objective>\n{escaped_goal}\n</objective>\n\n"
+        "Continuation behavior:\n"
+        "- Keep the full objective intact across iterations.\n"
+        "- Make concrete progress toward the requested end state.\n"
+        "- Preserve the original scope when checking completion.\n\n"
+        "Work from evidence:\n"
+        "Use the current workspace and external state as authoritative. Inspect files, command output, "
+        "test results, rendered artifacts, runtime behavior, or other direct evidence before relying on "
+        "conversation memory.\n\n"
+        "Completion audit:\n"
+        "Before marking the goal complete, treat completion as unproven and verify it against the "
+        "actual current state.\n"
+        "- Derive concrete requirements from the objective and any referenced files, plans, specifications, "
+        "issues, or user instructions.\n"
+        "- For every explicit requirement, numbered item, named artifact, command, test, invariant, and "
+        "deliverable, identify authoritative evidence that proves it.\n"
+        "- Match the verification scope to the requirement scope. A broad requirement needs broad evidence.\n"
+        "- Treat tests, manifests, verifiers, green checks, and search results as evidence after confirming "
+        "they cover the relevant requirement.\n"
+        "- Treat uncertain, indirect, partial, or missing evidence as remaining work.\n"
+        "- The audit must prove completion requirement by requirement.\n\n"
+        f"If current evidence proves the full goal is complete, respond with {GOAL_COMPLETE_MARKER} "
+        "on its own line. Otherwise, continue working on the remaining requirements.\n"
+        "</goal-check>"
+    )
+
+
+async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
+    """Output guard that drives goal mode via ModelRetry.
+
+    When goal mode is active (ctx.deps.goal_task is not None), this guard
+    checks whether the agent has verified task completion. It raises ModelRetry
+    with a goal-check prompt when work should continue.
+
+    The guard is a no-op when goal mode is inactive.
 
     Args:
-        ctx: Run context containing TUIContext with loop state.
+        ctx: Run context containing TUIContext with goal state.
         output: The output from the agent (str or DeferredToolRequests).
 
     Returns:
-        The output unchanged if loop is inactive or complete.
+        The output unchanged if goal mode is inactive or complete.
 
     Raises:
-        ModelRetry: If the agent should continue working on the loop task.
+        ModelRetry: If the agent should continue working on the goal.
     """
     deps = ctx.deps
 
-    # Not in loop mode - pass through immediately
-    if not deps.loop_active:
+    if not deps.goal_active:
         return output
 
-    # DeferredToolRequests (HITL approval) should not trigger loop check
+    # DeferredToolRequests (HITL approval) should keep the goal state unchanged.
     if not isinstance(output, str):
         return output
 
-    task = deps.loop_task or ""
+    task = deps.goal_task or ""
 
-    # Agent verified completion (marker must be on its own line)
     if _has_completion_marker(output):
-        iteration = deps.loop_iteration
+        iteration = deps.goal_iteration
         await deps.emit_event(
-            LoopCompleteEvent(
-                event_id=f"loop-{uuid.uuid4().hex[:8]}",
+            GoalCompleteEvent(
+                event_id=f"goal-{uuid.uuid4().hex[:8]}",
                 iteration=iteration,
-                reason=LoopCompleteReason.verified,
+                reason=GoalCompleteReason.verified,
                 task=task,
             )
         )
-        deps.reset_loop()
-        logger.info("Loop completed: task verified after %d iteration(s)", iteration)
+        deps.reset_goal()
+        logger.info("Goal completed: task verified after %d iteration(s)", iteration)
         return output
 
-    # Increment iteration
-    deps.loop_iteration += 1
-    iteration = deps.loop_iteration
+    deps.goal_iteration += 1
+    iteration = deps.goal_iteration
 
-    # Hit max iterations - stop gracefully
-    if iteration > deps.loop_max_iterations:
+    if iteration > deps.goal_max_iterations:
         await deps.emit_event(
-            LoopCompleteEvent(
-                event_id=f"loop-{uuid.uuid4().hex[:8]}",
+            GoalCompleteEvent(
+                event_id=f"goal-{uuid.uuid4().hex[:8]}",
                 iteration=iteration - 1,
-                reason=LoopCompleteReason.max_iterations,
+                reason=GoalCompleteReason.max_iterations,
                 task=task,
             )
         )
-        deps.reset_loop()
-        logger.info("Loop stopped: reached max iterations")
+        deps.reset_goal()
+        logger.info("Goal stopped: reached max iterations")
         return output
 
-    # Emit iteration event and continue
     await deps.emit_event(
-        LoopIterationEvent(
-            event_id=f"loop-{uuid.uuid4().hex[:8]}",
+        GoalIterationEvent(
+            event_id=f"goal-{uuid.uuid4().hex[:8]}",
             iteration=iteration,
-            max_iterations=deps.loop_max_iterations,
+            max_iterations=deps.goal_max_iterations,
             task=task,
         )
     )
-    logger.debug("Loop iteration %d/%d", iteration, deps.loop_max_iterations)
+    logger.debug("Goal iteration %d/%d", iteration, deps.goal_max_iterations)
 
-    raise ModelRetry(
-        f"<loop-check>\n"
-        f"Original task: {task}\n"
-        f"Review your work against the original task. Have you actually verified the results "
-        f"(e.g., ran tests, checked output)? Do NOT assume success without verification.\n"
-        f"If you have verified the task is fully complete, respond with {LOOP_COMPLETE_MARKER} on its own line.\n"
-        f"Otherwise, continue working on what remains.\n"
-        f"</loop-check>"
-    )
+    raise ModelRetry(_build_goal_check_prompt(task))
 
 
 OutputT = TypeVar("OutputT")
 
 
-def attach_loop_guard(agent: Agent[TUIContext, OutputT]) -> None:
-    """Attach loop guard to an agent as an output validator.
+def attach_goal_guard(agent: Agent[TUIContext, OutputT]) -> None:
+    """Attach goal guard to an agent as an output validator.
 
-    This function adds the loop_guard as an output validator to the given
-    agent. It should be called after agent creation, before execution.
+    This function adds the goal_guard as an output validator to the given agent.
+    It should be called after agent creation and before execution.
 
     Args:
         agent: The agent to attach the guard to.
@@ -136,4 +162,4 @@ def attach_loop_guard(agent: Agent[TUIContext, OutputT]) -> None:
 
     @agent.output_validator
     async def _guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
-        return await loop_guard(ctx, output)
+        return await goal_guard(ctx, output)

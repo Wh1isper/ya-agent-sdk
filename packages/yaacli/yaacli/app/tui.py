@@ -115,7 +115,7 @@ from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display import EventRenderer, RichRenderer, ToolMessage
 from yaacli.environment import TUIEnvironment
-from yaacli.events import ContextUpdateEvent, LoopCompleteEvent, LoopCompleteReason, LoopIterationEvent
+from yaacli.events import ContextUpdateEvent, GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.hooks import emit_context_update
 from yaacli.logging import configure_tui_logging, get_logger
 from yaacli.model_profiles import (
@@ -1158,10 +1158,10 @@ class TUIApp:
                     ("class:status-bar", f"Context: {context_pct}%"),
                 ]
                 ctx = self.runtime.ctx
-                if ctx.loop_active:
+                if ctx.goal_active:
                     parts.extend([
                         ("class:status-bar", " | "),
-                        ("class:status-bar.warning", f"Loop: {ctx.loop_iteration}/{ctx.loop_max_iterations}"),
+                        ("class:status-bar.warning", f"Goal: {ctx.goal_iteration}/{ctx.goal_max_iterations}"),
                     ])
                 bg_label = self._format_background_label()
                 if bg_label:
@@ -1637,11 +1637,11 @@ class TUIApp:
             # These are messages injected via bus from user during execution.
             # If not cleared, they would leak into unrelated future tasks.
             self.runtime.ctx.steering_messages.clear()
-            # Clean up loop state if still active (cancelled or error)
+            # Clean up goal state if still active (cancelled or error)
             ctx = self.runtime.ctx
-            if ctx.loop_active:
-                self._append_system_output("[Loop] Cancelled")
-                ctx.reset_loop()
+            if ctx.goal_active:
+                self._append_system_output("[Goal] Cancelled")
+                ctx.reset_goal()
             self._agent_phase = "idle"
             self._state = TUIState.IDLE
             if self._app:
@@ -2212,16 +2212,16 @@ class TUIApp:
                 self._append_output(rendered.rstrip())
 
         # Handle TUI-specific events
-        elif isinstance(message_event, LoopIterationEvent):
-            self._append_system_output(f"[Loop] Iteration {message_event.iteration}/{message_event.max_iterations}")
+        elif isinstance(message_event, GoalIterationEvent):
+            self._append_system_output(f"[Goal] Iteration {message_event.iteration}/{message_event.max_iterations}")
 
-        elif isinstance(message_event, LoopCompleteEvent):
-            if message_event.reason == LoopCompleteReason.verified:
-                self._append_system_output(f"[Loop] Task completed in {message_event.iteration} iteration(s)")
-            elif message_event.reason == LoopCompleteReason.max_iterations:
+        elif isinstance(message_event, GoalCompleteEvent):
+            if message_event.reason == GoalCompleteReason.verified:
+                self._append_system_output(f"[Goal] Task completed in {message_event.iteration} iteration(s)")
+            elif message_event.reason == GoalCompleteReason.max_iterations:
                 self._append_system_output(
-                    f"[Loop] Reached max iterations ({message_event.iteration}). "
-                    "Task may be incomplete. You can run /loop again to continue."
+                    f"[Goal] Reached max iterations ({message_event.iteration}). "
+                    "Task may be incomplete. You can run /goal again to continue."
                 )
 
         elif isinstance(message_event, ContextUpdateEvent):
@@ -2682,20 +2682,20 @@ class TUIApp:
             case "/paste-image":
                 self._append_user_input(command)
                 await self._paste_clipboard_image()
-            case "/loop":
+            case "/goal":
                 self._append_user_input(command)
                 ctx = self.runtime.ctx
-                if ctx.loop_active:
-                    self._append_system_output("Loop is already running. Use Ctrl+C to stop it first.")
+                if ctx.goal_active:
+                    self._append_system_output("Goal is already running. Use Ctrl+C to stop it first.")
                 elif not args.strip():
-                    self._append_system_output("Usage: /loop <task description>")
+                    self._append_system_output("Usage: /goal <task description>")
                 else:
                     task = args.strip()
-                    ctx.loop_task = task
-                    ctx.loop_iteration = 0
-                    ctx.loop_max_iterations = self.config.general.max_loop_iterations
+                    ctx.goal_task = task
+                    ctx.goal_iteration = 0
+                    ctx.goal_max_iterations = self.config.general.max_goal_iterations
                     self._append_system_output(
-                        f"[Loop] Starting loop mode ({ctx.loop_max_iterations} max iterations). Ctrl+C to stop."
+                        f"[Goal] Starting goal mode ({ctx.goal_max_iterations} max iterations). Ctrl+C to stop."
                     )
                     self._agent_task = asyncio.create_task(self._run_agent(task))
                     self._agent_task.add_done_callback(self._on_agent_task_done)
@@ -2855,7 +2855,7 @@ class TUIApp:
         sys_table.add_row("/load <folder>", "Load session from folder")
         sys_table.add_row("/act", "Switch to ACT mode")
         sys_table.add_row("/plan", "Switch to PLAN mode")
-        sys_table.add_row("/loop <task>", "Run task in autonomous loop until complete")
+        sys_table.add_row("/goal <task>", "Run task toward a verified goal until complete")
         sys_table.add_row("/exit", "Exit TUI")
         lines.append(self._renderer.render(sys_table).rstrip())
 

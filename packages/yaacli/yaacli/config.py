@@ -82,11 +82,20 @@ class GeneralConfig(BaseModel):
     )
     """Prompt sent when resuming a failed stream attempt."""
 
-    max_loop_iterations: int = 10
-    """Maximum iterations for /loop command."""
+    max_goal_iterations: int = 10
+    """Maximum iterations for /goal command."""
 
     system_prompt_file: str = ""
     """Path to custom system prompt file. Empty uses built-in default."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_loop_config(cls, data: object) -> object:
+        """Accept the former /loop iteration setting for existing configs."""
+        if isinstance(data, dict) and "max_goal_iterations" not in data and "max_loop_iterations" in data:
+            data = dict(data)
+            data["max_goal_iterations"] = data["max_loop_iterations"]
+        return data
 
     @property
     def is_configured(self) -> bool:

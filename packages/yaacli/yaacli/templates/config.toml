@@ -57,8 +57,8 @@ agent_stream_resume_on_error = true
 agent_stream_resume_max_attempts = 2
 agent_stream_resume_prompt = "The previous streaming model request failed before the agent finished. Continue the task from the available conversation history. Avoid repeating completed work."
 
-# Maximum iterations for /loop command
-# max_loop_iterations = 10
+# Maximum iterations for /goal command
+# max_goal_iterations = 10
 
 # Custom system prompt file path (optional)
 # If empty, uses built-in default from CLI package
