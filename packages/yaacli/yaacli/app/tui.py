@@ -1581,6 +1581,7 @@ class TUIApp:
         self._subagent_states.clear()
         self._event_renderer.clear()
         cancelled = False
+        reported_error = False
 
         try:
             # Initial agent execution
@@ -1611,6 +1612,7 @@ class TUIApp:
             if _is_benign_contextvar_cleanup_error(e):
                 logger.debug("Suppressed benign ContextVar cleanup error in agent run: %s", _safe_exception_str(e))
             else:
+                reported_error = True
                 self._finalize_streaming_text()
                 self._finalize_streaming_thinking()
                 self._append_error_output(e)
@@ -1640,7 +1642,8 @@ class TUIApp:
             # Clean up goal state if still active (cancelled or error)
             ctx = self.runtime.ctx
             if ctx.goal_active:
-                self._append_system_output("[Goal] Cancelled")
+                if cancelled or reported_error:
+                    self._append_system_output("[Goal] Cancelled")
                 ctx.reset_goal()
             self._agent_phase = "idle"
             self._state = TUIState.IDLE
