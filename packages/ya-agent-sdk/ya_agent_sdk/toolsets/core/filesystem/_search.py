@@ -95,7 +95,11 @@ async def collect_walk_files(
 
 def filter_candidates_by_glob(candidates: Iterable[SearchCandidate], pattern: str) -> list[SearchCandidate]:
     """Filter candidates with match_glob."""
-    return [candidate for candidate in candidates if match_glob(candidate.path, pattern)]
+    candidates_list = list(candidates)
+    native_matches = _ripgrep_core.match_globs([candidate.path for candidate in candidates_list], pattern)
+    if native_matches is not None:
+        return [candidate for candidate, matched in zip(candidates_list, native_matches, strict=True) if matched]
+    return [candidate for candidate in candidates_list if match_glob(candidate.path, pattern)]
 
 
 async def filter_candidates_ignored(

@@ -53,17 +53,75 @@ async def search_file_streaming(
     context_lines: int,
     max_matches_per_file: int,
     chunk_size: int = 65536,
+    native_regex: _ripgrep_core.NativeRegex | None = None,
 ) -> LineSearchResult:
-    """Search a file through FileOperator.read_bytes_stream.
+    """Search a file through FileOperator.
 
-    The output shape matches the existing GrepMatch model. Context after a
-    match is completed by buffering pending matches until enough following
-    lines have been read.
+    When the native extension is available, the file is read once through
+    FileOperator and line matching plus context assembly run in Rust. The pure
+    Python path stays streaming for environments where the native extension is
+    unavailable or disabled.
     """
-    matches: dict[str, GrepMatch] = {}
-    native_regex: _ripgrep_core.NativeRegex | None = None
-    if _ripgrep_core.is_available():
+    if native_regex is None and _ripgrep_core.is_available():
         native_regex = _ripgrep_core.NativeRegex(regex_pattern.pattern)
+    if native_regex is not None and native_regex.supports_search_bytes:
+        data = await _read_file_bytes(file_operator, file_path, chunk_size=chunk_size)
+        if b"\x00" in data:
+            return LineSearchResult(matches={}, binary_detected=True)
+        native_matches = native_regex.search_bytes(
+            data,
+            context_lines=context_lines,
+            max_matches=max_matches_per_file,
+        )
+        if native_matches is not None:
+            return LineSearchResult(
+                matches={
+                    f"{file_path}:{line_number}": GrepMatch(
+                        file_path=file_path,
+                        line_number=line_number,
+                        matching_line=matching_line,
+                        context=context,
+                        context_start_line=context_start_line,
+                    )
+                    for line_number, matching_line, context, context_start_line in native_matches
+                }
+            )
+
+    return await _search_file_python(
+        file_operator,
+        file_path,
+        regex_pattern,
+        context_lines=context_lines,
+        max_matches_per_file=max_matches_per_file,
+        chunk_size=chunk_size,
+    )
+
+
+async def _read_file_bytes(file_operator: FileOperator, file_path: str, *, chunk_size: int) -> bytes:
+    """Read a file through FileOperator, using read_bytes when available."""
+    try:
+        return await file_operator.read_bytes(file_path)
+    except Exception:
+        chunks: list[bytes] = []
+        stream = file_operator.read_bytes_stream(file_path, chunk_size=chunk_size)
+        if inspect.isawaitable(stream):
+            stream = await stream
+        async for chunk in stream:
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+
+async def _search_file_python(
+    file_operator: FileOperator,
+    file_path: str,
+    regex_pattern: re.Pattern[str],
+    *,
+    context_lines: int,
+    max_matches_per_file: int,
+    chunk_size: int = 65536,
+) -> LineSearchResult:
+    """Pure Python streaming fallback for a single file."""
+    matches: dict[str, GrepMatch] = {}
     before_context: deque[tuple[int, str]] = deque(maxlen=max(0, context_lines))
     pending_matches: list[tuple[int, str, list[tuple[int, str]]]] = []
     file_matches = 0
@@ -99,7 +157,7 @@ async def search_file_streaming(
         iter_text_lines(file_operator, file_path, chunk_size=chunk_size), 1
     ):
         await _flush_ready(line_number)
-        matched = native_regex.search(line) if native_regex is not None else regex_pattern.search(line) is not None
+        matched = regex_pattern.search(line) is not None
         if matched and (max_matches_per_file <= 0 or file_matches < max_matches_per_file):
             pending_matches.append((line_number, line, list(before_context)))
             file_matches += 1

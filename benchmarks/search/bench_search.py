@@ -77,48 +77,48 @@ CASES: dict[str, DatasetCase] = {
     ),
     "small": DatasetCase(
         "small",
-        text_files=1_000,
+        text_files=500,
         dirs=32,
-        lines_per_file=120,
-        line_width=120,
+        lines_per_file=200,
+        line_width=200,
         hidden_files=50,
         ignored_files=120,
         binary_files=20,
     ),
     "medium": DatasetCase(
         "medium",
-        text_files=10_000,
-        dirs=128,
-        lines_per_file=160,
-        line_width=160,
-        hidden_files=200,
-        ignored_files=1_000,
-        binary_files=100,
+        text_files=1_500,
+        dirs=96,
+        lines_per_file=400,
+        line_width=220,
+        hidden_files=120,
+        ignored_files=400,
+        binary_files=80,
     ),
     "large-files": DatasetCase(
-        "large-files", text_files=100, dirs=16, lines_per_file=100, line_width=120, large_files=20, large_file_mb=8
+        "large-files", text_files=80, dirs=16, lines_per_file=160, line_width=160, large_files=8, large_file_mb=16
     ),
     "many-small": DatasetCase(
         "many-small",
-        text_files=50_000,
-        dirs=256,
-        lines_per_file=8,
-        line_width=80,
-        hidden_files=500,
-        ignored_files=2_000,
+        text_files=8_000,
+        dirs=192,
+        lines_per_file=12,
+        line_width=96,
+        hidden_files=180,
+        ignored_files=500,
     ),
     "ignored-heavy": DatasetCase(
         "ignored-heavy",
-        text_files=8_000,
+        text_files=2_000,
         dirs=64,
-        lines_per_file=80,
-        line_width=120,
-        hidden_files=300,
-        ignored_files=8_000,
-        binary_files=100,
+        lines_per_file=120,
+        line_width=180,
+        hidden_files=120,
+        ignored_files=1_500,
+        binary_files=80,
     ),
     "binary-mixed": DatasetCase(
-        "binary-mixed", text_files=3_000, dirs=64, lines_per_file=80, line_width=120, binary_files=2_000
+        "binary-mixed", text_files=1_200, dirs=64, lines_per_file=120, line_width=180, binary_files=1_500
     ),
 }
 
@@ -471,8 +471,7 @@ async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
 
 async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
     all_candidates = await collect_walk_files(file_operator, root=query.root, include_hidden=query.include_hidden)
-    candidates = [candidate for candidate in all_candidates if await file_operator.is_file(candidate.path)]
-    candidates = filter_candidates_by_glob(candidates, query.include)
+    candidates = filter_candidates_by_glob(all_candidates, query.include)
     if not query.include_ignored:
         paths = [candidate.path for candidate in candidates]
         ignored = await filter_gitignored(paths, file_operator)
@@ -483,11 +482,18 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
         candidates = candidates[: query.max_files]
 
     regex = re.compile(query.pattern, re.UNICODE)
+    native_regex = _ripgrep_core.NativeRegex(query.pattern) if _ripgrep_core.is_available() else None
     total_matches = 0
     result_size = 2
     bytes_read = 0
     searched = 0
     for candidate in candidates:
+        if query.max_results > 0 and total_matches >= query.max_results:
+            break
+        per_file_match_limit = _effective_per_file_match_limit(
+            query.max_matches_per_file,
+            remaining_results=query.max_results - total_matches if query.max_results > 0 else -1,
+        )
         if candidate.size is not None:
             bytes_read += candidate.size
         try:
@@ -496,7 +502,8 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
                 candidate.path,
                 regex,
                 context_lines=query.context_lines,
-                max_matches_per_file=query.max_matches_per_file,
+                max_matches_per_file=per_file_match_limit,
+                native_regex=native_regex,
             )
         except UnicodeError:
             continue
@@ -514,6 +521,15 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
         "matches": total_matches,
         "result_size_bytes": result_size,
     }
+
+
+def _effective_per_file_match_limit(max_matches_per_file: int, *, remaining_results: int) -> int:
+    """Return the match limit for the next file after applying the global limit."""
+    if remaining_results > 0 and max_matches_per_file > 0:
+        return min(max_matches_per_file, remaining_results)
+    if remaining_results > 0:
+        return remaining_results
+    return max_matches_per_file
 
 
 def _python_match_glob(path: str, pattern: str) -> bool:

@@ -54,6 +54,15 @@ def _add_gitignore_info(results: dict[str, Any], gitignore_summary: list[str]) -
         results["<note>"] += note
 
 
+def _effective_per_file_match_limit(max_matches_per_file: int, *, remaining_results: int) -> int:
+    """Return the match limit for the next file after applying the global limit."""
+    if remaining_results > 0 and max_matches_per_file > 0:
+        return min(max_matches_per_file, remaining_results)
+    if remaining_results > 0:
+        return remaining_results
+    return max_matches_per_file
+
+
 def _truncate_results(results: dict[str, Any]) -> dict[str, Any]:
     """Truncate results by dropping context and limiting matching_line length.
 
@@ -158,24 +167,28 @@ class GrepTool(BaseTool):
         file_operator: FileOperator,
         file_path: str,
         max_file_size: int,
+        candidate_size: int | None = None,
+        *,
+        check_binary: bool = True,
     ) -> str | None:
         """Check if a file is searchable. Returns skip reason or None if OK."""
-        if await file_operator.is_dir(file_path):
-            return "directory"
-
         if max_file_size > 0:
-            try:
-                stat = await file_operator.stat(file_path)
-                if stat["size"] > max_file_size:
-                    return "too_large"
-            except Exception:
-                logger.debug(f"Failed to stat file, skipping size check: {file_path}", exc_info=True)
+            if candidate_size is not None and candidate_size > max_file_size:
+                return "too_large"
+            if candidate_size is None:
+                try:
+                    stat = await file_operator.stat(file_path)
+                    if stat["size"] > max_file_size:
+                        return "too_large"
+                except Exception:
+                    logger.debug(f"Failed to stat file, skipping size check: {file_path}", exc_info=True)
 
-        try:
-            if await is_binary_file(file_operator, file_path):
-                return "binary"
-        except Exception:
-            logger.debug(f"Failed to check binary status: {file_path}", exc_info=True)
+        if check_binary:
+            try:
+                if await is_binary_file(file_operator, file_path):
+                    return "binary"
+            except Exception:
+                logger.debug(f"Failed to check binary status: {file_path}", exc_info=True)
 
         return None
 
@@ -188,19 +201,31 @@ class GrepTool(BaseTool):
         max_results: int,
         max_matches_per_file: int,
         max_file_size: int = 0,
+        native_regex: _ripgrep_core.NativeRegex | None = None,
     ) -> tuple[dict[str, Any], int, list[str]]:
         """Search files and return (results, match_count, skipped_large_files)."""
         results: dict[str, Any] = {}
         total_matches_found = 0
         skipped_large_files: list[str] = []
 
+        native_searches_bytes = native_regex is not None and native_regex.supports_search_bytes
+
         for candidate in files:
+            if max_results > 0 and total_matches_found >= max_results:
+                results["<system>"] = f"Hit global limit: {max_results} matches"
+                return results, total_matches_found, skipped_large_files
+            per_file_match_limit = _effective_per_file_match_limit(
+                max_matches_per_file,
+                remaining_results=max_results - total_matches_found if max_results > 0 else -1,
+            )
             file_path = candidate.path
-            size = candidate.size
-            if max_file_size > 0 and size is not None and size > max_file_size:
-                skipped_large_files.append(file_path)
-                continue
-            skip_reason = await self._check_file_searchable(file_operator, file_path, max_file_size)
+            skip_reason = await self._check_file_searchable(
+                file_operator,
+                file_path,
+                max_file_size,
+                candidate.size,
+                check_binary=not native_searches_bytes,
+            )
             if skip_reason == "too_large":
                 skipped_large_files.append(file_path)
                 continue
@@ -213,7 +238,8 @@ class GrepTool(BaseTool):
                     file_path,
                     compiled_pattern,
                     context_lines=context_lines,
-                    max_matches_per_file=max_matches_per_file,
+                    max_matches_per_file=per_file_match_limit,
+                    native_regex=native_regex,
                 )
             except Exception as e:
                 logger.warning(f"Failed to read file {file_path}: {e}")
@@ -278,18 +304,15 @@ class GrepTool(BaseTool):
         """Search file contents using regular expressions."""
         file_operator = cast(FileOperator, ctx.deps.file_operator)
 
+        native_regex: _ripgrep_core.NativeRegex | None = None
         try:
             if _ripgrep_core.is_available():
-                _ripgrep_core.NativeRegex(pattern)
+                native_regex = _ripgrep_core.NativeRegex(pattern)
             compiled_pattern = re.compile(pattern, re.UNICODE)
         except (ValueError, re.error) as e:
             return f"Error: Invalid regex pattern: {e}"
 
-        candidates = [
-            candidate
-            for candidate in await collect_walk_files(file_operator, root=root, include_hidden=include_hidden)
-            if await file_operator.is_file(candidate.path)
-        ]
+        candidates = await collect_walk_files(file_operator, root=root, include_hidden=include_hidden)
         candidates = filter_candidates_by_glob(candidates, include)
         candidates = sort_candidates_by_mtime(candidates)
         gitignore_summary: list[str] = []
@@ -310,6 +333,7 @@ class GrepTool(BaseTool):
             max_results,
             max_matches_per_file,
             max_file_size,
+            native_regex,
         )
 
         logger.info(f"Total matches found: {total_matches}")

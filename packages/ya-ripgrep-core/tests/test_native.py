@@ -19,7 +19,28 @@ def test_match_glob_leading_slash_anchors_to_root() -> None:
     assert not ya_ripgrep_core.match_glob("src/main.py", "/*.py")
 
 
+def test_rust_glob_matches_many_paths() -> None:
+    matcher = ya_ripgrep_core.RustGlob("*.py")
+    assert matcher.match_many(["main.py", "src/main.py", "src/main.txt"]) == [True, True, False]
+    assert ya_ripgrep_core.match_globs(["main.py", "src/main.py", "src/main.txt"], "*.py") == [True, True, False]
+
+
 def test_rust_regex_matches_lines() -> None:
     matcher = ya_ripgrep_core.RustRegex(r"def \w+")
     assert matcher.is_match("def hello():")
     assert not matcher.is_match("class Hello:")
+
+
+def test_rust_regex_searches_bytes_with_context_and_limit() -> None:
+    matcher = ya_ripgrep_core.RustRegex(r"TODO|FIXME")
+    data = b"before\nTODO one\nafter\nFIXME two\nend\n"
+    assert matcher.search_bytes(data, context_lines=1, max_matches=1) == [
+        (2, "TODO one", "before\nTODO one\nafter\n", 1)
+    ]
+    assert matcher.search_bytes(data, context_lines=0, max_matches=0) == [
+        (2, "TODO one", "TODO one\n", 2),
+        (4, "FIXME two", "FIXME two\n", 4),
+    ]
+    assert ya_ripgrep_core.regex_search_bytes(r"FIXME", data, context_lines=1, max_matches=-1) == [
+        (4, "FIXME two", "after\nFIXME two\nend\n", 3)
+    ]
