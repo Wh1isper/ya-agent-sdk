@@ -1,0 +1,37 @@
+[project]
+name = "ya-ripgrep-core"
+dynamic = ["version"]
+description = "Native ripgrep-backed glob and regex matching primitives for YA Agent filesystem tools"
+authors = [{ name = "wh1isper", email = "jizhongsheng957@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+]
+
+[project.urls]
+Repository = "https://github.com/wh1isper/ya-mono"
+
+[build-system]
+requires = ["maturin>=1.8,<2", "uv-dynamic-versioning>=0.7.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "ya_ripgrep_core"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+bump = true
+
+[dependency-groups]
+dev = [
+    "pytest>=7.2.0",
+]

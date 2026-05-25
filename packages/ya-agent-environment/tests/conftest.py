@@ -1,11 +1,13 @@
 """Shared test fixtures and mock classes for ya_agent_environment tests."""
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from ya_agent_environment import (
     BaseResource,
     Environment,
+    FileEntry,
     FileOperator,
     FileStat,
     Shell,
@@ -168,8 +170,16 @@ class MockFileOperator(FileOperator):
     async def _stat_impl(self, path: str) -> FileStat:
         return FileStat(size=0, mtime=0, is_file=False, is_dir=False)
 
-    async def _glob_impl(self, pattern: str) -> list[str]:
-        return []
+    async def _walk_files_impl(
+        self,
+        root: str = ".",
+        *,
+        max_depth: int | None = None,
+        include_hidden: bool = False,
+        follow_symlinks: bool = False,
+    ) -> AsyncIterator[FileEntry]:
+        if False:
+            yield FileEntry(path=root, is_file=False, is_dir=False, size=0, mtime=0)
 
 
 class MockShell(Shell):

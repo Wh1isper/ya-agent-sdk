@@ -14,8 +14,15 @@ from ya_agent_environment import FileOperator
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.toolsets.core.filesystem._gitignore import filter_gitignored
-from ya_agent_sdk.toolsets.core.filesystem._types import GrepMatch
+from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
+from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_streaming
+from ya_agent_sdk.toolsets.core.filesystem._search import (
+    SearchCandidate,
+    collect_walk_files,
+    filter_candidates_by_glob,
+    filter_candidates_ignored,
+    sort_candidates_by_mtime,
+)
 from ya_agent_sdk.toolsets.core.filesystem._utils import is_binary_file
 
 logger = get_logger(__name__)
@@ -130,10 +137,10 @@ async def _guard_output_size(
 
 
 class GrepTool(BaseTool):
-    """Tool for searching file contents using regular expressions."""
+    """Tool for searching file contents using ripgrep-backed regular expressions."""
 
     name = "grep"
-    description = "Search file contents using regex patterns. Returns matches with context lines."
+    description = "Search file contents using ripgrep-backed regex patterns. Returns matches with context lines."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
@@ -145,43 +152,6 @@ class GrepTool(BaseTool):
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Load instruction from prompts/grep.md."""
         return _load_instruction()
-
-    def _search_file_for_matches(
-        self,
-        file_path: str,
-        content: str,
-        regex_pattern: re.Pattern[str],
-        context_lines: int,
-        max_matches_per_file: int,
-    ) -> dict[str, GrepMatch]:
-        """Search a single file for regex matches."""
-        matches: dict[str, GrepMatch] = {}
-        file_matches = 0
-
-        lines = content.splitlines(keepends=True)
-
-        for i, line in enumerate(lines):
-            if regex_pattern.search(line):
-                if max_matches_per_file > 0 and file_matches >= max_matches_per_file:
-                    break
-
-                start = max(0, i - context_lines)
-                end = min(len(lines), i + context_lines + 1)
-
-                context = "".join(lines[start:end])
-
-                match_data = GrepMatch(
-                    file_path=file_path,
-                    line_number=i + 1,
-                    matching_line=line.rstrip("\n"),
-                    context=context,
-                    context_start_line=start + 1,
-                )
-
-                matches[f"{file_path}:{i + 1}"] = match_data
-                file_matches += 1
-
-        return matches
 
     async def _check_file_searchable(
         self,
@@ -212,7 +182,7 @@ class GrepTool(BaseTool):
     async def _search_files(
         self,
         file_operator: FileOperator,
-        files: list[str],
+        files: list[SearchCandidate],
         compiled_pattern: re.Pattern[str],
         context_lines: int,
         max_results: int,
@@ -224,7 +194,12 @@ class GrepTool(BaseTool):
         total_matches_found = 0
         skipped_large_files: list[str] = []
 
-        for file_path in files:
+        for candidate in files:
+            file_path = candidate.path
+            size = candidate.size
+            if max_file_size > 0 and size is not None and size > max_file_size:
+                skipped_large_files.append(file_path)
+                continue
             skip_reason = await self._check_file_searchable(file_operator, file_path, max_file_size)
             if skip_reason == "too_large":
                 skipped_large_files.append(file_path)
@@ -233,16 +208,18 @@ class GrepTool(BaseTool):
                 continue
 
             try:
-                content = await file_operator.read_file(file_path)
+                search_result = await search_file_streaming(
+                    file_operator,
+                    file_path,
+                    compiled_pattern,
+                    context_lines=context_lines,
+                    max_matches_per_file=max_matches_per_file,
+                )
             except Exception as e:
                 logger.warning(f"Failed to read file {file_path}: {e}")
                 continue
 
-            file_matches = self._search_file_for_matches(
-                file_path, content, compiled_pattern, context_lines, max_matches_per_file
-            )
-
-            for match_key, match_data in file_matches.items():
+            for match_key, match_data in search_result.matches.items():
                 if max_results > 0 and total_matches_found >= max_results:
                     results["<system>"] = f"Hit global limit: {max_results} matches"
                     return results, total_matches_found, skipped_large_files
@@ -255,11 +232,21 @@ class GrepTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
-        pattern: Annotated[str, Field(description="Regular expression pattern to search for")],
+        pattern: Annotated[str, Field(description="Ripgrep-style regular expression pattern to search for")],
         include: Annotated[
             str,
-            Field(description="Glob pattern to filter files (default: **/*)", default="**/*"),
+            Field(
+                description=(
+                    "Ripgrep-style glob pattern used to select files (default: **/*). "
+                    "Bare patterns like '*.py' match recursively; leading '/' anchors to the FileOperator root."
+                ),
+                default="**/*",
+            ),
         ] = "**/*",
+        root: Annotated[
+            str,
+            Field(description="Logical root to search from (default: .)", default="."),
+        ] = ".",
         context_lines: Annotated[
             int,
             Field(description="Context lines before/after matches (default: 2)", default=2),
@@ -278,26 +265,40 @@ class GrepTool(BaseTool):
         ] = 50,
         include_ignored: Annotated[
             bool,
-            Field(description="Include files ignored by .gitignore (default: false)", default=False),
+            Field(
+                description="Include files ignored by .gitignore and nested ignore files (default: false)",
+                default=False,
+            ),
+        ] = False,
+        include_hidden: Annotated[
+            bool,
+            Field(description="Include hidden dot paths such as .git, .venv, and .env (default: false)", default=False),
         ] = False,
     ) -> dict[str, Any] | str:
         """Search file contents using regular expressions."""
         file_operator = cast(FileOperator, ctx.deps.file_operator)
 
         try:
+            if _ripgrep_core.is_available():
+                _ripgrep_core.NativeRegex(pattern)
             compiled_pattern = re.compile(pattern, re.UNICODE)
-        except re.error as e:
+        except (ValueError, re.error) as e:
             return f"Error: Invalid regex pattern: {e}"
 
-        files = await file_operator.glob(include)
+        candidates = [
+            candidate
+            for candidate in await collect_walk_files(file_operator, root=root, include_hidden=include_hidden)
+            if await file_operator.is_file(candidate.path)
+        ]
+        candidates = filter_candidates_by_glob(candidates, include)
+        candidates = sort_candidates_by_mtime(candidates)
         gitignore_summary: list[str] = []
 
         if not include_ignored:
-            filter_result = await filter_gitignored(files, file_operator)
-            files = filter_result.kept
+            candidates, filter_result = await filter_candidates_ignored(candidates, file_operator)
             gitignore_summary = filter_result.get_ignored_summary(max_items=5)
 
-        files_to_search = files[:max_files] if max_files > 0 else files
+        files_to_search = candidates[:max_files] if max_files > 0 else candidates
 
         max_file_size = ctx.deps.tool_config.grep_max_file_size
 

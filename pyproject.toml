@@ -16,6 +16,7 @@ members = [
     "packages/ya-agent-environment",
     "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
+    "packages/ya-ripgrep-core",
     "packages/ya-oauth",
     "packages/ya-oauth-provider",
     "packages/yaacli",
@@ -27,6 +28,7 @@ members = [
 ya-agent-environment = { workspace = true }
 ya-environment-relay = { workspace = true }
 ya-agent-sdk = { workspace = true }
+ya-ripgrep-core = { workspace = true }
 ya-oauth = { workspace = true }
 ya-oauth-provider = { workspace = true }
 ya-claw = { workspace = true }
@@ -112,6 +114,7 @@ ignore = [
 "packages/yaacli/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-agent-environment/tests/*" = ["S101", "S108", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-agent-sdk/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
+"packages/ya-ripgrep-core/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-oauth/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-oauth-provider/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-claw/tests/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904"]

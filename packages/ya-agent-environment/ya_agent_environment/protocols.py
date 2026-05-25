@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path, PurePath
 from typing import Any, Protocol, runtime_checkable
 
-from ya_agent_environment.types import FileStat, TruncatedResult
+from ya_agent_environment.types import FileEntry, FileStat, TruncatedResult
 
 # Default chunk size for streaming operations (64KB)
 DEFAULT_CHUNK_SIZE = 65536
@@ -237,8 +237,15 @@ class TmpFileOperator(Protocol):
         """Get file/directory status information."""
         ...
 
-    async def glob(self, pattern: str) -> list[str]:
-        """Find files matching glob pattern."""
+    def walk_files(
+        self,
+        root: str = ".",
+        *,
+        max_depth: int | None = None,
+        include_hidden: bool = False,
+        follow_symlinks: bool = False,
+    ) -> AsyncIterator[FileEntry]:
+        """Walk files and directories through the operator logical path space."""
         ...
 
     def read_bytes_stream(

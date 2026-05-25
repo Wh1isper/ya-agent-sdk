@@ -217,7 +217,7 @@ check: ## Run code quality tools for all active packages
 .PHONY: test
 test: ## Run environment, SDK, CLI, YA Claw, and YA Desktop tests
 	@echo "Running pytest for workspace packages"
-	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-agent-sdk/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
+	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-ripgrep-core/tests packages/ya-agent-sdk/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
 	@echo "Running YA Desktop tests"
 	@$(MAKE) desktop-test
 

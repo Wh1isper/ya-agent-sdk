@@ -133,6 +133,7 @@ jobs:
         run: >-
           uv run python -m pytest
           packages/ya-agent-environment/tests
+          packages/ya-ripgrep-core/tests
           packages/ya-agent-sdk/tests
           packages/ya-oauth/tests
           packages/ya-oauth-provider/tests

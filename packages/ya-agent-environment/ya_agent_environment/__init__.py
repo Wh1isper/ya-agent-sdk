@@ -46,7 +46,7 @@ from ya_agent_environment.shell import (
     Shell,
     StdinAdapter,
 )
-from ya_agent_environment.types import FileStat, TruncatedResult
+from ya_agent_environment.types import FileEntry, FileStat, TruncatedResult
 from ya_agent_environment.utils import generate_filetree
 
 __all__ = [
@@ -61,6 +61,7 @@ __all__ = [
     "EnvironmentError",
     "EnvironmentNotEnteredError",
     "ExecutionHandle",
+    "FileEntry",
     "FileOperationError",
     "FileOperator",
     "FileStat",

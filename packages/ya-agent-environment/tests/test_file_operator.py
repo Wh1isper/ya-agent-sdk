@@ -166,18 +166,6 @@ async def test_local_tmp_file_operator_stat(tmp_path: Path) -> None:
     assert stat["mtime"] > 0
 
 
-async def test_local_tmp_file_operator_glob(tmp_path: Path) -> None:
-    """LocalTmpFileOperator should support glob patterns."""
-    op = LocalTmpFileOperator(tmp_path)
-
-    await op.write_file("a.txt", "a")
-    await op.write_file("b.txt", "b")
-    await op.write_file("c.py", "c")
-
-    txt_files = await op.glob("*.txt")
-    assert sorted(txt_files) == ["a.txt", "b.txt"]
-
-
 async def test_local_tmp_file_operator_truncate_to_tmp(tmp_path: Path) -> None:
     """LocalTmpFileOperator should truncate large content and save to tmp."""
     op = LocalTmpFileOperator(tmp_path)
@@ -504,16 +492,6 @@ class LocalFileOperator(FileOperator):
             is_dir=await anyio.Path(resolved).is_dir(),
         )
 
-    async def _glob_impl(self, pattern: str) -> list[str]:
-        matches = []
-        for p in self._default_path.glob(pattern):
-            try:
-                rel = p.relative_to(self._default_path)
-                matches.append(str(rel))
-            except ValueError:
-                matches.append(str(p))
-        return sorted(matches)
-
     # Override streaming for true streaming behavior
     async def _read_bytes_stream_impl(
         self,
@@ -743,9 +721,6 @@ class TmpOnlyFileOperator(FileOperator):
         raise RuntimeError("Should not be called in tmp-only mode")
 
     async def _stat_impl(self, path: str) -> FileStat:
-        raise RuntimeError("Should not be called in tmp-only mode")
-
-    async def _glob_impl(self, pattern: str) -> list[str]:
         raise RuntimeError("Should not be called in tmp-only mode")
 
 

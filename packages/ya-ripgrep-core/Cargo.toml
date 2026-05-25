@@ -1,0 +1,16 @@
+[package]
+name = "ya-ripgrep-core"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[lib]
+name = "ya_ripgrep_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+globset = "0.4.18"
+grep-matcher = "0.1.8"
+grep-regex = "0.1.14"
+pyo3 = { version = "0.27.1", features = ["extension-module"] }

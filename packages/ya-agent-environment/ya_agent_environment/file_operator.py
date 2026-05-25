@@ -4,6 +4,7 @@ This module provides abstract base classes and implementations for file
 system operations, supporting both local and remote backends.
 """
 
+import os
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
@@ -13,7 +14,7 @@ from xml.etree import ElementTree as ET
 import anyio
 
 from ya_agent_environment.protocols import DEFAULT_CHUNK_SIZE, TmpFileOperator
-from ya_agent_environment.types import FileStat, TruncatedResult
+from ya_agent_environment.types import FileEntry, FileStat, TruncatedResult
 
 # Default directories to skip but mark in file tree
 DEFAULT_INSTRUCTIONS_SKIP_DIRS: frozenset[str] = frozenset({"node_modules", ".git", ".venv", "__pycache__"})
@@ -177,16 +178,54 @@ class LocalTmpFileOperator:
             is_dir=await anyio.Path(resolved).is_dir(),
         )
 
-    async def glob(self, pattern: str) -> list[str]:
-        """Find files matching glob pattern relative to tmp_dir."""
-        matches = []
-        for p in self._tmp_dir.glob(pattern):
-            try:
-                rel = p.relative_to(self._tmp_dir)
-                matches.append(str(rel))
-            except ValueError:
-                matches.append(str(p))
-        return sorted(matches)
+    async def walk_files(  # noqa: C901
+        self,
+        root: str = ".",
+        *,
+        max_depth: int | None = None,
+        include_hidden: bool = False,
+        follow_symlinks: bool = False,
+    ) -> AsyncIterator[FileEntry]:
+        """Walk files and directories relative to tmp_dir."""
+        base = self._resolve(root)
+        if not await anyio.Path(base).exists():
+            return
+
+        def _walk() -> list[FileEntry]:
+            entries: list[FileEntry] = []
+            root_depth = len(base.parts)
+            for current, dirnames, filenames in os.walk(base, followlinks=follow_symlinks):
+                current_path = Path(current)
+                depth = len(current_path.parts) - root_depth
+                if max_depth is not None and depth >= max_depth:
+                    dirnames[:] = []
+                if not include_hidden:
+                    dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+                    filenames = [name for name in filenames if not name.startswith(".")]
+                for name in sorted(dirnames):
+                    path = current_path / name
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    rel = path.relative_to(self._tmp_dir).as_posix()
+                    entries.append(
+                        FileEntry(path=rel, is_file=False, is_dir=True, size=stat.st_size, mtime=stat.st_mtime)
+                    )
+                for name in sorted(filenames):
+                    path = current_path / name
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    rel = path.relative_to(self._tmp_dir).as_posix()
+                    entries.append(
+                        FileEntry(path=rel, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime)
+                    )
+            return entries
+
+        for entry in await anyio.to_thread.run_sync(_walk):  # type: ignore[reportAttributeAccessIssue]
+            yield entry
 
     async def read_bytes_stream(
         self,
@@ -511,10 +550,78 @@ class FileOperator(ABC):
         """Get file status. Implement in subclass."""
         ...
 
-    @abstractmethod
-    async def _glob_impl(self, pattern: str) -> list[str]:
-        """Find files matching glob pattern. Implement in subclass."""
-        ...
+    async def _walk_files_impl(  # noqa: C901
+        self,
+        root: str = ".",
+        *,
+        max_depth: int | None = None,
+        include_hidden: bool = False,
+        follow_symlinks: bool = False,
+    ) -> AsyncIterator[FileEntry]:
+        """Walk files and directories. Override for efficiency.
+
+        The default implementation recursively traverses directories using
+        list_dir_with_types() and stat(), so remote file operators can support
+        search without exposing local paths.
+        """
+        if root in {"", "."}:
+            root = "."
+        try:
+            root_is_dir = await self._is_dir_impl(root)
+            root_is_file = False if root_is_dir else await self._is_file_impl(root)
+        except Exception:
+            return
+
+        if root_is_file:
+            try:
+                stat = await self._stat_impl(root)
+            except Exception:
+                stat = FileStat(size=0, mtime=0.0, is_file=True, is_dir=False)
+            yield FileEntry(
+                path=root,
+                is_file=True,
+                is_dir=False,
+                size=stat.get("size"),
+                mtime=stat.get("mtime"),
+            )
+            return
+
+        if not root_is_dir:
+            return
+
+        async def _walk_dir(path: str, depth: int) -> AsyncIterator[FileEntry]:
+            try:
+                children = await self._list_dir_with_types_impl(path)
+            except Exception:
+                return
+            for name, is_dir in children:
+                if not include_hidden and name.startswith("."):
+                    continue
+                child_path = name if path == "." else f"{path.rstrip('/')}/{name}"
+                try:
+                    stat = await self._stat_impl(child_path)
+                except Exception:
+                    stat = FileStat(
+                        size=0,
+                        mtime=0.0,
+                        is_file=not is_dir,
+                        is_dir=is_dir,
+                    )
+                is_file = bool(stat.get("is_file", not is_dir))
+                child_is_dir = bool(stat.get("is_dir", is_dir))
+                yield FileEntry(
+                    path=child_path,
+                    is_file=is_file,
+                    is_dir=child_is_dir,
+                    size=stat.get("size"),
+                    mtime=stat.get("mtime"),
+                )
+                if child_is_dir and (max_depth is None or depth + 1 < max_depth):
+                    async for descendant in _walk_dir(child_path, depth + 1):
+                        yield descendant
+
+        async for entry in _walk_dir(root, 0):
+            yield entry
 
     # Streaming methods - optional to override (default uses read_bytes/write_file)
 
@@ -734,10 +841,28 @@ class FileOperator(ABC):
             return await self._tmp_file_operator.stat(routed_path)  # type: ignore[union-attr]
         return await self._stat_impl(path)
 
-    async def glob(self, pattern: str) -> list[str]:
-        """Find files matching glob pattern."""
-        # Note: glob doesn't support tmp routing as patterns are relative to default_path
-        return await self._glob_impl(pattern)
+    async def walk_files(
+        self,
+        root: str = ".",
+        *,
+        max_depth: int | None = None,
+        include_hidden: bool = False,
+        follow_symlinks: bool = False,
+    ) -> AsyncIterator[FileEntry]:
+        """Walk files and directories through the FileOperator logical path space.
+
+        This is the portable enumeration primitive used by search tools. Paths
+        yielded by this method are suitable for read_file(), read_bytes_stream(),
+        stat(), and other FileOperator methods.
+        """
+        # Note: walk_files doesn't support tmp routing as roots are relative to default_path.
+        async for entry in self._walk_files_impl(
+            root,
+            max_depth=max_depth,
+            include_hidden=include_hidden,
+            follow_symlinks=follow_symlinks,
+        ):
+            yield entry
 
     async def read_bytes_stream(
         self,

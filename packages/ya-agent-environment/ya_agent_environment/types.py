@@ -25,3 +25,18 @@ class TruncatedResult(TypedDict):
     """Path to the full content file in tmp directory."""
     message: str
     """Message indicating truncation occurred."""
+
+
+class FileEntry(TypedDict):
+    """File tree entry produced by FileOperator.walk_files."""
+
+    path: str
+    """Logical path relative to the operator default path, or an absolute logical path."""
+    is_file: bool
+    """True if path is a regular file."""
+    is_dir: bool
+    """True if path is a directory."""
+    size: int | None
+    """File size in bytes when known."""
+    mtime: float | None
+    """Modification time as Unix timestamp when known."""

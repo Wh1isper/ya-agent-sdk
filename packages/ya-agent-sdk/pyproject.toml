@@ -31,7 +31,8 @@ document = ["pymupdf>=1.26.6", "pymupdf4llm>=0.2.8", "markitdown[docx,pptx,xlsx,
 s3 = ["boto3>=1.34"]
 tool-search = ["rank-bm25>=0.2.2"]
 oauth = ["ya-oauth-provider"]
-all = ["ya-agent-sdk[docker,web,document,s3,tool-search,examples,oauth]"]
+ripgrep = ["ya-ripgrep-core"]
+all = ["ya-agent-sdk[docker,web,document,s3,tool-search,examples,oauth,ripgrep]"]
 
 [dependency-groups]
 dev = [
@@ -98,3 +99,4 @@ per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["ya-agent-sdk", "python-d
 [tool.uv.sources]
 ya-agent-environment = { workspace = true }
 ya-oauth-provider = { workspace = true }
+ya-ripgrep-core = { workspace = true }

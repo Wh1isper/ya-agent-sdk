@@ -425,35 +425,6 @@ class CompositeFileOperator(FileOperator):
             stream = await src_mount.file_operator.read_bytes_stream(src_rel, chunk_size=self._default_chunk_size)
             await dst_mount.file_operator.write_bytes_stream(dst_rel, stream)
 
-    async def _glob_impl(self, pattern: str) -> list[str]:
-        """Find files matching glob pattern.
-
-        Relative patterns are globbed against the default mount's backend.
-        Absolute patterns are matched to the appropriate mount and globbed there.
-        Results are returned as relative paths for relative patterns, or absolute
-        virtual paths for absolute patterns.
-        """
-        if self._default_path is None:
-            return []
-
-        pattern_path = as_virtual_path(pattern)
-
-        if pattern_path.is_absolute():
-            # Find mount for absolute pattern
-            normalized = normalize_virtual_path(pattern_path)
-            try:
-                mount = self._find_mount(normalized)
-            except PathNotAllowedError:
-                return []
-            rel_pattern = str(normalized.relative_to(mount.virtual_path))
-            results = await mount.file_operator.glob(rel_pattern)
-            # Convert backend-relative results to absolute virtual paths
-            return [str(mount.virtual_path / r) for r in results]
-        else:
-            # Relative pattern: glob against default mount only
-            mount = self._find_mount(as_virtual_path(self._default_path))
-            return await mount.file_operator.glob(pattern)
-
     # --- Streaming overrides ---
 
     async def _read_bytes_stream_impl(

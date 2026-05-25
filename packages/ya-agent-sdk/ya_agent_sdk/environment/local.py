@@ -7,12 +7,11 @@ using standard library functions.
 from __future__ import annotations
 
 import asyncio
-import glob as glob_module
 import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
@@ -21,6 +20,7 @@ import anyio
 from ya_agent_environment import (
     Environment,
     ExecutionHandle,
+    FileEntry,
     FileOperationError,
     FileOperator,
     FileStat,
@@ -378,42 +378,69 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("stat", path, str(e)) from e
 
-    async def _glob_impl(self, pattern: str) -> list[str]:
-        """Find files matching glob pattern."""
+    async def _walk_files_impl(  # noqa: C901
+        self,
+        root: str = ".",
+        *,
+        max_depth: int | None = None,
+        include_hidden: bool = False,
+        follow_symlinks: bool = False,
+    ) -> AsyncIterator[FileEntry]:
+        """Walk files and directories under the local default path."""
         default_path = self._local_default_path()
         if default_path is None:
-            return []
+            return
+        resolved_root = self._resolve_path(root)
+        if not await anyio.Path(resolved_root).exists():
+            return
 
-        matches = []
-        pattern_path = Path(pattern)
+        def _walk() -> list[FileEntry]:  # noqa: C901
+            entries: list[FileEntry] = []
+            if resolved_root.is_file():
+                stat = resolved_root.stat()
+                path = resolved_root.relative_to(default_path).as_posix()
+                entries.append(FileEntry(path=path, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime))
+                return entries
 
-        # Handle absolute paths - Python 3.13's pathlib.glob() doesn't support them
-        if pattern_path.is_absolute():
-            # Use glob module for absolute patterns
-            for p_str in glob_module.glob(pattern, recursive=True):
-                resolved = Path(p_str).resolve()
-                # Filter by allowed_paths for security
-                if self._is_path_allowed(resolved):
-                    matches.append(p_str)
-        else:
-            # Use pathlib for relative patterns
-            for p in default_path.glob(pattern):
-                try:
-                    rel = p.relative_to(default_path)
-                    matches.append(rel.as_posix())
-                except ValueError:
-                    matches.append(p.as_posix())
+            root_depth = len(resolved_root.parts)
+            for current, dirnames, filenames in os.walk(resolved_root, followlinks=follow_symlinks):
+                current_path = Path(current)
+                depth = len(current_path.parts) - root_depth
+                if max_depth is not None and depth >= max_depth:
+                    dirnames[:] = []
+                if not include_hidden:
+                    dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+                    filenames = [name for name in filenames if not name.startswith(".")]
+                for name in sorted(dirnames):
+                    path = current_path / name
+                    resolved = path.resolve()
+                    if not self._is_path_allowed(resolved):
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    rel = resolved.relative_to(default_path).as_posix()
+                    entries.append(
+                        FileEntry(path=rel, is_file=False, is_dir=True, size=stat.st_size, mtime=stat.st_mtime)
+                    )
+                for name in sorted(filenames):
+                    path = current_path / name
+                    resolved = path.resolve()
+                    if not self._is_path_allowed(resolved):
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    rel = resolved.relative_to(default_path).as_posix()
+                    entries.append(
+                        FileEntry(path=rel, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime)
+                    )
+            return entries
 
-        # Sort by modification time (newest first)
-        def get_mtime(x: str) -> float:
-            try:
-                p = Path(x) if Path(x).is_absolute() else (default_path / x)
-                return p.stat().st_mtime
-            except (OSError, FileNotFoundError):
-                return 0.0
-
-        matches.sort(key=get_mtime, reverse=True)
-        return matches
+        for entry in await anyio.to_thread.run_sync(_walk):  # type: ignore[reportAttributeAccessIssue]
+            yield entry
 
 
 @dataclass(frozen=True)
@@ -841,61 +868,86 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("stat", path, str(e)) from e
 
-    async def _glob_impl(self, pattern: str) -> list[str]:  # noqa: C901
-        """Find files matching glob pattern.
-
-        Relative patterns are globbed against the default mount's host path.
-        Absolute virtual patterns are matched to the appropriate mount and globbed there.
-        Results are returned as relative paths for relative patterns,
-        or absolute virtual paths for absolute patterns.
-        """
+    async def _walk_files_impl(  # noqa: C901
+        self,
+        root: str = ".",
+        *,
+        max_depth: int | None = None,
+        include_hidden: bool = False,
+        follow_symlinks: bool = False,
+    ) -> AsyncIterator[FileEntry]:
+        """Walk files and directories under the virtual default path."""
         if self._default_path is None:
-            return []
+            return
+        root_virtual = as_virtual_path(root)
+        if not root_virtual.is_absolute():
+            root_virtual = normalize_virtual_path(as_virtual_path(self._default_path) / root_virtual)
+        host_root = self._to_host(str(root_virtual))
+        default_virtual = as_virtual_path(self._default_path)
+        if not await anyio.Path(host_root).exists():
+            return
 
-        pattern_path = as_virtual_path(pattern)
-        default_mount = self._find_mount(as_virtual_path(self._default_path))
-        default_host = default_mount.host_path.resolve()
-
-        if pattern_path.is_absolute():
-            # Find which mount this pattern belongs to
-            normalized = normalize_virtual_path(pattern_path)
-            try:
-                mount = self._find_mount(normalized)
-            except PathNotAllowedError:
-                return []
-            mount_host = mount.host_path.resolve()
-            rel = normalized.relative_to(mount.virtual_path)
-            host_pattern = str(mount_host / rel)
-            matches = []
-            for p_str in glob_module.glob(host_pattern, recursive=True):
-                resolved = Path(p_str).resolve()
-                virtual_rel = self._to_virtual_rel(resolved)
-                if virtual_rel is not None:
-                    matches.append(virtual_rel)
-        else:
-            # Relative pattern: glob on default mount's host path
-            matches = []
-            for p in default_host.glob(pattern):
+        def _logical_path(host_path: Path) -> str | None:
+            virtual = self._to_virtual_rel(host_path.resolve())
+            if virtual is None:
+                return None
+            virtual_path = as_virtual_path(virtual)
+            if virtual_path.is_absolute():
                 try:
-                    rel = p.relative_to(default_host)
-                    matches.append(rel.as_posix())
+                    return virtual_path.relative_to(default_virtual).as_posix()
                 except ValueError:
-                    matches.append(p.as_posix())
+                    return virtual_path.as_posix()
+            return virtual
 
-        # Sort by modification time (newest first)
-        def get_mtime(x: str) -> float:
-            try:
-                target = as_virtual_path(x)
-                if target.is_absolute():
-                    # Absolute virtual path - translate to host for mtime
-                    host = self._to_host(x)
-                    return host.stat().st_mtime
-                return (default_host / Path(target.as_posix())).stat().st_mtime
-            except (OSError, FileNotFoundError):
-                return 0.0
+        def _walk() -> list[FileEntry]:  # noqa: C901
+            entries: list[FileEntry] = []
+            if host_root.is_file():
+                logical = _logical_path(host_root)
+                if logical is None:
+                    return entries
+                stat = host_root.stat()
+                entries.append(
+                    FileEntry(path=logical, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime)
+                )
+                return entries
 
-        matches.sort(key=get_mtime, reverse=True)
-        return matches
+            root_depth = len(host_root.parts)
+            for current, dirnames, filenames in os.walk(host_root, followlinks=follow_symlinks):
+                current_path = Path(current)
+                depth = len(current_path.parts) - root_depth
+                if max_depth is not None and depth >= max_depth:
+                    dirnames[:] = []
+                if not include_hidden:
+                    dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+                    filenames = [name for name in filenames if not name.startswith(".")]
+                for name in sorted(dirnames):
+                    path = current_path / name
+                    logical = _logical_path(path)
+                    if logical is None:
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    entries.append(
+                        FileEntry(path=logical, is_file=False, is_dir=True, size=stat.st_size, mtime=stat.st_mtime)
+                    )
+                for name in sorted(filenames):
+                    path = current_path / name
+                    logical = _logical_path(path)
+                    if logical is None:
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    entries.append(
+                        FileEntry(path=logical, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime)
+                    )
+            return entries
+
+        for entry in await anyio.to_thread.run_sync(_walk):  # type: ignore[reportAttributeAccessIssue]
+            yield entry
 
 
 class LocalShell(Shell):

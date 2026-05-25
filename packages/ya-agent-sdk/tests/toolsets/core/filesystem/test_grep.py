@@ -465,6 +465,55 @@ async def test_grep_include_ignored_flag(tmp_path: Path) -> None:
         assert any("debug.log" in k for k in match_keys)
 
 
+async def test_grep_hidden_files_require_include_hidden(tmp_path: Path) -> None:
+    """Should search hidden dot paths only when include_hidden=True."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GrepTool()
+
+        (tmp_path / ".env").write_text("TOKEN=secret")
+        (tmp_path / "visible.txt").write_text("TOKEN=public")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        default_result = await tool.call(mock_run_ctx, pattern="TOKEN", max_files=-1)
+        assert isinstance(default_result, dict)
+        default_paths = {v["file_path"] for v in default_result.values() if isinstance(v, dict)}
+        assert default_paths == {"visible.txt"}
+
+        hidden_result = await tool.call(mock_run_ctx, pattern="TOKEN", include_hidden=True, max_files=-1)
+        assert isinstance(hidden_result, dict)
+        hidden_paths = {v["file_path"] for v in hidden_result.values() if isinstance(v, dict)}
+        assert hidden_paths == {".env", "visible.txt"}
+
+
+async def test_grep_root_limits_traversal(tmp_path: Path) -> None:
+    """Should search from the requested logical root."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GrepTool()
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("hello app")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_main.py").write_text("hello test")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, pattern="hello", root="src", include="*.py")
+        assert isinstance(result, dict)
+        paths = {v["file_path"] for v in result.values() if isinstance(v, dict)}
+        assert paths == {"src/main.py"}
+
+
 async def test_grep_no_gitignore_no_excluded_info(tmp_path: Path) -> None:
     """Should not include gitignore info when no .gitignore exists."""
     async with AsyncExitStack() as stack:

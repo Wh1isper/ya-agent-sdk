@@ -13,7 +13,8 @@ from ya_agent_environment import FileOperator
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.toolsets.core.filesystem._gitignore import filter_gitignored
+from ya_agent_sdk.toolsets.core.filesystem._gitignore import GitignoreFilterResult
+from ya_agent_sdk.toolsets.core.filesystem._search import collect_glob_candidates
 
 logger = get_logger(__name__)
 
@@ -31,10 +32,10 @@ def _load_instruction() -> str:
 
 
 class GlobTool(BaseTool):
-    """Tool for finding files matching glob patterns."""
+    """Tool for finding files matching ripgrep-style glob patterns."""
 
     name = "glob"
-    description = "Find files by glob pattern. Returns paths sorted by modification time (newest first)."
+    description = "Find files by ripgrep-style glob pattern. Returns paths sorted by modification time (newest first)."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Check if tool is available (requires file_operator)."""
@@ -52,11 +53,27 @@ class GlobTool(BaseTool):
         ctx: RunContext[AgentContext],
         pattern: Annotated[
             str,
-            Field(description="Glob pattern to match files (e.g. '**/*.py')"),
+            Field(
+                description=(
+                    "Ripgrep-style glob pattern to match files and directories. "
+                    "Bare patterns like '*.py' match recursively; leading '/' anchors to the FileOperator root."
+                )
+            ),
         ],
+        root: Annotated[
+            str,
+            Field(description="Logical root to search from (default: .)", default="."),
+        ] = ".",
         include_ignored: Annotated[
             bool,
-            Field(description="Include files ignored by .gitignore (default: false)", default=False),
+            Field(
+                description="Include files ignored by .gitignore and nested ignore files (default: false)",
+                default=False,
+            ),
+        ] = False,
+        include_hidden: Annotated[
+            bool,
+            Field(description="Include hidden dot paths such as .git, .venv, and .env (default: false)", default=False),
         ] = False,
         max_results: Annotated[
             int,
@@ -69,41 +86,43 @@ class GlobTool(BaseTool):
     ) -> list[str] | dict[str, Any]:
         """Find files matching the given glob pattern."""
         file_operator = cast(FileOperator, ctx.deps.file_operator)
-        files = await file_operator.glob(pattern)
+        candidates, filter_result = await collect_glob_candidates(
+            file_operator,
+            pattern,
+            root=root,
+            include_ignored=include_ignored,
+            include_hidden=include_hidden,
+        )
+        files = [candidate.path for candidate in candidates]
 
-        # Build the logical result (with max_results and gitignore filtering)
         if include_ignored:
             result = _apply_max_results(files, max_results)
         else:
-            result = await _build_filtered_result(files, file_operator, max_results)
+            result = _build_filtered_result(files, filter_result, max_results)
 
-        # Hard output size guard: write to temp file if serialized output is too large
         return await _guard_output_size(result, file_operator)
 
 
-async def _build_filtered_result(
+def _build_filtered_result(
     files: list[str],
-    file_operator: FileOperator,
+    filter_result: GitignoreFilterResult | None,
     max_results: int,
 ) -> list[str] | dict[str, Any]:
-    """Build result with gitignore filtering and max_results applied."""
-    filtered = await filter_gitignored(files, file_operator)
-    kept = filtered.kept
-
-    total_count = len(kept)
+    """Build result with gitignore metadata and max_results applied."""
+    total_count = len(files)
     effective_limit = max_results if max_results >= 0 else total_count
     truncated = total_count > effective_limit
-    if truncated:
-        kept = kept[:effective_limit]
+    kept = files[:effective_limit] if truncated else files
+    ignored = filter_result.ignored if filter_result is not None else []
 
-    if not filtered.ignored and not truncated:
+    if not ignored and not truncated:
         return kept
 
     response: dict[str, Any] = {"files": kept}
     notes: list[str] = []
 
-    if filtered.ignored:
-        response["gitignore_excluded"] = filtered.get_ignored_summary(max_items=5)
+    if ignored and filter_result is not None:
+        response["gitignore_excluded"] = filter_result.get_ignored_summary(max_items=5)
         notes.append("Some files excluded by .gitignore. Set include_ignored=true to include them.")
 
     if truncated:

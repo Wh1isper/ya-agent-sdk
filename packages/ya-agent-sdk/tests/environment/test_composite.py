@@ -319,34 +319,6 @@ async def test_same_mount_move(composite_op: CompositeFileOperator):
     assert await composite_op.read_file("/workspace/dst.txt") == "move within"
 
 
-# --- Glob ---
-
-
-@pytest.mark.anyio
-async def test_glob_relative_pattern(composite_op: CompositeFileOperator):
-    """Relative glob patterns search the default mount."""
-    await composite_op.write_file("/workspace/a.py", "")
-    await composite_op.write_file("/workspace/b.txt", "")
-    await composite_op.write_file("/mnt/pc/c.py", "")
-
-    results = await composite_op.glob("*.py")
-    assert "a.py" in results
-    assert "b.txt" not in results
-    # Remote mount files should NOT appear in relative glob
-    assert "c.py" not in results
-
-
-@pytest.mark.anyio
-async def test_glob_absolute_pattern(composite_op: CompositeFileOperator):
-    """Absolute glob patterns search the specified mount."""
-    await composite_op.write_file("/mnt/pc/x.py", "")
-    await composite_op.write_file("/mnt/pc/y.txt", "")
-
-    results = await composite_op.glob("/mnt/pc/*.py")
-    assert any("x.py" in r for r in results)
-    assert not any("y.txt" in r for r in results)
-
-
 # --- Append ---
 
 

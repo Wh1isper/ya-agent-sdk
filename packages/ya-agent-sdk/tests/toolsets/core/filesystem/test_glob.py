@@ -209,6 +209,57 @@ async def test_glob_include_ignored_flag(tmp_path: Path) -> None:
         assert any("debug.log" in f for f in result)
 
 
+async def test_glob_hidden_files_require_include_hidden(tmp_path: Path) -> None:
+    """Should include hidden dot paths only when include_hidden=True."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GlobTool()
+
+        (tmp_path / ".env").write_text("SECRET=value")
+        (tmp_path / ".config").mkdir()
+        (tmp_path / ".config" / "settings.toml").write_text("key = 'value'")
+        (tmp_path / "visible.txt").write_text("content")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        default_result = await tool.call(mock_run_ctx, pattern="**/*")
+        assert isinstance(default_result, list)
+        assert "visible.txt" in default_result
+        assert ".env" not in default_result
+        assert ".config/settings.toml" not in default_result
+
+        hidden_result = await tool.call(mock_run_ctx, pattern="**/*", include_hidden=True)
+        assert isinstance(hidden_result, list)
+        assert ".env" in hidden_result
+        assert ".config/settings.toml" in hidden_result
+
+
+async def test_glob_root_limits_traversal(tmp_path: Path) -> None:
+    """Should traverse from the requested logical root."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GlobTool()
+
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("content")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_main.py").write_text("content")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, pattern="*.py", root="src")
+        assert isinstance(result, list)
+        assert result == ["src/main.py"]
+
+
 async def test_glob_max_results_truncates(tmp_path: Path) -> None:
     """Should truncate results when exceeding max_results."""
     async with AsyncExitStack() as stack:
