@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 SELF_SUBAGENT_NAME = "self"
-SELF_SUBAGENT_INSTRUCTION = """Fork the current agent with the current message history, system prompt, model, and all non-delegation tools. Use this after making a plan to run independent plan steps in parallel while keeping the full current context. The fork cannot delegate further."""
+SELF_SUBAGENT_INSTRUCTION = """Fork the current agent with the current message history, system prompt, model, capabilities, and ordinary tools. Delegation tools are hidden from self forks, so use them for focused work that benefits from the parent context."""
 
 
 @runtime_checkable
@@ -139,7 +139,18 @@ def _generate_instruction(
     if not available_entries and not self_available:
         return None
 
-    lines = ["Use the delegate tool to call specialized subagents or fork yourself for parallel work:\n"]
+    lines = ["Use the delegate tool for bounded subtasks that can return compact results.\n"]
+    lines.append("<delegation-best-practices>")
+    lines.append("Plan first, then call multiple delegates in the same response for independent work.")
+    if self_available:
+        lines.append(
+            "Use self forks for full-context plan steps, mid-task repository exploration, "
+            "assumption checks, approach comparisons, and implementation spikes."
+        )
+    if available_entries:
+        lines.append("Use named specialist subagents when a listed role matches the task.")
+    lines.append("Ask each delegate to return concise findings, changed files, tests run, and risks.")
+    lines.append("</delegation-best-practices>\n")
 
     if self_available:
         lines.append(f'<subagent name="{SELF_SUBAGENT_NAME}">')
@@ -156,11 +167,10 @@ def _generate_instruction(
         lines.append("</subagent>\n")
 
     lines.append("<execution-model>")
-    lines.append("Delegate calls are BLOCKING -- the agent waits for each subagent to finish before proceeding.")
-    lines.append("Multiple delegate calls in the SAME model response run concurrently (parallel), but the agent")
-    lines.append("is still blocked until ALL of them complete. This is parallel-but-blocking, not async.")
-    lines.append("For independent tasks, call multiple delegates in a single response to run them in parallel.")
-    lines.append("Sequential delegate calls (one per turn) run serially.")
+    lines.append("Delegate calls are blocking: the parent waits for each delegated result before proceeding.")
+    lines.append("Multiple delegate calls in the same model response run concurrently.")
+    lines.append("The parent resumes after all delegate calls in that response complete.")
+    lines.append("Sequential delegate calls across turns run serially.")
     lines.append("</execution-model>")
 
     return "\n".join(lines)
