@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark FileOperator-first search backends.
+"""Benchmark FileOperator-first file search backends.
 
 The harness compares two implementations that share the same public search
 interface:
@@ -37,6 +37,7 @@ from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
 from ya_agent_sdk.toolsets.core.filesystem._gitignore import filter_gitignored
 from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_streaming
 from ya_agent_sdk.toolsets.core.filesystem._search import (
+    collect_walk_entries,
     collect_walk_files,
     filter_candidates_by_glob,
     sort_candidates_by_mtime,
@@ -378,9 +379,7 @@ def run_parent(args: argparse.Namespace) -> None:
                     print(_format_progress(row), flush=True)
 
     if args.summary:
-        summary_path = Path(args.summary)
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        summary_path.write_text(summarize_rows(rows), encoding="utf-8")
+        summarize_file(output, Path(args.summary))
 
 
 def _format_progress(row: dict[str, Any]) -> str:
@@ -448,7 +447,7 @@ def _rss_to_mb(value: int) -> float:
 
 
 async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
-    all_candidates = await collect_walk_files(file_operator, root=query.root, include_hidden=query.include_hidden)
+    all_candidates = await collect_walk_entries(file_operator, root=query.root, include_hidden=query.include_hidden)
     candidates = filter_candidates_by_glob(all_candidates, query.pattern)
     if not query.include_ignored:
         paths = [candidate.path for candidate in candidates]
@@ -566,7 +565,7 @@ def summarize_rows(rows: Sequence[dict[str, Any]]) -> str:
         grouped[key].append(row)
 
     lines = [
-        "# Search Benchmark Summary",
+        "# File Search Benchmark Summary",
         "",
         "| case | op | query | variant | backend | p50 ms | p95 ms | peak RSS MB | Python peak MB | matches | files searched |",
         "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -592,12 +591,30 @@ def summarize_rows(rows: Sequence[dict[str, Any]]) -> str:
     lines.extend(["", "## Ratios", ""])
     for key in sorted(aggregates):
         variants = aggregates[key]
+        case, operation, query = key
+        if "base" in variants and "ripgrep-core" in variants:
+            base = variants["base"]
+            rg = variants["ripgrep-core"]
+            speed_ratio = base["p50"] / rg["p50"] if rg["p50"] else 0.0
+            rss_ratio = base["rss"] / rg["rss"] if rg["rss"] else 0.0
+            lines.append(
+                f"- {case} {operation} {query}: head ripgrep-core speed ratio {speed_ratio:.2f}x, "
+                f"peak RSS ratio {rss_ratio:.2f}x versus base."
+            )
+        if "base" in variants and "python-native" in variants:
+            base = variants["base"]
+            py = variants["python-native"]
+            speed_ratio = base["p50"] / py["p50"] if py["p50"] else 0.0
+            rss_ratio = base["rss"] / py["rss"] if py["rss"] else 0.0
+            lines.append(
+                f"- {case} {operation} {query}: head python-native speed ratio {speed_ratio:.2f}x, "
+                f"peak RSS ratio {rss_ratio:.2f}x versus base."
+            )
         if "python-native" in variants and "ripgrep-core" in variants:
             py = variants["python-native"]
             rg = variants["ripgrep-core"]
             speed_ratio = py["p50"] / rg["p50"] if rg["p50"] else 0.0
             rss_ratio = py["rss"] / rg["rss"] if rg["rss"] else 0.0
-            case, operation, query = key
             lines.append(
                 f"- {case} {operation} {query}: ripgrep-core speed ratio {speed_ratio:.2f}x, "
                 f"peak RSS ratio {rss_ratio:.2f}x versus python-native."
@@ -619,18 +636,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     generate = subparsers.add_parser("generate", help="Generate a deterministic benchmark dataset")
     generate.add_argument("--case", choices=case_choices, default="full")
-    generate.add_argument("--output", type=Path, default=Path(".bench/search-full"))
+    generate.add_argument("--output", type=Path, default=Path(".bench/file-search-full"))
     generate.add_argument("--force", action="store_true")
 
     run = subparsers.add_parser("run", help="Run benchmark queries")
     run.add_argument("--case", choices=case_choices, default="full")
-    run.add_argument("--dataset", default=".bench/search-full")
+    run.add_argument("--dataset", default=".bench/file-search-full")
     run.add_argument("--variants", nargs="+", default=["python-native", "ripgrep-core"])
     run.add_argument("--operations", type=_csv, default=None, help="Comma-separated operation filter: glob,grep")
     run.add_argument("--queries", type=_csv, default=None, help="Comma-separated query names")
     run.add_argument("--repeat", type=int, default=3)
-    run.add_argument("--output", default=".bench/results/search.jsonl")
-    run.add_argument("--summary", default=".bench/results/search-summary.md")
+    run.add_argument("--output", default=".bench/results/file-search.jsonl")
+    run.add_argument("--summary", default=".bench/results/file-search-summary.md")
     run.add_argument("--append", action="store_true", help="Append to an existing JSONL output file")
 
     worker = subparsers.add_parser("worker", help=argparse.SUPPRESS)

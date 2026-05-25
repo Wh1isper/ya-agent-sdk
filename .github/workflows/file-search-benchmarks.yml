@@ -1,0 +1,188 @@
+name: File Search Benchmarks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/file-search-benchmarks.yml"
+      - "benchmarks/file_search/**"
+      - "packages/ya-agent-sdk/ya_agent_sdk/toolsets/core/filesystem/**"
+      - "packages/ya-agent-sdk/tests/toolsets/core/filesystem/**"
+      - "packages/ya-agent-sdk/pyproject.toml"
+      - "packages/ya-agent-environment/ya_agent_environment/**"
+      - "packages/ya-agent-environment/tests/**"
+      - "packages/ya-ripgrep-core/**"
+      - "Makefile"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+    inputs:
+      case:
+        description: Benchmark dataset case
+        required: true
+        default: quick
+        type: choice
+        options:
+          - quick
+          - full
+          - small
+          - medium
+          - large-files
+          - many-small
+          - ignored-heavy
+          - binary-mixed
+      repeat:
+        description: Repetitions per query and variant
+        required: true
+        default: "3"
+      operations:
+        description: Optional comma-separated operation filter, for example glob,grep
+        required: false
+        default: ""
+      queries:
+        description: Optional comma-separated query name filter
+        required: false
+        default: ""
+      base_ref:
+        description: Optional base ref for manual comparison, for example origin/main
+        required: false
+        default: "origin/main"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BENCH_CASE: ${{ github.event.inputs.case || 'quick' }}
+  BENCH_REPEAT: ${{ github.event.inputs.repeat || '3' }}
+  BENCH_OPERATIONS: ${{ github.event.inputs.operations || '' }}
+  BENCH_QUERIES: ${{ github.event.inputs.queries || '' }}
+  BENCH_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.inputs.base_ref || 'origin/main' }}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  file-search-benchmarks:
+    name: File Search Benchmarks (${{ github.event.inputs.case || 'quick' }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out head
+        uses: actions/checkout@v6
+        with:
+          path: head
+          fetch-depth: 0
+
+      - name: Check out base
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.BENCH_BASE_REF }}
+          path: base
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.14"
+          enable-cache: "true"
+          cache-suffix: "file-search-benchmarks-3.13"
+
+      - name: Set up the head environment
+        shell: bash
+        working-directory: head
+        run: uv sync --frozen --all-packages --python=3.13 --all-extras
+
+      - name: Generate benchmark dataset
+        shell: bash
+        working-directory: head
+        run: |
+          set -euo pipefail
+          uv run python benchmarks/file_search/bench_file_search.py generate \
+            --case "${BENCH_CASE}" \
+            --output "../.bench/file-search-${BENCH_CASE}" \
+            --force
+
+      - name: Run base search benchmarks
+        shell: bash
+        working-directory: base
+        run: |
+          set -euo pipefail
+          uv sync --frozen --all-packages --python=3.13 --all-extras
+          args=(
+            uv run python ../head/benchmarks/file_search/base_worker.py
+            --case "${BENCH_CASE}"
+            --dataset "../.bench/file-search-${BENCH_CASE}"
+            --repeat "${BENCH_REPEAT}"
+            --output "../.bench/results/file-search-${BENCH_CASE}.jsonl"
+          )
+          if [[ -n "${BENCH_OPERATIONS}" ]]; then
+            args+=(--operations "${BENCH_OPERATIONS}")
+          fi
+          if [[ -n "${BENCH_QUERIES}" ]]; then
+            args+=(--queries "${BENCH_QUERIES}")
+          fi
+          "${args[@]}"
+
+      - name: Run head search benchmarks
+        shell: bash
+        working-directory: head
+        run: |
+          set -euo pipefail
+          args=(
+            uv run python benchmarks/file_search/bench_file_search.py run
+            --case "${BENCH_CASE}"
+            --dataset "../.bench/file-search-${BENCH_CASE}"
+            --variants python-native ripgrep-core
+            --repeat "${BENCH_REPEAT}"
+            --output "../.bench/results/file-search-${BENCH_CASE}.jsonl"
+            --summary "../.bench/results/file-search-${BENCH_CASE}-summary.md"
+            --append
+          )
+          if [[ -n "${BENCH_OPERATIONS}" ]]; then
+            args+=(--operations "${BENCH_OPERATIONS}")
+          fi
+          if [[ -n "${BENCH_QUERIES}" ]]; then
+            args+=(--queries "${BENCH_QUERIES}")
+          fi
+          "${args[@]}"
+
+      - name: Print summary
+        run: cat ".bench/results/file-search-${BENCH_CASE}-summary.md"
+
+      - name: Comment summary on PR
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs')
+            const marker = '<!-- ya-file-search-benchmark-summary -->'
+            const summaryPath = `.bench/results/file-search-${process.env.BENCH_CASE}-summary.md`
+            const summary = fs.readFileSync(summaryPath, 'utf8')
+            const body = `${marker}\n${summary}`
+            const { owner, repo } = context.repo
+            const issue_number = context.issue.number
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            })
+            const existing = comments.find(comment => comment.body && comment.body.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body })
+            }
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: file-search-benchmarks-${{ github.event.inputs.case || 'quick' }}
+          path: |
+            .bench/results/file-search-${{ github.event.inputs.case || 'quick' }}.jsonl
+            .bench/results/file-search-${{ github.event.inputs.case || 'quick' }}-summary.md
+            .bench/file-search-${{ github.event.inputs.case || 'quick' }}/manifest.json
+            .bench/file-search-${{ github.event.inputs.case || 'quick' }}/**/manifest.json

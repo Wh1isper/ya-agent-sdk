@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
-from ya_agent_sdk.toolsets.core.filesystem._search import collect_walk_files, match_glob
+from ya_agent_sdk.toolsets.core.filesystem._search import collect_walk_entries, collect_walk_files, match_glob
 
 
 def test_match_glob_bare_pattern_matches_recursively() -> None:
@@ -56,3 +56,18 @@ async def test_collect_walk_files_honors_root(tmp_path: Path) -> None:
 
     paths = {candidate.path for candidate in candidates}
     assert paths == {"src/app.py", "src/nested/child.py"}
+
+
+async def test_collect_walk_entries_includes_directories(tmp_path: Path) -> None:
+    """collect_walk_entries should preserve directory candidates for glob."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('app')")
+
+    async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path) as env:
+        file_operator = env.file_operator
+        assert file_operator is not None
+        candidates = await collect_walk_entries(file_operator, root=".")
+
+    paths = {candidate.path for candidate in candidates}
+    assert "src" in paths
+    assert "src/app.py" in paths

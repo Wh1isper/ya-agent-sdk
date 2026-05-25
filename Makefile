@@ -214,27 +214,33 @@ check: ## Run code quality tools for all active packages
 	@echo "Running deptry for ya-claw"
 	@(cd packages/ya-claw && uvx deptry ya_claw)
 
-.PHONY: bench-search
-bench-search: ## Run full search backend benchmarks
-	@echo "Running full search backend benchmarks"
-	@uv run python benchmarks/search/bench_search.py run \
+.PHONY: bench-file-search
+bench-file-search: ## Run full file search backend benchmarks
+	@echo "Running full file search backend benchmarks"
+	@uv run python benchmarks/file_search/bench_file_search.py run \
 		--case full \
-		--dataset .bench/search-full \
+		--dataset .bench/file-search-full \
 		--variants python-native ripgrep-core \
 		--repeat 3 \
-		--output .bench/results/search.jsonl \
-		--summary .bench/results/search-summary.md
+		--output .bench/results/file-search.jsonl \
+		--summary .bench/results/file-search-summary.md
 
-.PHONY: bench-search-quick
-bench-search-quick: ## Run quick search backend smoke benchmarks
-	@echo "Running quick search backend smoke benchmarks"
-	@uv run python benchmarks/search/bench_search.py run \
+.PHONY: bench-search
+bench-search: bench-file-search ## Alias for bench-file-search
+
+.PHONY: bench-file-search-quick
+bench-file-search-quick: ## Run quick file search backend smoke benchmarks
+	@echo "Running quick file search backend smoke benchmarks"
+	@uv run python benchmarks/file_search/bench_file_search.py run \
 		--case quick \
-		--dataset .bench/search-quick \
+		--dataset .bench/file-search-quick \
 		--variants python-native ripgrep-core \
 		--repeat 1 \
-		--output .bench/results/search-quick.jsonl \
-		--summary .bench/results/search-quick-summary.md
+		--output .bench/results/file-search-quick.jsonl \
+		--summary .bench/results/file-search-quick-summary.md
+
+.PHONY: bench-search-quick
+bench-search-quick: bench-file-search-quick ## Alias for bench-file-search-quick
 
 .PHONY: test
 test: ## Run environment, SDK, CLI, YA Claw, and YA Desktop tests

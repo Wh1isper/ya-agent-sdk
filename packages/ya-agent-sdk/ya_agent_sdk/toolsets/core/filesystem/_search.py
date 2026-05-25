@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class SearchCandidate:
-    """Logical file candidate for glob/grep tools."""
+    """Logical filesystem candidate for glob/grep tools."""
 
     path: str
     size: int | None = None
@@ -77,6 +77,22 @@ def match_glob(path: str, pattern: str) -> bool:
     return False
 
 
+async def collect_walk_entries(
+    file_operator: FileOperator,
+    *,
+    root: str = ".",
+    include_hidden: bool = False,
+) -> list[SearchCandidate]:
+    """Collect file and directory candidates through FileOperator.walk_files."""
+    candidates: list[SearchCandidate] = []
+    async for entry in file_operator.walk_files(root, include_hidden=include_hidden):
+        path = normalize_logical_path(entry["path"])
+        if not include_hidden and is_hidden_logical_path(path):
+            continue
+        candidates.append(SearchCandidate(path=path, size=entry.get("size"), mtime=entry.get("mtime")))
+    return candidates
+
+
 async def collect_walk_files(
     file_operator: FileOperator,
     *,
@@ -129,7 +145,7 @@ async def collect_glob_candidates(
     include_hidden: bool = False,
 ) -> tuple[list[SearchCandidate], GitignoreFilterResult | None]:
     """Collect glob candidates through walk_files, glob matching, and ignore filtering."""
-    candidates = await collect_walk_files(file_operator, root=root, include_hidden=include_hidden)
+    candidates = await collect_walk_entries(file_operator, root=root, include_hidden=include_hidden)
     candidates = filter_candidates_by_glob(candidates, pattern)
     filter_result: GitignoreFilterResult | None = None
     if not include_ignored:
@@ -140,6 +156,7 @@ async def collect_glob_candidates(
 __all__ = [
     "SearchCandidate",
     "collect_glob_candidates",
+    "collect_walk_entries",
     "collect_walk_files",
     "filter_candidates_by_glob",
     "filter_candidates_ignored",
