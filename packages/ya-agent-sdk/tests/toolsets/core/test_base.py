@@ -115,6 +115,17 @@ class UnavailableTool(BaseTool):
         return "Should not be called"
 
 
+class DelegationTool(BaseTool):
+    """A tool that delegates to another agent."""
+
+    name = "delegation_tool"
+    description = "A delegation tool"
+    tags = frozenset({"delegation"})
+
+    async def call(self, ctx: RunContext[AgentContext]) -> str:
+        return "Delegated"
+
+
 # --- BaseTool tests ---
 def test_base_tool_default_availability(agent_context: AgentContext) -> None:
     """Should be available by default."""
@@ -545,6 +556,15 @@ def test_toolset_with_subagents_multiple_configs(agent_context: AgentContext) ->
     assert "dummy_tool" in result.tool_names
     assert "subagent_a" in result.tool_names
     assert "subagent_b" in result.tool_names
+
+
+def test_toolset_exclude_tags(agent_context: AgentContext) -> None:
+    """Should filter tagged tools while preserving ordinary tools."""
+    toolset = Toolset(tools=[DummyTool, DelegationTool])
+    result = toolset.exclude_tags(frozenset({"delegation"}))
+    assert "dummy_tool" in result.tool_names
+    assert "delegation_tool" not in result.tool_names
+    assert toolset.has_tags(frozenset({"delegation"}))
 
 
 def test_toolset_with_subagents_inherit_hooks(agent_context: AgentContext) -> None:

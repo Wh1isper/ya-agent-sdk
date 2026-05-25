@@ -1271,6 +1271,14 @@ class AgentContext(BaseModel):
         )
     """
 
+    self_fork_agent: Any | None = Field(default=None, exclude=True)
+    """Runtime-only agent used by delegate(subagent_name="self") forks.
+
+    The self fork agent is created by create_agent() with the same model,
+    system prompt, capabilities, and ordinary tools as the parent agent. It is
+    excluded from serialization and restored per runtime construction.
+    """
+
     wrapper_metadata: dict[str, Any] = Field(default_factory=dict, exclude=True)
     """Additional context passed to model_wrapper via get_wrapper_metadata().
 

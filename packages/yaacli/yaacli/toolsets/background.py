@@ -56,6 +56,7 @@ class SpawnDelegateTool(BaseTool):
 
     name = "spawn_delegate"
     description = "Spawn a subagent in the background (non-blocking). Result delivered via message bus."
+    tags = frozenset({"delegation"})
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available only for main agent with BackgroundMonitor and delegate tool.
@@ -179,6 +180,7 @@ class SteerSubagentTool(BaseTool):
 
     name = "steer_subagent"
     description = "Send additional guidance to a running background subagent."
+    tags = frozenset({"delegation"})
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available only for main agent with active background tasks."""

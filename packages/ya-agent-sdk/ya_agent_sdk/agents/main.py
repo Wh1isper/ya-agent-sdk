@@ -668,6 +668,39 @@ def create_agent(
     # --- Create Agent ---
     logger.debug("Creating agent with model=%s, output_type=%s", model, output_type)
     agent_retries = _resolve_agent_retries(retries, output_retries)
+
+    delegation_tags = frozenset({"delegation"})
+    if core_toolset.has_tags(delegation_tags):
+        self_fork_toolsets: list[AbstractToolset[Any]] = [core_toolset.exclude_tags(delegation_tags)]
+        if toolsets:
+            self_fork_toolsets.extend(toolsets)
+        self_fork_toolsets.extend(actual_env.get_toolsets())
+        self_fork_base_model = (
+            infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else base_model
+        )
+        self_fork_agent: Agent[AgentContext, str] = add_toolset_instructions(
+            Agent(
+                model=self_fork_base_model,
+                system_prompt=effective_system_prompt,
+                model_settings=model_settings,
+                deps_type=AgentContext,
+                output_type=str,
+                tools=agent_tools or (),
+                toolsets=self_fork_toolsets if self_fork_toolsets else None,
+                capabilities=[
+                    *cast(list[AbstractCapability[Any]], all_capabilities),
+                    ProcessHistory(create_system_prompt_filter(system_prompt=effective_system_prompt)),
+                ],
+                retries=agent_retries,
+                defer_model_check=defer_model_check,
+                end_strategy=end_strategy,  # type: ignore[arg-type]
+                name="self",
+            ),
+            self_fork_toolsets,
+        )
+        attach_message_bus_guard(self_fork_agent)
+        ctx.self_fork_agent = self_fork_agent
+
     agent: Agent[AgentDepsT, OutputT] = add_toolset_instructions(
         Agent(
             model=effective_model,

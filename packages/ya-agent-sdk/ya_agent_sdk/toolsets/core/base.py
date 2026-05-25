@@ -225,6 +225,41 @@ class Toolset(BaseToolset[AgentDepsT]):
         tool_instance = self._get_tool_instance(tool_name)
         return tool_instance.is_available(ctx)
 
+    def has_tags(self, tags: set[str] | frozenset[str]) -> bool:
+        """Return whether any tool in this toolset has any of the given tags."""
+        return any(tool_cls.tags & tags for tool_cls in self._tool_classes.values())
+
+    def exclude_tags(
+        self,
+        tags: set[str] | frozenset[str],
+        *,
+        inherit_hooks: bool = True,
+    ) -> Toolset[AgentDepsT]:
+        """Create a Toolset excluding tools that have any of the given tags."""
+        selected_names = {name for name, tool_cls in self._tool_classes.items() if not tool_cls.tags & tags}
+        selected_classes = [tool_cls for name, tool_cls in self._tool_classes.items() if name in selected_names]
+
+        pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None
+        post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None
+        global_hooks: GlobalHooks | None = None
+
+        if inherit_hooks:
+            pre_hooks = {k: v for k, v in self.pre_hooks.items() if k in selected_names}
+            post_hooks = {k: v for k, v in self.post_hooks.items() if k in selected_names}
+            global_hooks = self.global_hooks
+
+        return Toolset(
+            tools=selected_classes,
+            pre_hooks=pre_hooks,
+            post_hooks=post_hooks,
+            global_hooks=global_hooks,
+            max_retries=self.max_retries,
+            timeout=self.timeout,
+            toolset_id=self._id,
+            skip_unavailable=self._skip_unavailable,
+            description=self._description,
+        )
+
     def subset(
         self,
         tool_names: list[str] | None = None,

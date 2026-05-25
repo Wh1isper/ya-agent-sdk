@@ -758,6 +758,22 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
 
 
+async def test_export_state_excludes_runtime_self_fork_agent(env: LocalEnvironment) -> None:
+    """Runtime-only self fork agent should not be serialized into state."""
+    sentinel = object()
+    async with AgentContext(env=env) as ctx:
+        ctx.self_fork_agent = sentinel
+        state = ctx.export_state()
+
+        dumped_state = state.model_dump()
+        assert "self_fork_agent" not in dumped_state
+        assert "self_fork_agent" not in state.model_dump_json()
+
+    async with AgentContext(env=env) as new_ctx:
+        new_ctx.with_state(state)
+        assert new_ctx.self_fork_agent is None
+
+
 async def test_with_state_preserves_runtime_security(env: LocalEnvironment) -> None:
     """Runtime security policy should come from the current context when restoring state."""
     async with AgentContext(env=env) as old_ctx:

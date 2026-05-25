@@ -263,6 +263,8 @@ async def test_subagent_unified_inherits_capabilities(env):
     async with runtime:
         assert runtime.core_toolset is not None
         assert "delegate" in runtime.core_toolset._tool_classes
+        delegate_tool = runtime.core_toolset._tool_classes["delegate"]
+        assert delegate_tool._available_subagents == ("helper1", "helper2")
 
 
 async def test_subagent_no_capabilities_when_parent_has_none(env):

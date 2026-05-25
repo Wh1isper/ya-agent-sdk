@@ -202,6 +202,24 @@ def test_unified_tool_availability_dynamic(mock_run_ctx) -> None:
 # =============================================================================
 
 
+async def test_unified_tool_instruction_contains_self_when_runtime_supports_fork(mock_run_ctx) -> None:
+    """Instruction should list self fork when the runtime configures it."""
+    mock_run_ctx.deps.self_fork_agent = object()
+    configs = [
+        SubagentConfig(name="helper", description="...", system_prompt="..."),
+    ]
+    parent_toolset = Toolset(tools=[])
+
+    tool_cls = create_unified_subagent_tool(configs, parent_toolset, model="test")
+    tool = tool_cls()
+
+    instruction = await tool.get_instruction(mock_run_ctx)
+
+    assert instruction is not None
+    assert '<subagent name="self">' in instruction
+    assert "parallel" in instruction
+
+
 async def test_unified_tool_instruction_contains_available_subagents(mock_run_ctx) -> None:
     """Instruction should list available subagents."""
     configs = [
@@ -253,6 +271,22 @@ async def test_unified_tool_instruction_excludes_unavailable_subagents(mock_run_
     assert instruction is not None
     assert "available_agent" in instruction
     assert "unavailable_agent" not in instruction
+
+
+async def test_unified_tool_call_self_without_runtime_agent_returns_error(mock_run_ctx) -> None:
+    """Calling self should return a clear error when runtime support is missing."""
+    configs = [
+        SubagentConfig(name="helper", description="...", system_prompt="You help."),
+    ]
+    parent_toolset = Toolset(tools=[])
+
+    tool_cls = create_unified_subagent_tool(configs, parent_toolset, model="test")
+    tool = tool_cls()
+
+    result = await tool.call(mock_run_ctx, subagent_name="self", prompt="Fork work")
+
+    assert "self fork" in result.lower()
+    assert "not available" in result.lower()
 
 
 async def test_unified_tool_instruction_none_when_no_subagents_available(mock_run_ctx) -> None:
