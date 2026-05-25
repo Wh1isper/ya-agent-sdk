@@ -245,5 +245,6 @@ async def test_office_convert_docx_success(tmp_path: Path, docx_file: Path) -> N
         export_dir = tmp_path / result["export_path"]
         assert export_dir.exists()
         assert (tmp_path / result["markdown_path"]).exists()
-        assert "这是一首简单的小情歌" in (tmp_path / result["markdown_path"]).read_text()
-        assert "images/" in (tmp_path / result["markdown_path"]).read_text()
+        markdown_content = (tmp_path / result["markdown_path"]).read_text(encoding="utf-8")
+        assert "这是一首简单的小情歌" in markdown_content
+        assert "images/" in markdown_content
