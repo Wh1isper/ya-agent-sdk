@@ -214,16 +214,27 @@ check: ## Run code quality tools for all active packages
 	@echo "Running deptry for ya-claw"
 	@(cd packages/ya-claw && uvx deptry ya_claw)
 
-.PHONY: bench-search-quick
-bench-search-quick: ## Run quick search backend benchmarks
-	@echo "Running quick search backend benchmarks"
+.PHONY: bench-search
+bench-search: ## Run full search backend benchmarks
+	@echo "Running full search backend benchmarks"
 	@uv run python benchmarks/search/bench_search.py run \
-		--case quick \
-		--dataset .bench/search-quick \
+		--case full \
+		--dataset .bench/search-full \
 		--variants python-native ripgrep-core \
 		--repeat 3 \
 		--output .bench/results/search.jsonl \
 		--summary .bench/results/search-summary.md
+
+.PHONY: bench-search-quick
+bench-search-quick: ## Run quick search backend smoke benchmarks
+	@echo "Running quick search backend smoke benchmarks"
+	@uv run python benchmarks/search/bench_search.py run \
+		--case quick \
+		--dataset .bench/search-quick \
+		--variants python-native ripgrep-core \
+		--repeat 1 \
+		--output .bench/results/search-quick.jsonl \
+		--summary .bench/results/search-quick-summary.md
 
 .PHONY: test
 test: ## Run environment, SDK, CLI, YA Claw, and YA Desktop tests

@@ -20,9 +20,10 @@ on:
       case:
         description: Benchmark dataset case
         required: true
-        default: quick
+        default: full
         type: choice
         options:
+          - full
           - quick
           - small
           - medium
@@ -45,7 +46,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  BENCH_CASE: ${{ github.event.inputs.case || 'quick' }}
+  BENCH_CASE: ${{ github.event.inputs.case || 'full' }}
   BENCH_REPEAT: ${{ github.event.inputs.repeat || '3' }}
   BENCH_OPERATIONS: ${{ github.event.inputs.operations || '' }}
   BENCH_QUERIES: ${{ github.event.inputs.queries || '' }}
@@ -56,7 +57,7 @@ permissions:
 
 jobs:
   search-benchmarks:
-    name: Search Benchmarks (${{ github.event.inputs.case || 'quick' }})
+    name: Search Benchmarks (${{ github.event.inputs.case || 'full' }})
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -120,8 +121,8 @@ jobs:
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: search-benchmarks-${{ github.event.inputs.case || 'quick' }}
+          name: search-benchmarks-${{ github.event.inputs.case || 'full' }}
           path: |
-            .bench/results/search-${{ github.event.inputs.case || 'quick' }}.jsonl
-            .bench/results/search-${{ github.event.inputs.case || 'quick' }}-summary.md
-            .bench/search-${{ github.event.inputs.case || 'quick' }}/manifest.json
+            .bench/results/search-${{ github.event.inputs.case || 'full' }}.jsonl
+            .bench/results/search-${{ github.event.inputs.case || 'full' }}-summary.md
+            .bench/search-${{ github.event.inputs.case || 'full' }}/**/manifest.json

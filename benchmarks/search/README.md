@@ -7,13 +7,21 @@ This benchmark suite measures the FileOperator-first filesystem search stack wit
 
 The benchmark focuses on end-to-end tool-layer cost: traversal, ignore filtering, glob matching, streaming grep, result construction, CPU time, and memory usage.
 
-## Quick run
+## Default full run
+
+```bash
+make bench-search
+```
+
+This generates `.bench/search-full`, runs all representative cases with the full query matrix, writes raw JSONL to `.bench/results/search.jsonl`, and writes a Markdown summary to `.bench/results/search-summary.md`.
+
+## Quick smoke run
 
 ```bash
 make bench-search-quick
 ```
 
-This generates `.bench/search-quick`, runs a small query matrix, writes raw JSONL to `.bench/results/search.jsonl`, and writes a Markdown summary to `.bench/results/search-summary.md`.
+This generates `.bench/search-quick`, runs the quick case with the full query matrix, writes raw JSONL to `.bench/results/search-quick.jsonl`, and writes a Markdown summary to `.bench/results/search-quick-summary.md`.
 
 ## Manual run
 
@@ -24,8 +32,8 @@ uv run python benchmarks/search/bench_search.py generate \
   --force
 
 uv run python benchmarks/search/bench_search.py run \
-  --case small \
-  --dataset .bench/search-small \
+  --case full \
+  --dataset .bench/search-full \
   --variants python-native ripgrep-core \
   --repeat 5 \
   --output .bench/results/search-small.jsonl \
@@ -36,6 +44,7 @@ uv run python benchmarks/search/bench_search.py run \
 
 | case            | purpose                            |
 | --------------- | ---------------------------------- |
+| `full`          | all representative cases           |
 | `quick`         | fast local smoke benchmark         |
 | `small`         | normal project-sized dataset       |
 | `medium`        | large repository-sized dataset     |
@@ -59,12 +68,12 @@ Each JSONL row includes:
 
 ## CI
 
-The `Search Benchmarks` workflow runs automatically on pull requests that touch filesystem search, environment file traversal, the ripgrep core package, benchmark files, or dependency metadata. The default PR run uses the `quick` dataset with the full query matrix and 3 repeats. It uploads raw JSONL and Markdown summary artifacts, and posts the Markdown summary table as a sticky PR comment.
+The `Search Benchmarks` workflow runs automatically on pull requests that touch filesystem search, environment file traversal, the ripgrep core package, benchmark files, or dependency metadata. The default PR run uses the `full` suite with the full query matrix and 3 repeats. It uploads raw JSONL and Markdown summary artifacts, and posts the Markdown summary table as a sticky PR comment.
 
 Manual runs support larger cases and query filters:
 
 ```bash
-gh workflow run search-benchmarks.yml -f case=quick -f repeat=3
+gh workflow run search-benchmarks.yml -f case=full -f repeat=3
 gh workflow run search-benchmarks.yml -f case=large-files -f repeat=3 -f queries=grep_rare,grep_common
 ```
 

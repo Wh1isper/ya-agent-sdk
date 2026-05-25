@@ -62,6 +62,8 @@ class DatasetCase:
     large_file_mb: int = 1
 
 
+FULL_CASES: tuple[str, ...] = ("small", "medium", "large-files", "many-small", "ignored-heavy", "binary-mixed")
+
 CASES: dict[str, DatasetCase] = {
     "quick": DatasetCase(
         "quick",
@@ -283,8 +285,23 @@ def _case(name: str) -> DatasetCase:
     try:
         return CASES[name]
     except KeyError as exc:
-        available = ", ".join(sorted(CASES))
+        available = ", ".join(sorted([*CASES, "full"]))
         raise SystemExit(f"Unknown case: {name}. Available cases: {available}") from exc
+
+
+def _case_names(name: str) -> tuple[str, ...]:
+    """Expand a benchmark case selector."""
+    if name == "full":
+        return FULL_CASES
+    _case(name)
+    return (name,)
+
+
+def _case_dataset_root(base: Path, requested_case: str, case_name: str) -> Path:
+    """Return dataset path for a requested case/case member pair."""
+    if requested_case == "full":
+        return base / case_name
+    return base
 
 
 def _selected_queries(names: Sequence[str] | None, operations: Sequence[str] | None) -> list[Query]:
@@ -313,45 +330,52 @@ def _backend_env(variant: str) -> dict[str, str]:
 
 def run_parent(args: argparse.Namespace) -> None:
     """Run benchmarks in child processes and write JSONL."""
-    dataset = Path(args.dataset)
-    if not dataset.exists():
-        generate_dataset(args.case, dataset, force=False)
+    dataset_base = Path(args.dataset)
+    case_names = _case_names(args.case)
+    for case_name in case_names:
+        dataset = _case_dataset_root(dataset_base, args.case, case_name)
+        if not dataset.exists():
+            generate_dataset(case_name, dataset, force=False)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists() and not args.append:
+        output.unlink()
 
     variants = list(args.variants)
     queries = _selected_queries(args.queries, args.operations)
     rows: list[dict[str, Any]] = []
-    for query in queries:
-        for variant in variants:
-            for repeat in range(args.repeat):
-                command = [
-                    sys.executable,
-                    __file__,
-                    "worker",
-                    "--dataset",
-                    str(dataset),
-                    "--case",
-                    args.case,
-                    "--variant",
-                    variant,
-                    "--query",
-                    query.name,
-                    "--repeat-index",
-                    str(repeat),
-                ]
-                completed = subprocess.run(  # noqa: S603
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    env=_backend_env(variant),
-                )
-                row = json.loads(completed.stdout)
-                rows.append(row)
-                with output.open("a", encoding="utf-8") as stream:
-                    stream.write(json.dumps(row, sort_keys=True) + "\n")
-                print(_format_progress(row), flush=True)
+    for case_name in case_names:
+        dataset = _case_dataset_root(dataset_base, args.case, case_name)
+        for query in queries:
+            for variant in variants:
+                for repeat in range(args.repeat):
+                    command = [
+                        sys.executable,
+                        __file__,
+                        "worker",
+                        "--dataset",
+                        str(dataset),
+                        "--case",
+                        case_name,
+                        "--variant",
+                        variant,
+                        "--query",
+                        query.name,
+                        "--repeat-index",
+                        str(repeat),
+                    ]
+                    completed = subprocess.run(  # noqa: S603
+                        command,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        env=_backend_env(variant),
+                    )
+                    row = json.loads(completed.stdout)
+                    rows.append(row)
+                    with output.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(row, sort_keys=True) + "\n")
+                    print(_format_progress(row), flush=True)
 
     if args.summary:
         summary_path = Path(args.summary)
@@ -575,20 +599,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    case_choices = sorted([*CASES, "full"])
+
     generate = subparsers.add_parser("generate", help="Generate a deterministic benchmark dataset")
-    generate.add_argument("--case", choices=sorted(CASES), default="quick")
-    generate.add_argument("--output", type=Path, default=Path(".bench/search-quick"))
+    generate.add_argument("--case", choices=case_choices, default="full")
+    generate.add_argument("--output", type=Path, default=Path(".bench/search-full"))
     generate.add_argument("--force", action="store_true")
 
     run = subparsers.add_parser("run", help="Run benchmark queries")
-    run.add_argument("--case", choices=sorted(CASES), default="quick")
-    run.add_argument("--dataset", default=".bench/search-quick")
+    run.add_argument("--case", choices=case_choices, default="full")
+    run.add_argument("--dataset", default=".bench/search-full")
     run.add_argument("--variants", nargs="+", default=["python-native", "ripgrep-core"])
     run.add_argument("--operations", type=_csv, default=None, help="Comma-separated operation filter: glob,grep")
     run.add_argument("--queries", type=_csv, default=None, help="Comma-separated query names")
     run.add_argument("--repeat", type=int, default=3)
     run.add_argument("--output", default=".bench/results/search.jsonl")
     run.add_argument("--summary", default=".bench/results/search-summary.md")
+    run.add_argument("--append", action="store_true", help="Append to an existing JSONL output file")
 
     worker = subparsers.add_parser("worker", help=argparse.SUPPRESS)
     worker.add_argument("--dataset", required=True)
@@ -606,7 +633,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.command == "generate":
-        generate_dataset(args.case, args.output, force=args.force)
+        for case_name in _case_names(args.case):
+            generate_dataset(case_name, _case_dataset_root(args.output, args.case, case_name), force=args.force)
     elif args.command == "run":
         run_parent(args)
     elif args.command == "worker":
