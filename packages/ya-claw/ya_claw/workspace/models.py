@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePath
@@ -11,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from ya_agent_sdk.environment.virtual_path import (
     VirtualPath,
+    VirtualPathLike,
     is_virtual_path_relative_to,
 )
 from ya_agent_sdk.environment.virtual_path import (
@@ -135,7 +137,7 @@ class SandboxState(BaseModel):
     last_used_at: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class WorkspaceMountBinding:
     id: str
     host_path: Path
@@ -145,8 +147,27 @@ class WorkspaceMountBinding:
     name: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __init__(
+        self,
+        *,
+        id: str,  # noqa: A002
+        host_path: Path,
+        virtual_path: VirtualPathLike,
+        mode: WorkspaceMountMode = "rw",
+        docker_host_path: Path | None = None,
+        name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        object.__setattr__(self, "id", id)
+        object.__setattr__(self, "host_path", host_path)
+        object.__setattr__(self, "virtual_path", normalize_agent_virtual_path(virtual_path))
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "docker_host_path", docker_host_path)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "metadata", dict(metadata or {}))
 
-@dataclass(slots=True)
+
+@dataclass(slots=True, init=False)
 class WorkspaceBinding:
     host_path: Path
     virtual_path: VirtualPath
@@ -161,6 +182,37 @@ class WorkspaceBinding:
     environment_overrides: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     backend_hint: str | None = None
+
+    def __init__(
+        self,
+        *,
+        host_path: Path,
+        virtual_path: VirtualPathLike,
+        cwd: VirtualPathLike,
+        readable_paths: Sequence[VirtualPathLike],
+        writable_paths: Sequence[VirtualPathLike],
+        mounts: list[WorkspaceMountBinding],
+        fingerprint: str,
+        generation: int | None = None,
+        sandbox_scope: SandboxScopeLiteral | None = None,
+        docker_host_path: Path | None = None,
+        environment_overrides: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        backend_hint: str | None = None,
+    ) -> None:
+        self.host_path = host_path
+        self.virtual_path = normalize_agent_virtual_path(virtual_path)
+        self.cwd = normalize_agent_virtual_path(cwd)
+        self.readable_paths = [normalize_agent_virtual_path(path) for path in readable_paths]
+        self.writable_paths = [normalize_agent_virtual_path(path) for path in writable_paths]
+        self.mounts = list(mounts)
+        self.fingerprint = fingerprint
+        self.generation = generation
+        self.sandbox_scope = sandbox_scope
+        self.docker_host_path = docker_host_path
+        self.environment_overrides = dict(environment_overrides or {})
+        self.metadata = dict(metadata or {})
+        self.backend_hint = backend_hint
 
     @property
     def default_mount(self) -> WorkspaceMountBinding:
