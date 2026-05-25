@@ -195,6 +195,7 @@ def _make_mock_shell(active_pids: dict[str, str] | None = None) -> MagicMock:
     mock_shell.active_background_processes = processes
     # Also set up _background_processes for command lookup
     mock_shell._background_processes = processes
+    mock_shell._output_buffers = {}
     return mock_shell
 
 
@@ -222,7 +223,10 @@ async def test_shell_monitor_detects_completion() -> None:
     monitor.set_completion_callback(lambda pid: callback_calls.append(pid))
 
     # Start with one active process
-    shell = _make_mock_shell({"pid-1": "npm run dev"})
+    shell = _make_mock_shell_with_buffers(
+        active_pids={"pid-1": "npm run dev"},
+        buffers={"pid-1": (["ready"], [], True)},
+    )
     bus = MessageBus()
     bus.subscribe("main")
     monitor.start_shell_monitor(shell, bus, "main", poll_interval=0.05)
@@ -253,10 +257,62 @@ async def test_shell_monitor_detects_completion() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shell_monitor_drops_completion_after_result_drained() -> None:
+    """Completion wakeup should be dropped after the shell result buffer is consumed."""
+    monitor = BackgroundMonitor()
+    shell = _make_mock_shell_with_buffers(
+        active_pids={"pid-1": "npm run dev"},
+        buffers={"pid-1": (["ready"], [], True)},
+    )
+    bus = MessageBus()
+    monitor.start_shell_monitor(shell, bus, "main", poll_interval=0.05)
+
+    await asyncio.sleep(0.1)
+    shell.active_background_processes = {}
+    await asyncio.sleep(0.15)
+
+    assert monitor.has_pending_messages is True
+
+    # Simulate shell_wait() or inject_background_results() consuming the result.
+    shell._output_buffers.pop("pid-1")
+    assert monitor.deliver_pending_messages(bus, "main") == 0
+    assert bus.has_pending("main") is False
+    assert monitor.has_pending_messages is False
+
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_shell_monitor_delivers_completion_while_result_buffer_exists() -> None:
+    """Completion wakeup should be delivered while completed result is still buffered."""
+    monitor = BackgroundMonitor()
+    shell = _make_mock_shell_with_buffers(
+        active_pids={"pid-1": "npm run dev"},
+        buffers={"pid-1": (["ready"], [], True)},
+    )
+    bus = MessageBus()
+    monitor.start_shell_monitor(shell, bus, "main", poll_interval=0.05)
+
+    await asyncio.sleep(0.1)
+    shell.active_background_processes = {}
+    await asyncio.sleep(0.15)
+
+    assert monitor.deliver_pending_messages(bus, "main") == 1
+    messages = bus.consume("main")
+    assert len(messages) == 1
+    assert "pid-1" in messages[0].content
+
+    await monitor.close()
+
+
+@pytest.mark.asyncio
 async def test_shell_monitor_queues_completion_for_redelivery() -> None:
     """Shell completion notifications should be queued until the TUI redelivers them."""
     monitor = BackgroundMonitor()
-    shell = _make_mock_shell({"pid-1": "npm run dev"})
+    shell = _make_mock_shell_with_buffers(
+        active_pids={"pid-1": "npm run dev"},
+        buffers={"pid-1": (["ready"], [], True)},
+    )
     bus = MessageBus()
     monitor.start_shell_monitor(shell, bus, "main", poll_interval=0.05)
 
@@ -380,7 +436,10 @@ async def test_shell_monitor_bus_message_target() -> None:
     """Bus messages from shell monitor should target the configured agent_id."""
     monitor = BackgroundMonitor()
 
-    shell = _make_mock_shell({"pid-1": "echo hello"})
+    shell = _make_mock_shell_with_buffers(
+        active_pids={"pid-1": "echo hello"},
+        buffers={"pid-1": (["hello"], [], True)},
+    )
     bus = MessageBus()
     bus.subscribe("custom-agent")
     bus.subscribe("main")
@@ -995,7 +1054,7 @@ async def test_steer_instruction_only_with_active_tasks() -> None:
 
 def _make_mock_shell_with_buffers(
     active_pids: dict[str, str] | None = None,
-    buffers: dict[str, tuple[list[str], list[str]]] | None = None,
+    buffers: dict[str, tuple[list[str], list[str]] | tuple[list[str], list[str], bool]] | None = None,
 ) -> MagicMock:
     """Create a mock Shell with active_background_processes and _output_buffers.
 
@@ -1010,12 +1069,17 @@ def _make_mock_shell_with_buffers(
     # Set up output buffers
     output_buffers: dict[str, MagicMock] = {}
     if buffers:
-        for pid, (stdout_lines, stderr_lines) in buffers.items():
+        for pid, buffer_data in buffers.items():
+            if len(buffer_data) == 2:
+                stdout_lines, stderr_lines = buffer_data
+                completed = False
+            else:
+                stdout_lines, stderr_lines, completed = buffer_data
             buf = MagicMock()
             buf.stdout = deque(stdout_lines)
             buf.stderr = deque(stderr_lines)
-            buf.completed = False
-            buf.exit_code = None
+            buf.completed = completed
+            buf.exit_code = 0 if completed else None
             output_buffers[pid] = buf
 
     mock_shell._output_buffers = output_buffers
@@ -1119,6 +1183,36 @@ async def test_output_monitoring_re_notifies_after_drain() -> None:
     messages = bus.consume("main")
     output_msgs = [m for m in messages if "new output" in m.content]
     assert len(output_msgs) >= 1
+
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+async def test_output_monitoring_drops_wakeup_after_output_drained() -> None:
+    """Output wakeup should be dropped if shell_wait drains output before delivery."""
+    from collections import deque
+
+    bus = MessageBus()
+    bus.subscribe("main")
+    shell = _make_mock_shell_with_buffers(
+        active_pids={"pid-1": "build"},
+        buffers={"pid-1": (["initial output"], [])},
+    )
+
+    monitor = BackgroundMonitor()
+    monitor.start_shell_monitor(shell, bus, "main", poll_interval=0.05)
+    monitor.register_monitored_process("pid-1")
+
+    await asyncio.sleep(0.1)
+    assert monitor.has_pending_messages is True
+
+    # Simulate shell_wait(timeout_seconds=0) draining the output before delivery.
+    shell._output_buffers["pid-1"].stdout = deque()
+    shell._output_buffers["pid-1"].stderr = deque()
+
+    assert monitor.deliver_pending_messages(bus, "main") == 0
+    assert bus.consume("main") == []
+    assert monitor.has_pending_messages is False
 
     await monitor.close()
 
