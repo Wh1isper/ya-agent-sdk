@@ -108,6 +108,11 @@ jobs:
             extras: "all"
             coverage: false
             type_check: false
+          - os: windows-latest
+            python-version: "3.13"
+            extras: "all"
+            coverage: false
+            type_check: true
       fail-fast: false
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -129,6 +134,8 @@ jobs:
           uv run python -m pytest
           packages/ya-agent-environment/tests
           packages/ya-agent-sdk/tests
+          packages/ya-oauth/tests
+          packages/ya-oauth-provider/tests
           packages/yaacli/tests
           packages/ya-claw/tests
           -n 4 -vv --inline-snapshot=disable

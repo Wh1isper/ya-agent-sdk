@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from ya_oauth.store import OAuthStore
 from ya_oauth.types import AuthFile
@@ -15,4 +16,5 @@ def test_load_repairs_existing_auth_file_mode(tmp_path) -> None:
     store = OAuthStore(auth_path)
 
     assert store.load().version == 1
-    assert auth_path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert auth_path.stat().st_mode & 0o777 == 0o600
