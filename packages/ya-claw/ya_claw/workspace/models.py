@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -10,6 +9,16 @@ from pathlib import Path, PurePath
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from ya_agent_sdk.environment.virtual_path import (
+    VirtualPath,
+    is_virtual_path_relative_to,
+)
+from ya_agent_sdk.environment.virtual_path import (
+    normalize_virtual_path as normalize_agent_virtual_path,
+)
+from ya_agent_sdk.environment.virtual_path import (
+    relative_virtual_path as agent_relative_virtual_path,
+)
 
 WORKSPACE_METADATA_KEY = "workspace"
 WORKSPACE_SNAPSHOT_METADATA_KEY = "workspace_snapshot"
@@ -130,7 +139,7 @@ class SandboxState(BaseModel):
 class WorkspaceMountBinding:
     id: str
     host_path: Path
-    virtual_path: Path
+    virtual_path: VirtualPath
     mode: WorkspaceMountMode = "rw"
     docker_host_path: Path | None = None
     name: str | None = None
@@ -140,10 +149,10 @@ class WorkspaceMountBinding:
 @dataclass(slots=True)
 class WorkspaceBinding:
     host_path: Path
-    virtual_path: Path
-    cwd: Path
-    readable_paths: list[Path]
-    writable_paths: list[Path]
+    virtual_path: VirtualPath
+    cwd: VirtualPath
+    readable_paths: list[VirtualPath]
+    writable_paths: list[VirtualPath]
     mounts: list[WorkspaceMountBinding]
     fingerprint: str
     generation: int | None = None
@@ -215,30 +224,22 @@ def derive_mount_id(virtual_path: str) -> str:
 def normalize_virtual_path(value: str | None) -> str:
     if value is None or value.strip() == "":
         raise ValueError("virtual path must be a non-empty absolute path")
-    raw_value = value.strip()
-    if not raw_value.startswith("/"):
+    normalized = normalize_agent_virtual_path(value.strip())
+    if not normalized.is_absolute():
         raise ValueError("virtual path must be absolute")
-    normalized = posixpath.normpath(raw_value)
-    if normalized == ".":
-        normalized = "/"
-    if not normalized.startswith("/"):
-        normalized = f"/{normalized}"
-    return normalized
+    return normalized.as_posix()
 
 
 def virtual_path_contains(parent: str | PurePath, child: str | PurePath) -> bool:
-    parent_value = normalize_virtual_path(str(parent))
-    child_value = normalize_virtual_path(str(child))
-    return child_value == parent_value or child_value.startswith(f"{parent_value.rstrip('/')}/")
+    return is_virtual_path_relative_to(child, parent)
 
 
-def relative_virtual_path(parent: str | PurePath, child: str | PurePath) -> Path:
+def relative_virtual_path(parent: str | PurePath, child: str | PurePath) -> VirtualPath:
     parent_value = normalize_virtual_path(str(parent))
     child_value = normalize_virtual_path(str(child))
     if not virtual_path_contains(parent_value, child_value):
         raise ValueError(f"virtual path '{child_value}' is outside '{parent_value}'")
-    relative = child_value.removeprefix(parent_value).lstrip("/")
-    return Path(relative)
+    return agent_relative_virtual_path(child_value, parent_value)
 
 
 def workspace_fingerprint_payload(

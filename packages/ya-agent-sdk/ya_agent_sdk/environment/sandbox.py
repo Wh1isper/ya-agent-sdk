@@ -19,7 +19,7 @@ import os
 import tempfile
 import time
 from collections.abc import Iterator
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any
 
 import docker
@@ -38,15 +38,7 @@ from ya_agent_environment import (
 )
 
 from ya_agent_sdk.environment.local import VirtualLocalFileOperator, VirtualMount
-
-
-def _virtual_path(path: str | PurePath) -> PurePosixPath:
-    return PurePosixPath(str(path).replace("\\", "/"))
-
-
-def _normalize_virtual_path(path: str | PurePath) -> PurePosixPath:
-    return PurePosixPath(os.path.normpath(str(_virtual_path(path))))
-
+from ya_agent_sdk.environment.virtual_path import VirtualPath, normalize_virtual_path
 
 if TYPE_CHECKING:
     pass
@@ -415,7 +407,7 @@ class SandboxEnvironment(Environment):
         raw_work_dir = work_dir if work_dir is not None else str(mounts[0].virtual_path)
 
         # Validate work_dir is absolute and under at least one mount's virtual_path
-        normalized_work_dir = _normalize_virtual_path(raw_work_dir)
+        normalized_work_dir = normalize_virtual_path(raw_work_dir)
         if not normalized_work_dir.is_absolute():
             raise ValueError(f"work_dir must be absolute, got: {raw_work_dir}")
         if not any(self._is_path_under(normalized_work_dir, m.virtual_path) for m in mounts):
@@ -443,7 +435,7 @@ class SandboxEnvironment(Environment):
         self._ready_lock: asyncio.Lock = asyncio.Lock()
 
     @staticmethod
-    def _is_path_under(path: PurePosixPath, root: PurePath) -> bool:
+    def _is_path_under(path: VirtualPath, root: PurePath) -> bool:
         """Check if path is equal to or under root using path semantics."""
         try:
             path.relative_to(root)

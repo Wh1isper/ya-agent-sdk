@@ -12,6 +12,7 @@ from uuid import uuid4
 from dotenv import dotenv_values, load_dotenv
 from pydantic import AliasChoices, Field, PositiveInt, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path as normalize_agent_virtual_path
 
 from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchMode
 from ya_claw.workspace import DockerExtraMount
@@ -67,7 +68,7 @@ def _parse_docker_extra_mounts(value: str) -> list[DockerExtraMount]:
             continue
         host_path_raw, container_path_raw, mode = _split_docker_extra_mount(item)
         host_path = Path(host_path_raw).expanduser()
-        container_path = Path(container_path_raw)
+        container_path = normalize_agent_virtual_path(container_path_raw)
         if str(host_path).strip() == "":
             raise ValueError("Docker extra mount host_path must not be empty")
         if not container_path.is_absolute():

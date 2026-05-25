@@ -12,8 +12,9 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 import anyio
@@ -39,19 +40,11 @@ from ya_agent_sdk.environment.process import (
     send_process_tree_signal,
     terminate_process_tree,
 )
-
-VirtualPath = PurePosixPath
-
-
-def _virtual_path(path: str | PurePath) -> PurePosixPath:
-    """Return a POSIX path for agent-facing virtual paths."""
-    return PurePosixPath(str(path).replace("\\", "/"))
-
-
-def _normalize_virtual_path(path: str | PurePath) -> PurePosixPath:
-    """Normalize an agent-facing POSIX path without touching the host filesystem."""
-    return PurePosixPath(os.path.normpath(str(_virtual_path(path))))
-
+from ya_agent_sdk.environment.virtual_path import (
+    VirtualPath,
+    as_virtual_path,
+    normalize_virtual_path,
+)
 
 if TYPE_CHECKING:
     from ya_agent_sdk.environment.shell_sandbox.policy import ShellSandboxRuntimePolicy
@@ -107,7 +100,7 @@ class LocalFileOperator(FileOperator):
     def __init__(
         self,
         default_path: Path | None = None,
-        allowed_paths: list[Path] | None = None,
+        allowed_paths: Sequence[Path | PurePath] | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
         tmp_dir: Path | None = None,
@@ -127,7 +120,8 @@ class LocalFileOperator(FileOperator):
         """
         # Fallback: use first allowed_path as default when only allowed_paths is provided
         if default_path is None and allowed_paths:
-            default_path = allowed_paths[0]
+            first_allowed_path = allowed_paths[0]
+            default_path = first_allowed_path if isinstance(first_allowed_path, Path) else None
 
         super().__init__(
             default_path=default_path,
@@ -435,10 +429,10 @@ class VirtualMount:
     """
 
     host_path: Path
-    virtual_path: Path
+    virtual_path: Path | VirtualPath
 
     def __post_init__(self) -> None:
-        virtual_path = _normalize_virtual_path(self.virtual_path)
+        virtual_path = normalize_virtual_path(self.virtual_path)
         if not virtual_path.is_absolute():
             raise ValueError(f"virtual_path must be absolute, got: {self.virtual_path}")
         object.__setattr__(self, "virtual_path", virtual_path)
@@ -481,7 +475,7 @@ class VirtualLocalFileOperator(FileOperator):
     def __init__(
         self,
         mounts: list[VirtualMount],
-        default_virtual_path: Path | PurePosixPath | None = None,
+        default_virtual_path: Path | VirtualPath | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
         tmp_dir: Path | None = None,
@@ -501,7 +495,7 @@ class VirtualLocalFileOperator(FileOperator):
         """
         self._mounts = mounts
         default_vp = (
-            _normalize_virtual_path(default_virtual_path)
+            normalize_virtual_path(default_virtual_path)
             if default_virtual_path is not None
             else (mounts[0].virtual_path if mounts else None)
         )
@@ -515,7 +509,7 @@ class VirtualLocalFileOperator(FileOperator):
             tmp_file_operator=tmp_file_operator,
         )
 
-    def _find_mount(self, normalized_virtual: PurePosixPath) -> VirtualMount:
+    def _find_mount(self, normalized_virtual: VirtualPath) -> VirtualMount:
         """Find the mount whose virtual_path is the longest prefix of the given path.
 
         Args:
@@ -545,7 +539,7 @@ class VirtualLocalFileOperator(FileOperator):
             )
         return best
 
-    def _resolve_virtual(self, path: str) -> PurePosixPath:
+    def _resolve_virtual(self, path: str) -> VirtualPath:
         """Resolve a virtual path to a normalized absolute virtual path.
 
         Args:
@@ -560,10 +554,10 @@ class VirtualLocalFileOperator(FileOperator):
         """
         if self._default_path is None:
             raise PathNotAllowedError(path, [])
-        target = _virtual_path(path)
+        target = as_virtual_path(path)
         if not target.is_absolute():
-            target = _virtual_path(self._default_path) / target
-        normalized = _normalize_virtual_path(target)
+            target = as_virtual_path(self._default_path) / target
+        normalized = normalize_virtual_path(target)
 
         # Validate: must be under at least one mount
         self._find_mount(normalized)
@@ -858,13 +852,13 @@ class VirtualLocalFileOperator(FileOperator):
         if self._default_path is None:
             return []
 
-        pattern_path = _virtual_path(pattern)
-        default_mount = self._find_mount(_virtual_path(self._default_path))
+        pattern_path = as_virtual_path(pattern)
+        default_mount = self._find_mount(as_virtual_path(self._default_path))
         default_host = default_mount.host_path.resolve()
 
         if pattern_path.is_absolute():
             # Find which mount this pattern belongs to
-            normalized = _normalize_virtual_path(pattern_path)
+            normalized = normalize_virtual_path(pattern_path)
             try:
                 mount = self._find_mount(normalized)
             except PathNotAllowedError:
@@ -891,7 +885,7 @@ class VirtualLocalFileOperator(FileOperator):
         # Sort by modification time (newest first)
         def get_mtime(x: str) -> float:
             try:
-                target = _virtual_path(x)
+                target = as_virtual_path(x)
                 if target.is_absolute():
                     # Absolute virtual path - translate to host for mtime
                     host = self._to_host(x)

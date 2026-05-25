@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ya_agent_sdk.environment import LocalShell, SandboxEnvironment, VirtualLocalFileOperator, VirtualMount
 from ya_agent_sdk.environment.sandbox import DockerShell
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path
 from ya_claw.workspace import (
     DockerEnvironmentFactory,
     DockerExtraMount,
@@ -53,10 +54,10 @@ def test_local_workspace_provider_resolves_single_workspace(tmp_path: Path) -> N
 
     assert binding.host_path == workspace_dir.resolve()
     assert binding.host_path.exists()
-    assert binding.virtual_path == workspace_dir.resolve()
-    assert binding.cwd == workspace_dir.resolve()
-    assert binding.readable_paths == [workspace_dir.resolve()]
-    assert binding.writable_paths == [workspace_dir.resolve()]
+    assert binding.virtual_path == normalize_virtual_path("/workspace")
+    assert binding.cwd == normalize_virtual_path("/workspace")
+    assert binding.readable_paths == [normalize_virtual_path("/workspace")]
+    assert binding.writable_paths == [normalize_virtual_path("/workspace")]
     assert binding.metadata["source"] == "api"
     assert binding.metadata["provider"] == "local"
     assert binding.metadata["shell_backend"] == "local"
@@ -73,6 +74,7 @@ async def test_service_local_plus_local_shell_uses_real_paths_for_file_ops_and_s
     async with environment as env:
         assert isinstance(env.file_operator, VirtualLocalFileOperator)
         assert env.shell is not None
+        assert str(env.file_operator._default_path) == "/workspace"
         await env.file_operator.write_file("notes.txt", "hello")
         content = await env.file_operator.read_file("notes.txt")
         exit_code, stdout, stderr = await env.shell.execute("pwd && ls")
@@ -105,10 +107,12 @@ def test_docker_workspace_provider_defaults_docker_host_path_to_service_path(tmp
 
     binding = provider.resolve(metadata={"session_id": "session-1"})
 
+    assert str(binding.virtual_path) == "/workspace"
+    assert str(binding.cwd) == "/workspace"
     assert binding.host_path == workspace_dir.resolve()
     assert binding.docker_host_path == workspace_dir.resolve()
-    assert binding.virtual_path == Path("/workspace")
-    assert binding.cwd == Path("/workspace")
+    assert binding.virtual_path == normalize_virtual_path("/workspace")
+    assert binding.cwd == normalize_virtual_path("/workspace")
     assert binding.metadata["provider"] == "docker"
     assert binding.metadata["docker_image"] == "python:3.11"
     assert binding.metadata["host_mount"] == str(workspace_dir.resolve())
@@ -119,6 +123,23 @@ def test_docker_workspace_provider_defaults_docker_host_path_to_service_path(tmp
         "image": "python:3.11",
     }
     assert binding.backend_hint == "docker"
+
+
+def test_docker_workspace_provider_keeps_posix_virtual_paths_from_host_path_input(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    provider = DockerWorkspaceProvider(
+        workspace_dir,
+        image="python:3.11",
+        virtual_workspace_path=Path("/workspace/../workspace"),
+    )
+
+    binding = provider.resolve(metadata={"session_id": "session-1"})
+    environment = DockerEnvironmentFactory(image="python:3.11").build(binding)
+
+    assert str(binding.virtual_path) == "/workspace"
+    assert str(binding.cwd) == "/workspace"
+    assert str(environment._work_dir) == "/workspace"
+    assert str(environment._mounts[0].virtual_path) == "/workspace"
 
 
 def test_docker_workspace_provider_supports_separate_service_and_daemon_paths(tmp_path: Path) -> None:
@@ -134,8 +155,8 @@ def test_docker_workspace_provider_supports_separate_service_and_daemon_paths(tm
 
     assert binding.host_path == service_workspace_dir.resolve()
     assert binding.docker_host_path == host_workspace_dir.resolve()
-    assert binding.virtual_path == Path("/workspace")
-    assert binding.cwd == Path("/workspace")
+    assert binding.virtual_path == normalize_virtual_path("/workspace")
+    assert binding.cwd == normalize_virtual_path("/workspace")
     assert binding.metadata["host_mount"] == str(host_workspace_dir.resolve())
     assert binding.metadata["service_mount"] == str(service_workspace_dir.resolve())
     assert binding.metadata["sandbox"] == {
@@ -157,8 +178,8 @@ def test_service_local_plus_docker_shell_uses_virtual_paths_for_file_ops_and_she
     assert isinstance(environment, ReusableSandboxEnvironment)
     assert binding.host_path == workspace_dir.resolve()
     assert binding.docker_host_path == workspace_dir.resolve()
-    assert binding.virtual_path == Path("/workspace")
-    assert binding.cwd == Path("/workspace")
+    assert binding.virtual_path == normalize_virtual_path("/workspace")
+    assert binding.cwd == normalize_virtual_path("/workspace")
     assert environment.container_ref == build_workspace_container_ref(image="python:3.11", workspace_dir=workspace_dir)
     assert binding.metadata["workspace_uid"] == 1234
     assert binding.metadata["workspace_gid"] == 2345
@@ -626,7 +647,7 @@ def test_load_workspace_guidance_reads_workspace_agents_file(tmp_path: Path) -> 
 
     assert guidance is not None
     assert guidance.host_path == agents_path.resolve()
-    assert guidance.virtual_path == (tmp_path / "workspace" / "AGENTS.md").resolve()
+    assert guidance.virtual_path == normalize_virtual_path("/workspace/AGENTS.md")
     assert guidance.content == "# Workspace\nUse pytest.\n"
 
 
