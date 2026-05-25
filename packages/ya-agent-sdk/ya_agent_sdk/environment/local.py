@@ -4,6 +4,8 @@ This module provides local file system and shell implementations
 using standard library functions.
 """
 
+from __future__ import annotations
+
 import asyncio
 import glob as glob_module
 import os
@@ -39,7 +41,7 @@ from ya_agent_sdk.environment.process import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from ya_agent_sdk.environment.shell_sandbox.policy import ShellSandboxRuntimePolicy
 
 
 def _default_shell_executable() -> str | None:
@@ -460,7 +462,7 @@ class VirtualLocalFileOperator(FileOperator):
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
         tmp_dir: Path | None = None,
-        tmp_file_operator: "TmpFileOperator | None" = None,
+        tmp_file_operator: TmpFileOperator | None = None,
     ):
         """Initialize VirtualLocalFileOperator.
 
@@ -880,10 +882,12 @@ class VirtualLocalFileOperator(FileOperator):
 
 
 class LocalShell(Shell):
-    """Local shell command executor with path validation.
+    """Local shell command executor with optional sandbox policy.
 
-    Implements the Shell ABC for local command execution.
-    Validates working directory against allowed paths.
+    LocalShell is the single SDK implementation for host shell execution. With
+    no sandbox policy it preserves raw subprocess behavior. When a
+    ShellSandboxRuntimePolicy is provided and enabled, LocalShell routes command
+    creation through the selected sandbox backend.
     """
 
     def __init__(
@@ -893,6 +897,8 @@ class LocalShell(Shell):
         default_timeout: float = 30.0,
         include_os_env: bool = True,
         shell_executable: str | None = None,
+        environment_overrides: dict[str, str] | None = None,
+        sandbox_policy: ShellSandboxRuntimePolicy | None = None,
     ):
         """Initialize LocalShell.
 
@@ -906,11 +912,17 @@ class LocalShell(Shell):
                 variables when an explicit env dict is provided to execute().
                 When True (default), os.environ is merged as the base layer.
                 When False, only the explicitly provided env dict is used.
-                Note: when env=None, subprocess always inherits os.environ
-                regardless of this setting (Python subprocess behavior).
-            shell_executable: Shell executable used by create_subprocess_shell.
+                Note: raw mode with env=None naturally inherits os.environ;
+                sandbox mode always builds an explicit policy-filtered env.
+            shell_executable: Shell executable used by local shell execution.
                 Defaults to /bin/bash on POSIX systems when available and
                 Python's platform default shell otherwise.
+            environment_overrides: Environment values injected before per-call
+                env values. Used by workspace providers to pass runtime secrets
+                and tool configuration into shell commands.
+            sandbox_policy: Optional resolved shell sandbox policy. When
+                provided and enabled, backend, network, mounts, environment
+                allowlist, and raw host allowance affect process creation.
         """
         # Fallback: use first allowed_path as default when only allowed_paths is provided
         if default_cwd is None and allowed_paths:
@@ -924,6 +936,8 @@ class LocalShell(Shell):
         self._include_os_env = include_os_env
         self._shell_executable = _resolve_shell_executable(shell_executable)
         self._platform_name = sys.platform
+        self._environment_overrides = dict(environment_overrides or {})
+        self._sandbox_policy = sandbox_policy
 
     def _resolve_cwd(self, cwd: str | None) -> Path:
         """Resolve and validate working directory."""
@@ -957,18 +971,45 @@ class LocalShell(Shell):
         return False
 
     def _build_effective_env(self, env: dict[str, str] | None) -> dict[str, str] | None:
-        """Build effective environment for subprocess.
+        """Build effective environment for subprocess."""
+        requested = {**self._environment_overrides, **dict(env or {})}
+        policy = self._active_sandbox_policy()
+        if policy is not None:
+            return self._build_sandbox_env(requested, policy.env_allowlist)
+        return self._build_raw_env(env, requested)
 
-        - include_os_env=True + env provided: merge os.environ as base layer
-        - include_os_env=True + env=None: inherit naturally (pass None)
-        - include_os_env=False + env provided: use only provided env
-        - include_os_env=False + env=None: pass empty dict to prevent inheritance
-        """
+    def _build_raw_env(self, env: dict[str, str] | None, requested: dict[str, str]) -> dict[str, str] | None:
+        if requested:
+            return {**os.environ, **requested} if self._include_os_env else requested
         if env is not None and self._include_os_env:
             return {**os.environ, **env}
         if env is None and not self._include_os_env:
             return {}
         return env
+
+    def _build_sandbox_env(self, requested: dict[str, str], env_allowlist: tuple[str, ...]) -> dict[str, str]:
+        allowlist = set(env_allowlist)
+        if "*" in allowlist:
+            return {**os.environ, **requested} if self._include_os_env else requested
+        filtered = {key: value for key, value in requested.items() if key in allowlist}
+        if self._include_os_env:
+            for key in allowlist:
+                if key in os.environ and key not in filtered:
+                    filtered[key] = os.environ[key]
+        if "HOME" not in filtered and "HOME" in os.environ:
+            filtered["HOME"] = os.environ["HOME"]
+        if "PATH" not in filtered and "PATH" in os.environ:
+            filtered["PATH"] = os.environ["PATH"]
+        return filtered
+
+    def _active_sandbox_policy(self) -> ShellSandboxRuntimePolicy | None:
+        if self._sandbox_policy is not None and self._sandbox_policy.enabled:
+            return self._sandbox_policy
+        return None
+
+    @property
+    def _sandbox_enabled(self) -> bool:
+        return self._active_sandbox_policy() is not None
 
     def _shell_environment_instruction(self) -> str:
         shell_type = _shell_type_from_executable(self._shell_executable)
@@ -987,8 +1028,30 @@ class LocalShell(Shell):
         instructions = await super().get_context_instructions()
         if instructions is None:
             return None
-        return instructions.replace(
+        instructions = instructions.replace(
             "\n  <default-timeout>", f"\n{self._shell_environment_instruction()}\n  <default-timeout>"
+        )
+        if self._sandbox_policy is None:
+            return instructions
+        metadata = self._sandbox_policy.to_metadata()
+        sandbox_lines = [
+            "  <shell-sandbox>",
+            f"    <enabled>{str(self._sandbox_policy.enabled).lower()}</enabled>",
+            f"    <profile>{self._sandbox_policy.profile}</profile>",
+            f"    <backend>{self._sandbox_policy.backend}</backend>",
+            f"    <network>{self._sandbox_policy.network}</network>",
+            f"    <raw-host-allowed>{str(self._sandbox_policy.raw_shell_allowed).lower()}</raw-host-allowed>",
+            "  </shell-sandbox>",
+        ]
+        insertion = "\n".join(sandbox_lines)
+        note = (
+            f"Commands run through YA shell sandbox policy {metadata['profile']} on backend {metadata['backend']}."
+            if self._sandbox_policy.enabled
+            else "Commands will be executed with the working directory validated."
+        )
+        return instructions.replace("\n  <note>", f"\n{insertion}\n  <note>").replace(
+            "Commands will be executed with the working directory validated.",
+            note,
         )
 
     async def execute(
@@ -1015,20 +1078,54 @@ class LocalShell(Shell):
             raise ShellExecutionError("", stderr="Empty command")
 
         resolved_cwd = self._resolve_cwd(cwd)
-        effective_timeout = timeout
+        policy = self._active_sandbox_policy()
+        effective_timeout = self._default_timeout if timeout is None and policy is not None else timeout
+        cleanup = lambda: None
 
         try:
             effective_env = self._build_effective_env(env)
+            if policy is not None:
+                if policy.backend == "raw_host" and not policy.raw_shell_allowed:
+                    raise ShellExecutionError(
+                        command, stderr="Raw host shell backend is disabled by shell sandbox policy"
+                    )
+                if policy.backend == "raw_host":
+                    process = await asyncio.create_subprocess_shell(
+                        command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=resolved_cwd,
+                        env=effective_env,
+                        executable=self._shell_executable,
+                        **process_group_kwargs(),
+                    )
+                else:
+                    from ya_agent_sdk.environment.shell_sandbox.backend import build_sandbox_command
 
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=resolved_cwd,
-                env=effective_env,
-                executable=self._shell_executable,
-                **process_group_kwargs(),
-            )
+                    args, cleanup = build_sandbox_command(
+                        command=command,
+                        cwd=resolved_cwd,
+                        policy=policy,
+                        shell_executable=self._shell_executable,
+                    )
+                    process = await asyncio.create_subprocess_exec(
+                        *args,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=resolved_cwd,
+                        env=effective_env,
+                        **process_group_kwargs(),
+                    )
+            else:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=resolved_cwd,
+                    env=effective_env,
+                    executable=self._shell_executable,
+                    **process_group_kwargs(),
+                )
 
             try:
                 if effective_timeout is not None:
@@ -1049,15 +1146,17 @@ class LocalShell(Shell):
         except FileNotFoundError as e:
             raise ShellExecutionError(
                 command,
-                stderr="Command not found",
+                stderr="Shell sandbox backend is unavailable" if self._sandbox_enabled else "Command not found",
             ) from e
         except PermissionError as e:
             raise ShellExecutionError(
                 command,
-                stderr="Permission denied",
+                stderr="Shell sandbox backend permission denied" if self._sandbox_enabled else "Permission denied",
             ) from e
         except OSError as e:
             raise ShellExecutionError(command, stderr=str(e)) from e
+        finally:
+            cleanup()
 
     async def _create_process(
         self,
@@ -1077,30 +1176,75 @@ class LocalShell(Shell):
 
         resolved_cwd = self._resolve_cwd(cwd)
         effective_env = self._build_effective_env(env)
+        cleanup = lambda: None
 
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=resolved_cwd,
-                env=effective_env,
-                executable=self._shell_executable,
-                **process_group_kwargs(),
-            )
+            policy = self._active_sandbox_policy()
+            if policy is not None:
+                if policy.backend == "raw_host" and not policy.raw_shell_allowed:
+                    raise ShellExecutionError(
+                        command, stderr="Raw host shell backend is disabled by shell sandbox policy"
+                    )
+                if policy.backend == "raw_host":
+                    process = await asyncio.create_subprocess_shell(
+                        command,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=resolved_cwd,
+                        env=effective_env,
+                        executable=self._shell_executable,
+                        **process_group_kwargs(),
+                    )
+                else:
+                    from ya_agent_sdk.environment.shell_sandbox.backend import build_sandbox_command
+
+                    args, cleanup = build_sandbox_command(
+                        command=command,
+                        cwd=resolved_cwd,
+                        policy=policy,
+                        shell_executable=self._shell_executable,
+                    )
+                    process = await asyncio.create_subprocess_exec(
+                        *args,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=resolved_cwd,
+                        env=effective_env,
+                        **process_group_kwargs(),
+                    )
+            else:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=resolved_cwd,
+                    env=effective_env,
+                    executable=self._shell_executable,
+                    **process_group_kwargs(),
+                )
         except Exception as e:
+            cleanup()
             raise ShellExecutionError(command, stderr=str(e)) from e
 
         if process.stdout is None or process.stderr is None:
+            cleanup()
             raise ShellExecutionError(command, stderr="Failed to capture subprocess streams")
 
         async def _wait() -> int:
-            await process.wait()
-            return process.returncode or 0
+            try:
+                await process.wait()
+                return process.returncode or 0
+            finally:
+                cleanup()
 
         async def _kill() -> None:
-            await kill_process_tree(process)
+            try:
+                await kill_process_tree(process)
+            finally:
+                cleanup()
 
         async def _send_signal(sig: int) -> None:
             send_process_tree_signal(process, sig)
@@ -1153,6 +1297,8 @@ class LocalEnvironment(Environment):
         resource_factories: dict[str, ResourceFactory] | None = None,
         include_os_env: bool = True,
         shell_executable: str | None = None,
+        environment_overrides: dict[str, str] | None = None,
+        shell_sandbox_policy: ShellSandboxRuntimePolicy | None = None,
     ):
         """Initialize LocalEnvironment.
 
@@ -1174,6 +1320,9 @@ class LocalEnvironment(Environment):
             shell_executable: Shell executable used by LocalShell.
                 Defaults to /bin/bash on POSIX systems when available and
                 Python's platform default shell otherwise.
+            environment_overrides: Environment values injected into shell commands.
+            shell_sandbox_policy: Optional LocalShell sandbox policy. The default
+                is raw local subprocess behavior for SDK and YAACLI compatibility.
         """
         super().__init__(
             resource_state=resource_state,
@@ -1186,6 +1335,8 @@ class LocalEnvironment(Environment):
         self._enable_tmp_dir = enable_tmp_dir
         self._include_os_env = include_os_env
         self._shell_executable = shell_executable
+        self._environment_overrides = dict(environment_overrides or {})
+        self._shell_sandbox_policy = shell_sandbox_policy
         self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
 
     @property
@@ -1237,6 +1388,8 @@ class LocalEnvironment(Environment):
                 default_timeout=self._shell_timeout,
                 include_os_env=self._include_os_env,
                 shell_executable=self._shell_executable,
+                environment_overrides=self._environment_overrides,
+                sandbox_policy=self._shell_sandbox_policy,
             )
 
     async def _teardown(self) -> None:

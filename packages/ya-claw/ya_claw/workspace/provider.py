@@ -24,7 +24,6 @@ from ya_agent_environment import (
 )
 from ya_agent_sdk.environment import (
     LocalShell,
-    SandboxedLocalShell,
     SandboxEnvironment,
     ShellSandboxBackend,
     ShellSandboxNetwork,
@@ -195,53 +194,19 @@ class MappedLocalEnvironment(Environment):
         )
         if tmp_dir_path is not None:
             allowed_paths.append(tmp_dir_path.resolve())
-        if self._shell_sandbox_policy is not None and self._shell_sandbox_policy.enabled:
-            self._shell = SandboxedLocalShell(
-                policy=self._shell_sandbox_policy,
-                default_cwd=self._host_cwd,
-                allowed_paths=allowed_paths,
-                default_timeout=self._shell_timeout,
-                include_os_env=self._include_os_env,
-                environment_overrides=self._environment_overrides,
-            )
-        else:
-            self._shell = WorkspaceLocalShell(
-                default_cwd=self._host_cwd,
-                allowed_paths=allowed_paths,
-                default_timeout=self._shell_timeout,
-                include_os_env=self._include_os_env,
-                environment_overrides=self._environment_overrides,
-            )
+        self._shell = LocalShell(
+            default_cwd=self._host_cwd,
+            allowed_paths=allowed_paths,
+            default_timeout=self._shell_timeout,
+            include_os_env=self._include_os_env,
+            environment_overrides=self._environment_overrides,
+            sandbox_policy=self._shell_sandbox_policy,
+        )
 
     async def _teardown(self) -> None:
         if self._tmp_dir_obj is not None:
             self._tmp_dir_obj.cleanup()
             self._tmp_dir_obj = None
-
-
-class WorkspaceLocalShell(LocalShell):
-    def __init__(
-        self,
-        *,
-        environment_overrides: dict[str, str],
-        default_cwd: Path | None = None,
-        allowed_paths: list[Path] | None = None,
-        default_timeout: float = 30.0,
-        include_os_env: bool = True,
-    ) -> None:
-        super().__init__(
-            default_cwd=default_cwd,
-            allowed_paths=allowed_paths,
-            default_timeout=default_timeout,
-            include_os_env=include_os_env,
-        )
-        self._environment_overrides = dict(environment_overrides)
-
-    def _build_effective_env(self, env: dict[str, str] | None) -> dict[str, str] | None:
-        merged_env = {**self._environment_overrides, **dict(env or {})}
-        if not merged_env:
-            return super()._build_effective_env(env)
-        return super()._build_effective_env(merged_env)
 
 
 class DockerWorkspaceDeferredShell(DeferredShell):

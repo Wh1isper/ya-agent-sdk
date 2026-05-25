@@ -62,7 +62,7 @@ classDiagram
 - Maintain a registry of spawned processes.
 - Provide bounded cleanup on application exit.
 - Keep process metadata available for TUI display and diagnostics.
-- Preserve `LocalEnvironment` file and shell semantics.
+- Preserve `LocalEnvironment` file and shell semantics, including raw local subprocess behavior by default. YAACLI can opt into `LocalShell` sandbox policy later through explicit configuration.
 
 ## Process Manager Sketch
 

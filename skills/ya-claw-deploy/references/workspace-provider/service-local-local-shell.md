@@ -9,7 +9,7 @@ flowchart LR
     CLIENT["Client"] --> SERVICE["YA Claw host process"]
     SERVICE --> WORKSPACE["Real workspace path"]
     WORKSPACE --> FILES["LocalFileOperator"]
-    WORKSPACE --> SHELL["SandboxedLocalShell"]
+    WORKSPACE --> SHELL["LocalShell + ShellSandboxRuntimePolicy"]
 ```
 
 ## Configuration
@@ -27,7 +27,7 @@ YA_CLAW_WORKSPACE_DIR=/var/lib/ya-claw/workspace
 | agent-visible `virtual_path` | `/var/lib/ya-claw/workspace` |
 | agent cwd                    | `/var/lib/ya-claw/workspace` |
 
-`LocalWorkspaceProvider` uses the real workspace path as `virtual_path` and `cwd`. `LocalEnvironmentFactory` creates a `LocalFileOperator` and, by default, a `SandboxedLocalShell` restricted to the workspace path and temporary directory. Set `YA_CLAW_SHELL_SANDBOX_ENABLED=false` to use the plain `WorkspaceLocalShell` path for a trusted development machine.
+`LocalWorkspaceProvider` uses the real workspace path as `virtual_path` and `cwd`. `LocalEnvironmentFactory` creates a `LocalFileOperator` and policy-driven `LocalShell` restricted to the workspace path and temporary directory. By default, Claw passes a resolved `ShellSandboxRuntimePolicy` into `LocalShell`. Set `YA_CLAW_SHELL_SANDBOX_ENABLED=false` to use raw host subprocess mode for a trusted development machine.
 
 ## Shell Sandbox Requirements
 

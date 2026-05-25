@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ya_agent_sdk.environment import SandboxEnvironment, VirtualLocalFileOperator, VirtualMount
+from ya_agent_sdk.environment import LocalShell, SandboxEnvironment, VirtualLocalFileOperator, VirtualMount
 from ya_agent_sdk.environment.sandbox import DockerShell
 from ya_claw.workspace import (
     DockerEnvironmentFactory,
@@ -14,7 +14,6 @@ from ya_claw.workspace import (
     MappedLocalEnvironment,
     ReusableSandboxEnvironment,
     WorkspaceGuidance,
-    WorkspaceLocalShell,
     build_workspace_container_ref,
     build_workspace_sandbox_metadata,
     format_workspace_guidance,
@@ -92,7 +91,7 @@ async def test_local_environment_factory_passes_workspace_environment(tmp_path: 
     environment = factory.build(binding)
 
     async with environment as env:
-        assert isinstance(env.shell, WorkspaceLocalShell)
+        assert isinstance(env.shell, LocalShell)
         exit_code, stdout, stderr = await env.shell.execute("printf '%s' \"$LARK_APP_ID\"")
 
     assert exit_code == 0

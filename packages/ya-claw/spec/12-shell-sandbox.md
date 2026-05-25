@@ -67,7 +67,7 @@ flowchart TB
     PROVIDER --> OCI[Advanced OCI / VM backend]
 ```
 
-`WorkspaceProvider` keeps returning declarative bindings. The reusable sandbox shell implementation and policy data models live in `ya-agent-sdk` under `ya_agent_sdk.environment.shell_sandbox`, split into `policy`, `backend`, and `shell` modules. Shared subprocess lifecycle helpers live in `ya_agent_sdk.environment.process`. Claw keeps workspace-specific conversion in `ya_claw.workspace.shell_sandbox`, resolving profile/settings/workspace bindings into `ShellSandboxRuntimePolicy`; `EnvironmentFactory` selects `SandboxedLocalShell` for local workspaces and builds the concrete SDK `Environment`.
+`WorkspaceProvider` keeps returning declarative bindings. The reusable shell sandbox policy data models and backend builders live in `ya-agent-sdk` under `ya_agent_sdk.environment.shell_sandbox`, split into `policy`, `backend`, and alias `shell` modules. The single SDK local shell implementation is policy-driven `LocalShell`; with a resolved `ShellSandboxRuntimePolicy` it uses the selected sandbox backend, and with no policy it preserves raw subprocess behavior for SDK and YAACLI compatibility. Shared subprocess lifecycle helpers live in `ya_agent_sdk.environment.process`. Claw keeps workspace-specific conversion in `ya_claw.workspace.shell_sandbox`, resolving profile/settings/workspace bindings into `ShellSandboxRuntimePolicy`; `EnvironmentFactory` passes that policy into `LocalShell` for local workspaces.
 
 ## Policy Model
 

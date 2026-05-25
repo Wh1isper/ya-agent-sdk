@@ -38,7 +38,7 @@ flowchart TB
     BIND --> FACTORY["DefaultEnvironmentFactory"]
     FACTORY --> LOCAL["LocalEnvironmentFactory"]
     FACTORY --> DOCKER["DockerEnvironmentFactory"]
-    LOCAL --> LOCAL_ENV["LocalFileOperator + LocalShell"]
+    LOCAL --> LOCAL_ENV["LocalFileOperator + policy-driven LocalShell"]
     DOCKER --> DOCKER_ENV["VirtualLocalFileOperator + DockerShell"]
 ```
 

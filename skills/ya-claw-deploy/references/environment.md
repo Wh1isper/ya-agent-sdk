@@ -76,7 +76,7 @@ Use the same values for systemd or custom container deployments when memory resi
 
 ## Shell Sandbox Settings
 
-These settings apply to local workspace shell execution. Docker workspace provider deployments use the Docker workspace container boundary; local shell deployments use `SandboxedLocalShell` when shell sandboxing is enabled.
+These settings apply to local workspace shell execution. Docker workspace provider deployments use the Docker workspace container boundary; local shell deployments use policy-driven `LocalShell` with a resolved shell sandbox policy when shell sandboxing is enabled.
 
 | Variable                               | Default | Purpose                                                                                                        |
 | -------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
