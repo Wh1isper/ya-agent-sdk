@@ -14,15 +14,18 @@ from ya_agent_sdk.environment.local import (
     VirtualMount,
 )
 from ya_agent_sdk.environment.shell_sandbox import (
+    SHELL_SANDBOX_MASKED_PATH_ALIASES,
     SandboxedLocalShell,
     ShellSandboxBackend,
     ShellSandboxConfig,
+    ShellSandboxMaskedPathAlias,
     ShellSandboxMountPolicy,
     ShellSandboxNetwork,
     ShellSandboxProfile,
     ShellSandboxRawApproval,
     ShellSandboxRuntimePolicy,
     default_backend_for_platform,
+    resolve_masked_paths,
     resolve_shell_sandbox_runtime_policy,
     shell_sandbox_diagnostics,
 )
@@ -40,6 +43,7 @@ except ModuleNotFoundError:
     _DOCKER_AVAILABLE = False
 
 __all__ = [
+    "SHELL_SANDBOX_MASKED_PATH_ALIASES",
     "CompositeFileOperator",
     "LocalEnvironment",
     "LocalFileOperator",
@@ -50,6 +54,7 @@ __all__ = [
     "SandboxedLocalShell",
     "ShellSandboxBackend",
     "ShellSandboxConfig",
+    "ShellSandboxMaskedPathAlias",
     "ShellSandboxMountPolicy",
     "ShellSandboxNetwork",
     "ShellSandboxProfile",
@@ -58,6 +63,7 @@ __all__ = [
     "VirtualLocalFileOperator",
     "VirtualMount",
     "default_backend_for_platform",
+    "resolve_masked_paths",
     "resolve_shell_sandbox_runtime_policy",
     "shell_sandbox_diagnostics",
 ]

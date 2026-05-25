@@ -10,16 +10,8 @@ from typing import Any
 
 from ya_agent_environment import ShellExecutionError
 
-from ya_agent_sdk.environment.shell_sandbox.policy import ShellSandboxMountPolicy, ShellSandboxRuntimePolicy
+from ya_agent_sdk.environment.shell_sandbox.policy import ShellSandboxRuntimePolicy
 
-PROTECTED_HOME_SUFFIXES = (
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".config/gcloud",
-    ".docker",
-    ".kube",
-)
 LINUX_BWRAP_TMP_PATH = "/tmp"  # noqa: S108 - bubblewrap tmpfs mount point inside the sandbox namespace.
 
 SandboxCommand = tuple[list[str], Callable[[], None]]
@@ -77,8 +69,11 @@ def build_linux_bwrap_command(
     if policy.network in {"blocked", "restricted"}:
         args.append("--unshare-net")
     args.extend(["--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", LINUX_BWRAP_TMP_PATH])
-    for protected_path in protected_home_paths(policy.mounts):
-        args.extend(["--tmpfs", str(protected_path)])
+    for masked_path in policy.masked_paths:
+        expanded_masked_path = masked_path.expanduser()
+        if not expanded_masked_path.exists():
+            continue
+        args.extend(["--tmpfs", str(expanded_masked_path)])
     for mount in policy.mounts:
         host_path = mount.host_path.resolve()
         if not host_path.exists():
@@ -155,28 +150,6 @@ def default_shell_command(command: str) -> list[str]:
     if os.name == "posix":
         return [shell, "-lc", command]
     return [shell, "/d", "/s", "/c", command]
-
-
-def protected_home_paths(mounts: list[ShellSandboxMountPolicy]) -> list[Path]:
-    home = Path.home()
-    protected: list[Path] = []
-    for suffix in PROTECTED_HOME_SUFFIXES:
-        candidate = home / suffix
-        if not candidate.exists():
-            continue
-        candidate_resolved = candidate.resolve()
-        mount_contains_protected_path = False
-        for mount in mounts:
-            try:
-                mount.host_path.resolve().relative_to(candidate_resolved)
-            except ValueError:
-                continue
-            mount_contains_protected_path = True
-            break
-        if mount_contains_protected_path:
-            continue
-        protected.append(candidate)
-    return protected
 
 
 def seatbelt_profile(policy: ShellSandboxRuntimePolicy) -> str:

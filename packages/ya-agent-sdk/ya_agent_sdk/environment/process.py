@@ -50,8 +50,9 @@ async def terminate_process_tree(
 async def kill_process_tree(process: asyncio.subprocess.Process) -> None:
     """Force kill a process tree and wait for the root process to be reaped."""
     if process.returncode is None:
-        send_process_tree_signal(process, signal.SIGKILL)
-        if os.name != "posix":
+        if os.name == "posix":
+            send_process_tree_signal(process, signal.SIGKILL)
+        else:
             with contextlib.suppress(ProcessLookupError, OSError):
                 process.kill()
     with contextlib.suppress(ProcessLookupError, OSError):

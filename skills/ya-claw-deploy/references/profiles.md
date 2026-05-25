@@ -116,6 +116,10 @@ profiles:
       network: full
       env_allowlist:
         - "*"
+      # Optional path masks hide selected host paths in local sandbox shells.
+      # Recommended aliases: common_credentials, ssh, gnupg, aws, gcloud, docker, kube.
+      masked_path_aliases: []
+      masked_paths: []
       raw_shell_approval: requires_human
       audit_enabled: true
 ```
@@ -127,6 +131,8 @@ Supported `backend_preference` values are `auto`, `linux_bwrap_seccomp`, `macos_
 Supported `network` values are `blocked`, `restricted`, `proxy`, and `full`. The default is `full` so local coding workflows can install packages, run dev servers, and use external API tools while filesystem access stays bound to the workspace policy. Linux bubblewrap unshares networking for `blocked` and `restricted`; macOS seatbelt allows network access for `proxy` and `full`.
 
 `env_allowlist` is the environment variable allowlist copied into sandboxed subprocesses. The default `"*"` passes the effective process and workspace environment through. Set explicit names when a deployment wants a narrower subprocess environment; workspace environment overrides outside the explicit list are dropped before process creation.
+
+`masked_path_aliases` and `masked_paths` are opt-in path masks for local sandbox shells. The default is empty. Use the `common_credentials` alias to mask the recommended credential directory set (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gcloud`, `~/.docker`, `~/.kube`), or use narrower aliases such as `ssh`, `aws`, and `kube`. Use `masked_paths` for deployment-specific directories.
 
 `raw_shell_approval` accepts `forbidden`, `requires_human`, and `allowed_for_profile`. Raw host shell execution also requires service-level allowance through `YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST=true` or profile-level `allowed_for_profile`. Treat raw host shell as an audited maintenance path.
 

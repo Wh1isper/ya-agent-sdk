@@ -27,6 +27,12 @@ profiles:
       network: full
       env_allowlist:
         - "*"
+      # Optional path masks hide selected host paths inside local sandbox shells.
+      # Recommended aliases: common_credentials, ssh, gnupg, aws, gcloud, docker, kube.
+      # masked_path_aliases:
+      #   - common_credentials
+      # masked_paths:
+      #   - ~/.custom-secret-dir
       raw_shell_approval: requires_human
       audit_enabled: true
   system_prompt: |-

@@ -36,6 +36,8 @@ def test_resolve_workspace_shell_sandbox_policy_combines_defaults_and_profile(tm
             profile="read_only",
             backend_preference="raw_host",
             network="blocked",
+            masked_path_aliases=["common_credentials"],
+            masked_paths=[tmp_path / "extra-mask"],
             raw_shell_approval="allowed_for_profile",
         ),
     )
@@ -57,5 +59,14 @@ def test_resolve_workspace_shell_sandbox_policy_combines_defaults_and_profile(tm
     assert policy.requested_backend == "raw_host"
     assert policy.network == "blocked"
     assert policy.raw_shell_allowed is True
+    assert policy.masked_paths == (
+        Path.home() / ".ssh",
+        Path.home() / ".gnupg",
+        Path.home() / ".aws",
+        Path.home() / ".config/gcloud",
+        Path.home() / ".docker",
+        Path.home() / ".kube",
+        tmp_path / "extra-mask",
+    )
     assert [mount.id for mount in policy.mounts] == ["main", "docs"]
     assert [mount.mode for mount in policy.mounts] == ["rw", "ro"]

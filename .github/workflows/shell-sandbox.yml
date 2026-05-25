@@ -1,0 +1,97 @@
+name: Shell Sandbox
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/ya-agent-sdk/**"
+      - "packages/ya-claw/ya_claw/workspace/shell_sandbox.py"
+      - "packages/ya-claw/tests/test_workspace_shell_sandbox.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/shell-sandbox.yml"
+      - ".github/actions/setup-python-env/**"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "packages/ya-agent-sdk/**"
+      - "packages/ya-claw/ya_claw/workspace/shell_sandbox.py"
+      - "packages/ya-claw/tests/test_workspace_shell_sandbox.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/shell-sandbox.yml"
+      - ".github/actions/setup-python-env/**"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  shell-sandbox-package:
+    name: Shell Sandbox Package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      UV_PYTHON: "3.13"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.13"
+          extras: "all"
+
+      - name: Run SDK shell sandbox unit tests
+        run: >-
+          uv run python -m pytest
+          packages/ya-agent-sdk/tests/environment/test_shell_sandbox.py
+          -vv --inline-snapshot=disable
+
+      - name: Run Claw shell sandbox unit tests
+        if: ${{ runner.os != 'Windows' }}
+        run: >-
+          uv run python -m pytest
+          packages/ya-claw/tests/test_workspace_shell_sandbox.py
+          -vv --inline-snapshot=disable
+
+      - name: Check shell sandbox typing
+        run: >-
+          uv run python -m pyright
+          packages/ya-agent-sdk/ya_agent_sdk/environment/process.py
+          packages/ya-agent-sdk/ya_agent_sdk/environment/local.py
+          packages/ya-agent-sdk/ya_agent_sdk/environment/shell_sandbox
+          packages/ya-claw/ya_claw/workspace/shell_sandbox.py
+
+  shell-sandbox-linux-bwrap:
+    name: Shell Sandbox Linux bubblewrap integration
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.13"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.13"
+          extras: "all"
+
+      - name: Run Linux bubblewrap integration tests
+        run: uv run python -m pytest packages/ya-agent-sdk/tests/environment/test_shell_sandbox_integration.py -vv

@@ -77,6 +77,8 @@ async with stream_agent(runtime, "Hello") as streamer:
 
 `LocalShell` is the SDK's single local subprocess implementation. By default, `LocalShell` and `LocalEnvironment` preserve raw local subprocess behavior for SDK and YAACLI compatibility. Pass a resolved `ShellSandboxRuntimePolicy` to `LocalShell(sandbox_policy=...)` or `LocalEnvironment(shell_sandbox_policy=...)` to route commands through the selected local sandbox backend. `SandboxedLocalShell` is exported as a direct alias of `LocalShell` for naming convenience.
 
+Path masks are opt-in. `ShellSandboxConfig.masked_path_aliases` provides recommended aliases such as `common_credentials`, `ssh`, `aws`, and `kube`; `masked_paths` accepts concrete paths. Linux bubblewrap applies these masks as tmpfs mounts inside the sandbox.
+
 ## Shell Command Review
 
 Configure shell command review on `AgentContext.security.shell_review` to run a small reviewer model before shell execution:

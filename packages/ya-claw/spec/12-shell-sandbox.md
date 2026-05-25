@@ -143,11 +143,8 @@ shell_sandbox:
     scratch:
       - run_temp_dir
       - cache_dir_for_profile
-    protected_path_classes:
-      - credentials
-      - runtime_metadata
-      - git_metadata_when_protected
-      - desktop_app_data
+    masked_path_aliases: []
+    masked_paths: []
   network: full
   env_allowlist:
     - "*"
@@ -170,19 +167,11 @@ Profiles can tighten or widen this policy through stored execution profile metad
 - `cwd` must resolve inside one declared mount or approved scratch root.
 - file operations and shell execution use the same binding snapshot.
 
-### Protected Path Classes
+### Path Masks
 
-Default protected classes:
+Path masks are opt-in. Profiles can set `masked_path_aliases` for recommended host path groups or `masked_paths` for concrete deployment paths. The recommended `common_credentials` alias expands to `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gcloud`, `~/.docker`, and `~/.kube`. Narrow aliases are available for `ssh`, `gnupg`, `aws`, `gcloud`, `docker`, and `kube`.
 
-| Class                | Examples                                                                       | Policy                                                          |
-| -------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `credentials`        | `.ssh`, `.gnupg`, `.aws`, `.config/gcloud`, browser profiles, keychain exports | hidden from shell                                               |
-| `runtime_metadata`   | `.yaacli`, `.ya-claw`, profile seed files, auth stores                         | hidden or read-only by role                                     |
-| `workspace_guidance` | `AGENTS.md`, `HEARTBEAT.md`, memory files                                      | read-only unless the profile grants memory edits                |
-| `git_metadata`       | `.git`                                                                         | read-only for normal runs, writable for approved Git operations |
-| `desktop_app_data`   | Desktop settings and local relay tokens                                        | hidden from shell                                               |
-
-The policy resolver should support workspace-level overrides for teams that use agent-edited guidance or Git metadata.
+Linux bubblewrap applies masks as `tmpfs` mounts after the base filesystem view and before explicit workspace mounts. Other native backends should implement equivalent path-hiding semantics where the platform supports it.
 
 ### Scratch Roots
 
