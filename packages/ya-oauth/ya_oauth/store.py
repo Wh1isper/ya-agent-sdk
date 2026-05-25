@@ -8,7 +8,7 @@ import stat
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -42,9 +42,7 @@ class FileLock:
             self._file.seek(0)
             self._msvcrt.locking(self._file.fileno(), self._msvcrt.LK_LOCK, 1)
         else:
-            import fcntl
-
-            fcntl.flock(self._file.fileno(), fcntl.LOCK_EX)
+            _lock_posix_file(self._file.fileno())
 
     def __exit__(
         self,
@@ -59,12 +57,24 @@ class FileLock:
                 self._file.seek(0)
                 self._msvcrt.locking(self._file.fileno(), self._msvcrt.LK_UNLCK, 1)
             else:
-                import fcntl
-
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                _unlock_posix_file(self._file.fileno())
         finally:
             self._file.close()
             self._file = None
+
+
+def _lock_posix_file(fd: int) -> None:
+    import fcntl
+
+    fcntl_module = cast(Any, fcntl)
+    fcntl_module.flock(fd, fcntl_module.LOCK_EX)
+
+
+def _unlock_posix_file(fd: int) -> None:
+    import fcntl
+
+    fcntl_module = cast(Any, fcntl)
+    fcntl_module.flock(fd, fcntl_module.LOCK_UN)
 
 
 class OAuthStore:
