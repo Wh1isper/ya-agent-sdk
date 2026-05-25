@@ -5,12 +5,7 @@ from pathlib import Path
 from ya_agent_sdk.environment import ShellSandboxConfig
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.workspace.models import WorkspaceBinding, WorkspaceMountBinding
-from ya_claw.workspace.shell_sandbox import (
-    WorkspaceShellSandboxDefaults,
-    resolve_workspace_shell_sandbox_policy,
-    shell_sandbox_mount_from_workspace_mount,
-    shell_sandbox_mounts_from_binding,
-)
+from ya_claw.workspace.shell_sandbox import WorkspaceShellSandboxDefaults, resolve_workspace_shell_sandbox_policy
 
 
 def _binding(main: Path, docs: Path) -> WorkspaceBinding:
@@ -27,30 +22,6 @@ def _binding(main: Path, docs: Path) -> WorkspaceBinding:
         fingerprint="sha256:test",
         metadata={},
     )
-
-
-def test_shell_sandbox_mount_conversion_preserves_workspace_mount_policy(tmp_path: Path) -> None:
-    mount = WorkspaceMountBinding(
-        id="docs",
-        host_path=tmp_path / "docs",
-        virtual_path=Path("/workspace/docs"),
-        mode="ro",
-    )
-
-    policy_mount = shell_sandbox_mount_from_workspace_mount(mount)
-
-    assert policy_mount.id == "docs"
-    assert policy_mount.host_path == tmp_path / "docs"
-    assert policy_mount.mode == "ro"
-
-
-def test_shell_sandbox_mounts_from_binding_preserves_all_mounts(tmp_path: Path) -> None:
-    binding = _binding(tmp_path / "main", tmp_path / "docs")
-
-    mounts = shell_sandbox_mounts_from_binding(binding)
-
-    assert [mount.id for mount in mounts] == ["main", "docs"]
-    assert [mount.mode for mount in mounts] == ["rw", "ro"]
 
 
 def test_resolve_workspace_shell_sandbox_policy_combines_defaults_and_profile(tmp_path: Path) -> None:

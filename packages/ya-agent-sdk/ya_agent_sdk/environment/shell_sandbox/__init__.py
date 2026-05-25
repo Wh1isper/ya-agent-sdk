@@ -1,4 +1,4 @@
-from ya_agent_sdk.environment.shell_sandbox.backend import shell_quote_command, shell_sandbox_diagnostics
+from ya_agent_sdk.environment.shell_sandbox.backend import shell_sandbox_diagnostics
 from ya_agent_sdk.environment.shell_sandbox.policy import (
     DEFAULT_SHELL_SANDBOX_ENV_ALLOWLIST,
     ShellSandboxBackend,
@@ -25,6 +25,5 @@ __all__ = [
     "ShellSandboxRuntimePolicy",
     "default_backend_for_platform",
     "resolve_shell_sandbox_runtime_policy",
-    "shell_quote_command",
     "shell_sandbox_diagnostics",
 ]

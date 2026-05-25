@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shlex
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -39,7 +38,7 @@ def build_sandbox_command(
             cwd=cwd,
             policy=policy,
             shell_executable=shell_executable,
-        ), noop
+        ), lambda: None
     if policy.backend == "macos_seatbelt":
         return build_macos_seatbelt_command(
             command=command,
@@ -48,7 +47,7 @@ def build_sandbox_command(
         )
     if policy.backend == "windows_restricted_token":
         if policy.raw_shell_allowed:
-            return default_shell_command(command), noop
+            return default_shell_command(command), lambda: None
         raise ShellExecutionError(command, stderr="Windows restricted-token sandbox is not implemented in this build")
     raise ShellExecutionError(command, stderr=f"Unsupported shell sandbox backend: {policy.backend}")
 
@@ -102,7 +101,7 @@ def build_macos_seatbelt_command(
     if not sandbox_exec.exists():
         if policy.raw_shell_allowed:
             shell = shell_executable or default_platform_shell()
-            return [shell, "-lc", command], noop
+            return [shell, "-lc", command], lambda: None
         raise ShellExecutionError(command, stderr="/usr/bin/sandbox-exec is required for macos_seatbelt shell sandbox")
     with tempfile.NamedTemporaryFile(
         "w",
@@ -158,10 +157,6 @@ def default_shell_command(command: str) -> list[str]:
     return [shell, "/d", "/s", "/c", command]
 
 
-def noop() -> None:
-    return None
-
-
 def protected_home_paths(mounts: list[ShellSandboxMountPolicy]) -> list[Path]:
     home = Path.home()
     protected: list[Path] = []
@@ -169,18 +164,19 @@ def protected_home_paths(mounts: list[ShellSandboxMountPolicy]) -> list[Path]:
         candidate = home / suffix
         if not candidate.exists():
             continue
-        if any(path_contains(candidate, mount.host_path) for mount in mounts):
+        candidate_resolved = candidate.resolve()
+        mount_contains_protected_path = False
+        for mount in mounts:
+            try:
+                mount.host_path.resolve().relative_to(candidate_resolved)
+            except ValueError:
+                continue
+            mount_contains_protected_path = True
+            break
+        if mount_contains_protected_path:
             continue
         protected.append(candidate)
     return protected
-
-
-def path_contains(parent: Path, child: Path) -> bool:
-    try:
-        child.resolve().relative_to(parent.resolve())
-        return True
-    except ValueError:
-        return False
 
 
 def seatbelt_profile(policy: ShellSandboxRuntimePolicy) -> str:
@@ -207,16 +203,8 @@ def seatbelt_profile(policy: ShellSandboxRuntimePolicy) -> str:
     if policy.network in {"proxy", "full"}:
         lines.append("(allow network*)")
     for mount in policy.mounts:
-        escaped = sbpl_escape(str(mount.host_path.resolve()))
+        escaped = str(mount.host_path.resolve()).replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'(allow file-read* (subpath "{escaped}"))')
         if mount.mode == "rw":
             lines.append(f'(allow file-write* (subpath "{escaped}"))')
     return "\n".join(lines) + "\n"
-
-
-def sbpl_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def shell_quote_command(args: list[str]) -> str:
-    return " ".join(shlex.quote(arg) for arg in args)
