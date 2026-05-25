@@ -5,6 +5,7 @@ from html import escape
 from pathlib import Path
 
 from loguru import logger
+from ya_agent_sdk.environment.virtual_path import VirtualPath, normalize_virtual_path
 
 from ya_claw.workspace.provider import WorkspaceBinding
 
@@ -15,7 +16,7 @@ WORKSPACE_GUIDANCE_TAG = "workspace-guidance"
 @dataclass(slots=True)
 class WorkspaceGuidance:
     host_path: Path
-    virtual_path: Path
+    virtual_path: VirtualPath
     content: str
 
 
@@ -38,11 +39,11 @@ def load_workspace_guidance(binding: WorkspaceBinding) -> WorkspaceGuidance | No
 
     return WorkspaceGuidance(
         host_path=guidance_path,
-        virtual_path=binding.virtual_path / WORKSPACE_GUIDANCE_FILENAME,
+        virtual_path=normalize_virtual_path(binding.virtual_path / WORKSPACE_GUIDANCE_FILENAME),
         content=content,
     )
 
 
 def format_workspace_guidance(guidance: WorkspaceGuidance) -> str:
-    path = escape(str(guidance.virtual_path), quote=True)
+    path = escape(guidance.virtual_path.as_posix(), quote=True)
     return f'<{WORKSPACE_GUIDANCE_TAG} path="{path}">\n{guidance.content}\n</{WORKSPACE_GUIDANCE_TAG}>'

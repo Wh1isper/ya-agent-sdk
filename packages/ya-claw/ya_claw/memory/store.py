@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from ya_agent_sdk.environment.virtual_path import VirtualPath
 
 from ya_claw.json_types import JsonValue
 from ya_claw.workspace import WorkspaceBinding
@@ -45,7 +46,7 @@ class WorkspaceMemoryStore:
         return self._binding.host_path / MEMORY_DIRNAME
 
     @property
-    def virtual_root(self) -> Path:
+    def virtual_root(self) -> VirtualPath:
         return self._binding.virtual_path / MEMORY_DIRNAME
 
     @property
@@ -61,7 +62,7 @@ class WorkspaceMemoryStore:
         return self._binding.host_path / AGENCY_INDEX_FILENAME
 
     @property
-    def agency_virtual_md_path(self) -> Path:
+    def agency_virtual_md_path(self) -> VirtualPath:
         return self._binding.virtual_path / AGENCY_INDEX_FILENAME
 
     @property
@@ -69,7 +70,7 @@ class WorkspaceMemoryStore:
         return self._binding.host_path / AGENCY_DIRNAME
 
     @property
-    def agency_virtual_dir_path(self) -> Path:
+    def agency_virtual_dir_path(self) -> VirtualPath:
         return self._binding.virtual_path / AGENCY_DIRNAME
 
     @property

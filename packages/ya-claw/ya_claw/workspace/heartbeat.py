@@ -5,6 +5,7 @@ from html import escape
 from pathlib import Path
 
 from loguru import logger
+from ya_agent_sdk.environment.virtual_path import VirtualPath, normalize_virtual_path
 
 from ya_claw.workspace.provider import WorkspaceBinding
 
@@ -15,7 +16,7 @@ HEARTBEAT_GUIDANCE_TAG = "heartbeat-guidance"
 @dataclass(slots=True)
 class HeartbeatGuidance:
     host_path: Path
-    virtual_path: Path
+    virtual_path: VirtualPath
     content: str
 
 
@@ -38,11 +39,11 @@ def load_heartbeat_guidance(binding: WorkspaceBinding) -> HeartbeatGuidance | No
 
     return HeartbeatGuidance(
         host_path=guidance_path,
-        virtual_path=binding.virtual_path / HEARTBEAT_GUIDANCE_FILENAME,
+        virtual_path=normalize_virtual_path(binding.virtual_path / HEARTBEAT_GUIDANCE_FILENAME),
         content=content,
     )
 
 
 def format_heartbeat_guidance(guidance: HeartbeatGuidance) -> str:
-    path = escape(str(guidance.virtual_path), quote=True)
+    path = escape(guidance.virtual_path.as_posix(), quote=True)
     return f'<{HEARTBEAT_GUIDANCE_TAG} path="{path}">\n{guidance.content}\n</{HEARTBEAT_GUIDANCE_TAG}>'

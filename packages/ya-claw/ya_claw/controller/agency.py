@@ -5,6 +5,7 @@ from typing import Any, Literal
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path as normalize_agent_virtual_path
 
 from ya_claw.agency.lifecycle import AGENCY_SINGLETON_SCOPE_KEY, AgencyLifecycle
 from ya_claw.config import ClawSettings
@@ -255,14 +256,17 @@ class AgencyController:
         for run_id in clear_result.archived_run_ids:
             runtime_state.clear_run(run_id)
         workspace_dir = settings.resolved_workspace_dir
+        virtual_workspace_path = normalize_agent_virtual_path("/workspace")
         WorkspaceMemoryStore(
             WorkspaceBinding(
                 host_path=workspace_dir,
-                virtual_path=workspace_dir,
-                cwd=workspace_dir,
-                readable_paths=[workspace_dir],
-                writable_paths=[workspace_dir],
-                mounts=[WorkspaceMountBinding(id="default", host_path=workspace_dir, virtual_path=workspace_dir)],
+                virtual_path=virtual_workspace_path,
+                cwd=virtual_workspace_path,
+                readable_paths=[virtual_workspace_path],
+                writable_paths=[virtual_workspace_path],
+                mounts=[
+                    WorkspaceMountBinding(id="default", host_path=workspace_dir, virtual_path=virtual_workspace_path)
+                ],
                 fingerprint="agency-clear",
             )
         ).reset_agency()

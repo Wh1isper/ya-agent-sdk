@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_environment import FileOperationError
 from ya_agent_sdk.environment import SandboxEnvironment
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (
     RunCreateRequest,
@@ -176,9 +177,12 @@ def test_local_provider_resolves_explicit_multi_mount_and_read_only_policy(tmp_p
     binding = provider.resolve({"workspace": _workspace_payload(main, docs)})
 
     assert binding.host_path == main.resolve()
-    assert binding.cwd == Path("/workspace/main/subdir")
-    assert binding.readable_paths == [Path("/workspace/main"), Path("/workspace/docs")]
-    assert binding.writable_paths == [Path("/workspace/main")]
+    assert binding.cwd == normalize_virtual_path("/workspace/main/subdir")
+    assert binding.readable_paths == [
+        normalize_virtual_path("/workspace/main"),
+        normalize_virtual_path("/workspace/docs"),
+    ]
+    assert binding.writable_paths == [normalize_virtual_path("/workspace/main")]
     assert len(binding.mounts) == 2
 
 

@@ -82,7 +82,7 @@ async def test_service_local_plus_local_shell_uses_real_paths_for_file_ops_and_s
     assert content == "hello"
     assert exit_code == 0
     assert stderr == ""
-    assert str(binding.host_path) in stdout
+    assert binding.host_path.as_posix() in stdout.replace("\\", "/")
     assert "notes.txt" in stdout
 
 
@@ -94,7 +94,9 @@ async def test_local_environment_factory_passes_workspace_environment(tmp_path: 
 
     async with environment as env:
         assert isinstance(env.shell, LocalShell)
-        exit_code, stdout, stderr = await env.shell.execute("printf '%s' \"$LARK_APP_ID\"")
+        exit_code, stdout, stderr = await env.shell.execute(
+            "python -c \"import os; print(os.environ.get('LARK_APP_ID', ''), end='')\""
+        )
 
     assert exit_code == 0
     assert stderr == ""
@@ -669,7 +671,7 @@ def test_format_workspace_guidance_uses_virtual_path(tmp_path: Path) -> None:
     formatted = format_workspace_guidance(
         WorkspaceGuidance(
             host_path=workspace_dir / "AGENTS.md",
-            virtual_path=Path('/workspace/path-"quoted"/AGENTS.md'),
+            virtual_path=normalize_virtual_path('/workspace/path-"quoted"/AGENTS.md'),
             content="Use <safe> rules.",
         )
     )
