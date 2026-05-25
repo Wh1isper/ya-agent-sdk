@@ -7,6 +7,7 @@ import shlex
 import signal
 from pathlib import Path
 
+import pytest
 from ya_agent_sdk.environment.process import kill_process_tree, process_group_kwargs
 
 
@@ -51,6 +52,7 @@ async def _wait_for_pidfile(pidfile: Path, *, timeout: float = 2.0) -> int:
     raise AssertionError(f"child PID file was not populated with a running process ID: {pidfile}")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process tree test")
 async def test_kill_process_tree_terminates_spawned_child_process(tmp_path: Path) -> None:
     pidfile = tmp_path / "child.pid"
     process = await asyncio.create_subprocess_shell(

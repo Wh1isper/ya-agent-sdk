@@ -123,7 +123,8 @@ async def test_shell_tool_execute_with_env(tmp_path: Path) -> None:
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
 
-        result = await tool.call(mock_run_ctx, "echo $MY_VAR", environment={"MY_VAR": "test_value"})
+        command = "echo $MY_VAR" if os.name == "posix" else "echo %MY_VAR%"
+        result = await tool.call(mock_run_ctx, command, environment={"MY_VAR": "test_value"})
         assert result["return_code"] == 0
         assert "test_value" in result["stdout"]
 

@@ -6,8 +6,8 @@ system operations, supporting both local and remote backends.
 
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
-from pathlib import Path
+from collections.abc import AsyncIterator, Sequence
+from pathlib import Path, PurePath
 from xml.etree import ElementTree as ET
 
 import anyio
@@ -30,9 +30,9 @@ class LocalTmpFileOperator:
     def __init__(self, tmp_dir: Path):
         self._tmp_dir = tmp_dir.resolve()
 
-    def is_managed_path(self, path: str, base_path: Path) -> tuple[bool, str]:
+    def is_managed_path(self, path: str, base_path: Path | PurePath) -> tuple[bool, str]:
         target = Path(path)
-        resolved = target if target.is_absolute() else (base_path / target).resolve()
+        resolved = target if target.is_absolute() else Path(base_path / target).resolve()
         try:
             rel_path = resolved.relative_to(self._tmp_dir)
             return True, str(rel_path) if str(rel_path) != "." else "."
@@ -309,8 +309,8 @@ class FileOperator(ABC):
 
     def __init__(
         self,
-        default_path: Path | None = None,
-        allowed_paths: list[Path] | None = None,
+        default_path: Path | PurePath | None = None,
+        allowed_paths: Sequence[Path | PurePath] | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = DEFAULT_INSTRUCTIONS_MAX_DEPTH,
         tmp_dir: Path | None = None,
@@ -341,15 +341,15 @@ class FileOperator(ABC):
             If neither tmp_dir nor tmp_file_operator is provided, tmp handling
             is disabled. Cross-boundary operations will not be available.
         """
-        self._default_path = default_path.resolve() if default_path is not None else None
+        self._default_path: Path | PurePath | None = self._normalize_config_path(default_path)
 
         if allowed_paths is None:
-            self._allowed_paths = [self._default_path] if self._default_path is not None else []
+            self._allowed_paths: list[Path | PurePath] = [self._default_path] if self._default_path is not None else []
         else:
-            resolved_paths = [p.resolve() for p in allowed_paths]
+            resolved_paths = [self._normalize_config_path(p) for p in allowed_paths]
             if self._default_path is not None and self._default_path not in resolved_paths:
                 resolved_paths.append(self._default_path)
-            self._allowed_paths = resolved_paths
+            self._allowed_paths = [p for p in resolved_paths if p is not None]
 
         self._instructions_skip_dirs = (
             instructions_skip_dirs if instructions_skip_dirs is not None else DEFAULT_INSTRUCTIONS_SKIP_DIRS
@@ -371,6 +371,16 @@ class FileOperator(ABC):
         else:
             # No tmp handling - cross-boundary operations will not be available
             self._tmp_file_operator = None
+
+    @staticmethod
+    def _normalize_config_path(path: Path | PurePath | None) -> Path | PurePath | None:
+        if path is None:
+            return None
+        if type(path) is Path:
+            return path.resolve()
+        if isinstance(path, Path):
+            return path.resolve()
+        return path
 
     def _is_tmp_path(self, path: str) -> tuple[bool, str]:
         """Delegate to tmp_file_operator to check if path is managed."""
@@ -900,10 +910,12 @@ class FileOperator(ABC):
 
         # File trees for each allowed path
         file_trees = ET.SubElement(root, "file-trees")
+        default_path = self._default_path
         for allowed_path in self._allowed_paths:
-            if self._default_path is not None:
+            if default_path is not None:
+                base_path: Path | PurePath = default_path
                 try:
-                    rel_path = str(allowed_path.relative_to(self._default_path))
+                    rel_path = str(allowed_path.relative_to(base_path))
                     if rel_path == ".":
                         rel_path = "."
                 except ValueError:

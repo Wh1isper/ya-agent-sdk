@@ -6,7 +6,7 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -226,13 +226,13 @@ def normalize_virtual_path(value: str | None) -> str:
     return normalized
 
 
-def virtual_path_contains(parent: str | Path, child: str | Path) -> bool:
+def virtual_path_contains(parent: str | PurePath, child: str | PurePath) -> bool:
     parent_value = normalize_virtual_path(str(parent))
     child_value = normalize_virtual_path(str(child))
     return child_value == parent_value or child_value.startswith(f"{parent_value.rstrip('/')}/")
 
 
-def relative_virtual_path(parent: str | Path, child: str | Path) -> Path:
+def relative_virtual_path(parent: str | PurePath, child: str | PurePath) -> Path:
     parent_value = normalize_virtual_path(str(parent))
     child_value = normalize_virtual_path(str(child))
     if not virtual_path_contains(parent_value, child_value):

@@ -444,6 +444,7 @@ async def test_shell_execute_timeout(tmp_path: Path) -> None:
         await shell.execute("sleep 10", timeout=0.1)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process tree test")
 async def test_shell_background_kill_terminates_child_process(tmp_path: Path) -> None:
     """Killing a background shell process should terminate spawned child processes."""
     shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
@@ -469,7 +470,7 @@ async def test_shell_execute_command_not_found(tmp_path: Path) -> None:
     shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     exit_code, _, stderr = await shell.execute("nonexistent_command_xyz")
     assert exit_code != 0
-    assert "not found" in stderr.lower()
+    assert "not found" in stderr.lower() or "not recognized" in stderr.lower()
 
 
 async def test_shell_execute_returns_stderr(tmp_path: Path) -> None:
@@ -538,6 +539,7 @@ async def test_environment_get_context_instructions_with_custom_shell(tmp_path: 
     assert "<shell-executable>/bin/zsh</shell-executable>" in instructions
 
 
+@pytest.mark.skipif(os.name != "posix", reason="snapshot uses POSIX path formatting")
 async def test_shell_get_context_instructions() -> None:
     """Should return context instructions in XML format."""
     shell = LocalShell(

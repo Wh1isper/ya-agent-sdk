@@ -62,7 +62,7 @@ def test_read_macos_pasteboard_file_image_sync_reads_public_file_url(tmp_path: P
     fake_pasteboard = FakePasteboard(image_path.as_uri())
     fake_appkit = SimpleNamespace(NSPasteboard=SimpleNamespace(generalPasteboard=lambda: fake_pasteboard))
     fake_foundation = SimpleNamespace(
-        NSURL=SimpleNamespace(URLWithString_=lambda value: SimpleNamespace(path=lambda: Path(value[7:]).as_posix()))
+        NSURL=SimpleNamespace(URLWithString_=lambda value: SimpleNamespace(path=lambda: str(image_path)))
     )
 
     with patch.dict(sys.modules, {"AppKit": fake_appkit, "Foundation": fake_foundation}):

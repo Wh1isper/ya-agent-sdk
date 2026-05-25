@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from ya_claw import config as config_module
 from ya_claw.bridge import BridgeAdapterType, BridgeDispatchMode
@@ -152,7 +152,10 @@ def test_settings_workspace_docker_host_workspace_dir_can_be_configured(tmp_path
 def test_settings_default_workspace_docker_identity_uses_process_uid_gid(monkeypatch) -> None:
     monkeypatch.delenv("YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID", raising=False)
     monkeypatch.delenv("YA_CLAW_WORKSPACE_PROVIDER_DOCKER_GID", raising=False)
-    with patch.object(os, "getuid", return_value=1234), patch.object(os, "getgid", return_value=2345):
+    with (
+        patch.object(os, "getuid", Mock(return_value=1234), create=True),
+        patch.object(os, "getgid", Mock(return_value=2345), create=True),
+    ):
         settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
         assert settings.resolved_workspace_provider_docker_uid == 1234
         assert settings.resolved_workspace_provider_docker_gid == 2345
@@ -337,7 +340,7 @@ def test_settings_rejects_invalid_docker_extra_mounts() -> None:
     try:
         _ = settings.resolved_workspace_provider_docker_extra_mounts
     except ValueError as exc:
-        assert "container_path must be absolute" in str(exc)
+        assert "Docker extra mounts" in str(exc) or "container_path must be absolute" in str(exc)
     else:
         raise AssertionError("Expected invalid Docker extra mount to raise ValueError")
 

@@ -160,7 +160,7 @@ class SkillToolset(BaseToolset[AgentContext]):
         skills_dirs: list[str] = []
 
         # Access the internal _allowed_paths attribute
-        allowed_paths: list[Path] = file_operator._allowed_paths
+        allowed_paths = [path for path in file_operator._allowed_paths if isinstance(path, Path)]
 
         # Build ordered list of dir names: extra dirs first (lower priority),
         # then primary dir (higher priority)

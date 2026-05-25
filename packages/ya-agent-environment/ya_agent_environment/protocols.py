@@ -4,7 +4,7 @@ This module defines runtime-checkable protocols for resources and operators.
 """
 
 from collections.abc import AsyncIterator
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Protocol, runtime_checkable
 
 from ya_agent_environment.types import FileStat, TruncatedResult
@@ -297,7 +297,7 @@ class TmpFileOperator(Protocol):
         """
         ...
 
-    def is_managed_path(self, path: str, base_path: Path) -> tuple[bool, str]:
+    def is_managed_path(self, path: str, base_path: Path | PurePath) -> tuple[bool, str]:
         """Check if path is managed by this operator.
 
         Args:

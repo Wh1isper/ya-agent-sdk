@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import socket
+from collections.abc import Callable
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 
 from dotenv import dotenv_values, load_dotenv
@@ -42,18 +43,31 @@ def _parse_env_var_names(value: str) -> list[str]:
     return names
 
 
+def _split_docker_extra_mount(item: str) -> tuple[str, str, str]:
+    for mode in (":rw", ":ro"):
+        if item.endswith(mode):
+            body = item[: -len(mode)]
+            parsed_mode = mode[1:]
+            break
+    else:
+        body = item
+        parsed_mode = "rw"
+
+    container_marker = body.rfind(":/")
+    if container_marker < 0:
+        raise ValueError("Docker extra mounts must use host_path:container_path[:mode] entries")
+    return body[:container_marker], body[container_marker + 1 :], parsed_mode
+
+
 def _parse_docker_extra_mounts(value: str) -> list[DockerExtraMount]:
     mounts: list[DockerExtraMount] = []
     for raw_item in value.split(","):
         item = raw_item.strip()
         if item == "":
             continue
-        parts = item.split(":")
-        if len(parts) not in (2, 3):
-            raise ValueError("Docker extra mounts must use host_path:container_path[:mode] entries")
-        host_path = Path(parts[0]).expanduser()
-        container_path = Path(parts[1])
-        mode = parts[2].strip() if len(parts) == 3 else "rw"
+        host_path_raw, container_path_raw, mode = _split_docker_extra_mount(item)
+        host_path = Path(host_path_raw).expanduser()
+        container_path = Path(container_path_raw)
         if str(host_path).strip() == "":
             raise ValueError("Docker extra mount host_path must not be empty")
         if not container_path.is_absolute():
@@ -295,13 +309,19 @@ class ClawSettings(BaseSettings):
     def resolved_workspace_provider_docker_uid(self) -> int:
         if isinstance(self.workspace_provider_docker_uid, int):
             return self.workspace_provider_docker_uid
-        return os.getuid()
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid):
+            return cast(Callable[[], int], getuid)()
+        return 1000
 
     @property
     def resolved_workspace_provider_docker_gid(self) -> int:
         if isinstance(self.workspace_provider_docker_gid, int):
             return self.workspace_provider_docker_gid
-        return os.getgid()
+        getgid = getattr(os, "getgid", None)
+        if callable(getgid):
+            return cast(Callable[[], int], getgid)()
+        return 1000
 
     @property
     def resolved_workspace_provider_docker_container_cache_dir(self) -> Path:

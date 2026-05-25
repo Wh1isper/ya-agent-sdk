@@ -101,7 +101,7 @@ def test_create_worktree_auto_branch(tmp_path: Path) -> None:
         text=True,
         check=True,
     )
-    assert str(worktree_dir) in result.stdout
+    assert worktree_dir.as_posix() in result.stdout.replace("\\", "/")
 
     # Cleanup
     subprocess.run(["git", "worktree", "remove", str(worktree_dir)], cwd=str(repo), capture_output=True, check=True)
