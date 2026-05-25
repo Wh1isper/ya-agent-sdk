@@ -884,7 +884,7 @@ class FileOperator(ABC):
         """
         is_tmp, routed_path = self._is_tmp_path(path)
         if is_tmp:  # pragma: no cover
-            return await self._tmp_file_operator.read_bytes_stream(  # type: ignore[union-attr]
+            return self._tmp_file_operator.read_bytes_stream(  # type: ignore[union-attr]
                 routed_path, chunk_size=chunk_size
             )
         return self._read_bytes_stream_impl(path, chunk_size=chunk_size)

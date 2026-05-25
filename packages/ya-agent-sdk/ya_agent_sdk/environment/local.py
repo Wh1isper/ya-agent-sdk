@@ -75,6 +75,16 @@ def _resolve_shell_executable(shell_executable: str | None) -> str | None:
     return shell_executable
 
 
+def _read_path_bytes(path: Path, *, offset: int = 0, length: int | None = None) -> bytes:
+    """Read bytes from a local path using seek for bounded reads."""
+    with path.open("rb") as stream:
+        if offset > 0:
+            stream.seek(offset)
+        if length is not None:
+            return stream.read(length)
+        return stream.read()
+
+
 def _shell_type_from_executable(shell_executable: str | None) -> str:
     """Return a shell type label for context instructions."""
     if shell_executable is None:
@@ -217,11 +227,9 @@ class LocalFileOperator(FileOperator):
         """
         resolved = self._resolve_path(path)
         try:
-            content = await anyio.Path(resolved).read_bytes()
-            if offset > 0 or length is not None:
-                end = None if length is None else offset + length
-                content = content[offset:end]
-            return content
+            return await anyio.to_thread.run_sync(  # type: ignore[reportAttributeAccessIssue]
+                lambda: _read_path_bytes(resolved, offset=offset, length=length)
+            )
         except FileNotFoundError as e:
             raise FileOperationError("read", path, "file not found") from e
         except PermissionError as e:
@@ -702,11 +710,9 @@ class VirtualLocalFileOperator(FileOperator):
     ) -> bytes:
         host = self._to_host(path)
         try:
-            content = await anyio.Path(host).read_bytes()
-            if offset > 0 or length is not None:
-                end = None if length is None else offset + length
-                content = content[offset:end]
-            return content
+            return await anyio.to_thread.run_sync(  # type: ignore[reportAttributeAccessIssue]
+                lambda: _read_path_bytes(host, offset=offset, length=length)
+            )
         except FileNotFoundError as e:
             raise FileOperationError("read", path, "file not found") from e
         except PermissionError as e:

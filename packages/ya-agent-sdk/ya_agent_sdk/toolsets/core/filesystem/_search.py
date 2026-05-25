@@ -86,6 +86,8 @@ async def collect_walk_files(
     """Collect regular file candidates through FileOperator.walk_files."""
     candidates: list[SearchCandidate] = []
     async for entry in file_operator.walk_files(root, include_hidden=include_hidden):
+        if not entry.get("is_file", False):
+            continue
         path = normalize_logical_path(entry["path"])
         if not include_hidden and is_hidden_logical_path(path):
             continue

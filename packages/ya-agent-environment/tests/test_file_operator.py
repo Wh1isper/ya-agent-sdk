@@ -374,6 +374,25 @@ async def test_local_tmp_operator_stream_default_chunk_size(tmp_path: Path) -> N
 # --- Cross-boundary streaming tests ---
 
 
+async def test_file_operator_read_bytes_stream_routes_tmp_without_awaiting_generator(tmp_path: Path) -> None:
+    """FileOperator should return tmp async streams without awaiting async generators."""
+    main_dir = tmp_path / "main"
+    tmp_dir = tmp_path / "tmp"
+    main_dir.mkdir()
+    tmp_dir.mkdir()
+    op = LocalFileOperator(main_dir, tmp_dir, default_chunk_size=4)
+    content = b"streamed tmp content"
+    await op._tmp_file_operator.write_file("source.bin", content)
+
+    stream = await op.read_bytes_stream(str(tmp_dir / "source.bin"), chunk_size=4)
+    chunks: list[bytes] = []
+    async for chunk in stream:
+        chunks.append(chunk)
+
+    assert b"".join(chunks) == content
+    assert len(chunks) > 1
+
+
 class LocalFileOperator(FileOperator):
     """A local filesystem FileOperator for testing cross-boundary operations."""
 

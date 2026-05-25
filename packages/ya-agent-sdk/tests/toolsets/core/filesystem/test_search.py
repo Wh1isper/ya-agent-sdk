@@ -44,6 +44,8 @@ async def test_collect_walk_files_honors_root(tmp_path: Path) -> None:
     """collect_walk_files should traverse from the requested logical root."""
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('app')")
+    (tmp_path / "src" / "nested").mkdir()
+    (tmp_path / "src" / "nested" / "child.py").write_text("print('child')")
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_app.py").write_text("print('test')")
 
@@ -53,4 +55,4 @@ async def test_collect_walk_files_honors_root(tmp_path: Path) -> None:
         candidates = await collect_walk_files(file_operator, root="src")
 
     paths = {candidate.path for candidate in candidates}
-    assert paths == {"src/app.py"}
+    assert paths == {"src/app.py", "src/nested/child.py"}
