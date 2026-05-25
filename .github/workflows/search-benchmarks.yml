@@ -1,0 +1,71 @@
+name: Search Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: Benchmark dataset case
+        required: true
+        default: quick
+        type: choice
+        options:
+          - quick
+          - small
+          - medium
+          - large-files
+          - many-small
+          - ignored-heavy
+          - binary-mixed
+      repeat:
+        description: Repetitions per query and variant
+        required: true
+        default: "3"
+      operations:
+        description: Optional comma-separated operation filter, for example glob,grep
+        required: false
+        default: ""
+      queries:
+        description: Optional comma-separated query name filter
+        required: false
+        default: ""
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  search-benchmarks:
+    name: Search Benchmarks (${{ inputs.case }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Set up the environment
+        uses: ./.github/actions/setup-python-env
+        with:
+          python-version: "3.13"
+          extras: all
+
+      - name: Run search benchmarks
+        run: >-
+          uv run python benchmarks/search/bench_search.py run
+          --case "${{ inputs.case }}"
+          --dataset ".bench/search-${{ inputs.case }}"
+          --variants python-native ripgrep-core
+          --repeat "${{ inputs.repeat }}"
+          --output ".bench/results/search-${{ inputs.case }}.jsonl"
+          --summary ".bench/results/search-${{ inputs.case }}-summary.md"
+          ${{ inputs.operations != '' && format('--operations "{0}"', inputs.operations) || '' }}
+          ${{ inputs.queries != '' && format('--queries "{0}"', inputs.queries) || '' }}
+
+      - name: Print summary
+        run: cat ".bench/results/search-${{ inputs.case }}-summary.md"
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: search-benchmarks-${{ inputs.case }}
+          path: |
+            .bench/results/search-${{ inputs.case }}.jsonl
+            .bench/results/search-${{ inputs.case }}-summary.md
+            .bench/search-${{ inputs.case }}/manifest.json

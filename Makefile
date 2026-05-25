@@ -214,6 +214,17 @@ check: ## Run code quality tools for all active packages
 	@echo "Running deptry for ya-claw"
 	@(cd packages/ya-claw && uvx deptry ya_claw)
 
+.PHONY: bench-search-quick
+bench-search-quick: ## Run quick search backend benchmarks
+	@echo "Running quick search backend benchmarks"
+	@uv run python benchmarks/search/bench_search.py run \
+		--case quick \
+		--dataset .bench/search-quick \
+		--variants python-native ripgrep-core \
+		--repeat 3 \
+		--output .bench/results/search.jsonl \
+		--summary .bench/results/search-summary.md
+
 .PHONY: test
 test: ## Run environment, SDK, CLI, YA Claw, and YA Desktop tests
 	@echo "Running pytest for workspace packages"

@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from functools import cache
 from typing import Any
+
+_DISABLE_ENV = "YA_RIPGREP_CORE_DISABLE"
+
+
+def is_disabled() -> bool:
+    """Return True when the native ripgrep core is disabled by environment."""
+    return os.getenv(_DISABLE_ENV, "").lower() in {"1", "true", "yes", "on"}
 
 
 @cache
 def _native() -> Any | None:
-    """Return the native ripgrep extension when installed."""
+    """Return the native ripgrep extension when installed and enabled."""
+    if is_disabled():
+        return None
     try:
         import ya_ripgrep_core
     except ImportError:
@@ -43,4 +53,4 @@ class NativeRegex:
         return bool(self._regex.is_match(text))
 
 
-__all__ = ["NativeRegex", "is_available", "match_glob"]
+__all__ = ["NativeRegex", "is_available", "is_disabled", "match_glob"]

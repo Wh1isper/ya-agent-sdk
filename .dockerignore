@@ -1,5 +1,6 @@
 .venv/
 .pytest_cache/
+.bench/
 .mypy_cache/
 .pyright/
 .ruff_cache/
@@ -26,6 +27,7 @@ secrets/
 htmlcov/
 dist/
 build/
+packages/ya-ripgrep-core/target/
 node_modules/
 apps/*/node_modules/
 apps/*/dist/
