@@ -98,7 +98,9 @@ Shell grants should include:
 - max runtime.
 - streaming output limits.
 
-Shell execution should use provider-local sandboxing when available.
+Shell execution should use provider-local sandboxing. The default shell sandbox contract is defined by YA Claw in `packages/ya-claw/spec/12-shell-sandbox.md` and carried through relay shell requests as policy metadata.
+
+Desktop providers apply a local shell safety envelope after runtime policy and relay grant checks. The envelope includes shell mode, allowed root IDs, cwd root, environment allowlist, command review thresholds, unattended thresholds, network policy, max runtime, output limit, local approval result, and audit state. This lets a central Claw agent mount a local PC Space while Desktop keeps final authority over local shell execution.
 
 ## Tool Safety
 

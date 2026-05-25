@@ -16,6 +16,7 @@ const LOCAL_CLAW_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const CLAW_AUTO_UPDATE_INITIAL_DELAY: Duration = Duration::from_secs(30);
 const CLAW_AUTO_UPDATE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 const DESKTOP_CLAW_CONTRACT: &str = "claw-desktop.v1";
+const DESKTOP_RELAY_PROTOCOL: &str = "ya-environment-relay.v1";
 const DEFAULT_CLAW_PACKAGE_SPEC: &str = "ya-claw[all]";
 const DEFAULT_CLAW_PYTHON_VERSION: &str = "3.13";
 
@@ -58,6 +59,8 @@ struct LocalClawStatus {
     log_file: Option<String>,
     lock_file: Option<String>,
     api_token: Option<String>,
+    profile_seed_file: Option<String>,
+    relay_protocol: String,
     message: String,
 }
 
@@ -75,6 +78,26 @@ struct LocalClawLaunchConfig {
     agency_enabled: bool,
     #[serde(default = "default_true")]
     memory_enabled: bool,
+    #[serde(default = "default_true")]
+    shell_review_enabled: bool,
+    #[serde(default = "default_shell_review_model")]
+    shell_review_model: String,
+    #[serde(default = "default_shell_review_model_settings")]
+    shell_review_model_settings: String,
+    #[serde(default = "default_shell_review_risk_threshold")]
+    shell_review_risk_threshold: String,
+    #[serde(default = "default_shell_review_unattended_risk_threshold")]
+    shell_review_unattended_risk_threshold: String,
+    #[serde(default = "default_shell_review_action")]
+    shell_review_action: String,
+    #[serde(default = "default_true")]
+    shell_sandbox_enabled: bool,
+    #[serde(default = "default_shell_sandbox_backend")]
+    shell_sandbox_backend: String,
+    #[serde(default = "default_shell_sandbox_network")]
+    shell_sandbox_network: String,
+    #[serde(default)]
+    shell_sandbox_allow_raw_host: bool,
     #[serde(default)]
     preset_name: Option<String>,
     #[serde(default)]
@@ -88,6 +111,17 @@ impl Default for LocalClawLaunchConfig {
         Self {
             agency_enabled: true,
             memory_enabled: true,
+            shell_review_enabled: true,
+            shell_review_model: default_shell_review_model(),
+            shell_review_model_settings: default_shell_review_model_settings(),
+            shell_review_risk_threshold: default_shell_review_risk_threshold(),
+            shell_review_unattended_risk_threshold: default_shell_review_unattended_risk_threshold(
+            ),
+            shell_review_action: default_shell_review_action(),
+            shell_sandbox_enabled: true,
+            shell_sandbox_backend: default_shell_sandbox_backend(),
+            shell_sandbox_network: default_shell_sandbox_network(),
+            shell_sandbox_allow_raw_host: false,
             preset_name: Some("Desktop default".to_string()),
             env: Vec::new(),
             config_file: None,
@@ -97,6 +131,34 @@ impl Default for LocalClawLaunchConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_shell_review_model() -> String {
+    "gateway@openai-responses:gpt-5.4-mini".to_string()
+}
+
+fn default_shell_review_model_settings() -> String {
+    "openai_responses_low".to_string()
+}
+
+fn default_shell_review_risk_threshold() -> String {
+    "extra_high".to_string()
+}
+
+fn default_shell_review_unattended_risk_threshold() -> String {
+    "extra_high".to_string()
+}
+
+fn default_shell_review_action() -> String {
+    "defer".to_string()
+}
+
+fn default_shell_sandbox_backend() -> String {
+    "auto".to_string()
+}
+
+fn default_shell_sandbox_network() -> String {
+    "restricted".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,6 +278,32 @@ struct RuntimeUpdateCheckResult {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopWorkspaceStatus {
+    workspace_root: String,
+    profile_seed_file: String,
+    relay_protocol: String,
+    shell_review_enabled: bool,
+    shell_review_risk_threshold: String,
+    shell_review_unattended_risk_threshold: String,
+    shell_review_action: String,
+    shell_sandbox_enabled: bool,
+    shell_sandbox_backend: String,
+    shell_sandbox_network: String,
+    shell_sandbox_allow_raw_host: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopOnboardingResult {
+    config: LocalClawLaunchConfig,
+    workspace_status: DesktopWorkspaceStatus,
+    api_token_configured: bool,
+    message: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ClawdVersionPayload {
     version: String,
@@ -299,6 +387,7 @@ fn start_local_claw(
     let layout = ensure_local_claw_layout(&app)?;
     let api_token = ensure_local_api_token(&layout.env_file)?;
     let launch_config = read_local_claw_launch_config(&layout.launch_config_file)?;
+    let profile_seed_file = ensure_desktop_profile_seed_file(&layout, &launch_config)?;
     let local_port = reserve_local_claw_port()?;
     let public_base_url = format!("http://127.0.0.1:{}", local_port);
     let command_spec = resolve_clawd_command(&app)?;
@@ -336,11 +425,28 @@ fn start_local_claw(
         "YA_CLAW_MEMORY_ENABLED",
         bool_env(launch_config.memory_enabled),
     );
+    command.env(
+        "YA_CLAW_SHELL_SANDBOX_ENABLED",
+        bool_env(launch_config.shell_sandbox_enabled),
+    );
+    command.env(
+        "YA_CLAW_SHELL_SANDBOX_BACKEND",
+        &launch_config.shell_sandbox_backend,
+    );
+    command.env(
+        "YA_CLAW_SHELL_SANDBOX_NETWORK",
+        &launch_config.shell_sandbox_network,
+    );
+    command.env(
+        "YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST",
+        bool_env(launch_config.shell_sandbox_allow_raw_host),
+    );
     for entry in &launch_config.env {
         command.env(&entry.key, &entry.value);
     }
     command.env("YA_CLAW_PUBLIC_BASE_URL", &public_base_url);
     command.env("YA_CLAW_API_TOKEN", api_token);
+    command.env("YA_CLAW_PROFILE_SEED_FILE", profile_seed_file);
     if let Some(seed_file) = resolve_profile_seed_file(&app) {
         command.env("YA_CLAW_PROFILE_SEED_FILE", seed_file);
     }
@@ -578,6 +684,7 @@ fn update_local_claw_launch_config(
     let layout = ensure_local_claw_layout(&app)?;
     let config = normalize_launch_config(config)?;
     write_local_claw_launch_config(&layout.launch_config_file, &config)?;
+    let _ = ensure_desktop_profile_seed_file(&layout, &config)?;
     read_local_claw_launch_config(&layout.launch_config_file)
 }
 
@@ -597,7 +704,34 @@ fn import_local_claw_launch_preset(
     let layout = ensure_local_claw_layout(&app)?;
     let config = parse_launch_preset(&raw)?;
     write_local_claw_launch_config(&layout.launch_config_file, &config)?;
+    let _ = ensure_desktop_profile_seed_file(&layout, &config)?;
     read_local_claw_launch_config(&layout.launch_config_file)
+}
+
+#[tauri::command]
+fn get_desktop_workspace_status(app: AppHandle) -> Result<DesktopWorkspaceStatus, String> {
+    let layout = ensure_local_claw_layout(&app)?;
+    let config = read_local_claw_launch_config(&layout.launch_config_file)?;
+    desktop_workspace_status_from_layout(&layout, &config)
+}
+
+#[tauri::command]
+fn run_desktop_onboarding(
+    app: AppHandle,
+    config: Option<LocalClawLaunchConfig>,
+) -> Result<DesktopOnboardingResult, String> {
+    let layout = ensure_local_claw_layout(&app)?;
+    let config = normalize_launch_config(config.unwrap_or_default())?;
+    write_local_claw_launch_config(&layout.launch_config_file, &config)?;
+    ensure_local_api_token(&layout.env_file)?;
+    let workspace_status = desktop_workspace_status_from_layout(&layout, &config)?;
+    let config = read_local_claw_launch_config(&layout.launch_config_file)?;
+    Ok(DesktopOnboardingResult {
+        config,
+        workspace_status,
+        api_token_configured: true,
+        message: "Desktop onboarding initialized Local Claw configuration".to_string(),
+    })
 }
 
 #[tauri::command]
@@ -1222,6 +1356,7 @@ fn unix_timestamp() -> Result<u64, String> {
 struct LocalClawLayout {
     env_file: PathBuf,
     launch_config_file: PathBuf,
+    profile_seed_file: PathBuf,
     data_dir: PathBuf,
     workspace_dir: PathBuf,
     sqlite_path: PathBuf,
@@ -1251,12 +1386,144 @@ fn ensure_local_claw_layout(app: &AppHandle) -> Result<LocalClawLayout, String> 
     Ok(LocalClawLayout {
         env_file: root.join(".env"),
         launch_config_file: root.join("launch-config.json"),
+        profile_seed_file: root.join("desktop-profiles.yaml"),
         sqlite_path: root.join("ya_claw.sqlite3"),
         lock_file: root.join("runtime.json"),
         log_file: logs_dir.join("ya-clawd.log"),
         data_dir,
         workspace_dir,
     })
+}
+
+fn desktop_workspace_status_from_layout(
+    layout: &LocalClawLayout,
+    config: &LocalClawLaunchConfig,
+) -> Result<DesktopWorkspaceStatus, String> {
+    let profile_seed_file = ensure_desktop_profile_seed_file(layout, config)?;
+    Ok(DesktopWorkspaceStatus {
+        workspace_root: layout.workspace_dir.to_string_lossy().to_string(),
+        profile_seed_file: profile_seed_file.to_string_lossy().to_string(),
+        relay_protocol: DESKTOP_RELAY_PROTOCOL.to_string(),
+        shell_review_enabled: config.shell_review_enabled,
+        shell_review_risk_threshold: config.shell_review_risk_threshold.clone(),
+        shell_review_unattended_risk_threshold: config
+            .shell_review_unattended_risk_threshold
+            .clone(),
+        shell_review_action: config.shell_review_action.clone(),
+        shell_sandbox_enabled: config.shell_sandbox_enabled,
+        shell_sandbox_backend: config.shell_sandbox_backend.clone(),
+        shell_sandbox_network: config.shell_sandbox_network.clone(),
+        shell_sandbox_allow_raw_host: config.shell_sandbox_allow_raw_host,
+        message: "Desktop workspace is ready for local execution".to_string(),
+    })
+}
+
+fn ensure_desktop_profile_seed_file(
+    layout: &LocalClawLayout,
+    config: &LocalClawLaunchConfig,
+) -> Result<PathBuf, String> {
+    let content = desktop_profile_seed_content(config)?;
+    if let Some(parent) = layout.profile_seed_file.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(&layout.profile_seed_file, content).map_err(|error| error.to_string())?;
+    Ok(layout.profile_seed_file.clone())
+}
+
+fn desktop_profile_seed_content(config: &LocalClawLaunchConfig) -> Result<String, String> {
+    let shell_action = validate_shell_review_action(&config.shell_review_action)?;
+    let review_threshold = validate_shell_review_risk(&config.shell_review_risk_threshold)?;
+    let unattended_threshold =
+        validate_shell_review_risk(&config.shell_review_unattended_risk_threshold)?;
+    let sandbox_backend = validate_shell_sandbox_backend(&config.shell_sandbox_backend)?;
+    let sandbox_network = validate_shell_sandbox_network(&config.shell_sandbox_network)?;
+    let model = yaml_string(&config.shell_review_model);
+    let model_settings = yaml_string(&config.shell_review_model_settings);
+    let enabled = bool_env(config.shell_review_enabled);
+    let sandbox_enabled = bool_env(config.shell_sandbox_enabled);
+    let sandbox_raw_host_approval = if config.shell_sandbox_allow_raw_host {
+        "allowed_for_profile"
+    } else {
+        "requires_human"
+    };
+    Ok(format!(
+        r#"version: 1
+profiles:
+- name: default
+  model: gateway@openai-responses:gpt-5.5
+  model_settings_preset: openai_responses_high
+  model_config_preset: gpt5_270k
+  security:
+    shell_review:
+      enabled: {enabled}
+      model: {model}
+      model_settings: {model_settings}
+      on_needs_approval: {shell_action}
+      risk_threshold: {review_threshold}
+      unattended_risk_threshold: {unattended_threshold}
+    shell_sandbox:
+      enabled: {sandbox_enabled}
+      profile: workspace_write
+      backend_preference: {sandbox_backend}
+      network: {sandbox_network}
+      raw_shell_approval: {sandbox_raw_host_approval}
+      audit_enabled: true
+  system_prompt: |-
+    <agent_behavior>
+    <identity>You are the YA Desktop workspace agent running through Local Claw.</identity>
+    <workspace_contract>Use the selected Desktop Space as the execution boundary. Keep file and shell work inside the mounted workspace roots and preserve user project files carefully.</workspace_contract>
+    <shell_safety>Shell commands are governed by Desktop shell review and Local Claw shell sandbox. Commands at or above the configured risk threshold enter human approval. Unattended work uses the stricter unattended threshold and denial mode for approval-required commands.</shell_safety>
+    <relay_future>Desktop is the local capability host for {relay_protocol}; future central Claw agents can mount this device through explicit relay grants.</relay_future>
+    </agent_behavior>
+  builtin_toolsets:
+  - core
+  include_builtin_subagents: true
+"#,
+        relay_protocol = DESKTOP_RELAY_PROTOCOL,
+    ))
+}
+
+fn validate_shell_review_action(value: &str) -> Result<&'static str, String> {
+    match value.trim() {
+        "defer" => Ok("defer"),
+        "deny" => Ok("deny"),
+        other => Err(format!("Invalid shell review action: {}", other)),
+    }
+}
+
+fn validate_shell_review_risk(value: &str) -> Result<&'static str, String> {
+    match value.trim() {
+        "low" => Ok("low"),
+        "medium" => Ok("medium"),
+        "high" => Ok("high"),
+        "extra_high" => Ok("extra_high"),
+        other => Err(format!("Invalid shell review risk threshold: {}", other)),
+    }
+}
+
+fn validate_shell_sandbox_backend(value: &str) -> Result<&'static str, String> {
+    match value.trim() {
+        "auto" => Ok("auto"),
+        "linux_bwrap_seccomp" => Ok("linux_bwrap_seccomp"),
+        "macos_seatbelt" => Ok("macos_seatbelt"),
+        "windows_restricted_token" => Ok("windows_restricted_token"),
+        "raw_host" => Ok("raw_host"),
+        other => Err(format!("Invalid shell sandbox backend: {}", other)),
+    }
+}
+
+fn validate_shell_sandbox_network(value: &str) -> Result<&'static str, String> {
+    match value.trim() {
+        "blocked" => Ok("blocked"),
+        "restricted" => Ok("restricted"),
+        "proxy" => Ok("proxy"),
+        "full" => Ok("full"),
+        other => Err(format!("Invalid shell sandbox network policy: {}", other)),
+    }
+}
+
+fn yaml_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
 fn ensure_local_api_token(env_file: &Path) -> Result<String, String> {
@@ -1336,7 +1603,19 @@ fn normalize_launch_config(
             "YA_CLAW_MEMORY_ENABLED" => {
                 config.memory_enabled = parse_bool_env(&value)?;
             }
-            "YA_CLAW_API_TOKEN" | "YA_CLAW_PUBLIC_BASE_URL" => {
+            "YA_CLAW_SHELL_SANDBOX_ENABLED" => {
+                config.shell_sandbox_enabled = parse_bool_env(&value)?;
+            }
+            "YA_CLAW_SHELL_SANDBOX_BACKEND" => {
+                config.shell_sandbox_backend = value;
+            }
+            "YA_CLAW_SHELL_SANDBOX_NETWORK" => {
+                config.shell_sandbox_network = value;
+            }
+            "YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST" => {
+                config.shell_sandbox_allow_raw_host = parse_bool_env(&value)?;
+            }
+            "YA_CLAW_API_TOKEN" | "YA_CLAW_PUBLIC_BASE_URL" | "YA_CLAW_PROFILE_SEED_FILE" => {
                 return Err(format!(
                     "{} is managed by Desktop and cannot be overridden",
                     key
@@ -1345,6 +1624,24 @@ fn normalize_launch_config(
             _ => normalized_env.push(LocalClawEnvVar { key, value }),
         }
     }
+    validate_shell_review_action(&config.shell_review_action)?;
+    validate_shell_review_risk(&config.shell_review_risk_threshold)?;
+    validate_shell_review_risk(&config.shell_review_unattended_risk_threshold)?;
+    validate_shell_sandbox_backend(&config.shell_sandbox_backend)?;
+    validate_shell_sandbox_network(&config.shell_sandbox_network)?;
+    if config.shell_review_enabled && config.shell_review_model.trim().is_empty() {
+        return Err("Shell review model is required when shell review is enabled".to_string());
+    }
+    config.shell_review_model = config.shell_review_model.trim().to_string();
+    config.shell_review_model_settings = config.shell_review_model_settings.trim().to_string();
+    config.shell_review_risk_threshold = config.shell_review_risk_threshold.trim().to_string();
+    config.shell_review_unattended_risk_threshold = config
+        .shell_review_unattended_risk_threshold
+        .trim()
+        .to_string();
+    config.shell_review_action = config.shell_review_action.trim().to_string();
+    config.shell_sandbox_backend = config.shell_sandbox_backend.trim().to_string();
+    config.shell_sandbox_network = config.shell_sandbox_network.trim().to_string();
     normalized_env.sort_by(|left, right| left.key.cmp(&right.key));
     normalized_env.dedup_by(|left, right| left.key == right.key);
     config.env = normalized_env;
@@ -1392,6 +1689,66 @@ fn parse_launch_preset_json(value: serde_json::Value) -> Result<LocalClawLaunchC
         .and_then(|value| value.as_bool())
     {
         config.memory_enabled = value;
+    }
+    if let Some(value) = object
+        .get("shellReviewEnabled")
+        .and_then(|value| value.as_bool())
+    {
+        config.shell_review_enabled = value;
+    }
+    if let Some(value) = object
+        .get("shellReviewModel")
+        .and_then(|value| value.as_str())
+    {
+        config.shell_review_model = value.to_string();
+    }
+    if let Some(value) = object
+        .get("shellReviewModelSettings")
+        .and_then(|value| value.as_str())
+    {
+        config.shell_review_model_settings = value.to_string();
+    }
+    if let Some(value) = object
+        .get("shellReviewRiskThreshold")
+        .and_then(|value| value.as_str())
+    {
+        config.shell_review_risk_threshold = value.to_string();
+    }
+    if let Some(value) = object
+        .get("shellReviewUnattendedRiskThreshold")
+        .and_then(|value| value.as_str())
+    {
+        config.shell_review_unattended_risk_threshold = value.to_string();
+    }
+    if let Some(value) = object
+        .get("shellReviewAction")
+        .and_then(|value| value.as_str())
+    {
+        config.shell_review_action = value.to_string();
+    }
+    if let Some(value) = object
+        .get("shellSandboxEnabled")
+        .and_then(|value| value.as_bool())
+    {
+        config.shell_sandbox_enabled = value;
+    }
+    if let Some(value) = object
+        .get("shellSandboxBackend")
+        .and_then(|value| value.as_str())
+    {
+        config.shell_sandbox_backend = value.to_string();
+    }
+    if let Some(value) = object
+        .get("shellSandboxNetwork")
+        .and_then(|value| value.as_str())
+    {
+        config.shell_sandbox_network = value.to_string();
+    }
+    if let Some(value) = object
+        .get("shellSandboxAllowRawHost")
+        .and_then(|value| value.as_bool())
+    {
+        config.shell_sandbox_allow_raw_host = value;
     }
     for key in ["env", "environment", "variables"] {
         if let Some(env_value) = object.get(key) {
@@ -1797,6 +2154,12 @@ fn status_from_info(info: &LocalClawRuntimeInfo, running: bool, message: &str) -
         log_file: Some(info.log_file.clone()),
         lock_file: Some(info.lock_file.clone()),
         api_token,
+        profile_seed_file: PathBuf::from(&info.data_dir).parent().map(|root| {
+            root.join("desktop-profiles.yaml")
+                .to_string_lossy()
+                .to_string()
+        }),
+        relay_protocol: DESKTOP_RELAY_PROTOCOL.to_string(),
         message: message.to_string(),
     }
 }
@@ -1812,6 +2175,8 @@ fn stopped_status(message: &str) -> LocalClawStatus {
         log_file: None,
         lock_file: None,
         api_token: None,
+        profile_seed_file: None,
+        relay_protocol: DESKTOP_RELAY_PROTOCOL.to_string(),
         message: message.to_string(),
     }
 }
@@ -1849,6 +2214,8 @@ pub fn run() {
             update_local_claw_launch_config,
             reset_local_claw_launch_config,
             import_local_claw_launch_preset,
+            get_desktop_workspace_status,
+            run_desktop_onboarding,
             get_runtime_manager_status,
             install_latest_claw_runtime,
             update_claw_runtime,

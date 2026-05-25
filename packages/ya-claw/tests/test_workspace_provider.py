@@ -67,7 +67,7 @@ def test_local_workspace_provider_resolves_single_workspace(tmp_path: Path) -> N
 async def test_service_local_plus_local_shell_uses_real_paths_for_file_ops_and_shell(tmp_path: Path) -> None:
     provider = LocalWorkspaceProvider(tmp_path / "workspace")
     binding = provider.resolve()
-    factory = LocalEnvironmentFactory()
+    factory = LocalEnvironmentFactory(shell_sandbox_enabled=False)
     environment = factory.build(binding)
     assert isinstance(environment, MappedLocalEnvironment)
 
@@ -88,7 +88,7 @@ async def test_service_local_plus_local_shell_uses_real_paths_for_file_ops_and_s
 async def test_local_environment_factory_passes_workspace_environment(tmp_path: Path) -> None:
     provider = LocalWorkspaceProvider(tmp_path / "workspace")
     binding = provider.resolve()
-    factory = LocalEnvironmentFactory(workspace_environment={"LARK_APP_ID": "cli_test"})
+    factory = LocalEnvironmentFactory(workspace_environment={"LARK_APP_ID": "cli_test"}, shell_sandbox_enabled=False)
     environment = factory.build(binding)
 
     async with environment as env:

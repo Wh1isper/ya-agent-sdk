@@ -1,10 +1,25 @@
-import { Folder, type LucideIcon } from 'lucide-react'
+import {
+  Folder,
+  Network,
+  ShieldCheck,
+  TerminalSquare,
+  type LucideIcon,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import type { ClawRunSummary, ClawSessionSummary } from '../claw'
 import { cn } from '../lib'
 import type { DesktopSpace, HomeStreamStatus } from './types'
-import { homeStreamStatusLabel, labelForStatus, sessionTitle, statusTone, statusToneName } from './utils'
+import {
+  executionLocationLabel,
+  homeStreamStatusLabel,
+  labelForStatus,
+  relayLabel,
+  sessionTitle,
+  shellSafetyLabel,
+  statusTone,
+  statusToneName,
+} from './utils'
 
 export function LiveSessionList({
   connectionReady,
@@ -228,7 +243,13 @@ export function SelectPill({
   )
 }
 
-export function InfoPill({ icon: Icon, text }: { icon: LucideIcon; text: string }) {
+export function InfoPill({
+  icon: Icon,
+  text,
+}: {
+  icon: LucideIcon
+  text: string
+}) {
   return (
     <span className="inline-flex h-8 max-w-64 items-center gap-2 rounded-full bg-[#f2f2ef] px-3">
       <Icon className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" />
@@ -264,7 +285,13 @@ export function PageFrame({
   )
 }
 
-export function PageEmpty({ title, detail }: { title: string; detail: string }) {
+export function PageEmpty({
+  title,
+  detail,
+}: {
+  title: string
+  detail: string
+}) {
   return (
     <div className="flex min-h-full items-center justify-center px-5 py-10">
       <EmptyState title={title} detail={detail} />
@@ -272,7 +299,13 @@ export function PageEmpty({ title, detail }: { title: string; detail: string }) 
   )
 }
 
-export function EmptyState({ title, detail }: { title: string; detail: string }) {
+export function EmptyState({
+  title,
+  detail,
+}: {
+  title: string
+  detail: string
+}) {
   return (
     <div className="rounded-2xl border border-dashed border-black/[0.10] bg-[#fbfbfa] p-5 text-center">
       <p className="text-sm font-semibold text-[#171717]">{title}</p>
@@ -339,16 +372,27 @@ export function SpaceCard({
       onClick={onClick}
       type="button"
     >
-      <Folder className="h-5 w-5 text-[#5f5f5f]" />
+      <div className="flex items-center justify-between gap-3">
+        <Folder className="h-5 w-5 text-[#5f5f5f]" />
+        <Chip>{executionLocationLabel(space)}</Chip>
+      </div>
       <h3 className="mt-3 text-sm font-semibold text-[#171717]">
         {space.name}
       </h3>
       <p className="mt-2 truncate text-xs text-[#6b6b6b]">
         {space.path || 'Embedded local workspace'}
       </p>
+      <div className="mt-4 space-y-2 text-xs text-[#6b6b6b]">
+        <SpaceMetaRow
+          icon={TerminalSquare}
+          text={shellSafetyLabel(space.shellSafety)}
+        />
+        <SpaceMetaRow icon={ShieldCheck} text={space.trust} />
+        <SpaceMetaRow icon={Network} text={relayLabel(space)} />
+      </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <Chip>{space.runtime}</Chip>
-        <Chip>{space.trust}</Chip>
+        <Chip>{space.kind.replaceAll('_', ' ')}</Chip>
         {selected && <Chip>Active</Chip>}
       </div>
     </button>
@@ -387,6 +431,21 @@ export function Chip({ children }: { children: ReactNode }) {
     <span className="rounded-full bg-[#f2f2ef] px-2.5 py-1 text-[11px] font-medium text-[#6b6b6b]">
       {children}
     </span>
+  )
+}
+
+function SpaceMetaRow({
+  icon: Icon,
+  text,
+}: {
+  icon: LucideIcon
+  text: string
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <Icon className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" />
+      <span className="truncate">{text}</span>
+    </div>
   )
 }
 

@@ -125,14 +125,14 @@ Desktop should merge Claw capabilities with local provider diagnostics before re
 
 ```ts
 type ComputerControlState =
-  | "disabled"
-  | "permission_required"
-  | "ready"
-  | "agent_active"
-  | "approval_required"
-  | "paused"
-  | "user_takeover"
-  | "errored";
+  | 'disabled'
+  | 'permission_required'
+  | 'ready'
+  | 'agent_active'
+  | 'approval_required'
+  | 'paused'
+  | 'user_takeover'
+  | 'errored'
 ```
 
 State transitions should be visible in Chats, Inbox, and tray status. `paused` prevents new computer actions while preserving the run. `user_takeover` gives the user direct control over the desktop and makes the agent wait. `disabled` removes the computer tool surface from future runs.

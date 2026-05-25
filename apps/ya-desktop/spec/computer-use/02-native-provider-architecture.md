@@ -53,14 +53,14 @@ The bridge should expose a provider-neutral API. The Claw side should call this 
 
 ```ts
 type HostComputerProvider = {
-  getStatus(): Promise<ComputerProviderStatus>;
-  see(request: ComputerSeeRequest): Promise<ComputerSnapshot>;
-  act(action: ComputerAction): Promise<ComputerActionResult>;
-  pause(reason?: string): Promise<void>;
-  resume(): Promise<void>;
-  takeover(): Promise<void>;
-  release(): Promise<void>;
-};
+  getStatus(): Promise<ComputerProviderStatus>
+  see(request: ComputerSeeRequest): Promise<ComputerSnapshot>
+  act(action: ComputerAction): Promise<ComputerActionResult>
+  pause(reason?: string): Promise<void>
+  resume(): Promise<void>
+  takeover(): Promise<void>
+  release(): Promise<void>
+}
 ```
 
 ## Capture Engine
@@ -84,16 +84,16 @@ Capture output should include coordinate metadata:
 
 ```ts
 type ScreenshotArtifact = {
-  artifact_id: string;
-  mime_type: "image/png" | "image/jpeg";
-  width: number;
-  height: number;
-  scale_factor: number;
-  display_id?: string;
-  window_id?: string;
-  app_bundle_id?: string;
-  created_at: string;
-};
+  artifact_id: string
+  mime_type: 'image/png' | 'image/jpeg'
+  width: number
+  height: number
+  scale_factor: number
+  display_id?: string
+  window_id?: string
+  app_bundle_id?: string
+  created_at: string
+}
 ```
 
 ## Accessibility Engine
@@ -109,19 +109,19 @@ Recommended element model:
 
 ```ts
 type UIElementNode = {
-  id: string;
-  role: string;
-  title?: string;
-  label?: string;
-  value?: string;
-  description?: string;
-  bounds?: Rect;
-  enabled?: boolean;
-  focused?: boolean;
-  selected?: boolean;
-  actions: string[];
-  children?: UIElementNode[];
-};
+  id: string
+  role: string
+  title?: string
+  label?: string
+  value?: string
+  description?: string
+  bounds?: Rect
+  enabled?: boolean
+  focused?: boolean
+  selected?: boolean
+  actions: string[]
+  children?: UIElementNode[]
+}
 ```
 
 Snapshot-scoped element IDs are enough for MVP. A later provider can add cross-snapshot tracking by accessibility path and fuzzy bounds matching.
@@ -164,11 +164,11 @@ The engine should emit action execution metadata for trace:
 
 ```ts
 type NativeActionExecution = {
-  strategy: "accessibility" | "coordinate" | "hybrid";
-  resolved_target?: ResolvedTarget;
-  duration_ms: number;
-  warnings: string[];
-};
+  strategy: 'accessibility' | 'coordinate' | 'hybrid'
+  resolved_target?: ResolvedTarget
+  duration_ms: number
+  warnings: string[]
+}
 ```
 
 ## Local Transport

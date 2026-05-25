@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from loguru import logger
 from ya_agent_environment import (
@@ -24,7 +24,11 @@ from ya_agent_environment import (
 )
 from ya_agent_sdk.environment import (
     LocalShell,
+    SandboxedLocalShell,
     SandboxEnvironment,
+    ShellSandboxBackend,
+    ShellSandboxNetwork,
+    ShellSandboxRuntimePolicy,
     VirtualLocalFileOperator,
     VirtualMount,
 )
@@ -45,6 +49,13 @@ from ya_claw.workspace.models import (
     virtual_path_contains,
     workspace_fingerprint_payload,
 )
+from ya_claw.workspace.shell_sandbox import (
+    WorkspaceShellSandboxDefaults,
+    resolve_workspace_shell_sandbox_policy,
+)
+
+if TYPE_CHECKING:
+    from ya_claw.execution.profile import ResolvedProfile
 
 _DOCKER_SANDBOX_METADATA_KEY = SANDBOX_METADATA_KEY
 _DOCKER_SANDBOX_PROVIDER = "docker"
@@ -146,6 +157,7 @@ class MappedLocalEnvironment(Environment):
         resource_factories: dict[str, ResourceFactory] | None = None,
         include_os_env: bool = True,
         environment_overrides: dict[str, str] | None = None,
+        shell_sandbox_policy: ShellSandboxRuntimePolicy | None = None,
     ) -> None:
         super().__init__(resource_state=resource_state, resource_factories=resource_factories)
         self._mounts = mounts
@@ -155,6 +167,7 @@ class MappedLocalEnvironment(Environment):
         self._enable_tmp_dir = enable_tmp_dir
         self._include_os_env = include_os_env
         self._environment_overrides = dict(environment_overrides or {})
+        self._shell_sandbox_policy = shell_sandbox_policy
         self._read_only_virtual_paths = [Path(path) for path in read_only_virtual_paths or []]
         self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
 
@@ -182,13 +195,23 @@ class MappedLocalEnvironment(Environment):
         )
         if tmp_dir_path is not None:
             allowed_paths.append(tmp_dir_path.resolve())
-        self._shell = WorkspaceLocalShell(
-            default_cwd=self._host_cwd,
-            allowed_paths=allowed_paths,
-            default_timeout=self._shell_timeout,
-            include_os_env=self._include_os_env,
-            environment_overrides=self._environment_overrides,
-        )
+        if self._shell_sandbox_policy is not None and self._shell_sandbox_policy.enabled:
+            self._shell = SandboxedLocalShell(
+                policy=self._shell_sandbox_policy,
+                default_cwd=self._host_cwd,
+                allowed_paths=allowed_paths,
+                default_timeout=self._shell_timeout,
+                include_os_env=self._include_os_env,
+                environment_overrides=self._environment_overrides,
+            )
+        else:
+            self._shell = WorkspaceLocalShell(
+                default_cwd=self._host_cwd,
+                allowed_paths=allowed_paths,
+                default_timeout=self._shell_timeout,
+                include_os_env=self._include_os_env,
+                environment_overrides=self._environment_overrides,
+            )
 
     async def _teardown(self) -> None:
         if self._tmp_dir_obj is not None:
@@ -675,7 +698,7 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
 
 class EnvironmentFactory(ABC):
     @abstractmethod
-    def build(self, binding: WorkspaceBinding) -> Environment:
+    def build(self, binding: WorkspaceBinding, *, profile: ResolvedProfile | None = None) -> Environment:
         raise NotImplementedError
 
 
@@ -686,12 +709,22 @@ class LocalEnvironmentFactory(EnvironmentFactory):
         shell_timeout: float = 30.0,
         tmp_base_dir: Path | None = None,
         workspace_environment: dict[str, str] | None = None,
+        shell_sandbox_enabled: bool = True,
+        shell_sandbox_backend: ShellSandboxBackend = "auto",
+        shell_sandbox_network: ShellSandboxNetwork = "restricted",
+        shell_sandbox_allow_raw_host: bool = False,
     ) -> None:
         self._shell_timeout = shell_timeout
         self._tmp_base_dir = tmp_base_dir
         self._workspace_environment = dict(workspace_environment or {})
+        self._shell_sandbox_defaults = WorkspaceShellSandboxDefaults(
+            enabled=shell_sandbox_enabled,
+            backend=shell_sandbox_backend,
+            network=shell_sandbox_network,
+            allow_raw_host=shell_sandbox_allow_raw_host,
+        )
 
-    def build(self, binding: WorkspaceBinding) -> Environment:
+    def build(self, binding: WorkspaceBinding, *, profile: ResolvedProfile | None = None) -> Environment:
         logger.debug(
             "Building local environment provider={} host_path={} cwd={} readable={} writable={}",
             binding.metadata.get("provider"),
@@ -700,6 +733,12 @@ class LocalEnvironmentFactory(EnvironmentFactory):
             binding.readable_paths,
             binding.writable_paths,
         )
+        shell_sandbox_policy = resolve_workspace_shell_sandbox_policy(
+            binding=binding,
+            defaults=self._shell_sandbox_defaults,
+            profile=profile,
+        )
+        binding.metadata["shell_sandbox"] = shell_sandbox_policy.to_metadata()
         return MappedLocalEnvironment(
             mounts=_virtual_mounts_from_binding(binding),
             host_cwd=_host_cwd_from_binding(binding),
@@ -707,6 +746,7 @@ class LocalEnvironmentFactory(EnvironmentFactory):
             tmp_base_dir=self._tmp_base_dir,
             read_only_virtual_paths=_read_only_paths_from_binding(binding),
             environment_overrides={**self._workspace_environment, **binding.environment_overrides},
+            shell_sandbox_policy=shell_sandbox_policy,
         )
 
 
@@ -740,7 +780,7 @@ class DockerEnvironmentFactory(EnvironmentFactory):
         self._retention_policy = retention_policy
         self._idle_ttl_seconds = idle_ttl_seconds
 
-    def build(self, binding: WorkspaceBinding) -> Environment:
+    def build(self, binding: WorkspaceBinding, *, profile: ResolvedProfile | None = None) -> Environment:
         sandbox_metadata = extract_workspace_sandbox_metadata(binding.metadata) or {}
         sandbox_metadata = {
             **sandbox_metadata,
@@ -839,11 +879,19 @@ class DefaultEnvironmentFactory(EnvironmentFactory):
         docker_exec_default_env: dict[str, str] | None = None,
         docker_retention_policy: str = "stop_on_idle",
         docker_idle_ttl_seconds: int = 3600,
+        shell_sandbox_enabled: bool = True,
+        shell_sandbox_backend: ShellSandboxBackend = "auto",
+        shell_sandbox_network: ShellSandboxNetwork = "restricted",
+        shell_sandbox_allow_raw_host: bool = False,
     ) -> None:
         self._local_factory = LocalEnvironmentFactory(
             shell_timeout=shell_timeout,
             tmp_base_dir=tmp_base_dir,
             workspace_environment=workspace_environment,
+            shell_sandbox_enabled=shell_sandbox_enabled,
+            shell_sandbox_backend=shell_sandbox_backend,
+            shell_sandbox_network=shell_sandbox_network,
+            shell_sandbox_allow_raw_host=shell_sandbox_allow_raw_host,
         )
         self._docker_factory = DockerEnvironmentFactory(
             image=docker_image,
@@ -860,7 +908,7 @@ class DefaultEnvironmentFactory(EnvironmentFactory):
             idle_ttl_seconds=docker_idle_ttl_seconds,
         )
 
-    def build(self, binding: WorkspaceBinding) -> Environment:
+    def build(self, binding: WorkspaceBinding, *, profile: ResolvedProfile | None = None) -> Environment:
         backend = (binding.backend_hint or "local").strip().lower()
         logger.debug(
             "Default environment factory selected backend={} provider={}",
@@ -868,8 +916,8 @@ class DefaultEnvironmentFactory(EnvironmentFactory):
             binding.metadata.get("provider"),
         )
         if backend == "docker":
-            return self._docker_factory.build(binding)
-        return self._local_factory.build(binding)
+            return self._docker_factory.build(binding, profile=profile)
+        return self._local_factory.build(binding, profile=profile)
 
 
 class LocalWorkspaceProvider(WorkspaceProvider):

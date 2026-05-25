@@ -107,31 +107,31 @@ Desktop should render stable session states with explicit transition reasons.
 
 ```ts
 type SessionStatus =
-  | "idle"
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 type SessionStatusReason =
-  | "idle"
-  | "run_queued"
-  | "run_running"
-  | "hitl_pending"
-  | "run_completed"
-  | "run_failed"
-  | "run_cancelled";
+  | 'idle'
+  | 'run_queued'
+  | 'run_running'
+  | 'hitl_pending'
+  | 'run_completed'
+  | 'run_failed'
+  | 'run_cancelled'
 
 type SessionStatusDetail = {
-  run_id?: string;
-  sequence_no?: number;
-  trigger_type?: "api" | "bridge" | "schedule" | "heartbeat" | "memory";
-  termination_reason?: "completed" | "error" | "cancel" | "interrupt";
-  error_message?: string;
-  active_interaction_count?: number;
-  active_interactions?: PendingInteractionSummary[];
-};
+  run_id?: string
+  sequence_no?: number
+  trigger_type?: 'api' | 'bridge' | 'schedule' | 'heartbeat' | 'memory'
+  termination_reason?: 'completed' | 'error' | 'cancel' | 'interrupt'
+  error_message?: string
+  active_interaction_count?: number
+  active_interactions?: PendingInteractionSummary[]
+}
 ```
 
 HITL uses `status="running"` with `status_reason="hitl_pending"`. The run remains active while Claw waits for the user's decision, and Desktop uses `status_reason` to show approval UI, tray badges, and native notifications.
@@ -192,18 +192,18 @@ Desktop should maintain a local read model keyed by connection ID.
 
 ```ts
 type DesktopSessionReadModel = {
-  connectionId: string;
-  sessionId: string;
-  status: SessionStatus;
-  statusReason: SessionStatusReason;
-  statusDetail: SessionStatusDetail;
-  activeRunId?: string | null;
-  headRunId?: string | null;
-  headSuccessRunId?: string | null;
-  latestRun?: RunSummary | null;
-  pendingInteractions: PendingInteractionSummary[];
-  lastNotificationId?: string;
-};
+  connectionId: string
+  sessionId: string
+  status: SessionStatus
+  statusReason: SessionStatusReason
+  statusDetail: SessionStatusDetail
+  activeRunId?: string | null
+  headRunId?: string | null
+  headSuccessRunId?: string | null
+  latestRun?: RunSummary | null
+  pendingInteractions: PendingInteractionSummary[]
+  lastNotificationId?: string
+}
 ```
 
 Update rules:
@@ -254,31 +254,31 @@ A pending interaction groups one or more deferred tool calls from the same agent
 
 ```ts
 type PendingInteraction = {
-  id: string;
-  kind: "tool_approval" | "external_tool_result";
-  status: "pending" | "responded" | "expired" | "cancelled";
-  session_id: string;
-  run_id: string;
-  sequence_no: number;
-  profile_name?: string | null;
-  requests: PendingToolRequest[];
-  created_at: string;
-  expires_at?: string | null;
-};
+  id: string
+  kind: 'tool_approval' | 'external_tool_result'
+  status: 'pending' | 'responded' | 'expired' | 'cancelled'
+  session_id: string
+  run_id: string
+  sequence_no: number
+  profile_name?: string | null
+  requests: PendingToolRequest[]
+  created_at: string
+  expires_at?: string | null
+}
 
 type PendingToolRequest = {
-  tool_call_id: string;
-  tool_name: string;
-  arguments: Record<string, unknown>;
-  metadata?: Record<string, unknown> | null;
+  tool_call_id: string
+  tool_name: string
+  arguments: Record<string, unknown>
+  metadata?: Record<string, unknown> | null
   presentation?: {
-    title?: string;
-    summary?: string;
-    risk?: "low" | "medium" | "high";
-    diff_preview?: string;
-    command_preview?: string;
-  };
-};
+    title?: string
+    summary?: string
+    risk?: 'low' | 'medium' | 'high'
+    diff_preview?: string
+    command_preview?: string
+  }
+}
 ```
 
 Interaction requested notification:
@@ -296,8 +296,8 @@ Interaction requested notification:
       {
         "tool_call_id": "call_abc",
         "tool_name": "shell",
-        "arguments": {"command": "make test"},
-        "metadata": {"cwd": "/workspace"},
+        "arguments": { "command": "make test" },
+        "metadata": { "cwd": "/workspace" },
         "presentation": {
           "title": "Run shell command",
           "summary": "make test",

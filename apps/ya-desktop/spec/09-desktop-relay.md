@@ -48,24 +48,24 @@ A Space owns the local trust decision. The user chooses folders, shell enablemen
 
 ```ts
 type DesktopRelaySpaceSettings = {
-  enabled: boolean;
-  connection_id: string;
-  client_id: string;
-  roots: RelayRootSetting[];
-  shell_enabled: boolean;
-  custom_tools_enabled: boolean;
-  computer_use_enabled: boolean;
-  approval_policy_id: string;
-  artifact_upload_policy: "ask" | "allow_for_run" | "allow_for_space";
-};
+  enabled: boolean
+  connection_id: string
+  client_id: string
+  roots: RelayRootSetting[]
+  shell_enabled: boolean
+  custom_tools_enabled: boolean
+  computer_use_enabled: boolean
+  approval_policy_id: string
+  artifact_upload_policy: 'ask' | 'allow_for_run' | 'allow_for_space'
+}
 
 type RelayRootSetting = {
-  root_id: string;
-  label: string;
-  local_path: string;
-  virtual_path: string;
-  mode: "ro" | "rw";
-};
+  root_id: string
+  label: string
+  local_path: string
+  virtual_path: string
+  mode: 'ro' | 'rw'
+}
 ```
 
 ## Connection Flow

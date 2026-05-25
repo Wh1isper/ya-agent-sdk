@@ -9,8 +9,7 @@ The core product shape combines:
 - Home for command-first invocation and recent conversation overview
 - Chats as the primary work management model
 - Board as the kanban view over chats and runs
-- Spaces for workspace folders, cloud workspaces, runtime connections, trust, execution location, and mount-set presets
-- Agency for proactive work visibility, singleton Agency runs, recent fires, and memory-session activity
+- Spaces for workspace folders, cloud workspaces, runtime connections, trust, execution location, mount-set presets, shell safety, and environment relay readiness
 - Inbox for HITL decisions, alerts, failed background work, and user actions
 - Settings for preferences, hotkeys, secrets, advanced runtime, logs, and diagnostics
 - tray or menu bar presence
@@ -29,8 +28,7 @@ flowchart TB
     Product --> Home[Home<br/>Command + recent chats]
     Product --> Chats[Chats<br/>Conversation work surface]
     Product --> Board[Board<br/>Kanban over chats]
-    Product --> Spaces[Spaces<br/>Workspace folders + runtimes]
-    Product --> Agency[Agency<br/>Proactive work + memory]
+    Product --> Spaces[Spaces<br/>Workspace folders + shell safety]
     Product --> Inbox[Inbox<br/>Approvals + alerts]
     Product --> Settings[Settings<br/>Preferences + advanced runtime]
 
@@ -46,7 +44,8 @@ flowchart TB
     LocalConn --> Runtime[App-managed Claw Runtime<br/>uv + .venv + ya-clawd]
     Runtime --> LocalDaemon[ya-clawd Daemon<br/>127.0.0.1 random port]
     LocalDaemon --> LocalStore[SQLite + Run Store]
-    LocalDaemon --> LocalWorkspace[Local WorkspaceProvider<br/>Controlled FileOps + Sandboxed Shell]
+    LocalDaemon --> LocalWorkspace[Local WorkspaceProvider<br/>Controlled FileOps + Shell Sandbox]
+    Desktop --> RelayPrep[Relay Grant Model<br/>ya-environment-relay.v1]
 
     RemoteConn --> RemoteClaw[Self-hosted ya-claw<br/>HTTPS]
     CloudConn --> CloudClaw[Cloud ya-claw<br/>HTTPS]
@@ -152,13 +151,16 @@ Spaces represent workspace folders or cloud workspaces plus runtime details.
 
 Current implementation:
 
-- Stores a browser-local Space registry with names, folder paths, runtime labels, trust labels, and active selection.
-- Allows users to add a local folder Space and select it for Home and Chats execution.
+- Stores a browser-local Space registry with names, folder paths, runtime labels, trust labels, execution location, shell safety policy, relay status, and active selection.
+- Allows users to add a local folder Space, choose trust level, choose shell mode, mark relay readiness, and select it for Home and Chats execution.
 - Maps the selected Space into a Claw workspace binding for session and run creation when the Space has a local path.
+- Sends Desktop shell safety and relay metadata in the workspace binding so Claw sessions retain the local execution policy context.
 
 Capabilities:
 
 - Local workspace folder cards.
+- Shell safety cards and command-review posture.
+- Relay grant readiness for central Claw mounting through `ya-environment-relay.v1`.
 - Remote and cloud workspace cards.
 - Folder registry with recent, trusted, and pinned folders.
 - Mount-set presets with one default folder and optional extra folders.
@@ -194,7 +196,7 @@ Current implementation:
 - Opens Agency or memory sessions in Chats for full session history.
 - Updates through notification SSE events for Agency config, fires, and clear operations.
 
-Desktop launch defaults enable both Agency and Memory for Local Claw. Settings exposes a launch preset editor so users can import preset JSON or dotenv-style variables and control startup environment variables passed to `ya-clawd`. Desktop reserves the sidecar port and sets `YA_CLAW_PUBLIC_BASE_URL` to the same local URL so Claw selfcall tools and async subagents target the active Local Claw process.
+Desktop launch defaults enable Agency, Memory, shell review, and Claw's default shell sandbox policy for Local Claw. Settings exposes a launch preset editor so users can import preset JSON or dotenv-style variables and control startup environment variables passed to `ya-clawd`. Desktop reserves the sidecar port and sets `YA_CLAW_PUBLIC_BASE_URL` to the same local URL so Claw selfcall tools and async subagents target the active Local Claw process. Desktop writes a managed `desktop-profiles.yaml` seed file and points Local Claw at it through `YA_CLAW_PROFILE_SEED_FILE`, giving local desktop execution a reviewed and sandboxed shell profile by default.
 
 Capabilities:
 
@@ -273,7 +275,7 @@ STT turns speech into `input_parts`. TTS consumes assistant text deltas or compl
 
 ## Trust and Workspace Safety Principles
 
-Desktop should make execution location explicit for workspace actions. Local execution should use controlled file operations plus a sandboxed shell by default.
+Desktop should make execution location explicit for workspace actions. Local execution should use controlled file operations plus Claw's default shell sandbox policy.
 
 Local embedded run:
 
@@ -310,7 +312,7 @@ Recommended safety layers:
 - Space trust: `read_only`, `trusted`, `restricted`, `ephemeral`.
 - Workspace provider: `local`, `docker`, `cloud`, or `remote_rpc`.
 - File operations: path-bounded `LocalFileOperator` over the selected workspace.
-- Shell runtime: `linux_bubblewrap` on Linux and `macos_seatbelt` on macOS.
+- Shell runtime: `linux_bwrap_seccomp` on Linux and `macos_seatbelt` on macOS.
 - Filesystem exposure: bind mount or path allowlist for the selected workspace.
 - Timeout, process cleanup, and output limits.
 - Audit log: persist input, tool calls, shell commands, file diffs, outputs, and interruptions.

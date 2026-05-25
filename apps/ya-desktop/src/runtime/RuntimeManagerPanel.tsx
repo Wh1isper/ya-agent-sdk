@@ -65,18 +65,39 @@ export function RuntimeManagerPanel() {
     ])
   }
 
-  const installMutation = useRuntimeMutation(installLatestClawRuntime, invalidate)
+  const installMutation = useRuntimeMutation(
+    installLatestClawRuntime,
+    invalidate,
+  )
   const updateMutation = useRuntimeMutation(updateClawRuntime, invalidate)
-  const repairMutation = useRuntimeMutation(() => repairClawRuntime(), invalidate)
+  const repairMutation = useRuntimeMutation(
+    () => repairClawRuntime(),
+    invalidate,
+  )
   const startMutation = useRuntimeMutation(startLocalClaw, invalidate)
   const stopMutation = useRuntimeMutation(stopLocalClaw, invalidate)
-  const launchConfigMutation = useRuntimeMutation(updateLocalClawLaunchConfig, invalidate)
-  const resetLaunchConfigMutation = useRuntimeMutation(resetLocalClawLaunchConfig, invalidate)
-  const importPresetMutation = useRuntimeMutation(importLocalClawLaunchPreset, invalidate)
+  const launchConfigMutation = useRuntimeMutation(
+    updateLocalClawLaunchConfig,
+    invalidate,
+  )
+  const resetLaunchConfigMutation = useRuntimeMutation(
+    resetLocalClawLaunchConfig,
+    invalidate,
+  )
+  const importPresetMutation = useRuntimeMutation(
+    importLocalClawLaunchPreset,
+    invalidate,
+  )
   const restartMutation = useRuntimeMutation(restartLocalClaw, invalidate)
   const removeMutation = useRuntimeMutation(removeClawRuntime, invalidate)
-  const checkUpdateMutation = useRuntimeMutation(checkClawRuntimeUpdate, invalidate)
-  const applyUpdateMutation = useRuntimeMutation(applyReadyClawRuntimeUpdate, invalidate)
+  const checkUpdateMutation = useRuntimeMutation(
+    checkClawRuntimeUpdate,
+    invalidate,
+  )
+  const applyUpdateMutation = useRuntimeMutation(
+    applyReadyClawRuntimeUpdate,
+    invalidate,
+  )
   const logMutation = useMutation({
     mutationFn: getRuntimeInstallLog,
     onSuccess: setInstallLog,
@@ -110,8 +131,8 @@ export function RuntimeManagerPanel() {
             Local Claw runtime
           </h2>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-500">
-            Desktop installs Claw with app-managed uv, activates verified runtimes, and launches
-            ya-clawd as a local child process.
+            Desktop installs Claw with app-managed uv, activates verified
+            runtimes, and launches ya-clawd as a local child process.
           </p>
         </div>
         <button
@@ -128,9 +149,12 @@ export function RuntimeManagerPanel() {
         <div className="mt-6 rounded-3xl border border-emerald-200 bg-emerald-50 p-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <p className="text-sm font-semibold text-emerald-900">Claw update ready</p>
+              <p className="text-sm font-semibold text-emerald-900">
+                Claw update ready
+              </p>
               <p className="mt-1 text-sm text-emerald-800/75">
-                Version {updateState.candidate.version} is verified. Restart local Claw to apply it.
+                Version {updateState.candidate.version} is verified. Restart
+                local Claw to apply it.
               </p>
             </div>
             <ActionButton
@@ -146,8 +170,12 @@ export function RuntimeManagerPanel() {
 
       {updateState?.lastError && (
         <div className="mt-6 rounded-3xl border border-rose-200 bg-rose-50 p-5">
-          <p className="text-sm font-semibold text-rose-900">Runtime update check failed</p>
-          <p className="mt-1 text-sm text-rose-800/75">{updateState.lastError}</p>
+          <p className="text-sm font-semibold text-rose-900">
+            Runtime update check failed
+          </p>
+          <p className="mt-1 text-sm text-rose-800/75">
+            {updateState.lastError}
+          </p>
         </div>
       )}
 
@@ -160,7 +188,11 @@ export function RuntimeManagerPanel() {
         <StatusCard
           label="Local daemon"
           value={running ? 'Running' : 'Stopped'}
-          detail={localStatus.data?.baseUrl ?? localStatus.data?.message ?? 'Waiting for status'}
+          detail={
+            localStatus.data?.baseUrl ??
+            localStatus.data?.message ??
+            'Waiting for status'
+          }
         />
         <StatusCard
           label="Auto update"
@@ -177,13 +209,28 @@ export function RuntimeManagerPanel() {
       <div className="mt-6 rounded-3xl border border-black/[0.06] bg-[#f7f7f4] p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-semibold text-slate-950">Launch preset</p>
+            <p className="text-sm font-semibold text-slate-950">
+              Launch preset
+            </p>
             <p className="mt-1 text-sm leading-6 text-slate-500">
-              Desktop starts Local Claw with Agency and Memory enabled by default. Import a preset or add environment variables for local daemon startup.
+              Desktop starts Local Claw with Agency and Memory enabled by
+              default. Import a preset or add environment variables for local
+              daemon startup.
             </p>
             <p className="mt-2 truncate text-xs text-slate-400">
               {currentLaunchConfig?.configFile ?? 'Launch config file'}
             </p>
+            {currentLaunchConfig && (
+              <p className="mt-2 text-xs text-slate-500">
+                Shell review {currentLaunchConfig.shellReviewRiskThreshold}+
+                uses {currentLaunchConfig.shellReviewAction}; unattended work
+                uses {currentLaunchConfig.shellReviewUnattendedRiskThreshold}+
+                deny mode. Sandbox{' '}
+                {currentLaunchConfig.shellSandboxEnabled ? 'on' : 'off'} ·{' '}
+                {currentLaunchConfig.shellSandboxBackend} ·{' '}
+                {currentLaunchConfig.shellSandboxNetwork} network.
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <ToggleButton
@@ -212,6 +259,33 @@ export function RuntimeManagerPanel() {
                 }
               }}
             />
+            <ToggleButton
+              active={currentLaunchConfig?.shellReviewEnabled ?? true}
+              label="Shell review"
+              disabled={busy || !currentLaunchConfig}
+              onClick={() => {
+                if (currentLaunchConfig) {
+                  launchConfigMutation.mutate({
+                    ...currentLaunchConfig,
+                    shellReviewEnabled: !currentLaunchConfig.shellReviewEnabled,
+                  })
+                }
+              }}
+            />
+            <ToggleButton
+              active={currentLaunchConfig?.shellSandboxEnabled ?? true}
+              label="Shell sandbox"
+              disabled={busy || !currentLaunchConfig}
+              onClick={() => {
+                if (currentLaunchConfig) {
+                  launchConfigMutation.mutate({
+                    ...currentLaunchConfig,
+                    shellSandboxEnabled:
+                      !currentLaunchConfig.shellSandboxEnabled,
+                  })
+                }
+              }}
+            />
           </div>
         </div>
         <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_0.9fr]">
@@ -235,7 +309,10 @@ export function RuntimeManagerPanel() {
                 disabled={busy || !currentLaunchConfig || !extraEnvKey.trim()}
                 onClick={() => {
                   if (!currentLaunchConfig) return
-                  const entry: LocalClawEnvVar = { key: extraEnvKey.trim(), value: extraEnvValue.trim() }
+                  const entry: LocalClawEnvVar = {
+                    key: extraEnvKey.trim(),
+                    value: extraEnvValue.trim(),
+                  }
                   launchConfigMutation.mutate({
                     ...currentLaunchConfig,
                     env: upsertEnv(currentLaunchConfig.env, entry),
@@ -249,7 +326,10 @@ export function RuntimeManagerPanel() {
             </div>
             <div className="mt-3 space-y-2">
               {(currentLaunchConfig?.env ?? []).map((entry) => (
-                <div key={entry.key} className="flex items-center gap-2 rounded-2xl bg-white px-3 py-2 text-sm ring-1 ring-black/[0.05]">
+                <div
+                  key={entry.key}
+                  className="flex items-center gap-2 rounded-2xl bg-white px-3 py-2 text-sm ring-1 ring-black/[0.05]"
+                >
                   <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-700">
                     {entry.key}={entry.value}
                   </span>
@@ -261,7 +341,9 @@ export function RuntimeManagerPanel() {
                       if (currentLaunchConfig) {
                         launchConfigMutation.mutate({
                           ...currentLaunchConfig,
-                          env: currentLaunchConfig.env.filter((item) => item.key !== entry.key),
+                          env: currentLaunchConfig.env.filter(
+                            (item) => item.key !== entry.key,
+                          ),
                         })
                       }
                     }}
@@ -337,7 +419,9 @@ export function RuntimeManagerPanel() {
           label={running ? 'Restart daemon' : 'Start daemon'}
           busy={running ? restartMutation.isPending : startMutation.isPending}
           disabled={busy}
-          onClick={() => (running ? restartMutation.mutate() : startMutation.mutate())}
+          onClick={() =>
+            running ? restartMutation.mutate() : startMutation.mutate()
+          }
         />
         <ActionButton
           icon={Activity}
@@ -357,7 +441,9 @@ export function RuntimeManagerPanel() {
 
       <div className="mt-6 rounded-3xl border border-black/[0.06] bg-[#f7f7f4] p-4">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold text-slate-950">Installed runtimes</h3>
+          <h3 className="text-sm font-semibold text-slate-950">
+            Installed runtimes
+          </h3>
           <span className="text-xs text-slate-500">
             {runtimeStatus.data?.clawDir ?? 'Runtime directory'}
           </span>
@@ -413,14 +499,24 @@ const defaultPresetText = `{
   "presetName": "Desktop default",
   "agencyEnabled": true,
   "memoryEnabled": true,
+  "shellReviewEnabled": true,
+  "shellReviewModel": "gateway@openai-responses:gpt-5.4-mini",
+  "shellReviewModelSettings": "openai_responses_low",
+  "shellReviewRiskThreshold": "extra_high",
+  "shellReviewUnattendedRiskThreshold": "extra_high",
+  "shellReviewAction": "defer",
+  "shellSandboxEnabled": true,
+  "shellSandboxBackend": "auto",
+  "shellSandboxNetwork": "restricted",
+  "shellSandboxAllowRawHost": false,
   "env": {
     "YA_CLAW_AGENCY_TIMER_INTERVAL_SECONDS": "3600"
   }
 }`
 
 function upsertEnv(env: LocalClawEnvVar[], entry: LocalClawEnvVar) {
-  return [...env.filter((item) => item.key !== entry.key), entry].sort((left, right) =>
-    left.key.localeCompare(right.key),
+  return [...env.filter((item) => item.key !== entry.key), entry].sort(
+    (left, right) => left.key.localeCompare(right.key),
   )
 }
 
@@ -428,7 +524,9 @@ function showError(error: unknown) {
   toast.error(error instanceof Error ? error.message : String(error))
 }
 
-function formatUpdateStateDetail(updateState: RuntimeManagerStatusUpdateState | undefined) {
+function formatUpdateStateDetail(
+  updateState: RuntimeManagerStatusUpdateState | undefined,
+) {
   if (!updateState) {
     return 'Waiting for status'
   }
@@ -480,10 +578,20 @@ function ToggleButton({
   )
 }
 
-function StatusCard({ label, value, detail }: { label: string; value: string; detail: string }) {
+function StatusCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string
+  value: string
+  detail: string
+}) {
   return (
     <div className="rounded-3xl border border-black/[0.06] bg-[#f7f7f4] p-5">
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{label}</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+        {label}
+      </p>
       <p className="mt-3 text-lg font-semibold text-slate-950">{value}</p>
       <p className="mt-1 truncate text-xs text-slate-500">{detail}</p>
     </div>
@@ -550,7 +658,9 @@ function RuntimeRow({
             </span>
           )}
         </div>
-        <p className="mt-1 truncate text-xs text-slate-500">{runtime.runtimeDir}</p>
+        <p className="mt-1 truncate text-xs text-slate-500">
+          {runtime.runtimeDir}
+        </p>
       </div>
       <div className="flex gap-2">
         <button

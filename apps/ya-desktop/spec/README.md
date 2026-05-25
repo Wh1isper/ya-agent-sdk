@@ -16,7 +16,7 @@ The same desktop client can use:
 - `WorkspaceProvider` remains the core execution boundary for local, Docker, cloud, and remote RPC environments.
 - A single Claw API client powers local, remote, and cloud connections.
 - Desktop keeps multiple saved connection profiles and manages the local runtime lifecycle.
-- Local execution uses controlled file operations plus a sandboxed shell by default.
+- Local execution uses controlled file operations plus Claw's default shell sandbox policy.
 - Desktop owns the richest HITL interaction surface through native notifications, approval cards, command previews, and Claw approval response APIs.
 - Chats are the primary work objects in Desktop; Claw sessions and runs remain the runtime backing.
 - Spaces represent workspace folders or cloud workspaces plus runtime connection, trust, execution location, and folder mount sets.

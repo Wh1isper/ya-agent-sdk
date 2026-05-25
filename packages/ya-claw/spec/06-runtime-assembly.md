@@ -9,10 +9,11 @@ The runtime assembly path should make each boundary explicit:
 1. resolve profile
 2. resolve workspace binding
 3. resolve Docker sandbox generation when the binding is Docker-backed
-4. build environment
-5. construct `ClawAgentContext`
-6. create `AgentRuntime`
-7. execute through one `RunCoordinator`
+4. resolve shell sandbox policy from profile, binding, and request metadata
+5. build environment
+6. construct `ClawAgentContext`
+7. create `AgentRuntime`
+8. execute through one `RunCoordinator`
 
 ## Assembly Objects
 
@@ -118,7 +119,8 @@ sequenceDiagram
     COORD->>WP: resolve(session metadata + run metadata)
     WP-->>COORD: WorkspaceBinding
     COORD->>COORD: resolve sandbox generation for Docker binding
-    COORD->>EF: build(binding, profile)
+    COORD->>COORD: resolve shell sandbox policy
+    COORD->>EF: build(binding, profile, shell sandbox policy)
     EF-->>COORD: Environment
     COORD->>RB: build(profile, binding, environment, restore_state, run metadata)
     RB->>SDK: create_agent(...)
@@ -134,6 +136,12 @@ For session-scoped sandboxes, the coordinator compares the current workspace fin
 Local bindings use workspace path policy directly and skip Docker sandbox generation.
 
 Run state stores the resolved workspace snapshot with fingerprint, sandbox scope, and generation.
+
+## Shell Sandbox Policy Rule
+
+Local and relay-backed shell environments resolve a shell sandbox policy before environment construction. The policy combines profile defaults, workspace binding mounts, request metadata, and source kind into a concrete sandbox snapshot. The default profile is `workspace_write` with bounded workspace writes, restricted networking, sanitized environment variables, time limits, output limits, and audit enabled.
+
+The full shell sandbox contract lives in [12-shell-sandbox.md](12-shell-sandbox.md).
 
 ## Environment Construction Rule
 

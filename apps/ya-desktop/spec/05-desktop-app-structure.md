@@ -163,6 +163,7 @@ Product responsibilities:
 - active connection provider
 - active space provider
 - active workspace mount-set provider
+- active shell safety and relay grant posture
 - theme and settings provider
 - global run notification state
 - pending interaction state and routing
@@ -192,7 +193,7 @@ Owns the command-first default surface.
 Responsibilities:
 
 - centered command input for starting conversations
-- compact profile, current space, runtime, default workspace, and selected mount-set chips inside the composer
+- compact profile, current space, runtime, default workspace, selected mount-set, shell safety, and relay chips inside the composer
 - selected text and clipboard preview
 - screenshot and active app context preview
 - recent chats and active runs below the composer
@@ -234,12 +235,16 @@ Owns workspace folders and runtime locations.
 Responsibilities:
 
 - local workspace folder cards
+- shell safety policy cards and controls
+- relay readiness controls for central Claw local PC mounting
 - remote and cloud workspace cards
 - folder registry for recent, trusted, and pinned folders
 - global default workspace picker
 - mount-set editor for one default folder plus optional extra folders
 - active connection and runtime location
 - workspace trust level
+- shell review risk threshold, unattended threshold, and local approval posture
+- `ya-environment-relay.v1` scope and capability grant readiness
 - default profile and model
 - local sidecar status, logs, and diagnostics shortcuts
 - file browsing entry points and memory summary
@@ -284,6 +289,7 @@ start_local_claw()
 stop_local_claw()
 restart_local_claw()
 get_local_claw_status()
+get_desktop_workspace_status()
 read_keychain_secret()
 write_keychain_secret()
 delete_keychain_secret()

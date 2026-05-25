@@ -1,7 +1,6 @@
 import type { DesktopSpace, AppRoute } from './types'
 import { BoardPage } from './pages/BoardPage'
 import { ChatsPage } from './pages/ChatsPage'
-import { AgencyPage } from './pages/AgencyPage'
 import { HomePage } from './pages/HomePage'
 import { InboxPage } from './pages/InboxPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -15,6 +14,7 @@ export function AppRouteOutlet({
   onAddSpace,
   onClearSession,
   onOpenSession,
+  onRunOnboarding,
   onSelectSpace,
 }: {
   route: AppRoute
@@ -24,15 +24,13 @@ export function AppRouteOutlet({
   onAddSpace: (space: DesktopSpace) => void
   onClearSession: () => void
   onOpenSession: (sessionId: string) => void
+  onRunOnboarding: () => void
   onSelectSpace: (spaceId: string) => void
 }) {
   switch (route) {
     case 'home':
       return (
-        <HomePage
-          selectedSpace={selectedSpace}
-          onOpenSession={onOpenSession}
-        />
+        <HomePage selectedSpace={selectedSpace} onOpenSession={onOpenSession} />
       )
     case 'chats':
       return (
@@ -54,11 +52,9 @@ export function AppRouteOutlet({
           onSelectSpace={onSelectSpace}
         />
       )
-    case 'agency':
-      return <AgencyPage onOpenSession={onOpenSession} />
     case 'inbox':
       return <InboxPage onOpenSession={onOpenSession} />
     case 'settings':
-      return <SettingsPage />
+      return <SettingsPage onRunOnboarding={onRunOnboarding} />
   }
 }

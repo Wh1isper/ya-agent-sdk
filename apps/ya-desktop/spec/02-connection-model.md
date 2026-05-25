@@ -12,14 +12,14 @@ The current P0 Desktop implementation derives an active local connection directl
 
 ```ts
 type DesktopClawConnection = {
-  id: "local";
-  kind: "local_embedded";
-  name: "Local Claw";
-  baseUrl: string;
-  apiToken?: string | null;
-  dataDir?: string | null;
-  workspaceDir?: string | null;
-};
+  id: 'local'
+  kind: 'local_embedded'
+  name: 'Local Claw'
+  baseUrl: string
+  apiToken?: string | null
+  dataDir?: string | null
+  workspaceDir?: string | null
+}
 ```
 
 When Local Claw is running and exposes `baseUrl`, the React UI creates a `ClawHttpClient` for read-only P0 data. The local bearer token is still backed by the Desktop-managed `.env` file created by Rust Core. A future keychain slice will move this secret behind a secure token reference and leave only `tokenRef` in frontend-visible connection config.
@@ -32,34 +32,34 @@ YA Desktop maintains a connection registry in desktop app config.
 type ClawConnection =
   | LocalEmbeddedClawConnection
   | RemoteClawConnection
-  | CloudClawConnection;
+  | CloudClawConnection
 
 type BaseClawConnection = {
-  id: string;
-  name: string;
-  baseUrl: string;
-  auth: ClawAuth;
-  capabilities?: ClawCapabilities;
-  lastHealth?: ClawHealth;
-};
+  id: string
+  name: string
+  baseUrl: string
+  auth: ClawAuth
+  capabilities?: ClawCapabilities
+  lastHealth?: ClawHealth
+}
 
 type LocalEmbeddedClawConnection = BaseClawConnection & {
-  kind: "local_embedded";
-  managed: true;
-  dataDir: string;
-  binaryPath: string;
-};
+  kind: 'local_embedded'
+  managed: true
+  dataDir: string
+  binaryPath: string
+}
 
 type RemoteClawConnection = BaseClawConnection & {
-  kind: "remote";
-  managed: false;
-};
+  kind: 'remote'
+  managed: false
+}
 
 type CloudClawConnection = BaseClawConnection & {
-  kind: "cloud";
-  managed: false;
-  orgId?: string;
-};
+  kind: 'cloud'
+  managed: false
+  orgId?: string
+}
 ```
 
 Example config:
@@ -120,25 +120,25 @@ The UI should use one API client interface for local, remote, and cloud Claw.
 
 ```ts
 export interface ClawClient {
-  connectionId: string;
+  connectionId: string
 
-  health(): Promise<ClawHealth>;
-  info(): Promise<ClawInfo>;
-  capabilities(): Promise<ClawCapabilities>;
+  health(): Promise<ClawHealth>
+  info(): Promise<ClawInfo>
+  capabilities(): Promise<ClawCapabilities>
 
-  listWorkspaces(): Promise<Workspace[]>;
-  listSessions(params?: ListSessionsParams): Promise<SessionList>;
-  getSession(sessionId: string): Promise<SessionDetail>;
-  listSessionTurns(sessionId: string): Promise<SessionTurnsResponse>;
-  getRunTrace(runId: string): Promise<RunTraceResponse>;
+  listWorkspaces(): Promise<Workspace[]>
+  listSessions(params?: ListSessionsParams): Promise<SessionList>
+  getSession(sessionId: string): Promise<SessionDetail>
+  listSessionTurns(sessionId: string): Promise<SessionTurnsResponse>
+  getRunTrace(runId: string): Promise<RunTraceResponse>
 
   streamSessionRun(
     sessionId: string,
     input: CreateRunInput,
     handlers: StreamHandlers,
-  ): Promise<RunHandle>;
+  ): Promise<RunHandle>
 
-  cancelRun(runId: string): Promise<void>;
+  cancelRun(runId: string): Promise<void>
 }
 ```
 
@@ -179,7 +179,7 @@ Example response:
     "schemes": ["bearer"]
   },
   "workspace_providers": ["local", "docker", "cloud"],
-  "local_shell_runtimes": ["linux_bubblewrap"],
+  "local_shell_runtimes": ["linux_bwrap_seccomp"],
   "workspace_mount_modes": ["bind_mount"],
   "profiles": ["default", "code", "research"],
   "limits": {
@@ -244,13 +244,13 @@ Desktop should track health per connection:
 
 ```ts
 type ClawHealth = {
-  status: "ready" | "starting" | "degraded" | "unreachable";
-  version?: string;
-  instanceId?: string;
-  uptimeSeconds?: number;
-  checkedAt: string;
-  error?: string;
-};
+  status: 'ready' | 'starting' | 'degraded' | 'unreachable'
+  version?: string
+  instanceId?: string
+  uptimeSeconds?: number
+  checkedAt: string
+  error?: string
+}
 ```
 
 Health state should drive connection badges, reconnect prompts, daemon restart actions, and offline display states.

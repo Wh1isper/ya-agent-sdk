@@ -29,9 +29,21 @@ export function CommandCenter() {
           </button>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <Context icon={FileText} title="Selection" text="No selected text captured" />
-          <Context icon={Clipboard} title="Clipboard" text="Clipboard preview pending" />
-          <Context icon={Camera} title="Screenshot" text="Screenshot capture pending" />
+          <Context
+            icon={FileText}
+            title="Selection"
+            text="No selected text captured"
+          />
+          <Context
+            icon={Clipboard}
+            title="Clipboard"
+            text="Clipboard preview pending"
+          />
+          <Context
+            icon={Camera}
+            title="Screenshot"
+            text="Screenshot capture pending"
+          />
         </div>
       </section>
     </div>

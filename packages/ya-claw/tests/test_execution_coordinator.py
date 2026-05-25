@@ -76,7 +76,7 @@ class StubEnvironment(Environment):
 
 
 class StubEnvironmentFactory:
-    def build(self, binding: WorkspaceBinding) -> Environment:
+    def build(self, binding: WorkspaceBinding, *, profile: ResolvedProfile | None = None) -> Environment:
         return StubEnvironment()
 
 

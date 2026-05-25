@@ -38,6 +38,7 @@ This spec set defines one execution shape:
 | 09      | [09-session-memory.md](09-session-memory.md)                                             | workspace memory files, internal memory sessions, extract and summary agents |
 | 10      | [10-workspace-mount-sets.md](10-workspace-mount-sets.md)                                 | session-scoped workspace mount sets and multi-folder execution               |
 | 11      | [11-session-agency.md](11-session-agency.md)                                             | singleton agency, context-bearing fires, idle wake, and async task feedback  |
+| 12      | [12-shell-sandbox.md](12-shell-sandbox.md)                                               | default shell sandbox policy, Linux/macOS backends, raw host escalation      |
 
 ## Out of Scope
 

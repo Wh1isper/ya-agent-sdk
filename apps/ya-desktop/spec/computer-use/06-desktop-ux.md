@@ -24,13 +24,13 @@ Space settings should include:
 
 ```ts
 type SpaceComputerSettings = {
-  enabled: boolean;
-  provider_id: string;
-  allowed_apps: string[];
-  denied_apps: string[];
-  approval_policy_id: string;
-  artifact_retention_days: number;
-};
+  enabled: boolean
+  provider_id: string
+  allowed_apps: string[]
+  denied_apps: string[]
+  approval_policy_id: string
+  artifact_retention_days: number
+}
 ```
 
 The Space detail page should show:
@@ -73,10 +73,10 @@ Approval response shape:
 
 ```ts
 type ComputerApprovalResponse = {
-  interaction_id: string;
-  decision: "approve_once" | "approve_similar_for_run" | "deny" | "pause";
-  user_note?: string;
-};
+  interaction_id: string
+  decision: 'approve_once' | 'approve_similar_for_run' | 'deny' | 'pause'
+  user_note?: string
+}
 ```
 
 ### Settings
@@ -117,18 +117,18 @@ Computer actions should appear as dedicated timeline cards:
 
 ```ts
 type ComputerTimelineCard = {
-  id: string;
-  run_id: string;
-  kind: "snapshot" | "action" | "approval" | "policy_block";
-  title: string;
-  subtitle?: string;
-  screenshot_artifact_id?: string;
-  app_name?: string;
-  window_title?: string;
-  action_kind?: string;
-  status: "running" | "succeeded" | "failed" | "blocked" | "waiting";
-  created_at: string;
-};
+  id: string
+  run_id: string
+  kind: 'snapshot' | 'action' | 'approval' | 'policy_block'
+  title: string
+  subtitle?: string
+  screenshot_artifact_id?: string
+  app_name?: string
+  window_title?: string
+  action_kind?: string
+  status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'waiting'
+  created_at: string
+}
 ```
 
 Examples:
@@ -157,24 +157,24 @@ The setup flow should save progress so users can return after macOS Settings cha
 
 ```ts
 type ComputerProviderStatusView = {
-  provider_id: string;
-  label: string;
-  platform: "macos" | "windows" | "linux" | "sandbox";
+  provider_id: string
+  label: string
+  platform: 'macos' | 'windows' | 'linux' | 'sandbox'
   state:
-    | "disabled"
-    | "permission_required"
-    | "starting"
-    | "ready"
-    | "active"
-    | "paused"
-    | "errored";
-  permissions: PermissionStatus[];
-  active_session_id?: string;
-  active_run_id?: string;
-  active_app?: string;
-  active_window?: string;
-  error?: string;
-};
+    | 'disabled'
+    | 'permission_required'
+    | 'starting'
+    | 'ready'
+    | 'active'
+    | 'paused'
+    | 'errored'
+  permissions: PermissionStatus[]
+  active_session_id?: string
+  active_run_id?: string
+  active_app?: string
+  active_window?: string
+  error?: string
+}
 ```
 
 ## Remote Connection UX

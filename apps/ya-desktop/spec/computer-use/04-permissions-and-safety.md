@@ -35,16 +35,16 @@ Computer use enablement should be scoped by Space and connection:
 
 ```ts
 type ComputerUseTrustScope = {
-  space_id: string;
-  connection_id: string;
-  provider_id: string;
-  enabled: boolean;
-  allowed_apps?: string[];
-  denied_apps?: string[];
-  approval_policy_id: string;
-  created_at: string;
-  updated_at: string;
-};
+  space_id: string
+  connection_id: string
+  provider_id: string
+  enabled: boolean
+  allowed_apps?: string[]
+  denied_apps?: string[]
+  approval_policy_id: string
+  created_at: string
+  updated_at: string
+}
 ```
 
 A global provider permission can exist, but a Space must explicitly enable computer use before Claw receives the computer tool surface.
@@ -105,16 +105,16 @@ Detection result:
 ```ts
 type SensitiveSurface = {
   category:
-    | "credential_field"
-    | "payment"
-    | "system_settings"
-    | "file_dialog"
-    | "private_app"
-    | "destructive_action"
-    | "external_communication";
-  confidence: "low" | "medium" | "high";
-  reason: string;
-};
+    | 'credential_field'
+    | 'payment'
+    | 'system_settings'
+    | 'file_dialog'
+    | 'private_app'
+    | 'destructive_action'
+    | 'external_communication'
+  confidence: 'low' | 'medium' | 'high'
+  reason: string
+}
 ```
 
 ## Pause, Takeover, and Stop
@@ -127,11 +127,11 @@ Computer use requires three visible controls:
 
 ```ts
 type ComputerControlCommand =
-  | { kind: "pause"; reason?: string }
-  | { kind: "resume" }
-  | { kind: "takeover"; reason?: string }
-  | { kind: "release" }
-  | { kind: "stop_run"; run_id: string };
+  | { kind: 'pause'; reason?: string }
+  | { kind: 'resume' }
+  | { kind: 'takeover'; reason?: string }
+  | { kind: 'release' }
+  | { kind: 'stop_run'; run_id: string }
 ```
 
 The provider must check control state before each action and after any approval wait.
@@ -160,11 +160,11 @@ Redaction metadata should be stored separately from the screenshot artifact:
 
 ```ts
 type RedactionReport = {
-  artifact_id: string;
-  redacted_regions: Rect[];
-  policy_id: string;
-  reasons: string[];
-};
+  artifact_id: string
+  redacted_regions: Rect[]
+  policy_id: string
+  reasons: string[]
+}
 ```
 
 ## Retention
@@ -182,18 +182,18 @@ Every computer action should generate an audit entry:
 
 ```ts
 type ComputerAuditEntry = {
-  id: string;
-  run_id?: string;
-  session_id?: string;
-  provider_id: string;
-  action_kind: string;
-  target_summary?: string;
-  app_name?: string;
-  window_title?: string;
-  policy_decision: "allowed" | "approved" | "blocked";
-  approved_by?: "user" | "policy";
-  created_at: string;
-};
+  id: string
+  run_id?: string
+  session_id?: string
+  provider_id: string
+  action_kind: string
+  target_summary?: string
+  app_name?: string
+  window_title?: string
+  policy_decision: 'allowed' | 'approved' | 'blocked'
+  approved_by?: 'user' | 'policy'
+  created_at: string
+}
 ```
 
 Audit entries should be visible in Settings diagnostics and linked from run trace entries.

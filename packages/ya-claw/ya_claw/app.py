@@ -153,6 +153,10 @@ class ClawApplication:
             docker_exec_default_env=self.settings.resolved_workspace_provider_docker_exec_default_env,
             docker_retention_policy=self.settings.resolved_workspace_provider_docker_retention_policy,
             docker_idle_ttl_seconds=self.settings.resolved_workspace_provider_docker_idle_ttl_seconds,
+            shell_sandbox_enabled=self.settings.shell_sandbox_enabled,
+            shell_sandbox_backend=self.settings.shell_sandbox_backend,
+            shell_sandbox_network=self.settings.shell_sandbox_network,
+            shell_sandbox_allow_raw_host=self.settings.shell_sandbox_allow_raw_host,
         )
 
         if app.state.db_session_factory is not None:

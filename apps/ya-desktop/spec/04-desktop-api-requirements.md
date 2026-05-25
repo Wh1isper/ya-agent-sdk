@@ -80,7 +80,7 @@ Example response:
     "schemes": ["bearer"]
   },
   "workspace_providers": ["local", "docker", "cloud"],
-  "local_shell_runtimes": ["linux_bubblewrap"],
+  "local_shell_runtimes": ["linux_bwrap_seccomp"],
   "workspace_mount_modes": ["rw", "ro"],
   "profiles": ["default", "code", "research"],
   "limits": {
@@ -118,7 +118,7 @@ Example local workspace:
   "file_operator": "local_file_operator",
   "shell": {
     "kind": "sandboxed_shell",
-    "runtime": "linux_bubblewrap",
+    "runtime": "linux_bwrap_seccomp",
     "workspace_mounts": [
       {
         "id": "main",
@@ -156,21 +156,21 @@ Type shape:
 
 ```ts
 type WorkspaceMount = {
-  id: string;
-  name?: string;
-  host_path: string;
-  virtual_path: string;
-  mode: "rw" | "ro";
-  docker_host_path?: string;
-  metadata?: Record<string, unknown>;
-};
+  id: string
+  name?: string
+  host_path: string
+  virtual_path: string
+  mode: 'rw' | 'ro'
+  docker_host_path?: string
+  metadata?: Record<string, unknown>
+}
 
 type WorkspaceBinding = {
-  mounts: WorkspaceMount[];
-  default_mount_id: string;
-  cwd: string;
-  metadata?: Record<string, unknown>;
-};
+  mounts: WorkspaceMount[]
+  default_mount_id: string
+  cwd: string
+  metadata?: Record<string, unknown>
+}
 ```
 
 Session create example:
@@ -179,7 +179,7 @@ Session create example:
 {
   "profile_name": "default",
   "input_parts": [
-    {"type": "text", "text": "Review this repository and propose next steps."}
+    { "type": "text", "text": "Review this repository and propose next steps." }
   ],
   "workspace": {
     "mounts": [
@@ -325,7 +325,7 @@ Example MVP input:
 ```json
 {
   "input_parts": [
-    {"type": "text", "text": "Explain this selected code:\n\n..."}
+    { "type": "text", "text": "Explain this selected code:\n\n..." }
   ],
   "workspace": {
     "mounts": [
@@ -351,11 +351,12 @@ Claw should support local workspace execution with path-bounded file operations 
 
 The default local shell should use:
 
-- `linux_bubblewrap` on Linux
+- `linux_bwrap_seccomp` on Linux
 - `macos_seatbelt` on macOS
 - bind mount or path allowlist for the selected workspace
+- Claw shell sandbox policy from [packages/ya-claw/spec/12-shell-sandbox.md](../../../packages/ya-claw/spec/12-shell-sandbox.md)
 
-Detailed design lives in [06-sandboxed-workspace-provider.md](06-sandboxed-workspace-provider.md).
+Desktop-facing behavior lives in [06-sandboxed-workspace-provider.md](06-sandboxed-workspace-provider.md).
 
 ## Remote RPC Groundwork
 

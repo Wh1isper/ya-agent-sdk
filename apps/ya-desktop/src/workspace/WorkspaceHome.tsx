@@ -16,9 +16,7 @@ export function WorkspaceHome() {
       <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
         <div className="grid gap-0 lg:grid-cols-[1.4fr_0.8fr]">
           <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 p-6 text-white">
-            <p className="text-sm font-medium text-blue-200">
-              Workspace Home
-            </p>
+            <p className="text-sm font-medium text-blue-200">Workspace Home</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">
               Work with agents from the context of this Mac
             </h1>
@@ -82,9 +80,7 @@ export function WorkspaceHome() {
 
       <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-sm font-semibold text-slate-950">
-            Recent work
-          </h2>
+          <h2 className="text-sm font-semibold text-slate-950">Recent work</h2>
           <p className="mt-1 text-sm text-slate-500">
             Tasks and runs will appear here once the Claw client is connected.
           </p>
@@ -196,7 +192,13 @@ function Detail({ label, value }: { label: string; value: string }) {
   )
 }
 
-function ContextCard({ icon: Icon, title }: { icon: typeof FileText; title: string }) {
+function ContextCard({
+  icon: Icon,
+  title,
+}: {
+  icon: typeof FileText
+  title: string
+}) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
       <Icon className="h-5 w-5 text-blue-600" />

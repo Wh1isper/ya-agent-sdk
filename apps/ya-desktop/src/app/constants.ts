@@ -1,29 +1,55 @@
 import {
   BriefcaseBusiness,
   Home,
-  BrainCircuit,
   Inbox,
   LayoutDashboard,
   MessageSquareText,
 } from 'lucide-react'
 
-import type { DesktopLayoutPreferences, DesktopSpace, NavItem } from './types'
+import type {
+  DesktopLayoutPreferences,
+  DesktopShellSafetyPolicy,
+  DesktopSpace,
+  NavItem,
+} from './types'
 
 export const defaultSpaceId = 'local-workspace'
+
+export const defaultShellSafetyPolicy: DesktopShellSafetyPolicy = {
+  mode: 'review_then_run',
+  reviewRiskThreshold: 'extra_high',
+  unattendedRiskThreshold: 'extra_high',
+  approvalPolicy: 'defer',
+  networkPolicy: 'restricted',
+  maxRuntimeSeconds: 180,
+  auditEnabled: true,
+}
 
 export const defaultDesktopSpaces: DesktopSpace[] = [
   {
     id: defaultSpaceId,
-    name: 'Local workspace',
+    name: 'Desktop workspace',
     path: '',
     runtime: 'Local Claw',
-    trust: 'Trusted',
+    trust: 'Trusted · Shell review',
     default: true,
+    kind: 'embedded',
+    executionLocation: 'this_device',
+    trustLevel: 'trusted',
+    shellSafety: defaultShellSafetyPolicy,
+    relay: {
+      enabled: false,
+      connectionId: null,
+      protocol: 'ya-environment-relay.v1',
+      capabilities: ['fileops', 'shell', 'artifacts'],
+    },
   },
 ]
 
-export const spacesStorageKey = 'ya-desktop.spaces.v1'
+export const spacesStorageKey = 'ya-desktop.spaces.v2'
+export const legacySpacesStorageKey = 'ya-desktop.spaces.v1'
 export const layoutPreferencesStorageKey = 'ya-desktop.layout-preferences.v2'
+export const onboardingStorageKey = 'ya-desktop.onboarding.v1'
 
 export const defaultLayoutPreferences: DesktopLayoutPreferences = {
   leftSidebarCollapsed: false,
@@ -49,12 +75,6 @@ export const navItems: NavItem[] = [
     label: 'Spaces',
     helper: 'Workspaces',
     icon: BriefcaseBusiness,
-  },
-  {
-    route: 'agency',
-    label: 'Agency',
-    helper: 'Proactive work',
-    icon: BrainCircuit,
   },
   { route: 'inbox', label: 'Inbox', helper: 'Decisions', icon: Inbox },
 ]

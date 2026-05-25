@@ -22,7 +22,7 @@ It provides a durable local execution shell around SDK agent construction and st
 ### Product Goals
 
 - make local and self-hosted deployment the default operating model
-- keep runtime file and shell access bounded by declared workspace bindings
+- keep runtime file and shell access bounded by declared workspace bindings and default shell sandbox policy
 - preserve SDK capabilities such as continuation, subagents, compact, and streaming
 - keep the runtime small enough to understand and evolve quickly
 - keep active execution management inside one process for the single-node target

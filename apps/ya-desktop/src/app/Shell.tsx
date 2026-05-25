@@ -1,15 +1,47 @@
-import { Activity, Bell, Folder, MessageSquareText, PanelLeft, PanelLeftClose, PanelRight, Plus, Settings, ShieldCheck, type LucideIcon } from 'lucide-react'
+import {
+  Activity,
+  Bell,
+  Folder,
+  MessageSquareText,
+  PanelLeft,
+  PanelLeftClose,
+  PanelRight,
+  Plus,
+  Settings,
+  ShieldCheck,
+  TerminalSquare,
+  type LucideIcon,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Toaster } from 'sonner'
 
-import { useActiveClawConnection, useClawNotifications, useClawSession, type DesktopClawConnection } from '../claw'
+import {
+  useActiveClawConnection,
+  useClawNotifications,
+  useClawSession,
+  type DesktopClawConnection,
+} from '../claw'
 import { cn } from '../lib'
 import { defaultSpaceId, navItems } from './constants'
+import { OnboardingDialog } from './onboarding/OnboardingDialog'
 import { AppRouteOutlet } from './routes'
-import { readLayoutPreferences, readSpaces, writeLayoutPreferences, writeSpaces } from './storage'
+import {
+  readLayoutPreferences,
+  readOnboardingCompleted,
+  readSpaces,
+  writeLayoutPreferences,
+  writeOnboardingCompleted,
+  writeSpaces,
+} from './storage'
 import type { AppRoute, DesktopLayoutPreferences, DesktopSpace } from './types'
 import { IconButton, PanelCard } from './ui'
-import { inboxItemsFromSessions, sessionTitle, spaceDetail } from './utils'
+import {
+  inboxItemsFromSessions,
+  relayLabel,
+  sessionTitle,
+  shellSafetyLabel,
+  spaceDetail,
+} from './utils'
 
 export function DesktopShell() {
   const [route, setRoute] = useState<AppRoute>('home')
@@ -20,6 +52,9 @@ export function DesktopShell() {
   )
   const [spaces, setSpaces] = useState<DesktopSpace[]>(readSpaces)
   const [selectedSpaceId, setSelectedSpaceId] = useState(defaultSpaceId)
+  const [showOnboarding, setShowOnboarding] = useState(
+    () => !readOnboardingCompleted(),
+  )
   const activeConnectionQuery = useActiveClawConnection()
   const connection = activeConnectionQuery.data?.connection ?? null
   useClawNotifications(connection)
@@ -71,6 +106,15 @@ export function DesktopShell() {
     }))
   }
 
+  function openOnboarding() {
+    setShowOnboarding(true)
+  }
+
+  function completeOnboarding() {
+    writeOnboardingCompleted()
+    setShowOnboarding(false)
+  }
+
   return (
     <div className="h-screen bg-[#f7f7f5] text-[#171717]">
       <div className="flex h-full overflow-hidden">
@@ -107,6 +151,7 @@ export function DesktopShell() {
               }
               onClearSession={clearSelectedSession}
               onOpenSession={openSession}
+              onRunOnboarding={openOnboarding}
               onSelectSpace={setSelectedSpaceId}
             />
           </div>
@@ -121,6 +166,7 @@ export function DesktopShell() {
           </aside>
         )}
       </div>
+      <OnboardingDialog open={showOnboarding} onComplete={completeOnboarding} />
       <Toaster richColors />
     </div>
   )
@@ -412,6 +458,16 @@ function DetailPanel({
       <PanelCard
         title="Trust"
         detail={selectedSpace.trust}
+        icon={ShieldCheck}
+      />
+      <PanelCard
+        title="Shell safety"
+        detail={shellSafetyLabel(selectedSpace.shellSafety)}
+        icon={TerminalSquare}
+      />
+      <PanelCard
+        title="Relay"
+        detail={relayLabel(selectedSpace)}
         icon={ShieldCheck}
       />
       <PanelCard

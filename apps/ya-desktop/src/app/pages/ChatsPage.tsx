@@ -1,11 +1,35 @@
 import { Loader2, Send, Square } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
-import { isRunErrorEvent, isRunFinishedEvent, streamErrorMessage, streamRunId, streamSessionId, streamTextDelta, useActiveClawConnection, useCancelClawSession, useClawRunTraces, useClawSession, useClawSessions, useClawSessionTurns, useCreateClawSessionRunStream, type ClawStreamEvent } from '../../claw'
+import {
+  isRunErrorEvent,
+  isRunFinishedEvent,
+  streamErrorMessage,
+  streamRunId,
+  streamSessionId,
+  streamTextDelta,
+  useActiveClawConnection,
+  useCancelClawSession,
+  useClawRunTraces,
+  useClawSession,
+  useClawSessions,
+  useClawSessionTurns,
+  useCreateClawSessionRunStream,
+  type ClawStreamEvent,
+} from '../../claw'
 import { ComposerFrame, HomeStreamPreview, LiveSessionList } from '../ui'
-import { RunDetailsDisclosure, SessionTurnsPanel } from '../chat/ConversationPanels'
+import {
+  RunDetailsDisclosure,
+  SessionTurnsPanel,
+} from '../chat/ConversationPanels'
 import type { DesktopSpace, HomeStreamStatus } from '../types'
-import { desktopSpaceMetadataFromWorkspace, sessionTitle, submitFormOnEnter, workspaceBindingFromSpace, workspaceFromSession } from '../utils'
+import {
+  desktopSpaceMetadataFromWorkspace,
+  sessionTitle,
+  submitFormOnEnter,
+  workspaceBindingFromSpace,
+  workspaceFromSession,
+} from '../utils'
 
 export function ChatsPage({
   selectedSessionId,

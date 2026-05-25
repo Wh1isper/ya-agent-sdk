@@ -98,7 +98,7 @@ YA Desktop can act as a relay client. It can advertise local capabilities:
 - Desktop-managed custom tools.
 - local artifact upload.
 
-Desktop owns user consent, local grants, and native permission UX. Claw owns runtime authorization and trace.
+Desktop owns user consent, local grants, shell safety, local audit, and native permission UX. Claw owns runtime authorization and trace. The Desktop local PC relay flow is specified in [06-desktop-local-pc-relay.md](06-desktop-local-pc-relay.md).
 
 ## Relationship to MCP
 

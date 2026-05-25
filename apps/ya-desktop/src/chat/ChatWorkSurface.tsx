@@ -1,4 +1,11 @@
-import { FileCode2, GitCompare, PlayCircle, RotateCcw, Square, TerminalSquare } from 'lucide-react'
+import {
+  FileCode2,
+  GitCompare,
+  PlayCircle,
+  RotateCcw,
+  Square,
+  TerminalSquare,
+} from 'lucide-react'
 
 export function ChatWorkSurface() {
   return (
@@ -72,7 +79,13 @@ export function ChatWorkSurface() {
   )
 }
 
-function Panel({ icon: Icon, title }: { icon: typeof TerminalSquare; title: string }) {
+function Panel({
+  icon: Icon,
+  title,
+}: {
+  icon: typeof TerminalSquare
+  title: string
+}) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <Icon className="h-5 w-5 text-blue-600" />

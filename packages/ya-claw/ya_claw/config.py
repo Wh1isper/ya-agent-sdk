@@ -134,6 +134,19 @@ class ClawSettings(BaseSettings):
     workspace_provider_docker_home: str = "/home/claw"
     workspace_provider_docker_retention_policy: Literal["stop_on_idle", "keep_warm"] = "stop_on_idle"
     workspace_provider_docker_idle_ttl_seconds: PositiveInt = 3600
+    shell_sandbox_enabled: bool = True
+    shell_sandbox_backend: Literal[
+        "auto",
+        "linux_bwrap_seccomp",
+        "macos_seatbelt",
+        "windows_restricted_token",
+        "docker",
+        "podman",
+        "nsjail",
+        "raw_host",
+    ] = "auto"
+    shell_sandbox_network: Literal["blocked", "restricted", "proxy", "full"] = "restricted"
+    shell_sandbox_allow_raw_host: bool = False
     workspace_env_vars: str = ""
     bridge_dispatch_mode: BridgeDispatchMode = BridgeDispatchMode.EMBEDDED
     bridge_enabled_adapters: str = ""

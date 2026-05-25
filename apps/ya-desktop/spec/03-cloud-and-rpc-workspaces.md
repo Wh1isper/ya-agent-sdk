@@ -49,17 +49,17 @@ Cloud workspace metadata should include:
 
 ```ts
 type CloudWorkspace = {
-  id: string;
-  name: string;
-  uri: string;
-  orgId: string;
-  projectId?: string;
-  repoUrl?: string;
-  branch?: string;
-  provider: "cloud";
-  trustLevel: "read_only" | "trusted" | "restricted" | "ephemeral";
-  capabilities: string[];
-};
+  id: string
+  name: string
+  uri: string
+  orgId: string
+  projectId?: string
+  repoUrl?: string
+  branch?: string
+  provider: 'cloud'
+  trustLevel: 'read_only' | 'trusted' | 'restricted' | 'ephemeral'
+  capabilities: string[]
+}
 ```
 
 ## Remote Agent with Local RPC Workspace

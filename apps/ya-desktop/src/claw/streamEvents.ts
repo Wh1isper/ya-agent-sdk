@@ -2,7 +2,9 @@ import type { EventSourceMessage } from '@microsoft/fetch-event-source'
 
 import type { ClawStreamEvent, JsonObject } from './types'
 
-export function parseStreamMessage(message: EventSourceMessage): ClawStreamEvent {
+export function parseStreamMessage(
+  message: EventSourceMessage,
+): ClawStreamEvent {
   return {
     id: message.id,
     event: message.event || 'message',
@@ -77,10 +79,7 @@ export function streamErrorMessage(event: ClawStreamEvent) {
   if (isRecord(value)) {
     if (typeof value.message === 'string') return value.message
     if (typeof value.error === 'string') return value.error
-    if (
-      isRecord(value.payload) &&
-      typeof value.payload.message === 'string'
-    ) {
+    if (isRecord(value.payload) && typeof value.payload.message === 'string') {
       return value.payload.message
     }
   }

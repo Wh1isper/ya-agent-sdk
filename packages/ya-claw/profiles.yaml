@@ -20,6 +20,13 @@ profiles:
       on_needs_approval: deny
       risk_threshold: extra_high
       unattended_risk_threshold: high
+    shell_sandbox:
+      enabled: true
+      profile: workspace_write
+      backend_preference: auto
+      network: restricted
+      raw_shell_approval: requires_human
+      audit_enabled: true
   system_prompt: |-
     <agent_behavior>
 

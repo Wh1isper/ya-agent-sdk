@@ -64,9 +64,9 @@ describe('stream event utilities', () => {
 
   it('detects terminal run events', () => {
     expect(isRunFinishedEvent(streamEvent('RUN_FINISHED', {}))).toBe(true)
-    expect(isRunErrorEvent(streamEvent('RUN_ERROR', { message: 'failed' }))).toBe(
-      true,
-    )
+    expect(
+      isRunErrorEvent(streamEvent('RUN_ERROR', { message: 'failed' })),
+    ).toBe(true)
   })
 
   it('extracts nested error messages', () => {
@@ -107,7 +107,10 @@ describe('stream event utilities', () => {
   })
 })
 
-function streamEvent(event: string, payload: Record<string, unknown>): ClawStreamEvent {
+function streamEvent(
+  event: string,
+  payload: Record<string, unknown>,
+): ClawStreamEvent {
   return {
     id: '1',
     event,

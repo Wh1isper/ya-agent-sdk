@@ -723,7 +723,7 @@ class RunCoordinator:
             workspace_binding.metadata.get("provider"),
             workspace_binding.cwd,
         )
-        environment = self._environment_factory.build(workspace_binding)
+        environment = self._environment_factory.build(workspace_binding, profile=profile)
         background_monitor = BackgroundMonitor(run_id=run_id, runtime_state=self._runtime_state)
         environment.resources.set(BACKGROUND_MONITOR_KEY, background_monitor)
         memory_metadata = run_metadata.get("memory") if isinstance(run_metadata, dict) else None
@@ -1113,6 +1113,7 @@ class RunCoordinator:
             need_user_approve_tools=profile.need_user_approve_tools,
             need_user_approve_mcps=profile.need_user_approve_mcps,
             shell_review=profile.shell_review,
+            shell_sandbox=profile.shell_sandbox,
             enabled_mcps=profile.enabled_mcps,
             disabled_mcps=profile.disabled_mcps,
             mcp_servers=profile.mcp_servers,

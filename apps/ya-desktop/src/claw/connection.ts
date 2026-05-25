@@ -14,7 +14,9 @@ export async function getActiveClawConnection(): Promise<ActiveClawConnectionSta
   }
 }
 
-export function connectionFromLocalStatus(status: LocalClawStatus): DesktopClawConnection | null {
+export function connectionFromLocalStatus(
+  status: LocalClawStatus,
+): DesktopClawConnection | null {
   if (!status.running || !status.baseUrl) return null
 
   return {

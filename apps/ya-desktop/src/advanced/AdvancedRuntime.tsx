@@ -1,14 +1,45 @@
-import { Activity, CalendarClock, HeartPulse, MessageSquareMore, Settings, SlidersHorizontal } from 'lucide-react'
+import {
+  Activity,
+  CalendarClock,
+  HeartPulse,
+  MessageSquareMore,
+  Settings,
+  SlidersHorizontal,
+} from 'lucide-react'
 
 const panels = [
-  { title: 'Profiles', detail: 'AgentProfile, models, tools, subagents, MCP', icon: SlidersHorizontal },
-  { title: 'Schedules', detail: 'Recurring and one-shot automation', icon: CalendarClock },
-  { title: 'Bridges', detail: 'External events and delivery state', icon: MessageSquareMore },
-  { title: 'Heartbeat', detail: 'Background pulse and guidance status', icon: HeartPulse },
-  { title: 'Diagnostics', detail: 'Logs, runtime instances, storage, capabilities', icon: Activity },
+  {
+    title: 'Profiles',
+    detail: 'AgentProfile, models, tools, subagents, MCP',
+    icon: SlidersHorizontal,
+  },
+  {
+    title: 'Schedules',
+    detail: 'Recurring and one-shot automation',
+    icon: CalendarClock,
+  },
+  {
+    title: 'Bridges',
+    detail: 'External events and delivery state',
+    icon: MessageSquareMore,
+  },
+  {
+    title: 'Heartbeat',
+    detail: 'Background pulse and guidance status',
+    icon: HeartPulse,
+  },
+  {
+    title: 'Diagnostics',
+    detail: 'Logs, runtime instances, storage, capabilities',
+    icon: Activity,
+  },
 ]
 
-export function AdvancedRuntime({ initialPanel }: { initialPanel?: 'desktop' }) {
+export function AdvancedRuntime({
+  initialPanel,
+}: {
+  initialPanel?: 'desktop'
+}) {
   if (initialPanel === 'desktop') {
     return <DesktopSettings />
   }

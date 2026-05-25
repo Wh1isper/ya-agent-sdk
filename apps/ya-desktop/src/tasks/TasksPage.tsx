@@ -62,9 +62,21 @@ export function TasksPage() {
           </div>
 
           <div className="mt-6 grid gap-4 md:grid-cols-3">
-            <Feature icon={Clock} title="Lifecycle" text="queued, running, waiting, completed, failed" />
-            <Feature icon={RotateCcw} title="Run controls" text="cancel, retry, rerun, pause, resume, handoff" />
-            <Feature icon={GitPullRequest} title="Review" text="tool timeline, shell output, diffs, artifacts" />
+            <Feature
+              icon={Clock}
+              title="Lifecycle"
+              text="queued, running, waiting, completed, failed"
+            />
+            <Feature
+              icon={RotateCcw}
+              title="Run controls"
+              text="cancel, retry, rerun, pause, resume, handoff"
+            />
+            <Feature
+              icon={GitPullRequest}
+              title="Review"
+              text="tool timeline, shell output, diffs, artifacts"
+            />
           </div>
         </section>
       </main>

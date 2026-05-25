@@ -30,6 +30,13 @@ from ya_claw.workspace.provider import (
     extract_workspace_sandbox_metadata,
     remove_workspace_sandbox_metadata,
 )
+from ya_claw.workspace.shell_sandbox import (
+    WorkspaceShellSandboxDefaults,
+    resolve_workspace_shell_sandbox_policy,
+    shell_sandbox_config_from_profile,
+    shell_sandbox_mount_from_workspace_mount,
+    shell_sandbox_mounts_from_binding,
+)
 
 __all__ = [
     "HEARTBEAT_GUIDANCE_FILENAME",
@@ -53,6 +60,7 @@ __all__ = [
     "WorkspaceMountBinding",
     "WorkspaceMountSpec",
     "WorkspaceProvider",
+    "WorkspaceShellSandboxDefaults",
     "build_workspace_container_ref",
     "build_workspace_sandbox_metadata",
     "extract_workspace_sandbox_metadata",
@@ -61,4 +69,8 @@ __all__ = [
     "load_heartbeat_guidance",
     "load_workspace_guidance",
     "remove_workspace_sandbox_metadata",
+    "resolve_workspace_shell_sandbox_policy",
+    "shell_sandbox_config_from_profile",
+    "shell_sandbox_mount_from_workspace_mount",
+    "shell_sandbox_mounts_from_binding",
 ]

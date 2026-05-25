@@ -4,7 +4,7 @@
 
 YA Desktop local execution should use a workspace provider that combines controlled file operations with a sandboxed shell. The host workspace remains the source of truth. File operations use Claw's existing path-bounded `FileOperator`; shell execution runs in a sandbox that exposes the selected workspace mount set as the project filesystem scope.
 
-The default local provider should be `LocalWorkspaceProvider` with `SandboxedShell`.
+The default local provider should be `LocalWorkspaceProvider` with `SandboxedShell`. Claw owns the canonical policy model in [packages/ya-claw/spec/12-shell-sandbox.md](../../../packages/ya-claw/spec/12-shell-sandbox.md); Desktop owns folder trust, user-facing controls, local diagnostics, approval UX, and relay-local enforcement.
 
 ```mermaid
 flowchart TB
@@ -35,46 +35,70 @@ File operations already go through the runtime file operator and can enforce pat
 ## Provider Model
 
 ```ts
-type WorkspaceProviderKind =
-  | "local"
-  | "docker"
-  | "cloud"
-  | "remote_rpc";
+type WorkspaceProviderKind = 'local' | 'docker' | 'cloud' | 'remote_rpc'
 
 type LocalWorkspaceProvider = {
-  kind: "local";
-  hostWorkspaceRoot: string;
-  fileOperator: "local_file_operator";
-  shell: SandboxedShell;
-};
+  kind: 'local'
+  hostWorkspaceRoot: string
+  fileOperator: 'local_file_operator'
+  shell: SandboxedShell
+}
 
 type SandboxedShell = {
-  kind: "sandboxed_shell";
-  runtime: SandboxRuntime;
-  workspaceMounts: WorkspaceMount[];
-  cwd: string;
-  policy: ShellSandboxPolicy;
-};
+  kind: 'sandboxed_shell'
+  runtime: SandboxRuntime
+  workspaceMounts: WorkspaceMount[]
+  cwd: string
+  policy: ShellSandboxPolicy
+}
 
 type SandboxRuntime =
-  | "linux_bubblewrap"
-  | "macos_seatbelt";
+  | 'linux_bwrap_seccomp'
+  | 'macos_seatbelt'
+  | 'windows_restricted_token'
+  | 'docker'
+  | 'podman'
+  | 'nsjail'
 
 type WorkspaceMount = {
-  id: string;
-  hostPath: string;
-  sandboxPath: string;
-  mode: "rw" | "ro";
-};
+  id: string
+  hostPath: string
+  sandboxPath: string
+  mode: 'rw' | 'ro'
+}
 
 type ShellSandboxPolicy = {
-  network: "allow" | "deny";
-  home: "tmpfs" | "deny";
-  timeoutSeconds: number;
-  outputLimitBytes: number;
-  envAllowlist: string[];
-};
+  profile:
+    | 'read_only'
+    | 'workspace_write'
+    | 'relay_workspace_write'
+    | 'network_proxy'
+    | 'danger_full_access'
+  backendPreference:
+    | 'auto'
+    | 'linux_bwrap_seccomp'
+    | 'macos_seatbelt'
+    | 'windows_restricted_token'
+    | 'docker'
+    | 'podman'
+    | 'nsjail'
+    | 'raw_host'
+  network: 'blocked' | 'restricted' | 'proxy' | 'full'
+  home: 'tmpfs' | 'deny'
+  timeoutSeconds: number
+  outputLimitBytes: number
+  envAllowlist: string[]
+}
 ```
+
+## Platform Runtime Summary
+
+| Platform                 | Default runtime            | Primary primitives                                                      | Desktop priority                    |
+| ------------------------ | -------------------------- | ----------------------------------------------------------------------- | ----------------------------------- |
+| Linux                    | `linux_bwrap_seccomp`      | bubblewrap, seccomp, optional Landlock                                  | first release                       |
+| macOS                    | `macos_seatbelt`           | generated Seatbelt profile through `/usr/bin/sandbox-exec`              | first release                       |
+| Windows                  | `windows_restricted_token` | restricted token, AppContainer, Job Object, private desktop, ACL grants | follow-up release                   |
+| Containerized workspaces | `docker` / `podman`        | OCI image, mounts, cgroups, runtime network policy                      | advanced local and self-hosted mode |
 
 ## Filesystem Strategy
 
@@ -88,9 +112,9 @@ The provider should use the real local workspace for file operations and shell e
 
 This keeps runtime behavior simple: changes made by fileops and shell commands are visible to each other immediately.
 
-## Linux Runtime: `linux_bubblewrap`
+## Linux Runtime: `linux_bwrap_seccomp`
 
-Linux should use `bubblewrap` as the default local shell sandbox runtime.
+Linux should use `bubblewrap` plus seccomp as the default local shell sandbox runtime.
 
 Capabilities:
 
@@ -101,6 +125,7 @@ Capabilities:
 - minimal `/proc` and `/dev`
 - configurable network access
 - process cleanup through `--die-with-parent`
+- syscall filtering for process inspection, privileged kernel controls, and network policy
 - timeout and output limits enforced by Claw
 
 Default shape:
@@ -170,7 +195,7 @@ workspace_provider: local
 file_operator: local_file_operator
 shell: sandboxed_shell
 linux:
-  sandbox_runtime: linux_bubblewrap
+  sandbox_runtime: linux_bwrap_seccomp
   workspace_mounts:
     - id: main
       host_path: selected_workspace
@@ -181,7 +206,7 @@ macos:
   workspace_allowlist:
     - selected_workspace
   cwd: /workspace/main
-network: allow
+network: restricted
 home: tmpfs
 timeout_seconds: 120
 output_limit_bytes: 1048576
@@ -219,7 +244,20 @@ Capability discovery should expose sandboxed shell support:
 ```json
 {
   "workspace_providers": ["local", "docker", "cloud"],
-  "local_shell_runtimes": ["linux_bubblewrap"],
+  "local_shell_runtimes": ["linux_bwrap_seccomp"],
+  "local_file_operator": true,
+  "workspace_mount_modes": ["rw", "ro"],
+  "multi_mount_workspaces": true,
+  "workspace_change_views": ["git_status", "git_diff"]
+}
+```
+
+Windows example:
+
+```json
+{
+  "workspace_providers": ["local", "docker", "cloud"],
+  "local_shell_runtimes": ["windows_restricted_token"],
   "local_file_operator": true,
   "workspace_mount_modes": ["rw", "ro"],
   "multi_mount_workspaces": true,
@@ -242,17 +280,27 @@ macOS example:
 
 ## Failure and Setup UX
 
-When the required sandbox runtime is unavailable, Desktop should show setup guidance for the platform runtime.
+Desktop should show setup guidance when the selected sandbox runtime fails diagnostics.
 
 Linux setup examples:
 
 - install `bubblewrap`
 - enable user namespaces when the distribution requires it
+- verify seccomp support through the Claw startup self-test
+- display Landlock ABI status as an additional hardening or fallback signal
 
 macOS setup examples:
 
 - require a recent supported macOS version
-- run a startup self-check for generated profiles
+- run a startup self-check for generated Seatbelt profiles
 - use packaged helper scripts and generated profiles
+- show Apple Containerization as a future high-isolation backend on supported systems
+
+Windows setup examples:
+
+- verify restricted-token process launch
+- verify Job Object kill-on-close and resource limit behavior
+- verify AppContainer availability for high-isolation profiles
+- verify workspace ACL grants for selected roots and scratch roots
 
 Local shell execution should start after the required sandbox runtime is ready. Remote and cloud connections continue to work through their own runtime providers.

@@ -5,16 +5,14 @@ using standard library functions.
 """
 
 import asyncio
-import contextlib
 import glob as glob_module
 import os
 import shutil
-import signal
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import anyio
 from ya_agent_environment import (
@@ -33,15 +31,15 @@ from ya_agent_environment import (
     TmpFileOperator,
 )
 
+from ya_agent_sdk.environment.process import (
+    kill_process_tree,
+    process_group_kwargs,
+    send_process_tree_signal,
+    terminate_process_tree,
+)
+
 if TYPE_CHECKING:
     pass
-
-
-def _process_group_kwargs() -> dict[str, Any]:
-    """Return subprocess kwargs that isolate a command tree for lifecycle control."""
-    if os.name == "posix":
-        return {"start_new_session": True}
-    return {}
 
 
 def _default_shell_executable() -> str | None:
@@ -78,50 +76,6 @@ def _shell_type_from_executable(shell_executable: str | None) -> str:
     if shell_name.endswith(".exe"):
         shell_name = shell_name[:-4]
     return shell_name or "custom"
-
-
-def _send_process_tree_signal(process: asyncio.subprocess.Process, sig: int) -> None:
-    """Send a signal to the whole process tree when process groups are available."""
-    if process.pid is None:
-        return
-
-    if os.name == "posix":
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.killpg(os.getpgid(process.pid), sig)
-            return
-
-    with contextlib.suppress(ProcessLookupError, OSError):
-        process.send_signal(sig)
-
-
-async def _terminate_process_tree(
-    process: asyncio.subprocess.Process,
-    *,
-    timeout: float = 5.0,
-) -> None:
-    """Terminate a process tree gracefully, then force kill if it keeps running."""
-    if process.returncode is not None:
-        return
-
-    _send_process_tree_signal(process, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(process.wait(), timeout=timeout)
-        return
-    except TimeoutError:
-        pass
-
-    await _kill_process_tree(process)
-
-
-async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
-    """Force kill a process tree and wait for the root process to be reaped."""
-    if process.returncode is None:
-        _send_process_tree_signal(process, signal.SIGKILL)
-        if os.name != "posix":
-            with contextlib.suppress(ProcessLookupError, OSError):
-                process.kill()
-    with contextlib.suppress(ProcessLookupError, OSError):
-        await process.wait()
 
 
 class LocalFileOperator(FileOperator):
@@ -1073,7 +1027,7 @@ class LocalShell(Shell):
                 cwd=resolved_cwd,
                 env=effective_env,
                 executable=self._shell_executable,
-                **_process_group_kwargs(),
+                **process_group_kwargs(),
             )
 
             try:
@@ -1085,7 +1039,7 @@ class LocalShell(Shell):
                 else:
                     stdout_bytes, stderr_bytes = await process.communicate()
             except TimeoutError as e:
-                await _terminate_process_tree(process)
+                await terminate_process_tree(process)
                 raise ShellTimeoutError(command, effective_timeout or 0) from e
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
@@ -1133,7 +1087,7 @@ class LocalShell(Shell):
                 cwd=resolved_cwd,
                 env=effective_env,
                 executable=self._shell_executable,
-                **_process_group_kwargs(),
+                **process_group_kwargs(),
             )
         except Exception as e:
             raise ShellExecutionError(command, stderr=str(e)) from e
@@ -1146,10 +1100,10 @@ class LocalShell(Shell):
             return process.returncode or 0
 
         async def _kill() -> None:
-            await _kill_process_tree(process)
+            await kill_process_tree(process)
 
         async def _send_signal(sig: int) -> None:
-            _send_process_tree_signal(process, sig)
+            send_process_tree_signal(process, sig)
 
         stdin = StdinAdapter(process.stdin) if process.stdin is not None else None
 

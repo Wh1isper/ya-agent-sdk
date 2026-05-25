@@ -15,9 +15,21 @@ export function ConnectionsPage() {
       </section>
 
       <div className="grid gap-4 xl:grid-cols-3">
-        <ConnectionCard icon={HardDrive} title="Local Claw" detail="Bundled sidecar on this Mac" />
-        <ConnectionCard icon={Server} title="Remote Claw" detail="Self-hosted HTTPS runtime" />
-        <ConnectionCard icon={Cloud} title="Cloud Claw" detail="Hosted workspace runtime" />
+        <ConnectionCard
+          icon={HardDrive}
+          title="Local Claw"
+          detail="Bundled sidecar on this Mac"
+        />
+        <ConnectionCard
+          icon={Server}
+          title="Remote Claw"
+          detail="Self-hosted HTTPS runtime"
+        />
+        <ConnectionCard
+          icon={Cloud}
+          title="Cloud Claw"
+          detail="Hosted workspace runtime"
+        />
       </div>
 
       <section className="max-w-3xl rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">

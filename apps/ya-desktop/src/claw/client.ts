@@ -9,6 +9,8 @@ import type {
   ClawAgencyFireListResponse,
   ClawAgencyStatus,
   ClawHealth,
+  ClawInteractionRespondRequest,
+  ClawInteractionRespondResponse,
   ClawInfo,
   ClawNotificationEvent,
   ClawNotificationHandlers,
@@ -138,6 +140,21 @@ export class ClawHttpClient {
     return this.fetchJson<ClawRunSummary>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/cancel`,
       { method: 'POST' },
+    )
+  }
+
+  respondInteraction(
+    runId: string,
+    interactionId: string,
+    input: ClawInteractionRespondRequest,
+  ) {
+    return this.fetchJson<ClawInteractionRespondResponse>(
+      `/api/v1/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}:respond`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
     )
   }
 
@@ -272,13 +289,22 @@ export function createClawClient(connection: DesktopClawConnection) {
   return new ClawHttpClient(connection)
 }
 
-function parseNotificationMessage(message: { id: string; event: string; data: string }): ClawNotificationEvent {
+function parseNotificationMessage(message: {
+  id: string
+  event: string
+  data: string
+}): ClawNotificationEvent {
   try {
     const parsedValue: unknown = JSON.parse(message.data)
     if (isRecord(parsedValue)) {
       return {
-        id: message.id || (typeof parsedValue.id === 'string' ? parsedValue.id : ''),
-        type: typeof parsedValue.type === 'string' ? parsedValue.type : message.event,
+        id:
+          message.id ||
+          (typeof parsedValue.id === 'string' ? parsedValue.id : ''),
+        type:
+          typeof parsedValue.type === 'string'
+            ? parsedValue.type
+            : message.event,
         created_at:
           typeof parsedValue.created_at === 'string'
             ? parsedValue.created_at
@@ -297,7 +323,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function buildUrl(baseUrl: string, path: string) {
-  const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
+  const normalizedBaseUrl = baseUrl.endsWith('/')
+    ? baseUrl.slice(0, -1)
+    : baseUrl
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
   return `${normalizedBaseUrl}${normalizedPath}`
 }

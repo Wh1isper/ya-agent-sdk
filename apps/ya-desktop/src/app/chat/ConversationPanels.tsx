@@ -1,9 +1,20 @@
 import { Bot } from 'lucide-react'
 
-import type { ClawRunSummary, ClawRunTraceResponse, ClawSessionDetail, ClawSessionSummary, ClawSessionTurn, JsonObject } from '../../claw'
+import type {
+  ClawRunSummary,
+  ClawRunTraceResponse,
+  ClawSessionDetail,
+  ClawSessionSummary,
+  ClawSessionTurn,
+  JsonObject,
+} from '../../claw'
 import { cn } from '../../lib'
 import type { HomeStreamStatus } from '../types'
-import { collectCommittedReplayText, formatDate, inputPartsPreview } from '../utils'
+import {
+  collectCommittedReplayText,
+  formatDate,
+  inputPartsPreview,
+} from '../utils'
 import { EmptyState, RunRow } from '../ui'
 
 export function SessionTurnsPanel({

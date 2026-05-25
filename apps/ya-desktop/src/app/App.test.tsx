@@ -9,5 +9,6 @@ describe('App', () => {
 
     expect(screen.getByText('YA Desktop')).toBeInTheDocument()
     expect(screen.getByText('Native Agent Workspace')).toBeInTheDocument()
+    expect(screen.queryByText('Agency')).not.toBeInTheDocument()
   })
 })

@@ -1,10 +1,46 @@
-import { Folder, Loader2, Send, Sparkles, TerminalSquare } from 'lucide-react'
+import {
+  Folder,
+  Loader2,
+  Network,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  TerminalSquare,
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
-import { isRunErrorEvent, isRunFinishedEvent, streamErrorMessage, streamRunId, streamSessionId, streamTextDelta, useActiveClawConnection, useClawHealth, useClawInfo, useClawProfiles, useClawSessions, useCreateClawSessionStream, type ClawStreamEvent } from '../../claw'
+import {
+  isRunErrorEvent,
+  isRunFinishedEvent,
+  streamErrorMessage,
+  streamRunId,
+  streamSessionId,
+  streamTextDelta,
+  useActiveClawConnection,
+  useClawHealth,
+  useClawInfo,
+  useClawProfiles,
+  useClawSessions,
+  useCreateClawSessionStream,
+  type ClawStreamEvent,
+} from '../../claw'
 import type { DesktopSpace, HomeStreamStatus } from '../types'
-import { ComposerFrame, HomeStreamPreview, InfoPill, LiveSessionList, SelectPill } from '../ui'
-import { enabledProfiles, profileNameOrDefault, spaceDetail, submitFormOnEnter, workspaceBindingFromSpace } from '../utils'
+import {
+  ComposerFrame,
+  HomeStreamPreview,
+  InfoPill,
+  LiveSessionList,
+  SelectPill,
+} from '../ui'
+import {
+  enabledProfiles,
+  profileNameOrDefault,
+  relayLabel,
+  shellSafetyLabel,
+  spaceDetail,
+  submitFormOnEnter,
+  workspaceBindingFromSpace,
+} from '../utils'
 
 export function HomePage({
   selectedSpace,
@@ -169,6 +205,11 @@ export function HomePage({
                 />
                 <InfoPill icon={Folder} text={spaceDetail(selectedSpace)} />
                 <InfoPill icon={TerminalSquare} text={runtimeDetail} />
+                <InfoPill
+                  icon={ShieldCheck}
+                  text={shellSafetyLabel(selectedSpace.shellSafety)}
+                />
+                <InfoPill icon={Network} text={relayLabel(selectedSpace)} />
               </div>
               <button
                 className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#171717] px-4 text-sm font-medium text-white transition hover:bg-[#2f2f2f] disabled:cursor-not-allowed disabled:bg-[#d8d8d4]"

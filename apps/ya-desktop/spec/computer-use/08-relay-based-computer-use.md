@@ -86,7 +86,12 @@ Claw accepts the capability and binds it to a relay provider registry entry:
   "kind": "relay_computer",
   "device_id": "dev_macbook_123",
   "connection_id": "relay_conn_123",
-  "capabilities": ["screenshots", "accessibility_tree", "semantic_actions", "coordinate_input"]
+  "capabilities": [
+    "screenshots",
+    "accessibility_tree",
+    "semantic_actions",
+    "coordinate_input"
+  ]
 }
 ```
 

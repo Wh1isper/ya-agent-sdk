@@ -25,7 +25,13 @@ export function ApprovalsInbox() {
   )
 }
 
-function ApprovalType({ icon: Icon, title }: { icon: typeof ShieldCheck; title: string }) {
+function ApprovalType({
+  icon: Icon,
+  title,
+}: {
+  icon: typeof ShieldCheck
+  title: string
+}) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
       <Icon className="h-5 w-5 text-blue-600" />

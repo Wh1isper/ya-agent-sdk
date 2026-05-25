@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_sdk.context import ShellReviewConfig, ShellReviewRiskLevel
+from ya_agent_sdk.environment import ShellSandboxConfig
 from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
 from ya_agent_sdk.subagents.config import SubagentConfig
 
@@ -53,6 +54,7 @@ class ResolvedProfile:
     need_user_approve_tools: list[str] = field(default_factory=list)
     need_user_approve_mcps: list[str] = field(default_factory=list)
     shell_review: ClawShellReviewConfig | None = None
+    shell_sandbox: ShellSandboxConfig | None = None
     enabled_mcps: list[str] = field(default_factory=list)
     disabled_mcps: list[str] = field(default_factory=list)
     mcp_servers: dict[str, Any] = field(default_factory=dict)
@@ -144,6 +146,7 @@ class ProfileResolver:
             need_user_approve_tools=list(record.need_user_approve_tools or []),
             need_user_approve_mcps=list(record.need_user_approve_mcps or []),
             shell_review=_resolve_shell_review(record.model_config_override),
+            shell_sandbox=_resolve_shell_sandbox(record.model_config_override),
             enabled_mcps=list(record.enabled_mcps or []),
             disabled_mcps=list(record.disabled_mcps or []),
             mcp_servers=normalize_profile_mcp_servers(record.mcp_servers),
@@ -193,6 +196,18 @@ def _resolve_shell_review(model_config_override: dict[str, Any] | None) -> ClawS
     raw_legacy = model_config_override.get("shell_review")
     if isinstance(raw_legacy, dict):
         return _resolve_claw_shell_review_config(raw_legacy)
+    return None
+
+
+def _resolve_shell_sandbox(model_config_override: dict[str, Any] | None) -> ShellSandboxConfig | None:
+    if not isinstance(model_config_override, dict):
+        return None
+    raw_security = model_config_override.get("security")
+    if isinstance(raw_security, dict) and isinstance(raw_security.get("shell_sandbox"), dict):
+        return ShellSandboxConfig.model_validate(raw_security["shell_sandbox"])
+    raw_legacy = model_config_override.get("shell_sandbox")
+    if isinstance(raw_legacy, dict):
+        return ShellSandboxConfig.model_validate(raw_legacy)
     return None
 
 

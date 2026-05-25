@@ -10,6 +10,7 @@ import {
 import { createClawClient } from './client'
 import { getActiveClawConnection } from './connection'
 import type {
+  ClawInteractionRespondRequest,
   ClawNotificationEvent,
   ClawSessionRunStreamInput,
   ClawRunSummary,
@@ -83,7 +84,8 @@ export function useClawInfo(connection?: DesktopClawConnection | null) {
 export function useClawProfiles(connection?: DesktopClawConnection | null) {
   return useQuery({
     queryKey: clawQueryKeys.profiles(connection),
-    queryFn: () => createClawClient(requiredConnection(connection)).listProfiles(),
+    queryFn: () =>
+      createClawClient(requiredConnection(connection)).listProfiles(),
     enabled: Boolean(connection),
   })
 }
@@ -113,11 +115,9 @@ export function useCreateClawSessionStream(
       handlers?: ClawStreamHandlers
       signal?: AbortSignal
     }) => {
-      await createClawClient(requiredConnection(connection)).createSessionStream(
-        input,
-        handlers,
-        signal,
-      )
+      await createClawClient(
+        requiredConnection(connection),
+      ).createSessionStream(input, handlers, signal)
     },
     onSettled: async () => {
       await queryClient.invalidateQueries({
@@ -144,12 +144,9 @@ export function useCreateClawSessionRunStream(
       handlers?: ClawStreamHandlers
       signal?: AbortSignal
     }) => {
-      await createClawClient(requiredConnection(connection)).createSessionRunStream(
-        sessionId,
-        input,
-        handlers,
-        signal,
-      )
+      await createClawClient(
+        requiredConnection(connection),
+      ).createSessionRunStream(sessionId, input, handlers, signal)
     },
     onSettled: async (_data, _error, variables) => {
       await Promise.all([
@@ -157,10 +154,16 @@ export function useCreateClawSessionRunStream(
           queryKey: clawQueryKeys.sessions(connection),
         }),
         queryClient.invalidateQueries({
-          queryKey: clawQueryKeys.session(connection, variables?.sessionId ?? null),
+          queryKey: clawQueryKeys.session(
+            connection,
+            variables?.sessionId ?? null,
+          ),
         }),
         queryClient.invalidateQueries({
-          queryKey: clawQueryKeys.turns(connection, variables?.sessionId ?? null),
+          queryKey: clawQueryKeys.turns(
+            connection,
+            variables?.sessionId ?? null,
+          ),
         }),
       ])
     },
@@ -170,7 +173,8 @@ export function useCreateClawSessionRunStream(
 export function useClawAgencyConfig(connection?: DesktopClawConnection | null) {
   return useQuery({
     queryKey: clawQueryKeys.agencyConfig(connection),
-    queryFn: () => createClawClient(requiredConnection(connection)).getAgencyConfig(),
+    queryFn: () =>
+      createClawClient(requiredConnection(connection)).getAgencyConfig(),
     enabled: Boolean(connection),
   })
 }
@@ -178,7 +182,8 @@ export function useClawAgencyConfig(connection?: DesktopClawConnection | null) {
 export function useClawAgencyStatus(connection?: DesktopClawConnection | null) {
   return useQuery({
     queryKey: clawQueryKeys.agencyStatus(connection),
-    queryFn: () => createClawClient(requiredConnection(connection)).getAgencyStatus(),
+    queryFn: () =>
+      createClawClient(requiredConnection(connection)).getAgencyStatus(),
     enabled: Boolean(connection),
     refetchInterval: connection ? 10_000 : false,
   })
@@ -187,7 +192,8 @@ export function useClawAgencyStatus(connection?: DesktopClawConnection | null) {
 export function useClawAgencyFires(connection?: DesktopClawConnection | null) {
   return useQuery({
     queryKey: clawQueryKeys.agencyFires(connection),
-    queryFn: () => createClawClient(requiredConnection(connection)).listAgencyFires(),
+    queryFn: () =>
+      createClawClient(requiredConnection(connection)).listAgencyFires(),
     enabled: Boolean(connection),
     refetchInterval: connection ? 10_000 : false,
   })
@@ -197,7 +203,8 @@ export function useClearClawAgency(connection?: DesktopClawConnection | null) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: () => createClawClient(requiredConnection(connection)).clearAgency(),
+    mutationFn: () =>
+      createClawClient(requiredConnection(connection)).clearAgency(),
     onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({
@@ -217,7 +224,9 @@ export function useClearClawAgency(connection?: DesktopClawConnection | null) {
   })
 }
 
-export function useCancelClawSession(connection?: DesktopClawConnection | null) {
+export function useCancelClawSession(
+  connection?: DesktopClawConnection | null,
+) {
   const queryClient = useQueryClient()
 
   return useMutation({
@@ -236,7 +245,46 @@ export function useCancelClawSession(connection?: DesktopClawConnection | null) 
   })
 }
 
-export function useClawNotifications(connection?: DesktopClawConnection | null) {
+export function useRespondClawInteraction(
+  connection?: DesktopClawConnection | null,
+) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({
+      runId,
+      interactionId,
+      input,
+    }: {
+      runId: string
+      interactionId: string
+      sessionId?: string | null
+      input: ClawInteractionRespondRequest
+    }) =>
+      createClawClient(requiredConnection(connection)).respondInteraction(
+        runId,
+        interactionId,
+        input,
+      ),
+    onSettled: async (_data, _error, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.sessions(connection),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: clawQueryKeys.session(
+            connection,
+            variables?.sessionId ?? null,
+          ),
+        }),
+      ])
+    },
+  })
+}
+
+export function useClawNotifications(
+  connection?: DesktopClawConnection | null,
+) {
   const queryClient = useQueryClient()
   const lastEventIdRef = useRef<string | null>(null)
 
@@ -253,7 +301,11 @@ export function useClawNotifications(connection?: DesktopClawConnection | null) 
             {
               onEvent: async (event) => {
                 lastEventIdRef.current = event.id || lastEventIdRef.current
-                await applyNotificationEvent(queryClient, activeConnection, event)
+                await applyNotificationEvent(
+                  queryClient,
+                  activeConnection,
+                  event,
+                )
               },
             },
             abortController.signal,

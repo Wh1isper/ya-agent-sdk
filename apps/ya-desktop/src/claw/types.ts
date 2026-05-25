@@ -191,6 +191,57 @@ export type ClawWorkspaceState = {
   workspace?: JsonObject | null
 }
 
+export type ClawActiveInteraction = {
+  interaction_id?: string
+  interactionId?: string
+  run_id?: string
+  runId?: string
+  session_id?: string
+  sessionId?: string
+  tool_call_id?: string
+  toolCallId?: string
+  tool_name?: string | null
+  toolName?: string | null
+  kind?: string
+  title?: string
+  description?: string | null
+  arguments_preview?: unknown
+  argumentsPreview?: unknown
+  metadata?: JsonObject
+  status?: 'pending' | 'approved' | 'denied' | string
+  sequence_no?: number
+  sequenceNo?: number
+  total_count?: number
+  totalCount?: number
+  created_at?: string | null
+  createdAt?: string | null
+  resolved_at?: string | null
+  resolvedAt?: string | null
+}
+
+export type ClawInteractionRespondRequest = {
+  approved: boolean
+  reason?: string | null
+  user_input?: unknown
+  client_token?: string | null
+}
+
+export type ClawInteractionRespondResponse = {
+  session_id?: string
+  sessionId?: string
+  run_id?: string
+  runId?: string
+  interaction_id?: string
+  interactionId?: string
+  tool_call_id?: string
+  toolCallId?: string
+  status: 'pending' | 'approved' | 'denied' | string
+  remaining_interaction_count?: number
+  remainingInteractionCount?: number
+  current_interaction?: ClawActiveInteraction | null
+  currentInteraction?: ClawActiveInteraction | null
+}
+
 export type ClawSessionSummary = {
   id: string
   parent_session_id?: string | null
@@ -209,8 +260,14 @@ export type ClawSessionSummary = {
   status: ClawSessionStatus
   status_reason?: string
   statusReason?: string
-  status_detail?: JsonObject
-  statusDetail?: JsonObject
+  status_detail?: JsonObject & {
+    active_interactions?: ClawActiveInteraction[]
+    active_interaction_count?: number
+  }
+  statusDetail?: JsonObject & {
+    activeInteractions?: ClawActiveInteraction[]
+    activeInteractionCount?: number
+  }
   run_count?: number
   runCount?: number
   head_run_id?: string | null

@@ -1,2 +1,7 @@
 dist
 src-tauri/target
+src-tauri/gen/schemas/*.json
+src-tauri/capabilities/default.json
+tsconfig.json
+spec/05-desktop-app-structure.md
+spec/11-signing-and-release.md

@@ -40,13 +40,14 @@ The first Python implementation should integrate with `ya-agent-sdk` and expose:
 
 ## Section Map
 
-| Section | Document                                               | Topic                                                                  |
-| ------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
-| 01      | [01-overview.md](01-overview.md)                       | goals, parties, capability model, relationship to SDK and Claw         |
-| 02      | [02-protocol.md](02-protocol.md)                       | WebSocket frames, request/response, streaming, cancellation, errors    |
-| 03      | [03-environment.md](03-environment.md)                 | SDK Environment mapping, file operator, shell, resources, custom tools |
-| 04      | [04-security-and-policy.md](04-security-and-policy.md) | authentication, grants, policy, approvals, artifact safety             |
-| 05      | [05-implementation-plan.md](05-implementation-plan.md) | MVP phases and package layout                                          |
+| Section | Document                                                     | Topic                                                                  |
+| ------- | ------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| 01      | [01-overview.md](01-overview.md)                             | goals, parties, capability model, relationship to SDK and Claw         |
+| 02      | [02-protocol.md](02-protocol.md)                             | WebSocket frames, request/response, streaming, cancellation, errors    |
+| 03      | [03-environment.md](03-environment.md)                       | SDK Environment mapping, file operator, shell, resources, custom tools |
+| 04      | [04-security-and-policy.md](04-security-and-policy.md)       | authentication, grants, policy, approvals, artifact safety             |
+| 05      | [05-implementation-plan.md](05-implementation-plan.md)       | MVP phases and package layout                                          |
+| 06      | [06-desktop-local-pc-relay.md](06-desktop-local-pc-relay.md) | Desktop local PC relay, shell safety, and central Claw mounting        |
 
 ## Relationship to Products
 
