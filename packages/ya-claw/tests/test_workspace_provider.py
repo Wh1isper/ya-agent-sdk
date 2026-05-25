@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from ya_agent_sdk.environment import LocalShell, SandboxEnvironment, VirtualLocalFileOperator, VirtualMount
 from ya_agent_sdk.environment.sandbox import DockerShell
@@ -77,12 +77,17 @@ async def test_service_local_plus_local_shell_uses_real_paths_for_file_ops_and_s
         assert str(env.file_operator._default_path) == "/workspace"
         await env.file_operator.write_file("notes.txt", "hello")
         content = await env.file_operator.read_file("notes.txt")
-        exit_code, stdout, stderr = await env.shell.execute("pwd && ls")
+        exit_code, stdout, stderr = await env.shell.execute(
+            'python -c "from pathlib import Path; print(Path.cwd().resolve().as_posix())" && ls'
+        )
 
     assert content == "hello"
     assert exit_code == 0
     assert stderr == ""
-    assert binding.host_path.as_posix() in stdout.replace("\\", "/")
+    stdout_path = stdout.splitlines()[0]
+    if stdout_path.startswith("/") and len(stdout_path) > 2 and stdout_path[2] == "/":
+        stdout_path = PureWindowsPath(stdout_path[1] + ":/" + stdout_path[3:]).as_posix()
+    assert binding.host_path.as_posix() == stdout_path
     assert "notes.txt" in stdout
 
 

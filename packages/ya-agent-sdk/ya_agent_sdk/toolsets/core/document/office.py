@@ -124,7 +124,7 @@ class OfficeConvertTool(BaseTool):
 
             try:
                 md = MarkItDown(enable_plugins=True)
-                result = await _run_in_threadpool(md.convert, f"file://{local_source.as_posix()}", keep_data_uris=True)
+                result = await _run_in_threadpool(md.convert, local_source.as_uri(), keep_data_uris=True)
                 content = result.text_content
             except Exception as e:
                 return {"error": f"Failed to convert document: {e}", "success": False}

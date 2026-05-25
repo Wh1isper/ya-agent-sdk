@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from ya_agent_environment import FileOperationError, PathNotAllowedError
 from ya_agent_sdk.environment.local import VirtualLocalFileOperator, VirtualMount
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path
 
 # --- VirtualMount Tests ---
 
@@ -34,8 +35,8 @@ def test_virtual_file_operator_init(tmp_path: Path) -> None:
         mounts=[VirtualMount(tmp_path, Path("/workspace"))],
     )
     assert op._mounts[0].host_path == tmp_path
-    assert op._mounts[0].virtual_path == Path("/workspace")
-    assert op._default_path == Path("/workspace")
+    assert op._mounts[0].virtual_path == normalize_virtual_path("/workspace")
+    assert op._default_path == normalize_virtual_path("/workspace")
 
 
 def test_virtual_file_operator_empty_mounts() -> None:
@@ -63,7 +64,7 @@ def test_virtual_file_operator_custom_default_path(tmp_path: Path) -> None:
         ],
         default_virtual_path=Path("/workspace/b"),
     )
-    assert op._default_path == Path("/workspace/b")
+    assert op._default_path == normalize_virtual_path("/workspace/b")
 
 
 async def test_virtual_file_operator_read_write(tmp_path: Path) -> None:

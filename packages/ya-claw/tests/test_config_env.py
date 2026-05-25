@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path
 from ya_claw import config as config_module
 from ya_claw.bridge import BridgeAdapterType, BridgeDispatchMode
 from ya_claw.config import ClawSettings
@@ -325,8 +326,8 @@ def test_settings_resolves_docker_extra_mounts(tmp_path: Path) -> None:
     mounts = settings.resolved_workspace_provider_docker_extra_mounts
 
     assert [(mount.host_path, mount.container_path, mount.mode) for mount in mounts] == [
-        (home_dir, Path("/home/claw"), "rw"),
-        (cache_dir, Path("/cache"), "ro"),
+        (home_dir, normalize_virtual_path("/home/claw"), "rw"),
+        (cache_dir, normalize_virtual_path("/cache"), "ro"),
     ]
 
 

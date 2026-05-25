@@ -15,6 +15,7 @@ docker = pytest.importorskip("docker")
 
 from ya_agent_sdk.environment.local import VirtualMount  # noqa: E402
 from ya_agent_sdk.environment.sandbox import DeferredDockerShell, DockerShell, SandboxEnvironment  # noqa: E402
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path  # noqa: E402
 
 # --- DockerShell Tests ---
 
@@ -326,7 +327,7 @@ async def test_sandbox_environment_enter_with_existing_container(tmp_path: Path)
         assert env.file_operator is not None
         assert env.shell is not None
         # File operator should use virtual path
-        assert env._file_operator._default_path == Path("/workspace")
+        assert env._file_operator._default_path == normalize_virtual_path("/workspace")
         assert env._shell._container_id == "existing123"
         assert env._shell._container_workdir == "/workspace"
 

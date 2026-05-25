@@ -7,6 +7,7 @@ import pytest
 from ya_agent_environment import FileOperator
 from ya_agent_sdk.environment.composite import CompositeFileOperator, Mount, MountBackend
 from ya_agent_sdk.environment.local import LocalFileOperator
+from ya_agent_sdk.environment.virtual_path import normalize_virtual_path
 
 
 @pytest.fixture
@@ -503,8 +504,8 @@ def test_mounts_property(composite_op: CompositeFileOperator):
     """mounts property returns a copy of the mount list."""
     mounts = composite_op.mounts
     assert len(mounts) == 2
-    assert mounts[0].virtual_path == Path("/workspace")
-    assert mounts[1].virtual_path == Path("/mnt/pc")
+    assert mounts[0].virtual_path == normalize_virtual_path("/workspace")
+    assert mounts[1].virtual_path == normalize_virtual_path("/mnt/pc")
 
     # Verify it's a copy
     mounts.pop()
