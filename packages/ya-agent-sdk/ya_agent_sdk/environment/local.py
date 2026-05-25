@@ -973,8 +973,8 @@ class LocalShell(Shell):
     def _build_effective_env(self, env: dict[str, str] | None) -> dict[str, str] | None:
         """Build effective environment for subprocess."""
         requested = {**self._environment_overrides, **dict(env or {})}
-        policy = self._active_sandbox_policy()
-        if policy is not None:
+        policy = self._sandbox_policy
+        if policy is not None and policy.enabled:
             return self._build_sandbox_env(requested, policy.env_allowlist)
         return self._build_raw_env(env, requested)
 
@@ -1001,15 +1001,6 @@ class LocalShell(Shell):
         if "PATH" not in filtered and "PATH" in os.environ:
             filtered["PATH"] = os.environ["PATH"]
         return filtered
-
-    def _active_sandbox_policy(self) -> ShellSandboxRuntimePolicy | None:
-        if self._sandbox_policy is not None and self._sandbox_policy.enabled:
-            return self._sandbox_policy
-        return None
-
-    @property
-    def _sandbox_enabled(self) -> bool:
-        return self._active_sandbox_policy() is not None
 
     def _shell_environment_instruction(self) -> str:
         shell_type = _shell_type_from_executable(self._shell_executable)
@@ -1078,8 +1069,9 @@ class LocalShell(Shell):
             raise ShellExecutionError("", stderr="Empty command")
 
         resolved_cwd = self._resolve_cwd(cwd)
-        policy = self._active_sandbox_policy()
-        effective_timeout = self._default_timeout if timeout is None and policy is not None else timeout
+        sandbox_enabled = self._sandbox_policy is not None and self._sandbox_policy.enabled
+        policy = self._sandbox_policy if sandbox_enabled else None
+        effective_timeout = self._default_timeout if timeout is None and sandbox_enabled else timeout
         cleanup = lambda: None
 
         try:
@@ -1146,12 +1138,12 @@ class LocalShell(Shell):
         except FileNotFoundError as e:
             raise ShellExecutionError(
                 command,
-                stderr="Shell sandbox backend is unavailable" if self._sandbox_enabled else "Command not found",
+                stderr="Shell sandbox backend is unavailable" if policy is not None else "Command not found",
             ) from e
         except PermissionError as e:
             raise ShellExecutionError(
                 command,
-                stderr="Shell sandbox backend permission denied" if self._sandbox_enabled else "Permission denied",
+                stderr="Shell sandbox backend permission denied" if policy is not None else "Permission denied",
             ) from e
         except OSError as e:
             raise ShellExecutionError(command, stderr=str(e)) from e
@@ -1179,7 +1171,8 @@ class LocalShell(Shell):
         cleanup = lambda: None
 
         try:
-            policy = self._active_sandbox_policy()
+            sandbox_enabled = self._sandbox_policy is not None and self._sandbox_policy.enabled
+            policy = self._sandbox_policy if sandbox_enabled else None
             if policy is not None:
                 if policy.backend == "raw_host" and not policy.raw_shell_allowed:
                     raise ShellExecutionError(
