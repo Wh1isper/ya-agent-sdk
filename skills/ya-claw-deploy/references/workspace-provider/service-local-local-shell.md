@@ -9,7 +9,7 @@ flowchart LR
     CLIENT["Client"] --> SERVICE["YA Claw host process"]
     SERVICE --> WORKSPACE["Real workspace path"]
     WORKSPACE --> FILES["LocalFileOperator"]
-    WORKSPACE --> SHELL["LocalShell"]
+    WORKSPACE --> SHELL["SandboxedLocalShell"]
 ```
 
 ## Configuration
@@ -27,11 +27,31 @@ YA_CLAW_WORKSPACE_DIR=/var/lib/ya-claw/workspace
 | agent-visible `virtual_path` | `/var/lib/ya-claw/workspace` |
 | agent cwd                    | `/var/lib/ya-claw/workspace` |
 
-`LocalWorkspaceProvider` uses the real workspace path as `virtual_path` and `cwd`. `LocalEnvironmentFactory` creates a `LocalFileOperator` and `LocalShell` restricted to the workspace path and temporary directory.
+`LocalWorkspaceProvider` uses the real workspace path as `virtual_path` and `cwd`. `LocalEnvironmentFactory` creates a `LocalFileOperator` and, by default, a `SandboxedLocalShell` restricted to the workspace path and temporary directory. Set `YA_CLAW_SHELL_SANDBOX_ENABLED=false` to use the plain `WorkspaceLocalShell` path for a trusted development machine.
+
+## Shell Sandbox Requirements
+
+Default local shell sandbox settings:
+
+```env
+YA_CLAW_SHELL_SANDBOX_ENABLED=true
+YA_CLAW_SHELL_SANDBOX_BACKEND=auto
+YA_CLAW_SHELL_SANDBOX_NETWORK=full
+YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST=false
+```
+
+Backend dependencies:
+
+- Linux `auto` resolves to `linux_bwrap_seccomp`; install `bubblewrap` so `bwrap` is available to the service user.
+- macOS `auto` resolves to `macos_seatbelt` and uses `/usr/bin/sandbox-exec`.
+- Windows `auto` resolves to `windows_restricted_token`; this backend is a guarded planned path.
+- `raw_host` requires explicit allowance and should be used only for audited maintenance.
+
+Profile-level `security.shell_sandbox` can set profile, backend preference, network policy, environment allowlist, and raw host approval. The default network policy is `full`, and the default environment allowlist is `"*"` to pass the effective environment through. The fields that directly affect subprocess creation today are backend, network, mount modes, environment allowlist, and raw host allowance. The profile label is also injected into shell context and metadata.
 
 ## Host Requirements
 
-The host must provide the tools agents need through the service user environment, such as Python, Node.js, Git, and any CLIs referenced by profiles or MCP servers.
+The host must provide the tools agents need through the service user environment, such as Python, Node.js, Git, `bubblewrap` on Linux, and any CLIs referenced by profiles or MCP servers.
 
 Workspace permissions should allow the service user to read and write:
 

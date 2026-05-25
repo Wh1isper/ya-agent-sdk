@@ -153,6 +153,34 @@ async def test_sandboxed_local_shell_filters_environment_for_raw_host(tmp_path: 
     assert stdout == "from-call:"
 
 
+async def test_sandboxed_local_shell_star_allowlist_passes_environment_for_raw_host(tmp_path: Path) -> None:
+    shell = SandboxedLocalShell(
+        policy=ShellSandboxRuntimePolicy(
+            enabled=True,
+            profile="workspace_write",
+            backend="raw_host",
+            requested_backend="raw_host",
+            network="full",
+            mounts=[ShellSandboxMountPolicy(id="workspace", host_path=tmp_path, mode="rw")],
+            env_allowlist=("*",),
+            raw_shell_allowed=True,
+        ),
+        environment_overrides={"DEFAULT_VALUE": "from-default"},
+        default_cwd=tmp_path,
+        allowed_paths=[tmp_path],
+        include_os_env=False,
+    )
+
+    exit_code, stdout, stderr = await shell.execute(
+        'printf \'%s:%s\' "$DEFAULT_VALUE" "$CALL_VALUE"',
+        env={"CALL_VALUE": "from-call"},
+    )
+
+    assert exit_code == 0
+    assert stderr == ""
+    assert stdout == "from-default:from-call"
+
+
 def test_shell_sandbox_diagnostics_reports_backend_state(tmp_path: Path) -> None:
     policy = ShellSandboxRuntimePolicy(
         enabled=True,

@@ -711,7 +711,7 @@ class LocalEnvironmentFactory(EnvironmentFactory):
         workspace_environment: dict[str, str] | None = None,
         shell_sandbox_enabled: bool = True,
         shell_sandbox_backend: ShellSandboxBackend = "auto",
-        shell_sandbox_network: ShellSandboxNetwork = "restricted",
+        shell_sandbox_network: ShellSandboxNetwork = "full",
         shell_sandbox_allow_raw_host: bool = False,
     ) -> None:
         self._shell_timeout = shell_timeout
@@ -881,7 +881,7 @@ class DefaultEnvironmentFactory(EnvironmentFactory):
         docker_idle_ttl_seconds: int = 3600,
         shell_sandbox_enabled: bool = True,
         shell_sandbox_backend: ShellSandboxBackend = "auto",
-        shell_sandbox_network: ShellSandboxNetwork = "restricted",
+        shell_sandbox_network: ShellSandboxNetwork = "full",
         shell_sandbox_allow_raw_host: bool = False,
     ) -> None:
         self._local_factory = LocalEnvironmentFactory(

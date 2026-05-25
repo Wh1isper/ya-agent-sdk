@@ -44,12 +44,12 @@ export function OnboardingDialog({
         <div className="mt-6 grid gap-4 md:grid-cols-2">
           <OnboardingOption
             title="Conservative defaults"
-            detail="Shell review at extra_high, sandbox enabled, restricted network, raw host shell gated."
+            detail="Shell review at extra_high, sandbox enabled, full network, raw host shell gated."
             selected
           />
           <OnboardingOption
             title="Recommended review preset"
-            detail="Shell review at medium, unattended review at high, sandbox remains enabled with restricted network."
+            detail="Shell review at medium, unattended review at high, sandbox remains enabled with full network."
           />
         </div>
 
@@ -151,7 +151,7 @@ function recommendedLaunchConfig(): LocalClawLaunchConfig {
     shellReviewAction: 'defer',
     shellSandboxEnabled: true,
     shellSandboxBackend: 'auto',
-    shellSandboxNetwork: 'restricted',
+    shellSandboxNetwork: 'full',
     shellSandboxAllowRawHost: false,
     presetName: 'Desktop recommended',
     env: [],

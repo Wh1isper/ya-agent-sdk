@@ -100,6 +100,36 @@ YA Claw uses `extra_high` as the profile shell review threshold default. Set `ri
 
 `model` is required when shell review is enabled. `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object.
 
+## Shell Sandbox Policy
+
+Shell sandbox policy is configured per profile under `security.shell_sandbox` in the seed YAML or stored AgentProfile `model_config_override`.
+
+```yaml
+profiles:
+- name: default
+  model: gateway@openai-responses:gpt-5.5
+  security:
+    shell_sandbox:
+      enabled: true
+      profile: workspace_write
+      backend_preference: auto
+      network: full
+      env_allowlist:
+        - "*"
+      raw_shell_approval: requires_human
+      audit_enabled: true
+```
+
+Supported `profile` values are `read_only`, `workspace_write`, `relay_workspace_write`, `network_proxy`, and `danger_full_access`. Current runtime enforcement comes from the resolved workspace mount modes, backend, network, environment allowlist, and raw host gate. The profile value is also recorded in metadata and shell context so agents, logs, and future audit storage can see the selected policy intent.
+
+Supported `backend_preference` values are `auto`, `linux_bwrap_seccomp`, `macos_seatbelt`, `windows_restricted_token`, `docker`, `podman`, `nsjail`, and `raw_host`. Local shell execution currently implements Linux bubblewrap, macOS seatbelt, guarded Windows behavior, and guarded raw host execution. Docker workspace isolation is configured through the Docker workspace provider shape.
+
+Supported `network` values are `blocked`, `restricted`, `proxy`, and `full`. The default is `full` so local coding workflows can install packages, run dev servers, and use external API tools while filesystem access stays bound to the workspace policy. Linux bubblewrap unshares networking for `blocked` and `restricted`; macOS seatbelt allows network access for `proxy` and `full`.
+
+`env_allowlist` is the environment variable allowlist copied into sandboxed subprocesses. The default `"*"` passes the effective process and workspace environment through. Set explicit names when a deployment wants a narrower subprocess environment; workspace environment overrides outside the explicit list are dropped before process creation.
+
+`raw_shell_approval` accepts `forbidden`, `requires_human`, and `allowed_for_profile`. Raw host shell execution also requires service-level allowance through `YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST=true` or profile-level `allowed_for_profile`. Treat raw host shell as an audited maintenance path.
+
 ## Tool and MCP Approval
 
 Profiles can require HITL for specific tools or MCP servers with `need_user_approve_tools` and `need_user_approve_mcps`.

@@ -37,22 +37,9 @@ ShellSandboxNetwork = Literal["blocked", "restricted", "proxy", "full"]
 # ShellSandboxRuntimePolicy.raw_shell_allowed boolean.
 ShellSandboxRawApproval = Literal["forbidden", "requires_human", "allowed_for_profile"]
 
-# Environment variables copied into sandboxed subprocesses. Other environment
-# overrides are dropped before process creation.
-DEFAULT_SHELL_SANDBOX_ENV_ALLOWLIST = (
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "TERM",
-    "LANG",
-    "LC_ALL",
-    "SHELL",
-    "PYTHONPATH",
-    "VIRTUAL_ENV",
-    "NODE_OPTIONS",
-    "npm_config_cache",
-    "UV_CACHE_DIR",
-)
+# Environment variables copied into sandboxed subprocesses. "*" means pass
+# the effective environment through. Profiles can set a narrower explicit list.
+DEFAULT_SHELL_SANDBOX_ENV_ALLOWLIST = ("*",)
 
 
 class ShellSandboxConfig(BaseModel):
@@ -67,7 +54,7 @@ class ShellSandboxConfig(BaseModel):
     enabled: bool = True
     profile: ShellSandboxProfile = "workspace_write"
     backend_preference: ShellSandboxBackend = "auto"
-    network: ShellSandboxNetwork = "restricted"
+    network: ShellSandboxNetwork = "full"
     env_allowlist: list[str] = Field(default_factory=lambda: list(DEFAULT_SHELL_SANDBOX_ENV_ALLOWLIST))
     raw_shell_approval: ShellSandboxRawApproval = "requires_human"
     audit_enabled: bool = True

@@ -206,7 +206,9 @@ macos:
   workspace_allowlist:
     - selected_workspace
   cwd: /workspace/main
-network: restricted
+network: full
+env_allowlist:
+  - "*"
 home: tmpfs
 timeout_seconds: 120
 output_limit_bytes: 1048576

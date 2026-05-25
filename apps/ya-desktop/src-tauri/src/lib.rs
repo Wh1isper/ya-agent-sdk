@@ -158,7 +158,7 @@ fn default_shell_sandbox_backend() -> String {
 }
 
 fn default_shell_sandbox_network() -> String {
-    "restricted".to_string()
+    "full".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1466,6 +1466,8 @@ profiles:
       profile: workspace_write
       backend_preference: {sandbox_backend}
       network: {sandbox_network}
+      env_allowlist:
+        - "*"
       raw_shell_approval: {sandbox_raw_host_approval}
       audit_enabled: true
   system_prompt: |-

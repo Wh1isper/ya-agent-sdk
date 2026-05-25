@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class WorkspaceShellSandboxDefaults:
     enabled: bool = True
     backend: ShellSandboxBackend = "auto"
-    network: ShellSandboxNetwork = "restricted"
+    network: ShellSandboxNetwork = "full"
     allow_raw_host: bool = False
 
 

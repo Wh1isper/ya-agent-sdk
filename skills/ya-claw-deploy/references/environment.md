@@ -74,6 +74,21 @@ Use the same values for systemd or custom container deployments when memory resi
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS`    | Idle seconds before stopping session sandboxes under `stop_on_idle`; default `3600`                                                                      |
 | `YA_CLAW_WORKSPACE_ENV_VARS`                            | Comma-separated process env names forwarded into workspace environments                                                                                  |
 
+## Shell Sandbox Settings
+
+These settings apply to local workspace shell execution. Docker workspace provider deployments use the Docker workspace container boundary; local shell deployments use `SandboxedLocalShell` when shell sandboxing is enabled.
+
+| Variable                               | Default | Purpose                                                                                                        |
+| -------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `YA_CLAW_SHELL_SANDBOX_ENABLED`        | `true`  | Enables local shell sandbox policy for local workspace environments                                            |
+| `YA_CLAW_SHELL_SANDBOX_BACKEND`        | `auto`  | Backend preference: `auto`, `linux_bwrap_seccomp`, `macos_seatbelt`, `windows_restricted_token`, or `raw_host` |
+| `YA_CLAW_SHELL_SANDBOX_NETWORK`        | `full`  | Network policy: `blocked`, `restricted`, `proxy`, or `full`                                                    |
+| `YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST` | `false` | Allows raw host shell fallback or explicit `raw_host` backend when profile policy also permits it              |
+
+`auto` selects `linux_bwrap_seccomp` on Linux, `macos_seatbelt` on macOS, and `windows_restricted_token` on Windows. Linux local shell sandboxing requires `bubblewrap` (`bwrap`) for the default backend. macOS local shell sandboxing uses `/usr/bin/sandbox-exec`. The Windows backend is planned and currently behaves as a guarded path.
+
+Profile-level `security.shell_sandbox` can override profile, backend preference, network policy, environment allowlist, raw host approval, and audit metadata. See [`profiles.md`](profiles.md#shell-sandbox-policy).
+
 ## Schedule and Heartbeat Settings
 
 | Variable                                         | Default                                    | Purpose                                                                  |
@@ -189,6 +204,10 @@ YA_CLAW_WORKSPACE_DIR=/var/lib/ya-claw/workspace
 YA_CLAW_WORKSPACE_PROVIDER_BACKEND=docker
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR=/srv/ya-claw/workspace
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE=ghcr.io/wh1isper/ya-claw-workspace:latest
+YA_CLAW_SHELL_SANDBOX_ENABLED=true
+YA_CLAW_SHELL_SANDBOX_BACKEND=auto
+YA_CLAW_SHELL_SANDBOX_NETWORK=full
+YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST=false
 YA_CLAW_PROFILE_SEED_FILE=/etc/ya-claw/profiles.yaml
 YA_CLAW_AUTO_SEED_PROFILES=true
 YA_CLAW_SCHEDULE_DISPATCH_ENABLED=true

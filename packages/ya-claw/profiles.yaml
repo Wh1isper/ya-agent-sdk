@@ -24,7 +24,9 @@ profiles:
       enabled: true
       profile: workspace_write
       backend_preference: auto
-      network: restricted
+      network: full
+      env_allowlist:
+        - "*"
       raw_shell_approval: requires_human
       audit_enabled: true
   system_prompt: |-

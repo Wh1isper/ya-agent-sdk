@@ -40,6 +40,10 @@ class SandboxedLocalShell(LocalShell):
     def _build_effective_env(self, env: dict[str, str] | None) -> dict[str, str] | None:
         requested = {**self._environment_overrides, **dict(env or {})}
         allowlist = set(self._policy.env_allowlist)
+        if "*" in allowlist:
+            if self._include_os_env:
+                return {**os.environ, **requested}
+            return requested
         filtered = {key: value for key, value in requested.items() if key in allowlist}
         if self._include_os_env:
             for key in allowlist:

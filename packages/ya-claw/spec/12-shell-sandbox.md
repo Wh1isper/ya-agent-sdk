@@ -82,13 +82,13 @@ type ShellSandboxProfile =
   | "danger_full_access";
 ```
 
-| Profile                 | Filesystem                            | Network             | Typical use                                     |
-| ----------------------- | ------------------------------------- | ------------------- | ----------------------------------------------- |
-| `read_only`             | workspace read, runtime scratch write | blocked             | inspection, grep, tests that write only scratch |
-| `workspace_write`       | selected workspace writes             | restricted or proxy | local coding and build loops                    |
-| `relay_workspace_write` | relay-granted roots only              | provider policy     | central Claw using Desktop local PC roots       |
-| `network_proxy`         | selected workspace writes             | proxy-mediated      | package install, docs fetch, API calls          |
-| `danger_full_access`    | host shell policy                     | full                | human-approved maintenance and diagnostics      |
+| Profile                 | Filesystem                            | Network         | Typical use                                     |
+| ----------------------- | ------------------------------------- | --------------- | ----------------------------------------------- |
+| `read_only`             | workspace read, runtime scratch write | blocked         | inspection, grep, tests that write only scratch |
+| `workspace_write`       | selected workspace writes             | full by default | local coding and build loops                    |
+| `relay_workspace_write` | relay-granted roots only              | provider policy | central Claw using Desktop local PC roots       |
+| `network_proxy`         | selected workspace writes             | proxy-mediated  | package install, docs fetch, API calls          |
+| `danger_full_access`    | host shell policy                     | full            | human-approved maintenance and diagnostics      |
 
 ### ShellSandboxPolicy
 
@@ -148,20 +148,9 @@ shell_sandbox:
       - runtime_metadata
       - git_metadata_when_protected
       - desktop_app_data
-  network: restricted
+  network: full
   env_allowlist:
-    - PATH
-    - HOME
-    - TMPDIR
-    - TERM
-    - LANG
-    - LC_ALL
-    - SHELL
-    - PYTHONPATH
-    - VIRTUAL_ENV
-    - NODE_OPTIONS
-    - npm_config_cache
-    - UV_CACHE_DIR
+    - "*"
   timeout_seconds: 120
   output_limit_bytes: 1048576
   raw_shell_approval: requires_human
@@ -221,7 +210,7 @@ Scratch cleanup follows run retention policy. Audit stores the scratch path hash
 | `proxy`      | egress through Claw or Desktop proxy policy | package install and web docs fetch |
 | `full`       | direct host networking                      | privileged profile with audit      |
 
-The default for local Desktop coding is `restricted`. Package installation and external API access should use `network_proxy` or an approved temporary upgrade.
+The default for local Desktop coding is `full` so package installation, development servers, and external API tools work without policy churn. Use `restricted`, `proxy`, or `blocked` for deployments that need tighter egress control.
 
 ## Linux Backend: `linux_bwrap_seccomp`
 
@@ -476,7 +465,9 @@ profiles:
     shell_sandbox:
       profile: workspace_write
       backend_preference: auto
-      network: restricted
+      network: full
+      env_allowlist:
+        - "*"
       raw_shell_approval: requires_human
       timeout_seconds: 120
       output_limit_bytes: 1048576

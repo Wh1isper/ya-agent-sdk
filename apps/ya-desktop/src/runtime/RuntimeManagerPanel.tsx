@@ -507,7 +507,7 @@ const defaultPresetText = `{
   "shellReviewAction": "defer",
   "shellSandboxEnabled": true,
   "shellSandboxBackend": "auto",
-  "shellSandboxNetwork": "restricted",
+  "shellSandboxNetwork": "full",
   "shellSandboxAllowRawHost": false,
   "env": {
     "YA_CLAW_AGENCY_TIMER_INTERVAL_SECONDS": "3600"

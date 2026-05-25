@@ -145,7 +145,7 @@ class ClawSettings(BaseSettings):
         "nsjail",
         "raw_host",
     ] = "auto"
-    shell_sandbox_network: Literal["blocked", "restricted", "proxy", "full"] = "restricted"
+    shell_sandbox_network: Literal["blocked", "restricted", "proxy", "full"] = "full"
     shell_sandbox_allow_raw_host: bool = False
     workspace_env_vars: str = ""
     bridge_dispatch_mode: BridgeDispatchMode = BridgeDispatchMode.EMBEDDED
