@@ -1,6 +1,20 @@
 name: Search Benchmarks
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/search-benchmarks.yml"
+      - "benchmarks/search/**"
+      - "packages/ya-agent-sdk/ya_agent_sdk/toolsets/core/filesystem/**"
+      - "packages/ya-agent-sdk/tests/toolsets/core/filesystem/**"
+      - "packages/ya-agent-sdk/pyproject.toml"
+      - "packages/ya-agent-environment/ya_agent_environment/**"
+      - "packages/ya-agent-environment/tests/**"
+      - "packages/ya-ripgrep-core/**"
+      - "Makefile"
+      - "pyproject.toml"
+      - "uv.lock"
   workflow_dispatch:
     inputs:
       case:
@@ -31,10 +45,18 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BENCH_CASE: ${{ github.event.inputs.case || 'quick' }}
+  BENCH_REPEAT: ${{ github.event.inputs.repeat || '3' }}
+  BENCH_OPERATIONS: ${{ github.event.inputs.operations || '' }}
+  BENCH_QUERIES: ${{ github.event.inputs.queries || '' }}
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   search-benchmarks:
-    name: Search Benchmarks (${{ inputs.case }})
+    name: Search Benchmarks (${{ github.event.inputs.case || 'quick' }})
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -47,25 +69,59 @@ jobs:
           extras: all
 
       - name: Run search benchmarks
-        run: >-
-          uv run python benchmarks/search/bench_search.py run
-          --case "${{ inputs.case }}"
-          --dataset ".bench/search-${{ inputs.case }}"
-          --variants python-native ripgrep-core
-          --repeat "${{ inputs.repeat }}"
-          --output ".bench/results/search-${{ inputs.case }}.jsonl"
-          --summary ".bench/results/search-${{ inputs.case }}-summary.md"
-          ${{ inputs.operations != '' && format('--operations "{0}"', inputs.operations) || '' }}
-          ${{ inputs.queries != '' && format('--queries "{0}"', inputs.queries) || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            uv run python benchmarks/search/bench_search.py run
+            --case "${BENCH_CASE}"
+            --dataset ".bench/search-${BENCH_CASE}"
+            --variants python-native ripgrep-core
+            --repeat "${BENCH_REPEAT}"
+            --output ".bench/results/search-${BENCH_CASE}.jsonl"
+            --summary ".bench/results/search-${BENCH_CASE}-summary.md"
+          )
+          if [[ -n "${BENCH_OPERATIONS}" ]]; then
+            args+=(--operations "${BENCH_OPERATIONS}")
+          fi
+          if [[ -n "${BENCH_QUERIES}" ]]; then
+            args+=(--queries "${BENCH_QUERIES}")
+          fi
+          "${args[@]}"
 
       - name: Print summary
-        run: cat ".bench/results/search-${{ inputs.case }}-summary.md"
+        run: cat ".bench/results/search-${BENCH_CASE}-summary.md"
+
+      - name: Comment summary on PR
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs')
+            const marker = '<!-- ya-search-benchmark-summary -->'
+            const summaryPath = `.bench/results/search-${process.env.BENCH_CASE}-summary.md`
+            const summary = fs.readFileSync(summaryPath, 'utf8')
+            const body = `${marker}\n${summary}`
+            const { owner, repo } = context.repo
+            const issue_number = context.issue.number
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            })
+            const existing = comments.find(comment => comment.body && comment.body.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body })
+            }
 
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: search-benchmarks-${{ inputs.case }}
+          name: search-benchmarks-${{ github.event.inputs.case || 'quick' }}
           path: |
-            .bench/results/search-${{ inputs.case }}.jsonl
-            .bench/results/search-${{ inputs.case }}-summary.md
-            .bench/search-${{ inputs.case }}/manifest.json
+            .bench/results/search-${{ github.event.inputs.case || 'quick' }}.jsonl
+            .bench/results/search-${{ github.event.inputs.case || 'quick' }}-summary.md
+            .bench/search-${{ github.event.inputs.case || 'quick' }}/manifest.json
