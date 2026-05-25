@@ -74,11 +74,21 @@ runtime = create_agent(
 
 ```python
 async def delegate(
-    subagent_name: str,  # Name of subagent to call (e.g., "debugger", "explorer")
+    subagent_name: str,  # Name of subagent to call (e.g., "self", "debugger", "explorer")
     prompt: str,         # Task to delegate
     agent_id: str | None = None,  # Optional ID to resume conversation
 ) -> str:
     ...
+```
+
+### Self Fork
+
+Unified delegate includes the built-in `subagent_name="self"` target. A self fork uses the current agent's system prompt, message history, model, capabilities, and ordinary tools, while delegation tools are hidden from the fork. Use it after making a plan to run independent plan steps in parallel with full current context.
+
+```python
+# After creating a plan, issue independent calls in the same model response.
+delegate(subagent_name="self", prompt="Implement plan step 1. Return changed files and test results.")
+delegate(subagent_name="self", prompt="Implement plan step 2. Return changed files and test results.")
 ```
 
 ### Key Benefits
