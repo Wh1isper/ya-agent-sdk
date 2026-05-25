@@ -15,6 +15,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.subagents.config import SubagentConfig
+from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 
 @pytest.fixture
@@ -64,6 +65,47 @@ class RequestCounter(AbstractCapability[Any]):
     async def before_model_request(self, ctx, request_context):
         self.count += 1
         return request_context
+
+
+class ExtraOrdinaryTool(BaseTool):
+    """Ordinary tool in an extra toolset."""
+
+    name = "extra_ordinary_tool"
+    description = "An ordinary tool"
+
+    async def call(self, ctx: RunContext) -> str:
+        return "ok"
+
+
+class ExtraDelegationTool(BaseTool):
+    """Delegation-tagged tool in an extra toolset."""
+
+    name = "extra_delegation_tool"
+    description = "A delegation tool"
+    tags = frozenset({"delegation"})
+
+    async def call(self, ctx: RunContext) -> str:
+        return "delegated"
+
+
+async def test_self_fork_filters_delegation_tags_from_extra_toolsets(env):
+    """Self fork should hide delegation tools from every SDK Toolset."""
+    config = SubagentConfig(name="helper", description="Helper", system_prompt="You are helper.")
+    extra_toolset = Toolset(tools=[ExtraOrdinaryTool, ExtraDelegationTool])
+
+    runtime = create_agent(
+        TestModel(),
+        env=env,
+        subagent_configs=[config],
+        unified_subagents=True,
+        toolsets=[extra_toolset],
+        defer_model_check=True,
+    )
+
+    assert runtime.ctx.self_fork_agent is not None
+    tool_names = [name for toolset in runtime.ctx.self_fork_agent._user_toolsets for name in toolset.tool_names]
+    assert "extra_ordinary_tool" in tool_names
+    assert "extra_delegation_tool" not in tool_names
 
 
 async def test_capabilities_forwarded_to_agent(env):

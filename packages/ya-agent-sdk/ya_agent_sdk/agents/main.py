@@ -146,6 +146,16 @@ def _restore_task_cancellation(task: asyncio.Task[Any] | None, count: int) -> No
         task.cancel()
 
 
+def _filter_delegation_toolset(
+    toolset: AbstractToolset[Any],
+    delegation_tags: frozenset[str],
+) -> AbstractToolset[Any]:
+    """Return a toolset safe for self forks by removing delegation-tagged tools."""
+    if isinstance(toolset, Toolset):
+        return toolset.exclude_tags(delegation_tags)
+    return toolset
+
+
 def _resolve_agent_retries(retries: int | AgentRetries | None, output_retries: int | None) -> int | AgentRetries:
     """Resolve SDK retry defaults into Pydantic AI's unified AgentRetries form."""
     if isinstance(retries, dict):
@@ -671,10 +681,7 @@ def create_agent(
 
     delegation_tags = frozenset({"delegation"})
     if core_toolset.has_tags(delegation_tags):
-        self_fork_toolsets: list[AbstractToolset[Any]] = [core_toolset.exclude_tags(delegation_tags)]
-        if toolsets:
-            self_fork_toolsets.extend(toolsets)
-        self_fork_toolsets.extend(actual_env.get_toolsets())
+        self_fork_toolsets = [_filter_delegation_toolset(toolset, delegation_tags) for toolset in all_toolsets]
         self_fork_base_model = (
             infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else base_model
         )

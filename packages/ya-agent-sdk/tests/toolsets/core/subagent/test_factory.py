@@ -1,11 +1,13 @@
 """Tests for subagent tool factory."""
 
+import asyncio
 import inspect
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import pytest
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
@@ -14,7 +16,7 @@ from ya_agent_sdk.toolsets.core.subagent import (
     create_subagent_call_func,
     create_subagent_tool,
 )
-from ya_agent_sdk.toolsets.core.subagent.factory import generate_unique_id
+from ya_agent_sdk.toolsets.core.subagent.factory import _get_self_fork_history, generate_unique_id
 
 # Tests for create_subagent_tool with create_subagent_call_func
 
@@ -234,7 +236,7 @@ async def test_create_subagent_call_func_basic():
     mock_run.__aiter__ = lambda _: empty_async_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter
@@ -262,6 +264,118 @@ async def test_create_subagent_call_func_basic():
     assert entry.agent_id.startswith("search-")
 
 
+async def test_concurrent_subagent_calls_do_not_share_wrapped_agent_model():
+    """Concurrent subagent calls should use per-run wrapped models."""
+    base_model = MagicMock()
+    base_model.model_name = "base-model"
+    mock_agent = MagicMock(spec=Agent)
+    mock_agent.model = base_model
+    mock_agent.name = "race"
+
+    mock_run = MagicMock()
+    mock_run.result = MagicMock()
+    mock_run.result.output = "race result"
+    mock_run.result.all_messages = MagicMock(return_value=[])
+    mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
+
+    async def empty_async_iter():
+        return
+        yield
+
+    mock_run.__aiter__ = lambda _: empty_async_iter()
+
+    wrapper_inputs = []
+    iter_models = []
+    first_iter_started = asyncio.Event()
+    release_first_iter = asyncio.Event()
+
+    def model_wrapper(model, agent_name, metadata):
+        wrapped_model = MagicMock()
+        wrapped_model.model_name = f"wrapped-{len(wrapper_inputs)}"
+        wrapper_inputs.append(model)
+        return wrapped_model
+
+    @asynccontextmanager
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
+        iter_models.append(model)
+        if len(iter_models) == 1:
+            first_iter_started.set()
+            await release_first_iter.wait()
+        yield mock_run
+
+    mock_agent.iter = mock_iter
+
+    call_func = create_subagent_call_func(mock_agent)
+    ctx = AgentContext(model_wrapper=model_wrapper)
+    mock_self = MagicMock(spec=BaseTool)
+
+    first = asyncio.create_task(call_func(mock_self, _create_mock_run_context(ctx), prompt="first"))
+    await first_iter_started.wait()
+    second = asyncio.create_task(call_func(mock_self, _create_mock_run_context(ctx), prompt="second"))
+    await asyncio.sleep(0)
+    release_first_iter.set()
+
+    await asyncio.gather(first, second)
+
+    assert wrapper_inputs == [base_model, base_model]
+    assert [model.model_name for model in iter_models] == ["wrapped-0", "wrapped-1"]
+    assert mock_agent.model is base_model
+
+
+async def test_concurrent_subagent_calls_reserve_distinct_agent_ids(monkeypatch):
+    """Concurrent calls should reserve IDs before history is written."""
+    mock_agent = MagicMock(spec=Agent)
+    mock_agent.model.model_name = "test-model"
+    mock_agent.name = "race"
+
+    mock_run = MagicMock()
+    mock_run.result = MagicMock()
+    mock_run.result.output = "race result"
+    mock_run.result.all_messages = MagicMock(return_value=[])
+    mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
+
+    async def empty_async_iter():
+        return
+        yield
+
+    mock_run.__aiter__ = lambda _: empty_async_iter()
+    first_iter_started = asyncio.Event()
+    release_first_iter = asyncio.Event()
+    seen_agent_ids = []
+
+    @asynccontextmanager
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
+        seen_agent_ids.append(deps.agent_id)
+        if len(seen_agent_ids) == 1:
+            first_iter_started.set()
+            await release_first_iter.wait()
+        yield mock_run
+
+    mock_agent.iter = mock_iter
+    ids = iter(["aaaa0000", "11110000"])
+
+    class MockUUID:
+        def __init__(self, value: str) -> None:
+            self.hex = value
+
+    monkeypatch.setattr("ya_agent_sdk.toolsets.core.subagent.factory.uuid4", lambda: MockUUID(next(ids)))
+
+    call_func = create_subagent_call_func(mock_agent)
+    ctx = AgentContext()
+    mock_self = MagicMock(spec=BaseTool)
+
+    first = asyncio.create_task(call_func(mock_self, _create_mock_run_context(ctx), prompt="first"))
+    await first_iter_started.wait()
+    second = asyncio.create_task(call_func(mock_self, _create_mock_run_context(ctx), prompt="second"))
+    await asyncio.sleep(0)
+    release_first_iter.set()
+
+    await asyncio.gather(first, second)
+
+    assert seen_agent_ids == ["race-aaaa", "race-1111"]
+    assert set(ctx.agent_registry) == {"race-aaaa", "race-1111"}
+
+
 async def test_create_subagent_call_func_registers_agent():
     """Test that create_subagent_call_func registers agent in agent_registry."""
     mock_agent = MagicMock(spec=Agent)
@@ -281,7 +395,7 @@ async def test_create_subagent_call_func_registers_agent():
     mock_run.__aiter__ = lambda _: empty_async_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter
@@ -323,7 +437,7 @@ async def test_create_subagent_call_func_stores_history():
     mock_run.__aiter__ = lambda _: empty_async_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter
@@ -340,6 +454,35 @@ async def test_create_subagent_call_func_stores_history():
     assert len(ctx.subagent_history) == 1
     agent_id = next(iter(ctx.subagent_history.keys()))
     assert ctx.subagent_history[agent_id] == mock_messages
+
+
+def test_get_self_fork_history_removes_all_unresolved_tool_calls() -> None:
+    """Self fork history should remove sibling pending tool calls."""
+    ctx = AgentContext()
+    run_ctx = _create_mock_run_context(ctx, tool_call_id="call-2")
+    run_ctx.messages = [
+        ModelResponse(
+            parts=[
+                TextPart(content="before tools"),
+                ToolCallPart(tool_name="delegate", args={}, tool_call_id="call-1"),
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="delegate", content="done", tool_call_id="call-1")]),
+        ModelResponse(
+            parts=[
+                TextPart(content="parallel calls"),
+                ToolCallPart(tool_name="delegate", args={}, tool_call_id="call-2"),
+                ToolCallPart(tool_name="delegate", args={}, tool_call_id="call-3"),
+            ]
+        ),
+    ]
+
+    history = _get_self_fork_history(run_ctx, "self-1234")
+
+    assert history is not None
+    response_parts = [part for message in history if isinstance(message, ModelResponse) for part in message.parts]
+    assert [part.tool_call_id for part in response_parts if isinstance(part, ToolCallPart)] == ["call-1"]
+    assert any(isinstance(part, TextPart) and part.content == "parallel calls" for part in response_parts)
 
 
 async def _assert_streaming_subagent_events(queue, *, mock_event: dict[str, str]) -> None:
@@ -417,7 +560,7 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     mock_run.__aiter__ = lambda _: node_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter
@@ -484,7 +627,7 @@ async def test_create_subagent_call_func_agent_id_with_name():
     mock_run.__aiter__ = lambda _: empty_async_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter
@@ -524,7 +667,7 @@ async def test_create_subagent_call_func_agent_id_without_name():
     mock_run.__aiter__ = lambda _: empty_async_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter
@@ -560,7 +703,7 @@ async def test_create_subagent_call_func_resume_with_agent_id():
     mock_run.__aiter__ = lambda _: empty_async_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter
@@ -608,7 +751,7 @@ async def test_usage_recorded_without_tool_call_id():
     mock_run.__aiter__ = lambda _: empty_async_iter()
 
     @asynccontextmanager
-    async def mock_iter(prompt, deps, message_history=None, usage_limits=None):
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
         yield mock_run
 
     mock_agent.iter = mock_iter

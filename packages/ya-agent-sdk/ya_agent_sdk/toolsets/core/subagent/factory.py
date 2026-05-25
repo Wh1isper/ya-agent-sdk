@@ -16,7 +16,14 @@ from uuid import uuid4
 
 from pydantic import Field
 from pydantic_ai import Agent, AgentRunResult, RunContext, UsageLimits
-from pydantic_ai.messages import BaseToolCallPart, ModelMessage, ModelResponse
+from pydantic_ai.messages import (
+    BaseToolCallPart,
+    BaseToolReturnPart,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+)
 from pydantic_ai.models import Model
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
@@ -135,6 +142,7 @@ async def _run_subagent_iter(
     prompt: str,
     message_history: list[Any] | None,
     *,
+    model: Model,
     model_id: str,
     agent_name: str,
     usage_id: str | None = None,
@@ -159,6 +167,7 @@ async def _run_subagent_iter(
         deps=sub_ctx,
         usage_limits=UsageLimits(request_limit=1000),
         message_history=message_history,
+        model=model,
     ) as run:
         async for node in run:
             if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
@@ -194,7 +203,7 @@ async def _run_subagent_iter(
     return cast(AgentRunResult, run.result)
 
 
-def generate_unique_id(existing: Container[str], *, max_retries: int = 10) -> str:
+def generate_unique_id(existing: Container[str], *, prefix: str = "", max_retries: int = 10) -> str:
     """Generate a unique 4-character ID with collision detection.
 
     First tries using the last 4 characters of run_id. If that collides
@@ -213,25 +222,38 @@ def generate_unique_id(existing: Container[str], *, max_retries: int = 10) -> st
     """
     for _ in range(max_retries):
         agent_id = uuid4().hex[:4]
-        if agent_id not in existing:
+        if f"{prefix}{agent_id}" not in existing:
             return agent_id
 
     raise RuntimeError(f"Failed to generate unique agent_id after {max_retries} retries")
 
 
-def _history_without_active_tool_call(
-    history: list[ModelMessage],
-    *,
-    tool_call_id: str | None,
-) -> list[ModelMessage]:
-    """Return history with the currently executing tool call removed.
+def _unresolved_tool_call_ids(history: list[ModelMessage]) -> set[str]:
+    """Return tool call IDs that have no matching return in the given history."""
+    unresolved: set[str] = set()
+    for message in history:
+        if isinstance(message, ModelResponse):
+            for part in message.parts:
+                if isinstance(part, BaseToolCallPart):
+                    unresolved.add(part.tool_call_id)
+        elif isinstance(message, ModelRequest):
+            for part in message.parts:
+                if isinstance(part, BaseToolReturnPart | RetryPromptPart):
+                    unresolved.discard(part.tool_call_id)
+    return unresolved
+
+
+def _history_without_unresolved_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]:
+    """Return history with pending tool calls removed.
 
     Self forks start from the parent conversation state and append their own
-    prompt. When called from a tool execution, the active delegate tool call has
-    no returned result yet. Removing that one tool-call part keeps the fork
-    history valid and avoids showing the fork its own invocation.
+    prompt. During parallel tool execution, sibling tool calls may still be
+    pending and therefore have no matching tool return. Removing all unresolved
+    tool-call parts keeps the fork history valid and avoids showing the fork its
+    own invocation.
     """
-    if tool_call_id is None:
+    unresolved_ids = _unresolved_tool_call_ids(history)
+    if not unresolved_ids:
         return list(history)
 
     cleaned: list[ModelMessage] = []
@@ -243,7 +265,7 @@ def _history_without_active_tool_call(
         parts = [
             part
             for part in message.parts
-            if not (isinstance(part, BaseToolCallPart) and part.tool_call_id == tool_call_id)
+            if not (isinstance(part, BaseToolCallPart) and part.tool_call_id in unresolved_ids)
         ]
         if parts:
             cleaned.append(replace(message, parts=parts))
@@ -255,7 +277,7 @@ def _get_self_fork_history(ctx: RunContext[AgentContext], agent_id: str) -> list
     resumed_history = ctx.deps.subagent_history.get(agent_id)
     if resumed_history is not None:
         return resumed_history
-    return _history_without_active_tool_call(list(ctx.messages), tool_call_id=ctx.tool_call_id)
+    return _history_without_unresolved_tool_calls(list(ctx.messages))
 
 
 def create_self_fork_call_func(
@@ -303,13 +325,15 @@ async def _call_agent_as_subagent(
     """Execute an agent using the common subagent lifecycle and history model."""
     deps = ctx.deps
 
-    # Generate stable agent_id if not provided
-    if not agent_id:
-        short_id = generate_unique_id(deps.subagent_history)
-        agent_id = f"{agent_name}-{short_id}"
+    async with deps._subagent_state_lock:
+        if agent_id is None:
+            existing_agent_ids = set(deps.agent_registry) | set(deps.subagent_history)
+            short_id = generate_unique_id(existing_agent_ids, prefix=f"{agent_name}-")
+            agent_id = f"{agent_name}-{short_id}"
 
-    # Track whether this is a new agent (not a resume) for cleanup on failure
-    is_new_agent = agent_id not in deps.agent_registry
+        # Track whether this is a new agent (not a resume) for cleanup on failure
+        is_new_agent = agent_id not in deps.agent_registry
+        deps.reserve_subagent_id(agent_name, agent_id)
 
     # Create subagent context (handles registration in agent_registry)
     override_kwargs: dict[str, Any] = {}
@@ -342,19 +366,15 @@ async def _call_agent_as_subagent(
             wrapper_metadata = deps.get_wrapper_metadata()
             subagent_ctx = deps.subagent_wrapper(agent_name, agent_id, wrapper_metadata)
 
-        # Save original model before entering wrapper so cleanup always works,
-        # even if subagent_wrapper.__aenter__ raises.
-        original_model = agent.model
-
         try:
             async with subagent_ctx:
-                # Apply model wrapper if configured
+                run_model = cast(Model, agent.model)
                 if deps.model_wrapper is not None:
-                    wrapper_metadata = deps.get_wrapper_metadata()
-                    wrapped = deps.model_wrapper(cast(Model, original_model), agent_name, wrapper_metadata)
-                    agent.model = await wrapped if isawaitable(wrapped) else wrapped
+                    wrapper_metadata = sub_ctx.get_wrapper_metadata()
+                    wrapped = deps.model_wrapper(run_model, agent_name, wrapper_metadata)
+                    run_model = await wrapped if isawaitable(wrapped) else wrapped
 
-                model_id = cast(Model, agent.model).model_name
+                model_id = run_model.model_name
                 usage_id = ctx.tool_call_id or uuid4().hex
                 message_history = (
                     initial_message_history_factory(ctx, agent_id)
@@ -367,6 +387,7 @@ async def _call_agent_as_subagent(
                     sub_ctx,
                     prompt,
                     message_history,
+                    model=run_model,
                     model_id=model_id,
                     agent_name=agent_name,
                     usage_id=usage_id,
@@ -400,9 +421,6 @@ async def _call_agent_as_subagent(
             raise
 
         finally:
-            # Restore original model to avoid side effects on shared agent
-            agent.model = original_model
-
             # Emit complete event to subagent's queue (use sub_ctx.elapsed_time for duration)
             elapsed = sub_ctx.elapsed_time
             duration = elapsed.total_seconds() if elapsed else 0.0

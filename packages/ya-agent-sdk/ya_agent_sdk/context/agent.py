@@ -1310,6 +1310,7 @@ class AgentContext(BaseModel):
     _agent_id: str = "main"
     _entered: bool = False
     _enter_lock: asyncio.Lock = None  # type: ignore[assignment]  # Initialized in __init__
+    _subagent_state_lock: asyncio.Lock = None  # type: ignore[assignment]  # Initialized in __init__
     _stream_queue_enabled: bool = False
     _compact_depth: int = 0
 
@@ -1317,6 +1318,7 @@ class AgentContext(BaseModel):
         """Initialize AgentContext."""
         super().__init__(**data)
         object.__setattr__(self, "_enter_lock", asyncio.Lock())
+        object.__setattr__(self, "_subagent_state_lock", asyncio.Lock())
 
     @property
     def agent_id(self) -> str:
@@ -1663,9 +1665,24 @@ class AgentContext(BaseModel):
         # Reset private state for fresh lifecycle
         object.__setattr__(new_ctx, "_entered", False)
         object.__setattr__(new_ctx, "_enter_lock", asyncio.Lock())
+        object.__setattr__(new_ctx, "_subagent_state_lock", self._subagent_state_lock)
         object.__setattr__(new_ctx, "_stream_queue_enabled", False)
         object.__setattr__(new_ctx, "_compact_depth", 0)
         return new_ctx
+
+    def reserve_subagent_id(self, agent_name: str, agent_id: str | None = None) -> str:
+        """Reserve and register a subagent ID synchronously.
+
+        The caller must hold ``_subagent_state_lock`` while calling this method.
+        """
+        effective_agent_id = agent_id or _generate_run_id()
+        if effective_agent_id not in self.agent_registry:
+            self.agent_registry[effective_agent_id] = AgentInfo(
+                agent_id=effective_agent_id,
+                agent_name=agent_name,
+                parent_agent_id=self._agent_id,
+            )
+        return effective_agent_id
 
     def create_subagent_context(
         self,
@@ -1700,16 +1717,7 @@ class AgentContext(BaseModel):
         Returns:
             A new context instance configured for the subagent.
         """
-        # Generate agent_id if not provided
-        effective_agent_id = agent_id or _generate_run_id()
-
-        # Register agent info in parent's registry (idempotent for resume)
-        if effective_agent_id not in self.agent_registry:
-            self.agent_registry[effective_agent_id] = AgentInfo(
-                agent_id=effective_agent_id,
-                agent_name=agent_name,
-                parent_agent_id=self._agent_id,
-            )
+        effective_agent_id = self.reserve_subagent_id(agent_name, agent_id)
 
         update: dict[str, Any] = {
             "run_id": _generate_run_id(),
@@ -1731,6 +1739,7 @@ class AgentContext(BaseModel):
         # Reset re-entry protection for subagent (independent lifecycle)
         object.__setattr__(new_ctx, "_entered", False)
         object.__setattr__(new_ctx, "_enter_lock", asyncio.Lock())
+        object.__setattr__(new_ctx, "_subagent_state_lock", self._subagent_state_lock)
         object.__setattr__(new_ctx, "_compact_depth", 0)
         return new_ctx
 
