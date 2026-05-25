@@ -75,7 +75,7 @@ async with stream_agent(runtime, "Hello") as streamer:
 
 ## Local Shell Sandbox Policy
 
-`LocalShell` is the SDK's single local subprocess implementation. By default, `LocalShell` and `LocalEnvironment` preserve raw local subprocess behavior for SDK and YAACLI compatibility. Pass a resolved `ShellSandboxRuntimePolicy` to `LocalShell(sandbox_policy=...)` or `LocalEnvironment(shell_sandbox_policy=...)` to route commands through the selected local sandbox backend. `SandboxedLocalShell` remains available as an alias subclass that constructs `LocalShell` with a required policy.
+`LocalShell` is the SDK's single local subprocess implementation. By default, `LocalShell` and `LocalEnvironment` preserve raw local subprocess behavior for SDK and YAACLI compatibility. Pass a resolved `ShellSandboxRuntimePolicy` to `LocalShell(sandbox_policy=...)` or `LocalEnvironment(shell_sandbox_policy=...)` to route commands through the selected local sandbox backend. `SandboxedLocalShell` is exported as a direct alias of `LocalShell` for naming convenience.
 
 ## Shell Command Review
 

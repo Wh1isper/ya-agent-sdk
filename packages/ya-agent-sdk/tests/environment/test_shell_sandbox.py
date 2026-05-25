@@ -7,7 +7,7 @@ import pytest
 import ya_agent_sdk.environment.shell_sandbox.backend as backend
 from ya_agent_environment import ShellExecutionError
 from ya_agent_sdk.environment import (
-    SandboxedLocalShell,
+    LocalShell,
     ShellSandboxConfig,
     ShellSandboxMountPolicy,
     ShellSandboxRuntimePolicy,
@@ -104,9 +104,9 @@ def test_macos_seatbelt_profile_reflects_mount_modes(tmp_path: Path) -> None:
     assert f'(allow file-write* (subpath "{writable.resolve()}"))' in profile
 
 
-async def test_sandboxed_local_shell_blocks_unapproved_raw_host(tmp_path: Path) -> None:
-    shell = SandboxedLocalShell(
-        policy=ShellSandboxRuntimePolicy(
+async def test_local_shell_sandbox_policy_blocks_unapproved_raw_host(tmp_path: Path) -> None:
+    shell = LocalShell(
+        sandbox_policy=ShellSandboxRuntimePolicy(
             enabled=True,
             profile="workspace_write",
             backend="raw_host",
@@ -125,9 +125,9 @@ async def test_sandboxed_local_shell_blocks_unapproved_raw_host(tmp_path: Path) 
         await shell.execute("echo denied")
 
 
-async def test_sandboxed_local_shell_filters_environment_for_raw_host(tmp_path: Path) -> None:
-    shell = SandboxedLocalShell(
-        policy=ShellSandboxRuntimePolicy(
+async def test_local_shell_sandbox_policy_filters_environment_for_raw_host(tmp_path: Path) -> None:
+    shell = LocalShell(
+        sandbox_policy=ShellSandboxRuntimePolicy(
             enabled=True,
             profile="workspace_write",
             backend="raw_host",
@@ -153,9 +153,9 @@ async def test_sandboxed_local_shell_filters_environment_for_raw_host(tmp_path: 
     assert stdout == "from-call:"
 
 
-async def test_sandboxed_local_shell_star_allowlist_passes_environment_for_raw_host(tmp_path: Path) -> None:
-    shell = SandboxedLocalShell(
-        policy=ShellSandboxRuntimePolicy(
+async def test_local_shell_sandbox_policy_star_allowlist_passes_environment_for_raw_host(tmp_path: Path) -> None:
+    shell = LocalShell(
+        sandbox_policy=ShellSandboxRuntimePolicy(
             enabled=True,
             profile="workspace_write",
             backend="raw_host",
