@@ -26,21 +26,94 @@ jobs:
       - name: Set up the environment
         uses: ./.github/actions/setup-python-env
 
+      - name: Resolve release version
+        id: release_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cd packages/ya-agent-sdk && uvx --with uv-dynamic-versioning hatchling version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release version: $version"
+
+      - name: Sync ripgrep core Cargo version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          version = "${{ steps.release_version.outputs.version }}"
+          path = Path("packages/ya-ripgrep-core/Cargo.toml")
+          text = path.read_text()
+          text = re.sub(r'(?m)^version = "[^"]+"', f'version = "{version}"', text, count=1)
+          path.write_text(text)
+          PY
+
       - name: Sync skills folder
         run: bash scripts/sync-skills.sh
 
-      - name: Build all packages
-        run: uv build --all-packages -o dist
+      - name: Build pure Python packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          packages=(
+            ya-agent-environment
+            ya-environment-relay
+            ya-agent-sdk
+            ya-oauth
+            ya-oauth-provider
+            yaacli
+            ya-claw
+            ya-agent-platform
+          )
+          for package in "${packages[@]}"; do
+            uv build --package "$package" -o dist
+          done
+
+      - name: Build ripgrep core source distribution
+        run: uv build --package ya-ripgrep-core --sdist -o dist
+
+      - name: Build ripgrep core manylinux wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          maturin-version: v1.11.5
+          args: --manifest-path packages/ya-ripgrep-core/Cargo.toml --release --out dist --interpreter python3.11 python3.12 python3.13 --compatibility pypi
+          manylinux: "2014"
+          sccache: "true"
 
       - name: Inspect package version
         id: inspect_package
         run: |
           version=$(cd packages/ya-agent-sdk && uvx --with uv-dynamic-versioning hatchling version)
+          ripgrep_version=$(python - <<'PY'
+          import tomllib
+          with open("packages/ya-ripgrep-core/Cargo.toml", "rb") as stream:
+              print(tomllib.load(stream)["package"]["version"])
+          PY
+          )
           echo "version=$version"
+          echo "ripgrep_version=$ripgrep_version"
+          if [[ "$version" != "${{ steps.release_version.outputs.version }}" ]]; then
+            echo "Python package version mismatch: $version" >&2
+            exit 1
+          fi
+          if [[ "$ripgrep_version" != "${{ steps.release_version.outputs.version }}" ]]; then
+            echo "Ripgrep core version mismatch: $ripgrep_version" >&2
+            exit 1
+          fi
+          ls -1 dist
+          if ls dist/ya_ripgrep_core-*-linux_*.whl >/dev/null 2>&1; then
+            echo "Found unsupported linux platform wheel tag" >&2
+            ls dist/ya_ripgrep_core-*-linux_*.whl >&2
+            exit 1
+          fi
+          ls dist/ya_ripgrep_core-*-manylinux*.whl >/dev/null
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Publish packages to PyPI
-        run: uv publish dist/*
+        run: uv publish --check-url https://pypi.org/simple/ dist/*
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
 
