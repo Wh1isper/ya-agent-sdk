@@ -401,7 +401,9 @@ def run_worker(args: argparse.Namespace) -> None:
     if query is None:
         raise SystemExit(f"Unknown query: {args.query}")
     result = asyncio.run(_measure(Path(args.dataset), args.case, args.variant, query))
-    print(json.dumps(asdict(result), sort_keys=True))
+    row = asdict(result)
+    row["repeat_index"] = args.repeat_index
+    print(json.dumps(row, sort_keys=True))
 
 
 async def _measure(dataset: Path, case_name: str, variant: str, query: Query) -> BenchmarkResult:
@@ -580,12 +582,57 @@ def summarize_rows(rows: Sequence[dict[str, Any]]) -> str:
         key = (row["case"], row["operation"], row["query"], row["variant"])
         grouped[key].append(row)
 
+    aggregates = _aggregate_summary_rows(grouped)
+    query_groups = _group_aggregates_by_query(aggregates)
+    cases = sorted({case for case, _, _ in query_groups})
+    repeats = _repeat_count(rows)
+    row_count = len(rows)
+    query_count = len(query_groups)
+    variant_names = sorted({variant for variants in aggregates.values() for variant in variants})
+
     lines = [
         "# File Search Benchmark Summary",
         "",
-        "| case | op | query | variant | backend | p50 ms | p95 ms | peak RSS MB | Python peak MB | matches | files searched |",
-        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        _format_overview_line(cases=cases, repeats=repeats, row_count=row_count, query_count=query_count),
+        "",
+        "## Quick read",
+        "",
+        *(_format_quick_read_lines(query_groups) or ["No comparable variant pairs were found."]),
+        "",
+        "## Direct comparisons",
+        "",
     ]
+
+    comparison_lines = _format_comparison_tables(query_groups)
+    if comparison_lines:
+        lines.extend(comparison_lines)
+    else:
+        lines.append("No direct comparisons are available for the collected variants.")
+
+    lines.extend([
+        "",
+        "<details>",
+        "<summary>Raw per-variant data</summary>",
+        "",
+        "| case | op | query | variant | backend | p50 | p95 | peak RSS | Python peak | matches | files |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for key in sorted(aggregates):
+        case, operation, query = key
+        for variant in sorted(aggregates[key]):
+            item = aggregates[key][variant]
+            lines.append(
+                f"| {case} | {operation} | `{query}` | `{variant}` | {_backend_label(item)} | "
+                f"{item['p50']:.2f} ms | {item['p95']:.2f} ms | {item['rss']:.1f} MB | "
+                f"{item['py']:.1f} MB | {int(item['matches'])} | {int(item['files'])} |"
+            )
+    lines.extend(["", "</details>", "", _format_footer(variant_names)])
+    return "\n".join(lines) + "\n"
+
+
+def _aggregate_summary_rows(
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]],
+) -> dict[tuple[str, str, str], dict[str, dict[str, float]]]:
     aggregates: dict[tuple[str, str, str], dict[str, dict[str, float]]] = defaultdict(dict)
     for key in sorted(grouped):
         case, operation, query, variant = key
@@ -597,38 +644,177 @@ def summarize_rows(rows: Sequence[dict[str, Any]]) -> str:
         python_peak = max(float(item["tracemalloc_peak_mb"]) for item in items)
         matches = int(statistics.median(int(item["matches"]) for item in items))
         files_searched = int(statistics.median(int(item["files_searched"]) for item in items))
-        backend = "yes" if any(bool(item["backend_available"]) for item in items) else "no"
-        lines.append(
-            f"| {case} | {operation} | {query} | {variant} | {backend} | "
-            f"{p50:.2f} | {p95:.2f} | {peak_rss:.1f} | {python_peak:.1f} | {matches} | {files_searched} |"
-        )
-        aggregates[(case, operation, query)][variant] = {"p50": p50, "rss": peak_rss, "py": python_peak}
+        backend_available = any(bool(item["backend_available"]) for item in items)
+        aggregates[(case, operation, query)][variant] = {
+            "p50": p50,
+            "p95": p95,
+            "rss": peak_rss,
+            "py": python_peak,
+            "matches": float(matches),
+            "files": float(files_searched),
+            "backend": 1.0 if backend_available else 0.0,
+        }
+    return aggregates
 
-    lines.extend(["", "## Ratios", ""])
-    for key in sorted(aggregates):
-        variants = aggregates[key]
-        case, operation, query = key
-        ratio_pairs = [
-            ("head-python-native", "base-python-native", "new python-native", "old python-native"),
-            ("head-ripgrep-core", "base-ripgrep-core", "new ripgrep-core", "old ripgrep-core"),
-            ("head-ripgrep-core", "head-python-native", "new ripgrep-core", "new python-native"),
-            ("base-ripgrep-core", "base-python-native", "old ripgrep-core", "old python-native"),
-            ("ripgrep-core", "base", "head ripgrep-core", "base"),
-            ("python-native", "base", "head python-native", "base"),
-            ("ripgrep-core", "python-native", "ripgrep-core", "python-native"),
+
+def _group_aggregates_by_query(
+    aggregates: dict[tuple[str, str, str], dict[str, dict[str, float]]],
+) -> dict[tuple[str, str, str], dict[str, dict[str, float]]]:
+    return dict(sorted(aggregates.items()))
+
+
+def _repeat_count(rows: Sequence[dict[str, Any]]) -> int:
+    repeat_indexes = {int(row.get("repeat_index", 0)) for row in rows}
+    return len(repeat_indexes) if repeat_indexes else 0
+
+
+def _format_overview_line(*, cases: Sequence[str], repeats: int, row_count: int, query_count: int) -> str:
+    case_label = ", ".join(f"`{case}`" for case in cases) if cases else "unknown"
+    return f"**Cases:** {case_label} · **Queries:** {query_count} · **Repeats:** {repeats} · **Rows:** {row_count}"
+
+
+def _format_quick_read_lines(
+    query_groups: dict[tuple[str, str, str], dict[str, dict[str, float]]],
+) -> list[str]:
+    rows: list[str] = []
+    preferred_pairs = [
+        ("head-ripgrep-core", "base-ripgrep-core", "New Rust vs old Rust"),
+        ("head-python-native", "base-python-native", "New Python vs old Python"),
+        ("ripgrep-core", "python-native", "Rust core vs Python"),
+        ("head-ripgrep-core", "head-python-native", "Head Rust vs head Python"),
+    ]
+    for left, right, label in preferred_pairs:
+        comparisons = [
+            _compare_variants(case, operation, query, variants, left, right, label)
+            for (case, operation, query), variants in query_groups.items()
         ]
-        for numerator_name, denominator_name, numerator_label, denominator_label in ratio_pairs:
-            if numerator_name not in variants or denominator_name not in variants:
-                continue
-            numerator = variants[numerator_name]
-            denominator = variants[denominator_name]
-            speed_ratio = denominator["p50"] / numerator["p50"] if numerator["p50"] else 0.0
-            rss_ratio = denominator["rss"] / numerator["rss"] if numerator["rss"] else 0.0
+        comparisons = [comparison for comparison in comparisons if comparison is not None]
+        if not comparisons:
+            continue
+        faster = sum(1 for comparison in comparisons if comparison["left_wins"])
+        left_ratios = [float(comparison["left_ratio"]) for comparison in comparisons]
+        average_ratio = statistics.mean(left_ratios)
+        best = max(comparisons, key=lambda comparison: float(comparison["left_ratio"]))
+        lowest = min(comparisons, key=lambda comparison: float(comparison["left_ratio"]))
+        rows.append(
+            f"| {label} | {faster}/{len(comparisons)} | {average_ratio:.2f}x | "
+            f"`{best['query']}` {best['left_ratio']:.2f}x | `{lowest['query']}` {lowest['left_ratio']:.2f}x |"
+        )
+    if not rows:
+        return []
+    return [
+        "| comparison | wins | avg speed | best query | lowest query |",
+        "| --- | ---: | ---: | --- | --- |",
+        *rows,
+    ]
+
+
+def _format_comparison_tables(
+    query_groups: dict[tuple[str, str, str], dict[str, dict[str, float]]],
+) -> list[str]:
+    sections = [
+        (
+            "PR change",
+            [
+                ("head-ripgrep-core", "base-ripgrep-core", "Rust"),
+                ("head-python-native", "base-python-native", "Python"),
+            ],
+        ),
+        (
+            "Runtime backend",
+            [
+                ("ripgrep-core", "python-native", "Rust core vs Python"),
+                ("head-ripgrep-core", "head-python-native", "Head Rust vs Python"),
+                ("base-ripgrep-core", "base-python-native", "Base Rust vs Python"),
+            ],
+        ),
+        ("Legacy head/base", [("ripgrep-core", "base", "Rust vs base"), ("python-native", "base", "Python vs base")]),
+    ]
+    lines: list[str] = []
+    for title, pairs in sections:
+        section_rows: list[dict[str, Any]] = []
+        for left, right, label in pairs:
+            for (case, operation, query), variants in query_groups.items():
+                comparison = _compare_variants(case, operation, query, variants, left, right, label)
+                if comparison is not None:
+                    section_rows.append(comparison)
+        if not section_rows:
+            continue
+        if lines:
+            lines.append("")
+        lines.extend([
+            f"### {title}",
+            "",
+            "| query | comparison | winner | speedup | winner p50 | other p50 | saved | RSS winner/other |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for row in sorted(section_rows, key=lambda item: (str(item["query"]), str(item["label"]))):
             lines.append(
-                f"- {case} {operation} {query}: {numerator_label} speed ratio {speed_ratio:.2f}x, "
-                f"peak RSS ratio {rss_ratio:.2f}x versus {denominator_label}."
+                f"| `{row['query']}` | {row['label']} | `{row['winner']}` | {row['ratio']:.2f}x | "
+                f"{row['winner_p50']:.2f} ms | {row['other_p50']:.2f} ms | {row['saved_ms']:.2f} ms | "
+                f"{row['winner_rss']:.1f}/{row['other_rss']:.1f} MB |"
             )
-    return "\n".join(lines) + "\n"
+    return lines
+
+
+def _compare_variants(
+    case: str,
+    operation: str,
+    query: str,
+    variants: dict[str, dict[str, float]],
+    left_name: str,
+    right_name: str,
+    label: str,
+) -> dict[str, Any] | None:
+    if left_name not in variants or right_name not in variants:
+        return None
+    left = variants[left_name]
+    right = variants[right_name]
+    left_p50 = left["p50"]
+    right_p50 = right["p50"]
+    left_ratio = right_p50 / left_p50 if left_p50 else 0.0
+    left_wins = left_p50 <= right_p50
+    if left_wins:
+        winner_name = left_name
+        other_name = right_name
+        winner = left
+        other = right
+        winner_p50 = left_p50
+        other_p50 = right_p50
+        ratio = left_ratio
+    else:
+        winner_name = right_name
+        other_name = left_name
+        winner = right
+        other = left
+        winner_p50 = right_p50
+        other_p50 = left_p50
+        ratio = left_p50 / right_p50 if right_p50 else 0.0
+    return {
+        "case": case,
+        "operation": operation,
+        "query": query,
+        "label": label,
+        "winner": winner_name,
+        "other": other_name,
+        "ratio": ratio,
+        "left_ratio": left_ratio,
+        "left_wins": left_wins,
+        "winner_p50": winner_p50,
+        "other_p50": other_p50,
+        "saved_ms": other_p50 - winner_p50,
+        "winner_rss": winner["rss"],
+        "other_rss": other["rss"],
+    }
+
+
+def _backend_label(item: dict[str, float]) -> str:
+    return "yes" if bool(item["backend"]) else "no"
+
+
+def _format_footer(variant_names: Sequence[str]) -> str:
+    variants = ", ".join(f"`{variant}`" for variant in variant_names) if variant_names else "unknown"
+    return f"Variants: {variants}. Times are p50/p95 wall-clock milliseconds; lower is faster."
 
 
 def _csv(value: str | None) -> list[str] | None:
