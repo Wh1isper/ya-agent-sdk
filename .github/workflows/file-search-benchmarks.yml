@@ -10,11 +10,11 @@ on:
       - "packages/ya-agent-sdk/tests/toolsets/core/filesystem/**"
       - "packages/ya-agent-sdk/pyproject.toml"
       - "packages/ya-agent-environment/ya_agent_environment/**"
-      - "packages/ya-agent-environment/tests/**"
-      - "packages/ya-ripgrep-core/**"
-      - "Makefile"
-      - "pyproject.toml"
-      - "uv.lock"
+      - "packages/ya-ripgrep-core/src/**"
+      - "packages/ya-ripgrep-core/tests/**"
+      - "packages/ya-ripgrep-core/Cargo.toml"
+      - "packages/ya-ripgrep-core/Cargo.lock"
+      - "packages/ya-ripgrep-core/pyproject.toml"
   workflow_dispatch:
     inputs:
       case:
@@ -59,6 +59,10 @@ env:
 permissions:
   contents: read
   pull-requests: write
+
+concurrency:
+  group: file-search-benchmarks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   file-search-benchmarks:

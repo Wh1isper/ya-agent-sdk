@@ -5,26 +5,34 @@ on:
     branches:
       - main
     paths:
-      - "packages/ya-agent-sdk/**"
+      - "packages/ya-agent-sdk/ya_agent_sdk/environment/process.py"
+      - "packages/ya-agent-sdk/ya_agent_sdk/environment/local.py"
+      - "packages/ya-agent-sdk/ya_agent_sdk/environment/shell_sandbox/**"
+      - "packages/ya-agent-sdk/tests/environment/test_shell_sandbox.py"
+      - "packages/ya-agent-sdk/tests/environment/test_shell_sandbox_integration.py"
       - "packages/ya-claw/ya_claw/workspace/shell_sandbox.py"
       - "packages/ya-claw/tests/test_workspace_shell_sandbox.py"
-      - "pyproject.toml"
-      - "uv.lock"
       - ".github/workflows/shell-sandbox.yml"
       - ".github/actions/setup-python-env/**"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
-      - "packages/ya-agent-sdk/**"
+      - "packages/ya-agent-sdk/ya_agent_sdk/environment/process.py"
+      - "packages/ya-agent-sdk/ya_agent_sdk/environment/local.py"
+      - "packages/ya-agent-sdk/ya_agent_sdk/environment/shell_sandbox/**"
+      - "packages/ya-agent-sdk/tests/environment/test_shell_sandbox.py"
+      - "packages/ya-agent-sdk/tests/environment/test_shell_sandbox_integration.py"
       - "packages/ya-claw/ya_claw/workspace/shell_sandbox.py"
       - "packages/ya-claw/tests/test_workspace_shell_sandbox.py"
-      - "pyproject.toml"
-      - "uv.lock"
       - ".github/workflows/shell-sandbox.yml"
       - ".github/actions/setup-python-env/**"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: shell-sandbox-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   shell-sandbox-package:

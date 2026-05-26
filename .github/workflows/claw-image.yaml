@@ -4,8 +4,48 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "Dockerfile.ya-claw"
+      - ".dockerignore"
+      - "apps/ya-claw-web/**"
+      - "packages/ya-agent-environment/pyproject.toml"
+      - "packages/ya-agent-sdk/pyproject.toml"
+      - "packages/ya-oauth/pyproject.toml"
+      - "packages/ya-oauth-provider/pyproject.toml"
+      - "packages/yaacli/pyproject.toml"
+      - "packages/ya-claw/ya_claw/**"
+      - "packages/ya-claw/scripts/**"
+      - "packages/ya-claw/docker-entrypoint.sh"
+      - "packages/ya-claw/profiles.yaml"
+      - "packages/ya-claw/pyproject.toml"
+      - "packages/ya-ripgrep-core/pyproject.toml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/claw-image.yaml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "Dockerfile.ya-claw"
+      - ".dockerignore"
+      - "apps/ya-claw-web/**"
+      - "packages/ya-agent-environment/pyproject.toml"
+      - "packages/ya-agent-sdk/pyproject.toml"
+      - "packages/ya-oauth/pyproject.toml"
+      - "packages/ya-oauth-provider/pyproject.toml"
+      - "packages/yaacli/pyproject.toml"
+      - "packages/ya-claw/ya_claw/**"
+      - "packages/ya-claw/scripts/**"
+      - "packages/ya-claw/docker-entrypoint.sh"
+      - "packages/ya-claw/profiles.yaml"
+      - "packages/ya-claw/pyproject.toml"
+      - "packages/ya-ripgrep-core/pyproject.toml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/claw-image.yaml"
   release:
     types: [published]
 
@@ -15,6 +55,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: ya-claw-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
