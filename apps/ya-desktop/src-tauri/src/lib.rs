@@ -17,7 +17,8 @@ const CLAW_AUTO_UPDATE_INITIAL_DELAY: Duration = Duration::from_secs(30);
 const CLAW_AUTO_UPDATE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 const DESKTOP_CLAW_CONTRACT: &str = "claw-desktop.v1";
 const DESKTOP_RELAY_PROTOCOL: &str = "ya-environment-relay.v1";
-const DEFAULT_CLAW_PACKAGE_SPEC: &str = "ya-claw[all]";
+const DEFAULT_CLAW_PACKAGE_SPEC: &str = "ya-claw[rs]";
+const FALLBACK_CLAW_PACKAGE_SPEC: &str = "ya-claw";
 const DEFAULT_CLAW_PYTHON_VERSION: &str = "3.13";
 
 #[derive(Default)]
@@ -972,6 +973,12 @@ fn install_claw_runtime_inner(
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_CLAW_PACKAGE_SPEC.to_string());
+    let fallback_package_spec = std::env::var("YA_DESKTOP_CLAW_FALLBACK_PACKAGE_SPEC")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| FALLBACK_CLAW_PACKAGE_SPEC.to_string());
+    let allow_rs_fallback =
+        package_spec == DEFAULT_CLAW_PACKAGE_SPEC && fallback_package_spec != package_spec;
     let python_version = std::env::var("YA_DESKTOP_CLAW_PYTHON_VERSION")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1013,8 +1020,18 @@ fn install_claw_runtime_inner(
     if upgrade {
         pip_args.push("--upgrade".to_string());
     }
-    pip_args.push(package_spec.clone());
-    run_uv_command(&uv_path, layout, &pip_args, log_file)?;
+    let installed_package_spec = install_runtime_package(
+        &uv_path,
+        layout,
+        &pip_args,
+        &package_spec,
+        if allow_rs_fallback {
+            Some(fallback_package_spec.as_str())
+        } else {
+            None
+        },
+        log_file,
+    )?;
 
     let version_output = run_runtime_command_capture(
         &entrypoint,
@@ -1047,7 +1064,7 @@ fn install_claw_runtime_inner(
         entrypoint: entrypoint.to_string_lossy().to_string(),
         runtime_dir: runtime_dir.to_string_lossy().to_string(),
         version: version_payload.version,
-        package_spec,
+        package_spec: installed_package_spec,
         python_version,
         uv_path: uv_path.to_string_lossy().to_string(),
         installed_at: unix_timestamp()?,
@@ -1060,6 +1077,37 @@ fn install_claw_runtime_inner(
     )
     .map_err(|error| error.to_string())?;
     Ok(runtime)
+}
+
+fn install_runtime_package(
+    uv_path: &Path,
+    layout: &RuntimeManagerLayout,
+    base_pip_args: &[String],
+    package_spec: &str,
+    fallback_package_spec: Option<&str>,
+    log_file: &Path,
+) -> Result<String, String> {
+    let mut primary_args = base_pip_args.to_vec();
+    primary_args.push(package_spec.to_string());
+    match run_uv_command(uv_path, layout, &primary_args, log_file) {
+        Ok(()) => Ok(package_spec.to_string()),
+        Err(primary_error) => {
+            let Some(fallback) = fallback_package_spec else {
+                return Err(primary_error);
+            };
+            append_log_line(
+                log_file,
+                &format!(
+                    "Rust runtime install failed for {}; retrying with {}: {}",
+                    package_spec, fallback, primary_error
+                ),
+            );
+            let mut fallback_args = base_pip_args.to_vec();
+            fallback_args.push(fallback.to_string());
+            run_uv_command(uv_path, layout, &fallback_args, log_file)?;
+            Ok(fallback.to_string())
+        }
+    }
 }
 
 fn ensure_runtime_manager_layout(app: &AppHandle) -> Result<RuntimeManagerLayout, String> {

@@ -115,6 +115,7 @@ jobs:
             uv run python ../head/benchmarks/file_search/base_worker.py
             --case "${BENCH_CASE}"
             --dataset "../.bench/file-search-${BENCH_CASE}"
+            --variants base-python-native base-ripgrep-core
             --repeat "${BENCH_REPEAT}"
             --output "../.bench/results/file-search-${BENCH_CASE}.jsonl"
           )
@@ -135,7 +136,7 @@ jobs:
             uv run python benchmarks/file_search/bench_file_search.py run
             --case "${BENCH_CASE}"
             --dataset "../.bench/file-search-${BENCH_CASE}"
-            --variants python-native ripgrep-core
+            --variants head-python-native head-ripgrep-core
             --repeat "${BENCH_REPEAT}"
             --output "../.bench/results/file-search-${BENCH_CASE}.jsonl"
             --summary "../.bench/results/file-search-${BENCH_CASE}-summary.md"

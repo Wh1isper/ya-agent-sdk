@@ -13,10 +13,12 @@ import asyncio
 import fnmatch
 import json
 import logging
+import os
 import platform
 import re
 import resource
 import statistics
+import subprocess
 import sys
 import time
 import tracemalloc
@@ -28,6 +30,13 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.filesystem._gitignore import filter_gitignored
+
+try:
+    from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
+    from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_streaming
+except ImportError:
+    _ripgrep_core = None
+    search_file_streaming = None
 
 Operation = Literal["glob", "grep"]
 FULL_CASES: tuple[str, ...] = ("small", "medium", "large-files", "many-small", "ignored-heavy", "binary-mixed")
@@ -123,6 +132,7 @@ QUERIES: tuple[Query, ...] = (
     Query(name="glob_selective", operation="glob", pattern="*.py"),
     Query(name="glob_anchored", operation="glob", pattern="/*.py"),
     Query(name="grep_rare", operation="grep", pattern="UNIQUE_TOKEN_777", include="*.py"),
+    Query(name="grep_unicode", operation="grep", pattern="性能优化|中文_TOKEN", include="*.py", max_results=500),
     Query(name="grep_common", operation="grep", pattern="TODO|FIXME", include="*.py", max_results=500),
     Query(
         name="grep_context", operation="grep", pattern=r"def func_\d+", include="*.py", context_lines=2, max_results=500
@@ -249,7 +259,7 @@ async def _stat_entry(file_operator: Any, path: str) -> RawEntry:
 
 
 async def _collect_candidates(
-    file_operator: Any, query: Query, pattern: str, *, files_only: bool
+    file_operator: Any, query: Query, pattern: str, *, files_only: bool, use_native: bool = False
 ) -> list[SearchCandidate]:
     root = "." if query.root in {"", "."} else query.root.rstrip("/")
     candidates: list[SearchCandidate] = []
@@ -257,7 +267,7 @@ async def _collect_candidates(
         path = _normalize_path(entry.path)
         if not query.include_hidden and _is_hidden_path(path):
             continue
-        if not _match_glob(path, pattern):
+        if not _match_glob_native_or_python(path, pattern, use_native=use_native):
             continue
         if entry.is_file is None or entry.size is None or entry.mtime is None:
             entry = await _stat_entry(file_operator, path)
@@ -267,12 +277,22 @@ async def _collect_candidates(
     return candidates
 
 
+def _match_glob_native_or_python(path: str, pattern: str, *, use_native: bool) -> bool:
+    if use_native and _ripgrep_core is not None:
+        matched = _ripgrep_core.match_glob(path, pattern)
+        if matched is not None:
+            return matched
+    return _match_glob(path, pattern)
+
+
 def _sort_candidates(candidates: list[SearchCandidate]) -> list[SearchCandidate]:
     return sorted(candidates, key=lambda candidate: candidate.mtime or 0.0, reverse=True)
 
 
-async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
-    all_candidates = await _collect_candidates(file_operator, query, query.pattern, files_only=False)
+async def _run_glob(file_operator: Any, query: Query, *, use_native: bool) -> dict[str, int]:
+    all_candidates = await _collect_candidates(
+        file_operator, query, query.pattern, files_only=False, use_native=use_native
+    )
     candidates = all_candidates
     if not query.include_ignored:
         ignored = await filter_gitignored([candidate.path for candidate in candidates], file_operator)
@@ -292,8 +312,10 @@ async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
     }
 
 
-async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
-    all_candidates = await _collect_candidates(file_operator, query, query.include, files_only=True)
+async def _run_grep(file_operator: Any, query: Query, *, use_native: bool) -> dict[str, int]:
+    all_candidates = await _collect_candidates(
+        file_operator, query, query.include, files_only=True, use_native=use_native
+    )
     candidates = all_candidates
     if not query.include_ignored:
         ignored = await filter_gitignored([candidate.path for candidate in candidates], file_operator)
@@ -304,6 +326,12 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
         candidates = candidates[: query.max_files]
 
     regex = re.compile(query.pattern, re.UNICODE)
+    native_regex = None
+    if use_native and _ripgrep_core is not None and _ripgrep_core.is_available():
+        try:
+            native_regex = _ripgrep_core.NativeRegex(query.pattern)
+        except Exception:
+            native_regex = None
     total_matches = 0
     result_size = 2
     bytes_read = 0
@@ -316,12 +344,18 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
         if candidate.size is not None:
             bytes_read += candidate.size
         try:
-            content = await file_operator.read_file(candidate.path)
+            matches = await _search_candidate(
+                file_operator,
+                candidate.path,
+                regex,
+                query.context_lines,
+                per_file_match_limit,
+                native_regex=native_regex,
+            )
         except Exception:
-            logger.debug("Failed to read benchmark candidate %s", candidate.path, exc_info=True)
+            logger.debug("Failed to search benchmark candidate %s", candidate.path, exc_info=True)
             continue
         searched += 1
-        matches = _search_text(candidate.path, content, regex, query.context_lines, per_file_match_limit)
         total_matches += len(matches)
         result_size += len(json.dumps(matches, default=dict))
         if query.max_results > 0 and total_matches >= query.max_results:
@@ -335,6 +369,29 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
         "matches": total_matches,
         "result_size_bytes": result_size,
     }
+
+
+async def _search_candidate(
+    file_operator: Any,
+    path: str,
+    regex: re.Pattern[str],
+    context_lines: int,
+    max_matches: int,
+    *,
+    native_regex: Any | None,
+) -> dict[str, Any]:
+    if native_regex is not None and search_file_streaming is not None:
+        search_result = await search_file_streaming(
+            file_operator,
+            path,
+            regex,
+            context_lines=context_lines,
+            max_matches_per_file=max_matches,
+            native_regex=native_regex,
+        )
+        return search_result.matches
+    content = await file_operator.read_file(path)
+    return _search_text(path, content, regex, context_lines, max_matches)
 
 
 def _effective_per_file_match_limit(max_matches_per_file: int, *, remaining_results: int) -> int:
@@ -374,7 +431,7 @@ def _search_text(
     return matches
 
 
-async def _measure(dataset: Path, case_name: str, query: Query) -> BenchmarkResult:
+async def _measure(dataset: Path, case_name: str, variant: str, query: Query) -> BenchmarkResult:
     before = resource.getrusage(resource.RUSAGE_SELF)
     tracemalloc.start()
     started = time.perf_counter_ns()
@@ -382,18 +439,19 @@ async def _measure(dataset: Path, case_name: str, query: Query) -> BenchmarkResu
         file_operator = env.file_operator
         if file_operator is None:
             raise RuntimeError("LocalEnvironment did not provide a file_operator")
+        use_native = variant.endswith("ripgrep-core")
         stats = (
-            await _run_glob(file_operator, query)
+            await _run_glob(file_operator, query, use_native=use_native)
             if query.operation == "glob"
-            else await _run_grep(file_operator, query)
+            else await _run_grep(file_operator, query, use_native=use_native)
         )
     duration_ms = (time.perf_counter_ns() - started) / 1_000_000
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     after = resource.getrusage(resource.RUSAGE_SELF)
     return BenchmarkResult(
-        variant="base",
-        backend_available=False,
+        variant=variant,
+        backend_available=bool(_ripgrep_core is not None and _ripgrep_core.is_available()),
         case=case_name,
         operation=query.operation,
         query=query.name,
@@ -422,6 +480,37 @@ def _rss_to_mb(value: int) -> float:
     return value / 1024
 
 
+def _backend_env(variant: str) -> dict[str, str]:
+    env = os.environ.copy()
+    if variant.endswith("python-native"):
+        env["YA_RIPGREP_CORE_DISABLE"] = "1"
+    elif variant.endswith("ripgrep-core"):
+        env.pop("YA_RIPGREP_CORE_DISABLE", None)
+    else:
+        raise SystemExit(f"Unknown variant: {variant}")
+    return env
+
+
+def _worker_command(args: argparse.Namespace, case_name: str, query: Query, variant: str, repeat: int) -> list[str]:
+    return [
+        sys.executable,
+        __file__,
+        "--worker",
+        "--dataset",
+        str(_case_dataset_root(Path(args.dataset), args.case, case_name)),
+        "--case",
+        case_name,
+        "--variant",
+        variant,
+        "--query",
+        query.name,
+        "--repeat-index",
+        str(repeat),
+        "--output",
+        args.output,
+    ]
+
+
 def _format_progress(row: dict[str, Any]) -> str:
     return (
         f"{row['case']} {row['query']} {row['variant']}: "
@@ -436,22 +525,36 @@ def run_parent(args: argparse.Namespace) -> None:
     if output.exists() and not args.append:
         output.unlink()
 
-    dataset_base = Path(args.dataset)
     rows: list[dict[str, Any]] = []
     for case_name in _case_names(args.case):
-        dataset = _case_dataset_root(dataset_base, args.case, case_name)
         for query in queries:
-            for repeat in range(args.repeat):
-                result = asyncio.run(_measure(dataset, case_name, query))
-                row = asdict(result)
-                row["repeat_index"] = repeat
-                rows.append(row)
-                with output.open("a", encoding="utf-8") as stream:
-                    stream.write(json.dumps(row, sort_keys=True) + "\n")
-                print(_format_progress(row), flush=True)
+            for variant in args.variants:
+                for repeat in range(args.repeat):
+                    completed = subprocess.run(  # noqa: S603
+                        _worker_command(args, case_name, query, variant, repeat),
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        env=_backend_env(variant),
+                    )
+                    row = json.loads(completed.stdout)
+                    rows.append(row)
+                    with output.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(row, sort_keys=True) + "\n")
+                    print(_format_progress(row), flush=True)
 
     if args.summary:
         summarize_file(output, Path(args.summary))
+
+
+def run_worker(args: argparse.Namespace) -> None:
+    query = next((item for item in QUERIES if item.name == args.query), None)
+    if query is None:
+        raise SystemExit(f"Unknown query: {args.query}")
+    result = asyncio.run(_measure(Path(args.dataset), args.case, args.variant, query))
+    row = asdict(result)
+    row["repeat_index"] = args.repeat_index
+    print(json.dumps(row, sort_keys=True))
 
 
 def summarize_file(input_path: Path, output_path: Path | None = None) -> str:
@@ -491,19 +594,28 @@ def summarize_rows(rows: Sequence[dict[str, Any]]) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--case", required=True)
     parser.add_argument("--operations", type=_csv, default=None)
     parser.add_argument("--queries", type=_csv, default=None)
+    parser.add_argument("--variants", nargs="+", default=["base-python-native", "base-ripgrep-core"])
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary")
     parser.add_argument("--append", action="store_true")
+    parser.add_argument("--variant", default="base-python-native", help=argparse.SUPPRESS)
+    parser.add_argument("--query", help=argparse.SUPPRESS)
+    parser.add_argument("--repeat-index", type=int, default=0, help=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    run_parent(build_parser().parse_args(argv))
+    args = build_parser().parse_args(argv)
+    if args.worker:
+        run_worker(args)
+    else:
+        run_parent(args)
 
 
 if __name__ == "__main__":

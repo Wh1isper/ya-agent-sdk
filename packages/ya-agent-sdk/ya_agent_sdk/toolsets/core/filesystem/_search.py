@@ -77,15 +77,32 @@ def match_glob(path: str, pattern: str) -> bool:
     return False
 
 
+def walk_max_depth_for_glob(pattern: str) -> int | None:
+    """Return a safe walk depth limit for anchored non-recursive glob patterns."""
+    normalized_pattern = pattern.replace("\\", "/") or "**/*"
+    if normalized_pattern.startswith("./"):
+        normalized_pattern = normalized_pattern[2:]
+    if not normalized_pattern.startswith("/"):
+        return None
+
+    anchored_pattern = normalized_pattern.lstrip("/")
+    if "**" in anchored_pattern:
+        return None
+    if anchored_pattern == "":
+        return 0
+    return anchored_pattern.count("/")
+
+
 async def collect_walk_entries(
     file_operator: FileOperator,
     *,
     root: str = ".",
     include_hidden: bool = False,
+    max_depth: int | None = None,
 ) -> list[SearchCandidate]:
     """Collect file and directory candidates through FileOperator.walk_files."""
     candidates: list[SearchCandidate] = []
-    async for entry in file_operator.walk_files(root, include_hidden=include_hidden):
+    async for entry in file_operator.walk_files(root, include_hidden=include_hidden, max_depth=max_depth):
         path = normalize_logical_path(entry["path"])
         if not include_hidden and is_hidden_logical_path(path):
             continue
@@ -98,10 +115,11 @@ async def collect_walk_files(
     *,
     root: str = ".",
     include_hidden: bool = False,
+    max_depth: int | None = None,
 ) -> list[SearchCandidate]:
     """Collect regular file candidates through FileOperator.walk_files."""
     candidates: list[SearchCandidate] = []
-    async for entry in file_operator.walk_files(root, include_hidden=include_hidden):
+    async for entry in file_operator.walk_files(root, include_hidden=include_hidden, max_depth=max_depth):
         if not entry.get("is_file", False):
             continue
         path = normalize_logical_path(entry["path"])
@@ -114,6 +132,8 @@ async def collect_walk_files(
 def filter_candidates_by_glob(candidates: Iterable[SearchCandidate], pattern: str) -> list[SearchCandidate]:
     """Filter candidates with match_glob."""
     candidates_list = list(candidates)
+    if not candidates_list:
+        return []
     native_matches = _ripgrep_core.match_globs([candidate.path for candidate in candidates_list], pattern)
     if native_matches is not None:
         return [candidate for candidate, matched in zip(candidates_list, native_matches, strict=True) if matched]
@@ -145,7 +165,12 @@ async def collect_glob_candidates(
     include_hidden: bool = False,
 ) -> tuple[list[SearchCandidate], GitignoreFilterResult | None]:
     """Collect glob candidates through walk_files, glob matching, and ignore filtering."""
-    candidates = await collect_walk_entries(file_operator, root=root, include_hidden=include_hidden)
+    candidates = await collect_walk_entries(
+        file_operator,
+        root=root,
+        include_hidden=include_hidden,
+        max_depth=walk_max_depth_for_glob(pattern),
+    )
     candidates = filter_candidates_by_glob(candidates, pattern)
     filter_result: GitignoreFilterResult | None = None
     if not include_ignored:
@@ -164,4 +189,5 @@ __all__ = [
     "match_glob",
     "normalize_logical_path",
     "sort_candidates_by_mtime",
+    "walk_max_depth_for_glob",
 ]

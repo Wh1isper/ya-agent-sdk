@@ -44,3 +44,15 @@ def test_rust_regex_searches_bytes_with_context_and_limit() -> None:
     assert ya_ripgrep_core.regex_search_bytes(r"FIXME", data, context_lines=1, max_matches=-1) == [
         (4, "FIXME two", "after\nFIXME two\nend\n", 3)
     ]
+
+
+def test_rust_regex_searches_utf8_chinese_bytes() -> None:
+    matcher = ya_ripgrep_core.RustRegex("性能优化|中文_TOKEN")
+    data = "开头\n这里需要性能优化\n普通行\n中文_TOKEN 命中\n".encode()
+    assert matcher.search_bytes(data, context_lines=0, max_matches=0) == [
+        (2, "这里需要性能优化", "这里需要性能优化\n", 2),
+        (4, "中文_TOKEN 命中", "中文_TOKEN 命中\n", 4),
+    ]
+    assert matcher.search_bytes(data, context_lines=1, max_matches=1) == [
+        (2, "这里需要性能优化", "开头\n这里需要性能优化\n普通行\n", 1)
+    ]

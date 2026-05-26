@@ -37,7 +37,7 @@ Claw runtime update:
 
 - Delivered by Runtime Manager through bundled `uv`.
 - Installs Python, virtualenv, Claw packages, and dependencies into app data.
-- Defaults to the latest compatible `ya-claw[all]` release.
+- Defaults to the latest compatible `ya-claw[rs]` release with fallback to `ya-claw`.
 - Keeps previous active runtime metadata and files for rollback.
 
 ## Bundled `uv`
@@ -60,7 +60,7 @@ UV_LINK_MODE=copy
 
 Runtime Manager follows a latest-first policy:
 
-1. Install latest `ya-claw[all]` on first launch.
+1. Install latest `ya-claw[rs]` on first launch and retry `ya-claw` when the native binding cannot be installed.
 2. Check for a newer Claw runtime after Desktop startup and then at most once every 24 hours.
 3. Install the newer runtime into a candidate directory.
 4. Run compatibility and health verification.
@@ -74,7 +74,7 @@ The first implementation can use PyPI package resolution directly:
 "$APP_UV" pip install \
   --python "$RUNTIME/.venv/bin/python" \
   --upgrade \
-  "ya-claw[all]"
+  "ya-claw[rs]"
 ```
 
 A package index, GitHub Release wheel URL, or enterprise mirror can be added as a configuration value later.
@@ -165,7 +165,7 @@ sequenceDiagram
     RM->>Runtime: create runtimes/claw/{version or pending}
     RM->>UV: python install 3.13
     RM->>UV: venv .venv --python 3.13
-    RM->>UV: pip install ya-claw[all]
+    RM->>UV: pip install ya-claw[rs]
     UV-->>RM: install complete
     RM->>Claw: version --json-output
     RM->>Claw: doctor --json-output
@@ -190,8 +190,10 @@ UV_PYTHON_INSTALL_DIR="$APP_DATA/uv/python" \
 UV_CACHE_DIR="$APP_DATA/uv/cache" \
 "$APP_DATA/uv/bin/uv" pip install \
   --python "$APP_DATA/runtimes/claw/pending/.venv/bin/python" \
-  "ya-claw[all]"
+  "ya-claw[rs]"
 ```
+
+Runtime Manager uses `YA_DESKTOP_CLAW_PACKAGE_SPEC` to override the primary package and `YA_DESKTOP_CLAW_FALLBACK_PACKAGE_SPEC` to override the fallback. Product defaults install `ya-claw[rs]` first and retry `ya-claw` for platforms where the native binding is unavailable.
 
 After `ya-clawd version --json-output` returns the resolved Claw version, Runtime Manager can rename or record the pending directory as that version.
 
@@ -313,7 +315,7 @@ First launch requires network access when the installer ships without a preinsta
 Runtime CI:
 
 - Build and publish Python packages or wheels for the workspace packages used by Claw.
-- Verify latest `ya-claw[all]` installs through bundled/current CI `uv`.
+- Verify latest `ya-claw[rs]` and fallback `ya-claw` install through bundled/current CI `uv`.
 - Smoke `ya-clawd version`, `doctor`, `serve --port 0`, `/healthz`, and `/api/v1/claw/info`.
 - Validate `desktop_compatibility.contract` in `ya-clawd version --json-output`.
 

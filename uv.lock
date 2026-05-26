@@ -4341,7 +4341,6 @@ all = [
     { name = "rank-bm25" },
     { name = "tavily-python" },
     { name = "ya-oauth-provider" },
-    { name = "ya-ripgrep-core" },
 ]
 docker = [
     { name = "docker" },
@@ -4360,6 +4359,9 @@ oauth = [
     { name = "ya-oauth-provider" },
 ]
 ripgrep = [
+    { name = "ya-ripgrep-core" },
+]
+rs = [
     { name = "ya-ripgrep-core" },
 ]
 s3 = [
@@ -4439,10 +4441,10 @@ requires-dist = [
     { name = "ya-agent-environment", editable = "packages/ya-agent-environment" },
     { name = "ya-oauth-provider", marker = "extra == 'all'", editable = "packages/ya-oauth-provider" },
     { name = "ya-oauth-provider", marker = "extra == 'oauth'", editable = "packages/ya-oauth-provider" },
-    { name = "ya-ripgrep-core", marker = "extra == 'all'", editable = "packages/ya-ripgrep-core" },
     { name = "ya-ripgrep-core", marker = "extra == 'ripgrep'", editable = "packages/ya-ripgrep-core" },
+    { name = "ya-ripgrep-core", marker = "extra == 'rs'", editable = "packages/ya-ripgrep-core" },
 ]
-provides-extras = ["all", "docker", "document", "examples", "oauth", "ripgrep", "s3", "tool-search", "web"]
+provides-extras = ["all", "docker", "document", "examples", "oauth", "ripgrep", "rs", "s3", "tool-search", "web"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -4493,6 +4495,11 @@ dependencies = [
     { name = "ya-oauth-provider" },
 ]
 
+[package.optional-dependencies]
+rs = [
+    { name = "ya-agent-sdk", extra = ["all", "rs"] },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "deptry" },
@@ -4522,9 +4529,11 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0" },
     { name = "ya-agent-environment", editable = "packages/ya-agent-environment" },
     { name = "ya-agent-sdk", extras = ["all"], editable = "packages/ya-agent-sdk" },
+    { name = "ya-agent-sdk", extras = ["all", "rs"], marker = "extra == 'rs'", editable = "packages/ya-agent-sdk" },
     { name = "ya-oauth", editable = "packages/ya-oauth" },
     { name = "ya-oauth-provider", editable = "packages/ya-oauth-provider" },
 ]
+provides-extras = ["rs"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -4669,6 +4678,11 @@ dependencies = [
     { name = "ya-oauth-provider" },
 ]
 
+[package.optional-dependencies]
+rs = [
+    { name = "ya-agent-sdk", extra = ["all", "rs"] },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
@@ -4680,9 +4694,11 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "ya-agent-environment", editable = "packages/ya-agent-environment" },
     { name = "ya-agent-sdk", extras = ["all"], editable = "packages/ya-agent-sdk" },
+    { name = "ya-agent-sdk", extras = ["all", "rs"], marker = "extra == 'rs'", editable = "packages/ya-agent-sdk" },
     { name = "ya-oauth", editable = "packages/ya-oauth" },
     { name = "ya-oauth-provider", editable = "packages/ya-oauth-provider" },
 ]
+provides-extras = ["rs"]
 
 [[package]]
 name = "yarl"

@@ -131,6 +131,29 @@ This section is the maintainer index for implementation details that affect code
 - Manual endpoints are `memory:extract` and `memory:summarize`.
 - File browsing should use workspace filetree APIs.
 
+## Installation
+
+Recommended standalone install with uv:
+
+```bash
+uv tool install 'ya-claw[rs]'
+ya-clawd version
+```
+
+`[rs]` passes `ya-agent-sdk[all,rs]` into the runtime and installs the native Rust filesystem search binding. The equivalent extra-dependency form is:
+
+```bash
+uv tool install ya-claw --with ya-ripgrep-core
+```
+
+`ya-ripgrep-core` is a library dependency, so `--with` is the matching uv form; `--with-executables-from` applies to companion packages that also expose CLI executables.
+
+Pip can install the same runtime shape:
+
+```bash
+pip install 'ya-claw[rs]'
+```
+
 ## Quick Start
 
 From the workspace root, start the default runtime flow:

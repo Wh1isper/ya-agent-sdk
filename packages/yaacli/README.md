@@ -7,15 +7,23 @@ TUI reference implementation for [ya-agent-sdk](https://github.com/wh1isper/ya-m
 Run with uvx:
 
 ```bash
-uvx yaacli
+uvx --from 'yaacli[rs]' yaacli
 ```
 
 Install with uv:
 
 ```bash
-uv tool install yaacli
+uv tool install 'yaacli[rs]'
 yaacli
 ```
+
+`[rs]` installs the native Rust filesystem search binding. The equivalent extra-dependency form is:
+
+```bash
+uv tool install yaacli --with ya-ripgrep-core
+```
+
+`ya-ripgrep-core` is a library dependency, so `--with` is the matching uv form; `--with-executables-from` applies to companion packages that also expose CLI executables.
 
 Update with uv:
 
@@ -26,7 +34,7 @@ uv tool upgrade yaacli
 Install with pip:
 
 ```bash
-pip install yaacli
+pip install 'yaacli[rs]'
 yaacli
 ```
 

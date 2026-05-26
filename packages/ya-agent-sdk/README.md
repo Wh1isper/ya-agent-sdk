@@ -25,19 +25,20 @@ Yet Another Agent SDK for building AI agents with [Pydantic AI](https://ai.pydan
 ## Installation
 
 ```bash
-pip install ya-agent-sdk[all]
-uv add ya-agent-sdk[all]
+pip install 'ya-agent-sdk[all,rs]'
+uv add 'ya-agent-sdk[all,rs]'
 ```
 
-Selective extras:
+`[rs]` adds the native Rust filesystem search binding. Selective extras:
 
 ```bash
-pip install ya-agent-sdk[docker]
-pip install ya-agent-sdk[web]
-pip install ya-agent-sdk[document]
-pip install ya-agent-sdk[s3]
-pip install ya-agent-sdk[tool-search]
-pip install ya-agent-sdk[oauth]
+pip install 'ya-agent-sdk[rs]'
+pip install 'ya-agent-sdk[docker]'
+pip install 'ya-agent-sdk[web]'
+pip install 'ya-agent-sdk[document]'
+pip install 'ya-agent-sdk[s3]'
+pip install 'ya-agent-sdk[tool-search]'
+pip install 'ya-agent-sdk[oauth]'
 ```
 
 ## OAuth-backed Codex

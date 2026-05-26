@@ -1,5 +1,6 @@
 """Tests for portable filesystem search helpers."""
 
+import re
 from pathlib import Path
 
 from ya_agent_sdk.environment.local import LocalEnvironment
@@ -71,3 +72,32 @@ async def test_collect_walk_entries_includes_directories(tmp_path: Path) -> None
     paths = {candidate.path for candidate in candidates}
     assert "src" in paths
     assert "src/app.py" in paths
+
+
+def test_native_glob_error_falls_back_to_python(monkeypatch) -> None:
+    """Invalid native glob patterns should use the Python matcher fallback."""
+
+    def raise_native(_path: str, _pattern: str) -> bool:
+        raise ValueError("native glob error")
+
+    monkeypatch.setattr(_ripgrep_core, "_native", lambda: type("Native", (), {"match_glob": raise_native})())
+    assert match_glob("src/app.py", "*.py")
+
+
+async def test_streaming_search_falls_back_when_native_regex_rejects_python_pattern(tmp_path: Path) -> None:
+    """Python-valid regex syntax should still work when Rust regex rejects it."""
+    from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_streaming
+
+    (tmp_path / "app.py").write_text("foo\nfoobar\n", encoding="utf-8")
+    async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path) as env:
+        file_operator = env.file_operator
+        assert file_operator is not None
+        result = await search_file_streaming(
+            file_operator,
+            "app.py",
+            re.compile(r"foo(?=bar)"),
+            context_lines=0,
+            max_matches_per_file=-1,
+        )
+
+    assert list(result.matches) == ["app.py:2"]

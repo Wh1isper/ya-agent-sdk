@@ -22,6 +22,7 @@ from ya_agent_sdk.toolsets.core.filesystem._search import (
     filter_candidates_by_glob,
     filter_candidates_ignored,
     sort_candidates_by_mtime,
+    walk_max_depth_for_glob,
 )
 from ya_agent_sdk.toolsets.core.filesystem._utils import is_binary_file
 
@@ -304,15 +305,24 @@ class GrepTool(BaseTool):
         """Search file contents using regular expressions."""
         file_operator = cast(FileOperator, ctx.deps.file_operator)
 
-        native_regex: _ripgrep_core.NativeRegex | None = None
         try:
-            if _ripgrep_core.is_available():
-                native_regex = _ripgrep_core.NativeRegex(pattern)
             compiled_pattern = re.compile(pattern, re.UNICODE)
-        except (ValueError, re.error) as e:
+        except re.error as e:
             return f"Error: Invalid regex pattern: {e}"
 
-        candidates = await collect_walk_files(file_operator, root=root, include_hidden=include_hidden)
+        native_regex: _ripgrep_core.NativeRegex | None = None
+        if _ripgrep_core.is_available():
+            try:
+                native_regex = _ripgrep_core.NativeRegex(pattern)
+            except Exception:
+                native_regex = None
+
+        candidates = await collect_walk_files(
+            file_operator,
+            root=root,
+            include_hidden=include_hidden,
+            max_depth=walk_max_depth_for_glob(include),
+        )
         candidates = filter_candidates_by_glob(candidates, include)
         candidates = sort_candidates_by_mtime(candidates)
         gitignore_summary: list[str] = []

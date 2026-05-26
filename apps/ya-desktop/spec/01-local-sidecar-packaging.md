@@ -23,7 +23,7 @@ Claw Runtime
   version: 0.73.1
   updatePolicy: latest-compatible
   python: 3.13
-  package: ya-claw[all]
+  package: ya-claw[rs]
   entrypoint: .venv/bin/ya-clawd
   status: installing | installed | active | failed | stale
 ```
@@ -91,7 +91,7 @@ Runtime metadata example:
   "version": "0.73.1",
   "updatePolicy": "latest-compatible",
   "python": "3.13",
-  "package": "ya-claw[all]",
+  "package": "ya-claw[rs]",
   "venvPath": "/Users/me/Library/Application Support/YA Desktop/runtimes/claw/0.73.1/.venv",
   "entrypoint": "/Users/me/Library/Application Support/YA Desktop/runtimes/claw/0.73.1/.venv/bin/ya-clawd",
   "installedAt": "2026-05-13T01:00:00Z",
@@ -245,8 +245,10 @@ Initial full runtime install uses the current Claw dependency surface and instal
 "$APP_UV" venv "$APP_DATA/runtimes/claw/pending/.venv" --python 3.13
 "$APP_UV" pip install \
   --python "$APP_DATA/runtimes/claw/pending/.venv/bin/python" \
-  "ya-claw[all]"
+  "ya-claw[rs]"
 ```
+
+Runtime Manager installs `ya-claw[rs]` first so local search uses the native Rust binding by default. If the native wheel or local build fails, Runtime Manager retries `ya-claw`, records the fallback package spec in `runtime.json`, and keeps the install log for diagnostics.
 
 Release builds can install from PyPI, a private package index, or GitHub Release wheel URLs. Runtime Manager verifies the installed runtime with `ya-clawd version --json-output`, `doctor`, and a serve smoke before activation.
 
@@ -315,7 +317,7 @@ flowchart LR
     Health --> Artifact[upload desktop artifact]
 ```
 
-Runtime CI should publish Python packages or wheels for `ya-agent-environment`, `ya-environment-relay`, `ya-agent-sdk`, and `ya-claw`, then verify that latest `ya-claw[all]` installs through the same `uv` path used by Desktop.
+Runtime CI should publish Python packages or wheels for `ya-agent-environment`, `ya-environment-relay`, `ya-agent-sdk`, and `ya-claw`, then verify that latest `ya-claw[rs]` and fallback `ya-claw` install through the same `uv` path used by Desktop.
 
 ## Release Compatibility
 
@@ -342,7 +344,7 @@ Minimum managed runtime smoke tests:
 ```bash
 uv python install 3.13
 uv venv "$RUNTIME/.venv" --python 3.13
-uv pip install --python "$RUNTIME/.venv/bin/python" "ya-claw[all]"
+uv pip install --python "$RUNTIME/.venv/bin/python" "ya-claw[rs]"
 "$RUNTIME/.venv/bin/ya-clawd" version --json-output
 YA_CLAW_API_TOKEN=test "$RUNTIME/.venv/bin/ya-clawd" doctor --json-output
 YA_CLAW_API_TOKEN=test "$RUNTIME/.venv/bin/ya-clawd" serve --host 127.0.0.1 --port 0 --ready-json

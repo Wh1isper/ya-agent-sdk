@@ -61,6 +61,15 @@ make install-skills
 
 This installs `agent-builder` and `ya-claw-deploy` for local agent use.
 
+Install published tools with native filesystem search enabled:
+
+```bash
+uv tool install 'yaacli[rs]'
+uv tool install 'ya-claw[rs]'
+```
+
+`uv tool install` accepts extras in the package requirement. The equivalent extra-dependency form is `uv tool install yaacli --with ya-ripgrep-core` or `uv tool install ya-claw --with ya-ripgrep-core`. `ya-ripgrep-core` is a library dependency, so `--with` is the matching uv form; `--with-executables-from` applies to companion packages that also expose CLI executables.
+
 ## Getting Started
 
 ### SDK and CLI

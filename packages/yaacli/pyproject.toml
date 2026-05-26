@@ -23,6 +23,9 @@ Repository = "https://github.com/wh1isper/ya-mono"
 [project.scripts]
 yaacli = "yaacli.cli:cli"
 
+[project.optional-dependencies]
+rs = ["ya-agent-sdk[all,rs]"]
+
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
 build-backend = "hatchling.build"

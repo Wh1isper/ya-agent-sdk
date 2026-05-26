@@ -24,6 +24,9 @@ Repository = "https://github.com/wh1isper/ya-mono"
 ya-claw = "ya_claw.cli:cli"
 ya-clawd = "ya_claw.cli:cli"
 
+[project.optional-dependencies]
+rs = ["ya-agent-sdk[all,rs]"]
+
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
 build-backend = "hatchling.build"

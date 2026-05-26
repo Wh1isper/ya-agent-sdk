@@ -56,7 +56,10 @@ def match_glob(path: str, pattern: str) -> bool | None:
     native = _native()
     if native is None:
         return None
-    return bool(native.match_glob(path, pattern))
+    try:
+        return bool(native.match_glob(path, pattern))
+    except Exception:
+        return None
 
 
 def match_globs(paths: list[str], pattern: str) -> list[bool] | None:
@@ -64,7 +67,10 @@ def match_globs(paths: list[str], pattern: str) -> list[bool] | None:
     native = _native()
     if not isinstance(native, _NativeGlobModule):
         return None
-    return [bool(value) for value in native.match_globs(paths, pattern)]
+    try:
+        return [bool(value) for value in native.match_globs(paths, pattern)]
+    except Exception:
+        return None
 
 
 class NativeRegex:

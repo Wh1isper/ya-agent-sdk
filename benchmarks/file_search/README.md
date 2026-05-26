@@ -1,10 +1,13 @@
 # File Search Benchmarks
 
-This benchmark suite measures the FileOperator-first filesystem file search stack with three comparable variants:
+This benchmark suite measures the FileOperator-first filesystem file search stack with four comparable PR variants:
 
-- `base`: the target branch implementation, run from the PR base checkout with this suite's portable `base_worker.py`.
-- `python-native`: the head implementation with `YA_RIPGREP_CORE_DISABLE=1`.
-- `ripgrep-core`: the head implementation with `ya-ripgrep-core` enabled.
+- `base-python-native`: the target branch implementation with `YA_RIPGREP_CORE_DISABLE=1`.
+- `base-ripgrep-core`: the target branch implementation with `ya-ripgrep-core` enabled when the base branch supports it.
+- `head-python-native`: the PR head implementation with `YA_RIPGREP_CORE_DISABLE=1`.
+- `head-ripgrep-core`: the PR head implementation with `ya-ripgrep-core` enabled.
+
+Local head-only runs can still use `python-native` and `ripgrep-core`.
 
 The benchmark focuses on end-to-end tool-layer cost: traversal, ignore filtering, glob matching, streaming grep, result construction, CPU time, and memory usage.
 
@@ -47,13 +50,14 @@ uv run python benchmarks/file_search/bench_file_search.py run \
 
 ## PR/base comparison
 
-CI checks out both the PR head and the PR base SHA. The head checkout generates the synthetic dataset, the base checkout runs `../head/benchmarks/file_search/base_worker.py` against the base implementation, then the head checkout appends `python-native` and `ripgrep-core` rows into the same JSONL file.
+CI checks out both the PR head and the PR base SHA. The head checkout generates the synthetic dataset, the base checkout runs `../head/benchmarks/file_search/base_worker.py` against the base implementation, then the head checkout appends its rows into the same JSONL file.
 
 The summary includes a per-query table plus ratios for:
 
-- head `ripgrep-core` versus `base`
-- head `python-native` versus `base`
-- head `ripgrep-core` versus head `python-native`
+- `head-python-native` versus `base-python-native`
+- `head-ripgrep-core` versus `base-ripgrep-core`
+- `head-ripgrep-core` versus `head-python-native`
+- `base-ripgrep-core` versus `base-python-native`
 
 This keeps future PRs comparable after this branch merges, because each pull request uses its own target branch SHA as `base`.
 
@@ -85,7 +89,7 @@ Each JSONL row includes:
 
 ## CI
 
-The `File Search Benchmarks` workflow runs automatically on pull requests that touch filesystem file search, environment file traversal, the ripgrep core package, benchmark files, or dependency metadata. The default PR run uses the `quick` suite with the full query matrix and 3 repeats so PR feedback stays fast. It uploads raw JSONL and Markdown summary artifacts, and posts the Markdown summary table as a sticky PR comment.
+The `File Search Benchmarks` workflow runs automatically on pull requests that touch filesystem file search, environment file traversal, the ripgrep core package, benchmark files, or dependency metadata. The default PR run uses the `quick` suite with the full query matrix, including `grep_unicode`, and 3 repeats so PR feedback stays fast. It uploads raw JSONL and Markdown summary artifacts, and posts the Markdown summary table as a sticky PR comment.
 
 Manual runs support full cases, query filters, and an explicit base ref:
 

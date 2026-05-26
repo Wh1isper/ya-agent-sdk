@@ -41,9 +41,10 @@ from ya_agent_sdk.toolsets.core.filesystem._search import (
     collect_walk_files,
     filter_candidates_by_glob,
     sort_candidates_by_mtime,
+    walk_max_depth_for_glob,
 )
 
-Variant = Literal["python-native", "ripgrep-core"]
+Variant = str
 Operation = Literal["glob", "grep"]
 
 
@@ -146,6 +147,7 @@ QUERIES: tuple[Query, ...] = (
     Query(name="glob_selective", operation="glob", pattern="*.py"),
     Query(name="glob_anchored", operation="glob", pattern="/*.py"),
     Query(name="grep_rare", operation="grep", pattern="UNIQUE_TOKEN_777", include="*.py"),
+    Query(name="grep_unicode", operation="grep", pattern="性能优化|中文_TOKEN", include="*.py", max_results=500),
     Query(name="grep_common", operation="grep", pattern="TODO|FIXME", include="*.py", max_results=500),
     Query(
         name="grep_context", operation="grep", pattern=r"def func_\d+", include="*.py", context_lines=2, max_results=500
@@ -244,6 +246,10 @@ def _text_content(index: int, lines: int, width: int, *, ignored: bool, hidden: 
             marker = "IGNORED_TOKEN"
         if hidden and line_number == 1:
             marker = "HIDDEN_TOKEN"
+        if index % 89 == 0 and line_number == 5:
+            marker = "性能优化"
+        if index % 137 == 0 and line_number == 7:
+            marker = "中文_TOKEN"
         prefix = f"def func_{index}_{line_number}():" if line_number % 29 == 0 else f"line {line_number:04d}"
         body = f" {marker} dataset={index:06d} value={(index * 131 + line_number) % 100000:05d} "
         output.append((prefix + body + "x" * width)[:width])
@@ -320,9 +326,9 @@ def _selected_queries(names: Sequence[str] | None, operations: Sequence[str] | N
 
 def _backend_env(variant: str) -> dict[str, str]:
     env = os.environ.copy()
-    if variant == "python-native":
+    if variant.endswith("python-native"):
         env["YA_RIPGREP_CORE_DISABLE"] = "1"
-    elif variant == "ripgrep-core":
+    elif variant.endswith("ripgrep-core"):
         env.pop("YA_RIPGREP_CORE_DISABLE", None)
     else:
         raise SystemExit(f"Unknown variant: {variant}")
@@ -447,7 +453,12 @@ def _rss_to_mb(value: int) -> float:
 
 
 async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
-    all_candidates = await collect_walk_entries(file_operator, root=query.root, include_hidden=query.include_hidden)
+    all_candidates = await collect_walk_entries(
+        file_operator,
+        root=query.root,
+        include_hidden=query.include_hidden,
+        max_depth=walk_max_depth_for_glob(query.pattern),
+    )
     candidates = filter_candidates_by_glob(all_candidates, query.pattern)
     if not query.include_ignored:
         paths = [candidate.path for candidate in candidates]
@@ -469,7 +480,12 @@ async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
 
 
 async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
-    all_candidates = await collect_walk_files(file_operator, root=query.root, include_hidden=query.include_hidden)
+    all_candidates = await collect_walk_files(
+        file_operator,
+        root=query.root,
+        include_hidden=query.include_hidden,
+        max_depth=walk_max_depth_for_glob(query.include),
+    )
     candidates = filter_candidates_by_glob(all_candidates, query.include)
     if not query.include_ignored:
         paths = [candidate.path for candidate in candidates]
@@ -592,32 +608,25 @@ def summarize_rows(rows: Sequence[dict[str, Any]]) -> str:
     for key in sorted(aggregates):
         variants = aggregates[key]
         case, operation, query = key
-        if "base" in variants and "ripgrep-core" in variants:
-            base = variants["base"]
-            rg = variants["ripgrep-core"]
-            speed_ratio = base["p50"] / rg["p50"] if rg["p50"] else 0.0
-            rss_ratio = base["rss"] / rg["rss"] if rg["rss"] else 0.0
+        ratio_pairs = [
+            ("head-python-native", "base-python-native", "new python-native", "old python-native"),
+            ("head-ripgrep-core", "base-ripgrep-core", "new ripgrep-core", "old ripgrep-core"),
+            ("head-ripgrep-core", "head-python-native", "new ripgrep-core", "new python-native"),
+            ("base-ripgrep-core", "base-python-native", "old ripgrep-core", "old python-native"),
+            ("ripgrep-core", "base", "head ripgrep-core", "base"),
+            ("python-native", "base", "head python-native", "base"),
+            ("ripgrep-core", "python-native", "ripgrep-core", "python-native"),
+        ]
+        for numerator_name, denominator_name, numerator_label, denominator_label in ratio_pairs:
+            if numerator_name not in variants or denominator_name not in variants:
+                continue
+            numerator = variants[numerator_name]
+            denominator = variants[denominator_name]
+            speed_ratio = denominator["p50"] / numerator["p50"] if numerator["p50"] else 0.0
+            rss_ratio = denominator["rss"] / numerator["rss"] if numerator["rss"] else 0.0
             lines.append(
-                f"- {case} {operation} {query}: head ripgrep-core speed ratio {speed_ratio:.2f}x, "
-                f"peak RSS ratio {rss_ratio:.2f}x versus base."
-            )
-        if "base" in variants and "python-native" in variants:
-            base = variants["base"]
-            py = variants["python-native"]
-            speed_ratio = base["p50"] / py["p50"] if py["p50"] else 0.0
-            rss_ratio = base["rss"] / py["rss"] if py["rss"] else 0.0
-            lines.append(
-                f"- {case} {operation} {query}: head python-native speed ratio {speed_ratio:.2f}x, "
-                f"peak RSS ratio {rss_ratio:.2f}x versus base."
-            )
-        if "python-native" in variants and "ripgrep-core" in variants:
-            py = variants["python-native"]
-            rg = variants["ripgrep-core"]
-            speed_ratio = py["p50"] / rg["p50"] if rg["p50"] else 0.0
-            rss_ratio = py["rss"] / rg["rss"] if rg["rss"] else 0.0
-            lines.append(
-                f"- {case} {operation} {query}: ripgrep-core speed ratio {speed_ratio:.2f}x, "
-                f"peak RSS ratio {rss_ratio:.2f}x versus python-native."
+                f"- {case} {operation} {query}: {numerator_label} speed ratio {speed_ratio:.2f}x, "
+                f"peak RSS ratio {rss_ratio:.2f}x versus {denominator_label}."
             )
     return "\n".join(lines) + "\n"
 
