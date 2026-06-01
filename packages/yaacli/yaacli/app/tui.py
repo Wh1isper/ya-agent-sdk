@@ -1757,7 +1757,7 @@ class TUIApp:
         reported_error = False
         run_id = uuid.uuid4().hex[:12]
         self._display_adapter = DisplayEventAdapter(session_id=self._session_id, run_id=run_id)
-        self._record_display_event(self._display_adapter.build_run_started_event(input_text=user_input))
+        self._handle_and_record_display_events([self._display_adapter.build_run_started_event(input_text=user_input)])
 
         try:
             # Initial agent execution
