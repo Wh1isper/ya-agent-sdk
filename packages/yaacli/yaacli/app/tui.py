@@ -748,7 +748,11 @@ class TUIApp:
     def _record_display_system_event(self, event_name: str, payload: Any) -> None:
         """Persist a YAACLI custom display event."""
         adapter = self._display_adapter or DisplayEventAdapter(session_id=self._session_id, run_id=self._session_id)
-        self._record_display_event(adapter.build_system_event(event_name, cast(Any, payload)))
+        self._handle_and_record_display_events([adapter.build_system_event(event_name, cast(Any, payload))])
+
+    def _handle_and_record_display_events(self, events: Sequence[dict[str, Any]]) -> None:
+        self._record_display_events(events)
+        self._handle_display_events(events)
 
     def _reset_output_blocks(self) -> None:
         """Clear rendered output blocks and viewport bookkeeping."""
@@ -804,6 +808,9 @@ class TUIApp:
                 self._finalize_streaming_thinking()
                 continue
             if event_type == "TOOL_CALL_CHUNK":
+                agent_id = str(event.get("yaacliAgentId") or "main")
+                if agent_id != "main":
+                    continue
                 self._finalize_streaming_text()
                 self._finalize_streaming_thinking()
                 tool_name = event.get("toolCallName") or event.get("tool_call_name") or "tool"
@@ -820,6 +827,9 @@ class TUIApp:
                     )
                 continue
             if event_type == "TOOL_CALL_RESULT":
+                agent_id = str(event.get("yaacliAgentId") or "main")
+                if agent_id != "main":
+                    continue
                 tool_call_id = str(event.get("toolCallId") or event.get("tool_call_id") or "")
                 existing_tool_msg = self._tool_messages.get(tool_call_id)
                 tool_msg = existing_tool_msg or ToolMessage(
@@ -827,13 +837,15 @@ class TUIApp:
                     name=str(event.get("toolCallName") or event.get("tool_call_name") or "tool"),
                 )
                 tool_msg.content = str(event.get("content") or "")
-                self._append_block(
-                    self._event_renderer.render_tool_call_complete(
-                        tool_msg,
-                        duration=0.0,
-                        width=width,
-                    ).rstrip()
-                )
+                if tool_call_id not in self._printed_tool_calls:
+                    self._append_block(
+                        self._event_renderer.render_tool_call_complete(
+                            tool_msg,
+                            duration=0.0,
+                            width=width,
+                        ).rstrip()
+                    )
+                    self._printed_tool_calls.add(tool_call_id)
                 continue
             if event_type == "CUSTOM" and event.get("name") == "yaacli.user_input":
                 value = event.get("value")
@@ -1759,7 +1771,9 @@ class TUIApp:
                 result = await self._execute_stream(user_response)
 
             output = result.output if result and isinstance(result.output, str) else None
-            self._record_display_event(self._display_adapter.build_run_finished_event(result={"output_text": output}))
+            self._handle_and_record_display_events([
+                self._display_adapter.build_run_finished_event(result={"output_text": output})
+            ])
 
         except asyncio.CancelledError:
             cancelled = True
@@ -1782,12 +1796,12 @@ class TUIApp:
                     self._append_system_output(
                         f"After restarting, run /session {self._session_id} to restore this session."
                     )
-                self._record_display_event(
+                self._handle_and_record_display_events([
                     self._display_adapter.build_run_error_event(
                         message=_safe_exception_str(e),
                         code=type(e).__name__,
                     )
-                )
+                ])
                 logger.exception("Agent execution failed")
         finally:
             # Finalize any remaining streaming text/thinking
@@ -1883,8 +1897,7 @@ class TUIApp:
                 async for event in stream:
                     if self._display_adapter is not None:
                         display_events = self._display_adapter.adapt_stream_event(event)
-                        self._record_display_events(display_events)
-                        self._handle_display_events(display_events)
+                        self._handle_and_record_display_events(display_events)
                         self._handle_stream_event(event, render_display=False)
                     else:
                         self._handle_stream_event(event)
