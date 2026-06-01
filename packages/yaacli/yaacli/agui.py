@@ -92,7 +92,7 @@ class DisplayReplayBuffer:
         if event_type == "TOOL_CALL_CHUNK":
             self._merge_tool_call_chunk(event)
             return
-        self.events.append(dict(event))
+        self._append_passthrough_event(event)
 
     def snapshot(self) -> list[dict[str, Any]]:
         snapshot: list[dict[str, Any]] = []
@@ -119,7 +119,7 @@ class DisplayReplayBuffer:
     def _merge_text_chunk(self, event: dict[str, Any]) -> None:
         message_id = _normalized_identifier(_event_field(event, "messageId", "message_id"))
         if message_id is None:
-            self.events.append(dict(event))
+            self._append_passthrough_event(event)
             return
         existing_index = self._text_chunk_index.get(message_id)
         if existing_index is None:
@@ -135,7 +135,7 @@ class DisplayReplayBuffer:
     def _merge_reasoning_chunk(self, event: dict[str, Any]) -> None:
         message_id = _normalized_identifier(_event_field(event, "messageId", "message_id"))
         if message_id is None:
-            self.events.append(dict(event))
+            self._append_passthrough_event(event)
             return
         existing_index = self._reasoning_chunk_index.get(message_id)
         if existing_index is None:
@@ -146,7 +146,7 @@ class DisplayReplayBuffer:
     def _merge_tool_call_chunk(self, event: dict[str, Any]) -> None:
         tool_call_id = _normalized_identifier(_event_field(event, "toolCallId", "tool_call_id"))
         if tool_call_id is None:
-            self.events.append(dict(event))
+            self._append_passthrough_event(event)
             return
         existing_index = self._tool_chunk_index.get(tool_call_id)
         if existing_index is None:
@@ -161,7 +161,12 @@ class DisplayReplayBuffer:
         if existing.get("parentMessageId") is None and parent_message_id is not None:
             existing["parentMessageId"] = parent_message_id
 
+    def _append_passthrough_event(self, event: dict[str, Any]) -> None:
+        self._forget_previous_run_state_if_needed(event)
+        self.events.append(dict(event))
+
     def _append_chunk_event(self, event: dict[str, Any]) -> int:
+        self._forget_previous_run_state_if_needed(event)
         event_copy = dict(event)
         fragment = _delta_fragment(event_copy.get("delta"))
         if fragment is not None:
@@ -177,6 +182,16 @@ class DisplayReplayBuffer:
         if fragment is None:
             return
         self._chunk_fragments.setdefault(index, []).append(fragment)
+
+    def _forget_previous_run_state_if_needed(self, event: dict[str, Any]) -> None:
+        if event.get("type") != "RUN_STARTED":
+            return
+        self._text_chunk_index.clear()
+        self._reasoning_chunk_index.clear()
+        self._tool_chunk_index.clear()
+        self._chunk_fragments = {
+            index: fragments for index, fragments in self._chunk_fragments.items() if index < len(self.events)
+        }
 
 
 class DisplayEventAdapter:
@@ -208,13 +223,13 @@ class DisplayEventAdapter:
             cursor.loop_index = event.loop_index
 
         if isinstance(event, PartStartEvent):
-            return self._adapt_part_start(stream_event, cursor)
+            return self._with_stream_metadata(stream_event, self._adapt_part_start(stream_event, cursor))
         if isinstance(event, PartDeltaEvent):
-            return self._adapt_part_delta(stream_event, cursor)
+            return self._with_stream_metadata(stream_event, self._adapt_part_delta(stream_event, cursor))
         if isinstance(event, PartEndEvent):
-            return self._adapt_part_end(stream_event, cursor)
+            return self._with_stream_metadata(stream_event, self._adapt_part_end(stream_event, cursor))
         if isinstance(event, FunctionToolResultEvent | OutputToolResultEvent):
-            return self._adapt_function_tool_result(stream_event)
+            return self._with_stream_metadata(stream_event, self._adapt_function_tool_result(stream_event))
         if isinstance(event, FinalResultEvent):
             return [
                 self._custom_agent_event(
@@ -473,6 +488,12 @@ class DisplayEventAdapter:
 
     def _part_id(self, agent_id: str, loop_index: int, part_index: int, kind: str) -> str:
         return f"{self._run_id}:{agent_id}:{loop_index}:{kind}:{part_index}"
+
+    def _with_stream_metadata(self, stream_event: StreamEvent, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for event in events:
+            event["yaacliAgentId"] = stream_event.agent_id
+            event["yaacliAgentName"] = stream_event.agent_name
+        return events
 
     def _custom_agent_event(self, event_name: str, *, stream_event: StreamEvent, payload: JsonValue) -> dict[str, Any]:
         return _dump_agui_event(
