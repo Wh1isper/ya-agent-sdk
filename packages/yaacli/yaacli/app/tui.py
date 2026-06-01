@@ -851,11 +851,17 @@ class TUIApp:
                 value = event.get("value")
                 if isinstance(value, dict):
                     text = str(value.get("text") or "")
+                    attachments = value.get("attachments")
+                    attachment_count = len(attachments) if isinstance(attachments, list) else 0
+                    display_text = text
+                    if not display_text and attachment_count:
+                        noun = "image" if attachment_count == 1 else "images"
+                        display_text = f"[Attached {attachment_count} {noun}]"
                     from rich.text import Text as RichText
 
                     user_text = RichText()
                     user_text.append("> ", style="bold green")
-                    user_text.append(text)
+                    user_text.append(display_text)
                     self._append_block(self._renderer.render(user_text, width=width).rstrip("\n"))
 
         if self._state == TUIState.RUNNING:

@@ -42,6 +42,7 @@ def test_display_event_adapter_maps_text_stream_events_and_compacts_replay() -> 
 
     assert live_events[0]["type"] == "CUSTOM"
     assert live_events[0]["name"] == "ya_agent.model_request_start"
+    assert live_events[1]["yaacliAgentId"] == "main"
     assert [event["type"] for event in live_events[1:]] == [
         "TEXT_MESSAGE_START",
         "TEXT_MESSAGE_CHUNK",
@@ -55,6 +56,19 @@ def test_display_event_adapter_maps_text_stream_events_and_compacts_replay() -> 
     assert [event["type"] for event in compacted] == ["CUSTOM", "TEXT_MESSAGE_CHUNK", "RUN_FINISHED"]
     assert compacted[1]["delta"] == "hello world"
     assert compacted[2]["result"] == {"output_text": "hello world"}
+
+
+def test_display_replay_buffer_keeps_runs_separate() -> None:
+    replay = DisplayReplayBuffer()
+    replay.append({"type": "RUN_STARTED", "runId": "run-1"})
+    replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "first"})
+    replay.append({"type": "RUN_FINISHED", "runId": "run-1"})
+    replay.append({"type": "RUN_STARTED", "runId": "run-2"})
+    replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "second"})
+
+    compacted = replay.snapshot()
+    text_chunks = [event for event in compacted if event["type"] == "TEXT_MESSAGE_CHUNK"]
+    assert [event["delta"] for event in text_chunks] == ["first", "second"]
 
 
 def test_display_replay_buffer_merges_tool_call_chunks() -> None:
