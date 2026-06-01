@@ -32,7 +32,41 @@ def test_cli_headless_forwards_session_and_profile(monkeypatch) -> None:  # type
         working_dir=cli_module.Path.cwd(),
         session_id="session-0",
         model_profile_id="fast",
+        worker=False,
     )
+
+
+def test_cli_headless_forwards_worker(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = MagicMock()
+    config_manager = MagicMock()
+    monkeypatch.setattr("yaacli.cli._prepare_cli_runtime", MagicMock(return_value=(config_manager, config)))
+    run_headless = MagicMock(return_value="session-1")
+    monkeypatch.setattr("yaacli.cli.asyncio.run", lambda coro: run_headless(coro))
+    monkeypatch.setattr(
+        "yaacli.cli._run_headless_prompt",
+        MagicMock(return_value="headless-coro"),
+    )
+
+    result = CliRunner().invoke(cli, ["-p", "hello", "--worker"])
+
+    assert result.exit_code == 0
+    from yaacli import cli as cli_module
+
+    cli_module._run_headless_prompt.assert_called_once_with(
+        config,
+        config_manager,
+        "hello",
+        working_dir=cli_module.Path.cwd(),
+        session_id=None,
+        model_profile_id=None,
+        worker=True,
+    )
+
+
+def test_cli_worker_requires_headless_prompt() -> None:
+    result = CliRunner().invoke(cli, ["--worker"])
+    assert result.exit_code != 0
+    assert "--worker requires --prompt/-p headless mode" in result.output
 
 
 def test_cli_help_includes_sessions_and_profile_options() -> None:
@@ -40,6 +74,7 @@ def test_cli_help_includes_sessions_and_profile_options() -> None:
     assert result.exit_code == 0
     assert "--session" in result.output
     assert "--profile" in result.output
+    assert "--worker" in result.output
     assert "sessions" in result.output
 
     sessions_result = CliRunner().invoke(cli, ["sessions", "--help"])

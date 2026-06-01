@@ -13,6 +13,7 @@ from yaacli.config import (
     YaacliConfig,
 )
 from yaacli.runtime import create_tui_runtime
+from yaacli.toolsets.background import SpawnDelegateTool, SteerSubagentTool
 
 # =============================================================================
 # create_tui_runtime Tests
@@ -246,6 +247,47 @@ def test_create_tui_runtime_with_model_cfg_dict(tmp_path: Path) -> None:
     assert runtime.ctx.model_cfg.context_window == 100_000
     assert runtime.ctx.model_cfg.max_images == 10
     assert ModelCapability.vision in runtime.ctx.model_cfg.capabilities
+
+
+def test_create_tui_runtime_can_disable_async_subagents(tmp_path: Path) -> None:
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai-chat:gpt-4"),
+    )
+
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        enable_async_subagents=False,
+    )
+
+    assert runtime.core_toolset is not None
+    assert "spawn_delegate" not in runtime.core_toolset._tool_classes
+    assert "steer_subagent" not in runtime.core_toolset._tool_classes
+    assert "shell_monitor" in runtime.core_toolset._tool_classes
+    assert SpawnDelegateTool.name == "spawn_delegate"
+    assert SteerSubagentTool.name == "steer_subagent"
+
+
+def test_create_tui_runtime_can_disable_delegate_subagents(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        "---\nname: helper\ndescription: Helper subagent\n---\n\nYou are a helper.\n"
+    )
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai-chat:gpt-4"),
+    )
+
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        config_dir=config_dir,
+        enable_delegate_subagents=False,
+    )
+
+    assert runtime.core_toolset is not None
+    assert "delegate" not in runtime.core_toolset._tool_classes
 
 
 def test_create_tui_runtime_with_no_model_cfg(tmp_path: Path) -> None:

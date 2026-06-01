@@ -589,6 +589,12 @@ def _prepare_session_cli_runtime(verbose: bool) -> ConfigManager:
     help="Branch name for worktree (implies --worktree).",
 )
 @click.option("-p", "--prompt", default=None, metavar="PROMPT", help="Run one prompt in headless mode.")
+@click.option(
+    "--worker",
+    is_flag=True,
+    default=False,
+    help="Run headless as a worker without synchronous delegate subagents.",
+)
 @click.option("-s", "--session", "session_id", default=None, metavar="SESSION_ID", help="Restore a saved session.")
 @click.option(
     "--profile",
@@ -612,6 +618,7 @@ def cli(
     worktree: bool,
     worktree_branch: str | None,
     prompt: str | None,
+    worker: bool,
     session_id: str | None,
     model_profile_id: str | None,
     model_profile_id_alias: str | None,
@@ -642,6 +649,8 @@ def cli(
         return
 
     effective_model_profile_id = model_profile_id_alias or model_profile_id
+    if worker and prompt is None:
+        raise click.UsageError("--worker requires --prompt/-p headless mode.")
 
     config_manager, config = _prepare_cli_runtime(verbose)
 
@@ -673,6 +682,7 @@ def cli(
                     working_dir=working_dir,
                     session_id=session_id,
                     model_profile_id=effective_model_profile_id,
+                    worker=worker,
                 )
             )
         else:
@@ -750,6 +760,7 @@ async def _run_headless_prompt(
     working_dir: Path | None = None,
     session_id: str | None = None,
     model_profile_id: str | None = None,
+    worker: bool = False,
 ) -> str | None:
     """Run one prompt in headless mode and stream display events as NDJSON."""
     from yaacli.headless import run_headless_prompt
@@ -761,6 +772,7 @@ async def _run_headless_prompt(
         working_dir=working_dir or Path.cwd(),
         session_id=session_id,
         model_profile_id=model_profile_id,
+        worker=worker,
     )
     return result.session_id
 

@@ -180,6 +180,7 @@ async def run_headless_prompt(
     working_dir: Path,
     session_id: str | None = None,
     model_profile_id: str | None = None,
+    worker: bool = False,
 ) -> HeadlessRunResult:
     """Run a single prompt and stream display events to stdout as NDJSON."""
     mcp_config = config_manager.load_mcp_config()
@@ -200,6 +201,8 @@ async def run_headless_prompt(
         working_dir=working_dir,
         config_dir=config_manager.config_dir,
         model_profile=model_profile,
+        enable_async_subagents=False,
+        enable_delegate_subagents=not worker,
     )
     async with runtime:
         runtime.ctx.injected_context_tags = (

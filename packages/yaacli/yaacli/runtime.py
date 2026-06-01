@@ -56,6 +56,8 @@ from yaacli.model_profiles import ResolvedModelProfile, get_startup_model_profil
 from yaacli.session import TUIContext
 from yaacli.toolsets.background import background_tools
 
+_ASYNC_SUBAGENT_TOOL_NAMES = frozenset({"spawn_delegate", "steer_subagent"})
+
 if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
 
@@ -143,6 +145,8 @@ def create_tui_runtime(
     system_prompt: str | None = None,
     config_dir: Path | None = None,
     model_profile: ResolvedModelProfile | None = None,
+    enable_async_subagents: bool = True,
+    enable_delegate_subagents: bool = True,
 ) -> AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment]:
     """Create AgentRuntime configured for TUI.
 
@@ -160,6 +164,8 @@ def create_tui_runtime(
         system_prompt: Custom system prompt. If None, uses default.
         config_dir: Global config directory used for subagents and allowed paths.
         model_profile: Optional resolved model profile override.
+        enable_async_subagents: Include background subagent tools such as spawn_delegate.
+        enable_delegate_subagents: Include the synchronous unified delegate subagent tool.
 
     Returns:
         AgentRuntime configured for TUI usage. Use as async context manager.
@@ -279,8 +285,10 @@ def create_tui_runtime(
     if config.tools.need_approval_mcps:
         logger.debug("MCP servers requiring approval: %s", config.tools.need_approval_mcps)
 
-    # Load subagent configs from user config directory
-    subagent_configs = _load_subagent_configs(config.subagents, config_dir=global_config_dir)
+    # Load subagent configs from user config directory when synchronous delegation is enabled.
+    subagent_configs = (
+        _load_subagent_configs(config.subagents, config_dir=global_config_dir) if enable_delegate_subagents else []
+    )
 
     # Core tools
     core_tools: list[type[BaseTool]] = [
@@ -294,11 +302,15 @@ def create_tui_runtime(
         *web_tools,
     ]
 
+    selected_background_tools = [
+        tool for tool in background_tools if enable_async_subagents or tool.name not in _ASYNC_SUBAGENT_TOOL_NAMES
+    ]
+
     # Build final tools list
     all_tools: list[type[BaseTool]] = [
         *core_tools,
         *subagent_tools,  # SubagentInfoTool for introspection
-        *background_tools,  # SpawnDelegateTool for async subagent execution
+        *selected_background_tools,
     ]
 
     # Load system prompt
@@ -346,10 +358,12 @@ def create_tui_runtime(
     attach_goal_guard(runtime.agent)
 
     logger.info(
-        "Created TUI runtime: model=%s, toolsets=%d, output_retries=%d",
+        "Created TUI runtime: model=%s, toolsets=%d, output_retries=%d, async_subagents=%s, delegate_subagents=%s",
         active_model,
         len(toolsets),
         output_retries,
+        enable_async_subagents,
+        enable_delegate_subagents,
     )
 
     return runtime

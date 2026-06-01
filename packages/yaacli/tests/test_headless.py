@@ -181,6 +181,8 @@ async def test_headless_prompt_uses_model_profile_and_auto_denies_hitl(
 
     assert result.output_text == "denied done"
     assert runtime_factory.call_args.kwargs["model_profile"].id == "fast"
+    assert runtime_factory.call_args.kwargs["enable_async_subagents"] is False
+    assert runtime_factory.call_args.kwargs["enable_delegate_subagents"] is True
     second_call = stream_agent_mock.call_args_list[1]
     deferred_results = second_call.kwargs["deferred_tool_results"]
     approval_result = deferred_results.approvals["approval-1"]
@@ -203,6 +205,40 @@ async def test_headless_prompt_uses_model_profile_and_auto_denies_hitl(
     }
     assert lines[-1]["type"] == "RUN_FINISHED"
     assert lines[-1]["result"] == {"output_text": "denied done"}
+
+
+@pytest.mark.asyncio
+async def test_headless_worker_disables_delegate_subagents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = MagicMock()
+    config.general.max_requests = 10
+    config.general.agent_stream_resume_on_error = False
+    config.general.agent_stream_resume_max_attempts = 0
+    config.general.agent_stream_resume_prompt = None
+
+    config_manager = MagicMock(spec=ConfigManager)
+    config_manager.config_dir = tmp_path / "config"
+    config_manager.get_sessions_dir.return_value = tmp_path / "sessions"
+    config_manager.load_mcp_config.return_value = None
+
+    runtime = FakeRuntime()
+    runtime_factory = MagicMock(return_value=runtime)
+    monkeypatch.setattr("yaacli.headless.create_tui_runtime", runtime_factory)
+    monkeypatch.setattr("yaacli.headless.stream_agent", MagicMock(return_value=FakeStreamContext(FakeStreamer())))
+    monkeypatch.setattr("yaacli.headless.get_latest_request_usage", MagicMock(return_value=None))
+
+    await run_headless_prompt(
+        config=config,
+        config_manager=config_manager,
+        prompt="hello",
+        working_dir=tmp_path,
+        worker=True,
+    )
+
+    assert runtime_factory.call_args.kwargs["enable_async_subagents"] is False
+    assert runtime_factory.call_args.kwargs["enable_delegate_subagents"] is False
 
 
 @pytest.mark.asyncio
