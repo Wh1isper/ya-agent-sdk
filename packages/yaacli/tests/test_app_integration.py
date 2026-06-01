@@ -7,6 +7,7 @@ Focus on testable components and state transitions.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1234,6 +1235,38 @@ def test_tui_app_load_history_clears_pending_attachments(tmp_path: Path) -> None
 
     assert app._pending_attachments == []
     assert app._message_history == []
+
+
+def test_tui_app_saves_and_restores_display_messages(tmp_path: Path) -> None:
+    """Session restore should rebuild visible output from display_messages.json."""
+    config = MockConfig()
+    sessions_dir = tmp_path / "sessions"
+    config_manager = MockConfigManager()
+    config_manager.get_sessions_dir = MagicMock(return_value=sessions_dir)
+    app = TUIApp(config=config, config_manager=config_manager)
+    app._runtime = MagicMock()
+    app._runtime.ctx.export_state.return_value.model_dump_json.return_value = "{}"
+    app._message_history = []
+    app._display_replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"})
+
+    app._save_session_snapshot(save_reason="test")
+
+    save_dir = sessions_dir / app.session_id
+    display_file = next((save_dir / "turns").iterdir()) / "display_messages.json"
+    assert display_file.exists()
+    assert json.loads(display_file.read_text()) == [{"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"}]
+
+    load_dir = tmp_path / "load"
+    load_dir.mkdir()
+    (load_dir / "message_history.json").write_bytes(b"[]")
+    (load_dir / "display_messages.json").write_text(display_file.read_text())
+
+    restored = TUIApp(config=config, config_manager=config_manager)
+    restored._load_history(str(load_dir))
+
+    assert restored._message_history == []
+    assert restored._display_replay.snapshot() == [{"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"}]
+    assert any("hello" in line for line in restored._output_lines)
 
 
 def test_tui_app_persist_stream_recoverable_state_updates_memory_only_on_interrupt():

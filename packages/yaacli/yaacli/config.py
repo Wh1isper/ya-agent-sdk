@@ -42,6 +42,7 @@ __all__ = [
     "MCPConfig",
     "MCPServerConfig",
     "ModelProfileConfig",
+    "SessionConfig",
     "SubagentOverride",
     "SubagentsConfig",
     "ToolsConfig",
@@ -270,6 +271,19 @@ class MediaConfig(BaseModel):
     """S3 configuration for media upload."""
 
 
+class SessionConfig(BaseModel):
+    """Saved session retention configuration."""
+
+    max_turns_per_session: PositiveInt = 20
+    """Maximum saved turns retained inside each session."""
+
+    max_sessions: PositiveInt = 100
+    """Maximum saved sessions retained globally."""
+
+    max_session_age_days: PositiveInt | None = None
+    """Optional maximum session age in days. Older sessions are pruned on save."""
+
+
 class OAuthRefreshConfig(BaseModel):
     """OAuth proactive refresh configuration."""
 
@@ -288,6 +302,8 @@ class YaacliConfig(BaseModel):
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     """Media handling configuration (S3 upload, etc.)."""
+    session: SessionConfig = Field(default_factory=SessionConfig)
+    """Saved session retention configuration."""
     oauth_refresh: OAuthRefreshConfig = Field(default_factory=OAuthRefreshConfig)
     """OAuth proactive refresh configuration."""
     env: dict[str, str] = Field(default_factory=dict)
@@ -363,6 +379,9 @@ class EnvSettings(BaseSettings):
     session_dir: str | None = None
     auto_save_history: bool | None = None
     auto_restore: bool | None = None
+    max_turns_per_session: PositiveInt | None = None
+    max_sessions: PositiveInt | None = None
+    max_session_age_days: PositiveInt | None = None
 
     # Agent stream recovery
     agent_stream_resume_on_error: bool | None = None
@@ -509,6 +528,12 @@ class ConfigManager:
             session["auto_save_history"] = env.auto_save_history
         if env.auto_restore is not None:
             session["auto_restore"] = env.auto_restore
+        if env.max_turns_per_session is not None:
+            session["max_turns_per_session"] = env.max_turns_per_session
+        if env.max_sessions is not None:
+            session["max_sessions"] = env.max_sessions
+        if env.max_session_age_days is not None:
+            session["max_session_age_days"] = env.max_session_age_days
         if session:
             overrides["session"] = session
 

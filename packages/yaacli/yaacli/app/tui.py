@@ -23,7 +23,6 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import signal
 import sys
 import time
@@ -109,6 +108,7 @@ from ya_agent_sdk.utils import get_latest_request_usage
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
+from yaacli.agui import DisplayEventAdapter, DisplayReplayBuffer, validate_display_events
 from yaacli.app.state import TUIMode
 from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, BackgroundTaskInfo
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
@@ -130,6 +130,7 @@ from yaacli.model_profiles import (
 from yaacli.perf import perf_log_report, perf_report, perf_timer
 from yaacli.runtime import create_tui_runtime
 from yaacli.session import TUIContext
+from yaacli.sessions import get_head_artifact_paths, save_session_turn, trim_sessions
 from yaacli.usage import SessionUsage
 
 if TYPE_CHECKING:
@@ -141,6 +142,8 @@ logger = get_logger(__name__)
 _SHUTDOWN_AGENT_TASK_TIMEOUT = 8.0
 _SHUTDOWN_MANAGED_TASKS_TIMEOUT = 5.0
 _DIRECT_SHELL_TERMINATE_TIMEOUT = 2.0
+_DEFAULT_MAX_TURNS_PER_SESSION = 20
+_DEFAULT_MAX_SESSIONS = 100
 
 
 # =============================================================================
@@ -172,6 +175,14 @@ def _safe_exception_str(e: BaseException) -> str:
         result = repr(e)
 
     return result
+
+
+def _positive_int_config(value: object, default: int) -> int:
+    return value if isinstance(value, int) and value > 0 else default
+
+
+def _optional_positive_int_config(value: object) -> int | None:
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def _is_benign_contextvar_cleanup_error(e: BaseException | None) -> bool:
@@ -272,6 +283,8 @@ class TUIApp:
     _output_ansi_cache: ANSI | None = field(default=None, init=False)  # Cached visible ANSI
     _renderer: RichRenderer = field(default_factory=RichRenderer, init=False)
     _event_renderer: EventRenderer = field(default_factory=EventRenderer, init=False)
+    _display_replay: DisplayReplayBuffer = field(default_factory=DisplayReplayBuffer, init=False)
+    _display_adapter: DisplayEventAdapter | None = field(default=None, init=False)
 
     # Session
     _session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12], init=False)
@@ -723,6 +736,135 @@ class TUIApp:
         # Invalidate app to refresh display (throttled during streaming)
         self._throttled_invalidate()
 
+    def _record_display_event(self, event: dict[str, Any]) -> None:
+        """Persist a display-layer event for replay/session restore."""
+        self._display_replay.append(event)
+
+    def _record_display_events(self, events: Sequence[dict[str, Any]]) -> None:
+        """Persist display-layer events for replay/session restore."""
+        for event in events:
+            self._record_display_event(event)
+
+    def _record_display_system_event(self, event_name: str, payload: Any) -> None:
+        """Persist a YAACLI custom display event."""
+        adapter = self._display_adapter or DisplayEventAdapter(session_id=self._session_id, run_id=self._session_id)
+        self._record_display_event(adapter.build_system_event(event_name, cast(Any, payload)))
+
+    def _reset_output_blocks(self) -> None:
+        """Clear rendered output blocks and viewport bookkeeping."""
+        self._output_lines.clear()
+        self._block_line_counts.clear()
+        self._output_ansi_cache = None
+        self._viewport_cache_key = None
+        self._output_generation = 0
+        self._total_line_count = 0
+        self._scroll_offset = 0
+
+    def _handle_display_events(self, events: Sequence[dict[str, Any]]) -> None:
+        """Render display-layer events into the TUI output buffer."""
+        width = self._get_terminal_width()
+        for event in events:
+            event_type = str(event.get("type", ""))
+            if event_type == "TEXT_MESSAGE_START":
+                self._finalize_streaming_text()
+                self._finalize_streaming_thinking()
+                self._start_streaming_text("")
+                continue
+            if event_type == "TEXT_MESSAGE_CHUNK":
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    if self._streaming_line_index is not None:
+                        self._update_streaming_text(delta)
+                    else:
+                        self._append_block(
+                            self._renderer.render_markdown(
+                                delta,
+                                code_theme=self._get_code_theme(),
+                                width=width,
+                            ).rstrip("\n")
+                        )
+                continue
+            if event_type == "TEXT_MESSAGE_END":
+                self._finalize_streaming_text()
+                continue
+            if event_type == "REASONING_MESSAGE_START":
+                self._finalize_streaming_text()
+                self._finalize_streaming_thinking()
+                self._start_streaming_thinking("")
+                continue
+            if event_type == "REASONING_MESSAGE_CHUNK":
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    if self._streaming_thinking_line_index is not None:
+                        self._update_streaming_thinking(delta)
+                    else:
+                        self._append_block(self._event_renderer.render_thinking(delta, width=width).rstrip("\n"))
+                continue
+            if event_type == "REASONING_MESSAGE_END":
+                self._finalize_streaming_thinking()
+                continue
+            if event_type == "TOOL_CALL_CHUNK":
+                self._finalize_streaming_text()
+                self._finalize_streaming_thinking()
+                tool_name = event.get("toolCallName") or event.get("tool_call_name") or "tool"
+                tool_call_id = str(event.get("toolCallId") or event.get("tool_call_id") or "")
+                if tool_call_id and tool_call_id not in self._tool_messages:
+                    self._tool_messages[tool_call_id] = ToolMessage(
+                        tool_call_id=tool_call_id,
+                        name=str(tool_name),
+                        args=event.get("delta") or "",
+                    )
+                    self._event_renderer.tracker.start_call(tool_call_id, str(tool_name), event.get("delta") or "")
+                    self._append_block(
+                        self._event_renderer.render_tool_call_start(str(tool_name), tool_call_id).rstrip()
+                    )
+                continue
+            if event_type == "TOOL_CALL_RESULT":
+                tool_call_id = str(event.get("toolCallId") or event.get("tool_call_id") or "")
+                existing_tool_msg = self._tool_messages.get(tool_call_id)
+                tool_msg = existing_tool_msg or ToolMessage(
+                    tool_call_id=tool_call_id,
+                    name=str(event.get("toolCallName") or event.get("tool_call_name") or "tool"),
+                )
+                tool_msg.content = str(event.get("content") or "")
+                self._append_block(
+                    self._event_renderer.render_tool_call_complete(
+                        tool_msg,
+                        duration=0.0,
+                        width=width,
+                    ).rstrip()
+                )
+                continue
+            if event_type == "CUSTOM" and event.get("name") == "yaacli.user_input":
+                value = event.get("value")
+                if isinstance(value, dict):
+                    text = str(value.get("text") or "")
+                    from rich.text import Text as RichText
+
+                    user_text = RichText()
+                    user_text.append("> ", style="bold green")
+                    user_text.append(text)
+                    self._append_block(self._renderer.render(user_text, width=width).rstrip("\n"))
+
+        if self._state == TUIState.RUNNING:
+            self._scroll_to_bottom()
+        if self._app:
+            self._app.invalidate()
+
+    def _restore_output_from_display_events(self, events: Sequence[dict[str, Any]]) -> None:
+        """Rebuild visible output from compacted display-layer events."""
+        self._reset_output_blocks()
+        self._streaming_text = ""
+        self._streaming_line_index = None
+        self._streaming_thinking = ""
+        self._streaming_thinking_line_index = None
+        self._handle_display_events(events)
+        self._finalize_streaming_text()
+        self._finalize_streaming_thinking()
+        self._scroll_to_bottom()
+        if self._app:
+            self._app.invalidate()
+
     def _get_viewport_height(self) -> int:
         """Get visible output height in lines."""
         if self._app and self._app.output:
@@ -957,6 +1099,15 @@ class TUIApp:
 
     def _append_user_input(self, text: str, attachments: Sequence[PendingAttachment] | None = None) -> None:
         """Render user input with styled prompt indicator and attachment markers."""
+        self._record_display_system_event(
+            "user_input",
+            {
+                "text": text,
+                "attachments": [
+                    {"media_type": item.media_type, "size_bytes": item.size_bytes} for item in (attachments or [])
+                ],
+            },
+        )
         width = self._get_terminal_width()
         from rich.text import Text as RichText
 
@@ -979,6 +1130,10 @@ class TUIApp:
 
     def _append_error_output(self, e: BaseException) -> None:
         """Render error message with traceback to fit terminal width."""
+        self._record_display_system_event(
+            "error",
+            {"type": type(e).__name__, "message": _safe_exception_str(e)},
+        )
         width = self._get_terminal_width()
         from rich.text import Text as RichText
 
@@ -1582,6 +1737,9 @@ class TUIApp:
         self._event_renderer.clear()
         cancelled = False
         reported_error = False
+        run_id = uuid.uuid4().hex[:12]
+        self._display_adapter = DisplayEventAdapter(session_id=self._session_id, run_id=run_id)
+        self._record_display_event(self._display_adapter.build_run_started_event(input_text=user_input))
 
         try:
             # Initial agent execution
@@ -1600,7 +1758,8 @@ class TUIApp:
                 # Resume agent with approval results
                 result = await self._execute_stream(user_response)
 
-            # Agent completed successfully
+            output = result.output if result and isinstance(result.output, str) else None
+            self._record_display_event(self._display_adapter.build_run_finished_event(result={"output_text": output}))
 
         except asyncio.CancelledError:
             cancelled = True
@@ -1623,6 +1782,12 @@ class TUIApp:
                     self._append_system_output(
                         f"After restarting, run /session {self._session_id} to restore this session."
                     )
+                self._record_display_event(
+                    self._display_adapter.build_run_error_event(
+                        message=_safe_exception_str(e),
+                        code=type(e).__name__,
+                    )
+                )
                 logger.exception("Agent execution failed")
         finally:
             # Finalize any remaining streaming text/thinking
@@ -1655,6 +1820,7 @@ class TUIApp:
             # intended to stop execution, not restart it immediately.
             if not cancelled:
                 self._check_pending_bus_messages()
+            self._display_adapter = None
 
     def _reset_hitl_state(self) -> None:
         """Reset all HITL-related state variables.
@@ -1715,7 +1881,13 @@ class TUIApp:
         ) as stream:
             try:
                 async for event in stream:
-                    self._handle_stream_event(event)
+                    if self._display_adapter is not None:
+                        display_events = self._display_adapter.adapt_stream_event(event)
+                        self._record_display_events(display_events)
+                        self._handle_display_events(display_events)
+                        self._handle_stream_event(event, render_display=False)
+                    else:
+                        self._handle_stream_event(event)
 
                 stream.raise_if_exception()
             except BaseException as exc:
@@ -2050,8 +2222,8 @@ class TUIApp:
         """Check if an agent_id belongs to a background subagent."""
         return "-bg-" in agent_id
 
-    def _handle_stream_event(self, event: StreamEvent) -> None:
-        """Handle a stream event from agent execution."""
+    def _handle_stream_event(self, event: StreamEvent, *, render_display: bool = True) -> None:
+        """Handle non-display state updates from agent execution."""
         message_event = event.event
         agent_id = event.agent_id
 
@@ -2088,6 +2260,34 @@ class TUIApp:
         if isinstance(message_event, UsageSnapshotEvent):
             if message_event.snapshot is not None:
                 self._session_usage.set_run_snapshot(message_event.snapshot)
+            return
+
+        if not render_display and isinstance(
+            message_event,
+            PartStartEvent
+            | PartDeltaEvent
+            | PartEndEvent
+            | FunctionToolCallEvent
+            | OutputToolCallEvent
+            | FunctionToolResultEvent
+            | OutputToolResultEvent,
+        ):
+            if isinstance(message_event, FunctionToolCallEvent | OutputToolCallEvent):
+                tool_call_id = message_event.part.tool_call_id
+                tool_name = message_event.part.tool_name
+                self._tool_messages[tool_call_id] = ToolMessage(
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    args=message_event.part.args,
+                )
+                self._event_renderer.tracker.start_call(tool_call_id, tool_name, message_event.part.args)
+            elif isinstance(message_event, FunctionToolResultEvent | OutputToolResultEvent):
+                tool_call_id = message_event.tool_call_id
+                if tool_call_id in self._tool_messages:
+                    result_content = self._extract_tool_result(message_event)
+                    self._tool_messages[tool_call_id].content = result_content
+                    self._event_renderer.tracker.complete_call(tool_call_id, result_content)
+                    self._printed_tool_calls.add(tool_call_id)
             return
 
         # Main agent events - normal processing
@@ -2911,14 +3111,7 @@ class TUIApp:
         Preserves:
         - Session usage (token/cost tracking)
         """
-        self._output_lines.clear()
-        # Reset virtual viewport state
-        self._block_line_counts.clear()
-        self._output_ansi_cache = None
-        self._viewport_cache_key = None
-        self._output_generation = 0
-        self._total_line_count = 0
-        self._scroll_offset = 0
+        self._reset_output_blocks()
         # Reset streaming state
         self._streaming_text = ""
         self._streaming_line_index = None
@@ -2928,6 +3121,7 @@ class TUIApp:
         self._tool_messages.clear()
         self._subagent_states.clear()
         self._steering_items.clear()
+        self._display_replay.clear()
         self._reset_pending_attachments()
         # Clear conversation history
         self._message_history = None
@@ -3085,6 +3279,9 @@ class TUIApp:
             history_file = dump_dir / "message_history.json"
             history_file.write_bytes(ModelMessagesTypeAdapter.dump_json(self._message_history, indent=2))
 
+            display_file = dump_dir / "display_messages.json"
+            display_file.write_text(json.dumps(self._display_replay.snapshot(), ensure_ascii=False, indent=2))
+
             # Save context state
             state_file = dump_dir / "context_state.json"
             state = self.runtime.ctx.export_state()
@@ -3092,6 +3289,7 @@ class TUIApp:
 
             self._append_system_output(f"Session dumped to {dump_dir}")
             self._append_system_output(f"  - message_history.json ({len(self._message_history)} messages)")
+            self._append_system_output(f"  - display_messages.json ({len(self._display_replay.snapshot())} events)")
             self._append_system_output("  - context_state.json")
         except Exception as e:
             self._append_system_output(f"Error: {e}")
@@ -3113,7 +3311,17 @@ class TUIApp:
             return
 
         history_file = load_dir / "message_history.json"
+        display_file = load_dir / "display_messages.json"
         state_file = load_dir / "context_state.json"
+        if not history_file.exists():
+            try:
+                paths = get_head_artifact_paths(self.config_manager, load_dir.name)
+            except (FileNotFoundError, ValueError):
+                paths = None
+            if paths is not None:
+                history_file = paths.message_history_file or history_file
+                display_file = paths.display_messages_file or display_file
+                state_file = paths.context_state_file or state_file
 
         if not history_file.exists():
             self._append_system_output(f"message_history.json not found in {load_dir}")
@@ -3125,6 +3333,11 @@ class TUIApp:
             history_data = history_file.read_bytes()
             history = ModelMessagesTypeAdapter.validate_json(history_data)
             self._message_history = history
+
+            if display_file.exists():
+                display_events = validate_display_events(json.loads(display_file.read_text()))
+                self._display_replay.extend_snapshot(display_events)
+                self._restore_output_from_display_events(display_events)
 
             # Load context state if exists
             if state_file.exists():
@@ -3142,10 +3355,18 @@ class TUIApp:
 
                 self._append_system_output(f"Session loaded from {load_dir}")
                 self._append_system_output(f"  - message_history.json ({len(history)} messages)")
+                if display_file.exists():
+                    self._append_system_output(
+                        f"  - display_messages.json ({len(self._display_replay.snapshot())} events)"
+                    )
                 self._append_system_output("  - context_state.json (restored)")
             else:
                 self._append_system_output(f"Session loaded from {load_dir}")
                 self._append_system_output(f"  - message_history.json ({len(history)} messages)")
+                if display_file.exists():
+                    self._append_system_output(
+                        f"  - display_messages.json ({len(self._display_replay.snapshot())} events)"
+                    )
                 self._append_system_output("  - context_state.json (not found, skipped)")
 
             self._append_system_output("Next message will continue from loaded history.")
@@ -3173,46 +3394,36 @@ class TUIApp:
         if include_usage_ledger is None:
             include_usage_ledger = bool(include_extra_usages)
 
-        if not self._message_history:
+        if not self._message_history and not self._display_replay.snapshot():
             return False
 
-        sessions_dir = self.config_manager.get_sessions_dir()
-        save_dir = sessions_dir / self._session_id
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        now = datetime.now(UTC).isoformat()
-
-        # Save message history
-        history_file = save_dir / "message_history.json"
-        history_file.write_bytes(ModelMessagesTypeAdapter.dump_json(self._message_history, indent=2))
-
-        # Save context state
-        state_file = save_dir / "context_state.json"
         if include_extra_usages is None:
             state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
         else:
             state = self.runtime.ctx.export_state(include_extra_usages=include_extra_usages)
-        state_file.write_text(state.model_dump_json(indent=2))
 
-        # Save/update metadata
-        metadata_file = save_dir / "metadata.json"
-        if metadata_file.exists():
-            metadata = json.loads(metadata_file.read_text())
-            metadata["updated_at"] = now
-        else:
-            metadata = {
-                "session_id": self._session_id,
-                "working_dir": str(self.working_dir),
-                "created_at": now,
-                "updated_at": now,
-            }
-        metadata["last_save_reason"] = save_reason
-        metadata_file.write_text(json.dumps(metadata, indent=2))
+        turn_dir = save_session_turn(
+            config_manager=self.config_manager,
+            session_id=self._session_id,
+            working_dir=self.working_dir,
+            message_history_json=ModelMessagesTypeAdapter.dump_json(self._message_history or [], indent=2),
+            context_state_json=state.model_dump_json(indent=2),
+            display_messages=self._display_replay.snapshot(),
+            output_text=None,
+            save_reason=save_reason,
+            max_turns=_positive_int_config(
+                getattr(getattr(self.config, "session", None), "max_turns_per_session", None),
+                _DEFAULT_MAX_TURNS_PER_SESSION,
+            ),
+            max_sessions=_positive_int_config(
+                getattr(getattr(self.config, "session", None), "max_sessions", None), _DEFAULT_MAX_SESSIONS
+            ),
+            max_session_age_days=_optional_positive_int_config(
+                getattr(getattr(self.config, "session", None), "max_session_age_days", None)
+            ),
+        )
 
-        logger.debug("Saved session snapshot to %s (reason=%s)", save_dir, save_reason)
-
-        # Prune old sessions
-        self._prune_sessions(sessions_dir)
+        logger.debug("Saved session snapshot to %s (reason=%s)", turn_dir, save_reason)
         return True
 
     def _auto_save_history(self) -> None:
@@ -3228,7 +3439,8 @@ class TUIApp:
     def has_session_data(self) -> bool:
         """Check if this session has any saved data."""
         sessions_dir = self.config_manager.get_sessions_dir()
-        return (sessions_dir / self._session_id / "message_history.json").exists()
+        session_dir = sessions_dir / self._session_id
+        return (session_dir / "message_history.json").exists() or (session_dir / "display_messages.json").exists()
 
     def _prune_sessions(self, sessions_dir: Path, max_sessions: int = 100) -> None:
         """Remove old sessions beyond the retention limit.
@@ -3241,35 +3453,17 @@ class TUIApp:
             sessions_dir: Path to ~/.yaacli/sessions/
             max_sessions: Maximum number of sessions to retain.
         """
-        if not sessions_dir.exists():
-            return
-
-        session_dirs = [d for d in sessions_dir.iterdir() if d.is_dir()]
-        if len(session_dirs) <= max_sessions:
-            return
-
-        def _get_session_time(d: Path) -> str:
-            metadata_file = d / "metadata.json"
-            if metadata_file.exists():
-                try:
-                    metadata = json.loads(metadata_file.read_text())
-                    return metadata.get("updated_at", "")
-                except (json.JSONDecodeError, OSError):
-                    pass
-            # Fallback to directory mtime
-            return datetime.fromtimestamp(d.stat().st_mtime, tz=UTC).isoformat()
-
-        # Sort by time ascending (oldest first)
-        session_dirs.sort(key=_get_session_time)
-
-        # Remove oldest sessions
-        to_remove = session_dirs[: len(session_dirs) - max_sessions]
-        for d in to_remove:
-            try:
-                shutil.rmtree(d)
-                logger.debug(f"Pruned old session: {d.name}")
-            except OSError as e:
-                logger.warning(f"Failed to prune session {d.name}: {e}")
+        try:
+            trim_sessions(
+                sessions_dir,
+                max_sessions=max_sessions,
+                max_session_age_days=_optional_positive_int_config(
+                    getattr(getattr(self.config, "session", None), "max_session_age_days", None)
+                ),
+                protected_session_id=self._session_id,
+            )
+        except OSError as e:
+            logger.warning("Failed to prune sessions in %s: %s", sessions_dir, e)
 
     def _list_sessions(self, max_display: int = 20) -> None:
         """List recent sessions.

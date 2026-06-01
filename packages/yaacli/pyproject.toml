@@ -40,6 +40,7 @@ bump = true
 
 [tool.hatch.metadata.hooks.uv-dynamic-versioning]
 dependencies = [
+    "ag-ui-protocol>=0.1.18",
     "ya-agent-sdk[all]=={{ version }}",
     "ya-oauth=={{ version }}",
     "ya-oauth-provider=={{ version }}",
@@ -64,5 +65,5 @@ ya-oauth-provider = { workspace = true }
 
 [tool.deptry]
 ignore = ["DEP001"]
-package_module_name_map = { "click" = "click", "pillow" = "PIL", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-settings" = "pydantic_settings", "pyobjc-framework-Cocoa" = "AppKit|Foundation", "python-dotenv" = "dotenv", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-environment" = "ya_agent_environment", "ya-oauth" = "ya_oauth", "ya-oauth-provider" = "ya_oauth_provider" }
-per_rule_ignores = { DEP001 = ["quick_validate"], DEP003 = ["anyio", "click", "dotenv", "prompt_toolkit", "pillow", "pydantic", "pydantic_ai", "pydantic_settings", "pyobjc-framework-Cocoa", "rich", "yaml", "ya_agent_environment", "ya_agent_sdk", "yaacli"], DEP004 = ["pytest"] }
+package_module_name_map = { "ag-ui-protocol" = "ag_ui", "click" = "click", "pillow" = "PIL", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pydantic-settings" = "pydantic_settings", "pyobjc-framework-Cocoa" = "AppKit|Foundation", "python-dotenv" = "dotenv", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-environment" = "ya_agent_environment", "ya-oauth" = "ya_oauth", "ya-oauth-provider" = "ya_oauth_provider" }
+per_rule_ignores = { DEP001 = ["quick_validate"], DEP003 = ["ag_ui", "anyio", "click", "dotenv", "prompt_toolkit", "pillow", "pydantic", "pydantic_ai", "pydantic_settings", "pyobjc-framework-Cocoa", "rich", "yaml", "ya_agent_environment", "ya_agent_sdk", "yaacli"], DEP004 = ["pytest"] }
