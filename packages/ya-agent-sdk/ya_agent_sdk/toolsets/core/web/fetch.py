@@ -9,7 +9,7 @@ from typing import Annotated, Any
 
 import httpx
 from pydantic import Field
-from pydantic_ai import BinaryContent, RunContext
+from pydantic_ai import BinaryContent, RunContext, ToolReturn
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
@@ -50,7 +50,7 @@ class FetchTool(BaseTool):
             bool,
             Field(description="Only check existence without downloading content", default=False),
         ] = False,
-    ) -> str | dict[str, Any] | BinaryContent:
+    ) -> str | dict[str, Any] | ToolReturn:
         """Fetch web resource or check its existence."""
         skip_verification = ctx.deps.tool_config.skip_url_verification
 
@@ -120,8 +120,8 @@ class FetchTool(BaseTool):
         ctx: RunContext[AgentContext],
         response: httpx.Response,
         content_type: str,
-    ) -> BinaryContent | dict[str, Any]:
-        """Read a binary response with a hard in-memory size limit."""
+    ) -> ToolReturn | dict[str, Any]:
+        """Read an image response with a hard in-memory size limit."""
         max_bytes = ctx.deps.tool_config.fetch_max_inline_binary_bytes
         chunk_size = ctx.deps.tool_config.fetch_stream_chunk_size
         content_length = response.headers.get("Content-Length")
@@ -146,7 +146,10 @@ class FetchTool(BaseTool):
             detected = detect_image_media_type(data)
             if detected:
                 content_type = detected
-        return BinaryContent(data=data, media_type=content_type)
+        return ToolReturn(
+            return_value="The image is attached in the user message.",
+            content=[BinaryContent(data=data, media_type=content_type)],
+        )
 
     async def _read_text_response(
         self, ctx: RunContext[AgentContext], response: httpx.Response
@@ -197,7 +200,7 @@ class FetchTool(BaseTool):
         ctx: RunContext[AgentContext],
         url: str,
         skip_verification: bool = False,
-    ) -> str | dict[str, Any] | BinaryContent:
+    ) -> str | dict[str, Any] | ToolReturn:
         """Make GET request and return content."""
         try:
             async with safe_stream_request(

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from inline_snapshot import snapshot
-from pydantic_ai import BinaryContent, RunContext
+from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.web.fetch import FetchTool
@@ -92,8 +92,12 @@ async def test_fetch_tool_get_image(tmp_path: Path, httpx_mock) -> None:
         mock_run_ctx.deps = ctx
 
         result = await tool.call(mock_run_ctx, url="https://example.com/image.png")
-        assert isinstance(result, BinaryContent)
-        assert result.media_type == "image/png"
+        assert isinstance(result, ToolReturn)
+        assert result.return_value == "The image is attached in the user message."
+        assert result.content is not None
+        assert len(result.content) == 1
+        assert isinstance(result.content[0], BinaryContent)
+        assert result.content[0].media_type == "image/png"
 
 
 async def test_fetch_tool_reject_large_image_by_content_length(tmp_path: Path, httpx_mock) -> None:

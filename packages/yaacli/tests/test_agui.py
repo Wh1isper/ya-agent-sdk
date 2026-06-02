@@ -58,6 +58,15 @@ def test_display_event_adapter_maps_text_stream_events_and_compacts_replay() -> 
     assert compacted[2]["result"] == {"output_text": "hello world"}
 
 
+def test_display_event_adapter_run_started_excludes_input_text() -> None:
+    adapter = DisplayEventAdapter(session_id="session-1", run_id="run-1")
+
+    event = adapter.build_run_started_event(input_text="hello")
+
+    assert event["type"] == "RUN_STARTED"
+    assert "input" not in event
+
+
 def test_display_replay_buffer_keeps_runs_separate() -> None:
     replay = DisplayReplayBuffer()
     replay.append({"type": "RUN_STARTED", "runId": "run-1"})

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
 from yaacli.app import TUIApp
+from yaacli.app.tui import PendingAttachment
 from yaacli.config import CommandDefinition
 
 
@@ -72,6 +73,31 @@ def test_tui_display_skips_subagent_tool_events() -> None:
     ])
 
     assert app._append_block.call_count == 0
+
+
+def test_tui_append_user_input_renders_once_and_records_replay_event() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+
+    app._append_user_input("hello")
+
+    assert sum(1 for line in app._output_lines if "hello" in line) == 1
+    replay = app._display_replay.snapshot()
+    assert len(replay) == 1
+    assert replay[0]["type"] == "CUSTOM"
+    assert replay[0]["name"] == "yaacli.user_input"
+    assert replay[0]["value"] == {"text": "hello", "attachments": []}
+
+
+def test_tui_append_user_input_records_attachment_replay_event() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    attachment = PendingAttachment(data=b"img", media_type="image/png", size_bytes=3)
+
+    app._append_user_input("", [attachment])
+
+    replay = app._display_replay.snapshot()
+    assert replay[0]["value"] == {"text": "", "attachments": [{"media_type": "image/png", "size_bytes": 3}]}
+    assert any("[Attached 1 image]" in line for line in app._output_lines)
+    assert any("image/png 3B" in line for line in app._output_lines)
 
 
 def test_tui_display_user_input_attachment_fallback() -> None:

@@ -201,10 +201,8 @@ class DisplayEventAdapter:
         self._agents: dict[str, AgentCursor] = {}
 
     def build_run_started_event(self, *, input_text: str | None = None) -> dict[str, Any]:
-        event = _dump_agui_event(RunStartedEvent(thread_id=self._session_id, run_id=self._run_id))
-        if input_text is not None:
-            event["input"] = input_text
-        return event
+        _ = input_text
+        return _dump_agui_event(RunStartedEvent(thread_id=self._session_id, run_id=self._run_id))
 
     def build_run_finished_event(self, result: JsonValue = None) -> dict[str, Any]:
         return _dump_agui_event(RunFinishedEvent(thread_id=self._session_id, run_id=self._run_id, result=result))

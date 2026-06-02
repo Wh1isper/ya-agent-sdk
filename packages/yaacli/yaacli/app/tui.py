@@ -1117,19 +1117,22 @@ class TUIApp:
 
     def _append_user_input(self, text: str, attachments: Sequence[PendingAttachment] | None = None) -> None:
         """Render user input with styled prompt indicator and attachment markers."""
-        self._record_display_system_event(
-            "user_input",
-            {
-                "text": text,
-                "attachments": [
-                    {"media_type": item.media_type, "size_bytes": item.size_bytes} for item in (attachments or [])
-                ],
-            },
+        attachment_list = list(attachments or [])
+        adapter = self._display_adapter or DisplayEventAdapter(session_id=self._session_id, run_id=self._session_id)
+        self._record_display_event(
+            adapter.build_system_event(
+                "user_input",
+                {
+                    "text": text,
+                    "attachments": [
+                        {"media_type": item.media_type, "size_bytes": item.size_bytes} for item in attachment_list
+                    ],
+                },
+            )
         )
         width = self._get_terminal_width()
         from rich.text import Text as RichText
 
-        attachment_list = list(attachments or [])
         display_text = text
         if not display_text and attachment_list:
             count = len(attachment_list)

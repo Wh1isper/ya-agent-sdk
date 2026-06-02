@@ -34,7 +34,7 @@ Example::
 
 import io
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
 from PIL import Image
 from pydantic_ai.messages import (
@@ -42,6 +42,7 @@ from pydantic_ai.messages import (
     ImageUrl,
     ModelMessage,
     ModelRequest,
+    ToolReturnPart,
     UserContent,
     UserPromptPart,
     VideoUrl,
@@ -338,7 +339,7 @@ def drop_gif_images(
 
 
 async def _compress_content_list(
-    content_list: list[UserContent],
+    content_list: list[UserContent | object],
     max_image_bytes: int,
 ) -> bool:
     """Compress oversized images in a content list in-place. Returns True if modified.
@@ -440,16 +441,26 @@ async def compress_large_images(
             continue
 
         for part in message.parts:
-            if not isinstance(part, UserPromptPart) or isinstance(part.content, str):
+            if isinstance(part, UserPromptPart):
+                if isinstance(part.content, str):
+                    continue
+
+                content_list: list[UserContent | object] = (
+                    list(part.content) if isinstance(part.content, Sequence) else [part.content]
+                )
+                modified = await _compress_content_list(content_list, max_image_bytes)
+
+                if modified:
+                    part.content = cast(list[UserContent], content_list)
                 continue
 
-            content_list: list[UserContent] = (
-                list(part.content) if isinstance(part.content, Sequence) else [part.content]
-            )
-            modified = await _compress_content_list(content_list, max_image_bytes)
+            if isinstance(part, ToolReturnPart):
+                tool_content_list: list[object] = list(part.content_items(mode="raw"))
+                modified = await _compress_content_list(tool_content_list, max_image_bytes)
 
-            if modified:
-                part.content = content_list
+                if modified:
+                    tool_return = cast(Any, part)
+                    tool_return.content = tool_content_list[0] if len(tool_content_list) == 1 else tool_content_list
 
     return message_history
 

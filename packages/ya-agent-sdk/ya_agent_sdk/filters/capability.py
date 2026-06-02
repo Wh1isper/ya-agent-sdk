@@ -32,6 +32,7 @@ Example::
 """
 
 from collections.abc import Sequence
+from typing import Any, cast
 
 from pydantic_ai import DocumentUrl
 from pydantic_ai.messages import (
@@ -39,6 +40,7 @@ from pydantic_ai.messages import (
     ImageUrl,
     ModelMessage,
     ModelRequest,
+    ToolReturnPart,
     UserContent,
     UserPromptPart,
     VideoUrl,
@@ -49,21 +51,21 @@ from ya_agent_sdk._logger import logger
 from ya_agent_sdk.context import AgentContext, ModelCapability
 
 
-def _is_image_content(item: UserContent) -> bool:
+def _is_image_content(item: object) -> bool:
     """Check if content item is an image."""
     if isinstance(item, ImageUrl):
         return True
     return isinstance(item, BinaryContent) and item.media_type.startswith("image/")
 
 
-def _is_video_content(item: UserContent) -> bool:
+def _is_video_content(item: object) -> bool:
     """Check if content item is a video."""
     if isinstance(item, VideoUrl):
         return True
     return isinstance(item, BinaryContent) and item.media_type.startswith("video/")
 
 
-def _is_document_content(item: UserContent) -> bool:
+def _is_document_content(item: object) -> bool:
     """Check if content item is a document (PDF)."""
     if isinstance(item, DocumentUrl):
         return True
@@ -71,7 +73,7 @@ def _is_document_content(item: UserContent) -> bool:
 
 
 def _add_filtered_messages(
-    filtered: list[UserContent],
+    filtered: list[UserContent | object],
     removed_images: bool,
     removed_videos: bool,
     removed_documents: bool,
@@ -103,11 +105,11 @@ def _add_filtered_messages(
 
 
 def _filter_content(
-    content: str | Sequence[UserContent],
+    content: str | Sequence[UserContent] | object,
     has_vision: bool,
     has_video: bool,
     has_document: bool,
-) -> str | list[UserContent]:
+) -> str | list[UserContent | object]:
     """Filter content based on model capabilities.
 
     Args:
@@ -124,8 +126,8 @@ def _filter_content(
         return content
 
     # Convert to list for processing
-    items: list[UserContent] = list(content)
-    filtered: list[UserContent] = []
+    items: list[UserContent | object] = list(content) if isinstance(content, Sequence) else [content]
+    filtered: list[UserContent | object] = []
     removed_images = False
     removed_videos = False
     removed_documents = False
@@ -203,16 +205,23 @@ def filter_by_capability(
             continue
 
         for part in message.parts:
-            if not isinstance(part, UserPromptPart):
+            if isinstance(part, UserPromptPart):
+                # Filter the content based on capabilities
+                filtered_content = _filter_content(part.content, has_vision, has_video, has_document)
+
+                # Update content - handle type conversion
+                if isinstance(filtered_content, str):
+                    part.content = filtered_content
+                else:
+                    part.content = cast(list[UserContent], filtered_content)
                 continue
 
-            # Filter the content based on capabilities
-            filtered_content = _filter_content(part.content, has_vision, has_video, has_document)
-
-            # Update content - handle type conversion
-            if isinstance(filtered_content, str):
-                part.content = filtered_content
-            else:
-                part.content = filtered_content
+            if isinstance(part, ToolReturnPart):
+                filtered_content = _filter_content(part.content, has_vision, has_video, has_document)
+                tool_return = cast(Any, part)
+                if isinstance(filtered_content, str):
+                    tool_return.content = filtered_content
+                else:
+                    tool_return.content = filtered_content[0] if len(filtered_content) == 1 else filtered_content
 
     return message_history
