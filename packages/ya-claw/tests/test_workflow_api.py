@@ -95,12 +95,30 @@ def test_workflow_api_crud_trigger_events_and_filters() -> None:
         assert workflow["owner_session_id"] == "session-1"
         assert workflow["scope"] == "session"
 
+        other_response = client.post(
+            "/api/v1/workflows",
+            headers=_auth_headers(),
+            json={"definition": {**_definition(), "name": "Other Workflow", "tags": ["other"]}},
+        )
+        assert other_response.status_code == 201
+
         list_response = client.get(
             "/api/v1/workflows?only_current_session=true&current_session_id=session-1&tags=api",
             headers=_auth_headers(),
         )
         assert list_response.status_code == 200
         assert [item["id"] for item in list_response.json()["workflows"]] == [workflow["id"]]
+
+        tag_only_response = client.get("/api/v1/workflows?tags=api", headers=_auth_headers())
+        assert tag_only_response.status_code == 200
+        assert [item["id"] for item in tag_only_response.json()["workflows"]] == [workflow["id"]]
+
+        repeated_tags_response = client.get(
+            "/api/v1/workflows?tags=api&tags=missing",
+            headers=_auth_headers(),
+        )
+        assert repeated_tags_response.status_code == 200
+        assert repeated_tags_response.json()["workflows"] == []
 
         trigger_response = client.post(
             f"/api/v1/agent/workflows/{workflow['id']}:trigger",

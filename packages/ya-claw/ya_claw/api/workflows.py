@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ya_claw.config import ClawSettings
@@ -31,7 +33,7 @@ controller = WorkflowController()
 async def list_workflows(
     request: Request,
     query: str | None = None,
-    tags: list[str] | None = None,
+    tags: Annotated[list[str] | None, Query()] = None,
     status: str | None = None,
     scope: str | None = None,
     owner_kind: str | None = None,
