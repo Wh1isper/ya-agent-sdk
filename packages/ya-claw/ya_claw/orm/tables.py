@@ -31,10 +31,25 @@ _ALLOWED_HITL_DEFERRED_INPUT_STATUSES = ("pending", "consumed", "discarded")
 _ALLOWED_BRIDGE_HITL_MESSAGE_STATUSES = ("active", "completed", "failed")
 _ALLOWED_SCHEDULE_STATUSES = ("active", "paused", "completed", "deleted")
 _ALLOWED_SCHEDULE_TRIGGER_KINDS = ("cron", "once")
-_ALLOWED_SCHEDULE_EXECUTION_MODES = ("continue_session", "fork_session", "isolate_session")
+_ALLOWED_SCHEDULE_EXECUTION_MODES = ("continue_session", "fork_session", "isolate_session", "workflow")
 _ALLOWED_SCHEDULE_ACTIVE_POLICIES = ("steer", "queue")
 _ALLOWED_SCHEDULE_FIRE_STATUSES = ("pending", "submitted", "steered", "skipped", "failed")
 _ALLOWED_HEARTBEAT_FIRE_STATUSES = ("pending", "submitted", "skipped", "failed")
+_ALLOWED_WORKFLOW_DEFINITION_STATUSES = ("draft", "active", "archived")
+_ALLOWED_WORKFLOW_SCOPES = ("global", "session")
+_ALLOWED_WORKFLOW_RUN_STATUSES = ("queued", "running", "waiting", "completed", "failed", "cancelled")
+_ALLOWED_WORKFLOW_TRIGGER_KINDS = ("web", "api", "agent", "schedule", "bridge", "system")
+_ALLOWED_WORKFLOW_NODE_RUN_STATUSES = (
+    "pending",
+    "ready",
+    "queued",
+    "running",
+    "waiting",
+    "completed",
+    "failed",
+    "cancelled",
+    "skipped",
+)
 
 
 def utc_now() -> datetime:
@@ -269,11 +284,14 @@ class ScheduleRecord(Base):
     source_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     on_active: Mapped[str] = mapped_column(String(32), default="queue")
     input_parts_template: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    workflow_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    workflow_inputs_template: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     schedule_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     last_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_fire_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_workflow_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     fire_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -304,6 +322,7 @@ class ScheduleFireRecord(Base):
     created_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     active_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     fire_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
@@ -334,6 +353,126 @@ class HeartbeatFireRecord(Base):
     fire_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkflowDefinitionRecord(Base):
+    __tablename__ = "workflow_definitions"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_WORKFLOW_DEFINITION_STATUSES!s}",
+            name="ck_workflow_definitions_status",
+        ),
+        CheckConstraint(
+            f"scope IN {_ALLOWED_WORKFLOW_SCOPES!s}",
+            name="ck_workflow_definitions_scope",
+        ),
+        Index("ix_workflow_definitions_status_updated", "status", "updated_at"),
+        Index("ix_workflow_definitions_owner_session", "owner_session_id"),
+        Index("ix_workflow_definitions_scope_status", "scope", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    definition_version: Mapped[int] = mapped_column(Integer, default=1)
+    schema_version: Mapped[str] = mapped_column(String(64), default="ya-claw.workflow.v1")
+    owner_kind: Mapped[str] = mapped_column(String(32), default="api")
+    owner_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    owner_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scope: Mapped[str] = mapped_column(String(32), default="global")
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    when_to_use: Mapped[str | None] = mapped_column(Text, nullable=True)
+    argument_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    definition: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    workflow_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkflowRunRecord(Base):
+    __tablename__ = "workflow_runs"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_WORKFLOW_RUN_STATUSES!s}",
+            name="ck_workflow_runs_status",
+        ),
+        CheckConstraint(
+            f"trigger_kind IN {_ALLOWED_WORKFLOW_TRIGGER_KINDS!s}",
+            name="ck_workflow_runs_trigger_kind",
+        ),
+        Index("ix_workflow_runs_workflow_created", "workflow_id", "created_at"),
+        Index("ix_workflow_runs_status_updated", "status", "updated_at"),
+        Index("ix_workflow_runs_supervisor_session", "supervisor_session_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(ForeignKey("workflow_definitions.id", ondelete="CASCADE"), nullable=False)
+    workflow_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    trigger_kind: Mapped[str] = mapped_column(String(32), default="api")
+    supervisor_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    supervisor_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    profile_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    inputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_node_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    workflow_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkflowNodeRunRecord(Base):
+    __tablename__ = "workflow_node_runs"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_WORKFLOW_NODE_RUN_STATUSES!s}",
+            name="ck_workflow_node_runs_status",
+        ),
+        Index("ix_workflow_node_runs_workflow_node", "workflow_run_id", "node_id"),
+        Index("ix_workflow_node_runs_run", "run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    workflow_run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    profile_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    needs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    node_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkflowEventRecord(Base):
+    __tablename__ = "workflow_events"
+    __table_args__ = (
+        Index("ix_workflow_events_run_created", "workflow_run_id", "created_at"),
+        Index("ix_workflow_events_node", "node_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    workflow_run_id: Mapped[str] = mapped_column(ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False)
+    node_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(32), default="workflow")
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class BridgeConversationRecord(Base):

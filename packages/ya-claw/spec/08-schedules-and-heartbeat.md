@@ -2,7 +2,7 @@
 
 YA Claw has two time-based ingress surfaces:
 
-- **Schedules** are user or agent managed timer resources that create or steer agent work.
+- **Schedules** are user or agent managed timer resources that create or steer agent work or trigger workflows.
 - **Heartbeat** is a runtime-owned internal timer that runs operational workspace checks from `HEARTBEAT.md`.
 
 Both surfaces submit work through the same queued-run execution model. Their ownership, API surface, and guidance loading rules stay separate.
@@ -29,6 +29,7 @@ flowchart TB
     S --> CS[continue_session]
     S --> FS[fork_session]
     S --> IS[isolate_session]
+    S --> WF[workflow]
 
     H --> HI[heartbeat isolate run]
 ```
@@ -90,6 +91,26 @@ Delivery behavior:
 
 This mode is useful for standalone recurring tasks that need workspace access, clean agent state, durable run history, and a fresh container lifecycle per fire.
 
+### `schedule + workflow`
+
+A schedule fire creates a workflow run from the stored workflow definition.
+
+Required execution fields:
+
+- `execution_mode = "workflow"`
+- `workflow_id`
+- `workflow_inputs_template`
+
+Delivery behavior:
+
+- the runtime renders workflow inputs from schedule metadata and fire context
+- the runtime creates a queued workflow run with `trigger_kind="schedule"`
+- the workflow executor dispatches node work through Claw sessions and queued runs
+- the schedule fire stores `last_workflow_run_id`
+- terminal workflow state updates the schedule fire status
+
+This mode is useful for periodic multi-step work where an agent or user wants durable orchestration state, node-level tracking, and Web UI visibility.
+
 ### `heartbeat`
 
 Heartbeat is a runtime-owned timer.
@@ -142,7 +163,9 @@ Suggested fields:
 - `run_at`
 - `timezone`
 - `next_fire_at`
-- `execution_mode`: `continue_session | fork_session | isolate_session`
+- `execution_mode`: `continue_session | fork_session | isolate_session | workflow`
+- `workflow_id`
+- `workflow_inputs_template`
 - `target_session_id`
 - `source_session_id`
 - `on_active`: `steer | skip | queue`
@@ -152,6 +175,7 @@ Suggested fields:
 - `last_fire_id`
 - `last_session_id`
 - `last_run_id`
+- `last_workflow_run_id`
 - `fire_count`
 - `failure_count`
 - `created_at`
@@ -162,6 +186,8 @@ Suggested fields:
 - `continue_session` requires `target_session_id`
 - `fork_session` requires `source_session_id`
 - `isolate_session` creates a fresh session for each fire and leaves target/source session fields empty
+- `workflow` requires `workflow_id`
+- `workflow_inputs_template` applies to `workflow`
 - `on_active` applies to `continue_session`
 - `cron` schedules require `cron_expr`
 - `once` schedules require `run_at`
@@ -185,6 +211,7 @@ Suggested fields:
 - `created_session_id`
 - `run_id`
 - `active_run_id`
+- `workflow_run_id`
 - `input_parts`
 - `error_message`
 - `metadata`

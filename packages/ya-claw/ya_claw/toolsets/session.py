@@ -246,6 +246,77 @@ class ClawSelfClient:
         path = f"/api/v1/schedules/{urllib.parse.quote(schedule_id)}:trigger"
         return await self._send_json(path, method="POST", payload={"prompt_override": prompt_override})
 
+    async def list_workflows(self, *, params: dict[str, str]) -> dict[str, Any]:
+        effective_params = {"current_session_id": self.session_id, **params}
+        return await self._get_json("/api/v1/workflows", params=effective_params)
+
+    async def get_workflow(self, *, workflow_id: str) -> dict[str, Any]:
+        return await self._get_json(f"/api/v1/workflows/{urllib.parse.quote(workflow_id)}", params={})
+
+    async def create_workflow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._send_json("/api/v1/agent/workflows", method="POST", payload=payload)
+
+    async def update_workflow(self, *, workflow_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._send_json(
+            f"/api/v1/workflows/{urllib.parse.quote(workflow_id)}",
+            method="PATCH",
+            payload=payload,
+        )
+
+    async def archive_workflow(self, *, workflow_id: str) -> dict[str, Any]:
+        return await self._send_json(
+            f"/api/v1/workflows/{urllib.parse.quote(workflow_id)}:archive",
+            method="POST",
+            payload={},
+        )
+
+    async def start_workflow(self, *, workflow_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._send_json(
+            f"/api/v1/agent/workflows/{urllib.parse.quote(workflow_id)}:trigger",
+            method="POST",
+            payload=payload,
+        )
+
+    async def list_workflow_runs(self, *, params: dict[str, str]) -> dict[str, Any]:
+        effective_params = {"current_session_id": self.session_id, **params}
+        return await self._get_json("/api/v1/workflow-runs", params=effective_params)
+
+    async def get_workflow_run(self, *, workflow_run_id: str) -> dict[str, Any]:
+        return await self._get_json(f"/api/v1/workflow-runs/{urllib.parse.quote(workflow_run_id)}", params={})
+
+    async def cancel_workflow_run(self, *, workflow_run_id: str, reason: str | None) -> dict[str, Any]:
+        return await self._send_json(
+            f"/api/v1/workflow-runs/{urllib.parse.quote(workflow_run_id)}/cancel",
+            method="POST",
+            payload={"reason": reason},
+        )
+
+    async def steer_workflow_node(
+        self,
+        *,
+        workflow_run_id: str,
+        node_id: str,
+        input_parts: list[dict[str, Any]],
+        prompt: str | None,
+    ) -> dict[str, Any]:
+        return await self._send_json(
+            f"/api/v1/workflow-runs/{urllib.parse.quote(workflow_run_id)}/nodes/{urllib.parse.quote(node_id)}/steer",
+            method="POST",
+            payload={"input_parts": input_parts, "prompt": prompt},
+        )
+
+    async def list_agent_presets(self, *, query: str | None) -> dict[str, Any]:
+        payload = await asyncio.to_thread(self._get_json_sync, "/api/v1/profiles", {})
+        profiles = (
+            payload if isinstance(payload, list) else payload.get("profiles") if isinstance(payload, dict) else []
+        )
+        if isinstance(query, str) and query.strip() != "" and isinstance(profiles, list):
+            needle = query.strip().lower()
+            profiles = [
+                item for item in profiles if isinstance(item, dict) and needle in str(item.get("name", "")).lower()
+            ]
+        return {"profiles": profiles if isinstance(profiles, list) else []}
+
     async def _get_json(self, path: str, *, params: dict[str, str]) -> dict[str, Any]:
         payload = await asyncio.to_thread(self._get_json_sync, path, params)
         if isinstance(payload, dict):
@@ -268,7 +339,7 @@ class ClawSelfClient:
             raise RuntimeError("YA Claw self API URL must use http or https.")
         request = urllib.request.Request(  # noqa: S310
             url,
-            headers={"Authorization": f"Bearer {self._api_token}"},
+            headers=self._headers(),
             method="GET",
         )
         try:
@@ -288,7 +359,7 @@ class ClawSelfClient:
         request = urllib.request.Request(  # noqa: S310
             url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": f"Bearer {self._api_token}", "Content-Type": "application/json"},
+            headers={**self._headers(), "Content-Type": "application/json"},
             method=method,
         )
         try:
@@ -300,6 +371,16 @@ class ClawSelfClient:
             raise RuntimeError(f"YA Claw self API request failed with status {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"YA Claw self API request failed: {exc.reason}") from exc
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {self._api_token}"}
+        if self.session_id:
+            headers["X-YA-Claw-Session-Id"] = self.session_id
+        if self.run_id:
+            headers["X-YA-Claw-Run-Id"] = self.run_id
+        if self.profile_name:
+            headers["X-YA-Claw-Profile-Name"] = self.profile_name
+        return headers
 
 
 class ListSessionTurnsTool(BaseTool):

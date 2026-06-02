@@ -53,6 +53,7 @@ class TriggerType(StrEnum):
     AGENCY = "agency"
     AGENCY_HANDOFF = "agency_handoff"
     ASYNC_TASK = "async_task"
+    WORKFLOW = "workflow"
 
 
 class AgencyHandoffKind(StrEnum):

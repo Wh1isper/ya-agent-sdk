@@ -216,6 +216,8 @@ def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
     assert "list_session_turns" in resolved_tool_names
     assert "get_run_trace" in resolved_tool_names
     assert "submit_to_session" in resolved_tool_names
+    assert "list_workflows" in resolved_tool_names
+    assert "start_workflow" in resolved_tool_names
 
 
 def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_path: Path) -> None:
@@ -238,6 +240,9 @@ def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_
     assert "get_source_run_trace" in resolved_tool_names
     assert "submit_to_session" in resolved_tool_names
     assert "create_schedule" in resolved_tool_names
+    assert "create_workflow_schedule" in resolved_tool_names
+    assert "create_workflow" in resolved_tool_names
+    assert "list_agent_presets" in resolved_tool_names
 
 
 def test_agency_prompt_instructs_async_subagent_orchestration() -> None:

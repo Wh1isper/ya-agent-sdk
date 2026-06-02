@@ -9,6 +9,7 @@ The web shell is the first-party runtime console.
 It should let a user:
 
 - create and continue sessions
+- manage workflows
 - manage schedules
 - inspect heartbeat configuration and fire history
 - watch live run output
@@ -25,6 +26,7 @@ The web shell acts as an application on top of YA Claw. It uses the single confi
 ```mermaid
 flowchart LR
     HOME[Overview] --> SS[Sessions]
+    HOME --> WF[Workflows]
     HOME --> SC[Schedules]
     HOME --> HB[Heartbeat]
     HOME --> PF[Profiles]
@@ -35,11 +37,17 @@ flowchart LR
 
 ### Overview
 
-Shows runtime health, workspace backend health, active sessions, ready sandbox count, active schedules, next schedule fire, heartbeat status, bridge activity, and recent runs. Workspace details include backend, runtime status, execution location, service path, virtual path, Docker image, and idle TTL when available.
+Shows runtime health, workspace backend health, active sessions, active workflows, ready sandbox count, active schedules, next schedule fire, heartbeat status, bridge activity, and recent runs. Workspace details include backend, runtime status, execution location, service path, virtual path, Docker image, and idle TTL when available.
 
 ### Sessions
 
 Shows session lineage, latest state, workspace/sandbox state, continuation entry points, and compacted conversation history loaded from `message.json` in the run store. Docker-backed sessions can expose sandbox prepare and stop controls when the runtime advertises those capabilities.
+
+### Workflows
+
+Shows workflow definitions, run history, live DAG state, node-linked sessions/runs, output previews, agent preset selection, and manual trigger controls. The workflow detail view should support create, edit, archive, trigger, cancel, steer active node, retry node, open linked session, and open linked run trace actions.
+
+Workflow runs started by an agent should appear in the supervising session detail with compact progress and result links.
 
 ### Schedules
 
@@ -100,7 +108,8 @@ The web shell uses these API layers:
 - `/api/v1/sessions/{session_id}/workspace` and sandbox lifecycle routes for selected-session workspace display and Docker sandbox control
 - `/api/v1/sessions` and nested run routes for chat creation, continuation, lineage, turns, and committed replay
 - `/api/v1/runs/{run_id}/events` and `/api/v1/sessions/{session_id}/events` for detailed AGUI-aligned live output
-- `/api/v1/profiles` for AgentProfile management
+- `/api/v1/profiles` for AgentProfile management and workflow node preset selection
+- `/api/v1/workflows` and `/api/v1/workflow-runs` for workflow definition management, triggering, live events, node steering, and run history
 - `/api/v1/schedules` for schedule CRUD, manual trigger, and fire history
 - `/api/v1/heartbeat/*` for effective heartbeat config, status, and fire history
 
@@ -115,6 +124,8 @@ flowchart LR
     SESSIONS[/sessions/] --> CHAT[Chat Console]
     RUN_EVENTS[/runs/:id/events/] --> CHAT
     PROFILES[/profiles/] --> ADMIN[Profile Admin]
+    WORKFLOWS[/workflows/] --> WF[Workflow Console]
+    WF_EVENTS[/workflow-runs/:id/events/] --> WF
     SCHEDULES[/schedules/] --> SCHED[Schedule Console]
     HEARTBEAT[/heartbeat/] --> HB[Heartbeat Console]
 ```
@@ -123,15 +134,16 @@ flowchart LR
 
 The default startup path is:
 
-1. load environment configuration
-2. initialize the relational store and in-process runtime state manager
-3. run migrations when auto-migrate is enabled
-4. initialize execution supervisor
-5. initialize schedule dispatcher
-6. initialize heartbeat dispatcher
-7. initialize bridge subsystem
-8. mount API routes
-9. mount bundled web assets when present
+01. load environment configuration
+02. initialize the relational store and in-process runtime state manager
+03. run migrations when auto-migrate is enabled
+04. initialize execution supervisor
+05. initialize workflow executor
+06. initialize schedule dispatcher
+07. initialize heartbeat dispatcher
+08. initialize bridge subsystem
+09. mount API routes
+10. mount bundled web assets when present
 
 ## Health Model
 
@@ -141,6 +153,7 @@ The default startup path is:
 - relational storage connectivity
 - in-process runtime state manager health
 - execution supervisor health
+- workflow executor health
 - schedule dispatcher health
 - heartbeat dispatcher health
 - bridge subsystem health
@@ -153,6 +166,7 @@ The runtime should emit structured logs for:
 - startup configuration summary
 - workspace resolution failures
 - run lifecycle transitions
+- workflow trigger, node dispatch, supervision, and terminal lifecycle
 - schedule trigger and dispatch lifecycle
 - heartbeat trigger and dispatch lifecycle
 - bridge ingress and relay lifecycle
@@ -165,11 +179,12 @@ On process shutdown, YA Claw stops ingress sources first, then waits for already
 
 1. stop heartbeat dispatcher
 2. stop schedule dispatcher
-3. stop embedded bridge adapters
-4. stop accepting new execution supervisor submissions
-5. wait for active execution supervisor run tasks to complete
-6. mark the runtime instance stopped
-7. close runtime state, notification hub, and database engine
+3. stop workflow executor ingress
+4. stop embedded bridge adapters
+5. stop accepting new execution supervisor submissions
+6. wait for active execution supervisor run tasks to complete
+7. mark the runtime instance stopped
+8. close runtime state, notification hub, and database engine
 
 `YA_CLAW_SHUTDOWN_TIMEOUT_SECONDS` maps to Uvicorn graceful shutdown timeout. Leave it unset for an unlimited application shutdown wait, and configure orchestrator stop windows such as Docker Compose `stop_grace_period` or systemd `TimeoutStopSec` to cover the longest expected run.
 

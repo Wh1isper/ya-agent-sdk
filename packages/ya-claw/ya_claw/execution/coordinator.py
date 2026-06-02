@@ -1797,7 +1797,7 @@ def _session_status_detail_from_run(
 
 
 def _sandbox_scope_for_trigger(trigger_type: str) -> SandboxScopeLiteral:
-    if trigger_type in {TriggerType.SCHEDULE.value, TriggerType.HEARTBEAT.value}:
+    if trigger_type in {TriggerType.SCHEDULE.value, TriggerType.WORKFLOW.value, TriggerType.HEARTBEAT.value}:
         return SANDBOX_SCOPE_RUN
     return SANDBOX_SCOPE_SESSION
 

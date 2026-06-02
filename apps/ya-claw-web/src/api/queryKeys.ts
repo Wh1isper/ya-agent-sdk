@@ -26,6 +26,13 @@ export const queryKeys = {
   schedule: (scheduleId: string) => ['schedule', scheduleId] as const,
   scheduleFires: (scheduleId: string) =>
     ['schedule-fires', scheduleId] as const,
+  workflows: (filtersKey: string) => ['workflows', filtersKey] as const,
+  workflow: (workflowId: string) => ['workflow', workflowId] as const,
+  workflowRuns: (filtersKey: string) => ['workflow-runs', filtersKey] as const,
+  workflowRun: (workflowRunId: string) =>
+    ['workflow-run', workflowRunId] as const,
+  workflowEvents: (workflowRunId: string) =>
+    ['workflow-events', workflowRunId] as const,
   heartbeatConfig: ['heartbeat-config'] as const,
   heartbeatStatus: ['heartbeat-status'] as const,
   heartbeatFires: ['heartbeat-fires'] as const,

@@ -16,6 +16,7 @@ export type AppRoute =
   | 'debug'
   | 'agency'
   | 'schedules'
+  | 'workflows'
   | 'bridges'
   | 'heartbeat'
   | 'profiles'

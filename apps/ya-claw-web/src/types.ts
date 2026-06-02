@@ -34,6 +34,7 @@ export type ClawInfo = {
     profiles: boolean
     schedules?: boolean
     heartbeat?: boolean
+    workflows?: boolean
   }
 }
 
@@ -171,6 +172,193 @@ export type FireRunStatus =
   | 'failed'
   | 'cancelled'
 
+export type WorkflowRunStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export type WorkflowDefinitionStatus = 'draft' | 'active' | 'archived'
+export type WorkflowScope = 'global' | 'session'
+export type WorkflowTriggerKind =
+  | 'web'
+  | 'api'
+  | 'agent'
+  | 'schedule'
+  | 'bridge'
+  | 'system'
+
+export type WorkflowNodeRunStatus =
+  | 'pending'
+  | 'ready'
+  | 'queued'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped'
+
+export type WorkflowDefinitionSummary = {
+  id: string
+  name: string
+  description?: string | null
+  status: WorkflowDefinitionStatus
+  definition_version: number
+  schema_version: string
+  owner_kind: string
+  owner_session_id?: string | null
+  owner_run_id?: string | null
+  scope: WorkflowScope
+  tags: string[]
+  when_to_use?: string | null
+  argument_hint?: string | null
+  latest_run?: WorkflowRunSummary | null
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  archived_at?: string | null
+}
+
+export type WorkflowDefinitionDetail = WorkflowDefinitionSummary & {
+  input_schema: Record<string, unknown>
+  definition: Record<string, unknown>
+}
+
+export type WorkflowDefinitionListResponse = {
+  workflows: WorkflowDefinitionSummary[]
+}
+
+export type WorkflowNodeRunSummary = {
+  id: string
+  workflow_run_id: string
+  node_id: string
+  attempt_no: number
+  status: WorkflowNodeRunStatus
+  profile_name?: string | null
+  session_id?: string | null
+  run_id?: string | null
+  input_preview?: string | null
+  output_text?: string | null
+  output_json?: Record<string, unknown> | null
+  error_message?: string | null
+  needs: string[]
+  metadata: Record<string, unknown>
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at: string
+}
+
+export type WorkflowEventSummary = {
+  id: string
+  workflow_run_id: string
+  node_run_id?: string | null
+  source_kind: string
+  event_type: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export type WorkflowRunSummary = {
+  id: string
+  workflow_id: string
+  workflow_version: number
+  workflow_name?: string | null
+  status: WorkflowRunStatus
+  trigger_kind: WorkflowTriggerKind
+  supervisor_session_id?: string | null
+  supervisor_run_id?: string | null
+  profile_name?: string | null
+  inputs: Record<string, unknown>
+  result?: Record<string, unknown> | null
+  error_message?: string | null
+  current_node_ids: string[]
+  metadata: Record<string, unknown>
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at: string
+}
+
+export type WorkflowRunDetail = WorkflowRunSummary & {
+  definition: Record<string, unknown>
+  nodes: WorkflowNodeRunSummary[]
+  events: WorkflowEventSummary[]
+}
+
+export type WorkflowRunListResponse = {
+  workflow_runs: WorkflowRunSummary[]
+}
+
+export type WorkflowEventListResponse = {
+  workflow_run_id: string
+  events: WorkflowEventSummary[]
+}
+
+export type WorkflowDefinitionCreateRequest = {
+  name?: string | null
+  description?: string | null
+  status?: WorkflowDefinitionStatus
+  scope?: WorkflowScope
+  tags?: string[]
+  when_to_use?: string | null
+  argument_hint?: string | null
+  input_schema?: Record<string, unknown>
+  definition: Record<string, unknown>
+  metadata?: Record<string, unknown>
+  owner_kind?: 'user' | 'agent' | 'api' | 'system'
+  owner_session_id?: string | null
+  owner_run_id?: string | null
+}
+
+export type WorkflowDefinitionUpdateRequest = Partial<{
+  name: string
+  description: string | null
+  status: WorkflowDefinitionStatus
+  scope: WorkflowScope
+  tags: string[]
+  when_to_use: string | null
+  argument_hint: string | null
+  input_schema: Record<string, unknown>
+  definition: Record<string, unknown>
+  metadata: Record<string, unknown>
+}>
+
+export type WorkflowTriggerRequest = {
+  inputs?: Record<string, unknown>
+  profile_name?: string | null
+  supervisor_session_id?: string | null
+  supervisor_run_id?: string | null
+  trigger_kind?: WorkflowTriggerKind
+  metadata?: Record<string, unknown>
+}
+
+export type WorkflowListFilters = {
+  query?: string | null
+  tags?: string[] | null
+  status?: WorkflowDefinitionStatus | 'all'
+  scope?: WorkflowScope | 'all'
+  ownerKind?: string | null
+  onlyCurrentSession?: boolean
+  includeArchived?: boolean
+  currentSessionId?: string | null
+  limit?: number
+}
+
+export type WorkflowRunListFilters = {
+  workflowId?: string | null
+  status?: WorkflowRunStatus | 'all'
+  triggerKind?: WorkflowTriggerKind | 'all'
+  onlyCurrentSession?: boolean
+  onlySupervisedByCurrentSession?: boolean
+  onlyTouchedByCurrentSession?: boolean
+  includeCompleted?: boolean
+  currentSessionId?: string | null
+  limit?: number
+}
+
 export type ScheduleFireSummary = {
   id: string
   schedule_id: string
@@ -182,6 +370,7 @@ export type ScheduleFireSummary = {
   created_session_id?: string | null
   run_id?: string | null
   active_run_id?: string | null
+  workflow_run_id?: string | null
   run_status?: FireRunStatus | null
   input_preview?: string | null
   error_message?: string | null
@@ -221,7 +410,14 @@ export type ScheduleSummary = {
     start_from_current_session: boolean
     steer_when_running: boolean
   }
-  execution_mode: 'continue_session' | 'fork_session' | 'isolate_session'
+  execution_mode:
+    | 'continue_session'
+    | 'fork_session'
+    | 'isolate_session'
+    | 'workflow'
+  workflow_id?: string | null
+  workflow_inputs_template?: Record<string, unknown> | null
+  last_workflow_run_id?: string | null
   owner_kind: string
   owner_session_id?: string | null
   owner_run_id?: string | null
@@ -261,6 +457,8 @@ export type ScheduleCreateRequest = {
   owner_run_id?: string | null
   profile_name?: string | null
   metadata?: Record<string, unknown>
+  workflow_id?: string | null
+  workflow_inputs_template?: Record<string, unknown> | null
 }
 
 export type ScheduleUpdateRequest = Partial<{
@@ -276,6 +474,8 @@ export type ScheduleUpdateRequest = Partial<{
   start_from_current_session: boolean
   steer_when_running: boolean
   metadata: Record<string, unknown>
+  workflow_id: string | null
+  workflow_inputs_template: Record<string, unknown> | null
 }>
 
 export type BridgeEventStatus =

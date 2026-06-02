@@ -22,13 +22,14 @@ from ya_claw.controller.models import (
 )
 from ya_claw.controller.run import RunController
 from ya_claw.controller.session import SessionController
+from ya_claw.controller.workflow import WorkflowController, WorkflowTriggerRequest, render_template
 from ya_claw.execution.dispatcher import RunDispatcher
 from ya_claw.orm.tables import RunRecord, ScheduleFireRecord, ScheduleRecord, SessionRecord, utc_now
 from ya_claw.runtime_state import InMemoryRuntimeState
 
 ScheduleStatus = Literal["active", "paused", "completed", "deleted"]
 ScheduleTriggerKind = Literal["cron", "once"]
-ScheduleExecutionMode = Literal["continue_session", "fork_session", "isolate_session"]
+ScheduleExecutionMode = Literal["continue_session", "fork_session", "isolate_session", "workflow"]
 ScheduleActivePolicy = Literal["steer", "queue"]
 ScheduleFireStatus = Literal["pending", "submitted", "steered", "skipped", "failed"]
 ScheduleRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
@@ -37,7 +38,7 @@ ScheduleRunStatus = Literal["queued", "running", "completed", "failed", "cancell
 class ScheduleCreateRequest(BaseModel):
     name: str
     description: str | None = None
-    prompt: str
+    prompt: str = ""
     trigger_kind: ScheduleTriggerKind | None = None
     cron: str | None = None
     run_at: datetime | None = None
@@ -46,6 +47,8 @@ class ScheduleCreateRequest(BaseModel):
     continue_current_session: bool = False
     start_from_current_session: bool = False
     steer_when_running: bool = False
+    workflow_id: str | None = None
+    workflow_inputs_template: dict[str, Any] | None = None
     owner_kind: Literal["api", "user", "agent"] = "api"
     owner_session_id: str | None = None
     owner_run_id: str | None = None
@@ -56,7 +59,7 @@ class ScheduleCreateRequest(BaseModel):
     def validate_prompt_and_trigger(self) -> ScheduleCreateRequest:
         if self.name.strip() == "":
             raise ValueError("name is required")
-        if self.prompt.strip() == "":
+        if self.prompt.strip() == "" and not _non_empty(self.workflow_id):
             raise ValueError("prompt is required")
         trigger_kind = infer_trigger_kind(self.trigger_kind, self.cron, self.run_at)
         if trigger_kind == "cron" and (not isinstance(self.cron, str) or self.cron.strip() == ""):
@@ -79,6 +82,8 @@ class ScheduleUpdateRequest(BaseModel):
     continue_current_session: bool | None = None
     start_from_current_session: bool | None = None
     steer_when_running: bool | None = None
+    workflow_id: str | None = None
+    workflow_inputs_template: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -97,6 +102,7 @@ class ScheduleFireSummary(BaseModel):
     created_session_id: str | None = None
     run_id: str | None = None
     active_run_id: str | None = None
+    workflow_run_id: str | None = None
     run_status: ScheduleRunStatus | None = None
     input_preview: str | None = None
     error_message: str | None = None
@@ -121,6 +127,8 @@ class ScheduleSummary(BaseModel):
     profile_name: str | None = None
     target_session_id: str | None = None
     source_session_id: str | None = None
+    workflow_id: str | None = None
+    workflow_inputs_template: dict[str, Any] | None = None
     last_fire: ScheduleFireSummary | None = None
     fire_count: int = 0
     failure_count: int = 0
@@ -180,10 +188,13 @@ class ScheduleController:
             start_from_current_session=request.start_from_current_session,
             steer_when_running=request.steer_when_running,
             current_session_id=request.owner_session_id,
+            workflow_id=request.workflow_id,
         )
         if execution_mode in {"continue_session", "fork_session"}:
             session_id = target_session_id if execution_mode == "continue_session" else source_session_id
             await self._require_session(db_session, session_id)
+        if execution_mode == "workflow":
+            await self._require_workflow(db_session, request.workflow_id)
 
         trigger_kind = infer_trigger_kind(request.trigger_kind, request.cron, request.run_at)
         timezone = normalize_timezone(request.timezone)
@@ -205,7 +216,11 @@ class ScheduleController:
             target_session_id=target_session_id,
             source_session_id=source_session_id,
             on_active=on_active,
-            input_parts_template=[TextPart(type="text", text=request.prompt).model_dump(mode="json")],
+            input_parts_template=[TextPart(type="text", text=request.prompt).model_dump(mode="json")]
+            if request.prompt.strip() != ""
+            else [],
+            workflow_id=_clean_optional(request.workflow_id),
+            workflow_inputs_template=dict(request.workflow_inputs_template or {}),
             schedule_metadata=dict(request.metadata),
         )
         if request.enabled:
@@ -230,9 +245,13 @@ class ScheduleController:
         if request.description is not None:
             record.description = _clean_optional(request.description)
         if isinstance(request.prompt, str):
-            if request.prompt.strip() == "":
+            if request.prompt.strip() == "" and record.execution_mode != "workflow":
                 raise HTTPException(status_code=422, detail="prompt is required.")
-            record.input_parts_template = [TextPart(type="text", text=request.prompt).model_dump(mode="json")]
+            record.input_parts_template = (
+                [TextPart(type="text", text=request.prompt).model_dump(mode="json")]
+                if request.prompt.strip() != ""
+                else []
+            )
         if request.trigger_kind is not None:
             record.trigger_kind = request.trigger_kind
             if record.trigger_kind == "cron":
@@ -251,10 +270,25 @@ class ScheduleController:
                 record.trigger_kind = "once"
         if isinstance(request.timezone, str):
             record.timezone = normalize_timezone(request.timezone)
+        workflow_changed = "workflow_id" in request.model_fields_set
+        if workflow_changed:
+            normalized_workflow_id = _clean_optional(request.workflow_id)
+            if normalized_workflow_id is not None:
+                await self._require_workflow(db_session, normalized_workflow_id)
+                record.workflow_id = normalized_workflow_id
+                record.execution_mode = "workflow"
+                record.target_session_id = None
+                record.source_session_id = None
+            else:
+                record.workflow_id = None
+                record.workflow_inputs_template = {}
+        if request.workflow_inputs_template is not None:
+            record.workflow_inputs_template = dict(request.workflow_inputs_template)
         if request.metadata is not None:
             record.schedule_metadata = dict(request.metadata)
         if (
-            request.continue_current_session is not None
+            workflow_changed
+            or request.continue_current_session is not None
             or request.start_from_current_session is not None
             or request.steer_when_running is not None
         ):
@@ -268,6 +302,7 @@ class ScheduleController:
                 else request.start_from_current_session,
                 steer_when_running=current_steer if request.steer_when_running is None else request.steer_when_running,
                 current_session_id=record.owner_session_id,
+                workflow_id=record.workflow_id,
             )
             if execution_mode in {"continue_session", "fork_session"}:
                 session_id = target_session_id if execution_mode == "continue_session" else source_session_id
@@ -276,6 +311,8 @@ class ScheduleController:
             record.target_session_id = target_session_id
             record.source_session_id = source_session_id
             record.on_active = on_active
+        if record.execution_mode != "workflow" and not record.input_parts_template:
+            raise HTTPException(status_code=422, detail="prompt is required.")
         validate_schedule_trigger(record)
         if request.enabled is not None:
             record.status = "active" if request.enabled else "paused"
@@ -436,6 +473,8 @@ class ScheduleController:
                 )
             elif record.execution_mode == "fork_session":
                 await self._dispatch_fork_session(db_session, settings, runtime_state, dispatcher, record, fire_record)
+            elif record.execution_mode == "workflow":
+                await self._dispatch_workflow(db_session, record, fire_record)
             else:
                 await self._dispatch_isolate_session(
                     db_session, settings, runtime_state, dispatcher, record, fire_record
@@ -452,6 +491,7 @@ class ScheduleController:
         record.last_fire_id = fire_record.id
         record.last_session_id = fire_record.created_session_id
         record.last_run_id = fire_record.run_id
+        record.last_workflow_run_id = fire_record.workflow_run_id
         record.fire_count += 1
         record.updated_at = utc_now()
 
@@ -595,7 +635,7 @@ class ScheduleController:
             target_session_id=record.target_session_id,
             source_session_id=record.source_session_id,
             input_parts=input_parts,
-            fire_metadata={"manual": manual},
+            fire_metadata={"manual": manual, "workflow_inputs": _render_workflow_inputs(record, scheduled_at)},
         )
         db_session.add(fire_record)
         try:
@@ -672,6 +712,8 @@ class ScheduleController:
             profile_name=record.profile_name,
             target_session_id=record.target_session_id,
             source_session_id=record.source_session_id,
+            workflow_id=record.workflow_id,
+            workflow_inputs_template=dict(record.workflow_inputs_template or {}),
             last_fire=last_fire,
             fire_count=record.fire_count,
             failure_count=record.failure_count,
@@ -691,6 +733,37 @@ class ScheduleController:
         if not isinstance(record, ScheduleRecord) or (record.status == "deleted" and not include_deleted):
             raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' was not found.")
         return record
+
+    async def _dispatch_workflow(
+        self,
+        db_session: AsyncSession,
+        record: ScheduleRecord,
+        fire_record: ScheduleFireRecord,
+    ) -> None:
+        workflow_id = record.workflow_id.strip() if isinstance(record.workflow_id, str) else ""
+        if workflow_id == "":
+            raise HTTPException(status_code=422, detail="workflow_id is required.")
+        workflow_controller = WorkflowController()
+        workflow_run = await workflow_controller.trigger(
+            db_session,
+            workflow_id,
+            WorkflowTriggerRequest(
+                inputs=dict((fire_record.fire_metadata or {}).get("workflow_inputs") or {}),
+                profile_name=record.profile_name,
+                trigger_kind="schedule",
+                metadata=_source_metadata(record, fire_record),
+            ),
+        )
+        fire_record.workflow_run_id = workflow_run.id
+        fire_record.status = "submitted"
+        fire_record.error_message = None
+
+    async def _require_workflow(self, db_session: AsyncSession, workflow_id: str | None) -> None:
+        normalized_workflow_id = workflow_id.strip() if isinstance(workflow_id, str) else ""
+        if normalized_workflow_id == "":
+            raise HTTPException(status_code=422, detail="workflow_id is required.")
+        workflow_controller = WorkflowController()
+        await workflow_controller.get_definition(db_session, normalized_workflow_id)
 
     async def _require_session(self, db_session: AsyncSession, session_id: str | None) -> SessionRecord:
         if not isinstance(session_id, str) or session_id.strip() == "":
@@ -723,6 +796,7 @@ def fire_summary_from_record(
         created_session_id=record.created_session_id,
         run_id=record.run_id,
         active_run_id=record.active_run_id,
+        workflow_run_id=record.workflow_run_id,
         run_status=cast(ScheduleRunStatus, run_status) if run_status is not None else None,
         input_preview=_prompt_from_input_parts(record.input_parts),
         error_message=record.error_message,
@@ -860,8 +934,11 @@ def _resolve_facade_mode(
     start_from_current_session: bool,
     steer_when_running: bool,
     current_session_id: str | None,
+    workflow_id: str | None = None,
 ) -> tuple[str, str | None, str | None, str]:
     on_active = "steer" if steer_when_running else "queue"
+    if _non_empty(workflow_id):
+        return "workflow", None, None, on_active
     if continue_current_session:
         return "continue_session", current_session_id, None, on_active
     if start_from_current_session:
@@ -883,7 +960,20 @@ def _source_metadata(record: ScheduleRecord, fire_record: ScheduleFireRecord) ->
         "schedule_id": record.id,
         "schedule_fire_id": fire_record.id,
         "execution_mode": record.execution_mode,
+        "workflow_id": record.workflow_id,
     }
+
+
+def _render_workflow_inputs(record: ScheduleRecord, scheduled_at: datetime) -> dict[str, Any]:
+    template = dict(record.workflow_inputs_template or {})
+    context = {
+        "schedule": {"id": record.id, "name": record.name},
+        "scheduled_at": scheduled_at.isoformat(),
+    }
+    rendered: dict[str, Any] = {}
+    for key, value in template.items():
+        rendered[key] = render_template(value, context) if isinstance(value, str) else value
+    return rendered
 
 
 def _prompt_from_input_parts(input_parts: list[dict[str, Any]]) -> str:
@@ -899,3 +989,7 @@ def _clean_optional(value: str | None) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _non_empty(value: str | None) -> bool:
+    return isinstance(value, str) and value.strip() != ""

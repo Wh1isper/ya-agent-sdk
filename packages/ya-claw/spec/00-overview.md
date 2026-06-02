@@ -26,7 +26,7 @@ It provides a durable local execution shell around SDK agent construction and st
 - preserve SDK capabilities such as continuation, subagents, compact, and streaming
 - keep the runtime small enough to understand and evolve quickly
 - keep active execution management inside one process for the single-node target
-- support API, schedule, heartbeat, and bridge ingress through one queued-run execution model
+- support API, workflow, schedule, heartbeat, and bridge ingress through one queued-run execution model
 - run schedule dispatchers, heartbeat dispatchers, and bridge adapters as supervised runtime components in the single-node service shape
 
 ### Non-Goals
@@ -60,6 +60,7 @@ flowchart TB
         ENVF[EnvironmentFactory]
         BUILD[ClawRuntimeBuilder]
         COORD[RunCoordinator]
+        WF[WorkflowExecutor]
         SCHED[ScheduleDispatcher]
         HEART[HeartbeatDispatcher]
         BRIDGE[BridgeSupervisor]
@@ -94,6 +95,9 @@ flowchart TB
     RUNS --> SQL
     RUNS --> SUP
     SESS --> SUP
+    WF --> SESS
+    WF --> RUNS
+    WF --> SUP
     SCHED --> SESS
     SCHED --> RUNS
     SCHED --> SUP
@@ -131,6 +135,7 @@ flowchart TB
 | Runtime assembly              | YA Claw               |
 | Session persistence           | YA Claw               |
 | Run orchestration             | YA Claw               |
+| Workflow orchestration        | YA Claw               |
 | Active execution tracking     | YA Claw               |
 | Event delivery                | YA Claw               |
 | Committed session persistence | YA Claw               |
@@ -149,9 +154,10 @@ The architecture revolves around a small set of runtime objects:
 - **ClawRuntimeBuilder**: runtime component that assembles `Environment`, `ClawAgentContext`, toolsets, and agent configuration into one SDK runtime
 - **Execution Supervisor**: in-process manager that claims queued runs, starts coordinators, and tracks active execution
 - **Run Coordinator**: short-lived per-run executor from claim to terminal state
+- **Workflow**: durable Claw-managed orchestration resource that agents can supervise and control through built-in tools
 - **Session**: durable conversational continuity
 - **Run**: one execution attempt inside a session
-- **Schedule**: agent-manageable or user-manageable timer resource that creates or steers runs
+- **Schedule**: agent-manageable or user-manageable timer resource that creates or steers runs or triggers workflows
 - **Heartbeat**: runtime-owned timer resource that creates isolated operational runs from `HEARTBEAT.md` guidance
 - **Execution Registry**: in-memory registry of active run tasks and control signals
 

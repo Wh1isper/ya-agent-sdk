@@ -33,6 +33,16 @@ import type {
   SessionSubmitResponse,
   SessionSummary,
   SessionWorkspaceState,
+  WorkflowDefinitionCreateRequest,
+  WorkflowDefinitionDetail,
+  WorkflowDefinitionListResponse,
+  WorkflowDefinitionUpdateRequest,
+  WorkflowEventListResponse,
+  WorkflowListFilters,
+  WorkflowRunDetail,
+  WorkflowRunListFilters,
+  WorkflowRunListResponse,
+  WorkflowTriggerRequest,
   WorkspaceResolveResponse,
   WorkspaceRuntimeStatus,
 } from '../types'
@@ -292,6 +302,133 @@ export class ClawApiClient {
       method: 'POST',
       body: JSON.stringify({ prune_missing: pruneMissing }),
     })
+  }
+
+  listWorkflows(filters: WorkflowListFilters = {}) {
+    const params = new URLSearchParams()
+    if (filters.query?.trim()) params.set('query', filters.query.trim())
+    if (filters.tags?.length) params.set('tags', filters.tags.join(','))
+    if (filters.status && filters.status !== 'all') {
+      params.set('status', filters.status)
+    }
+    if (filters.scope && filters.scope !== 'all')
+      params.set('scope', filters.scope)
+    if (filters.ownerKind?.trim())
+      params.set('owner_kind', filters.ownerKind.trim())
+    if (filters.onlyCurrentSession) params.set('only_current_session', 'true')
+    if (filters.includeArchived) params.set('include_archived', 'true')
+    if (filters.currentSessionId?.trim()) {
+      params.set('current_session_id', filters.currentSessionId.trim())
+    }
+    params.set('limit', String(filters.limit ?? 100))
+    const query = params.toString()
+    return this.request<WorkflowDefinitionListResponse>(
+      `/api/v1/workflows${query ? `?${query}` : ''}`,
+    )
+  }
+
+  getWorkflow(workflowId: string) {
+    return this.request<WorkflowDefinitionDetail>(
+      `/api/v1/workflows/${encodeURIComponent(workflowId)}`,
+    )
+  }
+
+  createWorkflow(payload: WorkflowDefinitionCreateRequest) {
+    return this.request<WorkflowDefinitionDetail>('/api/v1/workflows', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  updateWorkflow(workflowId: string, payload: WorkflowDefinitionUpdateRequest) {
+    return this.request<WorkflowDefinitionDetail>(
+      `/api/v1/workflows/${encodeURIComponent(workflowId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    )
+  }
+
+  archiveWorkflow(workflowId: string) {
+    return this.request<WorkflowDefinitionDetail>(
+      `/api/v1/workflows/${encodeURIComponent(workflowId)}:archive`,
+      { method: 'POST' },
+    )
+  }
+
+  triggerWorkflow(workflowId: string, payload: WorkflowTriggerRequest) {
+    return this.request<WorkflowRunDetail>(
+      `/api/v1/workflows/${encodeURIComponent(workflowId)}:trigger`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    )
+  }
+
+  listWorkflowRuns(filters: WorkflowRunListFilters = {}) {
+    const params = new URLSearchParams()
+    if (filters.workflowId?.trim())
+      params.set('workflow_id', filters.workflowId.trim())
+    if (filters.status && filters.status !== 'all')
+      params.set('status', filters.status)
+    if (filters.triggerKind && filters.triggerKind !== 'all') {
+      params.set('trigger_kind', filters.triggerKind)
+    }
+    if (filters.onlyCurrentSession) params.set('only_current_session', 'true')
+    if (filters.onlySupervisedByCurrentSession) {
+      params.set('only_supervised_by_current_session', 'true')
+    }
+    if (filters.onlyTouchedByCurrentSession) {
+      params.set('only_touched_by_current_session', 'true')
+    }
+    if (filters.includeCompleted === false)
+      params.set('include_completed', 'false')
+    if (filters.currentSessionId?.trim()) {
+      params.set('current_session_id', filters.currentSessionId.trim())
+    }
+    params.set('limit', String(filters.limit ?? 100))
+    const query = params.toString()
+    return this.request<WorkflowRunListResponse>(
+      `/api/v1/workflow-runs${query ? `?${query}` : ''}`,
+    )
+  }
+
+  getWorkflowRun(workflowRunId: string) {
+    return this.request<WorkflowRunDetail>(
+      `/api/v1/workflow-runs/${encodeURIComponent(workflowRunId)}`,
+    )
+  }
+
+  listWorkflowEvents(workflowRunId: string) {
+    return this.request<WorkflowEventListResponse>(
+      `/api/v1/workflow-runs/${encodeURIComponent(workflowRunId)}/events`,
+    )
+  }
+
+  cancelWorkflowRun(workflowRunId: string, reason?: string | null) {
+    return this.request<WorkflowRunDetail>(
+      `/api/v1/workflow-runs/${encodeURIComponent(workflowRunId)}/cancel`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason ?? null }),
+      },
+    )
+  }
+
+  steerWorkflowNode(
+    workflowRunId: string,
+    nodeId: string,
+    payload: { prompt?: string | null; input_parts?: InputPart[] },
+  ) {
+    return this.request<WorkflowRunDetail>(
+      `/api/v1/workflow-runs/${encodeURIComponent(workflowRunId)}/nodes/${encodeURIComponent(nodeId)}/steer`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    )
   }
 
   listSchedules(options?: { includeDeleted?: boolean }) {

@@ -16,6 +16,11 @@ import type {
   ScheduleCreateRequest,
   ScheduleUpdateRequest,
   SessionSubmitRequest,
+  WorkflowDefinitionCreateRequest,
+  WorkflowDefinitionUpdateRequest,
+  WorkflowListFilters,
+  WorkflowRunListFilters,
+  WorkflowTriggerRequest,
 } from '../types'
 import { ClawApiClient } from './client'
 import { queryKeys } from './queryKeys'
@@ -423,6 +428,196 @@ export function useSeedProfilesMutation() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.profiles })
     },
   })
+}
+
+function stableFiltersKey(value: unknown) {
+  return JSON.stringify(value)
+}
+
+export function useWorkflowsQuery(filters: WorkflowListFilters = {}) {
+  const api = useApiClient()
+  const key = stableFiltersKey(filters)
+  return useQuery({
+    queryKey: queryKeys.workflows(key),
+    queryFn: () => api.listWorkflows(filters),
+    placeholderData: keepPreviousData,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useWorkflowQuery(workflowId: string | null) {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: workflowId
+      ? queryKeys.workflow(workflowId)
+      : ['workflow', 'none'],
+    queryFn: () => api.getWorkflow(workflowId ?? ''),
+    enabled: Boolean(workflowId),
+    placeholderData: keepPreviousData,
+    staleTime: 10_000,
+  })
+}
+
+export function useWorkflowRunsQuery(filters: WorkflowRunListFilters = {}) {
+  const api = useApiClient()
+  const key = stableFiltersKey(filters)
+  return useQuery({
+    queryKey: queryKeys.workflowRuns(key),
+    queryFn: () => api.listWorkflowRuns(filters),
+    placeholderData: keepPreviousData,
+    staleTime: 5_000,
+    refetchInterval: 5_000,
+  })
+}
+
+export function useWorkflowRunQuery(workflowRunId: string | null) {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: workflowRunId
+      ? queryKeys.workflowRun(workflowRunId)
+      : ['workflow-run', 'none'],
+    queryFn: () => api.getWorkflowRun(workflowRunId ?? ''),
+    enabled: Boolean(workflowRunId),
+    placeholderData: keepPreviousData,
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+  })
+}
+
+export function useWorkflowEventsQuery(workflowRunId: string | null) {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: workflowRunId
+      ? queryKeys.workflowEvents(workflowRunId)
+      : ['workflow-events', 'none'],
+    queryFn: () => api.listWorkflowEvents(workflowRunId ?? ''),
+    enabled: Boolean(workflowRunId),
+    placeholderData: keepPreviousData,
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+  })
+}
+
+export function useCreateWorkflowMutation() {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: WorkflowDefinitionCreateRequest) =>
+      api.createWorkflow(payload),
+    onSuccess: async (workflow) => {
+      toast.success(`Created workflow ${workflow.name}`)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflow(workflow.id),
+        }),
+      ])
+    },
+  })
+}
+
+export function useUpdateWorkflowMutation() {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workflowId,
+      payload,
+    }: {
+      workflowId: string
+      payload: WorkflowDefinitionUpdateRequest
+    }) => api.updateWorkflow(workflowId, payload),
+    onSuccess: async (workflow) => {
+      toast.success(`Saved workflow ${workflow.name}`)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflow(workflow.id),
+        }),
+      ])
+    },
+  })
+}
+
+export function useArchiveWorkflowMutation() {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (workflowId: string) => api.archiveWorkflow(workflowId),
+    onSuccess: async (workflow) => {
+      toast.success(`Archived workflow ${workflow.name}`)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflow(workflow.id),
+        }),
+      ])
+    },
+  })
+}
+
+export function useTriggerWorkflowMutation() {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      workflowId,
+      payload,
+    }: {
+      workflowId: string
+      payload: WorkflowTriggerRequest
+    }) => api.triggerWorkflow(workflowId, payload),
+    onSuccess: async (run) => {
+      toast.success(`Started workflow run ${run.id.slice(0, 8)}`)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+        queryClient.invalidateQueries({ queryKey: ['workflow-runs'] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflow(run.workflow_id),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.workflowRun(run.id),
+        }),
+      ])
+    },
+  })
+}
+
+export function useWorkflowRunMutations(workflowRunId: string | null) {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+      queryClient.invalidateQueries({ queryKey: ['workflow-runs'] }),
+      workflowRunId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.workflowRun(workflowRunId),
+          })
+        : Promise.resolve(),
+      workflowRunId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.workflowEvents(workflowRunId),
+          })
+        : Promise.resolve(),
+    ])
+  }
+  return {
+    cancel: useMutation({
+      mutationFn: (reason?: string | null) =>
+        api.cancelWorkflowRun(workflowRunId ?? '', reason),
+      onSuccess: refresh,
+    }),
+    steerNode: useMutation({
+      mutationFn: ({ nodeId, prompt }: { nodeId: string; prompt: string }) =>
+        api.steerWorkflowNode(workflowRunId ?? '', nodeId, {
+          prompt,
+          input_parts: [],
+        }),
+      onSuccess: refresh,
+    }),
+  }
 }
 
 export function useSchedulesQuery(options?: { includeDeleted?: boolean }) {

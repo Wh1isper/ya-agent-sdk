@@ -4,6 +4,7 @@ import {
   Bug,
   CalendarClock,
   Circle,
+  GitBranch,
   HeartPulse,
   Home,
   LogOut,
@@ -62,6 +63,11 @@ const SchedulesPage = lazy(() =>
     default: module.SchedulesPage,
   })),
 )
+const WorkflowsPage = lazy(() =>
+  import('../features/workflows/WorkflowsPage').then((module) => ({
+    default: module.WorkflowsPage,
+  })),
+)
 const SettingsPage = lazy(() =>
   import('../features/settings/SettingsPage').then((module) => ({
     default: module.SettingsPage,
@@ -95,6 +101,12 @@ const navItems: Array<{
     icon: CalendarClock,
   },
   {
+    route: 'workflows',
+    label: 'Workflows',
+    helper: 'Durable DAGs',
+    icon: GitBranch,
+  },
+  {
     route: 'bridges',
     label: 'Bridges',
     helper: 'External events',
@@ -126,6 +138,7 @@ const routeCopy: Record<AppRoute, { eyebrow: string; title: string }> = {
   agency: { eyebrow: 'Automation', title: 'Agency' },
   debug: { eyebrow: 'AGUI', title: 'Debug Runtime' },
   schedules: { eyebrow: 'Automation', title: 'Schedules' },
+  workflows: { eyebrow: 'Automation', title: 'Workflows' },
   bridges: { eyebrow: 'Integrations', title: 'Bridges' },
   heartbeat: { eyebrow: 'Automation', title: 'Heartbeat' },
   profiles: { eyebrow: 'Configuration', title: 'Profiles' },
@@ -346,6 +359,7 @@ function renderRoute(route: AppRoute) {
   if (route === 'agency') return <AgencyPage />
   if (route === 'debug') return <DebugPage />
   if (route === 'schedules') return <SchedulesPage />
+  if (route === 'workflows') return <WorkflowsPage />
   if (route === 'bridges') return <BridgesPage />
   if (route === 'heartbeat') return <HeartbeatPage />
   if (route === 'profiles') return <ProfilesPage />

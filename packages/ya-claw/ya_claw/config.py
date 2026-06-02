@@ -193,6 +193,9 @@ class ClawSettings(BaseSettings):
     schedule_dispatch_enabled: bool = True
     schedule_tick_seconds: int = 5
     schedule_max_due_per_tick: int = 20
+    workflow_dispatch_enabled: bool = True
+    workflow_tick_seconds: int = 5
+    workflow_max_runs_per_tick: int = 20
     heartbeat_enabled: bool = False
     heartbeat_interval_seconds: int = 300
     heartbeat_profile: str | None = None

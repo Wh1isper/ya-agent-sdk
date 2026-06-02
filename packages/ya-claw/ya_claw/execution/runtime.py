@@ -50,13 +50,28 @@ from ya_claw.toolsets.async_subagent import (
 )
 from ya_claw.toolsets.schedule import (
     CreateOnceScheduleTool,
+    CreateOnceWorkflowScheduleTool,
     CreateScheduleTool,
+    CreateWorkflowScheduleTool,
     DeleteScheduleTool,
     ListSchedulesTool,
     TriggerScheduleTool,
     UpdateScheduleTool,
 )
 from ya_claw.toolsets.session import GetRunTraceTool, ListSessionTurnsTool
+from ya_claw.toolsets.workflow import (
+    ArchiveWorkflowTool,
+    CancelWorkflowRunTool,
+    CreateWorkflowTool,
+    GetWorkflowRunTool,
+    GetWorkflowTool,
+    ListAgentPresetsTool,
+    ListWorkflowRunsTool,
+    ListWorkflowsTool,
+    StartWorkflowTool,
+    SteerWorkflowNodeTool,
+    UpdateWorkflowTool,
+)
 from ya_claw.workspace import (
     WorkspaceBinding,
     extract_workspace_sandbox_metadata,
@@ -123,15 +138,30 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
         ListSchedulesTool,
         CreateScheduleTool,
         CreateOnceScheduleTool,
+        CreateWorkflowScheduleTool,
+        CreateOnceWorkflowScheduleTool,
         UpdateScheduleTool,
         DeleteScheduleTool,
         TriggerScheduleTool,
     ],
+    "workflow": [
+        ListWorkflowsTool,
+        GetWorkflowTool,
+        CreateWorkflowTool,
+        UpdateWorkflowTool,
+        ArchiveWorkflowTool,
+        StartWorkflowTool,
+        ListWorkflowRunsTool,
+        GetWorkflowRunTool,
+        SteerWorkflowNodeTool,
+        CancelWorkflowRunTool,
+        ListAgentPresetsTool,
+    ],
 }
 _BUILTIN_TOOLSET_ALIASES: dict[str, list[str]] = {
-    "core": ["filesystem", "shell", "background", "session", "schedule", "agency"],
+    "core": ["filesystem", "shell", "background", "session", "schedule", "workflow", "agency"],
 }
-_UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "heartbeat", "agency", "agency_handoff"})
+_UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "workflow", "heartbeat", "agency", "agency_handoff"})
 
 
 class ClawRuntimeBuilder:
@@ -345,7 +375,7 @@ class ClawRuntimeBuilder:
         )
         return toolsets
 
-    def _build_system_prompt(
+    def _build_system_prompt(  # noqa: C901
         self,
         *,
         profile: ResolvedProfile,
@@ -380,6 +410,8 @@ class ClawRuntimeBuilder:
                 prompt_lines.append(format_heartbeat_guidance(heartbeat_guidance))
         elif source_kind == "schedule":
             prompt_lines.append(self._build_schedule_context(source_metadata))
+        elif source_kind == "workflow":
+            prompt_lines.append(self._build_workflow_context(source_metadata))
         else:
             memory_context = self._build_memory_context(binding)
             if memory_context is not None:
@@ -419,6 +451,19 @@ class ClawRuntimeBuilder:
             f"Execution mode: {execution_mode}",
             "This is an automated scheduled run. Complete the scheduled task without updating conversation memory.",
             "</schedule-context>",
+        ])
+
+    def _build_workflow_context(self, source_metadata: dict[str, Any] | None) -> str:
+        metadata = dict(source_metadata or {})
+        return "\n".join([
+            '<workflow-context source="workflow">',
+            f"Workflow ID: {metadata.get('workflow_id') or ''}",
+            f"Workflow run ID: {metadata.get('workflow_run_id') or ''}",
+            f"Workflow node ID: {metadata.get('workflow_node_id') or ''}",
+            f"Workflow node run ID: {metadata.get('workflow_node_run_id') or ''}",
+            f"Node mode: {metadata.get('workflow_node_mode') or ''}",
+            "This is an automated workflow node run. Complete the node task and return concise output for downstream workflow nodes.",
+            "</workflow-context>",
         ])
 
     def _build_agency_handoff_context(self, source_metadata: dict[str, Any] | None) -> str:

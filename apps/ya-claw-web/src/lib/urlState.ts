@@ -6,6 +6,7 @@ const routePaths: Record<AppRoute, string> = {
   debug: '/debug',
   agency: '/agency',
   schedules: '/schedules',
+  workflows: '/workflows',
   bridges: '/bridges',
   heartbeat: '/heartbeat',
   profiles: '/profiles',
@@ -94,6 +95,7 @@ function routeFromSegment(segment: string | undefined): AppRoute {
   if (segment === 'debug') return 'debug'
   if (segment === 'agency') return 'agency'
   if (segment === 'schedules') return 'schedules'
+  if (segment === 'workflows') return 'workflows'
   if (segment === 'bridges') return 'bridges'
   if (segment === 'heartbeat') return 'heartbeat'
   if (segment === 'profiles') return 'profiles'

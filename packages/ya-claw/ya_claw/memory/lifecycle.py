@@ -26,11 +26,12 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 MEMORY_CONTEXT_TAG = "memory-context"
 MEMORY_MD_CONTEXT_TAG = "memory-md-context"
 MEMORY_FILE_INDEX_TAG = "memory-file-index"
-AUTO_TASK_CONTEXT_TAGS = ("heartbeat-guidance", "schedule-context", "heartbeat-context")
+AUTO_TASK_CONTEXT_TAGS = ("heartbeat-guidance", "schedule-context", "workflow-context", "heartbeat-context")
 AGENCY_CONTEXT_TAGS = ("agency-context", "agency-index-context", "agency-action-log-context", "agency-file-index")
 _MEMORY_EXCLUDED_TRIGGER_TYPES = {
     TriggerType.HEARTBEAT.value,
     TriggerType.SCHEDULE.value,
+    TriggerType.WORKFLOW.value,
     TriggerType.MEMORY.value,
     TriggerType.AGENCY.value,
 }
@@ -82,7 +83,7 @@ class ClawMemoryExtension(BaseLifecycleExtension[ClawAgentContext, Environment])
             return
         source_kind = getattr(runtime_ctx, "source_kind", None)
         existing_tags = runtime_ctx.injected_context_tags
-        if source_kind in {TriggerType.HEARTBEAT.value, TriggerType.SCHEDULE.value}:
+        if source_kind in {TriggerType.HEARTBEAT.value, TriggerType.SCHEDULE.value, TriggerType.WORKFLOW.value}:
             missing_auto_tags = [tag for tag in AUTO_TASK_CONTEXT_TAGS if tag not in existing_tags]
             if missing_auto_tags:
                 runtime_ctx.injected_context_tags = (*existing_tags, *missing_auto_tags)

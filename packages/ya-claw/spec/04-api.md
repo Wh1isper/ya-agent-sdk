@@ -2,10 +2,11 @@
 
 YA Claw exposes one local HTTP API under `/api/v1`.
 
-The API has four layers:
+The API has these layers:
 
 - **session API** for the common high-level workflow
 - **run API** for explicit low-level orchestration
+- **workflow API** for Claw-managed agent-supervised workflow orchestration
 - **schedule API** for timer-managed work
 - **heartbeat API** for runtime-owned operational timer visibility
 - **workspace binding fields** on session and run creation for multi-folder execution
@@ -24,6 +25,7 @@ flowchart TB
     ROOT --> RUNS[/runs]
     ROOT --> EVENTS[/events via nested session and run routes]
     ROOT --> PROFILES[/profiles and seed operations]
+    ROOT --> WORKFLOWS[/workflows and workflow-runs]
     ROOT --> SCHEDULES[/schedules]
     ROOT --> HEARTBEAT[/heartbeat]
     ROOT --> WORKSPACE[/workspace runtime and sandbox state]
@@ -37,6 +39,24 @@ flowchart TB
 | `GET`  | `/healthz`                   | service, storage, and runtime health         |
 | `GET`  | `/api/v1/claw/info`          | web console startup handshake and capability |
 | `GET`  | `/api/v1/claw/notifications` | global console notification SSE stream       |
+
+## Workflows
+
+| Method  | Path                                                            | Purpose                                                   |
+| ------- | --------------------------------------------------------------- | --------------------------------------------------------- |
+| `GET`   | `/api/v1/workflows`                                             | list workflow definitions                                 |
+| `POST`  | `/api/v1/workflows`                                             | create workflow definition                                |
+| `GET`   | `/api/v1/workflows/{workflow_id}`                               | inspect workflow definition                               |
+| `PATCH` | `/api/v1/workflows/{workflow_id}`                               | update workflow definition metadata or body               |
+| `POST`  | `/api/v1/workflows/{workflow_id}:archive`                       | archive workflow definition                               |
+| `POST`  | `/api/v1/workflows/{workflow_id}:trigger`                       | create a workflow run                                     |
+| `GET`   | `/api/v1/workflow-runs`                                         | list workflow runs                                        |
+| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}`                       | inspect workflow run, node state, result, and linked runs |
+| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}/events`                | replay and tail workflow events                           |
+| `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/cancel`                | cancel workflow run                                       |
+| `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/nodes/{node_id}/steer` | steer an active node run                                  |
+
+Workflow semantics live in [13-workflows.md](13-workflows.md). Workflow trigger creates a durable workflow run first, then the workflow executor starts node work through the regular queued-run execution model.
 
 ## Workspace Runtime
 

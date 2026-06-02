@@ -197,6 +197,105 @@ class CreateOnceScheduleTool(BaseTool):
             return f"Error: {exc}"
 
 
+class CreateWorkflowScheduleTool(BaseTool):
+    name = "create_workflow_schedule"
+    description = "Create a recurring cron schedule that triggers a YA Claw workflow."
+
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        return _get_schedule_client(ctx) is not None
+
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        if _get_schedule_client(ctx) is None:
+            return None
+        return (
+            "Create recurring cron schedules that trigger workflows. "
+            "Use workflow_inputs_template to map schedule context into workflow inputs; "
+            "templates can reference {{ schedule.id }}, {{ schedule.name }}, and {{ scheduled_at }}."
+        )
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        name: Annotated[str, Field(description="Schedule name")],
+        workflow_id: Annotated[str, Field(description="Workflow definition ID to trigger")],
+        cron: Annotated[str, Field(description="Five-field cron expression, e.g. '0 9 * * *'")],
+        workflow_inputs_template: Annotated[
+            dict[str, Any] | None,
+            Field(description="Workflow input object template rendered on each fire"),
+        ] = None,
+        timezone: Annotated[str, Field(description="IANA timezone, e.g. UTC or Asia/Shanghai")] = "UTC",
+        enabled: Annotated[bool, Field(description="Whether the schedule is active")] = True,
+        description: Annotated[str | None, Field(description="Optional schedule description")] = None,
+    ) -> str:
+        client = _get_schedule_client(ctx)
+        if client is None:
+            return "Error: YA Claw schedule client is unavailable."
+        try:
+            payload = {
+                "name": name,
+                "description": description,
+                "prompt": "",
+                "trigger_kind": "cron",
+                "cron": cron,
+                "timezone": timezone,
+                "enabled": enabled,
+                "workflow_id": workflow_id,
+                "workflow_inputs_template": dict(workflow_inputs_template or {}),
+                "owner_kind": "agent",
+                "owner_session_id": client.session_id,
+                "owner_run_id": client.run_id,
+                "profile_name": client.profile_name,
+            }
+            return _dump_json(await client.create_schedule(payload))
+        except Exception as exc:
+            return f"Error: {exc}"
+
+
+class CreateOnceWorkflowScheduleTool(BaseTool):
+    name = "create_once_workflow_schedule"
+    description = "Create a one-time schedule that triggers a YA Claw workflow."
+
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        return _get_schedule_client(ctx) is not None
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        name: Annotated[str, Field(description="Schedule name")],
+        workflow_id: Annotated[str, Field(description="Workflow definition ID to trigger")],
+        run_at: Annotated[datetime, Field(description="Absolute datetime to run at, with timezone if possible")],
+        workflow_inputs_template: Annotated[
+            dict[str, Any] | None,
+            Field(description="Workflow input object template rendered on fire"),
+        ] = None,
+        timezone: Annotated[str, Field(description="IANA timezone for display, e.g. UTC or Asia/Shanghai")] = "UTC",
+        enabled: Annotated[bool, Field(description="Whether the schedule is active")] = True,
+        description: Annotated[str | None, Field(description="Optional schedule description")] = None,
+    ) -> str:
+        client = _get_schedule_client(ctx)
+        if client is None:
+            return "Error: YA Claw schedule client is unavailable."
+        try:
+            payload = {
+                "name": name,
+                "description": description,
+                "prompt": "",
+                "trigger_kind": "once",
+                "run_at": run_at.isoformat(),
+                "timezone": timezone,
+                "enabled": enabled,
+                "workflow_id": workflow_id,
+                "workflow_inputs_template": dict(workflow_inputs_template or {}),
+                "owner_kind": "agent",
+                "owner_session_id": client.session_id,
+                "owner_run_id": client.run_id,
+                "profile_name": client.profile_name,
+            }
+            return _dump_json(await client.create_schedule(payload))
+        except Exception as exc:
+            return f"Error: {exc}"
+
+
 class UpdateScheduleTool(BaseTool):
     name = "update_schedule"
     description = "Update a schedule owned by the current YA Claw session."

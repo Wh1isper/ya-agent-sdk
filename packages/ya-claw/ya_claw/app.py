@@ -22,6 +22,7 @@ from ya_claw.api.profiles import router as profiles_router
 from ya_claw.api.runs import router as runs_router
 from ya_claw.api.schedules import router as schedules_router
 from ya_claw.api.sessions import router as sessions_router
+from ya_claw.api.workflows import router as workflows_router
 from ya_claw.api.workspace import router as workspace_router
 from ya_claw.bridge import BridgeDispatchMode
 from ya_claw.bridge.service import BridgeSupervisor, build_bridge_supervisor
@@ -38,6 +39,7 @@ from ya_claw.execution import (
 )
 from ya_claw.execution.heartbeat import HeartbeatDispatcher
 from ya_claw.execution.schedule import ScheduleDispatcher
+from ya_claw.execution.workflow import WorkflowExecutor
 from ya_claw.logging import configure_claw_logging, redact_url
 from ya_claw.notifications import NotificationHub, create_notification_hub
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
@@ -80,6 +82,7 @@ class ClawApplication:
         app.state.runtime_instance_manager = None
         app.state.bridge_supervisor = None
         app.state.schedule_dispatcher = None
+        app.state.workflow_executor = None
         app.state.heartbeat_dispatcher = None
         app.state.agency_dispatcher = None
         app.state.session_prune_dispatcher = None
@@ -101,6 +104,7 @@ class ClawApplication:
         app.include_router(sessions_router, prefix="/api/v1")
         app.include_router(runs_router, prefix="/api/v1")
         app.include_router(schedules_router, prefix="/api/v1")
+        app.include_router(workflows_router, prefix="/api/v1")
         app.include_router(heartbeat_router, prefix="/api/v1")
         app.include_router(bridges_router, prefix="/api/v1")
         app.include_router(workspace_router, prefix="/api/v1")
@@ -206,6 +210,15 @@ class ClawApplication:
             )
             app.state.schedule_dispatcher = schedule_dispatcher
             await schedule_dispatcher.startup()
+            workflow_executor = WorkflowExecutor(
+                settings=self.settings,
+                session_factory=app.state.db_session_factory,
+                runtime_state=app.state.runtime_state,
+                run_dispatcher=RunDispatcher(supervisor),
+                notification_hub=app.state.notification_hub,
+            )
+            app.state.workflow_executor = workflow_executor
+            await workflow_executor.startup()
             heartbeat_dispatcher = HeartbeatDispatcher(
                 settings=self.settings,
                 session_factory=app.state.db_session_factory,
@@ -268,6 +281,7 @@ class ClawApplication:
             notification_hub = app.state.notification_hub
             bridge_supervisor = app.state.bridge_supervisor
             schedule_dispatcher = app.state.schedule_dispatcher
+            workflow_executor = app.state.workflow_executor
             heartbeat_dispatcher = app.state.heartbeat_dispatcher
             agency_dispatcher = app.state.agency_dispatcher
             session_prune_dispatcher = app.state.session_prune_dispatcher
@@ -286,6 +300,7 @@ class ClawApplication:
             app.state.runtime_instance_manager = None
             app.state.bridge_supervisor = None
             app.state.schedule_dispatcher = None
+            app.state.workflow_executor = None
             app.state.heartbeat_dispatcher = None
             app.state.agency_dispatcher = None
             app.state.session_prune_dispatcher = None
@@ -306,6 +321,9 @@ class ClawApplication:
 
             if isinstance(heartbeat_dispatcher, HeartbeatDispatcher):
                 await heartbeat_dispatcher.shutdown()
+
+            if isinstance(workflow_executor, WorkflowExecutor):
+                await workflow_executor.shutdown()
 
             if isinstance(schedule_dispatcher, ScheduleDispatcher):
                 await schedule_dispatcher.shutdown()
@@ -477,7 +495,7 @@ class ClawApplication:
                 "environment": self.settings.environment,
                 "docs_url": "/docs",
                 "spec_path": "packages/ya-claw/spec",
-                "surfaces": ["profiles", "sessions", "runs", "schedules", "bridges"],
+                "surfaces": ["profiles", "sessions", "runs", "schedules", "workflows", "bridges"],
             }
 
 

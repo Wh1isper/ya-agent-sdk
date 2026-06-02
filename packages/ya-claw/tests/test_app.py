@@ -111,7 +111,7 @@ def test_index_without_frontend_bundle() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["name"] == "YA Claw"
-    assert payload["surfaces"] == ["profiles", "sessions", "runs", "schedules", "bridges"]
+    assert payload["surfaces"] == ["profiles", "sessions", "runs", "schedules", "workflows", "bridges"]
 
 
 def test_serves_frontend_bundle(monkeypatch, tmp_path: Path) -> None:

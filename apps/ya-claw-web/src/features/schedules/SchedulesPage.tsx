@@ -9,6 +9,7 @@ import {
   useSchedulesQuery,
   useTriggerScheduleMutation,
   useUpdateScheduleMutation,
+  useWorkflowsQuery,
 } from '../../api/hooks'
 import { EmptyState } from '../../components/EmptyState'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -21,7 +22,7 @@ import {
   toZonedDatetimeLocalValue,
   zonedDatetimeLocalToIso,
 } from '../../lib/timezone'
-import { cn } from '../../lib/utils'
+import { cn, parseJsonObject, safeJsonStringify } from '../../lib/utils'
 import type { ScheduleCreateRequest, ScheduleSummary } from '../../types'
 
 type ScheduleFormValues = {
@@ -36,6 +37,8 @@ type ScheduleFormValues = {
   continue_current_session: boolean
   start_from_current_session: boolean
   steer_when_running: boolean
+  workflow_id: string
+  workflow_inputs_template: string
 }
 
 type ScheduleStatusFilter = ScheduleSummary['status'] | 'all'
@@ -55,6 +58,8 @@ function createBlankSchedule(): ScheduleFormValues {
     continue_current_session: false,
     start_from_current_session: false,
     steer_when_running: false,
+    workflow_id: '',
+    workflow_inputs_template: '{}',
   }
 }
 
@@ -323,6 +328,11 @@ function ScheduleEditor({
   const updateSchedule = useUpdateScheduleMutation()
   const deleteSchedule = useDeleteScheduleMutation()
   const triggerSchedule = useTriggerScheduleMutation()
+  const workflows = useWorkflowsQuery({
+    status: 'active',
+    includeArchived: false,
+    limit: 100,
+  })
   const isDeleted = schedule?.status === 'deleted'
   const fires = useScheduleFiresQuery(schedule?.id ?? null)
   const form = useForm<ScheduleFormValues>({
@@ -330,6 +340,7 @@ function ScheduleEditor({
   })
   const triggerKind = form.watch('trigger_kind')
   const timezone = form.watch('timezone')
+  const workflowId = form.watch('workflow_id')
   const supportedTimeZones = useMemo(() => getSupportedTimeZones(), [])
 
   useEffect(() => {
@@ -353,6 +364,10 @@ function ScheduleEditor({
         continue_current_session: schedule.mode.continue_current_session,
         start_from_current_session: schedule.mode.start_from_current_session,
         steer_when_running: schedule.mode.steer_when_running,
+        workflow_id: schedule.workflow_id ?? '',
+        workflow_inputs_template: safeJsonStringify(
+          schedule.workflow_inputs_template ?? {},
+        ),
       })
     } else {
       form.reset(createBlankSchedule())
@@ -360,10 +375,15 @@ function ScheduleEditor({
   }, [form, schedule])
 
   const onSubmit = form.handleSubmit(async (values) => {
+    const workflowInputsTemplate = values.workflow_id.trim()
+      ? (parseJsonObject(values.workflow_inputs_template) ?? {})
+      : null
     const payload: ScheduleCreateRequest = {
       name: values.name,
       description: values.description || null,
-      prompt: values.prompt,
+      prompt: values.workflow_id.trim()
+        ? values.prompt || 'Workflow schedule'
+        : values.prompt,
       trigger_kind: values.trigger_kind,
       cron: values.trigger_kind === 'cron' ? values.cron : null,
       run_at:
@@ -376,6 +396,8 @@ function ScheduleEditor({
       start_from_current_session: values.start_from_current_session,
       steer_when_running: values.steer_when_running,
       owner_kind: 'user',
+      workflow_id: values.workflow_id.trim() || null,
+      workflow_inputs_template: workflowInputsTemplate,
     }
     if (creating) {
       await createSchedule.mutateAsync(payload)
@@ -505,13 +527,43 @@ function ScheduleEditor({
             <Field label="Description">
               <input className={inputClass} {...form.register('description')} />
             </Field>
+            <Field label="Workflow">
+              <select className={inputClass} {...form.register('workflow_id')}>
+                <option value="">Agent prompt schedule</option>
+                {(workflows.data?.workflows ?? []).map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
           </div>
-          <Field label="Prompt">
+          <Field
+            label={workflowId ? 'Prompt fallback' : 'Prompt'}
+            hint={
+              workflowId
+                ? 'Workflow schedules dispatch the selected workflow and use this text as an operator-facing fallback label.'
+                : undefined
+            }
+          >
             <textarea
               className={`${textareaClass} mt-2 min-h-40`}
-              {...form.register('prompt', { required: true })}
+              {...form.register('prompt', { required: !workflowId })}
             />
           </Field>
+          {workflowId ? (
+            <Field
+              label="Workflow inputs template"
+              hint={
+                'JSON object rendered with schedule context, for example {"topic": "{{ schedule.name }}"}.'
+              }
+            >
+              <textarea
+                className={`${textareaClass} mt-2 mono min-h-32`}
+                {...form.register('workflow_inputs_template')}
+              />
+            </Field>
+          ) : null}
           <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
             <label className={checkClass}>
               <input type="checkbox" {...form.register('enabled')} /> Enabled
@@ -572,8 +624,11 @@ function ScheduleEditor({
                 </div>
                 <p className="mt-2 text-slate-600">{fire.input_preview}</p>
                 <p className="mt-1 text-xs text-slate-400">
-                  Run {fire.run_id?.slice(0, 10) ?? 'none'} ·{' '}
-                  {describeBrowserDateTime(fire.created_at)}
+                  Run{' '}
+                  {fire.run_id?.slice(0, 10) ??
+                    fire.workflow_run_id?.slice(0, 10) ??
+                    'none'}{' '}
+                  · {describeBrowserDateTime(fire.created_at)}
                 </p>
                 {fire.error_message ? (
                   <p className="mt-1 text-xs text-rose-600">
