@@ -1,19 +1,27 @@
 import {
   Archive,
+  CalendarClock,
   GitBranch,
   Play,
   Plus,
   Save,
   Send,
+  Trash2,
   Workflow,
   XCircle,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import {
   useArchiveWorkflowMutation,
+  useCreateScheduleMutation,
   useCreateWorkflowMutation,
+  useDeleteScheduleMutation,
+  useScheduleFiresQuery,
+  useSchedulesQuery,
+  useTriggerScheduleMutation,
   useTriggerWorkflowMutation,
+  useUpdateScheduleMutation,
   useUpdateWorkflowMutation,
   useWorkflowEventsQuery,
   useWorkflowQuery,
@@ -33,7 +41,17 @@ import {
   safeJsonStringify,
   splitCsv,
 } from '../../lib/utils'
+import {
+  describeBrowserDateTime,
+  describeScheduledAndLocalDateTime,
+  getBrowserTimeZone,
+  getSupportedTimeZones,
+  toZonedDatetimeLocalValue,
+  zonedDatetimeLocalToIso,
+} from '../../lib/timezone'
 import type {
+  ScheduleCreateRequest,
+  ScheduleSummary,
   WorkflowDefinitionDetail,
   WorkflowDefinitionStatus,
   WorkflowDefinitionSummary,
@@ -63,6 +81,19 @@ type TriggerFormValues = {
   supervisor_session_id: string
   supervisor_run_id: string
   trigger_kind: WorkflowTriggerKind
+  metadata: string
+}
+
+type WorkflowScheduleFormValues = {
+  schedule_id: string
+  name: string
+  description: string
+  trigger_kind: 'cron' | 'once'
+  cron: string
+  run_at: string
+  timezone: string
+  enabled: boolean
+  workflow_inputs_template: string
   metadata: string
 }
 
@@ -136,6 +167,46 @@ function blankTriggerForm(): TriggerFormValues {
   }
 }
 
+function blankWorkflowScheduleForm(): WorkflowScheduleFormValues {
+  return {
+    schedule_id: '',
+    name: 'Workflow schedule',
+    description: '',
+    trigger_kind: 'cron',
+    cron: '0 9 * * *',
+    run_at: '',
+    timezone: getBrowserTimeZone(),
+    enabled: true,
+    workflow_inputs_template: '{}',
+    metadata: '{}',
+  }
+}
+
+function workflowScheduleToForm(
+  schedule: ScheduleSummary,
+): WorkflowScheduleFormValues {
+  return {
+    schedule_id: schedule.id,
+    name: schedule.name,
+    description: schedule.description ?? '',
+    trigger_kind: schedule.trigger.kind,
+    cron: schedule.trigger.kind === 'cron' ? (schedule.trigger.cron ?? '') : '',
+    run_at:
+      schedule.trigger.kind === 'once'
+        ? toZonedDatetimeLocalValue(
+            schedule.trigger.run_at,
+            schedule.trigger.timezone,
+          )
+        : '',
+    timezone: schedule.trigger.timezone,
+    enabled: schedule.enabled,
+    workflow_inputs_template: safeJsonStringify(
+      schedule.workflow_inputs_template ?? {},
+    ),
+    metadata: safeJsonStringify(schedule.metadata ?? {}),
+  }
+}
+
 export function WorkflowsPage() {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
     null,
@@ -178,6 +249,17 @@ export function WorkflowsPage() {
   )
   const selectedWorkflow = useWorkflowQuery(
     creating ? null : selectedWorkflowId,
+  )
+  const workflowSchedules = useSchedulesQuery({
+    workflowId: selectedWorkflowId,
+    executionMode: 'workflow',
+    includeWorkflow: true,
+    includeDeleted: true,
+    limit: 100,
+  })
+  const workflowScheduleRows = useMemo(
+    () => workflowSchedules.data?.schedules ?? [],
+    [workflowSchedules.data?.schedules],
   )
 
   const runFilters = useMemo(
@@ -313,6 +395,13 @@ export function WorkflowsPage() {
               <WorkflowListItem
                 key={workflow.id}
                 workflow={workflow}
+                scheduleCount={
+                  selectedWorkflowId === workflow.id
+                    ? workflowScheduleRows.filter(
+                        (schedule) => schedule.status !== 'deleted',
+                      ).length
+                    : undefined
+                }
                 active={!creating && selectedWorkflowId === workflow.id}
                 onClick={() => {
                   setCreating(false)
@@ -328,6 +417,7 @@ export function WorkflowsPage() {
         <section className="scrollbar-thin min-w-0 overflow-auto p-6">
           <WorkflowEditor
             workflow={creating ? null : (selectedWorkflow.data ?? null)}
+            schedules={workflowScheduleRows}
             creating={creating}
             onCreated={(workflowId) => {
               setCreating(false)
@@ -350,10 +440,12 @@ export function WorkflowsPage() {
 
 function WorkflowListItem({
   workflow,
+  scheduleCount,
   active,
   onClick,
 }: {
   workflow: WorkflowDefinitionSummary
+  scheduleCount?: number
   active: boolean
   onClick: () => void
 }) {
@@ -393,22 +485,32 @@ function WorkflowListItem({
           </span>
         ))}
       </div>
-      {workflow.latest_run ? (
-        <p className="mt-2 text-xs text-slate-400">
-          Latest run: {workflow.latest_run.status} ·{' '}
-          {formatShortId(workflow.latest_run.id)}
-        </p>
-      ) : null}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+        {workflow.latest_run ? (
+          <span>
+            Latest run: {workflow.latest_run.status} ·{' '}
+            {formatShortId(workflow.latest_run.id)}
+          </span>
+        ) : null}
+        {typeof scheduleCount === 'number' ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-600">
+            <CalendarClock className="h-3 w-3" />
+            {scheduleCount} schedules
+          </span>
+        ) : null}
+      </div>
     </button>
   )
 }
 
 function WorkflowEditor({
   workflow,
+  schedules,
   creating,
   onCreated,
 }: {
   workflow: WorkflowDefinitionDetail | null
+  schedules: ScheduleSummary[]
   creating: boolean
   onCreated: (workflowId: string) => void
 }) {
@@ -615,6 +717,10 @@ function WorkflowEditor({
         </div>
       </div>
 
+      {workflow ? (
+        <WorkflowSchedulesPanel workflow={workflow} schedules={schedules} />
+      ) : null}
+
       <div className={cardClass}>
         <div className="flex items-center gap-2">
           <Workflow className="h-4 w-4 text-blue-600" />
@@ -756,6 +862,367 @@ function WorkflowEditor({
           </label>
         </div>
       ) : null}
+    </div>
+  )
+}
+
+function WorkflowSchedulesPanel({
+  workflow,
+  schedules,
+}: {
+  workflow: WorkflowDefinitionDetail
+  schedules: ScheduleSummary[]
+}) {
+  const createSchedule = useCreateScheduleMutation()
+  const updateSchedule = useUpdateScheduleMutation()
+  const deleteSchedule = useDeleteScheduleMutation()
+  const triggerSchedule = useTriggerScheduleMutation()
+  const [form, setForm] = useState<WorkflowScheduleFormValues>(
+    blankWorkflowScheduleForm,
+  )
+  const [error, setError] = useState<string | null>(null)
+  const activeSchedules = schedules.filter(
+    (schedule) => schedule.status !== 'deleted',
+  )
+  const selectedSchedule = schedules.find(
+    (schedule) => schedule.id === form.schedule_id,
+  )
+  const supportedTimeZones = useMemo(() => getSupportedTimeZones(), [])
+  const fires = useScheduleFiresQuery(selectedSchedule?.id ?? null)
+
+  useEffect(() => {
+    setError(null)
+    setForm(blankWorkflowScheduleForm())
+  }, [workflow.id])
+
+  const selectSchedule = (schedule: ScheduleSummary) => {
+    setError(null)
+    setForm(workflowScheduleToForm(schedule))
+  }
+
+  const resetForm = () => {
+    setError(null)
+    setForm(blankWorkflowScheduleForm())
+  }
+
+  const save = async () => {
+    setError(null)
+    try {
+      const payload: ScheduleCreateRequest = {
+        name: form.name.trim(),
+        description: form.description.trim() || null,
+        prompt: '',
+        trigger_kind: form.trigger_kind,
+        cron: form.trigger_kind === 'cron' ? form.cron : null,
+        run_at:
+          form.trigger_kind === 'once'
+            ? zonedDatetimeLocalToIso(form.run_at, form.timezone)
+            : null,
+        timezone: form.timezone,
+        enabled: form.enabled,
+        continue_current_session: false,
+        start_from_current_session: false,
+        steer_when_running: false,
+        owner_kind: 'user',
+        workflow_id: workflow.id,
+        workflow_inputs_template:
+          parseJsonObject(form.workflow_inputs_template) ?? {},
+        metadata: parseJsonObject(form.metadata) ?? {},
+      }
+      if (form.schedule_id) {
+        await updateSchedule.mutateAsync({
+          scheduleId: form.schedule_id,
+          payload,
+        })
+      } else {
+        const created = await createSchedule.mutateAsync(payload)
+        setForm(workflowScheduleToForm(created))
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }
+
+  return (
+    <div className={cardClass}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-blue-600">Schedules</p>
+          <h3 className="font-semibold text-slate-900">Workflow recurrence</h3>
+        </div>
+        <button
+          type="button"
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+          onClick={resetForm}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New schedule
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
+        <div className="space-y-2">
+          {activeSchedules.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+              No workflow schedules yet.
+            </div>
+          ) : null}
+          {activeSchedules.map((schedule) => (
+            <button
+              key={schedule.id}
+              type="button"
+              className={cn(
+                'w-full rounded-2xl border p-3 text-left transition',
+                form.schedule_id === schedule.id
+                  ? 'border-blue-200 bg-blue-50'
+                  : 'border-slate-200 bg-white hover:bg-slate-50',
+              )}
+              onClick={() => selectSchedule(schedule)}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <p className="truncate text-sm font-semibold text-slate-900">
+                  {schedule.name}
+                </p>
+                <StatusBadge status={schedule.status} />
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                {formatWorkflowScheduleTrigger(schedule)}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Next:{' '}
+                {describeScheduledAndLocalDateTime(
+                  schedule.trigger.next_fire_at,
+                  schedule.trigger.timezone,
+                )}
+              </p>
+              {schedule.last_workflow_run_id ? (
+                <p className="mt-1 mono text-xs text-slate-400">
+                  Last run {formatShortId(schedule.last_workflow_run_id)}
+                </p>
+              ) : null}
+            </button>
+          ))}
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-slate-900">
+                {form.schedule_id
+                  ? 'Edit workflow schedule'
+                  : 'Create workflow schedule'}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Recurrence creates workflow runs with trigger_kind=schedule.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              {selectedSchedule && selectedSchedule.status !== 'deleted' ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  onClick={() =>
+                    triggerSchedule.mutate({ scheduleId: selectedSchedule.id })
+                  }
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  Trigger
+                </button>
+              ) : null}
+              {selectedSchedule && selectedSchedule.status !== 'deleted' ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                  onClick={() => deleteSchedule.mutate(selectedSchedule.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {error ? (
+            <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid grid-cols-2 gap-4">
+            <WorkflowField label="Name">
+              <input
+                className={inputClass}
+                value={form.name}
+                onChange={(event) =>
+                  setForm({ ...form, name: event.target.value })
+                }
+              />
+            </WorkflowField>
+            <WorkflowField label="Trigger">
+              <select
+                className={inputClass}
+                value={form.trigger_kind}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    trigger_kind: event.target.value as 'cron' | 'once',
+                  })
+                }
+              >
+                <option value="cron">Recurring cron</option>
+                <option value="once">One-time</option>
+              </select>
+            </WorkflowField>
+            {form.trigger_kind === 'cron' ? (
+              <WorkflowField label="Cron">
+                <input
+                  className={`${inputClass} mono`}
+                  value={form.cron}
+                  onChange={(event) =>
+                    setForm({ ...form, cron: event.target.value })
+                  }
+                />
+              </WorkflowField>
+            ) : (
+              <WorkflowField label="Run at">
+                <input
+                  type="datetime-local"
+                  className={inputClass}
+                  value={form.run_at}
+                  onChange={(event) =>
+                    setForm({ ...form, run_at: event.target.value })
+                  }
+                />
+              </WorkflowField>
+            )}
+            <WorkflowField label="Timezone">
+              {supportedTimeZones.length > 0 ? (
+                <select
+                  className={inputClass}
+                  value={form.timezone}
+                  onChange={(event) =>
+                    setForm({ ...form, timezone: event.target.value })
+                  }
+                >
+                  {supportedTimeZones.map((timeZone) => (
+                    <option key={timeZone} value={timeZone}>
+                      {timeZone}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={inputClass}
+                  value={form.timezone}
+                  onChange={(event) =>
+                    setForm({ ...form, timezone: event.target.value })
+                  }
+                />
+              )}
+            </WorkflowField>
+            <WorkflowField label="Description">
+              <input
+                className={inputClass}
+                value={form.description}
+                onChange={(event) =>
+                  setForm({ ...form, description: event.target.value })
+                }
+              />
+            </WorkflowField>
+            <WorkflowField label="Enabled">
+              <label className="mt-2 flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={form.enabled}
+                  onChange={(event) =>
+                    setForm({ ...form, enabled: event.target.checked })
+                  }
+                />
+                Enabled
+              </label>
+            </WorkflowField>
+          </div>
+          <WorkflowField
+            label="Workflow inputs template"
+            hint={
+              'JSON object rendered with schedule context, for example {"topic": "{{ schedule.name }}"}.'
+            }
+          >
+            <textarea
+              className={`${textareaClass} mono`}
+              rows={5}
+              value={form.workflow_inputs_template}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  workflow_inputs_template: event.target.value,
+                })
+              }
+            />
+          </WorkflowField>
+          <WorkflowField label="Metadata">
+            <textarea
+              className={`${textareaClass} mono`}
+              rows={3}
+              value={form.metadata}
+              onChange={(event) =>
+                setForm({ ...form, metadata: event.target.value })
+              }
+            />
+          </WorkflowField>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
+              onClick={save}
+              disabled={createSchedule.isPending || updateSchedule.isPending}
+            >
+              <Save className="h-4 w-4" />
+              Save schedule
+            </button>
+          </div>
+
+          {selectedSchedule ? (
+            <div className="mt-5 border-t border-slate-200 pt-4">
+              <h4 className="text-sm font-semibold text-slate-900">
+                Recent fires
+              </h4>
+              <div className="mt-3 space-y-2">
+                {(fires.data?.fires ?? []).map((fire) => (
+                  <div
+                    key={fire.id}
+                    className="rounded-xl border border-slate-200 bg-white p-3 text-sm"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="mono text-xs text-slate-500">
+                        {formatShortId(fire.id)}
+                      </span>
+                      <StatusBadge
+                        status={mapWorkflowScheduleFireStatus(
+                          fire.status,
+                          fire.run_status,
+                        )}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Workflow run{' '}
+                      {fire.workflow_run_id
+                        ? formatShortId(fire.workflow_run_id)
+                        : 'none'}{' '}
+                      · {describeBrowserDateTime(fire.created_at)}
+                    </p>
+                    {fire.error_message ? (
+                      <p className="mt-1 text-xs text-rose-600">
+                        {fire.error_message}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1014,6 +1481,28 @@ function WorkflowRunDetailPanel({
   )
 }
 
+function WorkflowField({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: string
+  children: ReactNode
+}) {
+  return (
+    <label className="mt-4 block text-sm font-medium text-slate-700">
+      {label}
+      {children}
+      {hint ? (
+        <span className="mt-1 block text-xs font-normal text-slate-400">
+          {hint}
+        </span>
+      ) : null}
+    </label>
+  )
+}
+
 function ListSkeleton() {
   return (
     <div className="space-y-2">
@@ -1043,6 +1532,28 @@ function formatDate(value: string | null | undefined) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function formatWorkflowScheduleTrigger(schedule: ScheduleSummary) {
+  if (schedule.trigger.kind === 'once') {
+    return `once · ${describeBrowserDateTime(schedule.trigger.run_at)}`
+  }
+  return `${schedule.trigger.cron ?? schedule.cron.expr ?? 'cron'} · ${schedule.trigger.timezone}`
+}
+
+function mapWorkflowScheduleFireStatus(
+  status: string,
+  runStatus?: string | null,
+) {
+  if (runStatus === 'failed') return 'failed'
+  if (runStatus === 'cancelled') return 'cancelled'
+  if (runStatus === 'completed') return 'completed'
+  if (runStatus === 'queued' || runStatus === 'running') return 'running'
+  if (status === 'failed') return 'failed'
+  if (status === 'pending' || status === 'submitted' || status === 'steered') {
+    return 'running'
+  }
+  return 'completed'
 }
 
 function isActiveNodeStatus(status: string) {

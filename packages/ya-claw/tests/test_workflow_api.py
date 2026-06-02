@@ -120,6 +120,53 @@ def test_workflow_api_crud_trigger_events_and_filters() -> None:
         assert repeated_tags_response.status_code == 200
         assert repeated_tags_response.json()["workflows"] == []
 
+        workflow_schedule_response = client.post(
+            "/api/v1/schedules",
+            headers=_auth_headers(),
+            json={
+                "name": "Workflow API schedule",
+                "prompt": "",
+                "cron": "* * * * *",
+                "timezone": "UTC",
+                "enabled": True,
+                "owner_kind": "user",
+                "workflow_id": workflow["id"],
+                "workflow_inputs_template": {"topic": "{{ schedule.name }}"},
+            },
+        )
+        assert workflow_schedule_response.status_code == 201
+        workflow_schedule = workflow_schedule_response.json()
+        assert workflow_schedule["execution_mode"] == "workflow"
+
+        prompt_schedule_response = client.post(
+            "/api/v1/schedules",
+            headers=_auth_headers(),
+            json={
+                "name": "Prompt API schedule",
+                "prompt": "Run ordinary schedule.",
+                "cron": "* * * * *",
+                "timezone": "UTC",
+                "enabled": True,
+                "owner_kind": "user",
+            },
+        )
+        assert prompt_schedule_response.status_code == 201
+        prompt_schedule = prompt_schedule_response.json()
+
+        workflow_schedules_response = client.get(
+            f"/api/v1/schedules?execution_mode=workflow&workflow_id={workflow['id']}",
+            headers=_auth_headers(),
+        )
+        assert workflow_schedules_response.status_code == 200
+        assert [item["id"] for item in workflow_schedules_response.json()["schedules"]] == [workflow_schedule["id"]]
+
+        prompt_schedules_response = client.get(
+            "/api/v1/schedules?include_workflow=false",
+            headers=_auth_headers(),
+        )
+        assert prompt_schedules_response.status_code == 200
+        assert [item["id"] for item in prompt_schedules_response.json()["schedules"]] == [prompt_schedule["id"]]
+
         trigger_response = client.post(
             f"/api/v1/agent/workflows/{workflow['id']}:trigger",
             headers=_agent_headers(),

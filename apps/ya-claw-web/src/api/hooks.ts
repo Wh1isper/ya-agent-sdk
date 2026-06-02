@@ -14,6 +14,7 @@ import type {
   InputPart,
   ProfileUpsertRequest,
   ScheduleCreateRequest,
+  ScheduleListFilters,
   ScheduleUpdateRequest,
   SessionSubmitRequest,
   WorkflowDefinitionCreateRequest,
@@ -620,12 +621,12 @@ export function useWorkflowRunMutations(workflowRunId: string | null) {
   }
 }
 
-export function useSchedulesQuery(options?: { includeDeleted?: boolean }) {
+export function useSchedulesQuery(filters: ScheduleListFilters = {}) {
   const api = useApiClient()
-  const includeDeleted = options?.includeDeleted ?? false
+  const key = stableFiltersKey(filters)
   return useQuery({
-    queryKey: queryKeys.schedules(includeDeleted),
-    queryFn: () => api.listSchedules({ includeDeleted }),
+    queryKey: queryKeys.schedules(key),
+    queryFn: () => api.listSchedules(filters),
     placeholderData: keepPreviousData,
     staleTime: 10_000,
     refetchInterval: 30_000,
@@ -665,7 +666,10 @@ export function useCreateScheduleMutation() {
     mutationFn: (payload: ScheduleCreateRequest) => api.createSchedule(payload),
     onSuccess: async (schedule) => {
       toast.success(`Created schedule ${schedule.name}`)
-      await queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+      ])
     },
   })
 }
@@ -688,6 +692,7 @@ export function useUpdateScheduleMutation() {
         queryClient.invalidateQueries({
           queryKey: queryKeys.schedule(schedule.id),
         }),
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
       ])
     },
   })
@@ -700,7 +705,10 @@ export function useDeleteScheduleMutation() {
     mutationFn: (scheduleId: string) => api.deleteSchedule(scheduleId),
     onSuccess: async (schedule) => {
       toast.success(`Deleted schedule ${schedule.name}`)
-      await queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+      ])
     },
   })
 }
@@ -724,6 +732,8 @@ export function useTriggerScheduleMutation() {
           queryKey: queryKeys.scheduleFires(fire.schedule_id),
         }),
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+        queryClient.invalidateQueries({ queryKey: ['workflows'] }),
+        queryClient.invalidateQueries({ queryKey: ['workflow-runs'] }),
       ])
     },
   })

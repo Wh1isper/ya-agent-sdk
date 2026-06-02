@@ -42,7 +42,7 @@ export function OverviewPage() {
   const info = useClawInfoQuery()
   const sessions = useSessionsQuery()
   const profiles = useProfilesQuery()
-  const schedules = useSchedulesQuery()
+  const schedules = useSchedulesQuery({ includeWorkflow: false })
   const heartbeat = useHeartbeatStatusQuery()
   const workspaceRuntime = useWorkspaceRuntimeQuery()
   const setRoute = useLayoutStore((state) => state.setRoute)

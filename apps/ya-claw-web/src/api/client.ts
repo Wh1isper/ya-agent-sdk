@@ -23,6 +23,7 @@ import type {
   ScheduleCreateRequest,
   ScheduleFireListResponse,
   ScheduleFireSummary,
+  ScheduleListFilters,
   ScheduleListResponse,
   ScheduleSummary,
   ScheduleUpdateRequest,
@@ -307,7 +308,9 @@ export class ClawApiClient {
   listWorkflows(filters: WorkflowListFilters = {}) {
     const params = new URLSearchParams()
     if (filters.query?.trim()) params.set('query', filters.query.trim())
-    if (filters.tags?.length) params.set('tags', filters.tags.join(','))
+    if (filters.tags?.length) {
+      for (const tag of filters.tags) params.append('tags', tag)
+    }
     if (filters.status && filters.status !== 'all') {
       params.set('status', filters.status)
     }
@@ -431,9 +434,24 @@ export class ClawApiClient {
     )
   }
 
-  listSchedules(options?: { includeDeleted?: boolean }) {
+  listSchedules(filters: ScheduleListFilters = {}) {
     const params = new URLSearchParams()
-    if (options?.includeDeleted) params.set('include_deleted', 'true')
+    if (filters.includeDeleted) params.set('include_deleted', 'true')
+    if (filters.includeWorkflow === false)
+      params.set('include_workflow', 'false')
+    if (filters.workflowId?.trim())
+      params.set('workflow_id', filters.workflowId.trim())
+    if (filters.executionMode && filters.executionMode !== 'all') {
+      params.set('execution_mode', filters.executionMode)
+    }
+    if (filters.ownerSessionId?.trim()) {
+      params.set('owner_session_id', filters.ownerSessionId.trim())
+    }
+    if (filters.scheduleId?.trim())
+      params.set('schedule_id', filters.scheduleId.trim())
+    if (filters.includeRecentRuns === false)
+      params.set('include_recent_runs', 'false')
+    params.set('limit', String(filters.limit ?? 100))
     const query = params.toString()
     return this.request<ScheduleListResponse>(
       `/api/v1/schedules${query ? `?${query}` : ''}`,

@@ -284,6 +284,48 @@ async def test_schedule_workflow_mode_triggers_workflow_run(
     assert workflow_run.inputs == {"topic": "workflow schedule"}
 
 
+async def test_schedule_list_filters_workflow_backed_schedules(
+    db_session: AsyncSession,
+) -> None:
+    workflow_controller = WorkflowController()
+    workflow = await workflow_controller.create_definition(
+        db_session,
+        WorkflowDefinitionCreateRequest(definition=_workflow_definition()),
+    )
+    schedule_controller = ScheduleController()
+    prompt_schedule = await schedule_controller.create(
+        db_session,
+        ScheduleCreateRequest(
+            name="ordinary schedule",
+            prompt="Run ordinary scheduled work.",
+            cron="* * * * *",
+        ),
+    )
+    workflow_schedule = await schedule_controller.create(
+        db_session,
+        ScheduleCreateRequest(
+            name="workflow schedule",
+            prompt="",
+            cron="* * * * *",
+            workflow_id=workflow.id,
+            workflow_inputs_template={"topic": "{{ schedule.name }}"},
+        ),
+    )
+
+    workflow_schedules = await schedule_controller.list(
+        db_session,
+        workflow_id=workflow.id,
+        execution_mode="workflow",
+    )
+    prompt_schedules = await schedule_controller.list(
+        db_session,
+        include_workflow=False,
+    )
+
+    assert [item.id for item in workflow_schedules.schedules] == [workflow_schedule.id]
+    assert [item.id for item in prompt_schedules.schedules] == [prompt_schedule.id]
+
+
 async def test_schedule_workflow_mode_can_be_cleared_to_prompt_schedule(
     db_session: AsyncSession,
 ) -> None:

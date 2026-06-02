@@ -436,6 +436,22 @@ export type ScheduleListResponse = {
   schedules: ScheduleSummary[]
 }
 
+export type ScheduleListFilters = {
+  includeDeleted?: boolean
+  includeWorkflow?: boolean
+  workflowId?: string | null
+  executionMode?:
+    | 'continue_session'
+    | 'fork_session'
+    | 'isolate_session'
+    | 'workflow'
+    | 'all'
+  ownerSessionId?: string | null
+  scheduleId?: string | null
+  includeRecentRuns?: boolean
+  limit?: number
+}
+
 export type ScheduleFireListResponse = {
   fires: ScheduleFireSummary[]
 }

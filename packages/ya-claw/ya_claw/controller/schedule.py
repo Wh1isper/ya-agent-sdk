@@ -129,6 +129,7 @@ class ScheduleSummary(BaseModel):
     source_session_id: str | None = None
     workflow_id: str | None = None
     workflow_inputs_template: dict[str, Any] | None = None
+    last_workflow_run_id: str | None = None
     last_fire: ScheduleFireSummary | None = None
     fire_count: int = 0
     failure_count: int = 0
@@ -157,6 +158,9 @@ class ScheduleController:
         include_deleted: bool = False,
         owner_session_id: str | None = None,
         schedule_id: str | None = None,
+        workflow_id: str | None = None,
+        execution_mode: ScheduleExecutionMode | None = None,
+        include_workflow: bool = True,
         limit: int = 100,
         include_recent_runs: bool = True,
     ) -> ScheduleListResponse:
@@ -168,6 +172,12 @@ class ScheduleController:
             statement = statement.where(ScheduleRecord.status != "deleted")
         if isinstance(owner_session_id, str) and owner_session_id.strip() != "":
             statement = statement.where(ScheduleRecord.owner_session_id == owner_session_id)
+        if isinstance(workflow_id, str) and workflow_id.strip() != "":
+            statement = statement.where(ScheduleRecord.workflow_id == workflow_id.strip())
+        if execution_mode is not None:
+            statement = statement.where(ScheduleRecord.execution_mode == execution_mode)
+        elif not include_workflow:
+            statement = statement.where(ScheduleRecord.execution_mode != "workflow")
         statement = statement.order_by(ScheduleRecord.updated_at.desc()).limit(normalized_limit)
         result = await db_session.execute(statement)
         records = list(result.scalars().all())
@@ -714,6 +724,7 @@ class ScheduleController:
             source_session_id=record.source_session_id,
             workflow_id=record.workflow_id,
             workflow_inputs_template=dict(record.workflow_inputs_template or {}),
+            last_workflow_run_id=record.last_workflow_run_id,
             last_fire=last_fire,
             fire_count=record.fire_count,
             failure_count=record.failure_count,

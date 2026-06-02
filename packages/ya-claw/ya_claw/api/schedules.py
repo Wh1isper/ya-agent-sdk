@@ -7,6 +7,7 @@ from ya_claw.config import ClawSettings
 from ya_claw.controller.schedule import (
     ScheduleController,
     ScheduleCreateRequest,
+    ScheduleExecutionMode,
     ScheduleFireListResponse,
     ScheduleFireSummary,
     ScheduleListResponse,
@@ -29,6 +30,9 @@ async def list_schedules(
     include_deleted: bool = False,
     owner_session_id: str | None = None,
     schedule_id: str | None = None,
+    workflow_id: str | None = None,
+    execution_mode: ScheduleExecutionMode | None = None,
+    include_workflow: bool = True,
     limit: int = 100,
     include_recent_runs: bool = True,
 ) -> ScheduleListResponse:
@@ -39,6 +43,9 @@ async def list_schedules(
             include_deleted=include_deleted,
             owner_session_id=owner_session_id,
             schedule_id=schedule_id,
+            workflow_id=workflow_id,
+            execution_mode=execution_mode,
+            include_workflow=include_workflow,
             limit=limit,
             include_recent_runs=include_recent_runs,
         )

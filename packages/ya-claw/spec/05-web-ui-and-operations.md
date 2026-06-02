@@ -45,13 +45,21 @@ Shows session lineage, latest state, workspace/sandbox state, continuation entry
 
 ### Workflows
 
-Shows workflow definitions, run history, live DAG state, node-linked sessions/runs, output previews, agent preset selection, and manual trigger controls. The workflow detail view should support create, edit, archive, trigger, cancel, steer active node, retry node, open linked session, and open linked run trace actions.
+Shows workflow definitions, workflow-specific schedule bindings, run history, live DAG state, node-linked sessions/runs, output previews, agent preset selection, and manual trigger controls. Workflows is the primary product column for durable orchestration.
+
+The workflow console should use a three-pane shape:
+
+- workflow column: searchable definitions with status, scope, tags, latest run, and linked schedule state
+- detail pane: workflow description, input schema, definition document, metadata, schedule bindings, and manual trigger form
+- activity pane: workflow runs, live node state, events, result projection, linked sessions, and linked run traces
+
+The workflow detail view should support create, edit, archive, trigger, cancel, steer active node, retry node, open linked session, open linked run trace, and manage workflow schedules. Workflow schedule management creates and updates schedule records whose `execution_mode="workflow"`, while keeping their configuration visible from the selected workflow.
 
 Workflow runs started by an agent should appear in the supervising session detail with compact progress and result links.
 
 ### Schedules
 
-Shows schedule definitions and fire history. The default schedule list hides `deleted` schedules. The schedule console can expose a hidden view that calls `/api/v1/schedules?include_deleted=true` for auto-hidden expired one-time schedules and operator-deleted schedules.
+Shows schedule definitions and fire history for timed agent prompts. The default schedule list hides `deleted` schedules. The schedule console can expose a hidden view that calls `/api/v1/schedules?include_deleted=true` for auto-hidden expired one-time schedules and operator-deleted schedules.
 
 Important fields:
 
@@ -63,7 +71,7 @@ Important fields:
 - last fire, last created session, and last run
 - owner kind and owner session
 
-The schedule detail view should support create, edit, pause, resume, delete, and manual trigger actions.
+The schedule detail view should support create, edit, pause, resume, delete, and manual trigger actions for timed agent prompts. Workflow-backed schedule records remain part of the schedule API and fire history model, and the first-party console presents their management inside the Workflows column.
 
 ### Heartbeat
 

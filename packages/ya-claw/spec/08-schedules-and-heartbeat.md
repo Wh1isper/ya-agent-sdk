@@ -2,7 +2,7 @@
 
 YA Claw has two time-based ingress surfaces:
 
-- **Schedules** are user or agent managed timer resources that create or steer agent work or trigger workflows.
+- **Schedules** are user or agent managed timer resources that create or steer agent work. The same durable schedule model can trigger workflows, and the first-party console manages those workflow-backed schedules from the Workflows column.
 - **Heartbeat** is a runtime-owned internal timer that runs operational workspace checks from `HEARTBEAT.md`.
 
 Both surfaces submit work through the same queued-run execution model. Their ownership, API surface, and guidance loading rules stay separate.
@@ -17,6 +17,7 @@ Both surfaces submit work through the same queued-run execution model. Their own
 - load `HEARTBEAT.md` only for heartbeat-triggered runs
 - inherit workspace binding from the owning or configured session when a timed run needs workspace files
 - use run-scoped Docker sandboxes for schedule and heartbeat runs and close them at terminal state
+- support periodic workflow triggering through the schedule storage and dispatcher model while presenting workflow recurrence in the Workflows console
 
 ## Time-based Work Types
 
@@ -93,7 +94,7 @@ This mode is useful for standalone recurring tasks that need workspace access, c
 
 ### `schedule + workflow`
 
-A schedule fire creates a workflow run from the stored workflow definition.
+A schedule fire creates a workflow run from the stored workflow definition. This remains a schedule execution mode in storage and dispatcher code, while the first-party Web UI manages workflow-backed schedules from the selected workflow detail view.
 
 Required execution fields:
 

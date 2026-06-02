@@ -8,7 +8,7 @@ A workflow is a first-class Claw resource. It can be created by users, APIs, or 
 
 - Make workflows a Claw-managed orchestration resource with durable definitions, runs, node state, and event history.
 - Let agents discover, start, inspect, steer, cancel, and repair workflows through a built-in workflow toolset.
-- Let the Web UI expose workflow definition management, manual triggering, live execution status, and run history.
+- Let the Web UI expose a dedicated Workflows column for workflow definition management, workflow-specific schedule bindings, manual triggering, live execution status, and run history.
 - Use execution profiles as the workflow node runtime preset. The default preset is `Self`, which resolves to the supervising session profile.
 - Reuse Claw's session/run execution model for node work, including queued runs, steering, profile resolution, workspace binding, sandbox policy, and event delivery.
 - Feed workflow progress and node run events back into the supervising conversation when a workflow is started by an agent.
@@ -180,6 +180,35 @@ Suggested fields:
 - `created_at`
 
 Events provide replayable workflow status for Web UI, API clients, and supervising agents. Node run events are projected into workflow events with compact payloads and links to original run traces.
+
+## Workflows Console Plan
+
+The first-party web console presents workflow orchestration from a dedicated Workflows column. This column is the operator home for workflow definitions, workflow detail, workflow runs, and workflow-specific schedule bindings.
+
+The console shape is:
+
+```mermaid
+flowchart LR
+    COL[Workflow column] --> DETAIL[Workflow detail]
+    DETAIL --> DEF[Definition editor]
+    DETAIL --> INPUTS[Input schema and trigger form]
+    DETAIL --> SCHED[Workflow schedules]
+    DETAIL --> RUNS[Run history]
+    RUNS --> DAG[Live node state]
+    RUNS --> EVENTS[Events and result]
+    DAG --> LINKS[Linked sessions and runs]
+```
+
+Workflow schedules are schedule records with `execution_mode="workflow"`. The Workflows console owns their create/edit/pause/resume/delete affordances so workflow recurrence is configured beside the workflow definition and run history. The Schedules console focuses on timed agent prompt schedules. Both surfaces can link to the same schedule fire records for audit and debugging.
+
+A workflow detail page should show:
+
+- definition summary: name, status, scope, tags, description, owner, version, updated time
+- editable definition document, input schema, argument hints, and metadata
+- manual trigger form with inputs, profile override, supervisor session/run fields, and metadata
+- workflow schedules with trigger kind, timezone, next fire time, enabled state, last fire, and last workflow run
+- run history with trigger kind, status, current nodes, result summary, and error state
+- selected run detail with DAG/node state, node-linked session/run IDs, output previews, events, result projection, cancel, and active-node steer controls
 
 ## Access and Filtering Model
 
