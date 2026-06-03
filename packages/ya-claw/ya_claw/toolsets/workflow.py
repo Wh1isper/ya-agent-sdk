@@ -242,6 +242,8 @@ class StartWorkflowTool(BaseTool):
             "profile_name": profile_name or client.profile_name,
             "trigger_kind": "agent",
             "metadata": dict(metadata or {}),
+            "inherit_shell_env": True,
+            "shell_env": dict(ctx.deps.shell_env),
         }
         try:
             return _dump_json(await client.start_workflow(workflow_id=workflow_id, payload=payload))

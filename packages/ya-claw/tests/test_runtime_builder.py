@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai import DeferredToolRequests
 from ya_agent_sdk.agents.main import stream_agent
-from ya_agent_sdk.context import ShellReviewAction, ShellReviewConfig
+from ya_agent_sdk.context import ResumableState, ShellReviewAction, ShellReviewConfig
 from ya_agent_sdk.environment import SandboxEnvironment, VirtualMount
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.skills.toolset import SkillToolset
@@ -425,6 +425,52 @@ async def test_runtime_builder_streams_with_pydantic_ai_test_model_and_exports_s
     assert runtime.ctx.workspace_binding is not None
     assert runtime.ctx.workspace_binding.cwd == "/workspace"
     assert exported_state is not None
+
+
+def test_runtime_builder_injects_shell_env_from_source_metadata_and_restore_state(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    host_path.mkdir(parents=True, exist_ok=True)
+    binding = _build_workspace_binding(host_path)
+    environment = MappedLocalEnvironment(
+        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
+        host_cwd=host_path,
+    )
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+        builtin_toolsets=[],
+        workspace_backend_hint="local",
+    )
+    restore_state = ResumableState(shell_env={"BASE_KEY": "restored", "RESTORED_ONLY": "1"})
+
+    runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=restore_state,
+        session_id="session-1",
+        run_id="run-1",
+        restore_from_run_id="restore-run-1",
+        dispatch_mode="async",
+        source_kind="workflow",
+        source_metadata={"shell_env": {"BASE_KEY": "workflow", "WORKFLOW_ONLY": "1"}},
+        claw_metadata={},
+    )
+
+    assert runtime.ctx.shell_env == {
+        "BASE_KEY": "workflow",
+        "RESTORED_ONLY": "1",
+        "WORKFLOW_ONLY": "1",
+    }
 
 
 def test_runtime_builder_system_prompt_loads_workspace_guidance(tmp_path: Path) -> None:

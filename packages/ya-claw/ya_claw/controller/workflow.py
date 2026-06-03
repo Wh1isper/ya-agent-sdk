@@ -112,6 +112,8 @@ class WorkflowTriggerRequest(BaseModel):
     supervisor_run_id: str | None = None
     trigger_kind: WorkflowTriggerKind = "api"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    inherit_shell_env: bool = True
+    shell_env: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkflowCancelRequest(BaseModel):
@@ -473,6 +475,12 @@ class WorkflowController:
         elif profile_name is None:
             profile_name = await self._resolve_supervisor_profile(db_session, supervisor_session_id, supervisor_run_id)
         now = utc_now()
+        workflow_metadata = {"workflow_name": record.name, **dict(request.metadata)}
+        workflow_metadata.pop("shell_env", None)
+        if request.inherit_shell_env:
+            shell_env = _normalize_shell_env(request.shell_env)
+            if shell_env:
+                workflow_metadata["shell_env"] = shell_env
         run_record = WorkflowRunRecord(
             id=uuid4().hex,
             workflow_id=record.id,
@@ -485,7 +493,7 @@ class WorkflowController:
             profile_name=profile_name,
             workspace=request.workspace.model_dump(mode="json") if request.workspace is not None else None,
             inputs=dict(request.inputs),
-            workflow_metadata={"workflow_name": record.name, **dict(request.metadata)},
+            workflow_metadata=workflow_metadata,
             created_at=now,
             updated_at=now,
         )
@@ -1141,7 +1149,7 @@ class WorkflowController:
         workspace = (
             WorkspaceBindingSpec.model_validate(record.workspace) if isinstance(record.workspace, dict) else None
         )
-        metadata = {
+        metadata: dict[str, Any] = {
             "source": "workflow",
             "workflow_id": record.workflow_id,
             "workflow_run_id": record.id,
@@ -1149,6 +1157,9 @@ class WorkflowController:
             "workflow_node_run_id": node.id,
             "workflow_node_mode": mode,
         }
+        workflow_shell_env = _normalize_shell_env((record.workflow_metadata or {}).get("shell_env"))
+        if workflow_shell_env:
+            metadata["shell_env"] = workflow_shell_env
         session_id, restore_from_run_id, reset_state = await self._resolve_node_session_plan(
             db_session, record, node, mode
         )
@@ -1352,6 +1363,12 @@ class WorkflowController:
             if isinstance(session, SessionRecord) and _non_empty(session.profile_name):
                 return session.profile_name
         return None
+
+
+def _normalize_shell_env(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): str(item) for key, item in value.items() if isinstance(key, str) and isinstance(item, str)}
 
 
 def definition_summary_from_record(

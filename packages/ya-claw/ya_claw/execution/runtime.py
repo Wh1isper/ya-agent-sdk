@@ -193,6 +193,7 @@ class ClawRuntimeBuilder:
         _ = async_subagents_context
         sandbox_metadata = extract_workspace_sandbox_metadata(binding.metadata) or {}
         is_async_subagent = _is_async_subagent_source(source_metadata)
+        effective_source_metadata = dict(source_metadata or {})
         extra_context_kwargs = {
             "session_id": session_id,
             "claw_run_id": run_id,
@@ -204,11 +205,19 @@ class ClawRuntimeBuilder:
             "container_id": sandbox_metadata.get("container_id") if isinstance(sandbox_metadata, dict) else None,
             "workspace_binding": ClawWorkspaceBindingSnapshot.from_binding(binding),
             "source_kind": source_kind,
-            "source_metadata": dict(source_metadata or {}),
+            "source_metadata": effective_source_metadata,
             "claw_metadata": dict(claw_metadata or {}),
             "is_async_subagent": is_async_subagent,
             "injected_context_tags": CLAW_INJECTED_CONTEXT_TAGS,
         }
+        shell_env = _normalize_shell_env(effective_source_metadata.get("shell_env"))
+        if shell_env:
+            extra_context_kwargs["shell_env"] = shell_env
+            if restore_state is not None:
+                restore_state = restore_state.model_copy(
+                    update={"shell_env": {**restore_state.shell_env, **shell_env}},
+                    deep=True,
+                )
         shell_review = self._resolve_shell_review(profile, source_kind=source_kind, source_metadata=source_metadata)
         if shell_review is not None:
             extra_context_kwargs["security"] = SecurityConfig(shell_review=shell_review)
@@ -583,6 +592,12 @@ def _is_async_subagent_source(source_metadata: dict[str, Any] | None) -> bool:
     if not isinstance(source_metadata, dict):
         return False
     return isinstance(source_metadata.get("async_task"), dict)
+
+
+def _normalize_shell_env(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, str)}
 
 
 def _agency_max_auto_action_risk(source_metadata: dict[str, Any] | None) -> str | None:

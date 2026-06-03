@@ -695,6 +695,7 @@ async def test_export_and_with_state_empty(env: LocalEnvironment) -> None:
         assert state.user_prompts is None
         assert state.steering_messages == []
         assert state.handoff_message is None
+        assert state.shell_env == {}
         assert state.deferred_tool_metadata == {}
 
     # Restore to new context
@@ -728,6 +729,7 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         ctx.user_prompts = "Test prompt"
         ctx.steering_messages = ["Steering 1", "Steering 2"]
         ctx.handoff_message = "Handoff summary"
+        ctx.shell_env = {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
         ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
 
         # Default export does NOT include usage_snapshot_entries
@@ -755,6 +757,7 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         assert new_ctx.user_prompts == "Test prompt"
         assert new_ctx.steering_messages == ["Steering 1", "Steering 2"]
         assert new_ctx.handoff_message == "Handoff summary"
+        assert new_ctx.shell_env == {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
 
 

@@ -184,6 +184,7 @@ async def test_list_workflows_passes_current_session_filter_flags() -> None:
 async def test_create_and_start_workflow_payloads_use_agent_context_defaults() -> None:
     client = FakeWorkflowClient()
     ctx = _context_with_client(client)
+    ctx.deps.shell_env = {"BASE_KEY": "base_value"}
     definition = {"schema": "ya-claw.workflow.v1", "nodes": {"a": {"prompt": "do it"}}}
 
     create_result = await CreateWorkflowTool().call(ctx, definition=definition, name="WF")  # type: ignore[arg-type]
@@ -197,6 +198,8 @@ async def test_create_and_start_workflow_payloads_use_agent_context_defaults() -
         "profile_name": "default",
         "trigger_kind": "agent",
         "metadata": {},
+        "inherit_shell_env": True,
+        "shell_env": {"BASE_KEY": "base_value"},
     }
 
 

@@ -870,6 +870,9 @@ class ResumableState(BaseModel):
     handoff_message: str | None = None
     """Rendered handoff message."""
 
+    shell_env: dict[str, str] = Field(default_factory=dict)
+    """Extra environment variables restored into AgentContext.shell_env."""
+
     deferred_tool_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Metadata for deferred tool calls."""
 
@@ -934,6 +937,7 @@ class ResumableState(BaseModel):
         ctx.user_prompts = self.user_prompts
         ctx.steering_messages = list(self.steering_messages)
         ctx.handoff_message = self.handoff_message
+        ctx.shell_env = {**ctx.shell_env, **self.shell_env}
         ctx.deferred_tool_metadata = dict(self.deferred_tool_metadata)
         # Restore agent_registry from serialized format
         ctx.agent_registry = {agent_id: AgentInfo(**info) for agent_id, info in self.agent_registry.items()}
@@ -2076,6 +2080,7 @@ class AgentContext(BaseModel):
             user_prompts=self.user_prompts,
             steering_messages=list(self.steering_messages),
             handoff_message=self.handoff_message,
+            shell_env=dict(self.shell_env),
             deferred_tool_metadata=dict(self.deferred_tool_metadata),
             agent_registry=serialized_registry,
             need_user_approve_tools=list(self.need_user_approve_tools),

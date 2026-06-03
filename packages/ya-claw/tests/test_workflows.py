@@ -141,11 +141,51 @@ async def test_workflow_controller_crud_filters_and_trigger(db_session: AsyncSes
     assert run.trigger_kind == "agent"
     assert run.supervisor_session_id == "session-1"
     assert run.events[0].event_type == "workflow_queued"
+    stored_run = await db_session.get(WorkflowRunRecord, run.id)
+    assert isinstance(stored_run, WorkflowRunRecord)
+    assert "shell_env" not in stored_run.workflow_metadata
+
+    shell_env_run = await controller.trigger(
+        db_session,
+        workflow.id,
+        WorkflowTriggerRequest(
+            inputs={"topic": "workflow orchestration"},
+            shell_env={"BASE_KEY": "base_value"},
+        ),
+        actor=WorkflowActorContext(
+            actor_kind="agent",
+            current_session_id="session-1",
+            current_run_id="run-1",
+            profile_name="default",
+        ),
+    )
+    stored_shell_env_run = await db_session.get(WorkflowRunRecord, shell_env_run.id)
+    assert isinstance(stored_shell_env_run, WorkflowRunRecord)
+    assert stored_shell_env_run.workflow_metadata["shell_env"] == {"BASE_KEY": "base_value"}
+
+    no_inherit_run = await controller.trigger(
+        db_session,
+        workflow.id,
+        WorkflowTriggerRequest(
+            inputs={"topic": "workflow orchestration"},
+            inherit_shell_env=False,
+            shell_env={"BASE_KEY": "base_value"},
+        ),
+        actor=WorkflowActorContext(
+            actor_kind="agent",
+            current_session_id="session-1",
+            current_run_id="run-1",
+            profile_name="default",
+        ),
+    )
+    stored_no_inherit_run = await db_session.get(WorkflowRunRecord, no_inherit_run.id)
+    assert isinstance(stored_no_inherit_run, WorkflowRunRecord)
+    assert "shell_env" not in stored_no_inherit_run.workflow_metadata
 
     runs = await controller.list_runs(
         db_session, only_supervised_by_current_session=True, current_session_id="session-1"
     )
-    assert [item.id for item in runs.workflow_runs] == [run.id]
+    assert {item.id for item in runs.workflow_runs} == {run.id, shell_env_run.id, no_inherit_run.id}
 
 
 async def test_workflow_executor_advances_dag_and_projects_result(
@@ -163,7 +203,11 @@ async def test_workflow_executor_advances_dag_and_projects_result(
     run = await controller.trigger(
         db_session,
         workflow.id,
-        WorkflowTriggerRequest(inputs={"topic": "workflow orchestration"}, profile_name="default"),
+        WorkflowTriggerRequest(
+            inputs={"topic": "workflow orchestration"},
+            profile_name="default",
+            shell_env={"BASE_KEY": "base_value"},
+        ),
     )
     record = await db_session.get(WorkflowRunRecord, run.id)
     assert isinstance(record, WorkflowRunRecord)
@@ -177,6 +221,7 @@ async def test_workflow_executor_advances_dag_and_projects_result(
     assert first_node.status == "queued"
     first_run = await db_session.get(RunRecord, first_node.run_id)
     assert isinstance(first_run, RunRecord)
+    assert first_run.run_metadata["shell_env"] == {"BASE_KEY": "base_value"}
     first_run.status = RunStatus.COMPLETED.value
     first_run.output_text = "landscape output"
     first_run.finished_at = datetime.now(UTC)
@@ -193,6 +238,7 @@ async def test_workflow_executor_advances_dag_and_projects_result(
     assert "landscape output" in second_node.input_parts[0]["text"]
     second_run = await db_session.get(RunRecord, second_node.run_id)
     assert isinstance(second_run, RunRecord)
+    assert second_run.run_metadata["shell_env"] == {"BASE_KEY": "base_value"}
     second_run.status = RunStatus.COMPLETED.value
     second_run.output_text = "final report"
     second_run.finished_at = datetime.now(UTC)
