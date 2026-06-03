@@ -232,6 +232,7 @@ class PendingAttachment:
     data: bytes
     media_type: str
     size_bytes: int
+    placeholder: str = ""
 
 
 # =============================================================================
@@ -1092,6 +1093,29 @@ class TUIApp:
     def _format_attachment_description(self, attachment: PendingAttachment) -> str:
         """Format a single attachment description."""
         return f"{attachment.media_type} {self._format_size_bytes(attachment.size_bytes)}"
+
+    def _format_attachment_placeholder(self, index: int, media_type: str, size_bytes: int) -> str:
+        """Format the visible compose-buffer placeholder for a queued image."""
+        return f"[Attached image {index}: {media_type} {self._format_size_bytes(size_bytes)}]"
+
+    def _insert_attachment_placeholder(self, input_area: TextArea, placeholder: str) -> None:
+        """Insert an attachment placeholder into the current compose buffer."""
+        buffer = input_area.buffer
+        prefix = "" if not buffer.text or buffer.text.endswith((" ", "\n")) else " "
+        suffix = "" if placeholder.endswith(" ") else " "
+        buffer.insert_text(f"{prefix}{placeholder}{suffix}")
+
+    def _strip_attachment_placeholders(
+        self,
+        text: str,
+        attachments: Sequence[PendingAttachment],
+    ) -> str:
+        """Remove generated attachment placeholders from submitted prompt text."""
+        cleaned_text = text
+        for attachment in attachments:
+            if attachment.placeholder:
+                cleaned_text = cleaned_text.replace(attachment.placeholder, "")
+        return cleaned_text.strip()
 
     def _format_pending_attachments_label(self) -> str:
         """Format pending attachment status label."""
@@ -2479,7 +2503,7 @@ class TUIApp:
         if self._app:
             self._app.invalidate()
 
-    async def _paste_clipboard_image(self) -> None:
+    async def _paste_clipboard_image(self, input_area: TextArea | None = None) -> None:
         """Attach an image from the system clipboard when available."""
         try:
             clipboard_result = await read_clipboard_image()
@@ -2489,12 +2513,21 @@ class TUIApp:
 
         image = clipboard_result.image
         if image is not None:
+            size_bytes = len(image.data)
+            placeholder = self._format_attachment_placeholder(
+                len(self._pending_attachments) + 1,
+                image.media_type,
+                size_bytes,
+            )
             attachment = PendingAttachment(
                 data=image.data,
                 media_type=image.media_type,
-                size_bytes=len(image.data),
+                size_bytes=size_bytes,
+                placeholder=placeholder,
             )
             self._pending_attachments.append(attachment)
+            if input_area is not None:
+                self._insert_attachment_placeholder(input_area, placeholder)
             self._history_index = -1
             self._current_input_backup = ""
             self._append_system_output(f"Attached {self._format_attachment_description(attachment)} from clipboard")
@@ -2554,15 +2587,16 @@ class TUIApp:
             return
 
         attachments = self._consume_pending_attachments()
-        if not text and not attachments:
+        submitted_text = self._strip_attachment_placeholders(text, attachments)
+        if not submitted_text and not attachments:
             input_area.buffer.reset()
             return
 
-        self._add_prompt_history(text)
+        self._add_prompt_history(submitted_text)
 
         input_area.buffer.reset()
-        self._append_user_input(text, attachments)
-        self._agent_task = asyncio.create_task(self._run_agent(text, attachments))
+        self._append_user_input(submitted_text, attachments)
+        self._agent_task = asyncio.create_task(self._run_agent(submitted_text, attachments))
         self._agent_task.add_done_callback(self._on_agent_task_done)
 
     def _extract_tool_result(self, event: FunctionToolResultEvent | OutputToolResultEvent) -> str:
@@ -2782,9 +2816,9 @@ class TUIApp:
             # Use eager matching so this app-level binding wins over prompt_toolkit's
             # default buffer/control Ctrl+V handlers on macOS terminals.
             if self._app:
-                self._app.create_background_task(self._paste_clipboard_image())
+                self._app.create_background_task(self._paste_clipboard_image(input_area))
             else:
-                self._track_managed_task(asyncio.create_task(self._paste_clipboard_image()))
+                self._track_managed_task(asyncio.create_task(self._paste_clipboard_image(input_area)))
 
         @kb.add("tab")
         def handle_tab(event: KeyPressEvent) -> None:

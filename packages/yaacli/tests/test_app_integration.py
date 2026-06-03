@@ -1125,15 +1125,18 @@ async def test_tui_app_paste_clipboard_image_attaches_image() -> None:
     config = MockConfig()
     config_manager = MockConfigManager()
     app = TUIApp(config=config, config_manager=config_manager)
+    input_area = TextArea(multiline=True)
 
     with patch("yaacli.app.tui.read_clipboard_image", new=AsyncMock()) as mock_read:
         mock_read.return_value = ClipboardImageReadResult(
             image=ClipboardImage(data=b"image-bytes", media_type="image/png")
         )
-        await app._paste_clipboard_image()
+        await app._paste_clipboard_image(input_area)
 
     assert len(app._pending_attachments) == 1
     assert app._pending_attachments[0].data == b"image-bytes"
+    assert app._pending_attachments[0].placeholder == "[Attached image 1: image/png 11B]"
+    assert input_area.buffer.text == "[Attached image 1: image/png 11B] "
     assert any("Attached image/png" in line for line in app._output_lines)
 
 
@@ -1206,6 +1209,40 @@ async def test_tui_app_submit_input_allows_attachment_only_message() -> None:
     assert app._agent_task is not None
     await app._agent_task
     assert captured_runs == [("", [attachment])]
+
+
+@pytest.mark.asyncio
+async def test_tui_app_submit_input_strips_attachment_placeholder() -> None:
+    """Submitted prompt text should omit generated clipboard image placeholders."""
+    config = MockConfig()
+    config_manager = MockConfigManager()
+    app = TUIApp(config=config, config_manager=config_manager)
+    input_area = TextArea(multiline=True)
+    attachment = PendingAttachment(
+        data=b"img",
+        media_type="image/png",
+        size_bytes=3,
+        placeholder="[Attached image 1: image/png 3B]",
+    )
+    app._pending_attachments.append(attachment)
+    captured_runs: list[tuple[str, list[PendingAttachment] | None]] = []
+
+    async def fake_run_agent(
+        prompt: str,
+        attachments: list[PendingAttachment] | None = None,
+    ) -> None:
+        captured_runs.append((prompt, attachments))
+
+    app._run_agent = fake_run_agent  # type: ignore[method-assign]
+
+    with patch.object(app, "_append_user_input") as mock_append_user_input:
+        app._submit_input("Please inspect [Attached image 1: image/png 3B]", input_area)
+
+    mock_append_user_input.assert_called_once_with("Please inspect", [attachment])
+    assert app._pending_attachments == []
+    assert app._agent_task is not None
+    await app._agent_task
+    assert captured_runs == [("Please inspect", [attachment])]
 
 
 def test_tui_app_clear_session_clears_pending_attachments() -> None:
