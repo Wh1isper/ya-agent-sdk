@@ -1106,6 +1106,41 @@ async def test_resumable_state_with_multiple_binary_contents(env: LocalEnvironme
         assert content2[0].media_type == "image/jpeg"
 
 
+async def test_resumable_state_with_tool_return_binary_content(env: LocalEnvironment) -> None:
+    """Should restore BinaryContent inside ToolReturnPart content after JSON round-trip."""
+    from pydantic_ai.messages import BinaryContent, ModelRequest, ToolReturnPart
+    from ya_agent_sdk.context import ResumableState
+
+    image_data = b"\x89PNG\r\n\x1a\nexample"
+
+    async with AgentContext(env=env) as ctx:
+        ctx.subagent_history["fetch-agent"] = [
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="fetch",
+                        content=[BinaryContent(data=image_data, media_type="image/png")],
+                        tool_call_id="call_1",
+                    )
+                ]
+            )
+        ]
+
+        json_str = ctx.export_state().model_dump_json()
+        restored_state = ResumableState.model_validate_json(json_str)
+        history = restored_state.to_subagent_history()
+
+        request = history["fetch-agent"][0]
+        assert isinstance(request, ModelRequest)
+        part = request.parts[0]
+        assert isinstance(part, ToolReturnPart)
+        assert isinstance(part.content, list)
+        restored_content = part.content[0]
+        assert isinstance(restored_content, BinaryContent)
+        assert restored_content.data == image_data
+        assert restored_content.media_type == "image/png"
+
+
 async def test_resumable_state_with_need_user_approve_tools(env: LocalEnvironment) -> None:
     """Should serialize and deserialize ResumableState with need_user_approve_tools."""
     from ya_agent_sdk.context import ResumableState

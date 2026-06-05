@@ -364,6 +364,57 @@ def runtime_state() -> InMemoryRuntimeState:
     return create_runtime_state()
 
 
+def test_extract_message_history_restores_tool_return_binary_content(tmp_path: Path, db_engine: AsyncEngine) -> None:
+    from pydantic_ai.messages import BinaryContent, ModelMessagesTypeAdapter, ModelRequest, ToolReturnPart
+    from ya_claw.execution.restore import ResolvedRestorePoint
+
+    coordinator = StubRunCoordinator(
+        settings=ClawSettings(
+            api_token="test-token",  # noqa: S106
+            data_dir=tmp_path / "runtime-data",
+            workspace_dir=tmp_path / "workspace",
+        ),
+        session_factory=create_session_factory(db_engine),
+        runtime_state=create_runtime_state(),
+        workspace_provider=StubWorkspaceProvider(tmp_path / "workspace"),
+    )
+    image_data = b"\x89PNG\r\n\x1a\nexample"
+    serialized_messages = ModelMessagesTypeAdapter.dump_python(
+        [
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="fetch",
+                        content=[BinaryContent(data=image_data, media_type="image/png")],
+                        tool_call_id="call_1",
+                    )
+                ]
+            )
+        ],
+        mode="json",
+    )
+    restore_point = ResolvedRestorePoint(
+        run_id="run-1",
+        session_id="session-1",
+        status="completed",
+        state={"message_history": serialized_messages},
+        message=None,
+    )
+
+    history = coordinator._extract_message_history(restore_point)
+
+    assert history is not None
+    request = history[0]
+    assert isinstance(request, ModelRequest)
+    part = request.parts[0]
+    assert isinstance(part, ToolReturnPart)
+    assert isinstance(part.content, list)
+    restored_content = part.content[0]
+    assert isinstance(restored_content, BinaryContent)
+    assert restored_content.data == image_data
+    assert restored_content.media_type == "image/png"
+
+
 def test_build_user_prompt_returns_only_mapped_user_input(tmp_path: Path, db_engine: AsyncEngine) -> None:
     from ya_claw.controller.models import CommandPart, ModePart, TextPart
     from ya_claw.execution.input import InputMappingResult

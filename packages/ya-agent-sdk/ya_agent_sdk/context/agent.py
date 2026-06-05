@@ -65,6 +65,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -911,7 +912,9 @@ class ResumableState(BaseModel):
         """
         result: dict[str, list[ModelMessage]] = {}
         for key, messages_data in self.subagent_history.items():
-            result[key] = ModelMessagesTypeAdapter.validate_python(messages_data)
+            # subagent_history stores JSON-compatible ModelMessagesTypeAdapter.dump_python(..., mode="json") output.
+            # validate_json applies val_json_bytes="base64" to nested BinaryContent inside ToolReturnPart.content.
+            result[key] = ModelMessagesTypeAdapter.validate_json(json.dumps(messages_data).encode())
         return result
 
     def restore(self, ctx: AgentContext) -> None:

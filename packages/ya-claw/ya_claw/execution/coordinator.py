@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1413,7 +1414,9 @@ class RunCoordinator:
 
         if not isinstance(raw_messages, list):
             return None
-        return cast(list[ModelMessage], ModelMessagesTypeAdapter.validate_python(raw_messages))
+        # Run store/state payloads contain JSON-compatible ModelMessagesTypeAdapter.dump_python(..., mode="json") output.
+        # validate_json restores nested BinaryContent in ToolReturnPart.content via val_json_bytes="base64".
+        return cast(list[ModelMessage], ModelMessagesTypeAdapter.validate_json(json.dumps(raw_messages).encode()))
 
     def _build_state_payload(
         self,
