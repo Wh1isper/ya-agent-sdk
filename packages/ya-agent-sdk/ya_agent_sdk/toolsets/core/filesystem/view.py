@@ -25,7 +25,12 @@ from ya_agent_sdk.toolsets.core.filesystem._types import (
     ViewTruncationInfo,
 )
 from ya_agent_sdk.toolsets.core.filesystem._utils import is_binary_file
-from ya_agent_sdk.utils import detect_image_media_type, run_in_threadpool
+from ya_agent_sdk.utils import (
+    compress_image_to_model_limit,
+    detect_image_media_type,
+    raw_bytes_limit_for_base64,
+    run_in_threadpool,
+)
 
 logger = get_logger(__name__)
 
@@ -398,6 +403,50 @@ class ViewTool(BaseTool):
         content = [VideoUrl(url=media_url)] if media_url else [BinaryContent(data=data, media_type=media_type)]
         return ToolReturn(return_value=return_value, content=content)
 
+    async def _compress_image_for_model_limit(
+        self,
+        ctx: RunContext[AgentContext],
+        image_data: bytes,
+        media_type: str,
+        *,
+        source: str,
+    ) -> tuple[bytes, str] | str:
+        """Compress inline image data to the configured model API image limit."""
+        max_encoded_bytes = ctx.deps.model_cfg.max_image_bytes if ctx.deps.model_cfg else 0
+        if max_encoded_bytes <= 0:
+            return image_data, media_type
+
+        max_raw_bytes = raw_bytes_limit_for_base64(max_encoded_bytes)
+        if len(image_data) <= max_raw_bytes:
+            return image_data, media_type
+
+        try:
+            compressed_data, compressed_media_type = await compress_image_to_model_limit(
+                image_data,
+                max_encoded_bytes=max_encoded_bytes,
+                media_type=media_type,
+            )
+        except Exception:
+            logger.exception("Failed to compress image from %s before inlining", source)
+            return (
+                f"Error: Image from {source} could not be compressed for inline model input. "
+                "Try resizing or converting it to a smaller format first."
+            )
+
+        if len(compressed_data) > max_raw_bytes:
+            return (
+                f"Error: Image from {source} could not be compressed below the {max_encoded_bytes} byte API limit "
+                "after accounting for base64 encoding. Try resizing or converting it to a smaller format first."
+            )
+
+        logger.info(
+            "Compressed image from %s from %d bytes to %d bytes before inlining",
+            source,
+            len(image_data),
+            len(compressed_data),
+        )
+        return compressed_data, compressed_media_type
+
     async def _read_image_with_fallback(
         self,
         file_operator: FileOperator,
@@ -432,16 +481,24 @@ class ViewTool(BaseTool):
                 log_name="image_to_url_hook",
             )
 
+        inline_data = image_data
+        inline_media_type = media_type
+        if image_url is None:
+            compressed = await self._compress_image_for_model_limit(ctx, image_data, media_type, source=file_path)
+            if isinstance(compressed, str):
+                return compressed
+            inline_data, inline_media_type = compressed
+
         if ctx.deps.model_cfg.has_vision:
             return self._build_inline_media_return(
                 kind="image",
                 media_url=image_url,
-                data=image_data,
-                media_type=media_type,
+                data=inline_data,
+                media_type=inline_media_type,
                 instructions=instructions,
             )
 
-        return await self._describe_image(ctx, file_path, image_data, media_type, image_url, instructions)
+        return await self._describe_image(ctx, file_path, inline_data, inline_media_type, image_url, instructions)
 
     async def _read_video_with_fallback(
         self,

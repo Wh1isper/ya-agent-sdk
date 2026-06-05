@@ -33,7 +33,7 @@ Example::
 """
 
 import io
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from PIL import Image
@@ -51,17 +51,17 @@ from pydantic_ai.tools import RunContext
 
 from ya_agent_sdk._logger import logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.utils import ImageMediaType, compress_image_data, split_image_data
+from ya_agent_sdk.utils import ImageMediaType, compress_image_data, raw_bytes_limit_for_base64, split_image_data
 
 
 def _raw_bytes_limit_for_base64(max_encoded_bytes: int) -> int:
     """Compute the maximum raw byte size that stays within a base64-encoded size limit.
 
-    Base64 encoding expands data by a factor of 4/3 (each 3 raw bytes become
-    4 encoded characters).  Given an API limit on the *encoded* size, the raw
-    payload must not exceed ``max_encoded_bytes * 3 // 4``.
+    Base64 encoding expands data in 4-character blocks (each 3 raw bytes become
+    4 encoded characters). Given an API limit on the *encoded* size, the raw
+    payload must fit in the complete base64 blocks available under that limit.
     """
-    return max_encoded_bytes * 3 // 4
+    return raw_bytes_limit_for_base64(max_encoded_bytes)
 
 
 def _is_image_content(item: UserContent) -> bool:
@@ -338,6 +338,125 @@ def drop_gif_images(
     return message_history
 
 
+async def _compress_binary_image_content(
+    item: BinaryContent,
+    *,
+    max_image_bytes: int,
+    max_raw_bytes: int,
+) -> tuple[object, bool]:
+    """Compress a BinaryContent image if it exceeds the raw byte budget."""
+    if len(item.data) <= max_raw_bytes:
+        return item, False
+
+    original_size = len(item.data)
+    original_media_type = cast(ImageMediaType, item.media_type)
+    try:
+        compressed_data, compressed_type = await compress_image_data(
+            image_bytes=item.data,
+            max_bytes=max_raw_bytes,
+            media_type=original_media_type,
+        )
+    except Exception:
+        logger.exception("Failed to compress image; dropping it")
+        return (
+            "<system-reminder>An image was removed because compression failed. "
+            "If the image is needed, try compressing it to a smaller size before viewing.</system-reminder>",
+            True,
+        )
+
+    if len(compressed_data) > max_raw_bytes:
+        logger.warning(
+            "Image compression could not reach target: %d raw bytes > %d raw byte limit "
+            "(base64 limit: %d bytes); dropping image",
+            len(compressed_data),
+            max_raw_bytes,
+            max_image_bytes,
+        )
+        return (
+            f"<system-reminder>An image ({original_size} bytes) was removed because it could not be "
+            f"compressed below the {max_image_bytes} byte API limit (accounting for base64 encoding). "
+            "If you need this image, try resizing or converting it to a smaller format first, "
+            "then use the view tool again.</system-reminder>",
+            True,
+        )
+
+    logger.info(
+        "Compressed image from %d bytes to %d bytes (%.0f%% reduction)",
+        original_size,
+        len(compressed_data),
+        (1 - len(compressed_data) / original_size) * 100,
+    )
+    return BinaryContent(data=compressed_data, media_type=compressed_type), True
+
+
+async def _compress_sequence_content(
+    items: list[object] | tuple[object, ...],
+    *,
+    max_image_bytes: int,
+    max_raw_bytes: int,
+) -> tuple[list[object] | tuple[object, ...], bool]:
+    """Compress image content nested inside a sequence."""
+    modified = False
+    new_items: list[object] = []
+    for child in items:
+        new_child, child_modified = await _compress_content_item(
+            child,
+            max_image_bytes=max_image_bytes,
+            max_raw_bytes=max_raw_bytes,
+        )
+        new_items.append(new_child)
+        modified = modified or child_modified
+    return (tuple(new_items) if isinstance(items, tuple) else new_items), modified
+
+
+async def _compress_mapping_content(
+    item: Mapping[object, object],
+    *,
+    max_image_bytes: int,
+    max_raw_bytes: int,
+) -> tuple[dict[object, object], bool]:
+    """Compress image content nested inside a mapping."""
+    modified = False
+    new_dict: dict[object, object] = {}
+    for key, value in item.items():
+        new_value, value_modified = await _compress_content_item(
+            value,
+            max_image_bytes=max_image_bytes,
+            max_raw_bytes=max_raw_bytes,
+        )
+        new_dict[key] = new_value
+        modified = modified or value_modified
+    return new_dict, modified
+
+
+async def _compress_content_item(
+    item: object,
+    *,
+    max_image_bytes: int,
+    max_raw_bytes: int,
+) -> tuple[object, bool]:
+    """Compress BinaryContent images in an arbitrary content item."""
+    if isinstance(item, BinaryContent) and item.media_type.startswith("image/"):
+        return await _compress_binary_image_content(
+            item,
+            max_image_bytes=max_image_bytes,
+            max_raw_bytes=max_raw_bytes,
+        )
+    if isinstance(item, (list, tuple)):
+        return await _compress_sequence_content(
+            item,
+            max_image_bytes=max_image_bytes,
+            max_raw_bytes=max_raw_bytes,
+        )
+    if isinstance(item, Mapping):
+        return await _compress_mapping_content(
+            item,
+            max_image_bytes=max_image_bytes,
+            max_raw_bytes=max_raw_bytes,
+        )
+    return item, False
+
+
 async def _compress_content_list(
     content_list: list[UserContent | object],
     max_image_bytes: int,
@@ -357,54 +476,14 @@ async def _compress_content_list(
     modified = False
 
     for idx, item in enumerate(content_list):
-        if not isinstance(item, BinaryContent) or not item.media_type.startswith("image/"):
-            continue
-
-        if len(item.data) <= max_raw_bytes:
-            continue
-
-        original_size = len(item.data)
-        original_media_type = cast(ImageMediaType, item.media_type)
-        try:
-            compressed_data, compressed_type = await compress_image_data(
-                image_bytes=item.data,
-                max_bytes=max_raw_bytes,
-                media_type=original_media_type,
-            )
-        except Exception:
-            logger.exception("Failed to compress image; dropping it")
-            content_list[idx] = (
-                "<system-reminder>An image was removed because compression failed. "
-                "If the image is needed, try compressing it to a smaller size before viewing.</system-reminder>"
-            )
-            modified = True
-            continue
-
-        if len(compressed_data) > max_raw_bytes:
-            logger.warning(
-                "Image compression could not reach target: %d raw bytes > %d raw byte limit "
-                "(base64 limit: %d bytes); dropping image",
-                len(compressed_data),
-                max_raw_bytes,
-                max_image_bytes,
-            )
-            content_list[idx] = (
-                f"<system-reminder>An image ({original_size} bytes) was removed because it could not be "
-                f"compressed below the {max_image_bytes} byte API limit (accounting for base64 encoding). "
-                "If you need this image, try resizing or converting it to a smaller format first, "
-                "then use the view tool again.</system-reminder>"
-            )
-            modified = True
-            continue
-
-        logger.info(
-            "Compressed image from %d bytes to %d bytes (%.0f%% reduction)",
-            original_size,
-            len(compressed_data),
-            (1 - len(compressed_data) / original_size) * 100,
+        new_item, item_modified = await _compress_content_item(
+            item,
+            max_image_bytes=max_image_bytes,
+            max_raw_bytes=max_raw_bytes,
         )
-        content_list[idx] = BinaryContent(data=compressed_data, media_type=compressed_type)
-        modified = True
+        if item_modified:
+            content_list[idx] = new_item
+            modified = True
 
     return modified
 

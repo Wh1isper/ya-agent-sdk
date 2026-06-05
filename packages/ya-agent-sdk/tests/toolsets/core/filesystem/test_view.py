@@ -1,10 +1,13 @@
 """Tests for ya_agent_sdk.toolsets.core.filesystem.view module."""
 
+import os
 from contextlib import AsyncExitStack
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from inline_snapshot import snapshot
+from PIL import Image
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
@@ -17,6 +20,14 @@ from ya_agent_sdk.toolsets.core.filesystem.view import (
     VIDEO_EXTENSIONS,
     ViewTool,
 )
+
+
+def _make_random_png(width: int = 1200, height: int = 1200) -> bytes:
+    raw = os.urandom(width * height * 3)
+    image = Image.frombytes("RGB", (width, height), raw)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", compress_level=1)
+    return buffer.getvalue()
 
 
 async def test_view_tool_attributes(agent_context: AgentContext) -> None:
@@ -302,6 +313,41 @@ async def test_view_image_file(tmp_path: Path) -> None:
         assert len(result.content) == 1
         assert isinstance(result.content[0], BinaryContent)
         assert result.content[0].media_type == "image/png"
+
+
+async def test_view_compresses_image_to_model_limit(tmp_path: Path) -> None:
+    """Should compress inline image content before returning it from view."""
+    from ya_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.utils import raw_bytes_limit_for_base64
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        max_image_bytes = 5 * 1024 * 1024
+        raw_budget = raw_bytes_limit_for_base64(max_image_bytes)
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                model_cfg=ModelConfig(max_image_bytes=max_image_bytes, capabilities={ModelCapability.vision}),
+            )
+        )
+        tool = ViewTool()
+
+        png_data = _make_random_png()
+        assert len(png_data) > raw_budget
+        test_file = tmp_path / "large.png"
+        test_file.write_bytes(png_data)
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, file_path="large.png")
+        assert isinstance(result, ToolReturn)
+        assert len(result.content) == 1
+        assert isinstance(result.content[0], BinaryContent)
+        assert result.content[0].media_type == "image/jpeg"
+        assert len(result.content[0].data) <= raw_budget
 
 
 async def test_view_reject_large_image_inline(tmp_path: Path) -> None:

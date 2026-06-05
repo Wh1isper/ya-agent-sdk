@@ -1,14 +1,25 @@
 """Tests for ya_agent_sdk.toolsets.core.web.fetch module."""
 
+import os
 from contextlib import AsyncExitStack
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from inline_snapshot import snapshot
+from PIL import Image
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.web.fetch import FetchTool
+
+
+def _make_random_png(width: int = 1200, height: int = 1200) -> bytes:
+    raw = os.urandom(width * height * 3)
+    image = Image.frombytes("RGB", (width, height), raw)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", compress_level=1)
+    return buffer.getvalue()
 
 
 def test_fetch_tool_attributes() -> None:
@@ -98,6 +109,43 @@ async def test_fetch_tool_get_image(tmp_path: Path, httpx_mock) -> None:
         assert len(result.content) == 1
         assert isinstance(result.content[0], BinaryContent)
         assert result.content[0].media_type == "image/png"
+
+
+async def test_fetch_tool_compresses_image_to_model_limit(tmp_path: Path, httpx_mock) -> None:
+    """Should compress fetched image content before returning it."""
+    from ya_agent_sdk.context import ModelConfig
+    from ya_agent_sdk.utils import raw_bytes_limit_for_base64
+
+    image_data = _make_random_png()
+    max_image_bytes = 5 * 1024 * 1024
+    raw_budget = raw_bytes_limit_for_base64(max_image_bytes)
+    assert len(image_data) > raw_budget
+
+    httpx_mock.add_response(
+        url="https://example.com/large-image.png",
+        content=image_data,
+        headers={"Content-Type": "image/png"},
+    )
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(env=env, model_cfg=ModelConfig(max_image_bytes=max_image_bytes))
+        )
+        tool = FetchTool()
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, url="https://example.com/large-image.png")
+        assert isinstance(result, ToolReturn)
+        assert result.content is not None
+        assert len(result.content) == 1
+        assert isinstance(result.content[0], BinaryContent)
+        assert result.content[0].media_type == "image/jpeg"
+        assert len(result.content[0].data) <= raw_budget
 
 
 async def test_fetch_tool_reject_large_image_by_content_length(tmp_path: Path, httpx_mock) -> None:

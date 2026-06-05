@@ -4,7 +4,7 @@ import functools
 import io
 import socket
 import typing
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import anyio.to_thread
 from PIL import Image
@@ -35,6 +35,17 @@ _PIL_FORMAT_TO_MEDIA_TYPE: dict[str, ImageMediaType] = {
     "GIF": "image/gif",
     "WEBP": "image/webp",
 }
+_SUPPORTED_IMAGE_MEDIA_TYPES = frozenset(_PIL_FORMAT_TO_MEDIA_TYPE.values())
+
+
+def normalize_image_media_type(data: bytes, media_type: str | None = None) -> ImageMediaType:
+    """Return a supported image media type using content detection first."""
+    detected = detect_image_media_type(data)
+    if detected:
+        return detected
+    if media_type in _SUPPORTED_IMAGE_MEDIA_TYPES:
+        return cast(ImageMediaType, media_type)
+    return "image/jpeg"
 
 
 def detect_image_media_type(data: bytes) -> ImageMediaType | None:
@@ -198,6 +209,28 @@ async def compress_image_data(
         type if the image was already small enough.
     """
     return await run_in_threadpool(_compress_image_data_sync, image_bytes, max_bytes, media_type)
+
+
+async def compress_image_to_model_limit(
+    image_bytes: bytes,
+    max_encoded_bytes: int,
+    media_type: str | None = "image/jpeg",
+) -> tuple[bytes, ImageMediaType]:
+    """Compress an image so its base64-encoded payload fits a model API limit."""
+    normalized_media_type = normalize_image_media_type(image_bytes, media_type)
+    if max_encoded_bytes <= 0:
+        return image_bytes, normalized_media_type
+
+    return await compress_image_data(
+        image_bytes=image_bytes,
+        max_bytes=raw_bytes_limit_for_base64(max_encoded_bytes),
+        media_type=normalized_media_type,
+    )
+
+
+def raw_bytes_limit_for_base64(max_encoded_bytes: int) -> int:
+    """Return the raw-byte budget for a base64-encoded byte limit."""
+    return (max_encoded_bytes // 4) * 3
 
 
 def _compress_image_data_sync(
