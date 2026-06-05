@@ -33,8 +33,8 @@ async def test_inject_environment_instructions_empty_history(tmp_path: Path) -> 
         assert result == []
 
 
-async def test_inject_environment_instructions_appends_to_last_request(tmp_path: Path) -> None:
-    """Should append environment instructions to the last ModelRequest."""
+async def test_inject_environment_instructions_inserts_before_user_prompt(tmp_path: Path) -> None:
+    """Should insert environment instructions before ordinary user prompt content."""
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
@@ -50,11 +50,13 @@ async def test_inject_environment_instructions_appends_to_last_request(tmp_path:
         result = await filter_func(mock_ctx, history)
 
         assert result == history
-        # Should have added a part
+        # Should have added a part before the user prompt
         assert len(request.parts) == 2
+        assert isinstance(request.parts[0], UserPromptPart)
         assert isinstance(request.parts[1], UserPromptPart)
+        assert request.parts[1].content == "Hello"
         # Should contain file system or shell instructions
-        assert "<file-system>" in request.parts[1].content or "<shell" in request.parts[1].content
+        assert "<file-system>" in request.parts[0].content or "<shell" in request.parts[0].content
 
 
 async def test_inject_environment_instructions_finds_last_request(tmp_path: Path) -> None:

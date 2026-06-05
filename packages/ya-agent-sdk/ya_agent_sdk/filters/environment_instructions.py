@@ -42,9 +42,10 @@ def create_environment_instructions_filter(
 ) -> Callable[[RunContext[AgentContext], list[ModelMessage]], Awaitable[list[ModelMessage]]]:
     """Create a history processor that injects environment instructions.
 
-    This factory function creates a pydantic-ai history_processor that appends
+    This factory function creates a pydantic-ai history_processor that inserts
     environment context instructions (file system paths, shell configuration)
-    to the last ModelRequest in the message history.
+    into the last ModelRequest before ordinary user prompt content, while keeping
+    tool response and retry prompt parts before injected instructions.
 
     Normally skips injection when the last request contains ToolReturnPart
     (intermediate tool responses). However, when ``ctx.deps.force_inject_instructions``
@@ -102,9 +103,14 @@ def create_environment_instructions_filter(
         if not instructions:
             return message_history
 
-        # Append environment instructions as a UserPromptPart
+        # Insert before ordinary user prompt content, while keeping any tool responses
+        # and retry prompts before injected instructions for protocol-required ordering.
         env_part = UserPromptPart(content=instructions)
-        last_request.parts = [*last_request.parts, env_part]
+        insert_at = 0
+        for index, part in enumerate(last_request.parts):
+            if isinstance(part, (ToolReturnPart, RetryPromptPart)):
+                insert_at = index + 1
+        last_request.parts = [*last_request.parts[:insert_at], env_part, *last_request.parts[insert_at:]]
 
         return message_history
 
