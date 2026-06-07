@@ -321,6 +321,43 @@ async with stream_agent(runtime, "Hello", raise_on_error=False) as streamer:
     streamer.raise_if_exception()  # Check after iteration
 ```
 
+### Stream resume recovery
+
+`stream_agent()` can retry provider or SSE stream failures using recovered message history.
+Configure defaults on `ModelConfig` and override per call when needed:
+
+```python
+from ya_agent_sdk.context import ModelConfig
+
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    model_cfg=ModelConfig(
+        stream_resume_on_error=True,
+        stream_resume_max_attempts=3,
+        stream_resume_prompt="Continue from the recovered conversation history.",
+    ),
+)
+
+async with stream_agent(runtime, "Hello") as streamer:
+    async for event in streamer:
+        pass
+
+# Per-call overrides take precedence over ModelConfig defaults.
+async with stream_agent(
+    runtime,
+    "Hello",
+    resume_on_error=True,
+    resume_max_attempts=5,
+) as streamer:
+    async for event in streamer:
+        pass
+```
+
+Retry recovery performs durable message-history cleanup before the next attempt:
+
+- OpenAI Responses item/reference errors drop server-side response IDs, encrypted reasoning artifacts, and stale item IDs while keeping text and tool-call semantics.
+- Context overflow errors force cold-start-style tool return trimming and replace image/video media with system reminders.
+
 Note: `on_runtime_exit` is always called, even when exceptions occur, making it
 ideal for cleanup operations. The `exception` field in `RuntimeExitContext`
 provides access to any error that occurred.

@@ -26,6 +26,7 @@ from pydantic_ai import BinaryContent
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from ya_agent_environment.shell import BackgroundProcess
 from ya_agent_sdk.agents.main import AgentInterrupted
+from ya_agent_sdk.context import TaskManager
 
 # Import the components we're testing
 from yaacli.app import TUIApp, TUIMode, TUIState
@@ -1255,6 +1256,22 @@ def test_tui_app_clear_session_clears_pending_attachments() -> None:
     app._clear_session()
 
     assert app._pending_attachments == []
+
+
+def test_tui_app_clear_session_clears_agent_tasks() -> None:
+    """Clearing the session should reset the AgentContext task manager."""
+    config = MockConfig()
+    config_manager = MockConfigManager()
+    app = TUIApp(config=config, config_manager=config_manager)
+    task_manager = TaskManager()
+    task_manager.create("Inspect issue", "Investigate stale task list after clear")
+    runtime = MagicMock()
+    runtime.ctx.task_manager = task_manager
+    app._runtime = runtime
+
+    app._clear_session()
+
+    assert runtime.ctx.task_manager.list_all() == []
 
 
 def test_tui_app_load_history_clears_pending_attachments(tmp_path: Path) -> None:

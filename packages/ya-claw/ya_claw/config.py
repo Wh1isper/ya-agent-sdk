@@ -179,7 +179,7 @@ class ClawSettings(BaseSettings):
     bridge_lark_previous_messages_limit: PositiveInt = 6
     default_profile: str = "default"
     agent_stream_resume_on_error: bool = True
-    agent_stream_resume_max_attempts: int = 2
+    agent_stream_resume_max_attempts: int = 3
     agent_stream_resume_prompt: str = (
         "The previous streaming model request failed before the agent finished. "
         "Continue the task from the available conversation history. Avoid repeating completed work."

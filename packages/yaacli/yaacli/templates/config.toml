@@ -54,7 +54,7 @@ max_requests = 1000
 
 # Retry interrupted provider/SSE streams by resuming from recovered message history.
 agent_stream_resume_on_error = true
-agent_stream_resume_max_attempts = 2
+agent_stream_resume_max_attempts = 3
 agent_stream_resume_prompt = "The previous streaming model request failed before the agent finished. Continue the task from the available conversation history. Avoid repeating completed work."
 
 # Maximum iterations for /goal command

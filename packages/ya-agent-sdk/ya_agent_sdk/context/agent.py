@@ -763,6 +763,18 @@ class ModelConfig(BaseModel):
     Set to 0 to disable.
     """
 
+    stream_resume_on_error: bool = False
+    """Whether stream_agent retries failed stream attempts by default."""
+
+    stream_resume_max_attempts: int = Field(default=3, ge=1)
+    """Default maximum total attempts for stream_agent stream recovery."""
+
+    stream_resume_prompt: str | None = None
+    """Default resume prompt for stream_agent stream recovery.
+
+    When unset, stream_agent uses its built-in resume prompt.
+    """
+
     max_images: int = 20
     """Maximum number of images allowed in message history. Default is 20 (Claude's limit)."""
 

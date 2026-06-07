@@ -32,7 +32,7 @@ def test_default_config() -> None:
     assert config.is_configured is False
     assert config.general.model_settings is None
     assert config.general.agent_stream_resume_on_error is True
-    assert config.general.agent_stream_resume_max_attempts == 2
+    assert config.general.agent_stream_resume_max_attempts == 3
     assert config.model_profiles == {}
     assert config.general.agent_stream_resume_prompt.startswith("The previous streaming model request failed")
 

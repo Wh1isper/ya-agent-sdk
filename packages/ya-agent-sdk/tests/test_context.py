@@ -52,6 +52,26 @@ async def test_model_config_image_split_custom_values() -> None:
     assert cfg.image_split_overlap == 64
 
 
+async def test_model_config_stream_resume_defaults() -> None:
+    """Should provide stream resume retry defaults."""
+    cfg = ModelConfig()
+    assert cfg.stream_resume_on_error is False
+    assert cfg.stream_resume_max_attempts == 3
+    assert cfg.stream_resume_prompt is None
+
+
+async def test_model_config_stream_resume_custom_values() -> None:
+    """Should allow overriding stream resume retry config values."""
+    cfg = ModelConfig(
+        stream_resume_on_error=True,
+        stream_resume_max_attempts=5,
+        stream_resume_prompt="resume from checkpoint",
+    )
+    assert cfg.stream_resume_on_error is True
+    assert cfg.stream_resume_max_attempts == 5
+    assert cfg.stream_resume_prompt == "resume from checkpoint"
+
+
 async def test_agent_context_elapsed_time_before_start(env: LocalEnvironment) -> None:
     """Should return None before context is started."""
     ctx = AgentContext(env=env)

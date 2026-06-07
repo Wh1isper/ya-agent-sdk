@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
+from ya_agent_sdk.events import SubagentStartEvent
 from yaacli.app import TUIApp
 from yaacli.app.tui import PendingAttachment
 from yaacli.config import CommandDefinition
@@ -52,11 +53,22 @@ def test_tui_display_tool_result_renders_once() -> None:
     assert app._append_block.call_count == 1
 
 
-def test_tui_display_skips_subagent_tool_events() -> None:
+def test_tui_display_skips_subagent_detail_events() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
     app._append_block = MagicMock(wraps=app._append_block)
 
     app._handle_display_events([
+        {"type": "TEXT_MESSAGE_START", "messageId": "text-1", "yaacliAgentId": "subagent-1"},
+        {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": "hidden", "yaacliAgentId": "subagent-1"},
+        {"type": "TEXT_MESSAGE_END", "messageId": "text-1", "yaacliAgentId": "subagent-1"},
+        {"type": "REASONING_MESSAGE_START", "messageId": "thinking-1", "yaacliAgentId": "subagent-1"},
+        {
+            "type": "REASONING_MESSAGE_CHUNK",
+            "messageId": "thinking-1",
+            "delta": "hidden thought",
+            "yaacliAgentId": "subagent-1",
+        },
+        {"type": "REASONING_MESSAGE_END", "messageId": "thinking-1", "yaacliAgentId": "subagent-1"},
         {
             "type": "TOOL_CALL_CHUNK",
             "toolCallId": "tool-1",
@@ -73,6 +85,26 @@ def test_tui_display_skips_subagent_tool_events() -> None:
     ])
 
     assert app._append_block.call_count == 0
+    assert app._output_lines == []
+
+
+def test_tui_display_subagent_tool_chunk_updates_progress_line() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    app._handle_subagent_start(SubagentStartEvent(event_id="subagent-1", agent_id="subagent-1", agent_name="worker"))
+
+    app._handle_display_events([
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "tool-1",
+            "toolCallName": "shell",
+            "delta": "{}",
+            "yaacliAgentId": "subagent-1",
+        }
+    ])
+
+    assert len(app._output_lines) == 1
+    assert "shell" in app._output_lines[0]
+    assert app._subagent_states["subagent-1"]["tool_names"] == ["shell"]
 
 
 def test_tui_append_user_input_renders_once_and_records_replay_event() -> None:

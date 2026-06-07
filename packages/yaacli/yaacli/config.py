@@ -74,7 +74,7 @@ class GeneralConfig(BaseModel):
     agent_stream_resume_on_error: bool = True
     """Resume failed streaming attempts from recovered message history."""
 
-    agent_stream_resume_max_attempts: int = 2
+    agent_stream_resume_max_attempts: int = 3
     """Maximum total streaming attempts when resume is enabled."""
 
     agent_stream_resume_prompt: str = (

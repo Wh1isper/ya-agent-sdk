@@ -85,6 +85,7 @@ from ya_agent_sdk.context import (
     BusMessage,
     ResumableState,
     StreamEvent,
+    TaskManager,
 )
 from ya_agent_sdk.events import (
     CompactCompleteEvent,
@@ -108,7 +109,7 @@ from ya_agent_sdk.utils import get_latest_request_usage
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
-from yaacli.agui import DisplayEventAdapter, DisplayReplayBuffer, validate_display_events
+from yaacli.agui import DisplayEventAdapter, DisplayReplayBuffer, is_subagent_display_event, validate_display_events
 from yaacli.app.state import TUIMode
 from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, BackgroundTaskInfo
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
@@ -770,6 +771,21 @@ class TUIApp:
         width = self._get_terminal_width()
         for event in events:
             event_type = str(event.get("type", ""))
+            if is_subagent_display_event(event):
+                if event_type == "TOOL_CALL_CHUNK":
+                    tool_name = str(event.get("toolCallName") or event.get("tool_call_name") or "")
+                    tool_call_id = str(event.get("toolCallId") or event.get("tool_call_id") or "")
+                    agent_id = str(event.get("yaacliAgentId") or event.get("yaacli_agent_id") or "")
+                    if agent_id in self._subagent_states and tool_call_id and tool_call_id not in self._tool_messages:
+                        self._tool_messages[tool_call_id] = ToolMessage(
+                            tool_call_id=tool_call_id,
+                            name=tool_name,
+                            args=event.get("delta") or "",
+                        )
+                        if tool_name:
+                            self._subagent_states[agent_id]["tool_names"].append(tool_name)
+                            self._update_subagent_progress_line(agent_id)
+                continue
             if event_type == "TEXT_MESSAGE_START":
                 self._finalize_streaming_text()
                 self._finalize_streaming_thinking()
@@ -2297,9 +2313,16 @@ class TUIApp:
         if agent_id != "main" and agent_id in self._subagent_states:
             if isinstance(message_event, FunctionToolCallEvent):
                 # Track tool name for progress display
-                tool_name = message_event.part.tool_name
-                self._subagent_states[agent_id]["tool_names"].append(tool_name)
-                self._update_subagent_progress_line(agent_id)
+                tool_call_id = message_event.part.tool_call_id
+                if tool_call_id not in self._tool_messages:
+                    tool_name = message_event.part.tool_name
+                    self._tool_messages[tool_call_id] = ToolMessage(
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        args=message_event.part.args,
+                    )
+                    self._subagent_states[agent_id]["tool_names"].append(tool_name)
+                    self._update_subagent_progress_line(agent_id)
             # Ignore all other subagent events (text streaming, tool results, etc.)
             return
 
@@ -3161,6 +3184,7 @@ class TUIApp:
         Resets:
         - Output lines and streaming state
         - Conversation history
+        - Agent task list
         - Status bar context percentage
         - Scroll position
 
@@ -3179,6 +3203,8 @@ class TUIApp:
         self._steering_items.clear()
         self._display_replay.clear()
         self._reset_pending_attachments()
+        if self._runtime is not None:
+            self._runtime.ctx.task_manager = TaskManager()
         # Clear conversation history
         self._message_history = None
         self._last_run = None

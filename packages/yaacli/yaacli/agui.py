@@ -52,6 +52,19 @@ _REPLAY_DROP_EVENT_TYPES = frozenset({
     "TOOL_CALL_START",
     "TOOL_CALL_END",
 })
+_SUBAGENT_DETAIL_EVENT_TYPES = frozenset({
+    "TEXT_MESSAGE_START",
+    "TEXT_MESSAGE_CHUNK",
+    "TEXT_MESSAGE_END",
+    "REASONING_MESSAGE_START",
+    "REASONING_MESSAGE_CHUNK",
+    "REASONING_MESSAGE_END",
+    "TOOL_CALL_START",
+    "TOOL_CALL_CHUNK",
+    "TOOL_CALL_END",
+    "TOOL_CALL_RESULT",
+})
+_MAIN_AGENT_ID = "main"
 
 
 @dataclass(slots=True)
@@ -80,6 +93,8 @@ class DisplayReplayBuffer:
     def append(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type", "")).strip()
         if event_type == "":
+            return
+        if _is_subagent_detail_event(event):
             return
         if event_type in _REPLAY_DROP_EVENT_TYPES:
             return
@@ -527,6 +542,17 @@ def _event_field(event: dict[str, Any], camel_name: str, snake_name: str) -> obj
     if camel_name in event:
         return event[camel_name]
     return event.get(snake_name)
+
+
+def is_subagent_display_event(event: dict[str, Any]) -> bool:
+    """Return True for display events that belong to a subagent stream."""
+    agent_id = _normalized_identifier(_event_field(event, "yaacliAgentId", "yaacli_agent_id"))
+    return agent_id is not None and agent_id != _MAIN_AGENT_ID
+
+
+def _is_subagent_detail_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("type", "")).strip()
+    return event_type in _SUBAGENT_DETAIL_EVENT_TYPES and is_subagent_display_event(event)
 
 
 def _normalized_identifier(value: object) -> str | None:

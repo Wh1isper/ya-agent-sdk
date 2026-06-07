@@ -113,6 +113,12 @@ def test_settings_agency_disabled_by_default() -> None:
     assert settings.agency_enabled is False
 
 
+def test_settings_stream_resume_max_attempts_defaults_to_three() -> None:
+    settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
+
+    assert settings.agent_stream_resume_max_attempts == 3
+
+
 def test_settings_session_prune_defaults() -> None:
     settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
 

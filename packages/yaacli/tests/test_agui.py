@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pydantic_ai import PartDeltaEvent, PartEndEvent, PartStartEvent, TextPartDelta
-from pydantic_ai.messages import TextPart
+from pydantic_ai import PartDeltaEvent, PartEndEvent, PartStartEvent, TextPartDelta, ThinkingPartDelta
+from pydantic_ai.messages import TextPart, ThinkingPart
 from ya_agent_sdk.context.agent import StreamEvent
 from ya_agent_sdk.events import ModelRequestStartEvent
 from yaacli.agui import DisplayEventAdapter, DisplayReplayBuffer
@@ -102,3 +102,46 @@ def test_display_replay_buffer_merges_tool_call_chunks() -> None:
     assert compacted[0]["toolCallName"] == "delegate"
     assert compacted[0]["delta"] == '{"prompt":"hello"}'
     assert compacted[1]["type"] == "TOOL_CALL_RESULT"
+
+
+def test_display_replay_buffer_drops_subagent_detail_events() -> None:
+    adapter = DisplayEventAdapter(session_id="session-1", run_id="run-1")
+    replay = DisplayReplayBuffer()
+
+    stream_events = [
+        StreamEvent(
+            agent_id="worker-1",
+            agent_name="worker",
+            event=PartStartEvent(index=0, part=ThinkingPart(content="")),
+        ),
+        StreamEvent(
+            agent_id="worker-1",
+            agent_name="worker",
+            event=PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta="hidden thought")),
+        ),
+        StreamEvent(
+            agent_id="worker-1",
+            agent_name="worker",
+            event=PartEndEvent(index=0, part=ThinkingPart(content="hidden thought")),
+        ),
+        StreamEvent(agent_id="worker-1", agent_name="worker", event=PartStartEvent(index=1, part=TextPart(content=""))),
+        StreamEvent(
+            agent_id="worker-1",
+            agent_name="worker",
+            event=PartDeltaEvent(index=1, delta=TextPartDelta(content_delta="hidden text")),
+        ),
+        StreamEvent(
+            agent_id="worker-1", agent_name="worker", event=PartEndEvent(index=1, part=TextPart(content="hidden text"))
+        ),
+    ]
+
+    live_events: list[dict[str, object]] = []
+    for stream_event in stream_events:
+        mapped = adapter.adapt_stream_event(stream_event)
+        live_events.extend(mapped)
+        for item in mapped:
+            replay.append(item)
+
+    assert any(event["type"] == "TEXT_MESSAGE_CHUNK" for event in live_events)
+    assert any(event["type"] == "REASONING_MESSAGE_CHUNK" for event in live_events)
+    assert replay.snapshot() == []

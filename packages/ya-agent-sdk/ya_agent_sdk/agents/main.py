@@ -53,6 +53,7 @@ from ya_agent_sdk.agents.compact import create_cache_friendly_compact_filter, cr
 from ya_agent_sdk.agents.guards import attach_message_bus_guard
 from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.retry_recovery import recover_retry_message_history
 from ya_agent_sdk.context import (
     AgentContext,
     AgentInfo,
@@ -158,10 +159,11 @@ def _filter_delegation_toolset(
 
 def _resolve_agent_retries(retries: int | AgentRetries | None, output_retries: int | None) -> int | AgentRetries:
     """Resolve SDK retry defaults into Pydantic AI's unified AgentRetries form."""
+    default_retries: AgentRetries = {"tools": 1, "output": 3}
     if isinstance(retries, dict):
-        resolved: AgentRetries = {**retries}
+        resolved: AgentRetries = {**default_retries, **retries}
     elif retries is None:
-        resolved = {"tools": 1, "output": 3}
+        resolved = default_retries.copy()
     else:
         resolved = {"tools": retries, "output": retries}
 
@@ -1160,8 +1162,8 @@ async def stream_agent(  # noqa: C901
     post_event_hook: EventHook[AgentDepsT, OutputT] | None = None,
     # Error handling
     raise_on_error: bool = True,
-    resume_on_error: bool = False,
-    resume_max_attempts: int = 2,
+    resume_on_error: bool | None = None,
+    resume_max_attempts: int | None = None,
     resume_prompt: UserPromptT | None = None,
     resume_prompt_factory: ResumePromptFactory | None = None,
     # Lifecycle events
@@ -1210,8 +1212,11 @@ async def stream_agent(  # noqa: C901
             immediately. If False, exceptions are captured in streamer.exception
             and can be checked after iteration via raise_if_exception().
         resume_on_error: If True, retry failed stream attempts inside the same stream.
+            If None, uses ctx.model_cfg.stream_resume_on_error.
         resume_max_attempts: Maximum total attempts when resume_on_error is enabled.
-        resume_prompt: Prompt sent after a recoverable stream failure.
+            If None, uses ctx.model_cfg.stream_resume_max_attempts.
+        resume_prompt: Prompt sent after a recoverable stream failure. If unset,
+            uses ctx.model_cfg.stream_resume_prompt, then the built-in default.
         resume_prompt_factory: Callable that builds a resume prompt from the exception,
             next attempt index, and recovered message history.
         emit_lifecycle_events: If True (default), emit built-in lifecycle events
@@ -1585,6 +1590,8 @@ async def stream_agent(  # noqa: C901
             return cast(UserPromptT, value)
         if resume_prompt is not None:
             return resume_prompt
+        if ctx.model_cfg.stream_resume_prompt is not None:
+            return ctx.model_cfg.stream_resume_prompt
         return _DEFAULT_RESUME_PROMPT
 
     async def emit_execution_failed_event(
@@ -1616,7 +1623,11 @@ async def stream_agent(  # noqa: C901
         effective_deferred_tool_results: DeferredToolResults | None,
         stream_start_time: float,
     ) -> None:
-        max_attempts = max(1, resume_max_attempts) if resume_on_error else 1
+        effective_resume_on_error = ctx.model_cfg.stream_resume_on_error if resume_on_error is None else resume_on_error
+        effective_resume_max_attempts = (
+            ctx.model_cfg.stream_resume_max_attempts if resume_max_attempts is None else resume_max_attempts
+        )
+        max_attempts = max(1, effective_resume_max_attempts) if effective_resume_on_error else 1
         attempt_index = 0
         current_user_prompt = effective_user_prompt
         current_deferred_tool_results = effective_deferred_tool_results
@@ -1653,6 +1664,14 @@ async def stream_agent(  # noqa: C901
                     extract_resume_history(streamer.run, current_message_history),
                     error_str,
                 )
+                recovery = recover_retry_message_history(e, resume_history, ctx)
+                resume_history = recovery.history
+                if recovery.changed:
+                    logger.info(
+                        "Applied retry recovery before resume attempt=%s reasons=%s",
+                        next_attempt_index,
+                        ",".join(recovery.reasons),
+                    )
                 if resume_history:
                     next_user_prompt = await resolve_resume_prompt(e, next_attempt_index, resume_history)
                     next_message_history: Sequence[ModelMessage] | None = resume_history
