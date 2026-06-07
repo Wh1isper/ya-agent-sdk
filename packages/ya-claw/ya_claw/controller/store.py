@@ -4,18 +4,10 @@ import json
 from pathlib import Path
 
 from fastapi import HTTPException
+from ya_agent_stream_protocol.agui import parse_required_message_events
 
 from ya_claw.config import ClawSettings
 from ya_claw.json_types import JsonObject, JsonValue
-
-
-def _parse_message_events(payload: JsonValue) -> list[JsonObject]:
-    if not isinstance(payload, list):
-        raise HTTPException(status_code=500, detail="Run message blob must be a top-level JSON array.")
-    parsed_events: list[JsonObject] = [event for event in payload if isinstance(event, dict)]
-    if len(parsed_events) != len(payload):
-        raise HTTPException(status_code=500, detail="Run message blob must contain only AGUI event objects.")
-    return parsed_events
 
 
 def _parse_state_payload(payload: JsonValue) -> JsonObject:
@@ -45,7 +37,10 @@ def read_run_message_blob_if_exists(settings: ClawSettings, run_id: str) -> list
     blob_path = run_blob_path(settings, run_id, "message.json")
     if not blob_path.exists():
         return None
-    return _parse_message_events(load_json_blob(blob_path))
+    try:
+        return parse_required_message_events(load_json_blob(blob_path), payload_name="Run message blob")
+    except TypeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def write_run_blob(settings: ClawSettings, run_id: str, blob_name: str, payload: JsonValue) -> Path:

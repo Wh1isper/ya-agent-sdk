@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from ya_claw.controller.models import parse_message_events
+from ya_agent_stream_protocol.agui import parse_message_events
 
 
 def test_parse_message_events_accepts_top_level_event_array() -> None:

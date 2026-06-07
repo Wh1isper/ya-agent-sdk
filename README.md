@@ -12,6 +12,7 @@
 - [`packages/ya-agent-environment`](packages/ya-agent-environment) — Environment abstractions for general agents
 - [`packages/ya-environment-relay`](packages/ya-environment-relay) — Provider-neutral relay protocol for external Environment capabilities
 - [`packages/ya-agent-sdk`](packages/ya-agent-sdk) — Python SDK for building AI agents with Pydantic AI
+- [`packages/ya-agent-stream-protocol`](packages/ya-agent-stream-protocol) — shared stream protocol adapters between `ya-agent-sdk` and applications
 - [`packages/ya-oauth`](packages/ya-oauth) — OAuth login, refresh, logout, token storage, and CLI for subscription-backed providers
 - [`packages/ya-oauth-provider`](packages/ya-oauth-provider) — Pydantic AI provider helpers for OAuth-backed model access
 - [`packages/yaacli`](packages/yaacli) — TUI reference implementation built on top of `ya-agent-sdk`

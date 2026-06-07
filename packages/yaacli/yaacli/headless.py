@@ -12,8 +12,9 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, RetryPr
 from ya_agent_sdk.agents.main import AgentInterrupted, stream_agent
 from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, ResumableState
 from ya_agent_sdk.utils import get_latest_request_usage
+from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig, validate_display_events
+from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
-from yaacli.agui import DisplayEventAdapter, DisplayReplayBuffer, validate_display_events
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.hooks import emit_context_update
 from yaacli.logging import get_logger
@@ -25,6 +26,12 @@ logger = get_logger(__name__)
 
 _DEFAULT_MAX_TURNS_PER_SESSION = 20
 _DEFAULT_MAX_SESSIONS = 100
+YAACLI_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="yaacli", stream_metadata_prefix="yaacli")
+YAACLI_AGUI_REPLAY_CONFIG = AguiReplayConfig(
+    agent_id_field="yaacliAgentId",
+    main_agent_id="main",
+    drop_subagent_detail_events=True,
+)
 
 
 def _positive_int_config(value: object, default: int) -> int:
@@ -57,7 +64,7 @@ class HeadlessRunResult:
 
 class HeadlessEventSink:
     def __init__(self) -> None:
-        self.replay = DisplayReplayBuffer()
+        self.replay = AguiReplayBuffer(config=YAACLI_AGUI_REPLAY_CONFIG)
 
     def emit(self, event: dict[str, Any]) -> None:
         self.replay.append(event)
@@ -216,10 +223,10 @@ async def run_headless_prompt(
                 runtime.ctx.usage_snapshot_entries.clear()
 
         run_id = uuid.uuid4().hex[:12]
-        adapter = DisplayEventAdapter(session_id=resolved_session_id, run_id=run_id)
+        adapter = AguiEventAdapter(session_id=resolved_session_id, run_id=run_id, config=YAACLI_AGUI_ADAPTER_CONFIG)
         sink = HeadlessEventSink()
         sink.replay.extend_snapshot(restored_display_messages)
-        sink.emit(adapter.build_run_started_event(input_text=prompt))
+        sink.emit(adapter.build_run_started_event())
 
         output_text: str | None = None
         try:
@@ -254,7 +261,7 @@ async def run_headless_prompt(
                     if isinstance(output, DeferredToolRequests):
                         denial_reason = "Headless mode denies HITL requests by default."
                         sink.emit(
-                            adapter.build_system_event(
+                            adapter.build_run_custom_event(
                                 "hitl_auto_denied",
                                 {
                                     "approval_count": len(output.approvals),
@@ -274,7 +281,7 @@ async def run_headless_prompt(
 
             sink.emit(adapter.build_run_finished_event(result={"output_text": output_text}))
         except (AgentInterrupted, KeyboardInterrupt):
-            sink.emit(adapter.build_system_event("run_cancelled", {"reason": "interrupted"}))
+            sink.emit(adapter.build_run_custom_event("run_cancelled", {"reason": "interrupted"}))
             raise
         except Exception as exc:
             sink.emit(adapter.build_run_error_event(message=str(exc) or repr(exc), code=type(exc).__name__))

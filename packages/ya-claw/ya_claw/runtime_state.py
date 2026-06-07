@@ -1,22 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from ya_claw.agui_adapter import AguiReplayBuffer
+from ya_agent_stream_protocol.agui import AguiReplayBuffer, BufferedStreamEvent, format_sse_event, resolve_event_cursor
+
 from ya_claw.controller.models import ActiveInteraction, UserInteraction
 from ya_claw.json_types import JsonValue
-
-
-@dataclass(slots=True)
-class BufferedEvent:
-    id: str
-    payload: dict[str, Any]
-    terminal: bool = False
 
 
 @dataclass(slots=True)
@@ -25,7 +18,7 @@ class ActiveRunHandle:
     session_id: str
     dispatch_mode: str = "async"
     steering_inputs: list[list[dict[str, Any]]] = field(default_factory=list)
-    events: list[BufferedEvent] = field(default_factory=list)
+    events: list[BufferedStreamEvent] = field(default_factory=list)
     replay: AguiReplayBuffer = field(default_factory=AguiReplayBuffer)
     next_event_id: int = 1
     closed: bool = False
@@ -207,7 +200,7 @@ class InMemoryRuntimeState:
         *,
         terminal: bool = False,
         replay: bool = True,
-    ) -> BufferedEvent:
+    ) -> BufferedStreamEvent:
         handle = self.get_run_handle(run_id)
         if not isinstance(handle, ActiveRunHandle):
             raise KeyError(run_id)
@@ -215,7 +208,7 @@ class InMemoryRuntimeState:
         if replay:
             handle.replay.append(payload)
 
-        event = BufferedEvent(id=str(handle.next_event_id), payload=payload, terminal=terminal)
+        event = BufferedStreamEvent(id=str(handle.next_event_id), payload=dict(payload), terminal=terminal)
         handle.next_event_id += 1
         handle.events.append(event)
         if terminal:
@@ -272,7 +265,7 @@ class InMemoryRuntimeState:
         if not isinstance(handle, ActiveRunHandle):
             raise KeyError(run_id)
 
-        cursor = _resolve_cursor(last_event_id)
+        cursor = resolve_event_cursor(last_event_id)
         self.subscribers += 1
         try:
             while True:
@@ -284,11 +277,7 @@ class InMemoryRuntimeState:
 
                 for event in pending_events:
                     cursor += 1
-                    yield {
-                        "id": event.id,
-                        "event": str(event.payload.get("type", "message")),
-                        "data": json.dumps(event.payload, ensure_ascii=False),
-                    }
+                    yield format_sse_event(event)
                     if event.terminal:
                         handle.terminal_event_consumed = True
                         return
@@ -334,15 +323,6 @@ class InMemoryRuntimeState:
         self.hitl_states.clear()
         self.cleanup_tasks.clear()
         self.subscribers = 0
-
-
-def _resolve_cursor(last_event_id: str | None) -> int:
-    if last_event_id is None:
-        return 0
-    try:
-        return max(int(last_event_id), 0)
-    except ValueError:
-        return 0
 
 
 def create_runtime_state() -> InMemoryRuntimeState:

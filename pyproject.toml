@@ -16,6 +16,7 @@ members = [
     "packages/ya-agent-environment",
     "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
+    "packages/ya-agent-stream-protocol",
     "packages/ya-ripgrep-core",
     "packages/ya-oauth",
     "packages/ya-oauth-provider",
@@ -28,6 +29,7 @@ members = [
 ya-agent-environment = { workspace = true }
 ya-environment-relay = { workspace = true }
 ya-agent-sdk = { workspace = true }
+ya-agent-stream-protocol = { workspace = true }
 ya-ripgrep-core = { workspace = true }
 ya-oauth = { workspace = true }
 ya-oauth-provider = { workspace = true }
@@ -39,6 +41,7 @@ include = [
     "packages/ya-agent-environment/ya_agent_environment",
     "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
+    "packages/ya-agent-stream-protocol/ya_agent_stream_protocol",
     "packages/ya-oauth/ya_oauth",
     "packages/ya-oauth-provider/ya_oauth_provider",
     "packages/yaacli/yaacli",
@@ -49,6 +52,7 @@ exclude = [
     "packages/ya-agent-environment/tests",
     "packages/ya-environment-relay/tests",
     "packages/ya-agent-sdk/tests",
+    "packages/ya-agent-stream-protocol/tests",
     "packages/ya-oauth/tests",
     "packages/ya-oauth-provider/tests",
     "packages/yaacli/tests",
@@ -67,6 +71,7 @@ extraPaths = [
     "packages/ya-agent-environment",
     "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
+    "packages/ya-agent-stream-protocol",
     "packages/ya-oauth",
     "packages/ya-oauth-provider",
     "packages/yaacli",
@@ -114,6 +119,7 @@ ignore = [
 "packages/yaacli/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-agent-environment/tests/*" = ["S101", "S108", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-agent-sdk/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
+"packages/ya-agent-stream-protocol/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-ripgrep-core/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-oauth/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
 "packages/ya-oauth-provider/tests/*" = ["S101", "S603", "S607", "SIM117", "RUF059", "TRY400", "B904"]
@@ -138,6 +144,7 @@ source = [
     "packages/ya-agent-environment/ya_agent_environment",
     "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
+    "packages/ya-agent-stream-protocol/ya_agent_stream_protocol",
     "packages/ya-oauth/ya_oauth",
     "packages/ya-oauth-provider/ya_oauth_provider",
     "packages/yaacli/yaacli",

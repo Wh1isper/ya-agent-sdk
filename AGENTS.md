@@ -7,6 +7,7 @@ Workspace members:
 - `packages/ya-agent-environment` — Environment abstractions for general agents
 - `packages/ya-environment-relay` — Provider-neutral relay protocol for external Environment capabilities
 - `packages/ya-agent-sdk` — SDK for building AI agents with Pydantic AI
+- `packages/ya-agent-stream-protocol` — shared stream protocol adapters between `ya-agent-sdk` and applications
 - `packages/ya-oauth` — OAuth login, refresh, logout, token storage, and CLI for subscription-backed providers
 - `packages/ya-oauth-provider` — Pydantic AI provider helpers for OAuth-backed model access
 - `packages/yaacli` — TUI reference implementation built on top of the SDK
@@ -56,6 +57,13 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - preserves the core execution primitives used across the repository
 - changes here should keep examples, skills, and package docs aligned
 - OAuth-backed model strings use `oauth@provider:model`; Codex currently uses `oauth@codex:gpt-5.5` and receives session/thread headers from `AgentContext.get_model_extra_headers()`
+
+### `packages/ya-agent-stream-protocol`
+
+- shared stream protocol layer between `ya-agent-sdk` and applications
+- implementation package import name is `ya_agent_stream_protocol`
+- owns AGUI event adaptation, compact replay buffers, message validation, and SSE framing helpers shared by YAACLI and YA Claw
+- applications configure their own event namespaces through `AguiAdapterConfig`
 
 ### `packages/ya-oauth`
 
@@ -188,6 +196,7 @@ When editing workspace metadata, keep these files aligned:
 - `packages/ya-agent-environment/pyproject.toml`
 - `packages/ya-environment-relay/pyproject.toml`
 - `packages/ya-agent-sdk/pyproject.toml`
+- `packages/ya-agent-stream-protocol/pyproject.toml`
 - `packages/yaacli/pyproject.toml`
 - `packages/ya-claw/pyproject.toml`
 - `packages/ya-agent-platform/pyproject.toml`

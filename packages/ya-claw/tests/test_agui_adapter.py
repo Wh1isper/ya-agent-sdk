@@ -4,11 +4,14 @@ from pydantic_ai import PartDeltaEvent, PartEndEvent, PartStartEvent, TextPartDe
 from pydantic_ai.messages import TextPart
 from ya_agent_sdk.context.agent import StreamEvent
 from ya_agent_sdk.events import ModelRequestStartEvent
-from ya_claw.agui_adapter import AguiEventAdapter, AguiReplayBuffer
+from ya_agent_stream_protocol.agui import AguiReplayBuffer
+from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
+
+CLAW_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="ya_claw")
 
 
 def test_agui_adapter_maps_text_stream_events_and_compacts_replay() -> None:
-    adapter = AguiEventAdapter(session_id="session-1", run_id="run-1")
+    adapter = AguiEventAdapter(session_id="session-1", run_id="run-1", config=CLAW_ADAPTER_CONFIG)
     replay = AguiReplayBuffer()
 
     stream_events = [
@@ -101,9 +104,9 @@ def test_agui_replay_buffer_stores_chunk_fragments_until_snapshot() -> None:
 
 
 def test_agui_adapter_maps_run_lifecycle_events() -> None:
-    adapter = AguiEventAdapter(session_id="session-1", run_id="run-1")
+    adapter = AguiEventAdapter(session_id="session-1", run_id="run-1", config=CLAW_ADAPTER_CONFIG)
 
-    queued = adapter.build_run_queued_event({"status": "queued"})
+    queued = adapter.build_run_custom_event("run_queued", {"status": "queued"})
     started = adapter.build_run_started_event()
     finished = adapter.build_run_finished_event(result={"output_text": "done"})
     errored = adapter.build_run_error_event(message="boom", code="error")

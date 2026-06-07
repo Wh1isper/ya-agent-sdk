@@ -700,17 +700,6 @@ def public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return dict(metadata)
 
 
-def parse_message_events(raw_message_payload: JsonValue) -> list[JsonObject] | None:
-    if raw_message_payload is None:
-        return None
-    if not isinstance(raw_message_payload, list):
-        raise TypeError("message payload must be a top-level JSON array of AGUI event objects")
-    parsed_events: list[JsonObject] = [event for event in raw_message_payload if isinstance(event, dict)]
-    if len(parsed_events) != len(raw_message_payload):
-        raise TypeError("message payload must contain only AGUI event objects")
-    return parsed_events
-
-
 def run_summary_from_record(
     record: RunRecord,
     *,

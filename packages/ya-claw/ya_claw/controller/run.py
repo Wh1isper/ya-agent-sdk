@@ -8,8 +8,8 @@ from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
-from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.controller.hitl import HitlController
 from ya_claw.controller.models import (
@@ -42,6 +42,7 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.workspace.models import metadata_with_workspace
 
 _ACTIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
+CLAW_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="ya_claw")
 
 
 class RunController:
@@ -127,16 +128,19 @@ class RunController:
 
         ensure_run_dir(settings, run_id)
         runtime_state.register_run(session_id, run_id, dispatch_mode=request.dispatch_mode)
-        agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id)
+        agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG)
         await runtime_state.append_run_event(
             run_id,
-            agui_adapter.build_run_queued_event({
-                "run_id": run_id,
-                "session_id": session_id,
-                "status": run_record.status,
-                "sequence_no": sequence_no,
-                "dispatch_mode": request.dispatch_mode,
-            }),
+            agui_adapter.build_run_custom_event(
+                "run_queued",
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "status": run_record.status,
+                    "sequence_no": sequence_no,
+                    "dispatch_mode": request.dispatch_mode,
+                },
+            ),
         )
 
         logger.info(
@@ -286,14 +290,19 @@ class RunController:
         input_payload = [part.model_dump(mode="json") for part in request.input_parts]
         try:
             await runtime_state.record_steering(run_id, input_payload)
-            agui_adapter = AguiEventAdapter(session_id=run_record.session_id, run_id=run_id)
+            agui_adapter = AguiEventAdapter(
+                session_id=run_record.session_id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG
+            )
             await runtime_state.append_run_event(
                 run_id,
-                agui_adapter.build_run_steered_event({
-                    "run_id": run_id,
-                    "session_id": run_record.session_id,
-                    "input_parts": input_payload,
-                }),
+                agui_adapter.build_run_custom_event(
+                    "run_steered",
+                    {
+                        "run_id": run_id,
+                        "session_id": run_record.session_id,
+                        "input_parts": input_payload,
+                    },
+                ),
             )
         except KeyError as exc:
             raise HTTPException(status_code=409, detail=f"Run '{run_id}' is not active in runtime state.") from exc
@@ -374,7 +383,9 @@ class RunController:
         run_record: RunRecord,
         event_type: str,
     ) -> None:
-        agui_adapter = AguiEventAdapter(session_id=run_record.session_id, run_id=run_record.id)
+        agui_adapter = AguiEventAdapter(
+            session_id=run_record.session_id, run_id=run_record.id, config=CLAW_AGUI_ADAPTER_CONFIG
+        )
         event_payload = {
             "run_id": run_record.id,
             "session_id": run_record.session_id,
@@ -382,9 +393,9 @@ class RunController:
             "termination_reason": run_record.termination_reason,
         }
         mapped_event = (
-            agui_adapter.build_run_interrupted_event(event_payload)
+            agui_adapter.build_run_custom_event("run_interrupted", event_payload)
             if event_type == "run.interrupted"
-            else agui_adapter.build_run_cancelled_event(event_payload)
+            else agui_adapter.build_run_custom_event("run_cancelled", event_payload)
         )
         try:
             await runtime_state.append_run_event(

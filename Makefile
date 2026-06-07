@@ -205,6 +205,8 @@ check: ## Run code quality tools for all active packages
 	@(cd packages/ya-environment-relay && uvx deptry ya_environment_relay)
 	@echo "Running deptry for ya-agent-sdk"
 	@(cd packages/ya-agent-sdk && uvx deptry ya_agent_sdk)
+	@echo "Running deptry for ya-agent-stream-protocol"
+	@(cd packages/ya-agent-stream-protocol && uvx deptry ya_agent_stream_protocol)
 	@echo "Running deptry for ya-oauth"
 	@(cd packages/ya-oauth && uvx deptry ya_oauth)
 	@echo "Running deptry for ya-oauth-provider"
@@ -243,9 +245,9 @@ bench-file-search-quick: ## Run quick file search backend smoke benchmarks
 bench-search-quick: bench-file-search-quick ## Alias for bench-file-search-quick
 
 .PHONY: test
-test: ## Run environment, SDK, CLI, YA Claw, and YA Desktop tests
+test: ## Run environment, SDK, stream protocol, CLI, YA Claw, and YA Desktop tests
 	@echo "Running pytest for workspace packages"
-	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-ripgrep-core/tests packages/ya-agent-sdk/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
+	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-ripgrep-core/tests packages/ya-agent-sdk/tests packages/ya-agent-stream-protocol/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
 	@echo "Running YA Desktop tests"
 	@$(MAKE) desktop-test
 
@@ -258,6 +260,11 @@ test-environment: ## Run ya-agent-environment tests
 test-sdk: ## Run SDK tests
 	@echo "Running SDK pytest"
 	@uv run python -m pytest packages/ya-agent-sdk/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
+
+.PHONY: test-stream-protocol
+test-stream-protocol: ## Run ya-agent-stream-protocol tests
+	@echo "Running ya-agent-stream-protocol pytest"
+	@uv run python -m pytest packages/ya-agent-stream-protocol/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
 
 .PHONY: test-cli
 test-cli: ## Run CLI tests
@@ -287,7 +294,7 @@ claw-sse-complete-smoke: ## Run YA Claw SSE completion smoke test against the co
 .PHONY: test-fix
 test-fix: ## Run pytest with inline snapshot updates
 	@echo "Running pytest with inline snapshot updates"
-	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-agent-sdk/tests packages/yaacli/tests packages/ya-claw/tests -vv --inline-snapshot=fix
+	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-agent-sdk/tests packages/ya-agent-stream-protocol/tests packages/yaacli/tests packages/ya-claw/tests -vv --inline-snapshot=fix
 
 .PHONY: build
 build: clean-build ## Build ya-agent-sdk distribution
@@ -303,6 +310,11 @@ build-environment: clean-build ## Build ya-agent-environment distribution
 build-relay: clean-build ## Build ya-environment-relay distribution
 	@echo "Building ya-environment-relay"
 	@uv build --package ya-environment-relay -o dist
+
+.PHONY: build-stream-protocol
+build-stream-protocol: clean-build ## Build ya-agent-stream-protocol distribution
+	@echo "Building ya-agent-stream-protocol"
+	@uv build --package ya-agent-stream-protocol -o dist
 
 .PHONY: build-claw
 build-claw: clean-build ## Build ya-claw distribution
@@ -322,7 +334,7 @@ build-all: clean-build ## Build distributions for all workspace packages
 .PHONY: clean-build
 clean-build: ## Clean build artifacts
 	@echo "Removing build artifacts"
-	@uv run python -c "from pathlib import Path; import shutil; [shutil.rmtree(path, ignore_errors=True) for path in (Path('dist'), Path('packages/ya-agent-environment/dist'), Path('packages/ya-environment-relay/dist'), Path('packages/ya-agent-sdk/dist'), Path('packages/yaacli/dist'), Path('packages/ya-claw/dist'), Path('packages/ya-agent-platform/dist'))]"
+	@uv run python -c "from pathlib import Path; import shutil; [shutil.rmtree(path, ignore_errors=True) for path in (Path('dist'), Path('packages/ya-agent-environment/dist'), Path('packages/ya-environment-relay/dist'), Path('packages/ya-agent-sdk/dist'), Path('packages/ya-agent-stream-protocol/dist'), Path('packages/yaacli/dist'), Path('packages/ya-claw/dist'), Path('packages/ya-agent-platform/dist'))]"
 
 .PHONY: publish
 publish: ## Publish built distributions to PyPI

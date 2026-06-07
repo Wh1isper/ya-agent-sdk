@@ -41,7 +41,6 @@ bump = true
 
 [tool.hatch.metadata.hooks.uv-dynamic-versioning]
 dependencies = [
-    "ag-ui-protocol>=0.1.18",
     "alembic>=1.16.0",
     "click>=8.0",
     "fastapi>=0.116.0",
@@ -57,6 +56,7 @@ dependencies = [
     "uvicorn[standard]>=0.35.0",
     "ya-agent-environment=={{ version }}",
     "ya-agent-sdk[all]=={{ version }}",
+    "ya-agent-stream-protocol=={{ version }}",
     "ya-oauth=={{ version }}",
     "ya-oauth-provider=={{ version }}",
 ]
@@ -72,6 +72,7 @@ include = [
 [tool.uv.sources]
 ya-agent-environment = { workspace = true }
 ya-agent-sdk = { workspace = true }
+ya-agent-stream-protocol = { workspace = true }
 ya-oauth = { workspace = true }
 ya-oauth-provider = { workspace = true }
 
@@ -88,5 +89,5 @@ dev = [
 
 [tool.deptry]
 ignore = ["DEP001"]
-package_module_name_map = { "ag-ui-protocol" = "ag_ui", "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-environment" = "ya_agent_environment", "ya-agent-sdk" = "ya_agent_sdk", "ya-oauth" = "ya_oauth", "ya-oauth-provider" = "ya_oauth_provider" }
-per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "greenlet", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_environment", "ya_agent_sdk", "ya_claw"], DEP004 = ["pytest"] }
+package_module_name_map = { "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-environment" = "ya_agent_environment", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-stream-protocol" = "ya_agent_stream_protocol", "ya-oauth" = "ya_oauth", "ya-oauth-provider" = "ya_oauth_provider" }
+per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "greenlet", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_environment", "ya_agent_sdk", "ya_agent_stream_protocol", "ya_claw"], DEP004 = ["pytest"] }

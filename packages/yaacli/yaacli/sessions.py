@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from pydantic_ai.messages import ModelMessagesTypeAdapter
+from ya_agent_stream_protocol.agui import validate_display_events
 
-from yaacli.agui import validate_display_events
 from yaacli.config import ConfigManager
 
 SESSION_SCHEMA_VERSION = 2

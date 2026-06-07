@@ -4,17 +4,10 @@ import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from ya_agent_stream_protocol.agui import parse_required_message_events
+
 from ya_claw.config import ClawSettings
 from ya_claw.json_types import JsonArray, JsonObject, JsonValue
-
-
-def _parse_message_events(payload: JsonValue) -> list[JsonObject]:
-    if not isinstance(payload, list):
-        raise TypeError("Expected top-level JSON array for AGUI replay events.")
-    parsed_events: list[JsonObject] = [event for event in payload if isinstance(event, dict)]
-    if len(parsed_events) != len(payload):
-        raise ValueError("Expected AGUI replay event objects only.")
-    return parsed_events
 
 
 class RunStore:
@@ -55,7 +48,7 @@ class RunStore:
         if payload is None:
             return None
         try:
-            return _parse_message_events(payload)
+            return parse_required_message_events(payload, payload_name="AGUI replay list")
         except TypeError as exc:
             raise ValueError(f"Invalid AGUI replay list at {self.message_path(run_id)}.") from exc
 

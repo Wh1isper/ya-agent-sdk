@@ -24,9 +24,9 @@ from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_setti
 from ya_agent_sdk.subagents import get_builtin_subagent_configs
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import UserInteraction as SdkUserInteraction
+from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from ya_claw.agency.lifecycle import AgencyLifecycle
-from ya_claw.agui_adapter import AguiEventAdapter
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
 from ya_claw.controller.async_task import AsyncTaskController
@@ -69,6 +69,8 @@ from ya_claw.workspace.models import (
     workspace_snapshot,
 )
 from ya_claw.workspace.runtime_models import build_session_sandbox_state_from_sandbox, session_sandbox_event_payload
+
+CLAW_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="ya_claw")
 
 
 @dataclass(slots=True)
@@ -336,7 +338,9 @@ class ExecutionSupervisor:
                 run_record,
             )
 
-            agui_adapter = AguiEventAdapter(session_id=session_record.id, run_id=run_id)
+            agui_adapter = AguiEventAdapter(
+                session_id=session_record.id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG
+            )
             await self._runtime_state.append_run_event(
                 run_id,
                 agui_adapter.build_run_started_event(input_parts=list(run_record.input_parts)),
@@ -500,7 +504,9 @@ class RunCoordinator:
                     "run.updated",
                     run_record,
                 )
-                agui_adapter = AguiEventAdapter(session_id=session_record.id, run_id=run_id)
+                agui_adapter = AguiEventAdapter(
+                    session_id=session_record.id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG
+                )
                 logger.info(
                     "Run failed run_id={} session_id={} error={}",
                     run_id,
@@ -563,7 +569,9 @@ class RunCoordinator:
             }
             complete_run(session_record, run_record)
             run_record.output_text = buffers.output_text
-            agui_adapter = AguiEventAdapter(session_id=session_record.id, run_id=run_id)
+            agui_adapter = AguiEventAdapter(
+                session_id=session_record.id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG
+            )
             buffers.terminal_event = agui_adapter.build_run_finished_event(
                 result={
                     "termination_reason": run_record.termination_reason,
@@ -767,7 +775,7 @@ class RunCoordinator:
             },
         )
         message_history = self._extract_message_history(restore_point)
-        agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id)
+        agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG)
         deferred_tool_results: DeferredToolResults | None = None
         use_initial_prompt = True
         refresh_task: asyncio.Task[None] | None = None
@@ -1001,13 +1009,16 @@ class RunCoordinator:
             await _publish_run_status_notification(self._notification_hub, "run.updated", run_record)
         await self._runtime_state.append_run_event(
             run_id,
-            agui_adapter.build_hitl_pending_event({
-                "run_id": run_id,
-                "session_id": session_id,
-                "batch_id": batch.batch_id,
-                "active_interactions": active_payload,
-                "active_interaction_count": len(active_payload),
-            }),
+            agui_adapter.build_run_custom_event(
+                "hitl_pending",
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "batch_id": batch.batch_id,
+                    "active_interactions": active_payload,
+                    "active_interaction_count": len(active_payload),
+                },
+            ),
         )
         return batch.batch_id
 
@@ -1025,10 +1036,13 @@ class RunCoordinator:
             await _publish_run_status_notification(self._notification_hub, "run.updated", run_record)
         await self._runtime_state.append_run_event(
             run_id,
-            agui_adapter.build_hitl_resolved_event({
-                "run_id": run_id,
-                "session_id": session_record.id,
-            }),
+            agui_adapter.build_run_custom_event(
+                "hitl_resolved",
+                {
+                    "run_id": run_id,
+                    "session_id": session_record.id,
+                },
+            ),
         )
 
     async def _forward_deferred_hitl_inputs(

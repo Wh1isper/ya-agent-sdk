@@ -106,10 +106,12 @@ from ya_agent_sdk.events import (
 )
 from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.utils import get_latest_request_usage
-from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
-from yaacli.agui import DisplayEventAdapter, DisplayReplayBuffer, is_subagent_display_event, validate_display_events
+from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig, is_subagent_event, validate_display_events
+from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
+from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
+
 from yaacli.app.state import TUIMode
 from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, BackgroundTaskInfo
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
@@ -133,6 +135,13 @@ from yaacli.runtime import create_tui_runtime
 from yaacli.session import TUIContext
 from yaacli.sessions import get_head_artifact_paths, save_session_turn, trim_sessions
 from yaacli.usage import SessionUsage
+
+YAACLI_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="yaacli", stream_metadata_prefix="yaacli")
+YAACLI_AGUI_REPLAY_CONFIG = AguiReplayConfig(
+    agent_id_field="yaacliAgentId",
+    main_agent_id="main",
+    drop_subagent_detail_events=True,
+)
 
 if TYPE_CHECKING:
     from prompt_toolkit.key_binding import KeyPressEvent
@@ -285,8 +294,10 @@ class TUIApp:
     _output_ansi_cache: ANSI | None = field(default=None, init=False)  # Cached visible ANSI
     _renderer: RichRenderer = field(default_factory=RichRenderer, init=False)
     _event_renderer: EventRenderer = field(default_factory=EventRenderer, init=False)
-    _display_replay: DisplayReplayBuffer = field(default_factory=DisplayReplayBuffer, init=False)
-    _display_adapter: DisplayEventAdapter | None = field(default=None, init=False)
+    _display_replay: AguiReplayBuffer = field(
+        default_factory=lambda: AguiReplayBuffer(config=YAACLI_AGUI_REPLAY_CONFIG), init=False
+    )
+    _display_adapter: AguiEventAdapter | None = field(default=None, init=False)
 
     # Session
     _session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12], init=False)
@@ -749,8 +760,10 @@ class TUIApp:
 
     def _record_display_system_event(self, event_name: str, payload: Any) -> None:
         """Persist a YAACLI custom display event."""
-        adapter = self._display_adapter or DisplayEventAdapter(session_id=self._session_id, run_id=self._session_id)
-        self._handle_and_record_display_events([adapter.build_system_event(event_name, cast(Any, payload))])
+        adapter = self._display_adapter or AguiEventAdapter(
+            session_id=self._session_id, run_id=self._session_id, config=YAACLI_AGUI_ADAPTER_CONFIG
+        )
+        self._handle_and_record_display_events([adapter.build_run_custom_event(event_name, cast(Any, payload))])
 
     def _handle_and_record_display_events(self, events: Sequence[dict[str, Any]]) -> None:
         self._record_display_events(events)
@@ -771,7 +784,7 @@ class TUIApp:
         width = self._get_terminal_width()
         for event in events:
             event_type = str(event.get("type", ""))
-            if is_subagent_display_event(event):
+            if is_subagent_event(event, agent_id_field="yaacliAgentId"):
                 if event_type == "TOOL_CALL_CHUNK":
                     tool_name = str(event.get("toolCallName") or event.get("tool_call_name") or "")
                     tool_call_id = str(event.get("toolCallId") or event.get("tool_call_id") or "")
@@ -1158,9 +1171,11 @@ class TUIApp:
     def _append_user_input(self, text: str, attachments: Sequence[PendingAttachment] | None = None) -> None:
         """Render user input with styled prompt indicator and attachment markers."""
         attachment_list = list(attachments or [])
-        adapter = self._display_adapter or DisplayEventAdapter(session_id=self._session_id, run_id=self._session_id)
+        adapter = self._display_adapter or AguiEventAdapter(
+            session_id=self._session_id, run_id=self._session_id, config=YAACLI_AGUI_ADAPTER_CONFIG
+        )
         self._record_display_event(
-            adapter.build_system_event(
+            adapter.build_run_custom_event(
                 "user_input",
                 {
                     "text": text,
@@ -1799,8 +1814,10 @@ class TUIApp:
         cancelled = False
         reported_error = False
         run_id = uuid.uuid4().hex[:12]
-        self._display_adapter = DisplayEventAdapter(session_id=self._session_id, run_id=run_id)
-        self._handle_and_record_display_events([self._display_adapter.build_run_started_event(input_text=user_input)])
+        self._display_adapter = AguiEventAdapter(
+            session_id=self._session_id, run_id=run_id, config=YAACLI_AGUI_ADAPTER_CONFIG
+        )
+        self._handle_and_record_display_events([self._display_adapter.build_run_started_event()])
 
         try:
             # Initial agent execution
