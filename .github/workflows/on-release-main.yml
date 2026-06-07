@@ -61,6 +61,7 @@ jobs:
             ya-agent-environment
             ya-environment-relay
             ya-agent-sdk
+            ya-agent-stream-protocol
             ya-oauth
             ya-oauth-provider
             yaacli

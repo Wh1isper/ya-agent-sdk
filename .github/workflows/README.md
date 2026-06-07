@@ -8,14 +8,14 @@ This directory keeps workflow path filters narrow so pull requests run the check
 
 ## Focused workflows
 
-| workflow                      | trigger scope                                                                                                                                      |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `file-search-benchmarks.yml`  | File search benchmark harness, SDK filesystem tool code/tests, FileOperator surface, and `ya-ripgrep-core` source/package metadata.                |
-| `cli-tests.yml`               | YAACLI source/tests, CLI-facing SDK APIs, bundled skills, and skill sync/build scripts.                                                            |
-| `shell-sandbox.yml`           | SDK shell sandbox/process/local environment code and Claw shell sandbox adapter/tests.                                                             |
-| `claw-image.yaml`             | Docker packaging inputs for the Claw image: Dockerfile, web app bundle inputs, runtime source/package metadata, lock files, and package manifests. |
-| `platform-image.yaml`         | Docker packaging inputs for the WIP platform image.                                                                                                |
-| `ya-claw-workspace-image.yml` | Workspace image Dockerfile and bundled workspace skill/image inputs.                                                                               |
+| workflow                      | trigger scope                                                                                                                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file-search-benchmarks.yml`  | File search benchmark harness, SDK filesystem tool code/tests, FileOperator surface, and `ya-ripgrep-core` source/package metadata.                                               |
+| `cli-tests.yml`               | YAACLI source/tests, shared stream protocol code/tests, CLI-facing SDK APIs, bundled skills, and skill sync/build scripts.                                                        |
+| `shell-sandbox.yml`           | SDK shell sandbox/process/local environment code and Claw shell sandbox adapter/tests.                                                                                            |
+| `claw-image.yaml`             | Docker packaging inputs for the Claw image: Dockerfile, web app bundle inputs, runtime source/package metadata, shared stream protocol inputs, lock files, and package manifests. |
+| `platform-image.yaml`         | Docker packaging inputs for the WIP platform image.                                                                                                                               |
+| `ya-claw-workspace-image.yml` | Workspace image Dockerfile and bundled workspace skill/image inputs.                                                                                                              |
 
 ## Guidelines
 

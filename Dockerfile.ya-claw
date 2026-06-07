@@ -40,6 +40,8 @@ COPY pyproject.toml uv.lock ./
 COPY packages/ya-agent-environment/pyproject.toml packages/ya-agent-environment/pyproject.toml
 COPY packages/ya-environment-relay/pyproject.toml packages/ya-environment-relay/pyproject.toml
 COPY packages/ya-agent-sdk/pyproject.toml packages/ya-agent-sdk/pyproject.toml
+COPY packages/ya-agent-stream-protocol/pyproject.toml packages/ya-agent-stream-protocol/pyproject.toml
+COPY packages/ya-ripgrep-core/pyproject.toml packages/ya-ripgrep-core/pyproject.toml
 COPY packages/ya-oauth/pyproject.toml packages/ya-oauth/pyproject.toml
 COPY packages/ya-oauth-provider/pyproject.toml packages/ya-oauth-provider/pyproject.toml
 COPY packages/yaacli/pyproject.toml packages/yaacli/pyproject.toml

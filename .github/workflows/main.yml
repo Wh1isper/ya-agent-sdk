@@ -139,6 +139,7 @@ jobs:
           packages/ya-agent-environment/tests
           packages/ya-ripgrep-core/tests
           packages/ya-agent-sdk/tests
+          packages/ya-agent-stream-protocol/tests
           packages/ya-oauth/tests
           packages/ya-oauth-provider/tests
           packages/yaacli/tests

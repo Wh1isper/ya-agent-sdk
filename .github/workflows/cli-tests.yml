@@ -30,6 +30,9 @@ on:
       - "packages/ya-agent-sdk/ya_agent_sdk/usage.py"
       - "packages/ya-agent-sdk/ya_agent_sdk/utils.py"
       - "packages/ya-agent-sdk/pyproject.toml"
+      - "packages/ya-agent-stream-protocol/ya_agent_stream_protocol/**"
+      - "packages/ya-agent-stream-protocol/tests/**"
+      - "packages/ya-agent-stream-protocol/pyproject.toml"
       - "packages/ya-agent-environment/ya_agent_environment/**"
       - "packages/ya-agent-environment/pyproject.toml"
       - "packages/ya-environment-relay/ya_environment_relay/**"
@@ -68,6 +71,9 @@ on:
       - "packages/ya-agent-sdk/ya_agent_sdk/usage.py"
       - "packages/ya-agent-sdk/ya_agent_sdk/utils.py"
       - "packages/ya-agent-sdk/pyproject.toml"
+      - "packages/ya-agent-stream-protocol/ya_agent_stream_protocol/**"
+      - "packages/ya-agent-stream-protocol/tests/**"
+      - "packages/ya-agent-stream-protocol/pyproject.toml"
       - "packages/ya-agent-environment/ya_agent_environment/**"
       - "packages/ya-agent-environment/pyproject.toml"
       - "packages/ya-environment-relay/ya_environment_relay/**"
@@ -115,5 +121,5 @@ jobs:
       - name: Check release skill zip build
         run: python scripts/build-skill-zips.py --check
 
-      - name: Run CLI tests
-        run: uv run python -m pytest packages/yaacli/tests -n auto
+      - name: Run stream protocol and CLI tests
+        run: uv run python -m pytest packages/ya-agent-stream-protocol/tests packages/yaacli/tests -n auto
