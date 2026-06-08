@@ -380,6 +380,8 @@ class ClawRuntimeBuilder:
                 namespace_descriptions=mcp_descriptions if mcp_descriptions else None,
                 search_strategy=create_best_strategy(),
                 optional_namespaces=optional_mcps if optional_mcps else None,
+                prefix="mcp",
+                include_legacy_unprefixed_state=True,
             )
         )
         return toolsets

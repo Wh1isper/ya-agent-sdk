@@ -5,6 +5,8 @@ The `ToolProxyToolset` is a wrapper over multiple toolsets that exposes exactly 
 - **`search_tools`** -- discover available tools via keyword search (returns XML with full parameter schemas)
 - **`call_tool`** -- invoke any discovered tool by name with arguments
 
+When `prefix` is configured, the visible proxy tools become **`{prefix}_search_tool`** and **`{prefix}_call_tool`**. For example, `prefix="mcp"` exposes `mcp_search_tool` and `mcp_call_tool`.
+
 Unlike [`ToolSearchToolSet`](tool-search.md) which dynamically adds discovered tools to the model's tool list, `ToolProxyToolset` keeps the tool list constant. This maximizes **prompt cache hit rates** for providers that cache based on tool definitions (e.g., Anthropic, OpenAI).
 
 ## When to Use
@@ -34,6 +36,11 @@ proxy = ToolProxyToolset(
     },
     max_results=5,
 )
+
+mcp_proxy = ToolProxyToolset(
+    toolsets=[mcp_server_1, mcp_server_2],
+    prefix="mcp",  # exposes mcp_search_tool and mcp_call_tool
+)
 ```
 
 ## How It Works
@@ -44,7 +51,7 @@ sequenceDiagram
     participant ToolProxy as ToolProxyToolset
     participant Underlying as Wrapped Toolsets
 
-    Note over Model,ToolProxy: Tool list: [search_tools, call_tool] (never changes)
+    Note over Model,ToolProxy: Tool list: [search_tools, call_tool] or [mcp_search_tool, mcp_call_tool] (never changes)
 
     Model->>ToolProxy: search_tools(query="weather")
     ToolProxy->>ToolProxy: Search index, update context state
@@ -84,6 +91,22 @@ When a tool call fails, an XML error with the parameter schema is returned so th
 </tool-call-error>
 ```
 
+## Prefixes
+
+Use `prefix` when an agent has multiple proxy blocks and each block needs distinct visible tools:
+
+```python
+mcp_proxy = ToolProxyToolset(toolsets=mcp_servers, prefix="mcp")
+custom_proxy = ToolProxyToolset(toolsets=custom_toolsets, prefix="custom")
+```
+
+This exposes:
+
+- `mcp_search_tool` / `mcp_call_tool`
+- `custom_search_tool` / `custom_call_tool`
+
+Discovered tool state is scoped by prefix in `AgentContext`, so multiple proxy blocks do not share loaded namespaces or loose-tool state accidentally. YAACLI and YA Claw use `prefix="mcp"` for MCP proxy toolsets by default.
+
 ## Namespaces and Loose Tools
 
 Same as [`ToolSearchToolSet`](tool-search.md):
@@ -95,15 +118,17 @@ State is stored in `AgentContext.tool_search_loaded_tools` and `AgentContext.too
 
 ## No Search Required
 
-The model can call `call_tool` directly if it already knows the tool name and schema. `search_tools` is not a prerequisite for `call_tool`. This is useful when:
+The model can use the configured call proxy tool directly if it already knows the underlying tool name and schema. The configured search proxy tool is not a prerequisite. This is useful when:
 
 - The tool name is mentioned in conversation context
-- The model has seen the schema in a previous `search_tools` result
+- The model has seen the schema in a previous search proxy result
 - The session is restored and discovered tools are listed in instructions
+
+For example, an unprefixed proxy uses `call_tool`; an MCP proxy in YAACLI or YA Claw uses `mcp_call_tool`.
 
 ## HITL (Human-in-the-Loop)
 
-`ToolProxyToolset` re-raises `ApprovalRequired` from underlying toolsets. When the user approves the `call_tool` invocation, the proxy retries the underlying tool call with the approved state. Tools listed in `AgentContext.need_user_approve_tools` are checked by the underlying toolset.
+`ToolProxyToolset` re-raises `ApprovalRequired` from underlying toolsets. When the user approves the configured call proxy invocation, the proxy retries the underlying tool call with the approved state. Tools listed in `AgentContext.need_user_approve_tools` are checked by the underlying toolset.
 
 ## Search Strategies
 
@@ -137,7 +162,7 @@ If an optional namespace fails during initialization or at runtime, it is skippe
 
 `ToolProxyToolset` provides dynamic instructions that include:
 
-1. Base usage guide for `search_tools` and `call_tool`
+1. Base usage guide for the configured search/call proxy tool names
 2. Search strategy hints (keyword vs. BM25)
 3. Available namespace list with descriptions and tool counts
 4. Previously discovered tools summary (for session continuity)
@@ -146,13 +171,13 @@ Instructions from underlying toolsets are forwarded only for toolsets whose tool
 
 ## Comparison with ToolSearchToolSet
 
-| Feature           | ToolSearchToolSet                | ToolProxyToolset              |
-| ----------------- | -------------------------------- | ----------------------------- |
-| Tool list         | Changes as tools are discovered  | Always 2 tools (fixed)        |
-| Prompt cache      | Invalidated on discovery         | Stable (high hit rate)        |
-| Model interaction | Calls tools natively             | Calls via `call_tool` proxy   |
-| Schema visibility | Model sees tool schemas directly | Schemas in search results XML |
-| Error feedback    | Native pydantic-ai validation    | XML error with schema         |
-| State storage     | Same (`AgentContext`)            | Same (`AgentContext`)         |
-| Search strategies | Same interface                   | Same interface                |
-| HITL              | Same behavior                    | Same behavior                 |
+| Feature           | ToolSearchToolSet                | ToolProxyToolset                |
+| ----------------- | -------------------------------- | ------------------------------- |
+| Tool list         | Changes as tools are discovered  | Always 2 tools (fixed)          |
+| Prompt cache      | Invalidated on discovery         | Stable (high hit rate)          |
+| Model interaction | Calls tools natively             | Calls via configured call proxy |
+| Schema visibility | Model sees tool schemas directly | Schemas in search results XML   |
+| Error feedback    | Native pydantic-ai validation    | XML error with schema           |
+| State storage     | Same (`AgentContext`)            | Same (`AgentContext`)           |
+| Search strategies | Same interface                   | Same interface                  |
+| HITL              | Same behavior                    | Same behavior                   |

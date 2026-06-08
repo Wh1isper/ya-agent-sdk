@@ -345,6 +345,10 @@ def test_runtime_builder_resolves_runtime_mcp_toolsets_from_profile(tmp_path: Pa
     assert len(toolsets) == 2
     assert isinstance(toolsets[0], SkillToolset)
     assert isinstance(toolsets[1], ToolProxyToolset)
+    assert toolsets[1].prefix == "mcp"
+    assert toolsets[1].search_tool_name == "mcp_search_tool"
+    assert toolsets[1].call_tool_name == "mcp_call_tool"
+    assert toolsets[1]._include_legacy_unprefixed_state is True
     assert [toolset.tool_prefix for toolset in toolsets[1]._toolsets] == ["context7"]
     assert toolsets[1]._optional_namespaces == {"context7"}
 

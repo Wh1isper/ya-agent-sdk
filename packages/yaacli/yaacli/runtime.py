@@ -198,10 +198,12 @@ def create_tui_runtime(
                 namespace_descriptions=mcp_descriptions if mcp_descriptions else None,
                 search_strategy=create_best_strategy(),
                 optional_namespaces=optional_mcps if optional_mcps else None,
+                prefix="mcp",
+                include_legacy_unprefixed_state=True,
             )
             toolsets.append(mcp_proxy)
             logger.info(
-                "Added %d MCP servers via ToolProxyToolset (descriptions: %d)",
+                "Added %d MCP servers via ToolProxyToolset (descriptions: %d, prefix=mcp)",
                 len(mcp_servers),
                 len(mcp_descriptions),
             )

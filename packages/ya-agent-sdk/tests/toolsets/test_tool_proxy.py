@@ -190,6 +190,132 @@ async def test_get_tools_order_is_stable(weather_toolset, mock_run_context):
 
 
 @pytest.mark.anyio
+async def test_get_tools_supports_prefix(weather_toolset, mock_run_context):
+    """Prefixed proxy names should use {prefix}_search_tool and {prefix}_call_tool."""
+    ts = ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp")
+    tools = await ts.get_tools(mock_run_context)
+
+    assert list(tools.keys()) == ["mcp_search_tool", "mcp_call_tool"]
+    assert ts.prefix == "mcp"
+    assert ts.search_tool_name == "mcp_search_tool"
+    assert ts.call_tool_name == "mcp_call_tool"
+
+
+@pytest.mark.anyio
+async def test_prefixed_proxy_search_and_call(weather_toolset, mock_run_context):
+    """Prefixed proxy tools should search, store scoped state, and call underlying tools."""
+    ts = ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp")
+    tools = await ts.get_tools(mock_run_context)
+
+    search_result = await ts.call_tool(
+        "mcp_search_tool",
+        {"query": "weather"},
+        mock_run_context,
+        tools["mcp_search_tool"],
+    )
+    assert "get_weather" in search_result
+    assert "weather" not in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+
+    call_result = await ts.call_tool(
+        "mcp_call_tool",
+        {"name": "get_weather", "arguments": {"location": "Rome"}},
+        mock_run_context,
+        tools["mcp_call_tool"],
+    )
+    assert "Rome" in call_result
+
+
+@pytest.mark.anyio
+async def test_prefixed_proxy_state_isolated_between_prefixes(weather_toolset, mock_run_context):
+    """Different proxy prefixes should not share discovered namespace state."""
+    mcp_proxy = ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp")
+    builtin_proxy = ToolProxyToolset(toolsets=[weather_toolset], prefix="builtin")
+    mcp_tools = await mcp_proxy.get_tools(mock_run_context)
+    builtin_tools = await builtin_proxy.get_tools(mock_run_context)
+
+    await mcp_proxy.call_tool("mcp_search_tool", {"query": "weather"}, mock_run_context, mcp_tools["mcp_search_tool"])
+    result = await builtin_proxy.call_tool(
+        "builtin_search_tool", {"query": "weather"}, mock_run_context, builtin_tools["builtin_search_tool"]
+    )
+
+    assert "get_weather" in result
+    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "builtin:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+
+
+@pytest.mark.anyio
+async def test_prefixed_proxy_instructions_use_prefixed_tool_names(weather_toolset, mock_run_context):
+    """Instructions should reference the configured proxy tool names."""
+    ts = ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp")
+    await ts.get_tools(mock_run_context)
+
+    instructions = await ts.get_instructions(mock_run_context)
+
+    assert instructions is not None
+    assert "mcp_search_tool" in instructions
+    assert "mcp_call_tool" in instructions
+    assert "search_tools" not in instructions
+
+
+@pytest.mark.anyio
+async def test_prefixed_proxy_instruction_replacement_is_single_pass(weather_toolset, mock_run_context):
+    """Prefix names containing legacy tool names should not corrupt rendered instructions."""
+    ts = ToolProxyToolset(toolsets=[weather_toolset], prefix="call_tool_proxy")
+    await ts.get_tools(mock_run_context)
+
+    instructions = await ts.get_instructions(mock_run_context)
+
+    assert instructions is not None
+    assert "call_tool_proxy_search_tool" in instructions
+    assert "call_tool_proxy_call_tool" in instructions
+    assert "call_tool_proxy_call_tool_proxy_call_tool" not in instructions
+
+
+@pytest.mark.anyio
+async def test_prefixed_proxy_can_restore_legacy_unprefixed_state(weather_toolset, loose_toolset, mock_run_context):
+    """A migrated prefixed proxy can read and migrate matching legacy state entries."""
+    mock_run_context.deps.tool_search_loaded_namespaces.extend(["weather", "other"])
+    mock_run_context.deps.tool_search_loaded_tools.extend(["view", "unknown_tool"])
+    ts = ToolProxyToolset(
+        toolsets=[weather_toolset, loose_toolset],
+        prefix="mcp",
+        include_legacy_unprefixed_state=True,
+    )
+    await ts.get_tools(mock_run_context)
+
+    instructions = await ts.get_instructions(mock_run_context)
+
+    assert instructions is not None
+    assert "Previously discovered tools" in instructions
+    assert "get_weather" in instructions
+    assert "view" in instructions
+    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "mcp:view" in mock_run_context.deps.tool_search_loaded_tools
+    assert "mcp:other" not in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "mcp:unknown_tool" not in mock_run_context.deps.tool_search_loaded_tools
+
+
+@pytest.mark.anyio
+async def test_prefixed_proxy_ignores_legacy_state_by_default(weather_toolset, mock_run_context):
+    """Prefixed proxy state compatibility is opt-in for migration scenarios."""
+    mock_run_context.deps.tool_search_loaded_namespaces.append("weather")
+    ts = ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp")
+    tools = await ts.get_tools(mock_run_context)
+
+    result = await ts.call_tool("mcp_search_tool", {"query": "weather"}, mock_run_context, tools["mcp_search_tool"])
+
+    assert "get_weather" in result
+    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+
+
+def test_prefix_validation_rejects_invalid_names(weather_toolset):
+    """Prefix must be safe for a pydantic-ai tool name."""
+    with pytest.raises(ValueError):
+        ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp-server")
+
+
+@pytest.mark.anyio
 async def test_underlying_tools_not_directly_visible(weather_toolset, mock_run_context):
     """Underlying tools must never appear in get_tools result."""
     mock_run_context.deps.tool_search_loaded_namespaces.append("weather")

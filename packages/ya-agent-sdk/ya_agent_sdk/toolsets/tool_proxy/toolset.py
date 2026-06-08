@@ -1,8 +1,8 @@
 """ToolProxyToolset: Fixed two-tool proxy for dynamic tool invocation.
 
 Wraps multiple AbstractToolsets and exposes exactly two tools:
-- ``search_tools``: discover tools via search (returns XML with full schemas)
-- ``call_tool``: invoke any discovered tool by name
+- ``search_tools`` or ``{prefix}_search_tool``: discover tools via search (returns XML with full schemas)
+- ``call_tool`` or ``{prefix}_call_tool``: invoke any discovered tool by name
 
 Unlike ToolSearchToolSet which dynamically adds tools to the model's tool list,
 ToolProxyToolset keeps the tool list constant (always two tools), maximizing
@@ -14,6 +14,7 @@ State is stored in AgentContext for automatic session restore via ResumableState
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from collections.abc import Sequence
 from html import escape as _html_escape
@@ -49,16 +50,37 @@ def xml_escape(s: str) -> str:
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 _SEARCH_TOOLS_NAME = "search_tools"
 _CALL_TOOL_NAME = "call_tool"
+_PREFIXED_SEARCH_TOOL_SUFFIX = "search_tool"
+_PREFIXED_CALL_TOOL_SUFFIX = "call_tool"
 _NS_KEY_PREFIX = "__ns__"
 _INSTRUCTION_GROUP = "tool-proxy"
+_PREFIX_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_TOOL_NAME_PATTERN = re.compile(rf"\b({_SEARCH_TOOLS_NAME}|{_CALL_TOOL_NAME})\b")
+
+
+def _normalize_prefix(prefix: str | None) -> str | None:
+    """Normalize and validate a proxy tool name prefix."""
+    if prefix is None:
+        return None
+
+    normalized = prefix.strip().strip("_")
+    if not normalized:
+        return None
+    if not _PREFIX_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            "ToolProxyToolset prefix must start with a letter and contain only letters, numbers, and underscores"
+        )
+    return normalized
 
 
 class ToolProxyToolset(BaseToolset[AgentContext]):
     """Fixed two-tool proxy for dynamic tool invocation.
 
     Wraps multiple toolsets and exposes exactly two tools: ``search_tools``
-    for discovery and ``call_tool`` for invocation. The tool list never
-    changes, which maximizes prompt cache hit rates.
+    for discovery and ``call_tool`` for invocation by default, or
+    ``{prefix}_search_tool`` and ``{prefix}_call_tool`` when ``prefix`` is
+    configured. The tool list never changes, which maximizes prompt cache hit
+    rates.
 
     Toolsets are organized into:
 
@@ -97,6 +119,8 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         search_strategy: SearchStrategy | None = None,
         max_results: int = 5,
         optional_namespaces: set[str] | None = None,
+        prefix: str | None = None,
+        include_legacy_unprefixed_state: bool = False,
     ) -> None:
         """Initialize ToolProxyToolset.
 
@@ -114,12 +138,30 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 ``__aenter__``, it will be skipped with a warning instead of
                 raising. Toolsets not in this set (or without an ID) are
                 required and will raise on failure.
+            prefix: Optional prefix for the two visible proxy tools. When set,
+                tools are exposed as ``{prefix}_search_tool`` and
+                ``{prefix}_call_tool``. When omitted, the legacy names
+                ``search_tools`` and ``call_tool`` are used.
+            include_legacy_unprefixed_state: When True with a prefix, restore
+                unprefixed loaded tool/namespace state for names that belong to
+                this proxy and write back prefixed state entries. This is useful
+                when migrating an existing unprefixed proxy block to a prefixed
+                one, such as YAACLI/YA Claw MCP proxies.
         """
         self._toolsets = list(toolsets)
         self._namespace_descriptions = namespace_descriptions or {}
         self._strategy: SearchStrategy = search_strategy or KeywordSearchStrategy()
         self._max_results = max_results
         self._optional_namespaces = optional_namespaces or set()
+        self._prefix = _normalize_prefix(prefix)
+        self._search_tool_name = (
+            f"{self._prefix}_{_PREFIXED_SEARCH_TOOL_SUFFIX}" if self._prefix else _SEARCH_TOOLS_NAME
+        )
+        self._call_tool_name = f"{self._prefix}_{_PREFIXED_CALL_TOOL_SUFFIX}" if self._prefix else _CALL_TOOL_NAME
+        self._instruction_group = f"{self._prefix}-tool-proxy" if self._prefix else _INSTRUCTION_GROUP
+        self._state_key_prefix = f"{self._prefix}:" if self._prefix else ""
+        self._include_legacy_unprefixed_state = bool(self._prefix and include_legacy_unprefixed_state)
+        self._event_id_prefix = f"tool-proxy-{self._prefix}-init" if self._prefix else "tool-proxy-init"
 
         # Init report: namespace_id -> status (populated during __aenter__)
         self._init_report: dict[str, NamespaceStatus] = {}
@@ -133,11 +175,32 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         self._search_pydantic_tool = self._create_search_tool()
         self._call_pydantic_tool = self._create_call_tool()
 
-        logger.debug(f"ToolProxyToolset initialized: {len(self._toolsets)} toolsets, max_results={max_results}")
+        logger.debug(
+            "ToolProxyToolset initialized: %d toolsets, max_results=%d, tools=(%s, %s)",
+            len(self._toolsets),
+            max_results,
+            self._search_tool_name,
+            self._call_tool_name,
+        )
 
     @property
     def id(self) -> str | None:
         return None
+
+    @property
+    def prefix(self) -> str | None:
+        """Optional prefix used for visible proxy tool names."""
+        return self._prefix
+
+    @property
+    def search_tool_name(self) -> str:
+        """Visible name of the search proxy tool."""
+        return self._search_tool_name
+
+    @property
+    def call_tool_name(self) -> str:
+        """Visible name of the call proxy tool."""
+        return self._call_tool_name
 
     @property
     def init_report(self) -> dict[str, NamespaceStatus]:
@@ -154,7 +217,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
     # -------------------------------------------------------------------------
 
     async def get_tools(self, ctx: RunContext[AgentContext]) -> dict[str, ToolsetTool[AgentContext]]:
-        """Return the two fixed proxy tools: search_tools and call_tool.
+        """Return the two fixed proxy tools.
 
         Internally collects all tools from wrapped toolsets and builds the
         search index, but only exposes the two proxy tools. The tool list
@@ -169,7 +232,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         if self._init_report:
             await ctx.deps.emit_event(
                 ToolSearchInitEvent(
-                    event_id=f"tool-proxy-init-{ctx.deps.run_id[:8]}",
+                    event_id=f"{self._event_id_prefix}-{ctx.deps.run_id[:8]}",
                     namespace_status=dict(self._init_report),
                 )
             )
@@ -183,7 +246,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
         search_tool_def = await self._search_pydantic_tool.prepare_tool_def(ctx)
         if search_tool_def:
-            visible[_SEARCH_TOOLS_NAME] = ToolsetTool(
+            visible[self._search_tool_name] = ToolsetTool(
                 toolset=self,
                 tool_def=search_tool_def,
                 max_retries=3,
@@ -192,7 +255,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
         call_tool_def = await self._call_pydantic_tool.prepare_tool_def(ctx)
         if call_tool_def:
-            visible[_CALL_TOOL_NAME] = ToolsetTool(
+            visible[self._call_tool_name] = ToolsetTool(
                 toolset=self,
                 tool_def=call_tool_def,
                 max_retries=3,
@@ -230,7 +293,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 raise
 
             for name, tool in ts_tools.items():
-                if name in (_SEARCH_TOOLS_NAME, _CALL_TOOL_NAME):
+                if name in (self._search_tool_name, self._call_tool_name):
                     logger.debug("Skipping proxy tool name %r from wrapped toolset", name)
                     continue
                 if name in self._toolset_tools_cache:
@@ -270,9 +333,9 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         tool: ToolsetTool[AgentContext],
     ) -> object:
         """Dispatch to search_tools or call_tool implementation."""
-        if name == _SEARCH_TOOLS_NAME:
+        if name == self._search_tool_name:
             return await self._execute_search(ctx, tool_args)
-        if name == _CALL_TOOL_NAME:
+        if name == self._call_tool_name:
             return await self._execute_call(ctx, tool_args)
         return f"<error>Unknown proxy tool: {xml_escape(name)}</error>"
 
@@ -282,10 +345,11 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         Only collects instructions from toolsets whose tools have been
         discovered (by namespace or individual tool).
         """
+        self._restore_legacy_state_entries(ctx)
         parts: list[str] = []
 
-        loaded_namespaces = set(ctx.deps.tool_search_loaded_namespaces)
-        loaded_tools = set(ctx.deps.tool_search_loaded_tools)
+        loaded_namespaces = self._loaded_namespaces(ctx)
+        loaded_tools = self._loaded_tools(ctx)
 
         for ts in self._toolsets:
             if not isinstance(ts, InstructableToolset):
@@ -307,7 +371,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         # Add tool-proxy instruction
         proxy_instruction = self._build_proxy_instruction(ctx)
         if proxy_instruction:
-            parts.append(f'<tool-instruction name="{_INSTRUCTION_GROUP}">{proxy_instruction}</tool-instruction>')
+            parts.append(f'<tool-instruction name="{self._instruction_group}">{proxy_instruction}</tool-instruction>')
 
         return "\n".join(parts) if parts else None
 
@@ -374,7 +438,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
     # -------------------------------------------------------------------------
 
     def _create_search_tool(self) -> Tool[AgentContext]:
-        """Create the pydantic-ai Tool for search_tools."""
+        """Create the pydantic-ai Tool for tool discovery."""
         toolset_ref = self
 
         async def _search_tools(
@@ -385,7 +449,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
         return Tool(
             function=_search_tools,
-            name=_SEARCH_TOOLS_NAME,
+            name=self._search_tool_name,
             description=(
                 "Search for available tools by keyword or description. "
                 "Returns tool names, descriptions, and full parameter schemas. "
@@ -396,7 +460,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         )
 
     def _create_call_tool(self) -> Tool[AgentContext]:
-        """Create the pydantic-ai Tool for call_tool."""
+        """Create the pydantic-ai Tool for proxied invocation."""
         toolset_ref = self
 
         async def _call_tool(
@@ -411,7 +475,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
         return Tool(
             function=_call_tool,
-            name=_CALL_TOOL_NAME,
+            name=self._call_tool_name,
             description=(
                 "Invoke a tool by name with the given arguments. "
                 "Pass the tool name and a JSON object of arguments matching "
@@ -431,8 +495,9 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         if not query:
             return "<error>Parameter 'query' is required.</error>"
 
-        loaded_tools = set(ctx.deps.tool_search_loaded_tools)
-        loaded_namespaces = set(ctx.deps.tool_search_loaded_namespaces)
+        self._restore_legacy_state_entries(ctx)
+        loaded_tools = self._loaded_tools(ctx)
+        loaded_namespaces = self._loaded_namespaces(ctx)
 
         candidates = self._get_unloaded_candidates(loaded_tools, loaded_namespaces)
         if not candidates:
@@ -484,11 +549,11 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
         for ns in new_namespaces:
             if ns not in loaded_namespaces:
-                ctx.deps.tool_search_loaded_namespaces.append(ns)
+                ctx.deps.tool_search_loaded_namespaces.append(self._state_key(ns))
                 logger.debug(f"Namespace {ns!r} discovered via search query {query!r}")
         for tool_name in new_tools:
             if tool_name not in loaded_tools:
-                ctx.deps.tool_search_loaded_tools.append(tool_name)
+                ctx.deps.tool_search_loaded_tools.append(self._state_key(tool_name))
                 logger.debug(f"Tool {tool_name!r} discovered via search query {query!r}")
 
         return new_namespaces, new_tools
@@ -559,7 +624,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         if tool_name not in self._toolset_tools_cache:
             return (
                 f'<error>Tool "{xml_escape(tool_name)}" not found. '
-                f"Use search_tools to discover available tools.</error>"
+                f"Use {self._search_tool_name} to discover available tools.</error>"
             )
 
         ts, original_tool = self._toolset_tools_cache[tool_name]
@@ -589,7 +654,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         # Load base instruction
         prompt_file = _PROMPTS_DIR / "tool_proxy.md"
         if prompt_file.exists():
-            parts.append(prompt_file.read_text().strip())
+            parts.append(self._render_base_instruction(prompt_file.read_text().strip()))
 
         # Add strategy-specific search hint
         search_hint = self._strategy.get_search_hint()
@@ -599,7 +664,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         # Add deferred tool count
         total_tools = len([k for k in self._search_entries if not k.startswith(_NS_KEY_PREFIX)])
         if total_tools > 0:
-            parts.append(f"\nThere are {total_tools} tools available via search_tools.")
+            parts.append(f"\nThere are {total_tools} tools available via {self._search_tool_name}.")
 
         # Add namespace information
         namespace_entries = [m for m in self._search_entries.values() if m.is_namespace_entry]
@@ -619,8 +684,8 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
     def _get_discovered_tools_summary(self, ctx: RunContext[AgentContext]) -> list[str]:
         """Build a summary of previously discovered tools from context state."""
-        loaded_namespaces = set(ctx.deps.tool_search_loaded_namespaces)
-        loaded_tools = set(ctx.deps.tool_search_loaded_tools)
+        loaded_namespaces = self._loaded_namespaces(ctx)
+        loaded_tools = self._loaded_tools(ctx)
         lines: list[str] = []
 
         # Namespace tools
@@ -646,6 +711,65 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+
+    def _state_key(self, name: str) -> str:
+        """Return the AgentContext state key for a tool or namespace name."""
+        return f"{self._state_key_prefix}{name}" if self._state_key_prefix else name
+
+    def _loaded_tools(self, ctx: RunContext[AgentContext]) -> set[str]:
+        """Return loaded tool names scoped to this proxy instance."""
+        return self._loaded_state_names(ctx.deps.tool_search_loaded_tools, self._valid_tool_state_names())
+
+    def _loaded_namespaces(self, ctx: RunContext[AgentContext]) -> set[str]:
+        """Return loaded namespace IDs scoped to this proxy instance."""
+        return self._loaded_state_names(ctx.deps.tool_search_loaded_namespaces, self._valid_namespace_state_names())
+
+    def _loaded_state_names(self, entries: Sequence[str], valid_names: set[str]) -> set[str]:
+        if not self._state_key_prefix:
+            return set(entries)
+        prefix_len = len(self._state_key_prefix)
+        loaded = {entry[prefix_len:] for entry in entries if entry.startswith(self._state_key_prefix)}
+        if self._include_legacy_unprefixed_state:
+            loaded.update(entry for entry in entries if entry in valid_names)
+        return loaded
+
+    def _restore_legacy_state_entries(self, ctx: RunContext[AgentContext]) -> None:
+        """Copy legacy unprefixed loaded state into prefixed state keys."""
+        if not self._include_legacy_unprefixed_state:
+            return
+
+        valid_tools = self._valid_tool_state_names()
+        valid_namespaces = self._valid_namespace_state_names()
+        self._restore_legacy_entries(ctx.deps.tool_search_loaded_tools, valid_tools)
+        self._restore_legacy_entries(ctx.deps.tool_search_loaded_namespaces, valid_namespaces)
+
+    def _restore_legacy_entries(self, entries: list[str], valid_names: set[str]) -> None:
+        existing = set(entries)
+        for entry in list(entries):
+            if entry not in valid_names:
+                continue
+            prefixed_entry = self._state_key(entry)
+            if prefixed_entry not in existing:
+                entries.append(prefixed_entry)
+                existing.add(prefixed_entry)
+
+    def _valid_tool_state_names(self) -> set[str]:
+        return {name for name in self._toolset_tools_cache if not name.startswith(_NS_KEY_PREFIX)}
+
+    def _valid_namespace_state_names(self) -> set[str]:
+        return {meta.namespace for meta in self._search_entries.values() if meta.is_namespace_entry and meta.namespace}
+
+    def _render_base_instruction(self, instruction: str) -> str:
+        """Render base instruction text with the configured proxy tool names."""
+        if self._search_tool_name == _SEARCH_TOOLS_NAME and self._call_tool_name == _CALL_TOOL_NAME:
+            return instruction
+
+        def replace_match(match: re.Match[str]) -> str:
+            if match.group(0) == _SEARCH_TOOLS_NAME:
+                return self._search_tool_name
+            return self._call_tool_name
+
+        return _TOOL_NAME_PATTERN.sub(replace_match, instruction)
 
     def _resolve_namespace_description(self, ts: AbstractToolset[AgentContext]) -> str:
         """Resolve description for a namespace toolset.

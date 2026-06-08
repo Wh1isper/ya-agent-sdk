@@ -148,6 +148,10 @@ def test_create_tui_runtime_with_mcp_servers(tmp_path: Path) -> None:
     )
 
     assert runtime is not None
+    mcp_proxy = next(toolset for toolset in runtime.agent.toolsets if getattr(toolset, "prefix", None) == "mcp")
+    assert mcp_proxy.search_tool_name == "mcp_search_tool"
+    assert mcp_proxy.call_tool_name == "mcp_call_tool"
+    assert mcp_proxy._include_legacy_unprefixed_state is True
 
 
 def test_create_tui_runtime_with_need_approval(tmp_path: Path) -> None:
