@@ -120,7 +120,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         max_results: int = 5,
         optional_namespaces: set[str] | None = None,
         prefix: str | None = None,
-        include_legacy_unprefixed_state: bool = False,
     ) -> None:
         """Initialize ToolProxyToolset.
 
@@ -142,11 +141,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 tools are exposed as ``{prefix}_search_tool`` and
                 ``{prefix}_call_tool``. When omitted, the legacy names
                 ``search_tools`` and ``call_tool`` are used.
-            include_legacy_unprefixed_state: When True with a prefix, restore
-                unprefixed loaded tool/namespace state for names that belong to
-                this proxy and write back prefixed state entries. This is useful
-                when migrating an existing unprefixed proxy block to a prefixed
-                one, such as YAACLI/YA Claw MCP proxies.
         """
         self._toolsets = list(toolsets)
         self._namespace_descriptions = namespace_descriptions or {}
@@ -160,7 +154,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         self._call_tool_name = f"{self._prefix}_{_PREFIXED_CALL_TOOL_SUFFIX}" if self._prefix else _CALL_TOOL_NAME
         self._instruction_group = f"{self._prefix}-tool-proxy" if self._prefix else _INSTRUCTION_GROUP
         self._state_key_prefix = f"{self._prefix}:" if self._prefix else ""
-        self._include_legacy_unprefixed_state = bool(self._prefix and include_legacy_unprefixed_state)
         self._event_id_prefix = f"tool-proxy-{self._prefix}-init" if self._prefix else "tool-proxy-init"
 
         # Init report: namespace_id -> status (populated during __aenter__)
@@ -345,7 +338,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         Only collects instructions from toolsets whose tools have been
         discovered (by namespace or individual tool).
         """
-        self._restore_legacy_state_entries(ctx)
         parts: list[str] = []
 
         loaded_namespaces = self._loaded_namespaces(ctx)
@@ -495,7 +487,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         if not query:
             return "<error>Parameter 'query' is required.</error>"
 
-        self._restore_legacy_state_entries(ctx)
         loaded_tools = self._loaded_tools(ctx)
         loaded_namespaces = self._loaded_namespaces(ctx)
 
@@ -718,46 +709,17 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
     def _loaded_tools(self, ctx: RunContext[AgentContext]) -> set[str]:
         """Return loaded tool names scoped to this proxy instance."""
-        return self._loaded_state_names(ctx.deps.tool_search_loaded_tools, self._valid_tool_state_names())
+        return self._loaded_state_names(ctx.deps.tool_search_loaded_tools)
 
     def _loaded_namespaces(self, ctx: RunContext[AgentContext]) -> set[str]:
         """Return loaded namespace IDs scoped to this proxy instance."""
-        return self._loaded_state_names(ctx.deps.tool_search_loaded_namespaces, self._valid_namespace_state_names())
+        return self._loaded_state_names(ctx.deps.tool_search_loaded_namespaces)
 
-    def _loaded_state_names(self, entries: Sequence[str], valid_names: set[str]) -> set[str]:
+    def _loaded_state_names(self, entries: Sequence[str]) -> set[str]:
         if not self._state_key_prefix:
             return set(entries)
         prefix_len = len(self._state_key_prefix)
-        loaded = {entry[prefix_len:] for entry in entries if entry.startswith(self._state_key_prefix)}
-        if self._include_legacy_unprefixed_state:
-            loaded.update(entry for entry in entries if entry in valid_names)
-        return loaded
-
-    def _restore_legacy_state_entries(self, ctx: RunContext[AgentContext]) -> None:
-        """Copy legacy unprefixed loaded state into prefixed state keys."""
-        if not self._include_legacy_unprefixed_state:
-            return
-
-        valid_tools = self._valid_tool_state_names()
-        valid_namespaces = self._valid_namespace_state_names()
-        self._restore_legacy_entries(ctx.deps.tool_search_loaded_tools, valid_tools)
-        self._restore_legacy_entries(ctx.deps.tool_search_loaded_namespaces, valid_namespaces)
-
-    def _restore_legacy_entries(self, entries: list[str], valid_names: set[str]) -> None:
-        existing = set(entries)
-        for entry in list(entries):
-            if entry not in valid_names:
-                continue
-            prefixed_entry = self._state_key(entry)
-            if prefixed_entry not in existing:
-                entries.append(prefixed_entry)
-                existing.add(prefixed_entry)
-
-    def _valid_tool_state_names(self) -> set[str]:
-        return {name for name in self._toolset_tools_cache if not name.startswith(_NS_KEY_PREFIX)}
-
-    def _valid_namespace_state_names(self) -> set[str]:
-        return {meta.namespace for meta in self._search_entries.values() if meta.is_namespace_entry and meta.namespace}
+        return {entry[prefix_len:] for entry in entries if entry.startswith(self._state_key_prefix)}
 
     def _render_base_instruction(self, instruction: str) -> str:
         """Render base instruction text with the configured proxy tool names."""

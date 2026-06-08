@@ -199,7 +199,6 @@ def create_tui_runtime(
                 search_strategy=create_best_strategy(),
                 optional_namespaces=optional_mcps if optional_mcps else None,
                 prefix="mcp",
-                include_legacy_unprefixed_state=True,
             )
             toolsets.append(mcp_proxy)
             logger.info(

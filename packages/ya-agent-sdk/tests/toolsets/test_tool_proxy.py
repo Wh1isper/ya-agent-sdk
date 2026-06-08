@@ -273,32 +273,8 @@ async def test_prefixed_proxy_instruction_replacement_is_single_pass(weather_too
 
 
 @pytest.mark.anyio
-async def test_prefixed_proxy_can_restore_legacy_unprefixed_state(weather_toolset, loose_toolset, mock_run_context):
-    """A migrated prefixed proxy can read and migrate matching legacy state entries."""
-    mock_run_context.deps.tool_search_loaded_namespaces.extend(["weather", "other"])
-    mock_run_context.deps.tool_search_loaded_tools.extend(["view", "unknown_tool"])
-    ts = ToolProxyToolset(
-        toolsets=[weather_toolset, loose_toolset],
-        prefix="mcp",
-        include_legacy_unprefixed_state=True,
-    )
-    await ts.get_tools(mock_run_context)
-
-    instructions = await ts.get_instructions(mock_run_context)
-
-    assert instructions is not None
-    assert "Previously discovered tools" in instructions
-    assert "get_weather" in instructions
-    assert "view" in instructions
-    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
-    assert "mcp:view" in mock_run_context.deps.tool_search_loaded_tools
-    assert "mcp:other" not in mock_run_context.deps.tool_search_loaded_namespaces
-    assert "mcp:unknown_tool" not in mock_run_context.deps.tool_search_loaded_tools
-
-
-@pytest.mark.anyio
-async def test_prefixed_proxy_ignores_legacy_state_by_default(weather_toolset, mock_run_context):
-    """Prefixed proxy state compatibility is opt-in for migration scenarios."""
+async def test_prefixed_proxy_uses_only_prefixed_state(weather_toolset, mock_run_context):
+    """Prefixed proxy state should not read unprefixed state from older proxy blocks."""
     mock_run_context.deps.tool_search_loaded_namespaces.append("weather")
     ts = ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp")
     tools = await ts.get_tools(mock_run_context)
