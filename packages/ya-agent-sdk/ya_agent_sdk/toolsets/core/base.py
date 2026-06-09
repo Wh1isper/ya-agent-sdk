@@ -490,7 +490,8 @@ class Toolset(BaseToolset[AgentDepsT]):
         logger.debug(f"get_tools called, preparing {len(self._tool_classes)} tools")
 
         # Phase 1: determine basic availability and collect tags
-        available_names: set[str] = set()
+        # Use a list to preserve registration order for deterministic tool output.
+        available_names: list[str] = []
         collected_tags: set[str] = set()
 
         for name in self._tool_classes:
@@ -499,7 +500,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             if self._skip_unavailable and not tool_instance.is_available(ctx):
                 logger.debug(f"Skipping unavailable tool {name!r}")
                 continue
-            available_names.add(name)
+            available_names.append(name)
             collected_tags.update(tool_instance.tags)
 
         # Set collected tags on context (recomputed fresh each call)
