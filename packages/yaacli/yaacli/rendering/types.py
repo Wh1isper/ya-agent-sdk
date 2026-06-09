@@ -52,7 +52,7 @@ class ToolCallInfo(BaseModel):
 
     def duration(self) -> float:
         """Calculate execution duration in seconds."""
-        if self.end_time:
+        if self.end_time is not None:
             return self.end_time - self.start_time
         return time.time() - self.start_time
 

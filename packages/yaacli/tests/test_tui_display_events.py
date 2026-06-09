@@ -53,6 +53,29 @@ def test_tui_display_tool_result_renders_once() -> None:
     assert app._append_block.call_count == 1
 
 
+def test_tui_display_tool_result_uses_agui_timestamps_for_duration() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+
+    app._handle_display_events([
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "tool-1",
+            "toolCallName": "shell",
+            "delta": '{"command":"sleep"}',
+            "timestamp": 1_000,
+        },
+        {
+            "type": "TOOL_CALL_RESULT",
+            "toolCallId": "tool-1",
+            "content": "done",
+            "timestamp": 2_500,
+        },
+    ])
+
+    assert any("(1.5s)" in line for line in app._output_lines)
+    assert abs(app._event_renderer.tracker.tool_calls["tool-1"].duration() - 1.5) < 0.01
+
+
 def test_tui_display_skips_subagent_detail_events() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
     app._append_block = MagicMock(wraps=app._append_block)

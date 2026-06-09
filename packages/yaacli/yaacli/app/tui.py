@@ -161,6 +161,29 @@ _DEFAULT_MAX_SESSIONS = 100
 # =============================================================================
 
 
+def _agui_event_timestamp_seconds(event: dict[str, Any]) -> float | None:
+    """Return an AGUI event timestamp as Unix seconds when available."""
+    timestamp = event.get("timestamp")
+    if timestamp is None or isinstance(timestamp, bool):
+        return None
+    if isinstance(timestamp, int | float):
+        return float(timestamp) / 1000.0
+    if not isinstance(timestamp, str):
+        return None
+
+    value = timestamp.strip()
+    if not value:
+        return None
+    try:
+        return float(value) / 1000.0
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def _safe_exception_str(e: BaseException) -> str:
     """Safely convert an exception to a string.
 
@@ -837,6 +860,28 @@ class TUIApp:
             if event_type == "REASONING_MESSAGE_END":
                 self._finalize_streaming_thinking()
                 continue
+            if event_type == "TOOL_CALL_START":
+                agent_id = str(event.get("yaacliAgentId") or "main")
+                if agent_id != "main":
+                    continue
+                self._finalize_streaming_text()
+                self._finalize_streaming_thinking()
+                tool_name = event.get("toolCallName") or event.get("tool_call_name") or "tool"
+                tool_call_id = str(event.get("toolCallId") or event.get("tool_call_id") or "")
+                if tool_call_id and tool_call_id not in self._tool_messages:
+                    self._tool_messages[tool_call_id] = ToolMessage(
+                        tool_call_id=tool_call_id,
+                        name=str(tool_name),
+                    )
+                    self._event_renderer.tracker.start_call(
+                        tool_call_id,
+                        str(tool_name),
+                        start_time=_agui_event_timestamp_seconds(event),
+                    )
+                    self._append_block(
+                        self._event_renderer.render_tool_call_start(str(tool_name), tool_call_id).rstrip()
+                    )
+                continue
             if event_type == "TOOL_CALL_CHUNK":
                 agent_id = str(event.get("yaacliAgentId") or "main")
                 if agent_id != "main":
@@ -851,10 +896,21 @@ class TUIApp:
                         name=str(tool_name),
                         args=event.get("delta") or "",
                     )
-                    self._event_renderer.tracker.start_call(tool_call_id, str(tool_name), event.get("delta") or "")
+                    self._event_renderer.tracker.start_call(
+                        tool_call_id,
+                        str(tool_name),
+                        event.get("delta") or "",
+                        start_time=_agui_event_timestamp_seconds(event),
+                    )
                     self._append_block(
                         self._event_renderer.render_tool_call_start(str(tool_name), tool_call_id).rstrip()
                     )
+                elif tool_call_id and tool_call_id in self._tool_messages:
+                    existing_tool_msg = self._tool_messages[tool_call_id]
+                    if not existing_tool_msg.args:
+                        existing_tool_msg.args = event.get("delta") or ""
+                    if tool_call_id in self._event_renderer.tracker.tool_calls:
+                        self._event_renderer.tracker.tool_calls[tool_call_id].args = existing_tool_msg.args
                 continue
             if event_type == "TOOL_CALL_RESULT":
                 agent_id = str(event.get("yaacliAgentId") or "main")
@@ -867,11 +923,19 @@ class TUIApp:
                     name=str(event.get("toolCallName") or event.get("tool_call_name") or "tool"),
                 )
                 tool_msg.content = str(event.get("content") or "")
+                self._event_renderer.tracker.complete_call(
+                    tool_call_id,
+                    tool_msg.content,
+                    end_time=_agui_event_timestamp_seconds(event),
+                )
                 if tool_call_id not in self._printed_tool_calls:
+                    duration = 0.0
+                    if tool_call_id in self._event_renderer.tracker.tool_calls:
+                        duration = self._event_renderer.tracker.tool_calls[tool_call_id].duration()
                     self._append_block(
                         self._event_renderer.render_tool_call_complete(
                             tool_msg,
-                            duration=0.0,
+                            duration=duration,
                             width=width,
                         ).rstrip()
                     )
