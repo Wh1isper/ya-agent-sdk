@@ -421,27 +421,35 @@ class LocalFileOperator(FileOperator):
                     filenames = [name for name in filenames if not name.startswith(".")]
                 for name in sorted(dirnames):
                     path = current_path / name
-                    resolved = path.resolve()
-                    if not self._is_path_allowed(resolved):
-                        continue
                     try:
-                        stat = path.stat()
-                    except OSError:
+                        if follow_symlinks:
+                            resolved = path.resolve()
+                            if not self._is_path_allowed(resolved):
+                                continue
+                            rel = resolved.relative_to(default_path).as_posix()
+                            stat = path.stat()
+                        else:
+                            rel = path.relative_to(default_path).as_posix()
+                            stat = path.lstat()
+                    except (OSError, ValueError):
                         continue
-                    rel = resolved.relative_to(default_path).as_posix()
                     entries.append(
                         FileEntry(path=rel, is_file=False, is_dir=True, size=stat.st_size, mtime=stat.st_mtime)
                     )
                 for name in sorted(filenames):
                     path = current_path / name
-                    resolved = path.resolve()
-                    if not self._is_path_allowed(resolved):
-                        continue
                     try:
-                        stat = path.stat()
-                    except OSError:
+                        if follow_symlinks:
+                            resolved = path.resolve()
+                            if not self._is_path_allowed(resolved):
+                                continue
+                            rel = resolved.relative_to(default_path).as_posix()
+                            stat = path.stat()
+                        else:
+                            rel = path.relative_to(default_path).as_posix()
+                            stat = path.lstat()
+                    except (OSError, ValueError):
                         continue
-                    rel = resolved.relative_to(default_path).as_posix()
                     entries.append(
                         FileEntry(path=rel, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime)
                     )

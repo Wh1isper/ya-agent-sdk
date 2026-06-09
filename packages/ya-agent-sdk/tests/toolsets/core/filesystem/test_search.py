@@ -74,6 +74,69 @@ async def test_collect_walk_entries_includes_directories(tmp_path: Path) -> None
     assert "src/app.py" in paths
 
 
+async def test_gitignore_filtered_walk_preserves_negation_under_ignored_dir(tmp_path: Path) -> None:
+    """Gitignore negation under an ignored dir should prevent pruning that dir."""
+    from ya_agent_sdk.toolsets.core.filesystem._search import collect_walk_files_gitignore_filtered
+
+    (tmp_path / ".gitignore").write_text("ignored/\n!ignored/keep.txt\n")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "drop.txt").write_text("drop")
+    (tmp_path / "ignored" / "keep.txt").write_text("keep")
+
+    async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path) as env:
+        file_operator = env.file_operator
+        assert file_operator is not None
+        filtered = await collect_walk_files_gitignore_filtered(file_operator, root=".")
+
+    assert filtered is not None
+    candidates, filter_result = filtered
+    assert {candidate.path for candidate in candidates} == {"ignored/keep.txt"}
+    assert filter_result.ignored == ["ignored/drop.txt"]
+
+
+async def test_gitignore_filtered_walk_preserves_slashless_literal_negation(tmp_path: Path) -> None:
+    """Slashless literal negation should preserve matching basenames under ignored dirs."""
+    from ya_agent_sdk.toolsets.core.filesystem._search import collect_walk_files_gitignore_filtered
+
+    (tmp_path / ".gitignore").write_text("ignored/\nother_ignored/\n!keep.txt\n")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "drop.txt").write_text("drop")
+    (tmp_path / "ignored" / "keep.txt").write_text("keep")
+    (tmp_path / "other_ignored").mkdir()
+    (tmp_path / "other_ignored" / "drop.txt").write_text("drop")
+
+    async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path) as env:
+        file_operator = env.file_operator
+        assert file_operator is not None
+        filtered = await collect_walk_files_gitignore_filtered(file_operator, root=".")
+
+    assert filtered is not None
+    candidates, filter_result = filtered
+    assert {candidate.path for candidate in candidates} == {"ignored/keep.txt"}
+    assert set(filter_result.ignored) == {"ignored/drop.txt", "other_ignored/"}
+
+
+async def test_gitignore_filtered_walk_uses_symlink_metadata_without_following(tmp_path: Path) -> None:
+    """Local fast path should lstat symlinks instead of following target metadata."""
+    from ya_agent_sdk.toolsets.core.filesystem._search import collect_walk_files_gitignore_filtered
+
+    outside = tmp_path.parent / "outside-large-target.txt"
+    outside.write_text("x" * 4096)
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    (tmp_path / "link.txt").symlink_to(outside)
+
+    async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path) as env:
+        file_operator = env.file_operator
+        assert file_operator is not None
+        filtered = await collect_walk_files_gitignore_filtered(file_operator, root=".")
+
+    assert filtered is not None
+    candidates, _ = filtered
+    link = next(candidate for candidate in candidates if candidate.path == "link.txt")
+    assert link.size == (tmp_path / "link.txt").lstat().st_size
+    assert link.size != outside.stat().st_size
+
+
 def test_native_glob_error_falls_back_to_python(monkeypatch) -> None:
     """Invalid native glob patterns should use the Python matcher fallback."""
 

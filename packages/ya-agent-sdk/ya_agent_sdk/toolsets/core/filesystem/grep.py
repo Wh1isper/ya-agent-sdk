@@ -19,6 +19,7 @@ from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_strea
 from ya_agent_sdk.toolsets.core.filesystem._search import (
     SearchCandidate,
     collect_walk_files,
+    collect_walk_files_gitignore_filtered,
     filter_candidates_by_glob,
     filter_candidates_ignored,
     sort_candidates_by_mtime,
@@ -317,18 +318,40 @@ class GrepTool(BaseTool):
             except Exception:
                 native_regex = None
 
-        candidates = await collect_walk_files(
-            file_operator,
-            root=root,
-            include_hidden=include_hidden,
-            max_depth=walk_max_depth_for_glob(include),
-        )
+        max_depth = walk_max_depth_for_glob(include)
+        gitignore_summary: list[str] = []
+        filter_result = None
+
+        if include_ignored:
+            candidates = await collect_walk_files(
+                file_operator,
+                root=root,
+                include_hidden=include_hidden,
+                max_depth=max_depth,
+            )
+        else:
+            filtered = await collect_walk_files_gitignore_filtered(
+                file_operator,
+                root=root,
+                include_hidden=include_hidden,
+                max_depth=max_depth,
+            )
+            if filtered is None:
+                candidates = await collect_walk_files(
+                    file_operator,
+                    root=root,
+                    include_hidden=include_hidden,
+                    max_depth=max_depth,
+                )
+            else:
+                candidates, filter_result = filtered
+
         candidates = filter_candidates_by_glob(candidates, include)
         candidates = sort_candidates_by_mtime(candidates)
-        gitignore_summary: list[str] = []
 
         if not include_ignored:
-            candidates, filter_result = await filter_candidates_ignored(candidates, file_operator)
+            if filter_result is None:
+                candidates, filter_result = await filter_candidates_ignored(candidates, file_operator)
             gitignore_summary = filter_result.get_ignored_summary(max_items=5)
 
         files_to_search = candidates[:max_files] if max_files > 0 else candidates
