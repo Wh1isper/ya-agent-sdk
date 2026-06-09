@@ -21,6 +21,8 @@ from ya_agent_sdk.toolsets.core.base import (
     UserInteraction,
 )
 
+from .._instruction_helpers import instruction_text as _instruction_text
+
 
 # --- UserInteraction tests ---
 def test_user_interaction_approved() -> None:
@@ -233,8 +235,9 @@ async def test_toolset_get_instructions(agent_context: AgentContext) -> None:
     toolset = Toolset(tools=[DummyTool])
     mock_run_ctx = MagicMock(spec=RunContext)
     instructions = await toolset.get_instructions(mock_run_ctx)
+    instruction_text = _instruction_text(instructions)
     assert instructions is not None
-    assert "Use this dummy tool for testing purposes." in instructions
+    assert "Use this dummy tool for testing purposes." in instruction_text
 
 
 async def test_toolset_get_tools(agent_context: AgentContext) -> None:

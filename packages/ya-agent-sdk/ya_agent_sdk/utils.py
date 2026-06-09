@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import anyio.to_thread
 from PIL import Image
-from pydantic_ai import AbstractToolset, Agent, ModelMessage, ModelResponse, RequestUsage, RunContext, ToolCallPart
+from pydantic_ai import AbstractToolset, Agent, ModelMessage, ModelResponse, RequestUsage, ToolCallPart
 from pydantic_ai.messages import BinaryContent
 from pydantic_ai.output import OutputDataT
 from typing_extensions import TypeVar
@@ -110,55 +110,19 @@ def get_latest_request_usage(message_history: list[ModelMessage]) -> RequestUsag
     return None
 
 
-def _pydantic_ai_has_native_toolset_instructions() -> bool:
-    """Check if pydantic-ai natively supports AbstractToolset.get_instructions().
-
-    This was added in pydantic-ai v1.74.0 via https://github.com/pydantic/pydantic-ai/pull/4123.
-    When available, the agent graph automatically collects toolset instructions,
-    so we don't need to inject them manually via @agent.instructions.
-    """
-    from importlib.metadata import version
-
-    try:
-        v = version("pydantic-ai-slim")
-        major, minor = (int(x) for x in v.split(".")[:2])
-        return (major, minor) >= (1, 74)
-    except Exception:
-        return False
-
-
-_HAS_NATIVE_TOOLSET_INSTRUCTIONS = _pydantic_ai_has_native_toolset_instructions()
-
-
 def add_toolset_instructions(
     agent: Agent[AgentDepsT, OutputDataT], toolsets: list[AbstractToolset]
 ) -> Agent[AgentDepsT, OutputDataT]:
-    """Add instructions from toolsets to the agent.
+    """Return *agent* unchanged; Pydantic AI owns toolset instruction collection.
 
-    Works with any toolset that implements InstructableToolset protocol
-    (has get_instructions method).
-
-    Since pydantic-ai v1.74.0, AbstractToolset.get_instructions() is natively
-    supported and the agent graph collects toolset instructions automatically.
-    In that case, this function is a no-op to avoid duplicate injection.
+    ``ya-agent-sdk`` depends on Pydantic AI versions where
+    ``AbstractToolset.get_instructions()`` is native. Keeping this small helper
+    preserves the existing factory call sites without re-injecting or flattening
+    toolset instructions through ``@agent.instructions``. This lets toolsets
+    return ``InstructionPart`` objects directly so static/dynamic cache metadata
+    reaches providers such as Anthropic and Bedrock.
     """
-    if _HAS_NATIVE_TOOLSET_INSTRUCTIONS:
-        return agent
-
-    from ya_agent_sdk.toolsets.base import InstructableToolset, collect_instruction_parts
-
-    @agent.instructions
-    async def _(ctx: RunContext[AgentDepsT]) -> str | None:
-        parts: list[str] = []
-        for toolset in toolsets:
-            if isinstance(toolset, InstructableToolset):
-                instructions = await toolset.get_instructions(ctx)  # type: ignore[arg-type]
-                if instructions:
-                    collect_instruction_parts(instructions, parts)
-        if not parts:
-            return None
-        return "\n".join(parts)
-
+    _ = toolsets
     return agent
 
 

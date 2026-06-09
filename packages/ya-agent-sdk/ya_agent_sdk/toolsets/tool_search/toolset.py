@@ -17,12 +17,13 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 from pydantic_ai import RunContext, Tool
+from pydantic_ai.messages import InstructionPart
 from pydantic_ai.toolsets.abstract import AbstractToolset, ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
-from ya_agent_sdk.toolsets.base import BaseToolset, InstructableToolset, collect_instruction_parts
+from ya_agent_sdk.toolsets.base import BaseToolset, collect_instruction_parts
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
 
@@ -286,20 +287,18 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
         ts, original_tool = self._toolset_tools_cache[name]
         return await ts.call_tool(name, tool_args, ctx, original_tool)
 
-    async def get_instructions(self, ctx: RunContext[AgentContext]) -> str | list[str] | None:
+    async def get_instructions(self, ctx: RunContext[AgentContext]) -> list[str | InstructionPart] | None:
         """Get instructions for tool_search and delegate to loaded toolsets.
 
         Only collects instructions from toolsets whose tools are currently
         loaded (by namespace or individual tool).
         """
-        parts: list[str] = []
+        parts: list[str | InstructionPart] = []
 
         loaded_namespaces = set(ctx.deps.tool_search_loaded_namespaces)
         loaded_tools = set(ctx.deps.tool_search_loaded_tools)
 
         for ts in self._toolsets:
-            if not isinstance(ts, InstructableToolset):
-                continue
             ns_id = ts.id
             # Only include instructions for loaded toolsets
             if ns_id:
@@ -317,9 +316,14 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
         # Add tool_search instruction
         search_instruction = self._build_search_instruction()
         if search_instruction:
-            parts.append(f'<tool-instruction name="tool_search">{search_instruction}</tool-instruction>')
+            parts.append(
+                InstructionPart(
+                    content=f'<tool-instruction name="tool_search">{search_instruction}</tool-instruction>',
+                    dynamic=False,
+                )
+            )
 
-        return "\n".join(parts) if parts else None
+        return parts or None
 
     # -------------------------------------------------------------------------
     # Context manager delegation

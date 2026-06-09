@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import RunContext
+from pydantic_ai.messages import InstructionPart
 from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
@@ -341,7 +342,7 @@ class SkillToolset(BaseToolset[AgentContext]):
 
         return "\n".join(lines)
 
-    async def get_instructions(self, ctx: RunContext[AgentContext]) -> str | list[str] | None:
+    async def get_instructions(self, ctx: RunContext[AgentContext]) -> list[InstructionPart] | None:
         """Get skill instructions to inject into system prompt.
 
         This method is called at the start of each request, providing the
@@ -355,7 +356,7 @@ class SkillToolset(BaseToolset[AgentContext]):
             ctx: The run context containing AgentContext with file_operator.
 
         Returns:
-            Formatted skill metadata string, or None if no skills or no file_operator.
+            Dynamic skill metadata instruction part, or None if no skills or no file_operator.
         """
         # Call pre-scan hook if provided (supports sync and async)
         if self._pre_scan_hook:
@@ -377,7 +378,10 @@ class SkillToolset(BaseToolset[AgentContext]):
 
         logger.debug(f"SkillToolset: Found {len(skills)} skill(s): {list(skills.keys())}")
 
-        return self._format_skills_instruction(skills)
+        instruction = self._format_skills_instruction(skills)
+        if not instruction:
+            return None
+        return [InstructionPart(content=instruction, dynamic=True)]
 
     # -------------------------------------------------------------------------
     # AbstractToolset implementation (no tools, just instructions)

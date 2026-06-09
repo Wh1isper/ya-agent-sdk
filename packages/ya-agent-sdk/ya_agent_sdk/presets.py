@@ -388,6 +388,7 @@ def _anthropic_adaptive_settings(
         },
         "anthropic_effort": effort,
         "anthropic_cache_instructions": True,
+        "anthropic_cache_tool_definitions": True,
         "anthropic_cache_response": True,
         "anthropic_cache_messages": True,
     }
@@ -428,6 +429,7 @@ def _anthropic_off_settings(
             "type": "disabled",
         },
         "anthropic_cache_instructions": True,
+        "anthropic_cache_tool_definitions": True,
         "anthropic_cache_response": True,
         "anthropic_cache_messages": True,
     }

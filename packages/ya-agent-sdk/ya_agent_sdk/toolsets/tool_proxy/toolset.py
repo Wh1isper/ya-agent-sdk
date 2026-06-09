@@ -23,12 +23,13 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 from pydantic_ai import RunContext, Tool
+from pydantic_ai.messages import InstructionPart
 from pydantic_ai.toolsets.abstract import AbstractToolset, ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
-from ya_agent_sdk.toolsets.base import BaseToolset, InstructableToolset, collect_instruction_parts
+from ya_agent_sdk.toolsets.base import BaseToolset, collect_instruction_parts
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
 
@@ -332,20 +333,18 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
             return await self._execute_call(ctx, tool_args)
         return f"<error>Unknown proxy tool: {xml_escape(name)}</error>"
 
-    async def get_instructions(self, ctx: RunContext[AgentContext]) -> str | list[str] | None:
+    async def get_instructions(self, ctx: RunContext[AgentContext]) -> list[str | InstructionPart] | None:
         """Get instructions for proxy tools and delegate to loaded toolsets.
 
         Only collects instructions from toolsets whose tools have been
         discovered (by namespace or individual tool).
         """
-        parts: list[str] = []
+        parts: list[str | InstructionPart] = []
 
         loaded_namespaces = self._loaded_namespaces(ctx)
         loaded_tools = self._loaded_tools(ctx)
 
         for ts in self._toolsets:
-            if not isinstance(ts, InstructableToolset):
-                continue
             ns_id = ts.id
             # Only include instructions for loaded toolsets
             if ns_id:
@@ -363,9 +362,14 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         # Add tool-proxy instruction
         proxy_instruction = self._build_proxy_instruction(ctx)
         if proxy_instruction:
-            parts.append(f'<tool-instruction name="{self._instruction_group}">{proxy_instruction}</tool-instruction>')
+            parts.append(
+                InstructionPart(
+                    content=f'<tool-instruction name="{self._instruction_group}">{proxy_instruction}</tool-instruction>',
+                    dynamic=False,
+                )
+            )
 
-        return "\n".join(parts) if parts else None
+        return parts or None
 
     # -------------------------------------------------------------------------
     # Context manager delegation

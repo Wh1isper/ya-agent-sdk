@@ -10,6 +10,8 @@ from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.skills import SkillToolset
 
+from .._instruction_helpers import instruction_text as _instruction_text
+
 
 @pytest.fixture
 async def env_with_skills(tmp_path: Path):
@@ -78,14 +80,15 @@ async def test_skill_toolset_get_instructions(mock_run_ctx_with_skills: MagicMoc
     """Test that SkillToolset loads and formats skill instructions."""
     toolset = SkillToolset()
     instructions = await toolset.get_instructions(mock_run_ctx_with_skills)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert "<available-skills>" in instructions
-    assert "project-skill" in instructions
-    assert "global-skill" in instructions
-    assert "A project-specific skill" in instructions
-    assert "A global skill available everywhere" in instructions
-    assert "<skill-usage-instructions>" in instructions
+    assert "<available-skills>" in instruction_text
+    assert "project-skill" in instruction_text
+    assert "global-skill" in instruction_text
+    assert "A project-specific skill" in instruction_text
+    assert "A global skill available everywhere" in instruction_text
+    assert "<skill-usage-instructions>" in instruction_text
 
 
 async def test_skill_toolset_no_file_operator():
@@ -96,7 +99,6 @@ async def test_skill_toolset_no_file_operator():
 
     toolset = SkillToolset()
     instructions = await toolset.get_instructions(mock_ctx)
-
     assert instructions is None
 
 
@@ -114,7 +116,6 @@ async def test_skill_toolset_no_skills(tmp_path: Path):
 
             toolset = SkillToolset()
             instructions = await toolset.get_instructions(mock_ctx)
-
             assert instructions is None
 
 
@@ -150,8 +151,9 @@ Content v1.
 
             # First call - loads skill
             instructions1 = await toolset.get_instructions(mock_ctx)
+            instruction_text1 = _instruction_text(instructions1)
             assert instructions1 is not None
-            assert "Version 1 description" in instructions1
+            assert "Version 1 description" in instruction_text1
 
             # Modify skill frontmatter
             skill_file.write_text("""---
@@ -164,9 +166,10 @@ Content v2.
 
             # Second call - should detect change and reload
             instructions2 = await toolset.get_instructions(mock_ctx)
+            instruction_text2 = _instruction_text(instructions2)
             assert instructions2 is not None
-            assert "Version 2 description" in instructions2
-            assert "Version 1 description" not in instructions2
+            assert "Version 2 description" in instruction_text2
+            assert "Version 1 description" not in instruction_text2
 
 
 async def test_skill_toolset_cache_unchanged(tmp_path: Path):
@@ -241,8 +244,9 @@ Content.
             # Custom dir name - should find skill
             custom_toolset = SkillToolset(skills_dir_name="custom-skills")
             instructions_custom = await custom_toolset.get_instructions(mock_ctx)
+            instruction_text_custom = _instruction_text(instructions_custom)
             assert instructions_custom is not None
-            assert "custom-skill" in instructions_custom
+            assert "custom-skill" in instruction_text_custom
 
 
 async def test_skill_toolset_uses_highest_priority_duplicate(tmp_path: Path):
@@ -280,10 +284,11 @@ High priority content.
 
             toolset = SkillToolset()
             instructions = await toolset.get_instructions(mock_ctx)
+            instruction_text = _instruction_text(instructions)
 
             assert instructions is not None
-            assert "High priority description" in instructions
-            assert "Low priority description" not in instructions
+            assert "High priority description" in instruction_text
+            assert "Low priority description" not in instruction_text
             assert toolset._skills_cache["duplicate-skill"].path == high_priority_skill_dir
 
 

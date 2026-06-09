@@ -15,6 +15,8 @@ from ya_agent_sdk.toolsets.tool_search.strategies.bm25 import BM25SearchStrategy
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
 from ya_agent_sdk.toolsets.tool_search.toolset import ToolSearchToolSet
 
+from ._instruction_helpers import instruction_text as _instruction_text
+
 # ---------------------------------------------------------------------------
 # Test tools
 # ---------------------------------------------------------------------------
@@ -700,8 +702,9 @@ async def test_namespace_description_from_explicit(weather_toolset, mock_run_con
     )
     await ts.get_tools(mock_run_context)
     instruction = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instruction)
     assert instruction is not None
-    assert "Custom weather description" in instruction
+    assert "Custom weather description" in instruction_text
 
 
 @pytest.mark.anyio
@@ -715,8 +718,9 @@ async def test_namespace_description_from_toolset_description(mock_run_context):
     ts = ToolSearchToolSet(toolsets=[ts_with_desc])
     await ts.get_tools(mock_run_context)
     instruction = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instruction)
     assert instruction is not None
-    assert "Weather toolset from description property" in instruction
+    assert "Weather toolset from description property" in instruction_text
 
 
 @pytest.mark.anyio
@@ -726,8 +730,9 @@ async def test_namespace_description_auto_fallback(mock_run_context):
     ts = ToolSearchToolSet(toolsets=[ts_no_desc])
     await ts.get_tools(mock_run_context)
     instruction = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instruction)
     assert instruction is not None
-    assert "weather" in instruction
+    assert "weather" in instruction_text
 
 
 @pytest.mark.anyio
@@ -740,10 +745,11 @@ async def test_namespace_description_from_instructions_property(mock_run_context
     ts = ToolSearchToolSet(toolsets=[ts_with_instructions])
     await ts.get_tools(mock_run_context)
     instruction = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instruction)
     assert instruction is not None
-    assert "MCP server for weather data" in instruction
+    assert "MCP server for weather data" in instruction_text
     # Should not include the second line
-    assert "More details here" not in instruction
+    assert "More details here" not in instruction_text
 
 
 @pytest.mark.anyio
@@ -758,9 +764,10 @@ async def test_namespace_description_instructions_lower_priority_than_explicit(m
     )
     await ts.get_tools(mock_run_context)
     instruction = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instruction)
     assert instruction is not None
-    assert "User-provided description" in instruction
-    assert "From MCP instructions" not in instruction
+    assert "User-provided description" in instruction_text
+    assert "From MCP instructions" not in instruction_text
 
 
 # ---------------------------------------------------------------------------
@@ -780,10 +787,11 @@ async def test_instructions_include_namespace_info(weather_toolset, finance_tool
     )
     await ts.get_tools(mock_run_context)
     instruction = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instruction)
     assert instruction is not None
-    assert "weather" in instruction
-    assert "finance" in instruction
-    assert "namespaces" in instruction.lower()
+    assert "weather" in instruction_text
+    assert "finance" in instruction_text
+    assert "namespaces" in instruction_text.lower()
 
 
 @pytest.mark.anyio
@@ -794,9 +802,10 @@ async def test_instructions_only_for_loaded_toolsets(weather_toolset, mock_run_c
     # No tools loaded yet - should not include weather toolset instructions
     await ts.get_tools(mock_run_context)
     instruction = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instruction)
     # Should only have tool_search instruction, not weather toolset instructions
     assert instruction is not None
-    assert "tool_search" in instruction
+    assert "tool_search" in instruction_text
 
 
 # ---------------------------------------------------------------------------

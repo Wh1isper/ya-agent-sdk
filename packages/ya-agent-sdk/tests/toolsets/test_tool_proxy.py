@@ -12,6 +12,8 @@ from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 
+from ._instruction_helpers import instruction_text as _instruction_text
+
 # ---------------------------------------------------------------------------
 # Test tools
 # ---------------------------------------------------------------------------
@@ -251,11 +253,12 @@ async def test_prefixed_proxy_instructions_use_prefixed_tool_names(weather_tools
     await ts.get_tools(mock_run_context)
 
     instructions = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert "mcp_search_tool" in instructions
-    assert "mcp_call_tool" in instructions
-    assert "search_tools" not in instructions
+    assert "mcp_search_tool" in instruction_text
+    assert "mcp_call_tool" in instruction_text
+    assert "search_tools" not in instruction_text
 
 
 @pytest.mark.anyio
@@ -265,11 +268,12 @@ async def test_prefixed_proxy_instruction_replacement_is_single_pass(weather_too
     await ts.get_tools(mock_run_context)
 
     instructions = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert "call_tool_proxy_search_tool" in instructions
-    assert "call_tool_proxy_call_tool" in instructions
-    assert "call_tool_proxy_call_tool_proxy_call_tool" not in instructions
+    assert "call_tool_proxy_search_tool" in instruction_text
+    assert "call_tool_proxy_call_tool" in instruction_text
+    assert "call_tool_proxy_call_tool_proxy_call_tool" not in instruction_text
 
 
 @pytest.mark.anyio
@@ -627,10 +631,11 @@ async def test_instructions_include_namespace_info(weather_toolset, finance_tool
     await ts.get_tools(mock_run_context)
 
     instructions = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
     assert instructions is not None
-    assert "weather" in instructions
-    assert "finance" in instructions
-    assert "tool-proxy" in instructions
+    assert "weather" in instruction_text
+    assert "finance" in instruction_text
+    assert "tool-proxy" in instruction_text
 
 
 @pytest.mark.anyio
@@ -645,10 +650,11 @@ async def test_instructions_include_discovered_tools(weather_toolset, mock_run_c
     await ts.get_tools(mock_run_context)
 
     instructions = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
     assert instructions is not None
-    assert "Previously discovered tools" in instructions
-    assert "get_weather" in instructions
-    assert "get_forecast" in instructions
+    assert "Previously discovered tools" in instruction_text
+    assert "get_weather" in instruction_text
+    assert "get_forecast" in instruction_text
 
 
 @pytest.mark.anyio
@@ -662,9 +668,10 @@ async def test_instructions_delegates_loaded_toolset_instructions(mock_run_conte
 
     # Before loading namespace, no toolset instructions forwarded
     instructions = await ts.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
     # Only proxy instructions should be present
     assert instructions is not None
-    assert "tool-proxy" in instructions
+    assert "tool-proxy" in instruction_text
 
 
 # ---------------------------------------------------------------------------

@@ -2,9 +2,12 @@
 
 import pytest
 from pydantic_ai import RunContext
+from pydantic_ai.messages import InstructionPart
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets import Instruction, Toolset
 from ya_agent_sdk.toolsets.base import BaseTool
+
+from ._instruction_helpers import instruction_text as _instruction_text
 
 
 class ToolWithStringInstruction(BaseTool):
@@ -118,10 +121,13 @@ async def test_get_instructions_string_tool(mock_run_context: RunContext[AgentCo
     """Test get_instructions with tool returning string."""
     toolset = Toolset(tools=[ToolWithStringInstruction])
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert 'name="string_tool"' in instructions
-    assert "String instruction content" in instructions
+    assert 'name="string_tool"' in instruction_text
+    assert "String instruction content" in instruction_text
+    assert isinstance(instructions[0], InstructionPart)
+    assert instructions[0].dynamic is False
 
 
 @pytest.mark.asyncio
@@ -129,10 +135,13 @@ async def test_get_instructions_grouped_tool(mock_run_context: RunContext[AgentC
     """Test get_instructions with tool returning Instruction."""
     toolset = Toolset(tools=[ToolWithGroupedInstruction])
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert 'name="my-group"' in instructions
-    assert "Grouped instruction content" in instructions
+    assert 'name="my-group"' in instruction_text
+    assert "Grouped instruction content" in instruction_text
+    assert isinstance(instructions[0], InstructionPart)
+    assert instructions[0].dynamic is False
 
 
 @pytest.mark.asyncio
@@ -140,14 +149,15 @@ async def test_get_instructions_deduplication(mock_run_context: RunContext[Agent
     """Test that tools with same group are deduplicated."""
     toolset = Toolset(tools=[ToolWithGroupedInstruction, ToolWithSameGroup])
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
     # First tool's content should be present
-    assert "Grouped instruction content" in instructions
+    assert "Grouped instruction content" in instruction_text
     # Second tool's content should be skipped
-    assert "This should be skipped" not in instructions
+    assert "This should be skipped" not in instruction_text
     # Only one instruction block for the group
-    assert instructions.count('name="my-group"') == 1
+    assert instruction_text.count('name="my-group"') == 1
 
 
 @pytest.mark.asyncio
@@ -162,15 +172,16 @@ async def test_get_instructions_mixed_tools(mock_run_context: RunContext[AgentCo
         ]
     )
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
     # String tool uses tool name as group
-    assert 'name="string_tool"' in instructions
+    assert 'name="string_tool"' in instruction_text
     # Grouped tools share one instruction
-    assert 'name="my-group"' in instructions
-    assert instructions.count('name="my-group"') == 1
+    assert 'name="my-group"' in instruction_text
+    assert instruction_text.count('name="my-group"') == 1
     # No instruction tool contributes nothing
-    assert 'name="no_instruction_tool"' not in instructions
+    assert 'name="no_instruction_tool"' not in instruction_text
 
 
 @pytest.mark.asyncio
@@ -178,7 +189,6 @@ async def test_get_instructions_empty(mock_run_context: RunContext[AgentContext]
     """Test get_instructions with only no-instruction tools."""
     toolset = Toolset(tools=[ToolWithNoInstruction])
     instructions = await toolset.get_instructions(mock_run_context)
-
     assert instructions is None
 
 
@@ -190,11 +200,12 @@ async def test_get_instructions_skips_unavailable_tools(mock_run_context: RunCon
     """Test that unavailable tools do not inject instructions when skip_unavailable=True."""
     toolset = Toolset(tools=[ToolWithStringInstruction, UnavailableTool], skip_unavailable=True)
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert "String instruction content" in instructions
-    assert "should NOT be injected" not in instructions
-    assert 'name="unavailable_tool"' not in instructions
+    assert "String instruction content" in instruction_text
+    assert "should NOT be injected" not in instruction_text
+    assert 'name="unavailable_tool"' not in instruction_text
 
 
 @pytest.mark.asyncio
@@ -202,9 +213,10 @@ async def test_get_instructions_includes_unavailable_when_skip_disabled(mock_run
     """Test that unavailable tools still inject instructions when skip_unavailable=False."""
     toolset = Toolset(tools=[UnavailableTool], skip_unavailable=False)
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert 'name="unavailable_tool"' in instructions
+    assert 'name="unavailable_tool"' in instruction_text
 
 
 @pytest.mark.asyncio
@@ -212,13 +224,14 @@ async def test_get_instructions_skips_superseded_tools(mock_run_context: RunCont
     """Test that superseded tools do not inject instructions."""
     toolset = Toolset(tools=[SupersededTool, AdvancedTool])
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
     # Advanced tool instruction should be present
-    assert "Advanced tool instruction" in instructions
+    assert "Advanced tool instruction" in instruction_text
     # Superseded tool instruction should NOT be present
-    assert "should NOT be injected when superseded" not in instructions
-    assert 'name="superseded_tool"' not in instructions
+    assert "should NOT be injected when superseded" not in instruction_text
+    assert 'name="superseded_tool"' not in instruction_text
 
 
 @pytest.mark.asyncio
@@ -226,9 +239,10 @@ async def test_get_instructions_includes_superseded_when_no_superseding_tag(mock
     """Test that superseded tools inject instructions when the superseding tag is absent."""
     toolset = Toolset(tools=[SupersededTool])  # No AdvancedTool, so no "advanced" tag
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
-    assert 'name="superseded_tool"' in instructions
+    assert 'name="superseded_tool"' in instruction_text
 
 
 @pytest.mark.asyncio
@@ -239,11 +253,12 @@ async def test_get_instructions_skips_both_unavailable_and_superseded(mock_run_c
         skip_unavailable=True,
     )
     instructions = await toolset.get_instructions(mock_run_context)
+    instruction_text = _instruction_text(instructions)
 
     assert instructions is not None
     # Available, non-superseded tools should be present
-    assert "String instruction content" in instructions
-    assert "Advanced tool instruction" in instructions
+    assert "String instruction content" in instruction_text
+    assert "Advanced tool instruction" in instruction_text
     # Unavailable and superseded tools should be excluded
-    assert 'name="unavailable_tool"' not in instructions
-    assert 'name="superseded_tool"' not in instructions
+    assert 'name="unavailable_tool"' not in instruction_text
+    assert 'name="superseded_tool"' not in instruction_text

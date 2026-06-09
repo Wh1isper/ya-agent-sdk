@@ -111,6 +111,7 @@ def _assert_anthropic_adaptive_preset(
     assert preset["anthropic_thinking"] == {"type": "adaptive", "display": "summarized"}
     assert preset["anthropic_effort"] == effort
     assert preset["anthropic_cache_instructions"] is True
+    assert preset["anthropic_cache_tool_definitions"] is True
     assert preset["anthropic_cache_messages"] is True
 
     beta_header = preset.get("extra_headers", {}).get("anthropic-beta", "")
@@ -139,6 +140,35 @@ def test_anthropic_presets_structure() -> None:
 
     assert ANTHROPIC_OFF["anthropic_thinking"]["type"] == "disabled"
     assert "extra_headers" not in ANTHROPIC_OFF
+
+
+def test_anthropic_presets_cache_tool_definitions() -> None:
+    """Test that Anthropic cache presets also cache tool definitions."""
+    for preset in [
+        ANTHROPIC_DEFAULT,
+        ANTHROPIC_HIGH,
+        ANTHROPIC_MEDIUM,
+        ANTHROPIC_LOW,
+        ANTHROPIC_OFF,
+        ANTHROPIC_1M_DEFAULT,
+        ANTHROPIC_1M_HIGH,
+        ANTHROPIC_1M_MEDIUM,
+        ANTHROPIC_1M_LOW,
+        ANTHROPIC_1M_OFF,
+        ANTHROPIC_CM_DEFAULT,
+        ANTHROPIC_CM_HIGH,
+        ANTHROPIC_CM_MEDIUM,
+        ANTHROPIC_CM_LOW,
+        ANTHROPIC_CM_OFF,
+        ANTHROPIC_1M_CM_DEFAULT,
+        ANTHROPIC_1M_CM_HIGH,
+        ANTHROPIC_1M_CM_MEDIUM,
+        ANTHROPIC_1M_CM_LOW,
+        ANTHROPIC_1M_CM_OFF,
+    ]:
+        assert preset["anthropic_cache_instructions"] is True
+        assert preset["anthropic_cache_tool_definitions"] is True
+        assert preset["anthropic_cache_messages"] is True
 
 
 def test_anthropic_1m_presets_structure() -> None:
@@ -266,6 +296,7 @@ def test_anthropic_adaptive_presets_structure() -> None:
         assert preset["anthropic_effort"] in ("low", "medium", "high", "xhigh", "max")
         # Caching enabled
         assert preset["anthropic_cache_instructions"] is True
+        assert preset["anthropic_cache_tool_definitions"] is True
         assert preset["anthropic_cache_messages"] is True
         # No beta headers needed (adaptive auto-enables interleaved)
         assert "extra_headers" not in preset
