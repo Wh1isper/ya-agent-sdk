@@ -5,6 +5,7 @@ All file operations use the FileOperator abstraction for remote filesystem suppo
 """
 
 import inspect
+import re
 from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -18,6 +19,7 @@ from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.context.agent import MediaToUrlHook
 from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.filesystem._search import match_glob
 from ya_agent_sdk.toolsets.core.filesystem._types import (
     ViewMetadata,
     ViewReadingParams,
@@ -188,6 +190,47 @@ class ViewTool(BaseTool):
         return AUDIO_MEDIA_TYPE_MAP.get(ext, "audio/mpeg")
 
     # --- File reading methods (async, using FileOperator) ---
+
+    @staticmethod
+    def _normalize_match_path(path: str) -> str:
+        """Normalize an agent-facing path for pattern matching without resolving it."""
+        normalized = path.replace("\\", "/")
+        while "//" in normalized:
+            normalized = normalized.replace("//", "/")
+        if normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized.rstrip("/")
+
+    @classmethod
+    def _matches_relaxed_text_pattern(cls, match_paths: tuple[str, ...], pattern: str) -> bool:
+        """Return True if any normalized path candidate matches a relaxed text view pattern."""
+        pattern = pattern.strip()
+        if not pattern:
+            return False
+
+        if pattern.startswith("re:"):
+            try:
+                regex = re.compile(pattern[3:])
+            except re.error:
+                logger.warning("Invalid view relaxed text regex pattern ignored: %s", pattern)
+                return False
+            return any(regex.search(match_path) is not None for match_path in match_paths)
+
+        return any(match_glob(match_path, pattern) for match_path in match_paths)
+
+    @classmethod
+    def _uses_relaxed_text_limits(
+        cls,
+        ctx: RunContext[AgentContext],
+        file_operator: FileOperator,
+        file_path: str,
+    ) -> bool:
+        """Check whether a text file should use relaxed view limits."""
+        match_paths = file_operator.get_path_match_candidates(file_path)
+        return any(
+            cls._matches_relaxed_text_pattern(match_paths, pattern)
+            for pattern in ctx.deps.tool_config.iter_view_relaxed_text_patterns()
+        )
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
@@ -641,7 +684,31 @@ class ViewTool(BaseTool):
         """Read text file with pagination and truncation support."""
         stat = await file_operator.stat(file_path)
         file_size = stat["size"]
-        max_text_file_size = ctx.deps.tool_config.view_max_text_file_size
+
+        # Binary/media payloads must never receive relaxed text limits. This check
+        # is intentionally before relaxed limit selection; it only reads a small
+        # prefix and keeps pattern-based relaxation text-only.
+        if await is_binary_file(file_operator, file_path):
+            return (
+                f"Error: {file_path} appears to be a binary file. "
+                f"Use appropriate tools (e.g. `pdf_convert` for PDFs, `xxd` for hex dumps) instead."
+            )
+
+        relaxed_limits = self._uses_relaxed_text_limits(ctx, file_operator, file_path)
+        max_text_file_size = (
+            ctx.deps.tool_config.view_relaxed_text_file_size
+            if relaxed_limits
+            else ctx.deps.tool_config.view_max_text_file_size
+        )
+        if relaxed_limits and line_limit == 300:
+            line_limit = ctx.deps.tool_config.view_relaxed_line_limit
+        if relaxed_limits and max_line_length == 2000:
+            max_line_length = ctx.deps.tool_config.view_relaxed_max_line_length
+        max_content_chars = (
+            ctx.deps.tool_config.view_relaxed_max_content_chars
+            if relaxed_limits
+            else ctx.deps.tool_config.view_max_content_chars
+        )
 
         if file_size > max_text_file_size:
             return {
@@ -654,13 +721,13 @@ class ViewTool(BaseTool):
             }
 
         # Safe to read in one shot: stat check above guarantees bounded size
-        if await is_binary_file(file_operator, file_path):
+        try:
+            full_content = await file_operator.read_file(file_path)
+        except UnicodeDecodeError:
             return (
-                f"Error: {file_path} appears to be a binary file. "
+                f"Error: {file_path} could not be decoded as text. "
                 f"Use appropriate tools (e.g. `pdf_convert` for PDFs, `xxd` for hex dumps) instead."
             )
-
-        full_content = await file_operator.read_file(file_path)
         all_lines = full_content.splitlines(keepends=True)
         total_lines = len(all_lines)
         total_chars = len(full_content)
@@ -679,8 +746,8 @@ class ViewTool(BaseTool):
             processed_lines.append(line)
 
         content = "".join(processed_lines)
-        if len(content) > 60000:
-            content = content[:60000] + "\n... (content truncated)"
+        if len(content) > max_content_chars:
+            content = content[:max_content_chars] + "\n... (content truncated)"
             content_truncated = True
 
         line_offset = start_index

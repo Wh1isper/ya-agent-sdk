@@ -421,6 +421,50 @@ class FileOperator(ABC):
             return path.resolve()
         return path
 
+    @staticmethod
+    def _normalize_match_path(path: str) -> str:
+        """Normalize an agent-facing path for pattern matching without resolving it."""
+        normalized = path.replace("\\", "/")
+        while "//" in normalized:
+            normalized = normalized.replace("//", "/")
+        if normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized.rstrip("/") or "."
+
+    def get_path_match_candidates(self, path: str) -> tuple[str, ...]:
+        """Return equivalent path strings for agent-facing pattern matching.
+
+        File operators may accept both relative paths and absolute paths under their
+        configured default/allowed roots. Callers that match user-provided paths against
+        patterns can use these candidates to avoid registering duplicate absolute and
+        relative patterns. Remote/custom operators still get a safe default candidate
+        based on the original agent-facing path.
+        """
+        normalized_path = self._normalize_match_path(path)
+        candidates = {normalized_path}
+
+        default_root = self._default_path
+        if default_root is not None and not PurePath(normalized_path).is_absolute():
+            default_root_path = self._normalize_match_path(str(default_root))
+            if default_root_path != ".":
+                candidates.add(
+                    f"{default_root_path}/{normalized_path}" if normalized_path != "." else default_root_path
+                )
+
+        roots = [default_root, *self._allowed_paths]
+        for root in roots:
+            if root is None:
+                continue
+            root_path = self._normalize_match_path(str(root))
+            if root_path == ".":
+                continue
+            if normalized_path == root_path:
+                candidates.add(".")
+            elif normalized_path.startswith(f"{root_path}/"):
+                candidates.add(normalized_path[len(root_path) + 1 :] or ".")
+
+        return tuple(sorted(candidates))
+
     def _is_tmp_path(self, path: str) -> tuple[bool, str]:
         """Delegate to tmp_file_operator to check if path is managed."""
         if self._tmp_file_operator is None:

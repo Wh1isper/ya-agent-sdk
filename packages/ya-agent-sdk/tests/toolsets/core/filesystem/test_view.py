@@ -611,3 +611,206 @@ def test_supported_image_media_types() -> None:
     assert "image/png" in SUPPORTED_IMAGE_MEDIA_TYPES
     assert "image/jpeg" in SUPPORTED_IMAGE_MEDIA_TYPES
     assert "image/webp" in SUPPORTED_IMAGE_MEDIA_TYPES
+
+
+async def test_view_relaxed_text_regex_pattern(tmp_path: Path) -> None:
+    """Should support re: patterns for relaxed text view matching."""
+    from ya_agent_sdk.context import ToolConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(
+                    view_relaxed_text_patterns=(r"re:^docs/.+\.md$",),
+                    view_relaxed_line_limit=500,
+                    view_relaxed_max_content_chars=100_000,
+                ),
+            )
+        )
+        tool = ViewTool()
+
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        test_file = docs_dir / "guide.md"
+        test_file.write_text("\n".join(f"Line {i}" for i in range(350)), encoding="utf-8")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, file_path="docs/guide.md")
+        assert isinstance(result, str)
+        assert "Line 349" in result
+
+
+async def test_view_relaxed_text_pattern_still_rejects_binary(tmp_path: Path) -> None:
+    """Should keep relaxed pattern matching text-only and reject binary payloads."""
+    from ya_agent_sdk.context import ToolConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(view_relaxed_text_patterns=("*.md",)),
+            )
+        )
+        tool = ViewTool()
+
+        test_file = tmp_path / "binary.md"
+        test_file.write_bytes(b"frontmatter\n\x00binary payload")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, file_path="binary.md")
+        assert (
+            result
+            == "Error: binary.md appears to be a binary file. Use appropriate tools (e.g. `pdf_convert` for PDFs, `xxd` for hex dumps) instead."
+        )
+
+
+async def test_view_relaxed_text_pattern_uses_recursive_bare_glob(tmp_path: Path) -> None:
+    """Should reuse filesystem glob semantics where bare *.md matches recursively."""
+    from ya_agent_sdk.context import ToolConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(
+                    view_relaxed_text_patterns=("*.md",),
+                    view_relaxed_line_limit=500,
+                    view_relaxed_max_content_chars=100_000,
+                ),
+            )
+        )
+        tool = ViewTool()
+
+        docs_dir = tmp_path / "docs" / "nested"
+        docs_dir.mkdir(parents=True)
+        test_file = docs_dir / "guide.md"
+        test_file.write_text("\n".join(f"Line {i}" for i in range(350)), encoding="utf-8")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, file_path="docs/nested/guide.md")
+        assert isinstance(result, str)
+        assert "Line 349" in result
+
+
+async def test_view_relaxed_text_pattern_leading_slash_anchors_to_root(tmp_path: Path) -> None:
+    """Should keep leading slash semantics from filesystem glob matching."""
+    from ya_agent_sdk.context import ToolConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(
+                    view_relaxed_text_patterns=("/AGENTS.md",),
+                    view_relaxed_line_limit=500,
+                    view_relaxed_max_content_chars=100_000,
+                ),
+            )
+        )
+        tool = ViewTool()
+
+        nested_dir = tmp_path / "nested"
+        nested_dir.mkdir()
+        nested_file = nested_dir / "AGENTS.md"
+        nested_file.write_text("\n".join(f"Line {i}" for i in range(350)), encoding="utf-8")
+        root_file = tmp_path / "AGENTS.md"
+        root_file.write_text("\n".join(f"Root {i}" for i in range(350)), encoding="utf-8")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        nested_result = await tool.call(mock_run_ctx, file_path="nested/AGENTS.md")
+        assert isinstance(nested_result, dict)
+        assert nested_result["metadata"]["current_segment"]["lines_to_show"] == 300
+
+        root_result = await tool.call(mock_run_ctx, file_path="AGENTS.md")
+        assert isinstance(root_result, str)
+        assert "Root 349" in root_result
+
+
+async def test_view_relaxed_text_matching_normalizes_absolute_and_relative_paths(tmp_path: Path) -> None:
+    """Should let view normalize absolute/relative paths instead of registering both."""
+    from ya_agent_sdk.context import ToolConfig
+
+    absolute_docs_dir = str(tmp_path / "docs").replace("\\", "/")
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(
+                    view_relaxed_text_patterns=(rf"re:^{absolute_docs_dir}/.*\.md$",),
+                    view_relaxed_line_limit=500,
+                    view_relaxed_max_content_chars=100_000,
+                ),
+            )
+        )
+        tool = ViewTool()
+
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        test_file = docs_dir / "guide.md"
+        test_file.write_text("\n".join(f"Line {i}" for i in range(350)), encoding="utf-8")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        relative_result = await tool.call(mock_run_ctx, file_path="docs/guide.md")
+        assert isinstance(relative_result, str)
+        assert "Line 349" in relative_result
+
+        absolute_result = await tool.call(mock_run_ctx, file_path=str(test_file))
+        assert isinstance(absolute_result, str)
+        assert "Line 349" in absolute_result
+
+
+async def test_view_relaxed_text_pattern_does_not_relax_non_matching_code(tmp_path: Path) -> None:
+    """Should not relax code files when patterns only match Markdown."""
+    from ya_agent_sdk.context import ToolConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(
+                    view_relaxed_text_patterns=("*.md",),
+                    view_relaxed_line_limit=500,
+                ),
+            )
+        )
+        tool = ViewTool()
+
+        test_file = tmp_path / "helper.py"
+        test_file.write_text("\n".join(f"Line {i}" for i in range(350)), encoding="utf-8")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, file_path="helper.py")
+        assert isinstance(result, dict)
+        assert result["metadata"]["current_segment"]["lines_to_show"] == 300
+        assert result["metadata"]["current_segment"]["has_more_content"] is True

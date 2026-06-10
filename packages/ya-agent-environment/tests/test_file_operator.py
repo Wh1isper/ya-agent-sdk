@@ -800,3 +800,15 @@ async def test_file_operator_allowed_paths_without_default(tmp_path: Path) -> No
     # allowed_paths should contain only the explicit paths, not try to add None
     assert len(op._allowed_paths) == 1
     assert op._allowed_paths[0] == extra.resolve()
+
+
+def test_file_operator_path_match_candidates_normalize_relative_and_absolute(tmp_path: Path) -> None:
+    """FileOperator should expose public path candidates for matcher callers."""
+    op = LocalFileOperator(tmp_path, tmp_path / "tmp")
+    relative_candidates = op.get_path_match_candidates("docs/guide.md")
+    assert "docs/guide.md" in relative_candidates
+    assert f"{tmp_path}/docs/guide.md" in relative_candidates
+
+    absolute_candidates = op.get_path_match_candidates(str(tmp_path / "docs" / "guide.md"))
+    assert str(tmp_path / "docs" / "guide.md") in absolute_candidates
+    assert "docs/guide.md" in absolute_candidates

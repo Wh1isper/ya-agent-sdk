@@ -18,6 +18,7 @@ Architecture Notes:
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -127,6 +128,7 @@ class SkillToolset(BaseToolset[AgentContext]):
         self._last_scan_paths: frozenset[str] = frozenset()
         self._toolset_id = toolset_id
         self._pre_scan_hook = pre_scan_hook
+        self._relaxed_text_patterns_source = f"skills:{toolset_id or id(self)}"
 
     @property
     def skills_dir_name(self) -> str:
@@ -306,6 +308,24 @@ class SkillToolset(BaseToolset[AgentContext]):
 
         return new_skills
 
+    @staticmethod
+    def _skill_markdown_relaxed_pattern(skill_path: Path) -> str:
+        """Build a regex relaxed view pattern for Markdown files in a skill directory."""
+        normalized_path = str(skill_path).replace("\\", "/").rstrip("/")
+        return f"re:^{re.escape(normalized_path)}/.*\\.md$"
+
+    def _register_skill_markdown_relaxed_patterns(
+        self,
+        ctx: RunContext[AgentContext],
+        skills: dict[str, SkillConfig],
+    ) -> None:
+        """Register relaxed view patterns for Markdown documents inside discovered skill dirs."""
+        patterns = tuple(
+            self._skill_markdown_relaxed_pattern(config.path)
+            for config in sorted(skills.values(), key=lambda item: str(item.path))
+        )
+        ctx.deps.tool_config.register_view_relaxed_text_patterns(self._relaxed_text_patterns_source, patterns)
+
     def _format_skills_instruction(self, skills: dict[str, SkillConfig]) -> str | None:
         """Format skills metadata for system prompt injection.
 
@@ -366,6 +386,9 @@ class SkillToolset(BaseToolset[AgentContext]):
 
         file_operator = ctx.deps.file_operator
         if file_operator is None:
+            tool_config = getattr(ctx.deps, "tool_config", None)
+            if tool_config is not None:
+                tool_config.unregister_view_relaxed_text_patterns(self._relaxed_text_patterns_source)
             logger.debug("SkillToolset: No file_operator available, skipping skill scan")
             return None
 
@@ -373,9 +396,11 @@ class SkillToolset(BaseToolset[AgentContext]):
         skills = await self._scan_skills(file_operator)
 
         if not skills:
+            ctx.deps.tool_config.unregister_view_relaxed_text_patterns(self._relaxed_text_patterns_source)
             logger.debug("SkillToolset: No skills found in any allowed path")
             return None
 
+        self._register_skill_markdown_relaxed_patterns(ctx, skills)
         logger.debug(f"SkillToolset: Found {len(skills)} skill(s): {list(skills.keys())}")
 
         instruction = self._format_skills_instruction(skills)

@@ -81,6 +81,72 @@ async def test_grep_with_include_filter(tmp_path: Path) -> None:
         assert all("test.py" in key for key in result)
 
 
+async def test_grep_recursive_include_matches_files_at_leaf_root(tmp_path: Path) -> None:
+    """Recursive include patterns should match root-level files under a leaf root."""
+    base = tmp_path / "workspace"
+    leaf = base / "enter_agent_sdk" / "agent"
+    leaf.mkdir(parents=True)
+    (leaf / "context.go").write_text('package agent\n\nfunc ContextToken() string { return "hit" }\n')
+    (leaf / "context.txt").write_text("ContextToken should not be searched\n")
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[base], default_path=base, tmp_base_dir=base)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GrepTool()
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(
+            mock_run_ctx,
+            pattern="ContextToken",
+            include="**/*.go",
+            root="enter_agent_sdk/agent",
+            max_files=-1,
+        )
+        assert isinstance(result, dict)
+        matched_files = {value["file_path"] for value in result.values() if isinstance(value, dict)}
+        assert matched_files == {"enter_agent_sdk/agent/context.go"}
+
+        absolute_root_result = await tool.call(
+            mock_run_ctx,
+            pattern="ContextToken",
+            include="**/*.go",
+            root=str(leaf),
+            max_files=-1,
+        )
+        assert isinstance(absolute_root_result, dict)
+        absolute_root_matched_files = {
+            value["file_path"] for value in absolute_root_result.values() if isinstance(value, dict)
+        }
+        assert absolute_root_matched_files == {"enter_agent_sdk/agent/context.go"}
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[leaf], default_path=leaf, tmp_base_dir=leaf)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GrepTool()
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        leaf_default_result = await tool.call(
+            mock_run_ctx,
+            pattern="ContextToken",
+            include="**/*.go",
+            root=".",
+            max_files=-1,
+        )
+        assert isinstance(leaf_default_result, dict)
+        leaf_default_matched_files = {
+            value["file_path"] for value in leaf_default_result.values() if isinstance(value, dict)
+        }
+        assert leaf_default_matched_files == {"context.go"}
+
+
 async def test_grep_context_lines(tmp_path: Path) -> None:
     """Should include context lines around matches."""
     async with AsyncExitStack() as stack:

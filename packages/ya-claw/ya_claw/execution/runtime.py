@@ -14,6 +14,7 @@ from ya_agent_sdk.context import (
     ShellReviewAction,
     ShellReviewConfig,
     ShellReviewRiskLevel,
+    ToolConfig,
 )
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps, filter_mcp_config
 from ya_agent_sdk.toolsets.core.base import BaseTool
@@ -228,6 +229,7 @@ class ClawRuntimeBuilder:
             context_type=ClawAgentContext,
             model_cfg=self._build_model_config(profile),
             env=environment,
+            tool_config=ToolConfig(view_relaxed_text_patterns=("memory/**/*.md", "AGENTS.md")),
             extra_context_kwargs=extra_context_kwargs,
             state=restore_state,
             need_user_approve_tools=self._resolve_need_user_approve_tools(profile, source_kind=source_kind),

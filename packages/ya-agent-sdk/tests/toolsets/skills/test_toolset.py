@@ -428,3 +428,103 @@ async def test_skill_toolset_pre_scan_hook_accesses_config(tmp_path: Path):
             await toolset.get_instructions(mock_ctx)
 
             assert captured_dir_name == ["custom-dir"]
+
+
+async def test_skill_toolset_registers_view_relaxed_patterns_for_skill_markdown(tmp_path: Path):
+    """SkillToolset should register actual skill markdown dirs with ToolConfig."""
+    from ya_agent_sdk.context import ToolConfig
+    from ya_agent_sdk.toolsets.core.filesystem.view import ViewTool
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    skill_dir = skills_dir / "doc-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("""---
+name: doc-skill
+description: Documents things.
+---
+
+# Doc Skill
+""")
+    (skill_dir / "README.md").write_text("\n".join(f"Line {i}" for i in range(350)), encoding="utf-8")
+    (skill_dir / "helper.py").write_text("\n".join(f"Line {i}" for i in range(350)), encoding="utf-8")
+
+    async with LocalEnvironment(
+        default_path=tmp_path,
+        allowed_paths=[tmp_path],
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(
+            env=env,
+            tool_config=ToolConfig(view_relaxed_line_limit=500, view_relaxed_max_content_chars=100_000),
+        ) as ctx:
+            mock_ctx = MagicMock(spec=RunContext)
+            mock_ctx.deps = ctx
+
+            toolset = SkillToolset()
+            instructions = await toolset.get_instructions(mock_ctx)
+            assert instructions is not None
+            registered = ctx.tool_config.iter_view_relaxed_text_patterns()
+            assert any(pattern.startswith("re:") and "doc\\-skill" in pattern for pattern in registered)
+
+            view_tool = ViewTool()
+            markdown_result = await view_tool.call(mock_ctx, file_path="skills/doc-skill/README.md")
+            assert isinstance(markdown_result, str)
+            assert "Line 349" in markdown_result
+
+            code_result = await view_tool.call(mock_ctx, file_path="skills/doc-skill/helper.py")
+            assert isinstance(code_result, dict)
+            assert code_result["metadata"]["current_segment"]["lines_to_show"] == 300
+
+
+async def test_skill_toolset_unregisters_view_relaxed_patterns_when_no_skills(tmp_path: Path):
+    """SkillToolset should remove its dynamic patterns when skills disappear."""
+    from ya_agent_sdk.context import ToolConfig
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    skill_dir = skills_dir / "temporary"
+    skill_dir.mkdir()
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("""---
+name: temporary
+description: Temporary skill.
+---
+
+# Temporary
+""")
+
+    async with LocalEnvironment(
+        default_path=tmp_path,
+        allowed_paths=[tmp_path],
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(env=env, tool_config=ToolConfig()) as ctx:
+            mock_ctx = MagicMock(spec=RunContext)
+            mock_ctx.deps = ctx
+            toolset = SkillToolset()
+
+            assert await toolset.get_instructions(mock_ctx) is not None
+            assert ctx.tool_config.view_relaxed_text_dynamic_patterns
+
+            skill_file.unlink()
+            assert await toolset.get_instructions(mock_ctx) is None
+            assert not ctx.tool_config.view_relaxed_text_dynamic_patterns
+
+
+async def test_skill_toolset_unregisters_view_relaxed_patterns_without_file_operator() -> None:
+    """SkillToolset should clear dynamic patterns if scanning is skipped without file_operator."""
+    from ya_agent_sdk.context import ToolConfig
+
+    mock_ctx = MagicMock(spec=RunContext)
+    mock_ctx.deps = MagicMock(spec=AgentContext)
+    mock_ctx.deps.file_operator = None
+    mock_ctx.deps.tool_config = ToolConfig()
+
+    toolset = SkillToolset(toolset_id="cleanup")
+    mock_ctx.deps.tool_config.register_view_relaxed_text_patterns("skills:cleanup", ("*.md",))
+    assert mock_ctx.deps.tool_config.view_relaxed_text_dynamic_patterns
+
+    instructions = await toolset.get_instructions(mock_ctx)
+    assert instructions is None
+    assert not mock_ctx.deps.tool_config.view_relaxed_text_dynamic_patterns

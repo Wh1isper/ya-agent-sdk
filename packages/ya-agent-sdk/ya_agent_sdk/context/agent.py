@@ -631,6 +631,50 @@ class ToolConfig(BaseModel):
     view_max_text_file_size: int = 10 * 1024 * 1024
     """Maximum text file size in bytes that the view tool will inspect."""
 
+    view_relaxed_text_patterns: Sequence[str] = Field(default_factory=tuple)
+    """Ripgrep-style glob patterns or re: patterns where text view uses relaxed truncation limits.
+
+    Glob patterns use the same semantics as filesystem glob/grep. Patterns prefixed with
+    re: are matched as regular expressions against the agent-facing file path.
+    """
+
+    view_relaxed_text_dynamic_patterns: dict[str, tuple[str, ...]] = Field(default_factory=dict, exclude=True)
+    """Runtime-registered relaxed text patterns keyed by source/toolset id."""
+
+    def iter_view_relaxed_text_patterns(self) -> tuple[str, ...]:
+        """Return static and runtime-registered relaxed text patterns."""
+        dynamic_patterns = tuple(
+            pattern for patterns in self.view_relaxed_text_dynamic_patterns.values() for pattern in patterns
+        )
+        return (*self.view_relaxed_text_patterns, *dynamic_patterns)
+
+    def register_view_relaxed_text_patterns(self, source: str, patterns: Sequence[str]) -> None:
+        """Register runtime relaxed text patterns for a source id."""
+        normalized = tuple(pattern.strip() for pattern in patterns if pattern.strip())
+        if normalized:
+            self.view_relaxed_text_dynamic_patterns[source] = normalized
+        else:
+            self.view_relaxed_text_dynamic_patterns.pop(source, None)
+
+    def unregister_view_relaxed_text_patterns(self, source: str) -> None:
+        """Remove runtime relaxed text patterns registered by a source id."""
+        self.view_relaxed_text_dynamic_patterns.pop(source, None)
+
+    view_relaxed_text_file_size: int = 50 * 1024 * 1024
+    """Maximum text file size in bytes for paths matched by view_relaxed_text_patterns."""
+
+    view_relaxed_line_limit: int = 5000
+    """Line limit for relaxed paths when the effective line_limit is the normal default."""
+
+    view_relaxed_max_line_length: int = 20000
+    """Max line length for relaxed paths when the effective max_line_length is the normal default."""
+
+    view_max_content_chars: int = 60000
+    """Maximum returned text characters for normal view output before content truncation."""
+
+    view_relaxed_max_content_chars: int = 250000
+    """Maximum returned text characters for relaxed view output before content truncation."""
+
     edit_max_file_size: int = 20 * 1024 * 1024
     """Maximum file size in bytes that edit/multi_edit tools will process. Default: 20 MB."""
 
