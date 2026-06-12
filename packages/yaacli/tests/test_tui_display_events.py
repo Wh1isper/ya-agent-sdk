@@ -76,6 +76,25 @@ def test_tui_display_tool_result_uses_agui_timestamps_for_duration() -> None:
     assert abs(app._event_renderer.tracker.tool_calls["tool-1"].duration() - 1.5) < 0.01
 
 
+def test_tui_display_empty_reasoning_start_does_not_render_blank_block() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+
+    app._handle_display_events([{"type": "REASONING_MESSAGE_START", "messageId": "thinking-1"}])
+
+    assert app._streaming_thinking == ""
+    assert app._streaming_thinking_line_index == 0
+    assert app._output_lines == []
+    assert app._block_line_counts == []
+    assert app._total_line_count == 0
+
+    app._handle_display_events([{"type": "REASONING_MESSAGE_CHUNK", "messageId": "thinking-1", "delta": "reasoning"}])
+
+    assert len(app._output_lines) == 1
+    assert app._block_line_counts == [1]
+    assert app._total_line_count == 1
+    assert "reasoning" in app._output_lines[0]
+
+
 def test_tui_display_skips_subagent_detail_events() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
     app._append_block = MagicMock(wraps=app._append_block)

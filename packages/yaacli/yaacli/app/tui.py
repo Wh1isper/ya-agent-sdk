@@ -1131,10 +1131,15 @@ class TUIApp:
         self._streaming_thinking = initial_content
         self._streaming_thinking_line_index = len(self._output_lines)
         self._last_stream_render_time = 0.0  # Reset throttle for new block
-        # Render initial content with thinking style
-        rendered = self._event_renderer.render_thinking(initial_content, width=self._get_terminal_width()).rstrip("\n")
-        self._append_block(rendered)
-        self._throttled_invalidate()
+        if initial_content:
+            # Add placeholder that will be updated.
+            # Empty thinking starts should not create a visible blank line.
+            rendered = self._event_renderer.render_thinking(
+                initial_content,
+                width=self._get_terminal_width(),
+            ).rstrip("\n")
+            self._append_block(rendered)
+            self._throttled_invalidate()
 
     def _update_streaming_thinking(self, delta: str) -> None:
         """Update current streaming thinking with delta.
@@ -1150,14 +1155,15 @@ class TUIApp:
         self._last_stream_render_time = now
 
         # Re-render thinking for the complete text so far
-        if self._streaming_thinking_line_index is not None and self._streaming_thinking_line_index < len(
-            self._output_lines
-        ):
+        if self._streaming_thinking_line_index is not None:
             rendered = self._event_renderer.render_thinking(
                 self._streaming_thinking,
                 width=self._get_terminal_width(),
             ).rstrip("\n")
-            self._update_block(self._streaming_thinking_line_index, rendered)
+            if self._streaming_thinking_line_index < len(self._output_lines):
+                self._update_block(self._streaming_thinking_line_index, rendered)
+            elif rendered:
+                self._append_block(rendered)
             if self._state == TUIState.RUNNING:
                 self._scroll_to_bottom()
             self._throttled_invalidate()
@@ -1172,6 +1178,8 @@ class TUIApp:
             ).rstrip("\n")
             if self._streaming_thinking_line_index < len(self._output_lines):
                 self._update_block(self._streaming_thinking_line_index, rendered)
+            elif rendered:
+                self._append_block(rendered)
         self._streaming_thinking = ""
         self._streaming_thinking_line_index = None
 
