@@ -116,6 +116,53 @@ def _has_tool_call_parts(parts: Sequence[object]) -> bool:
     return any(isinstance(part, BaseToolCallPart) for part in parts)
 
 
+_PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_MAX_CHARS = 32000
+_PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_KEEP_HEAD = 24000
+_PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_KEEP_TAIL = 6000
+
+
+def _truncate_previous_assistant_response_reference(text: str) -> str:
+    """Bound previous assistant visible output used as compact restore reference.
+
+    The cap is intentionally generous because numbered execution plans and
+    option lists often live in the previous assistant response and may be needed
+    to resolve terse follow-up prompts such as "do 1, 2, and 3".
+    """
+    stripped = text.strip()
+    if len(stripped) <= _PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_MAX_CHARS:
+        return stripped
+
+    head = stripped[:_PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_KEEP_HEAD]
+    tail = stripped[-_PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_KEEP_TAIL:]
+    truncated_count = (
+        len(stripped)
+        - _PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_KEEP_HEAD
+        - _PREVIOUS_ASSISTANT_RESPONSE_REFERENCE_KEEP_TAIL
+    )
+    return f"{head}\n[... {truncated_count} chars truncated from previous assistant response ...]\n{tail}"
+
+
+def _extract_previous_assistant_response_reference(
+    message_history: Sequence[ModelMessage] | None,
+) -> str | None:
+    """Extract visible text from the assistant response before the current user prompt.
+
+    The reference is used only for compact restore to resolve references in the
+    current prompt, e.g. "1,2,3", "the above", or "that option". It intentionally
+    excludes thinking, tool calls, tool returns, and other non-visible content.
+    """
+    if not message_history:
+        return None
+
+    for message in reversed(message_history):
+        if not isinstance(message, ModelResponse):
+            continue
+        chunks = [part.content for part in message.parts if isinstance(part, TextPart) and part.content.strip()]
+        if chunks:
+            return _truncate_previous_assistant_response_reference("\n\n".join(chunks))
+    return None
+
+
 def _suspend_current_task_cancellation() -> tuple[asyncio.Task[Any] | None, int]:
     """Temporarily clear cancellation requests on the current task.
 
@@ -1710,6 +1757,7 @@ async def stream_agent(  # noqa: C901
             effective_user_prompt = await user_prompt_factory(runtime)
 
         ctx.user_prompts = effective_user_prompt
+        ctx.previous_assistant_response_reference = _extract_previous_assistant_response_reference(message_history)
 
         ready_ctx = RuntimeReadyContext(
             runtime=runtime,

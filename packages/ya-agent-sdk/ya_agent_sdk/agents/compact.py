@@ -68,6 +68,7 @@ from ya_agent_sdk.filters._builders import (
     KEEP_TAG_KEY,
     build_context_restored_part,
     build_original_request_parts,
+    build_previous_assistant_reference_parts,
     build_steering_parts,
 )
 from ya_agent_sdk.utils import get_latest_request_usage
@@ -114,7 +115,7 @@ Use this exact Markdown structure:
    - [Explicit pending tasks]
 
 6. Current Work:
-   [Precise current work immediately before compaction]
+   [Precise current work immediately before compaction. If the current user request references numbered items, "above", "that", or similar phrases, resolve those references using the previous assistant response and spell out what they refer to.]
 
 7. Optional Next Step:
    [Direct next step aligned with the current work]
@@ -125,8 +126,8 @@ Use this exact Markdown structure:
 9. Skills Documentation:
    [If any /skills/ documentation was accessed, list the relevant skill files and remind the next agent to re-read them]
 
-10. Auto-load Files:
-   [List only file paths that should be auto-loaded when resuming]
+10. Files to Inspect on Resume:
+   [List only file paths that may need to be inspected when resuming. Do not include file contents.]
 """
 
 CACHE_FRIENDLY_COMPACT_PROMPT = """Compact the conversation history into the requested continuation summary format.
@@ -317,22 +318,18 @@ class CondenseResult(BaseModel):
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
 5. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
-6. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
+6. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable. If the current user request references numbered items, "above", "that", or similar phrases, resolve those references using the previous assistant response and spell out what they refer to.
 7. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests without confirming with the user first.
 8. If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
 9. Past Interactions: A concise bullet list of key interactions (both sides) that already occurred, to prevent repetition. Include your actions/proposals and user's responses, approaches tried and outcomes, explanations already given.
+10. Skills Documentation: If any Skills were accessed during the conversation, include a reminder to re-read the relevant skill documentation when resuming work.
+11. Files to Inspect on Resume: List file paths that may need to be inspected when resuming. Do not include file contents and do not assume they will be automatically loaded.
 """,
     )
     original_prompt: str = Field(
         ...,
         description="The original prompt and key information from the user. "
         "Used as fallback when agent_ctx.user_prompts is not set.",
-    )
-    auto_load_files: list[str] = Field(
-        default_factory=list,
-        description="File paths to auto-load when resuming. "
-        "Files will be read and injected into context on next request. "
-        "Use for: files being actively edited, key references needed to continue work.",
     )
 
 
@@ -500,6 +497,7 @@ def _build_compacted_messages(
     summary: str,
     original_prompt: str | Sequence[UserContent],
     steering_messages: list[str] | None = None,
+    previous_assistant_reference: str | None = None,
 ) -> list[ModelMessage]:
     """Build compacted message history.
 
@@ -510,6 +508,8 @@ def _build_compacted_messages(
         summary: The compacted summary content.
         original_prompt: The initial user prompt.
         steering_messages: Additional steering messages from user during execution.
+        previous_assistant_reference: Visible assistant response immediately before
+            the current user request. Used only to resolve references in the request.
 
     Returns:
         List of ModelMessage representing the compacted history.
@@ -525,11 +525,13 @@ def _build_compacted_messages(
         ),
     ]
 
-    # Build final request parts with labeled original prompt and steering messages
+    # Build final request parts in interpretation order: restore instructions,
+    # reference anchor, original request, then later user steering.
     final_parts: list[UserPromptPart] = [
+        build_context_restored_part(),
+        *build_previous_assistant_reference_parts(previous_assistant_reference),
         *build_original_request_parts(original_prompt),
         *build_steering_parts(steering_messages),
-        build_context_restored_part(),
     ]
 
     return [
@@ -619,6 +621,7 @@ def create_cache_friendly_compact_filter(
                     summary_markdown,
                     agent_ctx.user_prompts or CACHE_FRIENDLY_COMPACT_PROMPT,
                     agent_ctx.steering_messages or None,
+                    agent_ctx.previous_assistant_response_reference,
                 )
 
                 complete_ctx = CompactCompleteContext(
@@ -799,10 +802,6 @@ def create_compact_filter(
 
                 condense_result: CondenseResult = result.output
 
-                # Append auto_load_files for the auto_load_files filter to process
-                # Use extend instead of assignment to preserve any files set by external callers
-                agent_ctx.auto_load_files.extend(condense_result.auto_load_files)
-
                 # Build summary with condense result and user prompts
                 condense_markdown = condense_result_to_markdown(condense_result)
 
@@ -814,6 +813,7 @@ def create_compact_filter(
                     condense_markdown,
                     agent_ctx.user_prompts or condense_result.original_prompt,
                     agent_ctx.steering_messages or None,
+                    agent_ctx.previous_assistant_response_reference,
                 )
 
                 # Emit complete event with summary

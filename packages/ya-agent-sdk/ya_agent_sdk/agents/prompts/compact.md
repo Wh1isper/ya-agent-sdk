@@ -17,7 +17,7 @@ Your summary should include the following sections:
 3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
 4. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
 5. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
-6. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
+6. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable. If the current user request references numbered items, "above", "that", or similar phrases, resolve those references using the previous assistant response and spell out what they refer to.
 7. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests without confirming with the user first.
 8. If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
 9. Past Interactions: A concise log of key interactions that already occurred during this conversation, to prevent repetition after context reset. Include BOTH sides of each interaction:
@@ -28,7 +28,7 @@ Your summary should include the following sections:
    - Important clarifications the user provided that should not be re-asked
    Format as a bullet list of "I did X / User said Y" pairs. Focus on interactions that would be wasteful or annoying to repeat.
 10. Skills Documentation: If any Skills were accessed during the conversation (files in /skills/ directory such as SKILL.md or skill resources), include a reminder to re-read the relevant skill documentation when resuming work. List the specific skills that were referenced.
-11. Auto-load Files: If there are specific files that should be automatically loaded when resuming (e.g., files being actively edited, key configuration files, important references), list their paths. These files will be read and injected into the context automatically on the next request. Only include truly necessary files to avoid context bloat.
+11. Files to Inspect on Resume: If there are specific files that may need to be inspected when resuming (e.g., files being actively edited, key configuration files, important references), list their paths. Do not include file contents and do not assume they will be automatically loaded.
 
 Here's an example of how your output should be structured:
 
@@ -79,8 +79,8 @@ Here's an example of how your output should be structured:
 9. Skills Documentation:
    [If applicable: List specific skills accessed (e.g., /skills/ai-integration/SKILL.md) and reminder to re-read them]
 
-10. Auto-load Files:
-   [If applicable: List file paths that should be auto-loaded when resuming, e.g., src/main.py, config.yaml]
+10. Files to Inspect on Resume:
+   [If applicable: List file paths that may need to be inspected when resuming, e.g., src/main.py, config.yaml]
 
 </context>
 </condense>

@@ -921,6 +921,13 @@ class ResumableState(BaseModel):
     user_prompts: str | Sequence[UserContent] | None = None
     """User prompts collected during the session."""
 
+    previous_assistant_response_reference: str | None = None
+    """Visible assistant response immediately before the current user prompt.
+
+    Used by compact restore to resolve references in the current prompt such as
+    numbered items ("1", "2", "3"), "the above", or "that option".
+    """
+
     steering_messages: list[str] = Field(default_factory=list)
     """Accumulated user steering messages for compact."""
 
@@ -946,7 +953,7 @@ class ResumableState(BaseModel):
     """Security-related runtime configuration."""
 
     auto_load_files: list[str] = Field(default_factory=list)
-    """Files to auto-load on next request. Set by handoff/compact, consumed by auto_load_files filter."""
+    """Files to auto-load on next request. Set by handoff/context tools or external callers."""
 
     tasks: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Serialized tasks from TaskManager, keyed by task ID."""
@@ -994,6 +1001,7 @@ class ResumableState(BaseModel):
         ctx.subagent_history = self.to_subagent_history()
         ctx.usage_snapshot_entries = dict(self.usage_snapshot_entries)
         ctx.user_prompts = self.user_prompts
+        ctx.previous_assistant_response_reference = self.previous_assistant_response_reference
         ctx.steering_messages = list(self.steering_messages)
         ctx.handoff_message = self.handoff_message
         ctx.shell_env = {**ctx.shell_env, **self.shell_env}
@@ -1144,6 +1152,13 @@ class AgentContext(BaseModel):
     user_prompts: str | Sequence[UserContent] | None = None
     """User prompts collected during the session for compact."""
 
+    previous_assistant_response_reference: str | None = None
+    """Visible assistant response immediately before the current user prompt.
+
+    Used by compact restore to resolve references in the current prompt such as
+    numbered items ("1", "2", "3"), "the above", or "that option".
+    """
+
     steering_messages: list[str] = Field(default_factory=list)
     """Accumulated user steering messages received via message bus.
 
@@ -1200,7 +1215,7 @@ class AgentContext(BaseModel):
     """
 
     auto_load_files: list[str] = Field(default_factory=list)
-    """Files to auto-load on next request. Set by handoff/compact tool, consumed by auto_load_files filter."""
+    """Files to auto-load on next request. Set by handoff/context tools or external callers."""
 
     task_manager: TaskManager = Field(default_factory=TaskManager)
     """Task manager for tracking tasks and dependencies within the session."""
@@ -1700,7 +1715,7 @@ class AgentContext(BaseModel):
             - run_id, start_at, end_at
             - tool_id_wrapper, agent_stream_queues
             - usage_snapshot_entries, shell_review_records, deferred_tool_metadata
-            - force_inject_instructions
+            - force_inject_instructions, previous_assistant_response_reference
 
         Shared state (same reference as original):
             - env, model_cfg, tool_config
@@ -1723,6 +1738,7 @@ class AgentContext(BaseModel):
             "shell_review_records": deque(maxlen=10),
             "deferred_tool_metadata": {},
             "force_inject_instructions": False,
+            "previous_assistant_response_reference": None,
         }
         new_ctx = self.model_copy(update=update)
         # Reset private state for fresh lifecycle
@@ -1789,6 +1805,7 @@ class AgentContext(BaseModel):
             "end_at": None,  # Will be set by __aexit__
             "handoff_message": None,  # Subagents don't inherit handoff state
             "user_prompts": None,  # Subagent has its own initial prompt (set by caller)
+            "previous_assistant_response_reference": None,
             "steering_messages": [],  # Subagent has its own steering queue
             "tool_id_wrapper": ToolIdWrapper(),  # Fresh wrapper for subagent
             "tool_tags": set(),  # Fresh tags for subagent (recomputed by its own Toolset)
@@ -2137,6 +2154,7 @@ class AgentContext(BaseModel):
             subagent_history=serialized_history,
             usage_snapshot_entries=dict(self.usage_snapshot_entries) if include_usage_ledger else {},
             user_prompts=self.user_prompts,
+            previous_assistant_response_reference=self.previous_assistant_response_reference,
             steering_messages=list(self.steering_messages),
             handoff_message=self.handoff_message,
             shell_env=dict(self.shell_env),

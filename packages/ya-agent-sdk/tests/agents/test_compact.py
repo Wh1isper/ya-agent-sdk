@@ -801,7 +801,7 @@ def test_trim_strips_last_turn_by_default() -> None:
 # =============================================================================
 
 
-async def test_create_agent_runs_auto_load_files_after_compact(tmp_path: Path) -> None:
+async def test_create_agent_keeps_auto_load_files_processor_after_compact_filter(tmp_path: Path) -> None:
     env = LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
@@ -1118,20 +1118,23 @@ def test_build_compacted_messages_tags_response_with_keep() -> None:
 
 
 def test_build_compacted_messages_uses_shared_builders() -> None:
-    """Compacted messages should contain original-request, steering, and context-restored parts."""
+    """Compacted messages should contain original-request, previous reference, steering, and restored parts."""
     from ya_agent_sdk.agents.compact import _build_compacted_messages
 
     messages = _build_compacted_messages(
         "Summary text",
         "Build a CLI",
         steering_messages=["Use click"],
+        previous_assistant_reference="1. Add tests\n2. Update docs",
     )
     final_request = messages[2]
     assert isinstance(final_request, ModelRequest)
     user_parts = [p for p in final_request.parts if isinstance(p, UserPromptPart)]
-    # Should have: original-request label, original prompt, steering label, steering msg, context-restored
+    # Should have: original-request, previous reference, steering, and context-restored
     assert any("original-request" in p.content for p in user_parts)
-    assert any(p.content == "Build a CLI" for p in user_parts)
+    assert any("Build a CLI" in p.content for p in user_parts)
+    assert any("previous-assistant-reference" in p.content for p in user_parts)
+    assert any("1. Add tests\n2. Update docs" in p.content for p in user_parts)
     assert any("user-steering" in p.content for p in user_parts)
     assert any("[User Steering] Use click" in p.content for p in user_parts)
     assert any("context-restored" in p.content for p in user_parts)
@@ -1286,6 +1289,7 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
     ]
     agent_context.model_cfg = ModelConfig(context_window=10, compact_threshold=0.1)
     agent_context.user_prompts = "hello"
+    agent_context.previous_assistant_response_reference = "1. first option\n2. second option"
     object.__setattr__(agent_context, "_stream_queue_enabled", True)
 
     mock_run_ctx = MagicMock()
@@ -1326,6 +1330,12 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
     assert "instructions" not in call_args.kwargs
 
     assert len(compacted) == 3
+    final_request = compacted[2]
+    assert isinstance(final_request, ModelRequest)
+    assert any(
+        isinstance(part, UserPromptPart) and "1. first option\n2. second option" in part.content
+        for part in final_request.parts
+    )
     assert agent_context.force_inject_instructions is True
     assert agent_context._compact_depth == 0
     snapshot = agent_context.build_usage_snapshot()
@@ -1441,7 +1451,6 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
         analysis="analysis",
         context="context",
         original_prompt="hello",
-        auto_load_files=["packages/ya-agent-sdk/README.md"],
     )
     run_result = _FakeCompactResult(
         output=condense_result,
@@ -1468,7 +1477,7 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
     assert compact_deps.model_cfg == agent_context.model_cfg
 
     assert len(compacted) == 3
-    assert agent_context.auto_load_files == ["packages/ya-agent-sdk/README.md"]
+    assert agent_context.auto_load_files == []
     assert agent_context.force_inject_instructions is True
     snapshot = agent_context.build_usage_snapshot()
     compact_entries = [entry for entry in snapshot.entries if entry.agent_id == "compact"]

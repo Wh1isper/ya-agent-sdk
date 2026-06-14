@@ -88,7 +88,7 @@ async def test_process_handoff_with_user_prompts(tmp_path: Path) -> None:
             assert any(isinstance(p, SystemPromptPart) for p in restored.parts)
             user_parts = [p for p in restored.parts if isinstance(p, UserPromptPart)]
             assert "original-request" in user_parts[0].content
-            assert user_parts[1].content == "Build me a web app with React"
+            assert "Build me a web app with React" in user_parts[0].content
 
 
 async def test_process_handoff_with_steering_messages(tmp_path: Path) -> None:
@@ -279,7 +279,7 @@ def test_build_handoff_messages_with_prompt_and_steering() -> None:
     assert isinstance(restored, ModelRequest)
     user_parts = [p for p in restored.parts if isinstance(p, UserPromptPart)]
     assert "original-request" in user_parts[0].content
-    assert user_parts[1].content == "Build a CLI tool"
+    assert "Build a CLI tool" in user_parts[0].content
     assert any("user-steering" in p.content for p in user_parts)
     assert any("[User Steering] Use click library" in p.content for p in user_parts)
     assert any("context-restored" in p.content for p in user_parts)
@@ -316,7 +316,7 @@ def test_build_handoff_messages_uses_shared_builders() -> None:
     assert isinstance(restored, ModelRequest)
     user_parts = [p for p in restored.parts if isinstance(p, UserPromptPart)]
     assert any("original-request" in p.content for p in user_parts)
-    assert any(p.content == "Build a CLI" for p in user_parts)
+    assert any("Build a CLI" in p.content for p in user_parts)
     assert any("user-steering" in p.content for p in user_parts)
     assert any("[User Steering] Use click" in p.content for p in user_parts)
     assert any("context-restored" in p.content for p in user_parts)

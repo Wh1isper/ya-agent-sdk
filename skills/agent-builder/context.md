@@ -285,14 +285,15 @@ config.model_extra["my_custom_key"]  # Also works
 
 ## ResumableState Fields
 
-| Field                       | Type                            | Description                                  |
-| --------------------------- | ------------------------------- | -------------------------------------------- |
-| `subagent_history`          | `dict[str, list[dict]]`         | Serialized conversation history per subagent |
-| `usage_snapshot_entries`    | `dict[str, UsageSnapshotEntry]` | Cumulative per-run usage ledger entries      |
-| `user_prompts`              | `list[str]`                     | Collected user prompts                       |
-| `handoff_message`           | `str \| None`                   | Context handoff message                      |
-| `context_manage_tool_names` | `list[str]`                     | Active context management tool names         |
-| `need_user_approve_tools`   | `list[str]`                     | Tool names requiring user approval           |
+| Field                                   | Type                            | Description                                                                                                 |
+| --------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `subagent_history`                      | `dict[str, list[dict]]`         | Serialized conversation history per subagent                                                                |
+| `usage_snapshot_entries`                | `dict[str, UsageSnapshotEntry]` | Cumulative per-run usage ledger entries                                                                     |
+| `user_prompts`                          | `list[str]`                     | Collected user prompts                                                                                      |
+| `previous_assistant_response_reference` | `str \| None`                   | Bounded visible assistant response before the current prompt, used by compact restore to resolve references |
+| `handoff_message`                       | `str \| None`                   | Context handoff message                                                                                     |
+| `context_manage_tool_names`             | `list[str]`                     | Active context management tool names                                                                        |
+| `need_user_approve_tools`               | `list[str]`                     | Tool names requiring user approval                                                                          |
 
 ### UsageSnapshotEntry Fields
 

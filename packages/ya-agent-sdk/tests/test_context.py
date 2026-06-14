@@ -147,18 +147,21 @@ async def test_agent_context_create_subagent_context_inherits_security(env: Loca
 
 
 async def test_agent_context_create_subagent_context_resets_prompts(env: LocalEnvironment) -> None:
-    """Should reset user_prompts and steering_messages for subagent context."""
+    """Should reset user_prompts, previous assistant reference, and steering_messages for subagents."""
     parent = AgentContext(env=env)
     parent.user_prompts = "Parent prompt"
+    parent.previous_assistant_response_reference = "Previous parent response"
     parent.steering_messages = ["Parent steering 1", "Parent steering 2"]
 
     async with parent.create_subagent_context("search") as child:
         # Subagent should have independent prompt tracking
         assert child.user_prompts is None  # Reset, to be set by subagent caller
+        assert child.previous_assistant_response_reference is None
         assert child.steering_messages == []  # Fresh queue for subagent
 
         # Parent's prompts should be unaffected
         assert parent.user_prompts == "Parent prompt"
+        assert parent.previous_assistant_response_reference == "Previous parent response"
         assert parent.steering_messages == ["Parent steering 1", "Parent steering 2"]
 
 
@@ -747,6 +750,7 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
             ledger_key="test-uuid",
         )
         ctx.user_prompts = "Test prompt"
+        ctx.previous_assistant_response_reference = "Previous response with numbered options"
         ctx.steering_messages = ["Steering 1", "Steering 2"]
         ctx.handoff_message = "Handoff summary"
         ctx.shell_env = {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
@@ -775,6 +779,7 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         # Verify usage_snapshot_entries is empty (not restored by default)
         assert new_ctx.usage_snapshot_entries == {}
         assert new_ctx.user_prompts == "Test prompt"
+        assert new_ctx.previous_assistant_response_reference == "Previous response with numbered options"
         assert new_ctx.steering_messages == ["Steering 1", "Steering 2"]
         assert new_ctx.handoff_message == "Handoff summary"
         assert new_ctx.shell_env == {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
