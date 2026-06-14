@@ -17,11 +17,12 @@ from ya_agent_sdk.filters._builders import (
 
 
 def test_build_original_request_parts_with_prompt() -> None:
-    """Should return label + prompt parts when prompt is provided."""
+    """Should return closed original-request XML when prompt is provided."""
     parts = build_original_request_parts("Build a CLI tool")
-    assert len(parts) == 2
-    assert "original-request" in parts[0].content
-    assert parts[1].content == "Build a CLI tool"
+    assert len(parts) == 1
+    assert parts[0].content.startswith("<original-request>")
+    assert parts[0].content.endswith("</original-request>")
+    assert "Build a CLI tool" in parts[0].content
 
 
 def test_build_original_request_parts_none() -> None:
@@ -36,12 +37,13 @@ def test_build_original_request_parts_none() -> None:
 
 
 def test_build_steering_parts_with_messages() -> None:
-    """Should return label + prefixed messages."""
+    """Should return closed user-steering XML with prefixed messages."""
     parts = build_steering_parts(["Use click", "Add tests"])
-    assert len(parts) == 3
-    assert "user-steering" in parts[0].content
-    assert "[User Steering] Use click" in parts[1].content
-    assert "[User Steering] Add tests" in parts[2].content
+    assert len(parts) == 1
+    assert parts[0].content.startswith("<user-steering>")
+    assert parts[0].content.endswith("</user-steering>")
+    assert "[User Steering] Use click" in parts[0].content
+    assert "[User Steering] Add tests" in parts[0].content
 
 
 def test_build_steering_parts_none() -> None:
