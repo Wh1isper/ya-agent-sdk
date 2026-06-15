@@ -371,13 +371,13 @@ The profile generator should include a tested platform default read set for comm
 
 ### macOS Caveats
 
-`sandbox-exec` is the available CLI mechanism for arbitrary per-process Seatbelt policy. Desktop should run a startup self-test that executes representative read, write, and network probes under the generated profile. Diagnostics should surface failures with setup instructions and backend alternatives.
+`sandbox-exec` is the available CLI mechanism for arbitrary per-process Seatbelt policy. The backend should run a startup self-test that executes representative read, write, and network probes under the generated profile. Diagnostics should surface failures with setup instructions and backend alternatives.
 
 Apple Containerization is a future high-isolation provider for Apple silicon and supported macOS versions. It belongs behind an explicit `container_vm` backend preference because it executes Linux containers in lightweight VMs and changes toolchain assumptions.
 
 ## Windows Backend: `windows_restricted_token`
 
-Windows support has lower priority than Linux and macOS for the first YA Desktop shell sandbox release. The target backend should combine Windows native isolation primitives:
+Windows support has lower priority than Linux and macOS for the first local shell sandbox release. The target backend should combine Windows native isolation primitives:
 
 1. `CreateRestrictedToken` to create a reduced primary token with disabled SIDs, deleted privileges, and restricting SIDs.
 2. AppContainer profile execution for file, registry, credential, process, window, and network isolation when command compatibility allows it.

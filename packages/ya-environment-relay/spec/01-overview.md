@@ -1,147 +1,257 @@
-# 01. YA Environment Relay Overview
+# 01. YA Environment Protocol Overview
 
 ## Goal
 
-YA Environment Relay connects an agent runtime to capabilities that execute in another process, device, sandbox, or host. It turns those external capabilities into `ya-agent-sdk` Environment components so the agent can use them through normal file, shell, resource, and tool abstractions.
+YA Environment Protocol connects an agent runtime to capabilities that execute in another process, device, sandbox, or host. It turns those capabilities into `ya-agent-sdk` Environment components while keeping the protocol independent from programming language and transport.
 
-YA Environment Relay is protocol-level infrastructure. Product integrations such as YA Desktop, YA Claw, cloud workers, or sandbox services implement the protocol for their own deployment models.
+The protocol is YA-owned infrastructure. Product integrations such as YA Desktop, YA Claw, cloud workers, local workspace daemons, and custom providers implement or supervise protocol providers according to their deployment model.
+
+The protocol string is:
+
+```text
+ya-environment-protocol.v1
+```
+
+## Design Targets
+
+1. Pluggable environments.
+   A session can use an agent-owned environment, a user-mounted environment, or both. User-mounted environments can be online, offline, paused, or revoked. Agent-owned detached environments can keep running when the user is offline.
+
+2. Language independence.
+   Providers can be written in Rust, Python, TypeScript, Go, or any other language that can read and write the JSON payloads.
+
+3. Transport independence.
+   The same JSON-RPC messages can run over stdio, local sockets, Windows named pipes, WebSocket, or future transports.
+
+4. Explicit shell state.
+   Stateless command execution, background process state, and stateful shell sessions are separate protocol objects.
+
+5. Shared file and shell view.
+   File operations and shell targets are bound to the same virtual mounts so an agent sees one coherent workspace.
+
+6. Application-owned activation.
+   The protocol reports provider readiness and changes. Claw, Desktop, or another application decides whether those events should wake or activate an agent.
 
 ## Parties
 
 ```mermaid
 flowchart TB
-    Runtime[Agent Runtime] --> RelayServer[Relay Server]
-    RelayServer <--> RelayClient[Relay Client]
-    RelayClient --> Provider[Capability Provider]
-    Provider --> Target[Local Device / Sandbox / External System]
+    Runtime["Agent Runtime"] --> Adapter["SDK Environment Adapter"]
+    Adapter --> RpcClient["Environment RPC Client"]
+    RpcClient <--> Transport["Transport (stdio / socket / named pipe / WebSocket)"]
+    Transport <--> Provider["Protocol Provider"]
+    Provider --> Daemon["ya-envd or Custom Provider"]
+    Daemon --> Target["Local Device / Sandbox / Container / VM / Service"]
 
-    Runtime --> SDK[ya-agent-sdk Environment]
-    SDK --> RelayEnvironment[RelayEnvironment]
-    RelayEnvironment --> RelayServer
+    App["Application Layer (Claw / Desktop / Worker)"] --> Runtime
+    App --> ProviderRegistry["Provider Registry and Bindings"]
+    ProviderRegistry --> RpcClient
 ```
 
 Definitions:
 
 - Agent Runtime: process that runs the model loop and tool calls.
-- Relay Server: endpoint that accepts relay client connections and routes requests.
-- Relay Client: process that connects to the relay server and advertises capabilities.
-- Capability Provider: implementation behind the relay client, such as local filesystem, shell, OS automation, browser, VM, or custom tool host.
-- Relay Environment: SDK Environment implementation backed by relay requests.
+- SDK Environment Adapter: Python adapter that implements `Environment`, `FileOperator`, `Shell`, resources, and toolsets through protocol calls.
+- Provider: protocol endpoint that advertises capabilities and executes requests.
+- `ya-envd`: official Rust daemon provider implementation.
+- Application Layer: product code that launches providers, stores grants, binds sessions, handles approvals, records trace, and decides activation behavior.
+- Mount: virtual filesystem root exposed by a provider.
+- Execution Target: shell-capable target bound to a set of mounts and policy.
+- Resource: long-lived provider object such as shell session, browser, computer session, database connection, or local app automation handle.
+
+## Provider Model
+
+A provider is identified separately from the connection that currently carries messages.
+
+```ts
+type ProviderDescriptor = {
+  protocol: "ya-environment-protocol.v1";
+  provider_id: string;
+  provider_kind: "ya_envd" | "desktop" | "workspace" | "cloud_worker" | "custom";
+  provider_version: string;
+  instance_id: string;
+  environment_id?: string;
+  display_name?: string;
+  capabilities: CapabilityAdvertisement;
+};
+```
+
+`provider_id` is stable across reconnects when the same provider identity returns. `instance_id` changes when the daemon process or custom provider instance restarts. A runtime must not assume process or shell session handles survive an `instance_id` change unless the provider explicitly reports durable state.
+
+## State Model
+
+Providers and capabilities share a common readiness vocabulary:
+
+```text
+starting
+online
+offline
+paused
+degraded
+permission_required
+revoked
+error
+```
+
+Readiness is observable but not prescriptive. For example:
+
+- `provider.online` can let Claw enqueue an activation decision.
+- `mount.changed` can let Desktop show a sync prompt.
+- `shell_session.available` can let a UI offer reattach.
+- `provider.offline` can make user-mounted tools unavailable while an agent-owned detached provider continues.
 
 ## Capability Families
 
-YA Environment Relay uses capability families to group provider methods:
+Initial v1 capability families:
 
 ```text
 fileops
 shell
+process
+shell_session
 tools
 resources
 artifacts
 computer
-browser
 ```
 
-Initial protocol should define the first six families. Browser can be added as a specialized provider or implemented as custom tools.
+`shell` is for stateless command execution. `process` is for long-running background processes. `shell_session` is for stateful interactive shell sessions. This split avoids hiding durable state behind ordinary command calls.
+
+## Mounts and Execution Targets
+
+File and shell capabilities are connected through mounts:
+
+```ts
+type MountDescriptor = {
+  mount_id: string;
+  label?: string;
+  virtual_path: string;
+  mode: "ro" | "rw";
+  state: "online" | "offline" | "paused" | "revoked" | "error";
+  generation: number;
+  case_sensitive?: boolean;
+  follow_symlinks: boolean;
+  watch_supported: boolean;
+};
+
+type ExecutionTargetDescriptor = {
+  target_id: string;
+  label?: string;
+  platform: "linux" | "darwin" | "windows" | "container" | "custom";
+  shell_kind: "sh" | "bash" | "zsh" | "powershell" | "cmd" | "custom";
+  default_cwd: string;
+  allowed_mount_ids: string[];
+  supports_exec: boolean;
+  supports_processes: boolean;
+  supports_pty: boolean;
+  supports_signals: boolean;
+  process_persistence: "none" | "connection" | "provider" | "durable";
+  session_persistence: "none" | "connection" | "provider" | "durable";
+};
+```
+
+Paths are POSIX-style virtual paths on every host. Providers map virtual paths to host paths, container paths, or remote storage internally.
+
+## Detached and User-Mounted Execution
+
+An agent can bind to multiple environments:
+
+```text
+session
+  agent-owned provider: online, detached capable
+  user-mounted provider: offline until Desktop reconnects
+```
+
+The runtime should not pretend an offline user device is available. A request against an unavailable provider returns a capability/provider error. Product policy decides whether to:
+
+- fail the tool call,
+- queue work until the provider resumes,
+- route to an agent-owned provider,
+- ask the user,
+- or start a reconciliation run after reconnect.
 
 ## Relationship to ya-agent-sdk
 
-`ya-agent-sdk` already has core runtime abstractions:
+`ya-agent-sdk` already has:
 
-- Environment
-- FileOperator
-- Shell
-- ResourceRegistry
-- Toolset
+- `Environment`
+- `FileOperator`
+- `Shell`
+- `ResourceRegistry`
+- `Toolset`
 - resumable resources
 
-YA Environment Relay should provide remote implementations of these abstractions:
+The Python adapter should map protocol capabilities to these abstractions:
 
 ```python
-RelayEnvironment(Environment)
-RelayFileOperator(FileOperator)
-RelayShell(Shell)
-RelayResourceRegistry(ResourceRegistry)
-RelayToolset(Toolset)
+DaemonEnvironment(Environment)
+DaemonFileOperator(FileOperator)
+DaemonShell(Shell)
+DaemonResourceRegistry(ResourceRegistry)
+DaemonToolset(Toolset)
 ```
 
-This keeps agent code and profiles stable while moving execution to a connected provider.
+The existing SDK `Shell` maps naturally to stateless shell execution and background process methods. Stateful shell sessions should be represented as resources or a dedicated tool surface rather than hidden behind `Shell.execute`.
 
 ## Relationship to Claw
 
-Claw can use YA Environment Relay as one `WorkspaceProvider` backend:
+Claw can use protocol providers as one `WorkspaceProvider` backend:
 
 ```text
-WorkspaceProvider kind = relay
-Environment = RelayEnvironment
+WorkspaceProvider kind = daemon
+Environment = DaemonEnvironment
 ```
 
 Claw remains responsible for:
 
-- sessions and runs.
-- profile selection.
-- model execution.
-- HITL approvals.
-- durable trace.
-- artifact storage.
-- provider registry and connection routing.
-
-A relay client supplies execution capabilities. Claw exposes them to the agent through SDK abstractions.
+- sessions and runs
+- profile selection
+- model execution
+- runtime HITL approvals
+- durable trace
+- artifact storage
+- provider registry
+- environment binding policy
+- deciding whether provider events activate an agent
 
 ## Relationship to Desktop
 
-YA Desktop can act as a relay client. It can advertise local capabilities:
+YA Desktop can supervise a user-owned `ya-envd` and expose selected local capabilities:
 
-- selected folders as workspace roots.
-- sandboxed local shell.
-- native OS computer use.
-- Desktop-managed custom tools.
-- local artifact upload.
+- selected folders as mounts
+- sandboxed local shell targets
+- interactive shell sessions
+- native OS computer use
+- Desktop-managed tools
+- local artifact upload
 
-Desktop owns user consent, local grants, shell safety, local audit, and native permission UX. Claw owns runtime authorization and trace. The Desktop local PC relay flow is specified in [06-desktop-local-pc-relay.md](06-desktop-local-pc-relay.md).
-
-## Relationship to MCP
-
-MCP and YA Environment Relay address overlapping but different surfaces:
-
-| Surface                        | MCP                         | YA Environment Relay |
-| ------------------------------ | --------------------------- | -------------------- |
-| Tool discovery                 | yes                         | yes                  |
-| JSON Schema tool input         | yes                         | yes                  |
-| FileOperator abstraction       | product-specific            | built in             |
-| Shell streaming                | server-specific             | built in             |
-| Environment/resource lifecycle | limited by server           | built in             |
-| Runtime artifact ownership     | external or custom          | built in             |
-| User device relay              | possible with custom server | primary use case     |
-
-A relay client can wrap MCP servers and register selected tools into YA Environment Relay. A Claw profile can use MCP servers and relay capabilities together.
+Desktop owns local identity, user consent, local grants, shell safety, native permissions, and local audit. Claw owns runtime authorization and run trace.
 
 ## High-Level Flow
 
 ```mermaid
 sequenceDiagram
-    participant Client as Relay Client
-    participant Server as Relay Server
+    participant App as Application Layer
     participant Runtime as Agent Runtime
-    participant Provider as Provider
+    participant Adapter as SDK Adapter
+    participant Provider as Provider or ya-envd
+    participant Target as Execution Target
 
-    Client->>Server: WebSocket connect
-    Client->>Server: hello capabilities
-    Server-->>Client: accepted capabilities
-    Runtime->>Server: file/shell/tool/computer request
-    Server->>Client: relay request
-    Client->>Provider: execute
-    Provider-->>Client: result / stream
-    Client-->>Server: response / stream
-    Server-->>Runtime: Environment result
+    App->>Provider: launch/connect/supervise
+    Provider-->>App: provider.online + capabilities
+    App->>Runtime: bind session to provider/mounts/targets
+    Runtime->>Adapter: use Environment abstraction
+    Adapter->>Provider: JSON-RPC request
+    Provider->>Target: execute file/shell/resource operation
+    Provider-->>Adapter: result / stream / event
+    Adapter-->>Runtime: SDK result
+    Provider-->>App: provider or mount events
+    App->>App: decide activation / queue / ignore
 ```
 
-## Design Principles
+## Non-Goals
 
-- The protocol is provider-neutral.
-- The runtime controls model-facing tool exposure.
-- The provider controls local execution and local policy.
-- Capabilities are explicitly advertised and accepted.
-- Streaming and cancellation are first-class.
-- Artifacts are owned by the runtime store when the call belongs to a run.
-- Security is scoped by device, connection, space/workspace, capability, and root grants.
+- The protocol does not define model-facing prompting.
+- The protocol does not define when to wake an agent.
+- The protocol does not require WebSocket.
+- The protocol does not promise shell session durability unless a provider explicitly advertises it.

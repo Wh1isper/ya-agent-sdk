@@ -87,62 +87,6 @@ web-build: ## Run TypeScript and Vite build checks for the YA Claw web app
 	@echo "Running ya-claw-web build"
 	@corepack pnpm --dir apps/ya-claw-web build
 
-.PHONY: desktop-dev
-desktop-dev: ## Run the YA Desktop Tauri app locally
-	@echo "Running ya-desktop"
-	@corepack pnpm --dir apps/ya-desktop tauri:dev
-
-.PHONY: desktop-lint
-desktop-lint: ## Run ESLint for the YA Desktop app
-	@echo "Running ya-desktop lint"
-	@corepack pnpm --dir apps/ya-desktop exec eslint .
-
-.PHONY: desktop-build
-desktop-build: ## Run TypeScript and Vite build checks for the YA Desktop app
-	@echo "Running ya-desktop build"
-	@corepack pnpm --dir apps/ya-desktop build
-
-.PHONY: desktop-test
-desktop-test: ## Run YA Desktop frontend tests
-	@echo "Running ya-desktop tests"
-	@corepack pnpm --dir apps/ya-desktop test
-
-.PHONY: desktop-rust-fmt
-desktop-rust-fmt: ## Check YA Desktop Rust formatting
-	@echo "Checking ya-desktop Rust formatting"
-	@(cd apps/ya-desktop/src-tauri && cargo fmt --all -- --check)
-
-.PHONY: desktop-rust-check
-desktop-rust-check: ## Run cargo check for the YA Desktop Tauri app
-	@echo "Running ya-desktop Rust check"
-	@(cd apps/ya-desktop/src-tauri && cargo check --locked --all-targets)
-
-.PHONY: desktop-rust-clippy
-desktop-rust-clippy: ## Run clippy for the YA Desktop Tauri app
-	@echo "Running ya-desktop Rust clippy"
-	@(cd apps/ya-desktop/src-tauri && cargo clippy --locked --all-targets --all-features -- -D warnings)
-
-.PHONY: desktop-prepare-uv-resource
-desktop-prepare-uv-resource: ## Copy the active uv binary into YA Desktop bundle resources
-	@echo "Preparing ya-desktop uv resource"
-	@python scripts/prepare-desktop-uv-resource.py
-
-.PHONY: desktop-tauri-build
-desktop-tauri-build: desktop-prepare-uv-resource ## Build the YA Desktop Tauri bundle
-	@echo "Building ya-desktop Tauri bundle"
-	@corepack pnpm --dir apps/ya-desktop tauri:build
-
-.PHONY: desktop-package-local
-desktop-package-local: desktop-tauri-build ## Build a local unsigned YA Desktop installer bundle
-	@echo "YA Desktop local bundles:"
-	@find apps/ya-desktop/src-tauri/target/release/bundle -type f \
-		\( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
-		-print
-
-.PHONY: desktop-install-local
-desktop-install-local: desktop-package-local ## Build and install YA Desktop locally on the current machine
-	@python scripts/install-desktop-local.py
-
 .PHONY: docker-build-claw
 docker-build-claw: ## Build the YA Claw Docker image
 	@echo "Building ya-claw Docker image"
@@ -178,7 +122,7 @@ check: ## Run code quality tools for all active packages
 	@echo "Checking lock file consistency with pyproject.toml"
 	@uv lock --locked
 	@echo "Running pre-commit"
-	@SKIP=cargo-fmt-desktop,cargo-clippy-desktop uv run pre-commit run -a
+	@uv run pre-commit run -a
 	@echo "Checking bundled skills sync"
 	@./scripts/check-skills-sync.sh
 	@echo "Checking release skill zip build"
@@ -187,16 +131,6 @@ check: ## Run code quality tools for all active packages
 	@$(MAKE) web-lint
 	@echo "Running web build"
 	@$(MAKE) web-build
-	@echo "Running desktop lint"
-	@$(MAKE) desktop-lint
-	@echo "Running desktop build"
-	@$(MAKE) desktop-build
-	@echo "Checking desktop Rust formatting"
-	@$(MAKE) desktop-rust-fmt
-	@echo "Running desktop Rust check"
-	@$(MAKE) desktop-rust-check
-	@echo "Running desktop Rust clippy"
-	@$(MAKE) desktop-rust-clippy
 	@echo "Running pyright"
 	@uv run python -m pyright
 	@echo "Running deptry for ya-agent-environment"
@@ -245,11 +179,9 @@ bench-file-search-quick: ## Run quick file search backend smoke benchmarks
 bench-search-quick: bench-file-search-quick ## Alias for bench-file-search-quick
 
 .PHONY: test
-test: ## Run environment, SDK, stream protocol, CLI, YA Claw, and YA Desktop tests
+test: ## Run environment, SDK, stream protocol, CLI, and YA Claw tests
 	@echo "Running pytest for workspace packages"
 	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-ripgrep-core/tests packages/ya-agent-sdk/tests packages/ya-agent-stream-protocol/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
-	@echo "Running YA Desktop tests"
-	@$(MAKE) desktop-test
 
 .PHONY: test-environment
 test-environment: ## Run ya-agent-environment tests

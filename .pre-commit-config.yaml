@@ -1,6 +1,3 @@
-ci:
-  skip: [cargo-fmt-desktop, cargo-clippy-desktop]
-
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v6.0.0"
@@ -12,10 +9,9 @@ repos:
       - id: check-json
         exclude: ^.devcontainer/devcontainer.json
       - id: pretty-format-json
-        exclude: ^(.devcontainer/devcontainer\.json|apps/ya-desktop/src-tauri/gen/schemas/.*\.json)$
+        exclude: ^.devcontainer/devcontainer\.json$
         args: [--autofix]
       - id: end-of-file-fixer
-        exclude: ^apps/ya-desktop/src-tauri/gen/schemas/.*\.json$
       - id: trailing-whitespace
   - repo: https://github.com/executablebooks/mdformat
     rev: 1.0.0
@@ -33,20 +29,6 @@ repos:
         language: node
         additional_dependencies: [prettier@3.6.2]
         files: ^apps/ya-claw-web/.*\.(ts|tsx|css|html|md)$
-      - id: cargo-fmt-desktop
-        name: cargo fmt ya-desktop
-        entry: bash -c 'cd apps/ya-desktop/src-tauri && cargo fmt --all -- --check'
-        language: system
-        pass_filenames: false
-        always_run: true
-        files: ^apps/ya-desktop/src-tauri/.*\.rs$
-      - id: cargo-clippy-desktop
-        name: cargo clippy ya-desktop
-        entry: bash -c 'cd apps/ya-desktop/src-tauri && cargo clippy --locked --all-targets --all-features -- -D warnings'
-        language: system
-        pass_filenames: false
-        always_run: true
-        files: ^apps/ya-desktop/src-tauri/.*\.(rs|toml)$
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: "v0.15.16"
     hooks:

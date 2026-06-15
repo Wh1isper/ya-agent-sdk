@@ -138,22 +138,6 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 
 - WIP stateless agent service with TBD scope
 
-## YA Desktop Direction
-
-- `apps/ya-desktop` is a standalone Tauri 2 + TypeScript desktop product, not a direct clone of the Claw Web UI.
-- Use a white, ChatGPT-like theme with a more polished desktop feel.
-- Keep top-level navigation focused: `Home`, `Chats`, `Board`, `Spaces`, `Inbox`, and bottom `Settings`.
-- `Home` owns the command-first experience and recent conversation overview.
-- `Chats` owns conversation-first work management; a chat is the primary product object backed by Claw sessions/runs.
-- `Board` owns kanban-style organization of chats by status, priority, or workspace.
-- `Spaces` owns workspace folders, local/remote/cloud workspace identity, runtime connection, trust, sidecar status, and execution location.
-- `Inbox` owns approvals, alerts, failed background work, and user decisions.
-- `Settings` owns preferences, hotkeys, notifications, tokens/keychain, advanced runtime, logs, and diagnostics.
-- After each YA Desktop product or implementation change, review `apps/ya-desktop/spec/*` and update the specs when the product model, navigation, architecture, or behavior changes.
-- YA Desktop unsigned draft releases are generated automatically from `release/desktop/**` branch pushes as `desktop-v*` GitHub draft releases; humans review artifacts and publish from GitHub.
-- YA Desktop signing and Desktop app auto-update should ship together in the release-channel phase.
-- Before Desktop app auto-update is ready, provide a local packaging/install Makefile path so users can clone the repository, build/install YA Desktop locally, and rely on Claw runtime auto-update for ongoing runtime updates.
-
 ## Development Workflow
 
 After changing code, run:

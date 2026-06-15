@@ -174,7 +174,7 @@ make test
 | `make install-skills`              | Install canonical skills into `~/.agents/skills`                    |
 | `make lint`                        | Check lock consistency and run pre-commit hooks                     |
 | `make check`                       | Run lock validation, lint, pyright, deptry, and web checks          |
-| `make test`                        | Run environment, SDK, CLI, YA Claw, and YA Desktop tests            |
+| `make test`                        | Run environment, SDK, CLI, and YA Claw tests                        |
 | `make run-claw`                    | Run the YA Claw backend                                             |
 | `make web-dev`                     | Run the YA Claw web app                                             |
 | `make build-claw`                  | Build the `ya-claw` distribution                                    |

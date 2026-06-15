@@ -1,57 +1,79 @@
-# YA Environment Relay Spec
+# YA Environment Protocol Spec
 
-YA Environment Relay is a provider-neutral protocol for connecting agent runtimes to external execution environments. It is designed to build on top of `ya-agent-sdk` Environment abstractions and expose remote or local capabilities as file operators, shells, resources, and toolsets.
+YA Environment Protocol is YA's own provider-neutral protocol for connecting agent runtimes to execution environments. Any language can implement a provider when it follows the JSON payload contract.
 
-YA Environment Relay is a general protocol. YA Desktop is one important relay client, but the protocol should also support headless relay agents, server-side workers, browser sandboxes, VM sandboxes, and custom tool hosts.
+The protocol lets a runtime expose external capabilities as `ya-agent-sdk` Environment components:
+
+- file operations
+- stateless shell execution
+- background processes
+- stateful shell sessions
+- provider resources
+- custom tools
+- artifacts
+- computer use
+
+The protocol string is `ya-environment-protocol.v1`.
+
+`ya-envd` is the official daemon implementation. It is expected to be a Rust binary that can run as a child process over stdio, as a long-lived local daemon over a socket or named pipe, or behind a remote transport. The daemon is an implementation of the protocol, not the protocol itself.
 
 ## Goals
 
-- Let an agent runtime call capabilities that live outside the runtime process.
-- Represent remote capabilities as SDK Environment components.
-- Support file operations, shell execution, custom tools, resources, artifacts, and computer use.
-- Use one bidirectional transport for request/response, streaming, cancellation, and provider events.
-- Keep tool schemas compatible with JSON Schema and model tool calling.
-- Preserve runtime-owned tracing, approvals, and artifact persistence.
+- Support pluggable environments owned by the agent, a user device, a workspace daemon, a cloud worker, or a custom provider.
+- Keep the protocol language independent by defining JSON payloads, JSON Schema models, and request/response semantics.
+- Keep the protocol transport independent by separating message shape from stdio, socket, named pipe, WebSocket, or future transports.
+- Let user-mounted environments go offline and come back online without blocking agent-owned detached execution.
+- Make environment readiness observable so applications can decide whether to activate an agent when a provider resumes.
+- Keep file and shell views aligned through shared mounts and execution targets.
+- Model shell state explicitly instead of hiding it behind plain command execution.
 
 ## Package Direction
 
-Initial work is spec-only. Future implementation can become a workspace package:
+Initial work is spec-first. The current package path remains `packages/ya-environment-relay` while the protocol is being designed. Future implementation can either keep this package as the Python protocol/adapter package or rename it once downstream impact is clear.
+
+Recommended repository shape:
 
 ```text
+crates/
+  ya-env-protocol/
+  ya-envd-core/
+  ya-envd/
+  ya-envd-client/
+
 packages/ya-environment-relay/
   spec/
-  pyproject.toml
   ya_environment_relay/
     protocol.py
     client.py
-    server.py
     environment.py
-    providers/
+    transports/
 ```
 
-The first Python implementation should integrate with `ya-agent-sdk` and expose:
+The Python package should expose SDK adapters:
 
-- `RelayEnvironment`
-- `RelayFileOperator`
-- `RelayShell`
-- `RelayToolset`
-- `RelayResourceRegistry`
-- protocol models for `ya-environment-relay.v1`
+- `DaemonEnvironment`
+- `DaemonFileOperator`
+- `DaemonShell`
+- `DaemonResourceRegistry`
+- `DaemonToolset`
+- protocol models for `ya-environment-protocol.v1`
 
 ## Section Map
 
-| Section | Document                                                     | Topic                                                                  |
-| ------- | ------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| 01      | [01-overview.md](01-overview.md)                             | goals, parties, capability model, relationship to SDK and Claw         |
-| 02      | [02-protocol.md](02-protocol.md)                             | WebSocket frames, request/response, streaming, cancellation, errors    |
-| 03      | [03-environment.md](03-environment.md)                       | SDK Environment mapping, file operator, shell, resources, custom tools |
-| 04      | [04-security-and-policy.md](04-security-and-policy.md)       | authentication, grants, policy, approvals, artifact safety             |
-| 05      | [05-implementation-plan.md](05-implementation-plan.md)       | MVP phases and package layout                                          |
-| 06      | [06-desktop-local-pc-relay.md](06-desktop-local-pc-relay.md) | Desktop local PC relay, shell safety, and central Claw mounting        |
+| Section | Document                                                           | Topic                                                                     |
+| ------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| 01      | [01-overview.md](01-overview.md)                                   | goals, parties, provider model, capability model, detached execution      |
+| 02      | [02-protocol.md](02-protocol.md)                                   | JSON-RPC envelope, transports, lifecycle, methods, events, versioning     |
+| 03      | [03-environment.md](03-environment.md)                             | SDK Environment mapping, mounts, fileops, shell, sessions, resources      |
+| 04      | [04-security-and-policy.md](04-security-and-policy.md)             | authentication, grants, path safety, shell safety, audit, revocation      |
+| 05      | [05-implementation-plan.md](05-implementation-plan.md)             | Rust daemon, Python adapter, Claw/Desktop integration phases, test matrix |
+| 06      | [06-desktop-local-pc-provider.md](06-desktop-local-pc-provider.md) | Desktop local PC provider, online/offline lifecycle, activation events    |
+| 07      | [07-ya-envd.md](07-ya-envd.md)                                     | official `ya-envd` daemon architecture, process/session state, transports |
 
 ## Relationship to Products
 
-- `ya-agent-sdk` provides the Environment concepts that YA Environment Relay implements remotely.
-- `ya-claw` can host a relay server and route agent tool calls to connected providers.
-- `ya-desktop` can act as a relay client for local files, shell, computer use, and custom tools.
-- Future services can implement relay clients for sandboxes, browsers, VMs, and specialized tools.
+- `ya-agent-sdk` provides the Environment concepts that protocol adapters implement.
+- `ya-claw` can bind sessions to one or more providers and decide when provider events should activate an agent.
+- `ya-desktop` can supervise a user-owned `ya-envd` and expose local files, shell, computer use, and Desktop tools.
+- Agent-owned detached workers can supervise their own `ya-envd` and continue running when user devices are offline.
+- Custom services can implement the same protocol in any language.

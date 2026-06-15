@@ -1,10 +1,10 @@
 [project]
 name = "ya-environment-relay"
 dynamic = ["version"]
-description = "Provider-neutral relay protocol for YA agent environments"
+description = "Provider-neutral environment protocol for YA agent environments"
 authors = [{ name = "wh1isper", email = "jizhongsheng957@gmail.com" }]
 readme = "README.md"
-keywords = ["python", "agent", "environment", "relay", "protocol"]
+keywords = ["python", "agent", "environment", "daemon", "protocol"]
 requires-python = ">=3.11,<3.14"
 classifiers = [
     "Intended Audience :: Developers",

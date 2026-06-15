@@ -1,105 +1,180 @@
-# 03. Relay Environment
+# 03. Environment Mapping
 
 ## Goal
 
-Relay Environment maps `ya-environment-relay.v1` capabilities into `ya-agent-sdk` runtime abstractions. Agents and toolsets should interact with normal SDK interfaces while execution happens through a connected relay provider.
+The Python adapter maps `ya-environment-protocol.v1` providers into `ya-agent-sdk` runtime abstractions. Agents and SDK toolsets should interact with normal Environment interfaces while execution happens through a daemon or custom provider.
 
-## Environment Shape
+## Adapter Shape
 
 ```python
-class RelayEnvironment(Environment):
-    file_operator: RelayFileOperator
-    shell: RelayShell
-    resources: RelayResourceRegistry
-    toolsets: list[RelayToolset]
+class DaemonEnvironment(Environment):
+    file_operator: DaemonFileOperator
+    shell: DaemonShell
+    resources: DaemonResourceRegistry
+    toolsets: list[DaemonToolset]
 ```
 
-The environment should be created from a binding:
+The environment is created from a binding, not directly from a transport connection:
 
 ```python
-class RelayEnvironmentBinding(BaseModel):
-    connection_id: str
-    client_id: str
-    roots: list[RelayRoot]
+class EnvironmentProviderBinding(BaseModel):
+    provider_id: str
+    instance_id: str | None = None
+    environment_id: str | None = None
+    mount_ids: list[str]
+    target_ids: list[str]
     capabilities: list[str]
+    connection_ref: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 ```
 
+The binding survives reconnects when the same `provider_id` returns. `instance_id` is used to decide whether process/session handles are still valid.
+
+## Multi-Provider Environment
+
+A session may bind more than one provider:
+
+```text
+DaemonEnvironment
+  primary file mount: user Desktop provider, /workspace/main
+  detached shell target: agent-owned provider, /workspace/main
+  optional tools: Desktop provider
+```
+
+The adapter must surface provider availability. If a mounted user provider is offline, file or shell requests against that provider fail with `provider_offline` or `capability_unavailable`; the application may choose a fallback provider before constructing the environment.
+
 ## FileOperator Mapping
 
-`RelayFileOperator` maps SDK file operations to `file.*` methods:
+`DaemonFileOperator` maps SDK file operations to `file.*` methods.
 
-| SDK behavior     | Relay method  |
-| ---------------- | ------------- |
-| read text/bytes  | `file.read`   |
-| write text/bytes | `file.write`  |
-| list directory   | `file.list`   |
-| stat path        | `file.stat`   |
-| create directory | `file.mkdir`  |
-| delete path      | `file.delete` |
-| search content   | `file.search` |
+| SDK behavior      | Protocol method             |
+| ----------------- | --------------------------- |
+| read text/bytes   | `file.read`                 |
+| write text/bytes  | `file.write`                |
+| append text/bytes | `file.append`               |
+| list directory    | `file.list`                 |
+| stat path         | `file.stat`                 |
+| create directory  | `file.mkdir`                |
+| delete path       | `file.delete`               |
+| move path         | `file.move`                 |
+| copy path         | `file.copy`                 |
+| walk/search       | `file.list` / `file.search` |
+| watch             | `file.watch`                |
 
-Paths should be virtualized. The model and runtime see `/workspace/main/README.md`; the relay client maps it to an approved local root.
+Paths are virtualized. The model and runtime see `/workspace/main/README.md`; the provider maps that to an approved host path, container path, or remote storage path.
 
-Request example:
+The adapter should normalize SDK paths into:
 
 ```json
 {
-  "method": "file.read",
-  "params": {
-    "root_id": "main",
-    "path": "README.md",
-    "encoding": "utf-8"
-  }
+  "mount_id": "main",
+  "path": "README.md"
 }
 ```
+
+when the path is under a known mount virtual path.
+
+## Mount Consistency
+
+Mount descriptors are the authority for file and shell path mapping:
+
+```json
+{
+  "mount_id": "main",
+  "virtual_path": "/workspace/main",
+  "mode": "rw",
+  "generation": 7,
+  "state": "online"
+}
+```
+
+Rules:
+
+- Every `DaemonFileOperator` operation must resolve to one mount.
+- Cross-mount copy/move must either stream through the adapter or use a provider method that explicitly supports both mounts.
+- Read-only mounts reject writes, appends, deletes, mkdir, move destination, and copy destination.
+- The provider enforces root boundaries after host path normalization.
+- The adapter should include mount state in environment instructions when useful.
 
 ## Shell Mapping
 
-`RelayShell` maps SDK shell execution to `shell.*` methods:
+The existing SDK `Shell` abstraction maps to stateless execution and background process methods:
 
-| SDK behavior    | Relay method   |
-| --------------- | -------------- |
-| start command   | `shell.start`  |
-| send stdin      | `shell.input`  |
-| resize terminal | `shell.resize` |
-| send signal     | `shell.signal` |
-| cancel command  | `shell.cancel` |
-| inspect command | `shell.status` |
+| SDK behavior   | Protocol method       |
+| -------------- | --------------------- |
+| `execute`      | `shell.exec`          |
+| `start`        | `process.start`       |
+| `write_stdin`  | `process.input`       |
+| `close_stdin`  | `process.close_stdin` |
+| `send_signal`  | `process.signal`      |
+| `wait_process` | `process.wait`        |
+| `kill_process` | `process.kill`        |
+| process status | `process.status/list` |
 
-Shell output uses stream frames:
+`DaemonShell.execute` must remain stateless. Each call supplies `target_id`, `cwd`, `env`, and timeout. It must not preserve command-to-command shell state.
 
-```json
-{
-  "type": "stream",
-  "id": "req_shell_1",
-  "event": "stdout",
-  "data": "pytest started\n"
-}
-```
+Background process IDs are provider-owned. The adapter should translate provider output buffers into SDK `BackgroundProcess` and `CompletedProcess` behavior. If the provider reports `process_lost`, the adapter should surface a completed failed result or a clear tool error rather than silently dropping the process.
 
-The terminal response carries exit status:
+## Execution Target Mapping
+
+An execution target describes where commands run:
 
 ```json
 {
-  "type": "response",
-  "id": "req_shell_1",
-  "result": {
-    "exit_code": 0,
-    "duration_ms": 18233
-  }
+  "target_id": "local-default",
+  "platform": "darwin",
+  "shell_kind": "zsh",
+  "default_cwd": "/workspace/main",
+  "allowed_mount_ids": ["main"],
+  "supports_exec": true,
+  "supports_processes": true,
+  "supports_pty": true,
+  "process_persistence": "provider",
+  "session_persistence": "provider"
 }
 ```
+
+The adapter must validate that a requested cwd is inside one of the target's allowed mounts before sending the request. The provider must also enforce this because remote clients are not trusted.
+
+## Stateful Shell Sessions
+
+Stateful shell sessions are not the same as SDK `Shell.execute`. They are explicit resources:
+
+```text
+shell_session.open
+shell_session.exec
+shell_session.input
+shell_session.resize
+shell_session.snapshot
+shell_session.close
+```
+
+Use cases:
+
+- interactive terminal UI
+- REPLs
+- long-lived activated environment
+- task-specific shell state that the agent intentionally manages
+
+The SDK can expose shell sessions through:
+
+- `ResourceRegistry`
+- a dedicated shell-session toolset
+- a future richer Shell API
+
+The adapter must not hide stateful shell sessions behind normal `execute`, because that would make detached and reconnect semantics ambiguous.
 
 ## Resource Mapping
 
-Relay resources represent long-lived provider-side objects:
+Protocol resources represent long-lived provider-side objects:
 
-- browser sessions.
-- computer sessions.
-- database connections.
-- local app automation handles.
-- external service sessions.
+- shell sessions
+- file watches
+- browser sessions
+- computer sessions
+- database connections
+- local app automation handles
+- external service sessions
 
 Method mapping:
 
@@ -112,13 +187,13 @@ resource.export_state
 resource.restore_state
 ```
 
-Resource state should integrate with SDK resumable resources when possible.
+Resource state can integrate with SDK resumable resources when the provider reports a serializable state. Providers must mark opaque or provider-local state as opaque and must not leak secrets in exported state.
 
 ## Tool Mapping
 
-Relay custom tools are described by JSON Schema and exposed as SDK tools.
+Custom tools are described by JSON Schema and exposed as SDK tools.
 
-Tool descriptor:
+Descriptor:
 
 ```json
 {
@@ -133,7 +208,6 @@ Tool descriptor:
     },
     "required": ["path"]
   },
-  "capability": "tools",
   "risk": "low",
   "approval_policy": "ask_once_per_run"
 }
@@ -141,23 +215,17 @@ Tool descriptor:
 
 Runtime mapping:
 
-1. Relay client registers tool descriptors.
-2. Runtime constructs a `RelayToolset` from accepted descriptors.
-3. Model calls generated SDK tool.
-4. Runtime sends `tool.call` over relay.
-5. Relay client executes the local tool.
-6. Runtime records trace and returns model-facing result.
+1. Provider reports descriptors through `tool.list` or `tool.registered`.
+2. Application policy accepts or filters tools.
+3. Runtime constructs a `DaemonToolset`.
+4. Model calls generated SDK tool.
+5. Adapter sends `tool.call`.
+6. Provider executes under local policy.
+7. Runtime records trace and returns model-facing result.
 
 ## Computer Mapping
 
-Computer use can be represented as either:
-
-- a specialized `RelayComputerProvider` used by a `ComputerUseToolset`.
-- custom tools registered under the `tools` capability.
-
-The specialized provider is preferred for product-grade computer use because it needs standard snapshot, action, artifact, pause, takeover, and policy semantics.
-
-Method mapping:
+Computer use should be a specialized capability rather than a generic tool bag when product-grade semantics are required:
 
 ```text
 computer.status
@@ -169,48 +237,48 @@ computer.takeover
 computer.release
 ```
 
-## Binding to Agent Runs
+Computer methods need standard snapshot, action, artifact, pause, takeover, and policy semantics. Generic custom tools can still cover simple local app actions.
 
-Each relay request should include runtime context when available:
+## Environment Instructions
 
-```json
-{
-  "context": {
-    "session_id": "session_123",
-    "run_id": "run_456",
-    "tool_call_id": "call_789",
-    "workspace_id": "workspace_abc"
-  }
-}
-```
+The adapter should generate concise environment instructions that include:
 
-This lets providers upload artifacts, render user-facing prompts, and attach local audit logs to runtime objects.
+- online/offline provider state
+- visible mounts and modes
+- default shell target and cwd
+- shell statelessness
+- background process behavior
+- available stateful shell session tools if enabled
+
+Instructions should not mention host paths unless product policy allows it.
 
 ## Lifecycle
 
 ```mermaid
 sequenceDiagram
-    participant Runtime as Runtime
-    participant Server as Relay Server
-    participant Client as Relay Client
+    participant App as Application
+    participant Env as DaemonEnvironment
+    participant Client as RPC Client
+    participant Provider as Provider
 
-    Client->>Server: connect + hello
-    Server->>Runtime: provider registered
-    Runtime->>Server: create RelayEnvironment for session
-    Runtime->>Server: request file/shell/tool/computer
-    Server->>Client: relay request
-    Client-->>Server: response / stream
-    Server-->>Runtime: SDK result
-    Runtime->>Server: dispose run resources
+    App->>Provider: connect or launch
+    Provider-->>App: initialize result and provider.online
+    App->>Env: construct binding
+    Env->>Client: attach binding
+    Env->>Provider: file/shell/process/tool/resource calls
+    Provider-->>Env: result / stream / events
+    Provider-->>App: readiness and change events
+    App->>App: activation decision
 ```
 
-## Reconnect
+## Reconnect and Handle Validity
 
-Relay clients can reconnect with the same `client_id`. Server behavior:
+When a provider reconnects with the same `provider_id`:
 
-- mark capabilities unavailable when disconnected.
-- fail pending requests with `relay_disconnected`.
-- accept a fresh `hello` after reconnect.
-- recreate environments against the new connection when session policy permits it.
+- bindings can remain valid if grants and accepted capabilities still match.
+- mounts should be compared by `mount_id` and `generation`.
+- process handles survive only if `process_persistence` and provider state prove they survived.
+- shell session handles survive only if `session_persistence` and provider state prove they survived.
+- opaque resource handles survive only if `resource.get` confirms them.
 
-Future protocol versions can add resumable request IDs and provider-side durable sessions.
+The adapter must treat uncertain handle state as lost.
