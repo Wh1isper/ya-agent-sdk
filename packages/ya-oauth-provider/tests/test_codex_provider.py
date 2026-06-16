@@ -109,6 +109,54 @@ async def test_oauth_bearer_auth_fills_codex_responses_instructions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_oauth_bearer_auth_strips_codex_response_token_limits() -> None:
+    source = FakeTokenSource()
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(json.loads(request.content)))
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        auth=OAuthBearerAuth(source, provider_name="codex"),
+    )
+
+    await client.post(
+        "https://chatgpt.com/backend-api/codex/responses",
+        json={
+            "model": "gpt-5.5",
+            "max_tokens": 4096,
+            "max_completion_tokens": 4096,
+            "max_output_tokens": 4096,
+        },
+    )
+    await client.aclose()
+
+    assert seen == [{"model": "gpt-5.5", "instructions": "", "store": False}]
+
+
+@pytest.mark.asyncio
+async def test_oauth_bearer_auth_keeps_token_limits_for_non_codex_response_requests() -> None:
+    source = FakeTokenSource()
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(json.loads(request.content)))
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        auth=OAuthBearerAuth(source, provider_name="codex"),
+    )
+
+    await client.post("https://example.com/v1/responses", json={"model": "gpt-5.5", "max_tokens": 4096})
+    await client.aclose()
+
+    assert seen == [{"model": "gpt-5.5", "max_tokens": 4096}]
+
+
+@pytest.mark.asyncio
 async def test_oauth_bearer_auth_refreshes_once_on_401() -> None:
     source = FakeTokenSource()
     seen: list[str] = []

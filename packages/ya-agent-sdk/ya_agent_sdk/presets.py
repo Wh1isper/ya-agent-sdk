@@ -730,7 +730,7 @@ def _openai_responses_settings(
         "openai_reasoning_summary": reasoning_summary,
     }
     if max_tokens is not None:
-        settings["max_output_tokens"] = max_tokens
+        settings["max_tokens"] = max_tokens
     if openai_service_tier is not None:
         settings["openai_service_tier"] = openai_service_tier
     return settings

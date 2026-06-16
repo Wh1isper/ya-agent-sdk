@@ -416,7 +416,7 @@ def test_openai_responses_presets_structure() -> None:
     assert OPENAI_RESPONSES_HIGH_FAST["openai_reasoning_effort"] == "high"
     assert OPENAI_RESPONSES_MEDIUM_FAST["openai_reasoning_effort"] == "medium"
     assert OPENAI_RESPONSES_LOW_FAST["openai_reasoning_effort"] == "low"
-    assert OPENAI_RESPONSES_XHIGH["max_output_tokens"] > OPENAI_RESPONSES_HIGH["max_output_tokens"]
+    assert OPENAI_RESPONSES_XHIGH["max_tokens"] > OPENAI_RESPONSES_HIGH["max_tokens"]
 
 
 def test_deepseek_v4_presets_structure() -> None:

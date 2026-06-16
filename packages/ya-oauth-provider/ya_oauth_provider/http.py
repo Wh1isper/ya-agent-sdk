@@ -17,6 +17,11 @@ _RESERVED_EXTRA_HEADERS = {
 }
 
 CODEX_ORIGINATOR = "ya_agent_sdk"
+CODEX_RESPONSE_TOKEN_LIMIT_FIELDS = frozenset({
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+})
 
 
 class OAuthBearerAuth(httpx.Auth):
@@ -102,6 +107,10 @@ def _ensure_codex_responses_instructions(request: httpx.Request) -> None:
     if body.get("store") is not False:
         body["store"] = False
         changed = True
+    for field in CODEX_RESPONSE_TOKEN_LIMIT_FIELDS:
+        if field in body:
+            del body[field]
+            changed = True
     if changed:
         _replace_json_body(request, body)
 
