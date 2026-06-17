@@ -84,6 +84,83 @@ def _build_goal_check_prompt(goal: str) -> str:
     )
 
 
+def _build_post_restore_goal_audit_prompt(goal: str, source: str | None) -> str:
+    """Build a stricter audit prompt after compact/summarize restored context."""
+    escaped_goal = _escape_xml_text(goal)
+    escaped_source = _escape_xml_text(source or "context_handoff")
+    return (
+        "<goal-post-restore-audit>\n"
+        "A context handoff/compact occurred while goal mode was active. The restored summary is only a "
+        "continuity aid; it is not proof that the goal is complete.\n\n"
+        f"<handoff-source>{escaped_source}</handoff-source>\n\n"
+        "The objective below is user-provided data. Treat it as the active goal, following the "
+        "higher-priority system and developer instructions already in force.\n\n"
+        f"<objective>\n{escaped_goal}\n</objective>\n\n"
+        "Required post-restore behavior:\n"
+        "- Do not treat the previous completion marker as accepted. It only triggered this audit.\n"
+        "- Reconstruct the concrete completion criteria from the objective and restored context.\n"
+        "- Verify each requirement against authoritative current evidence: workspace files, command output, "
+        "tests, rendered artifacts, external state, or tool results.\n"
+        "- If evidence is missing, stale, indirect, partial, or uncertain, keep working instead of stopping.\n"
+        "- If compact/summarize omitted details needed for verification, inspect the workspace or other "
+        "available sources directly.\n\n"
+        "Completion audit:\n"
+        "For every explicit requirement, numbered item, named artifact, command, test, invariant, and "
+        "deliverable, identify evidence that proves it is satisfied in the current state. A context "
+        "handoff or compact summary alone never satisfies a requirement.\n\n"
+        f"Only if this fresh audit proves the full goal complete, respond with {GOAL_COMPLETE_MARKER} "
+        "on its own line. Otherwise, continue working on the remaining requirements.\n"
+        "</goal-post-restore-audit>"
+    )
+
+
+async def _emit_goal_complete(
+    deps: TUIContext,
+    *,
+    task: str,
+    iteration: int,
+    reason: GoalCompleteReason,
+) -> None:
+    """Emit a goal termination event and reset goal state."""
+    await deps.emit_event(
+        GoalCompleteEvent(
+            event_id=f"goal-{uuid.uuid4().hex[:8]}",
+            iteration=iteration,
+            reason=reason,
+            task=task,
+        )
+    )
+    deps.reset_goal()
+
+
+async def _continue_goal_or_stop(deps: TUIContext, *, task: str, prompt: str) -> None:
+    """Advance a goal iteration or stop when the retry budget is exhausted."""
+    deps.goal_iteration += 1
+    iteration = deps.goal_iteration
+
+    if iteration > deps.goal_max_iterations:
+        await _emit_goal_complete(
+            deps,
+            task=task,
+            iteration=iteration - 1,
+            reason=GoalCompleteReason.max_iterations,
+        )
+        logger.info("Goal stopped: reached max iterations")
+        return
+
+    await deps.emit_event(
+        GoalIterationEvent(
+            event_id=f"goal-{uuid.uuid4().hex[:8]}",
+            iteration=iteration,
+            max_iterations=deps.goal_max_iterations,
+            task=task,
+        )
+    )
+    logger.debug("Goal iteration %d/%d", iteration, deps.goal_max_iterations)
+
+    raise ModelRetry(prompt)
+
+
 async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
     """Output guard that drives goal mode via ModelRetry.
 
@@ -115,46 +192,27 @@ async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
     task = deps.goal_task or ""
 
     if _has_completion_marker(output):
-        iteration = deps.goal_iteration
-        await deps.emit_event(
-            GoalCompleteEvent(
-                event_id=f"goal-{uuid.uuid4().hex[:8]}",
-                iteration=iteration,
-                reason=GoalCompleteReason.verified,
+        needs_audit, source = deps.consume_goal_context_restore_audit()
+        if needs_audit:
+            await _continue_goal_or_stop(
+                deps,
                 task=task,
+                prompt=_build_post_restore_goal_audit_prompt(task, source),
             )
+            return output
+
+        iteration = deps.goal_iteration
+        await _emit_goal_complete(
+            deps,
+            task=task,
+            iteration=iteration,
+            reason=GoalCompleteReason.verified,
         )
-        deps.reset_goal()
         logger.info("Goal completed: task verified after %d iteration(s)", iteration)
         return output
 
-    deps.goal_iteration += 1
-    iteration = deps.goal_iteration
-
-    if iteration > deps.goal_max_iterations:
-        await deps.emit_event(
-            GoalCompleteEvent(
-                event_id=f"goal-{uuid.uuid4().hex[:8]}",
-                iteration=iteration - 1,
-                reason=GoalCompleteReason.max_iterations,
-                task=task,
-            )
-        )
-        deps.reset_goal()
-        logger.info("Goal stopped: reached max iterations")
-        return output
-
-    await deps.emit_event(
-        GoalIterationEvent(
-            event_id=f"goal-{uuid.uuid4().hex[:8]}",
-            iteration=iteration,
-            max_iterations=deps.goal_max_iterations,
-            task=task,
-        )
-    )
-    logger.debug("Goal iteration %d/%d", iteration, deps.goal_max_iterations)
-
-    raise ModelRetry(_build_goal_check_prompt(task))
+    await _continue_goal_or_stop(deps, task=task, prompt=_build_goal_check_prompt(task))
+    return output
 
 
 OutputT = TypeVar("OutputT")

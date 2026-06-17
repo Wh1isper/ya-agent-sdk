@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic_ai.exceptions import ModelRetry
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
-from yaacli.guards import GOAL_COMPLETE_MARKER, _build_goal_check_prompt, _has_completion_marker, goal_guard
+from yaacli.guards import (
+    GOAL_COMPLETE_MARKER,
+    _build_goal_check_prompt,
+    _build_post_restore_goal_audit_prompt,
+    _has_completion_marker,
+    goal_guard,
+)
 from yaacli.session import TUIContext
 
 
@@ -25,6 +31,8 @@ def tui_ctx() -> TUIContext:
     ctx.goal_task = None
     ctx.goal_iteration = 0
     ctx.goal_max_iterations = 10
+    ctx.goal_needs_post_restore_audit = False
+    ctx.goal_last_context_handoff_source = None
     ctx._stream_queue_enabled = False
     return ctx
 
@@ -62,6 +70,8 @@ async def test_goal_guard_verified_complete(tui_ctx: TUIContext) -> None:
         assert result == output
         assert tui_ctx.goal_task is None
         assert tui_ctx.goal_iteration == 0
+        assert tui_ctx.goal_needs_post_restore_audit is False
+        assert tui_ctx.goal_last_context_handoff_source is None
 
         mock_emit.assert_called_once()
         event = mock_emit.call_args[0][0]
@@ -183,6 +193,74 @@ def test_build_goal_check_prompt_escapes_objective() -> None:
     assert "Work from evidence" in prompt
 
 
+def test_build_post_restore_goal_audit_prompt_requires_fresh_evidence() -> None:
+    """Post-restore audit prompt should distinguish handoff from completion."""
+    prompt = _build_post_restore_goal_audit_prompt("fix <tests> & docs", "summarize_tool")
+    assert "goal-post-restore-audit" in prompt
+    assert "fix &lt;tests&gt; &amp; docs" in prompt
+    assert "summarize_tool" in prompt
+    assert "handoff/compact" in prompt
+    assert "not proof" in prompt
+    assert "fresh audit" in prompt
+    assert GOAL_COMPLETE_MARKER in prompt
+
+
+@pytest.mark.asyncio
+async def test_goal_guard_rejects_completion_marker_after_context_restore(tui_ctx: TUIContext) -> None:
+    """The first completion marker after context restore should trigger a fresh audit."""
+    tui_ctx.goal_task = "fix tests"
+    tui_ctx.goal_iteration = 2
+    tui_ctx.goal_max_iterations = 10
+    tui_ctx.mark_goal_context_restored("compact")
+    ctx = _make_ctx(tui_ctx)
+
+    with patch.object(TUIContext, "emit_event", new_callable=AsyncMock) as mock_emit:
+        with pytest.raises(ModelRetry) as exc_info:
+            await goal_guard(ctx, f"Done.\n{GOAL_COMPLETE_MARKER}")
+
+        message = str(exc_info.value)
+        assert "goal-post-restore-audit" in message
+        assert "handoff/compact" in message
+        assert "not proof" in message
+        assert "fresh audit" in message
+        assert "compact" in message
+        assert tui_ctx.goal_task == "fix tests"
+        assert tui_ctx.goal_iteration == 3
+        assert tui_ctx.goal_needs_post_restore_audit is False
+        assert tui_ctx.goal_last_context_handoff_source is None
+
+        mock_emit.assert_called_once()
+        event = mock_emit.call_args[0][0]
+        assert isinstance(event, GoalIterationEvent)
+        assert event.iteration == 3
+        assert event.max_iterations == 10
+
+
+@pytest.mark.asyncio
+async def test_goal_guard_context_restore_marker_can_stop_at_max_iterations(tui_ctx: TUIContext) -> None:
+    """Post-restore audit should still honor the configured max-iteration stop."""
+    tui_ctx.goal_task = "fix tests"
+    tui_ctx.goal_iteration = 10
+    tui_ctx.goal_max_iterations = 10
+    tui_ctx.mark_goal_context_restored("summarize_tool")
+    ctx = _make_ctx(tui_ctx)
+
+    with patch.object(TUIContext, "emit_event", new_callable=AsyncMock) as mock_emit:
+        result = await goal_guard(ctx, f"Done.\n{GOAL_COMPLETE_MARKER}")
+
+        assert result == f"Done.\n{GOAL_COMPLETE_MARKER}"
+        assert tui_ctx.goal_task is None
+        assert tui_ctx.goal_iteration == 0
+        assert tui_ctx.goal_needs_post_restore_audit is False
+        assert tui_ctx.goal_last_context_handoff_source is None
+
+        mock_emit.assert_called_once()
+        event = mock_emit.call_args[0][0]
+        assert isinstance(event, GoalCompleteEvent)
+        assert event.reason == GoalCompleteReason.max_iterations
+        assert event.iteration == 10
+
+
 def test_tui_context_goal_active_property() -> None:
     """TUIContext.goal_active property should reflect goal_task state."""
     ctx = TUIContext.model_construct()
@@ -198,8 +276,42 @@ def test_tui_context_reset_goal() -> None:
     ctx = TUIContext.model_construct()
     ctx.goal_task = "some task"
     ctx.goal_iteration = 5
+    ctx.goal_needs_post_restore_audit = True
+    ctx.goal_last_context_handoff_source = "compact"
 
     ctx.reset_goal()
 
     assert ctx.goal_task is None
     assert ctx.goal_iteration == 0
+    assert ctx.goal_needs_post_restore_audit is False
+    assert ctx.goal_last_context_handoff_source is None
+
+
+def test_tui_context_mark_goal_context_restored_only_when_active() -> None:
+    """Context restore markers should only apply while goal mode is active."""
+    ctx = TUIContext.model_construct()
+    ctx.goal_task = None
+    ctx.goal_needs_post_restore_audit = False
+    ctx.goal_last_context_handoff_source = None
+
+    ctx.mark_goal_context_restored("compact")
+    assert ctx.goal_needs_post_restore_audit is False
+    assert ctx.goal_last_context_handoff_source is None
+
+    ctx.goal_task = "some task"
+    ctx.mark_goal_context_restored("summarize_tool")
+    assert ctx.goal_needs_post_restore_audit is True
+    assert ctx.goal_last_context_handoff_source == "summarize_tool"
+
+
+def test_tui_context_consume_goal_context_restore_audit() -> None:
+    """Consuming post-restore audit state should be one-shot."""
+    ctx = TUIContext.model_construct()
+    ctx.goal_task = "some task"
+    ctx.goal_needs_post_restore_audit = True
+    ctx.goal_last_context_handoff_source = "compact"
+
+    assert ctx.consume_goal_context_restore_audit() == (True, "compact")
+    assert ctx.goal_needs_post_restore_audit is False
+    assert ctx.goal_last_context_handoff_source is None
+    assert ctx.consume_goal_context_restore_audit() == (False, None)

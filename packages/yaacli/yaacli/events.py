@@ -40,13 +40,22 @@ class ContextUpdateEvent(AgentEvent):
 
 
 class GoalCompleteReason(StrEnum):
-    """Enumerated reasons for goal completion."""
+    """Enumerated reasons for goal-mode termination."""
 
     verified = "verified"
     """Agent verified the goal is complete."""
 
     max_iterations = "max_iterations"
     """Reached the maximum iteration limit."""
+
+    cancelled = "cancelled"
+    """User cancelled the active goal."""
+
+    error = "error"
+    """Goal stopped because agent execution failed."""
+
+    unverified_stop = "unverified_stop"
+    """Goal mode ended without an accepted verification marker."""
 
 
 @dataclass

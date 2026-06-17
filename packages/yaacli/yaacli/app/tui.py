@@ -1870,6 +1870,28 @@ class TUIApp:
         self._agent_task = asyncio.create_task(self._run_agent(""))
         self._agent_task.add_done_callback(self._on_agent_task_done)
 
+    def _finish_active_goal(self, reason: GoalCompleteReason) -> None:
+        """Finish active goal mode from the TUI layer with an explicit reason."""
+        ctx = self.runtime.ctx
+        if not ctx.goal_active:
+            return
+
+        event = GoalCompleteEvent(
+            event_id=f"goal-{uuid.uuid4().hex[:8]}",
+            iteration=ctx.goal_iteration,
+            reason=reason,
+            task=ctx.goal_task or "",
+        )
+        stream_event = StreamEvent(agent_id="main", agent_name="main", event=event)
+
+        if self._display_adapter is not None:
+            self._handle_and_record_display_events(self._display_adapter.adapt_stream_event(stream_event))
+            self._handle_stream_event(stream_event, render_display=False)
+        else:
+            self._handle_stream_event(stream_event)
+
+        ctx.reset_goal()
+
     async def _run_agent(
         self,
         user_input: str,
@@ -1956,12 +1978,18 @@ class TUIApp:
             # These are messages injected via bus from user during execution.
             # If not cleared, they would leak into unrelated future tasks.
             self.runtime.ctx.steering_messages.clear()
-            # Clean up goal state if still active (cancelled or error)
+            # Finish active goal state explicitly. Verified and max-iteration
+            # endings are handled by the goal guard; if the guard did not end
+            # goal mode, the run stopped without accepted completion.
             ctx = self.runtime.ctx
             if ctx.goal_active:
-                if cancelled or reported_error:
-                    self._append_system_output("[Goal] Cancelled")
-                ctx.reset_goal()
+                if cancelled:
+                    goal_stop_reason = GoalCompleteReason.cancelled
+                elif reported_error:
+                    goal_stop_reason = GoalCompleteReason.error
+                else:
+                    goal_stop_reason = GoalCompleteReason.unverified_stop
+                self._finish_active_goal(goal_stop_reason)
             self._agent_phase = "idle"
             self._state = TUIState.IDLE
             if self._app:
@@ -2584,6 +2612,19 @@ class TUIApp:
                     f"[Goal] Reached max iterations ({message_event.iteration}). "
                     "Task may be incomplete. You can run /goal again to continue."
                 )
+            elif message_event.reason == GoalCompleteReason.cancelled:
+                self._append_system_output(
+                    f"[Goal] Cancelled at iteration {message_event.iteration}. Task may be incomplete."
+                )
+            elif message_event.reason == GoalCompleteReason.error:
+                self._append_system_output(
+                    f"[Goal] Stopped after an error at iteration {message_event.iteration}. Task may be incomplete."
+                )
+            elif message_event.reason == GoalCompleteReason.unverified_stop:
+                self._append_system_output(
+                    f"[Goal] Stopped without verified completion at iteration {message_event.iteration}. "
+                    "Task may be incomplete. You can run /goal again to continue."
+                )
 
         elif isinstance(message_event, ContextUpdateEvent):
             self._current_context_tokens = message_event.total_tokens
@@ -3062,6 +3103,7 @@ class TUIApp:
                     self._append_system_output("Usage: /goal <task description>")
                 else:
                     task = args.strip()
+                    ctx.reset_goal()
                     ctx.goal_task = task
                     ctx.goal_iteration = 0
                     ctx.goal_max_iterations = self.config.general.max_goal_iterations

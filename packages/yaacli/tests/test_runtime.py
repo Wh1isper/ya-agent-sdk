@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from pydantic_ai.messages import ModelRequest, UserPromptPart
+from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
+from ya_agent_sdk.filters.handoff import process_handoff_message
 from yaacli.config import (
     GeneralConfig,
     MCPConfig,
@@ -12,7 +16,7 @@ from yaacli.config import (
     ToolsConfig,
     YaacliConfig,
 )
-from yaacli.runtime import create_tui_runtime
+from yaacli.runtime import GoalContextHandoffExtension, create_tui_runtime
 from yaacli.toolsets.background import SpawnDelegateTool, SteerSubagentTool
 
 # =============================================================================
@@ -35,6 +39,7 @@ def test_create_tui_runtime_minimal(tmp_path: Path) -> None:
     assert runtime.env is not None
     assert runtime.ctx is not None
     assert runtime.agent is not None
+    assert any(isinstance(extension, GoalContextHandoffExtension) for extension in runtime.lifecycle_extensions)
 
 
 async def test_create_tui_runtime_uses_custom_config_dir_for_allowed_paths(tmp_path: Path) -> None:
@@ -106,6 +111,84 @@ def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None
     )
 
     assert runtime.ctx.model_cfg.context_window == 1_000_000
+
+
+async def test_goal_context_handoff_extension_marks_active_goal() -> None:
+    """YAACLI lifecycle extension should mark active goals after context handoff."""
+    from yaacli.session import TUIContext
+
+    ctx = TUIContext.model_construct()
+    ctx.goal_task = "fix tests"
+    ctx.goal_iteration = 0
+    ctx.goal_max_iterations = 10
+    ctx.goal_needs_post_restore_audit = False
+    ctx.goal_last_context_handoff_source = None
+    extension = GoalContextHandoffExtension()
+
+    await extension.on_context_handoff_complete(
+        ContextHandoffCompleteContext(
+            event_id="handoff-1",
+            deps=ctx,
+            source=ContextHandoffSource.COMPACT,
+            original_messages=[],
+            trimmed_messages=[],
+            handoff_messages=[],
+            summary_markdown="summary",
+        )
+    )
+
+    assert ctx.goal_needs_post_restore_audit is True
+    assert ctx.goal_last_context_handoff_source == "compact"
+
+
+async def test_goal_context_handoff_extension_marks_goal_through_handoff_filter() -> None:
+    """The summarize handoff filter should trigger YAACLI goal post-restore audit state."""
+    from yaacli.session import TUIContext
+
+    ctx = TUIContext()
+    ctx.goal_task = "fix tests"
+    ctx.lifecycle_extensions = [GoalContextHandoffExtension()]
+    ctx.handoff_message = "# Context Summary\n\nContinue the task."
+    run_ctx = MagicMock()
+    run_ctx.deps = ctx
+
+    result = await process_handoff_message(
+        run_ctx,
+        [ModelRequest(parts=[UserPromptPart(content="original request")])],
+    )
+
+    assert len(result) == 1
+    assert ctx.handoff_message is None
+    assert ctx.goal_needs_post_restore_audit is True
+    assert ctx.goal_last_context_handoff_source == "summarize_tool"
+
+
+async def test_goal_context_handoff_extension_ignores_inactive_goal() -> None:
+    """Inactive goal contexts should not get post-restore audit state."""
+    from yaacli.session import TUIContext
+
+    ctx = TUIContext.model_construct()
+    ctx.goal_task = None
+    ctx.goal_iteration = 0
+    ctx.goal_max_iterations = 10
+    ctx.goal_needs_post_restore_audit = False
+    ctx.goal_last_context_handoff_source = None
+    extension = GoalContextHandoffExtension()
+
+    await extension.on_context_handoff_complete(
+        ContextHandoffCompleteContext(
+            event_id="handoff-1",
+            deps=ctx,
+            source=ContextHandoffSource.SUMMARIZE_TOOL,
+            original_messages=[],
+            trimmed_messages=[],
+            handoff_messages=[],
+            summary_markdown="summary",
+        )
+    )
+
+    assert ctx.goal_needs_post_restore_audit is False
+    assert ctx.goal_last_context_handoff_source is None
 
 
 def test_create_tui_runtime_with_model_settings(tmp_path: Path) -> None:

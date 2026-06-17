@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import DeferredToolRequests, ModelSettings
 from pydantic_ai.output import OutputSpec
+from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig, ToolConfig
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
@@ -62,6 +63,29 @@ if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
 
 logger = get_logger(__name__)
+
+
+class GoalContextHandoffExtension(BaseLifecycleExtension[TUIContext, TUIEnvironment]):
+    """Bridge SDK context handoff lifecycle to YAACLI goal-mode state.
+
+    SDK compaction and summarize-tool handoff are context lifecycle concerns.
+    YAACLI owns goal completion semantics, so this extension only records that
+    an active goal crossed a restored-context boundary. The goal guard then
+    requires one fresh completion audit before accepting a completion marker.
+    """
+
+    name = "yaacli_goal_context_handoff"
+
+    async def on_context_handoff_complete(self, ctx: ContextHandoffCompleteContext[TUIContext]) -> None:
+        deps = ctx.deps
+        if not isinstance(deps, TUIContext):
+            return
+
+        if isinstance(ctx.source, ContextHandoffSource):
+            source = ctx.source.value
+        else:
+            source = str(ctx.source)
+        deps.mark_goal_context_restored(source)
 
 
 def _load_system_prompt(config: YaacliConfig) -> str:
@@ -353,6 +377,7 @@ def create_tui_runtime(
         unified_subagents=True,
         retries={"output": output_retries},
         extra_context_kwargs=extra_ctx_kwargs,
+        lifecycle_extensions=[GoalContextHandoffExtension()],
     )
 
     # Attach goal guard for /goal command support

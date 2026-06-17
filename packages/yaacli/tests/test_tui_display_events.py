@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
+from ya_agent_sdk.context import StreamEvent
 from ya_agent_sdk.events import SubagentStartEvent
 from yaacli.app import TUIApp
 from yaacli.app.tui import PendingAttachment
 from yaacli.config import CommandDefinition
+from yaacli.events import GoalCompleteEvent, GoalCompleteReason
+from yaacli.session import TUIContext
 
 
 @dataclass
@@ -186,3 +189,41 @@ def test_tui_display_user_input_attachment_fallback() -> None:
     ])
 
     assert any("[Attached 1 image]" in line for line in app._output_lines)
+
+
+def test_tui_goal_complete_event_renders_unverified_stop() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+
+    app._handle_stream_event(
+        StreamEvent(
+            agent_id="main",
+            agent_name="main",
+            event=GoalCompleteEvent(
+                event_id="goal-1",
+                iteration=2,
+                reason=GoalCompleteReason.unverified_stop,
+                task="fix tests",
+            ),
+        )
+    )
+
+    assert any("Stopped without verified completion at iteration 2" in line for line in app._output_lines)
+
+
+def test_tui_finish_active_goal_emits_reason_and_resets_goal() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    ctx = TUIContext.model_construct()
+    ctx.goal_task = "fix tests"
+    ctx.goal_iteration = 4
+    ctx.goal_max_iterations = 10
+    ctx.goal_needs_post_restore_audit = True
+    ctx.goal_last_context_handoff_source = "compact"
+    app._runtime = MagicMock(ctx=ctx)
+
+    app._finish_active_goal(GoalCompleteReason.cancelled)
+
+    assert ctx.goal_task is None
+    assert ctx.goal_iteration == 0
+    assert ctx.goal_needs_post_restore_audit is False
+    assert ctx.goal_last_context_handoff_source is None
+    assert any("Cancelled at iteration 4" in line for line in app._output_lines)
