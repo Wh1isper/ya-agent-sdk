@@ -1873,7 +1873,7 @@ class TUIApp:
     def _finish_active_goal(self, reason: GoalCompleteReason) -> None:
         """Finish active goal mode from the TUI layer with an explicit reason."""
         ctx = self.runtime.ctx
-        if not ctx.goal_active:
+        if not isinstance(ctx, TUIContext) or not ctx.goal_active:
             return
 
         event = GoalCompleteEvent(
@@ -1982,7 +1982,7 @@ class TUIApp:
             # endings are handled by the goal guard; if the guard did not end
             # goal mode, the run stopped without accepted completion.
             ctx = self.runtime.ctx
-            if ctx.goal_active:
+            if isinstance(ctx, TUIContext) and ctx.goal_active:
                 if cancelled:
                     goal_stop_reason = GoalCompleteReason.cancelled
                 elif reported_error:
