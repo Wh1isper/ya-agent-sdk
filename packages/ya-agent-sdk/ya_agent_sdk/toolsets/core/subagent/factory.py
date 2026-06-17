@@ -176,7 +176,7 @@ async def _run_subagent_iter(
             if Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):
                 async with node.stream(run.ctx) as request_stream:
                     async for event in request_stream:
-                        await sub_ctx.emit_event(event)
+                        await sub_ctx.emit_event(sub_ctx.tool_id_wrapper.wrap_event(event))
                 if Agent.is_model_request_node(node):
                     parent_ctx.update_usage_snapshot_entry(
                         ledger_key=sub_ctx.agent_id,

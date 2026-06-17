@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, FunctionToolCallEvent, FunctionToolResultEvent, RunContext
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
@@ -603,6 +603,85 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     assert ctx.usage_snapshot_entries[subagent_id].agent_id == subagent_id
     assert ctx.usage_snapshot_entries[subagent_id].model_id == "test-model"
     assert ctx.usage_snapshot_entries[subagent_id].usage.requests == 2
+
+
+async def test_create_subagent_call_func_wraps_stream_tool_call_ids(monkeypatch):
+    """Subagent stream events should use normalized tool call IDs."""
+    mock_agent = MagicMock(spec=Agent)
+    mock_agent.model.model_name = "test-model"
+    mock_agent.name = "streamer"
+
+    mock_run = MagicMock()
+    mock_run.result = MagicMock()
+    mock_run.result.output = "result with wrapped tool IDs"
+    mock_run.result.all_messages = MagicMock(return_value=[])
+    mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
+    mock_run.usage = MagicMock(return_value=RunUsage(requests=1))
+    mock_run.ctx = MagicMock()
+
+    mock_model_node = MagicMock()
+    mock_end_node = MagicMock()
+    original_tool_call_id = "provider-call-1"
+
+    @asynccontextmanager
+    async def mock_stream(ctx):
+        async def event_gen():
+            yield FunctionToolCallEvent(
+                part=ToolCallPart(tool_name="shell", args={"command": "echo hello"}, tool_call_id=original_tool_call_id)
+            )
+            yield FunctionToolResultEvent(
+                part=ToolReturnPart(tool_name="shell", content="hello", tool_call_id=original_tool_call_id)
+            )
+
+        yield event_gen()
+
+    mock_model_node.stream = mock_stream
+
+    async def node_iter():
+        yield mock_model_node
+        yield mock_end_node
+
+    mock_run.__aiter__ = lambda _: node_iter()
+
+    @asynccontextmanager
+    async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
+        yield mock_run
+
+    mock_agent.iter = mock_iter
+
+    monkeypatch.setattr(Agent, "is_user_prompt_node", staticmethod(lambda n: False))
+    monkeypatch.setattr(Agent, "is_end_node", staticmethod(lambda n: n is mock_end_node))
+    monkeypatch.setattr(Agent, "is_model_request_node", staticmethod(lambda n: n is mock_model_node))
+    monkeypatch.setattr(Agent, "is_call_tools_node", staticmethod(lambda n: False))
+
+    call_func = create_subagent_call_func(mock_agent)
+
+    ctx = AgentContext()
+    ctx._stream_queue_enabled = True
+    run_ctx = _create_mock_run_context(ctx)
+    mock_self = MagicMock(spec=BaseTool)
+
+    output = await call_func(mock_self, run_ctx, prompt="test wrapped tool IDs")
+
+    assert "result with wrapped tool IDs" in output
+    subagent_id = next(iter(ctx.agent_registry.keys()))
+    queue = ctx.agent_stream_queues[subagent_id]
+
+    start_event = await queue.get()
+    assert isinstance(start_event, SubagentStartEvent)
+
+    call_event = await queue.get()
+    result_event = await queue.get()
+
+    assert isinstance(call_event, FunctionToolCallEvent)
+    assert isinstance(result_event, FunctionToolResultEvent)
+    assert call_event.tool_call_id.startswith("ya-")
+    assert result_event.tool_call_id == call_event.tool_call_id
+    assert call_event.tool_call_id != original_tool_call_id
+
+    complete_event = await queue.get()
+    assert isinstance(complete_event, SubagentCompleteEvent)
+    assert queue.empty()
 
 
 # Tests for agent_id generation
