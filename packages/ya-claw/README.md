@@ -31,7 +31,7 @@ Key areas in this package:
 - `spec/` — architecture and runtime design documents
 - `tests/` — runtime tests
 - `ya_claw/api/` — HTTP API surface
-- `ya_claw/bridge/` — IM bridge adapters and relay logic
+- `ya_claw/bridge/` — IM bridge adapters and event handling
 - `ya_claw/app.py` and `ya_claw/cli.py` — application entrypoints
 - `ya_claw/config.py` — runtime configuration
 

@@ -135,8 +135,6 @@ check: ## Run code quality tools for all active packages
 	@uv run python -m pyright
 	@echo "Running deptry for ya-agent-environment"
 	@(cd packages/ya-agent-environment && uvx deptry ya_agent_environment)
-	@echo "Running deptry for ya-environment-relay"
-	@(cd packages/ya-environment-relay && uvx deptry ya_environment_relay)
 	@echo "Running deptry for ya-agent-sdk"
 	@(cd packages/ya-agent-sdk && uvx deptry ya_agent_sdk)
 	@echo "Running deptry for ya-agent-stream-protocol"
@@ -238,11 +236,6 @@ build-environment: clean-build ## Build ya-agent-environment distribution
 	@echo "Building ya-agent-environment"
 	@uv build --package ya-agent-environment -o dist
 
-.PHONY: build-relay
-build-relay: clean-build ## Build ya-environment-relay distribution
-	@echo "Building ya-environment-relay"
-	@uv build --package ya-environment-relay -o dist
-
 .PHONY: build-stream-protocol
 build-stream-protocol: clean-build ## Build ya-agent-stream-protocol distribution
 	@echo "Building ya-agent-stream-protocol"
@@ -266,7 +259,7 @@ build-all: clean-build ## Build distributions for all workspace packages
 .PHONY: clean-build
 clean-build: ## Clean build artifacts
 	@echo "Removing build artifacts"
-	@uv run python -c "from pathlib import Path; import shutil; [shutil.rmtree(path, ignore_errors=True) for path in (Path('dist'), Path('packages/ya-agent-environment/dist'), Path('packages/ya-environment-relay/dist'), Path('packages/ya-agent-sdk/dist'), Path('packages/ya-agent-stream-protocol/dist'), Path('packages/yaacli/dist'), Path('packages/ya-claw/dist'), Path('packages/ya-agent-platform/dist'))]"
+	@uv run python -c "from pathlib import Path; import shutil; [shutil.rmtree(path, ignore_errors=True) for path in (Path('dist'), Path('packages/ya-agent-environment/dist'), Path('packages/ya-agent-sdk/dist'), Path('packages/ya-agent-stream-protocol/dist'), Path('packages/yaacli/dist'), Path('packages/ya-claw/dist'), Path('packages/ya-agent-platform/dist'))]"
 
 .PHONY: publish
 publish: ## Publish built distributions to PyPI

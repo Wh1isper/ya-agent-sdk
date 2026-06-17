@@ -14,7 +14,7 @@ It should let a user:
 - inspect heartbeat configuration and fire history
 - watch live run output
 - read compacted conversation history for completed rounds
-- inspect bridge endpoints and relay activity
+- inspect bridge endpoints and ingress activity
 - inspect run summaries
 - inspect workspace runtime health and session sandbox state
 - manage execution profiles
@@ -177,7 +177,7 @@ The runtime should emit structured logs for:
 - workflow trigger, node dispatch, supervision, and terminal lifecycle
 - schedule trigger and dispatch lifecycle
 - heartbeat trigger and dispatch lifecycle
-- bridge ingress and relay lifecycle
+- bridge ingress lifecycle
 - event delivery failures
 - shutdown and cleanup
 

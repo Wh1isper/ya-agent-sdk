@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 ShellSandboxProfile = Literal[
     "read_only",
     "workspace_write",
-    "relay_workspace_write",
+    "mounted_workspace_write",
     "network_proxy",
     "danger_full_access",
 ]

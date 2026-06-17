@@ -139,7 +139,7 @@ Run state stores the resolved workspace snapshot with fingerprint, sandbox scope
 
 ## Shell Sandbox Policy Rule
 
-Local and relay-backed shell environments resolve a shell sandbox policy before environment construction. The policy combines profile defaults, workspace binding mounts, request metadata, and source kind into a concrete sandbox snapshot. The default profile is `workspace_write` with bounded workspace writes, full networking, inherited environment variables, time limits, output limits, and audit enabled.
+Local and mounted shell environments resolve a shell sandbox policy before environment construction. The policy combines profile defaults, workspace binding mounts, request metadata, and source kind into a concrete sandbox snapshot. The default profile is `workspace_write` with bounded workspace writes, full networking, inherited environment variables, time limits, output limits, and audit enabled.
 
 The full shell sandbox contract lives in [12-shell-sandbox.md](12-shell-sandbox.md).
 

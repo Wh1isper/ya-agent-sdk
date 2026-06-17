@@ -14,7 +14,6 @@ package = false
 [tool.uv.workspace]
 members = [
     "packages/ya-agent-environment",
-    "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
     "packages/ya-agent-stream-protocol",
     "packages/ya-ripgrep-core",
@@ -27,7 +26,6 @@ members = [
 
 [tool.uv.sources]
 ya-agent-environment = { workspace = true }
-ya-environment-relay = { workspace = true }
 ya-agent-sdk = { workspace = true }
 ya-agent-stream-protocol = { workspace = true }
 ya-ripgrep-core = { workspace = true }
@@ -39,7 +37,6 @@ ya-agent-platform = { workspace = true }
 [tool.pyright]
 include = [
     "packages/ya-agent-environment/ya_agent_environment",
-    "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
     "packages/ya-agent-stream-protocol/ya_agent_stream_protocol",
     "packages/ya-oauth/ya_oauth",
@@ -50,7 +47,6 @@ include = [
 ]
 exclude = [
     "packages/ya-agent-environment/tests",
-    "packages/ya-environment-relay/tests",
     "packages/ya-agent-sdk/tests",
     "packages/ya-agent-stream-protocol/tests",
     "packages/ya-oauth/tests",
@@ -69,7 +65,6 @@ exclude = [
 pythonVersion = "3.11"
 extraPaths = [
     "packages/ya-agent-environment",
-    "packages/ya-environment-relay",
     "packages/ya-agent-sdk",
     "packages/ya-agent-stream-protocol",
     "packages/ya-oauth",
@@ -142,7 +137,6 @@ skip_empty = true
 branch = true
 source = [
     "packages/ya-agent-environment/ya_agent_environment",
-    "packages/ya-environment-relay/ya_environment_relay",
     "packages/ya-agent-sdk/ya_agent_sdk",
     "packages/ya-agent-stream-protocol/ya_agent_stream_protocol",
     "packages/ya-oauth/ya_oauth",

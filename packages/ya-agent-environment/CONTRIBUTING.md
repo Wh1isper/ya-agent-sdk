@@ -27,5 +27,4 @@ make test
 ## Guidelines
 
 - Keep the import package name `ya_agent_environment` for compatibility.
-- Put relay protocol work in the sibling `packages/ya-environment-relay` package.
 - Update tests and docs when changing public protocols, environment interfaces, shell behavior, file operations, or resource state.

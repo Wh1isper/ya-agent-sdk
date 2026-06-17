@@ -4,7 +4,7 @@
 
 YA Claw shell execution should use an OS-level sandbox by default. The runtime grants a shell the minimum filesystem, process, environment, and network surface required by the active workspace binding.
 
-This design covers the local single-node runtime first, then extends to Desktop relay and advanced container backends.
+This design covers the local single-node runtime first, then extends to mounted workspace providers and advanced container backends.
 
 ## Research Basis
 
@@ -77,18 +77,18 @@ flowchart TB
 type ShellSandboxProfile =
   | "read_only"
   | "workspace_write"
-  | "relay_workspace_write"
+  | "mounted_workspace_write"
   | "network_proxy"
   | "danger_full_access";
 ```
 
-| Profile                 | Filesystem                            | Network         | Typical use                                     |
-| ----------------------- | ------------------------------------- | --------------- | ----------------------------------------------- |
-| `read_only`             | workspace read, runtime scratch write | blocked         | inspection, grep, tests that write only scratch |
-| `workspace_write`       | selected workspace writes             | full by default | local coding and build loops                    |
-| `relay_workspace_write` | relay-granted roots only              | provider policy | central Claw using Desktop local PC roots       |
-| `network_proxy`         | selected workspace writes             | proxy-mediated  | package install, docs fetch, API calls          |
-| `danger_full_access`    | host shell policy                     | full            | human-approved maintenance and diagnostics      |
+| Profile                   | Filesystem                            | Network         | Typical use                                     |
+| ------------------------- | ------------------------------------- | --------------- | ----------------------------------------------- |
+| `read_only`               | workspace read, runtime scratch write | blocked         | inspection, grep, tests that write only scratch |
+| `workspace_write`         | selected workspace writes             | full by default | local coding and build loops                    |
+| `mounted_workspace_write` | mounted workspace roots only          | provider policy | central Claw using externally mounted roots     |
+| `network_proxy`           | selected workspace writes             | proxy-mediated  | package install, docs fetch, API calls          |
+| `danger_full_access`      | host shell policy                     | full            | human-approved maintenance and diagnostics      |
 
 ### ShellSandboxPolicy
 
@@ -154,7 +154,7 @@ shell_sandbox:
   audit_enabled: true
 ```
 
-Profiles can tighten or widen this policy through stored execution profile metadata. Request-level inputs can choose a stricter policy. A wider policy requires profile permission and HITL when the run source is interactive, scheduled, bridge-driven, agency-driven, or relay-driven.
+Profiles can tighten or widen this policy through stored execution profile metadata. Request-level inputs can choose a stricter policy. A wider policy requires profile permission and HITL when the run source is interactive, scheduled, bridge-driven, agency-driven, or externally mounted.
 
 ## Filesystem Rules
 
@@ -515,20 +515,20 @@ type ShellSandboxSnapshot = {
 };
 ```
 
-## Relay Implications
+## Mounted Provider Implications
 
-For relay-backed workspaces, Desktop or the relay provider is the final local enforcement point:
+For externally mounted workspaces, the local provider is the final local enforcement point:
 
 ```mermaid
 flowchart LR
     Agent[Central Agent Run] --> ClawPolicy[Claw profile and grant policy]
-    ClawPolicy --> RelayGrant[Relay shell grant]
-    RelayGrant --> DesktopPolicy[Desktop local shell policy]
-    DesktopPolicy --> LocalSandbox[Provider-local shell sandbox]
+    ClawPolicy --> MountGrant[Mounted workspace shell grant]
+    MountGrant --> LocalPolicy[Local shell policy]
+    LocalPolicy --> LocalSandbox[Provider-local shell sandbox]
     LocalSandbox --> Host[Local PC workspace]
 ```
 
-Claw sends the resolved shell request, workspace roots, cwd, env allowlist, network mode, and run context through relay. Desktop applies its local shell sandbox policy and records local audit. Claw records the relay result and audit projection in the run trace.
+Claw sends the resolved shell request, workspace roots, cwd, env allowlist, network mode, and run context to the mounted provider. The provider applies its local shell sandbox policy and records local audit. Claw records the result and audit projection in the run trace.
 
 ## Raw Host Shell Escalation
 
@@ -540,7 +540,7 @@ Raw host shell execution requires all of the following:
 4. audit records `raw_host = true`, policy hash, approver identity, and output truncation status.
 5. Desktop or Claw shows visible active state and cancellation.
 
-Scheduled, bridge-triggered, agency, and relay runs should use sandboxed profiles by default and require an explicit stored policy for wider execution.
+Scheduled, bridge-triggered, agency, and mounted-provider runs should use sandboxed profiles by default and require an explicit stored policy for wider execution.
 
 ## Audit Requirements
 
@@ -594,10 +594,10 @@ type ShellSandboxAuditEntry = {
 - Add startup self-test and diagnostics.
 - Add Desktop setup messaging for failed probes.
 
-### Phase 4: Relay and proxy networking
+### Phase 4: Mounted providers and proxy networking
 
-- Carry shell sandbox policy through `ya-environment-relay.v1` shell requests.
-- Add Desktop local enforcement and audit projection.
+- Carry shell sandbox policy through mounted provider shell requests.
+- Add local provider enforcement and audit projection.
 - Add proxy-network mode for approved package installs and web fetches.
 
 ### Phase 5: Advanced providers
@@ -623,4 +623,4 @@ type ShellSandboxAuditEntry = {
 
 ## Design Decision
 
-YA Claw should treat shell sandboxing as a first-class runtime boundary. Linux defaults to bubblewrap plus seccomp, macOS defaults to generated Seatbelt profiles, Windows targets restricted tokens plus Job Objects, Desktop relay enforces the same policy locally, and raw host shell execution stays a privileged audited path.
+YA Claw should treat shell sandboxing as a first-class runtime boundary. Linux defaults to bubblewrap plus seccomp, macOS defaults to generated Seatbelt profiles, Windows targets restricted tokens plus Job Objects, mounted providers enforce the same policy locally, and raw host shell execution stays a privileged audited path.

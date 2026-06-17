@@ -13,8 +13,6 @@ Environment abstractions for general agents.
 
 The Python import package is `ya_agent_environment`.
 
-Relay protocol work lives in the sibling [`ya-environment-relay`](../ya-environment-relay) package.
-
 ## Development
 
 This package is maintained as a workspace member in `ya-mono`.

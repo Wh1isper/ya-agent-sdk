@@ -124,7 +124,7 @@ profiles:
       audit_enabled: true
 ```
 
-Supported `profile` values are `read_only`, `workspace_write`, `relay_workspace_write`, `network_proxy`, and `danger_full_access`. Current runtime enforcement comes from the resolved workspace mount modes, backend, network, environment allowlist, and raw host gate. The profile value is also recorded in metadata and shell context so agents, logs, and future audit storage can see the selected policy intent.
+Supported `profile` values are `read_only`, `workspace_write`, `mounted_workspace_write`, `network_proxy`, and `danger_full_access`. Current runtime enforcement comes from the resolved workspace mount modes, backend, network, environment allowlist, and raw host gate. The profile value is also recorded in metadata and shell context so agents, logs, and future audit storage can see the selected policy intent.
 
 Supported `backend_preference` values are `auto`, `linux_bwrap_seccomp`, `macos_seatbelt`, `windows_restricted_token`, `docker`, `podman`, `nsjail`, and `raw_host`. Local shell execution currently implements Linux bubblewrap, macOS seatbelt, guarded Windows behavior, and guarded raw host execution. Docker workspace isolation is configured through the Docker workspace provider shape.
 
