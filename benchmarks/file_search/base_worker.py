@@ -40,6 +40,8 @@ except ImportError:
 
 Operation = Literal["glob", "grep"]
 FULL_CASES: tuple[str, ...] = ("small", "medium", "large-files", "many-small", "ignored-heavy", "binary-mixed")
+DEFAULT_GREP_MAX_FILE_SIZE = 10 * 1024 * 1024
+BINARY_PROBE_BYTES = 8192
 logger = logging.getLogger(__name__)
 
 
@@ -332,6 +334,7 @@ async def _run_grep(file_operator: Any, query: Query, *, use_native: bool) -> di
             native_regex = _ripgrep_core.NativeRegex(query.pattern)
         except Exception:
             native_regex = None
+    native_searches_bytes = native_regex is not None and getattr(native_regex, "supports_search_bytes", False)
     total_matches = 0
     result_size = 2
     bytes_read = 0
@@ -339,25 +342,21 @@ async def _run_grep(file_operator: Any, query: Query, *, use_native: bool) -> di
     for candidate in candidates:
         if query.max_results > 0 and total_matches >= query.max_results:
             break
-        remaining = query.max_results - total_matches if query.max_results > 0 else -1
-        per_file_match_limit = _effective_per_file_match_limit(query.max_matches_per_file, remaining_results=remaining)
-        if candidate.size is not None:
-            bytes_read += candidate.size
-        try:
-            matches = await _search_candidate(
-                file_operator,
-                candidate.path,
-                regex,
-                query.context_lines,
-                per_file_match_limit,
-                native_regex=native_regex,
-            )
-        except Exception:
-            logger.debug("Failed to search benchmark candidate %s", candidate.path, exc_info=True)
+        outcome = await _search_benchmark_candidate(
+            file_operator,
+            candidate,
+            query,
+            regex,
+            total_matches,
+            native_regex=native_regex,
+            check_binary=not native_searches_bytes,
+        )
+        bytes_read += outcome["bytes_read"]
+        if not outcome["searched"]:
             continue
         searched += 1
-        total_matches += len(matches)
-        result_size += len(json.dumps(matches, default=dict))
+        total_matches += outcome["matches"]
+        result_size += outcome["result_size_bytes"]
         if query.max_results > 0 and total_matches >= query.max_results:
             total_matches = query.max_results
             break
@@ -369,6 +368,66 @@ async def _run_grep(file_operator: Any, query: Query, *, use_native: bool) -> di
         "matches": total_matches,
         "result_size_bytes": result_size,
     }
+
+
+async def _search_benchmark_candidate(
+    file_operator: Any,
+    candidate: SearchCandidate,
+    query: Query,
+    regex: re.Pattern[str],
+    total_matches: int,
+    *,
+    native_regex: Any | None,
+    check_binary: bool,
+) -> dict[str, int | bool]:
+    searchable, probe_bytes = await _check_searchable_candidate(
+        file_operator,
+        candidate,
+        check_binary=check_binary,
+    )
+    bytes_read = probe_bytes
+    if not searchable:
+        return {"searched": False, "matches": 0, "result_size_bytes": 0, "bytes_read": bytes_read}
+    remaining = query.max_results - total_matches if query.max_results > 0 else -1
+    per_file_match_limit = _effective_per_file_match_limit(query.max_matches_per_file, remaining_results=remaining)
+    if candidate.size is not None:
+        bytes_read += candidate.size
+    try:
+        matches = await _search_candidate(
+            file_operator,
+            candidate.path,
+            regex,
+            query.context_lines,
+            per_file_match_limit,
+            native_regex=native_regex,
+        )
+    except Exception:
+        logger.debug("Failed to search benchmark candidate %s", candidate.path, exc_info=True)
+        return {"searched": False, "matches": 0, "result_size_bytes": 0, "bytes_read": bytes_read}
+    return {
+        "searched": True,
+        "matches": len(matches),
+        "result_size_bytes": len(json.dumps(matches, default=dict)),
+        "bytes_read": bytes_read,
+    }
+
+
+async def _check_searchable_candidate(
+    file_operator: Any,
+    candidate: SearchCandidate,
+    *,
+    check_binary: bool,
+) -> tuple[bool, int]:
+    if DEFAULT_GREP_MAX_FILE_SIZE > 0 and candidate.size is not None and candidate.size > DEFAULT_GREP_MAX_FILE_SIZE:
+        return False, 0
+    if not check_binary:
+        return True, 0
+    try:
+        chunk = await file_operator.read_bytes(candidate.path, length=BINARY_PROBE_BYTES)
+    except Exception:
+        return True, 0
+    probe_bytes = len(chunk)
+    return b"\x00" not in chunk, probe_bytes
 
 
 async def _search_candidate(

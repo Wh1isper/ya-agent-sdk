@@ -34,18 +34,24 @@ from typing import Any, Literal
 
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
-from ya_agent_sdk.toolsets.core.filesystem._gitignore import filter_gitignored
 from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_streaming
 from ya_agent_sdk.toolsets.core.filesystem._search import (
+    SearchCandidate,
     collect_walk_entries,
+    collect_walk_entries_gitignore_filtered,
     collect_walk_files,
+    collect_walk_files_gitignore_filtered,
     filter_candidates_by_glob,
+    filter_candidates_ignored,
     sort_candidates_by_mtime,
     walk_max_depth_for_glob,
 )
+from ya_agent_sdk.toolsets.core.filesystem._utils import is_binary_file
 
 Variant = str
 Operation = Literal["glob", "grep"]
+DEFAULT_GREP_MAX_FILE_SIZE = 10 * 1024 * 1024
+BINARY_PROBE_BYTES = 8192
 
 
 @dataclass(frozen=True)
@@ -455,24 +461,17 @@ def _rss_to_mb(value: int) -> float:
 
 
 async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
-    all_candidates = await collect_walk_entries(
-        file_operator,
-        root=query.root,
-        include_hidden=query.include_hidden,
-        max_depth=walk_max_depth_for_glob(query.pattern),
-    )
-    candidates = filter_candidates_by_glob(all_candidates, query.pattern)
-    if not query.include_ignored:
-        paths = [candidate.path for candidate in candidates]
-        ignored = await filter_gitignored(paths, file_operator)
-        kept = set(ignored.kept)
-        candidates = [candidate for candidate in candidates if candidate.path in kept]
+    candidates, already_filtered = await _collect_glob_walk_candidates(file_operator, query)
+    files_seen = len(candidates)
+    candidates = filter_candidates_by_glob(candidates, query.pattern)
+    if not query.include_ignored and not already_filtered:
+        candidates, _ = await filter_candidates_ignored(candidates, file_operator)
     candidates = sort_candidates_by_mtime(candidates)
     if query.max_results > 0:
         candidates = candidates[: query.max_results]
     result_paths = [candidate.path for candidate in candidates]
     return {
-        "files_seen": len(all_candidates),
+        "files_seen": files_seen,
         "files_matched": len(candidates),
         "files_searched": 0,
         "bytes_read": 0,
@@ -481,25 +480,38 @@ async def _run_glob(file_operator: Any, query: Query) -> dict[str, int]:
     }
 
 
-async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
-    all_candidates = await collect_walk_files(
+async def _collect_glob_walk_candidates(file_operator: Any, query: Query) -> tuple[list[SearchCandidate], bool]:
+    max_depth = walk_max_depth_for_glob(query.pattern)
+    if not query.include_ignored:
+        filtered = await collect_walk_entries_gitignore_filtered(
+            file_operator,
+            root=query.root,
+            include_hidden=query.include_hidden,
+            max_depth=max_depth,
+        )
+        if filtered is not None:
+            return filtered[0], True
+    candidates = await collect_walk_entries(
         file_operator,
         root=query.root,
         include_hidden=query.include_hidden,
-        max_depth=walk_max_depth_for_glob(query.include),
+        max_depth=max_depth,
     )
+    return candidates, False
+
+
+async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
+    all_candidates, already_filtered = await _collect_grep_walk_candidates(file_operator, query)
     candidates = filter_candidates_by_glob(all_candidates, query.include)
-    if not query.include_ignored:
-        paths = [candidate.path for candidate in candidates]
-        ignored = await filter_gitignored(paths, file_operator)
-        kept = set(ignored.kept)
-        candidates = [candidate for candidate in candidates if candidate.path in kept]
+    if not query.include_ignored and not already_filtered:
+        candidates, _ = await filter_candidates_ignored(candidates, file_operator)
     candidates = sort_candidates_by_mtime(candidates)
     if query.max_files > 0:
         candidates = candidates[: query.max_files]
 
     regex = re.compile(query.pattern, re.UNICODE)
     native_regex = _ripgrep_core.NativeRegex(query.pattern) if _ripgrep_core.is_available() else None
+    native_searches_bytes = native_regex is not None and native_regex.supports_search_bytes
     total_matches = 0
     result_size = 2
     bytes_read = 0
@@ -507,6 +519,14 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
     for candidate in candidates:
         if query.max_results > 0 and total_matches >= query.max_results:
             break
+        searchable, probe_bytes = await _check_searchable_candidate(
+            file_operator,
+            candidate,
+            check_binary=not native_searches_bytes,
+        )
+        bytes_read += probe_bytes
+        if not searchable:
+            continue
         per_file_match_limit = _effective_per_file_match_limit(
             query.max_matches_per_file,
             remaining_results=query.max_results - total_matches if query.max_results > 0 else -1,
@@ -538,6 +558,55 @@ async def _run_grep(file_operator: Any, query: Query) -> dict[str, int]:
         "matches": total_matches,
         "result_size_bytes": result_size,
     }
+
+
+async def _collect_grep_walk_candidates(file_operator: Any, query: Query) -> tuple[list[SearchCandidate], bool]:
+    max_depth = walk_max_depth_for_glob(query.include)
+    if query.include_ignored:
+        return (
+            await collect_walk_files(
+                file_operator,
+                root=query.root,
+                include_hidden=query.include_hidden,
+                max_depth=max_depth,
+            ),
+            False,
+        )
+    filtered = await collect_walk_files_gitignore_filtered(
+        file_operator,
+        root=query.root,
+        include_hidden=query.include_hidden,
+        max_depth=max_depth,
+    )
+    if filtered is not None:
+        return filtered[0], True
+    return (
+        await collect_walk_files(
+            file_operator,
+            root=query.root,
+            include_hidden=query.include_hidden,
+            max_depth=max_depth,
+        ),
+        False,
+    )
+
+
+async def _check_searchable_candidate(
+    file_operator: Any,
+    candidate: SearchCandidate,
+    *,
+    check_binary: bool,
+) -> tuple[bool, int]:
+    if DEFAULT_GREP_MAX_FILE_SIZE > 0 and candidate.size is not None and candidate.size > DEFAULT_GREP_MAX_FILE_SIZE:
+        return False, 0
+    if not check_binary:
+        return True, 0
+    try:
+        if await is_binary_file(file_operator, candidate.path):
+            return False, min(candidate.size or BINARY_PROBE_BYTES, BINARY_PROBE_BYTES)
+    except Exception:
+        return True, 0
+    return True, min(candidate.size or BINARY_PROBE_BYTES, BINARY_PROBE_BYTES)
 
 
 def _effective_per_file_match_limit(max_matches_per_file: int, *, remaining_results: int) -> int:

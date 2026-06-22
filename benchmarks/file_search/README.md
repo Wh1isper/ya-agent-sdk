@@ -9,7 +9,7 @@ This benchmark suite measures the FileOperator-first filesystem file search stac
 
 Local head-only runs can still use `python-native` and `ripgrep-core`.
 
-The benchmark focuses on end-to-end tool-layer cost: traversal, ignore filtering, glob matching, streaming grep, result construction, CPU time, and memory usage.
+The benchmark focuses on end-to-end tool-layer cost: traversal, ignore filtering, glob matching, grep binary/size guards, streaming grep, result construction, CPU time, and memory usage.
 
 ## Default full run
 
@@ -83,7 +83,7 @@ Each JSONL row includes:
 - `peak_rss_mb`: process peak resident memory.
 - `tracemalloc_peak_mb`: Python heap allocation peak.
 - `files_seen`, `files_matched`, `files_searched`: traversal and filter counts.
-- `bytes_read`: candidate bytes read by grep.
+- `bytes_read`: candidate bytes read by grep, including binary probe bytes when applicable.
 - `matches`: result match count.
 - `result_size_bytes`: serialized result payload size estimate.
 
