@@ -1,6 +1,6 @@
 <ls-tool>
 List directory contents with file info (name, type, size, modified time).
-Results are limited to 500 entries by default.
+Results are limited to 1000 entries by default.
 
 <parameters>
 - `path`: directory path to list.
