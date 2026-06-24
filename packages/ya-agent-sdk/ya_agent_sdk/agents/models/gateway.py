@@ -18,21 +18,14 @@ _OPENAI_PROVIDER_ERROR = (
     "or 'openai-responses' for the Responses API."
 )
 _OPENAI_PROVIDER_ALIASES: tuple[str, ...] = ("openai", "chat", "responses")
-_GOOGLE_PROVIDER_ALIASES = {
-    "google-gla": "google",
-    "google-vertex": "google-cloud",
-}
 
 
 def normalize_legacy_provider_alias(model: str) -> str:
-    """Normalize legacy Pydantic AI v1 provider aliases to v2 provider names."""
+    """Normalize Google provider aliases to Pydantic AI v2 provider names."""
     provider_name, sep, model_name = model.partition(":")
-    if not sep:
+    if not sep or provider_name == "google" or not provider_name.startswith("google-"):
         return model
-    normalized_provider = _GOOGLE_PROVIDER_ALIASES.get(provider_name)
-    if normalized_provider is None:
-        return model
-    return f"{normalized_provider}:{model_name}"
+    return f"google-cloud:{model_name}"
 
 
 def _supports_required_tool_choice(model_name: str) -> bool:

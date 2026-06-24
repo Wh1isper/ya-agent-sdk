@@ -77,8 +77,10 @@ def test_infer_model_rejects_ambiguous_openai_provider() -> None:
 @pytest.mark.parametrize(
     ("legacy_model", "normalized_model"),
     [
-        ("google-gla:gemini-2.5-pro", "google:gemini-2.5-pro"),
+        ("google:gemini-2.5-pro", "google:gemini-2.5-pro"),
+        ("google-gla:gemini-2.5-pro", "google-cloud:gemini-2.5-pro"),
         ("google-vertex:gemini-2.5-pro", "google-cloud:gemini-2.5-pro"),
+        ("google-custom:gemini-2.5-pro", "google-cloud:gemini-2.5-pro"),
     ],
 )
 def test_infer_model_normalizes_legacy_google_provider_aliases(
