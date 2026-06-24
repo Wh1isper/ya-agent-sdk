@@ -185,7 +185,7 @@ class VideoDescription(BaseModel):
 def get_video_understanding_agent(
     model: str | Model | None = None,
     model_settings: ModelSettings | None = None,
-) -> Agent[None, VideoDescription]:
+) -> Agent[object, VideoDescription]:
     """Create a video understanding agent.
 
     This is an async function to allow for future async initialization needs.
@@ -215,7 +215,7 @@ def get_video_understanding_agent(
 
     system_prompt = _load_system_prompt()
 
-    return Agent[None, VideoDescription](
+    return Agent[object, VideoDescription](
         model_instance,
         output_type=VideoDescription,
         system_prompt=system_prompt,

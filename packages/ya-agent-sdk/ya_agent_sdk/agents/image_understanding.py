@@ -198,7 +198,7 @@ class ImageDescription(BaseModel):
 def get_image_understanding_agent(
     model: str | Model | None = None,
     model_settings: ModelSettings | None = None,
-) -> Agent[None, ImageDescription]:
+) -> Agent[object, ImageDescription]:
     """Create an image understanding agent.
 
     Args:
@@ -226,7 +226,7 @@ def get_image_understanding_agent(
 
     system_prompt = _load_system_prompt()
 
-    return Agent[None, ImageDescription](
+    return Agent[object, ImageDescription](
         model_instance,
         output_type=ImageDescription,
         system_prompt=system_prompt,

@@ -177,10 +177,6 @@ def _build_gateway_provider(
         from pydantic_ai.providers.openai import OpenAIProvider
 
         return OpenAIProvider(api_key=api_key, base_url=base_url, http_client=http_client)
-    if provider_name == "groq":
-        from pydantic_ai.providers.groq import GroqProvider
-
-        return GroqProvider(api_key=api_key, base_url=base_url, http_client=http_client)
     if provider_name == "anthropic":
         from anthropic import AsyncAnthropic  # pyright: ignore[reportMissingImports]
         from pydantic_ai.providers.anthropic import AnthropicProvider

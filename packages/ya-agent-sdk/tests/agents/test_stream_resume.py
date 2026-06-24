@@ -66,14 +66,22 @@ async def test_stream_agent_resumes_after_stream_error(tmp_path: Path) -> None:
 
     assert len(calls) == 2
     resume_messages = calls[1]
-    assert len(resume_messages) == 1
-    resume_request = resume_messages[0]
+    assert len(resume_messages) == 3
+
+    original_request = resume_messages[0]
+    assert isinstance(original_request, ModelRequest)
+    assert any(isinstance(part, UserPromptPart) and part.content == "start task" for part in original_request.parts)
+
+    partial_response = resume_messages[1]
+    assert isinstance(partial_response, ModelResponse)
+    assert partial_response.state == "interrupted"
+    assert [part.content for part in partial_response.parts] == ["partial answer"]
+
+    resume_request = resume_messages[2]
     assert isinstance(resume_request, ModelRequest)
-    assert any(isinstance(part, UserPromptPart) and part.content == "start task" for part in resume_request.parts)
     assert any(
         isinstance(part, UserPromptPart) and part.content == "continue from checkpoint" for part in resume_request.parts
     )
-    assert not any(isinstance(message, ModelResponse) for message in resume_messages)
     assert streamer.run is not None
     assert streamer.run.result is not None
     assert streamer.run.result.output == " resumed answer"

@@ -42,7 +42,6 @@ PROVIDER_ENV_VARS = {
     "google-gla": ("GOOGLE_API_KEY", None),
     "google-vertex": ("GOOGLE_API_KEY", None),
     "gemini": ("GOOGLE_API_KEY", None),
-    "groq": ("GROQ_API_KEY", "GROQ_BASE_URL"),
     "bedrock": (None, None),  # Uses AWS credentials
 }
 
@@ -55,7 +54,6 @@ PROVIDER_MODEL_SETTINGS = {
     "google-gla": "gemini_thinking_budget_default",
     "google-vertex": "gemini_thinking_budget_default",
     "gemini": "gemini_thinking_budget_default",
-    "groq": None,  # No preset
     "bedrock": None,
 }
 
@@ -71,7 +69,6 @@ PROVIDER_MODEL_CFG = {
     "google-gla": "gemini_1m",
     "google-vertex": "gemini_1m",
     "gemini": "gemini_1m",
-    "groq": None,  # Unknown - no capabilities
     "bedrock": None,
 }
 

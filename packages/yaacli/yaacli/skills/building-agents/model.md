@@ -33,7 +33,6 @@ See official docs: [pydantic-ai Models](https://ai.pydantic.dev/models/)
 | Anthropic    | `anthropic:<model>`                                | `anthropic:claude-3-5-sonnet-20241022` |
 | Google       | `google:<model>`                                   | `google:gemini-2.5-pro`                |
 | Google Cloud | `google-cloud:<model>`                             | `google-cloud:gemini-2.5-pro`          |
-| Groq         | `groq:<model>`                                     | `groq:llama-3.1-70b-versatile`         |
 
 ## Google Vertex AI Configuration
 
@@ -133,7 +132,6 @@ Naming convention: `{GATEWAY_NAME}_API_KEY` and `{GATEWAY_NAME}_BASE_URL`
 | `openai` / `openai-chat` / `openai-responses` | `gateway@openai-chat:gpt-4o`                   |
 | `anthropic`                                   | `gateway@anthropic:claude-3-5-sonnet-20241022` |
 | `gemini` / `google-vertex`                    | `gateway@gemini:gemini-1.5-pro`                |
-| `groq`                                        | `gateway@groq:llama-3.1-70b-versatile`         |
 | `bedrock` / `converse`                        | `gateway@bedrock:anthropic.claude-3-sonnet`    |
 
 ### Sticky Routing

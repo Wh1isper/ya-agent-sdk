@@ -42,7 +42,7 @@ bump = true
 dependencies = [
     "ag-ui-protocol>=0.1.18",
     "pydantic>=2.0.0",
-    "pydantic-ai>=1.100.0,<2",
+    "pydantic-ai>=2.0.0,<3",
     "ya-agent-sdk=={{ version }}",
 ]
 

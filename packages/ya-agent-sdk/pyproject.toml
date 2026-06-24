@@ -22,7 +22,7 @@ Repository = "https://github.com/wh1isper/ya-mono"
 
 [project.optional-dependencies]
 examples = [
-    "pydantic-ai>=1.100.0,<2",
+    "pydantic-ai>=2.0.0,<3",
     "python-dotenv",
 ]
 docker = ["docker>=7.0.0"]
@@ -56,7 +56,7 @@ dev = [
     "pymupdf-layout>=1.26.6",
     "boto3>=1.34",
     "boto3-stubs[s3]>=1.34",
-    "pydantic-ai>=1.100.0,<2",
+    "pydantic-ai>=2.0.0,<3",
     "python-dotenv",
 ]
 
@@ -82,7 +82,7 @@ dependencies = [
     "pathspec>=0.12.0",
     "pillow>=10.0.0",
     "pydantic>=2.12.5",
-    "pydantic-ai>=1.100.0,<2",
+    "pydantic-ai>=2.0.0,<3",
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
     "tenacity>=9.0.0",

@@ -2,7 +2,6 @@
 
 import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.profiles.openai import OpenAIModelProfile
 from ya_agent_sdk.agents.models.gateway import (
     _is_deepseek_model,
     _is_mimo_model,
@@ -49,13 +48,13 @@ def test_infer_gateway_deepseek_v4_uses_reasoning_content_profile(monkeypatch) -
     model = infer_model("colorist", "openai-chat:deepseek-v4-pro")
 
     assert isinstance(model, OpenAIChatModel)
-    profile = OpenAIModelProfile.from_profile(model.profile)
+    profile = model.profile
     assert model.model_name == "deepseek-v4-pro"
-    assert profile.supports_thinking is True
-    assert profile.thinking_always_enabled is True
-    assert profile.openai_chat_thinking_field == "reasoning_content"
-    assert profile.openai_chat_send_back_thinking_parts == "field"
-    assert profile.openai_supports_tool_choice_required is False
+    assert profile.get("supports_thinking") is True
+    assert profile.get("thinking_always_enabled") is True
+    assert profile.get("openai_chat_thinking_field") == "reasoning_content"
+    assert profile.get("openai_chat_send_back_thinking_parts") == "field"
+    assert profile.get("openai_supports_tool_choice_required") is False
 
 
 def test_infer_gateway_mimo_v2_5_uses_reasoning_content_profile(monkeypatch) -> None:
@@ -66,12 +65,12 @@ def test_infer_gateway_mimo_v2_5_uses_reasoning_content_profile(monkeypatch) -> 
     model = infer_model("colorist", "openai-chat:MiMo-V2.5-Pro")
 
     assert isinstance(model, OpenAIChatModel)
-    profile = OpenAIModelProfile.from_profile(model.profile)
+    profile = model.profile
     assert model.model_name == "MiMo-V2.5-Pro"
-    assert profile.supports_thinking is True
-    assert profile.thinking_always_enabled is True
-    assert profile.openai_chat_thinking_field == "reasoning_content"
-    assert profile.openai_chat_send_back_thinking_parts == "field"
+    assert profile.get("supports_thinking") is True
+    assert profile.get("thinking_always_enabled") is True
+    assert profile.get("openai_chat_thinking_field") == "reasoning_content"
+    assert profile.get("openai_chat_send_back_thinking_parts") == "field"
 
 
 def test_infer_gateway_deepseek_r1_uses_tool_choice_profile_patch(monkeypatch) -> None:
@@ -82,11 +81,11 @@ def test_infer_gateway_deepseek_r1_uses_tool_choice_profile_patch(monkeypatch) -
     model = infer_model("colorist", "openai-chat:deepseek-reasoner")
 
     assert isinstance(model, OpenAIChatModel)
-    profile = OpenAIModelProfile.from_profile(model.profile)
+    profile = model.profile
     assert model.model_name == "deepseek-reasoner"
-    assert profile.openai_chat_thinking_field is None
-    assert profile.openai_chat_send_back_thinking_parts == "auto"
-    assert profile.openai_supports_tool_choice_required is False
+    assert profile.get("openai_chat_thinking_field") is None
+    assert profile.get("openai_chat_send_back_thinking_parts") == "auto"
+    assert profile.get("openai_supports_tool_choice_required") is False
 
 
 @pytest.mark.parametrize("provider_prefix", ["openai", "chat", "responses"])

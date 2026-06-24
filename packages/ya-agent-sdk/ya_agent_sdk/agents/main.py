@@ -1091,6 +1091,7 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
             if self._tool_id_wrapper is not None:
                 messages = self._tool_id_wrapper.wrap_messages(None, messages)
             if messages and isinstance(messages[-1], ModelResponse):
+                self._mark_interrupted_response(messages[-1])
                 return messages
         partial_response = self._partial_text.build_response()
         if partial_response is not None:
@@ -1098,6 +1099,18 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
             if self._tool_id_wrapper is not None:
                 messages = self._tool_id_wrapper.wrap_messages(None, messages)
         return messages
+
+    @staticmethod
+    def _mark_interrupted_response(response: ModelResponse) -> None:
+        """Annotate pydantic-ai v2 interrupted partial responses with SDK metadata."""
+        if response.state != "interrupted":
+            return
+        metadata = dict(response.metadata or {})
+        sdk_metadata = dict(metadata.get("ya_agent_sdk") or {})
+        sdk_metadata.setdefault("partial", True)
+        sdk_metadata.setdefault("reason", "stream_interrupted")
+        metadata["ya_agent_sdk"] = sdk_metadata
+        response.metadata = metadata
 
     def interrupt(self) -> None:
         """Interrupt the stream immediately, cancelling all running tasks.

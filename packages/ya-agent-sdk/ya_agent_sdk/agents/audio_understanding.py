@@ -199,7 +199,7 @@ class AudioDescription(BaseModel):
 def get_audio_understanding_agent(
     model: str | Model | None = None,
     model_settings: ModelSettings | None = None,
-) -> Agent[None, AudioDescription]:
+) -> Agent[object, AudioDescription]:
     """Create an audio understanding agent.
 
     Args:
@@ -227,7 +227,7 @@ def get_audio_understanding_agent(
 
     system_prompt = _load_system_prompt()
 
-    return Agent[None, AudioDescription](
+    return Agent[object, AudioDescription](
         model_instance,
         output_type=AudioDescription,
         system_prompt=system_prompt,

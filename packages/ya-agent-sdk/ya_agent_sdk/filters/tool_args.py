@@ -21,6 +21,7 @@ Example::
 import json
 
 from pydantic_ai.messages import (
+    LoadCapabilityCallPart,
     ModelMessage,
     ModelRequest,
     ToolCallPart,
@@ -61,7 +62,7 @@ async def fix_truncated_tool_args(
         for part in msg.parts:
             if (
                 isinstance(part, ToolCallPart)
-                and not isinstance(part, ToolSearchCallPart)
+                and not isinstance(part, ToolSearchCallPart | LoadCapabilityCallPart)
                 and isinstance(part.args, str)
                 and part.args
             ):
