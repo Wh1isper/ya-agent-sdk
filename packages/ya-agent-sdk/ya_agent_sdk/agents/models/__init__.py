@@ -4,6 +4,7 @@ from pydantic_ai.models import (
 from pydantic_ai.models import infer_model as legacy_infer_model
 
 from ya_agent_sdk.agents.models.gateway import infer_model as infer_gateway_model
+from ya_agent_sdk.agents.models.gateway import normalize_legacy_provider_alias
 
 __all__ = ["Model", "infer_model"]
 
@@ -48,4 +49,4 @@ def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None)
     if "@" in model:
         gateway_name, model_name = model.split("@", 1)
         return infer_gateway_model(gateway_name, model_name, extra_headers=extra_headers)
-    return legacy_infer_model(model)
+    return legacy_infer_model(normalize_legacy_provider_alias(model))

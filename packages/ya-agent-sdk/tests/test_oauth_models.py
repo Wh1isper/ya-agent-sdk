@@ -72,3 +72,27 @@ def test_infer_oauth_model_rejects_invalid_string() -> None:
 def test_infer_model_rejects_ambiguous_openai_provider() -> None:
     with pytest.raises(ValueError, match=r"openai-chat:<model>.*openai-responses:<model>"):
         infer_model("openai:gpt-4o")
+
+
+@pytest.mark.parametrize(
+    ("legacy_model", "normalized_model"),
+    [
+        ("google-gla:gemini-2.5-pro", "google:gemini-2.5-pro"),
+        ("google-vertex:gemini-2.5-pro", "google-cloud:gemini-2.5-pro"),
+    ],
+)
+def test_infer_model_normalizes_legacy_google_provider_aliases(
+    legacy_model: str,
+    normalized_model: str,
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def fake_legacy_infer(model):  # type: ignore[no-untyped-def]
+        calls.append(model)
+        return model
+
+    monkeypatch.setattr("ya_agent_sdk.agents.models.legacy_infer_model", fake_legacy_infer)
+
+    assert infer_model(legacy_model) == normalized_model
+    assert calls == [normalized_model]

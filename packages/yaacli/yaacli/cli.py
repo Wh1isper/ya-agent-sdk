@@ -39,6 +39,8 @@ PROVIDER_ENV_VARS = {
     "openai": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
     "openai-chat": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
     "openai-responses": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "google": ("GOOGLE_API_KEY", None),
+    "google-cloud": ("GOOGLE_API_KEY", None),
     "google-gla": ("GOOGLE_API_KEY", None),
     "google-vertex": ("GOOGLE_API_KEY", None),
     "gemini": ("GOOGLE_API_KEY", None),
@@ -51,6 +53,8 @@ PROVIDER_MODEL_SETTINGS = {
     "openai": "openai_default",
     "openai-chat": "openai_default",
     "openai-responses": "openai_responses_default",
+    "google": "gemini_thinking_budget_default",
+    "google-cloud": "gemini_thinking_budget_default",
     "google-gla": "gemini_thinking_budget_default",
     "google-vertex": "gemini_thinking_budget_default",
     "gemini": "gemini_thinking_budget_default",
@@ -66,6 +70,8 @@ PROVIDER_MODEL_CFG = {
     "openai": "gpt5_270k",
     "openai-chat": "gpt5_270k",
     "openai-responses": "gpt5_270k",
+    "google": "gemini_1m",
+    "google-cloud": "gemini_1m",
     "google-gla": "gemini_1m",
     "google-vertex": "gemini_1m",
     "gemini": "gemini_1m",
@@ -193,7 +199,7 @@ def run_setup_wizard(config_manager: ConfigManager) -> bool:
     click.echo("  Examples:")
     click.echo("    - anthropic:claude-sonnet-4-20250514")
     click.echo("    - openai-chat:gpt-4o")
-    click.echo("    - google-gla:gemini-2.5-pro")
+    click.echo("    - google:gemini-2.5-pro")
     click.echo("    - mygateway@anthropic:claude-sonnet-4")
     click.echo()
 

@@ -1405,7 +1405,7 @@ def test_tui_app_model_selector_movement_wraps() -> None:
         general=GeneralConfig(model="openai-chat:gpt-4o"),
         model_profiles={
             "sonnet": ModelProfileConfig(label="Sonnet", model="anthropic:claude-sonnet-4-5"),
-            "gemini": ModelProfileConfig(label="Gemini", model="google-gla:gemini-2.5-pro"),
+            "gemini": ModelProfileConfig(label="Gemini", model="google:gemini-2.5-pro"),
         },
     )
     config_manager = MockConfigManager()

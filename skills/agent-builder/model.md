@@ -131,7 +131,7 @@ Naming convention: `{GATEWAY_NAME}_API_KEY` and `{GATEWAY_NAME}_BASE_URL`
 | --------------------------------------------- | ---------------------------------------------- |
 | `openai` / `openai-chat` / `openai-responses` | `gateway@openai-chat:gpt-4o`                   |
 | `anthropic`                                   | `gateway@anthropic:claude-3-5-sonnet-20241022` |
-| `gemini` / `google-vertex`                    | `gateway@gemini:gemini-1.5-pro`                |
+| `gemini` / `google-cloud`                     | `gateway@gemini:gemini-1.5-pro`                |
 | `bedrock` / `converse`                        | `gateway@bedrock:anthropic.claude-3-sonnet`    |
 
 ### Sticky Routing

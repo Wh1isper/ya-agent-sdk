@@ -96,3 +96,27 @@ def test_infer_gateway_rejects_openai_provider_aliases(provider_prefix: str, mon
 
     with pytest.raises(ValueError, match=r"openai-chat.*openai-responses"):
         infer_model("colorist", f"{provider_prefix}:gpt-4o")
+
+
+@pytest.mark.parametrize("provider_prefix", ["google", "google-gla"])
+def test_infer_gateway_uses_google_provider_for_google(provider_prefix: str, monkeypatch) -> None:
+    """Should route the Gemini API provider to GoogleProvider."""
+    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
+    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+
+    model = infer_model("colorist", f"{provider_prefix}:gemini-2.5-pro")
+
+    assert model.provider.name == "google"
+    assert model.model_name == "gemini-2.5-pro"
+
+
+@pytest.mark.parametrize("provider_prefix", ["google-cloud", "google-vertex"])
+def test_infer_gateway_uses_google_cloud_provider_for_google_cloud(provider_prefix: str, monkeypatch) -> None:
+    """Should route the Google Cloud provider to GoogleCloudProvider."""
+    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
+    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+
+    model = infer_model("colorist", f"{provider_prefix}:gemini-2.5-pro")
+
+    assert model.provider.name == "google-cloud"
+    assert model.model_name == "gemini-2.5-pro"
