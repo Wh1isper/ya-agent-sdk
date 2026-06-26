@@ -47,17 +47,20 @@ async def test_generate_filetree_nonexistent_dir(tmp_path: Path) -> None:
 
 
 async def test_generate_filetree_hidden_dirs(tmp_path: Path) -> None:
-    """generate_filetree should skip hidden directories (except .env)."""
+    """generate_filetree should skip hidden directories except supported workspace metadata."""
     op = LocalTmpFileOperator(tmp_path)
 
     await op.mkdir(".hidden")
     await op.write_file(".hidden/secret.txt", "secret")
+    await op.mkdir(".agents/skills/example", parents=True)
+    await op.write_file(".agents/skills/example/SKILL.md", "# example")
     await op.write_file(".env", "ENV=value")
     await op.write_file("visible.txt", "visible")
 
     tree = await generate_filetree(op, ".")
     assert "visible.txt" in tree
     assert ".env" in tree  # .env should always be visible
+    assert ".agents/skills/example/SKILL.md" in tree
     assert ".hidden" not in tree  # Hidden dir should be skipped
 
 

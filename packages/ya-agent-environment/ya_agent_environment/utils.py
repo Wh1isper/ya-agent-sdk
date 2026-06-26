@@ -11,6 +11,14 @@ from ya_agent_environment.file_operator import (
     FileOperator,
 )
 
+FILETREE_VISIBLE_DOT_NAMES: frozenset[str] = frozenset({".agents", ".env"})
+FILETREE_EXTRA_DEPTH_BY_DOT_DIR: dict[str, int] = {".agents": 1}
+
+
+def _extra_depth_for_path(rel_path: str) -> int:
+    root_name = rel_path.split("/", 1)[0]
+    return FILETREE_EXTRA_DEPTH_BY_DOT_DIR.get(root_name, 0)
+
 
 def _should_skip_hidden_item(name: str, is_dir: bool, skip_dirs: frozenset[str]) -> tuple[bool, bool]:
     """Check if an item should be skipped.
@@ -25,8 +33,8 @@ def _should_skip_hidden_item(name: str, is_dir: bool, skip_dirs: frozenset[str])
     # Handle hidden items (starting with .)
     if not name.startswith("."):
         return False, False
-    if name == ".env":
-        return False, False  # Always show .env
+    if name in FILETREE_VISIBLE_DOT_NAMES:
+        return False, False
     return True, False  # Skip hidden items completely
 
 
@@ -109,7 +117,8 @@ async def generate_filetree(  # noqa: C901
                     result.append(f"{flat_path}/ (gitignored)")
                     continue
 
-                if current_depth < max_depth:
+                effective_max_depth = max_depth + _extra_depth_for_path(flat_path)
+                if current_depth < effective_max_depth:
                     result.extend(await _collect_paths(entry_path, current_depth + 1, f"{flat_path}/"))
 
             # Then files
