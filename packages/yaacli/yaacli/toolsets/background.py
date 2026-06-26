@@ -27,7 +27,7 @@ from ya_agent_sdk.events import BackgroundShellStartEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.subagent.factory import generate_unique_id
 
-from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
+from yaacli.background import BACKGROUND_MONITOR_KEY, DELEGATE_BACKEND_TOOL_NAME, BackgroundMonitor
 from yaacli.logging import get_logger
 
 logger = get_logger(__name__)
@@ -55,8 +55,9 @@ class SpawnDelegateTool(BaseTool):
     """
 
     name = "spawn_delegate"
-    description = "Spawn a subagent in the background (non-blocking). Result delivered via message bus."
+    description = "Spawn a subagent in the background. Result delivered via message bus."
     tags = frozenset({"delegation"})
+    delegate_backend_tool_name: str | None = None
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         """Available only for main agent with BackgroundMonitor and delegate tool.
@@ -70,10 +71,10 @@ class SpawnDelegateTool(BaseTool):
         if ctx.deps.agent_id != "main":
             return False
         monitor = _get_background_monitor(ctx)
-        return monitor is not None and monitor.has_delegate_tool
+        return monitor is not None and monitor.can_delegate(ctx, self.delegate_backend_tool_name)
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
-        """Generate instruction for spawn delegate."""
+        """Generate instruction for background delegation."""
         monitor = _get_background_monitor(ctx)
         if monitor is None:
             return None
@@ -82,10 +83,10 @@ class SpawnDelegateTool(BaseTool):
         task_info = monitor.get_context_instruction()
 
         lines = [
-            "Same subagent names as the `delegate` tool.",
-            "Use this for long-running tasks where you don't need immediate results.",
-            "The subagent runs in the background and its result is delivered via message bus.",
-            "You can continue working on other tasks while the background subagent runs.",
+            "Use this to run a subagent asynchronously when immediate results are not required.",
+            "Use the same subagent_name values listed for delegate.",
+            "The call returns right away with an agent ID; the final result is delivered via message bus.",
+            "Pass agent_id to resume a previous background subagent.",
         ]
         if task_info:
             lines.append("")
@@ -106,9 +107,9 @@ class SpawnDelegateTool(BaseTool):
         if monitor is None:
             return "Error: BackgroundMonitor not available"
 
-        delegate = monitor.get_delegate_tool()
+        delegate = monitor.get_delegate_tool(self.delegate_backend_tool_name)
         if delegate is None:
-            return "Error: delegate tool not available"
+            return "Error: delegate backend tool not available"
 
         deps = ctx.deps
 
@@ -128,26 +129,32 @@ class SpawnDelegateTool(BaseTool):
                     agent_id=agent_id,
                 )
                 monitor.enqueue_usage_snapshot(deps.build_usage_snapshot())
-                # Queue result for TUI-managed redelivery. The main SDK context
-                # clears bus state on exit, so direct send can be lost when a
-                # background task completes while the main agent is still running.
-                monitor.enqueue_message(
-                    BusMessage(
-                        content=result,
-                        source=agent_id,
-                        target=deps.agent_id,
-                    )
+                message = BusMessage(
+                    content=result,
+                    source=agent_id,
+                    target=deps.agent_id,
                 )
+                # Deliver directly to the active SDK message bus so the main
+                # run's message_bus_guard can see the result before accepting
+                # final output. If the target is no longer subscribed, queue a
+                # TUI-managed fallback instead; direct-sending to an unsubscribed
+                # bus would make later fallback redelivery look like a duplicate.
+                if deps.message_bus.is_subscribed(deps.agent_id):
+                    deps.send_message(message)
+                else:
+                    monitor.enqueue_message(message)
                 logger.info("Spawned delegate '%s' (%s) completed", subagent_name, agent_id)
             except Exception as e:
                 logger.warning("Spawned delegate '%s' (%s) failed: %s", subagent_name, agent_id, e)
-                monitor.enqueue_message(
-                    BusMessage(
-                        content=f"Spawned delegate '{subagent_name}' (id: {agent_id}) failed: {e}",
-                        source=agent_id,
-                        target=deps.agent_id,
-                    )
+                message = BusMessage(
+                    content=f"Spawned delegate '{subagent_name}' (id: {agent_id}) failed: {e}",
+                    source=agent_id,
+                    target=deps.agent_id,
                 )
+                if deps.message_bus.is_subscribed(deps.agent_id):
+                    deps.send_message(message)
+                else:
+                    monitor.enqueue_message(message)
             finally:
                 # Notify completion so TUI can trigger a new agent turn if idle
                 monitor.notify_completion(agent_id)
@@ -166,6 +173,36 @@ class SpawnDelegateTool(BaseTool):
     def _get_monitor(ctx: RunContext[AgentContext]) -> BackgroundMonitor | None:
         """Get BackgroundMonitor from resources."""
         return _get_background_monitor(ctx)
+
+
+class AsyncDelegateTool(SpawnDelegateTool):
+    """Expose background delegation under the standard delegate name."""
+
+    name = "delegate"
+    description = "Delegate task to a subagent asynchronously. Result delivered via message bus."
+    delegate_backend_tool_name = DELEGATE_BACKEND_TOOL_NAME
+
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        """Generate concise async delegate instructions with available subagents."""
+        monitor = _get_background_monitor(ctx)
+        if monitor is None:
+            return None
+
+        roster = monitor.get_delegate_roster_instruction(ctx, self.delegate_backend_tool_name)
+        if roster is None:
+            return None
+
+        lines = [
+            "In this TUI, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.",
+            "Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.",
+            "",
+            roster,
+        ]
+        task_info = monitor.get_context_instruction()
+        if task_info:
+            lines.append("")
+            lines.append(task_info)
+        return "\n".join(lines)
 
 
 class SteerSubagentTool(BaseTool):
@@ -247,12 +284,16 @@ class SteerSubagentTool(BaseTool):
         prompt_preview = message[:80] + "..." if len(message) > 80 else message
         prompt_preview = prompt_preview.replace('"', '\\"')
 
+        delegate_tool = monitor.get_delegate_tool("delegate")
+        resume_tool = (
+            "spawn_delegate"
+            if delegate_tool is not None and not isinstance(delegate_tool, AsyncDelegateTool)
+            else "delegate"
+        )
         return (
             f"'{agent_id}' has already completed and cannot be steered.{active_hint}\n"
-            f"To continue its conversation in the background, use spawn_delegate with agent_id to resume:\n"
-            f'  spawn_delegate(subagent_name="{agent_name}", prompt="{prompt_preview}", agent_id="{agent_id}")\n'
-            f"Or use blocking delegate for synchronous resume:\n"
-            f'  delegate(subagent_name="{agent_name}", prompt="{prompt_preview}", agent_id="{agent_id}")'
+            f"To continue its conversation, resume it with {resume_tool} and agent_id:\n"
+            f'  {resume_tool}(subagent_name="{agent_name}", prompt="{prompt_preview}", agent_id="{agent_id}")'
         )
 
     @staticmethod
@@ -352,4 +393,8 @@ class MonitoredShellTool(BaseTool):
         }
 
 
-background_tools: list[type[BaseTool]] = [SpawnDelegateTool, SteerSubagentTool, MonitoredShellTool]
+background_tools: list[type[BaseTool]] = [
+    SpawnDelegateTool,
+    SteerSubagentTool,
+    MonitoredShellTool,
+]

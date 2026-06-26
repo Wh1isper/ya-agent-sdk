@@ -49,15 +49,14 @@ from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillTo
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
+from yaacli.background import DELEGATE_BACKEND_TOOL_NAME
 from yaacli.config import ConfigManager, MCPConfig, SubagentsConfig, YaacliConfig
 from yaacli.environment import TUIEnvironment
 from yaacli.guards import attach_goal_guard
 from yaacli.logging import get_logger
 from yaacli.model_profiles import ResolvedModelProfile, get_startup_model_profile, resolve_profile_model_cfg
 from yaacli.session import TUIContext
-from yaacli.toolsets.background import background_tools
-
-_ASYNC_SUBAGENT_TOOL_NAMES = frozenset({"spawn_delegate", "steer_subagent"})
+from yaacli.toolsets.background import AsyncDelegateTool, MonitoredShellTool, SpawnDelegateTool, SteerSubagentTool
 
 if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
@@ -170,7 +169,7 @@ def create_tui_runtime(
     config_dir: Path | None = None,
     model_profile: ResolvedModelProfile | None = None,
     enable_async_subagents: bool = True,
-    enable_delegate_subagents: bool = True,
+    enable_delegate_subagents: bool = False,
 ) -> AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment]:
     """Create AgentRuntime configured for TUI.
 
@@ -188,8 +187,8 @@ def create_tui_runtime(
         system_prompt: Custom system prompt. If None, uses default.
         config_dir: Global config directory used for subagents and allowed paths.
         model_profile: Optional resolved model profile override.
-        enable_async_subagents: Include background subagent tools such as spawn_delegate.
-        enable_delegate_subagents: Include the synchronous unified delegate subagent tool.
+        enable_async_subagents: Include background subagent tools. When synchronous delegation is disabled, the async tool is exposed as delegate.
+        enable_delegate_subagents: Include the synchronous unified delegate subagent tool. Defaults to False for TUI async-only delegation.
 
     Returns:
         AgentRuntime configured for TUI usage. Use as async context manager.
@@ -310,9 +309,12 @@ def create_tui_runtime(
     if config.tools.need_approval_mcps:
         logger.debug("MCP servers requiring approval: %s", config.tools.need_approval_mcps)
 
-    # Load subagent configs from user config directory when synchronous delegation is enabled.
+    # Load subagent configs whenever either visible synchronous delegation or
+    # the async delegate backend is needed.
     subagent_configs = (
-        _load_subagent_configs(config.subagents, config_dir=global_config_dir) if enable_delegate_subagents else []
+        _load_subagent_configs(config.subagents, config_dir=global_config_dir)
+        if enable_delegate_subagents or enable_async_subagents
+        else []
     )
 
     # Core tools
@@ -327,9 +329,12 @@ def create_tui_runtime(
         *web_tools,
     ]
 
-    selected_background_tools = [
-        tool for tool in background_tools if enable_async_subagents or tool.name not in _ASYNC_SUBAGENT_TOOL_NAMES
-    ]
+    selected_background_tools: list[type[BaseTool]] = [MonitoredShellTool]
+    if enable_async_subagents:
+        if enable_delegate_subagents:
+            selected_background_tools.extend([SpawnDelegateTool, SteerSubagentTool])
+        else:
+            selected_background_tools.extend([AsyncDelegateTool, SteerSubagentTool])
 
     # Build final tools list
     all_tools: list[type[BaseTool]] = [
@@ -375,6 +380,8 @@ def create_tui_runtime(
         need_user_approve_mcps=config.tools.need_approval_mcps or None,
         subagent_configs=subagent_configs if subagent_configs else None,
         unified_subagents=True,
+        unified_subagent_tool_name="delegate" if enable_delegate_subagents else DELEGATE_BACKEND_TOOL_NAME,
+        hide_unified_subagent_tool=not enable_delegate_subagents,
         retries={"output": output_retries},
         extra_context_kwargs=extra_ctx_kwargs,
         lifecycle_extensions=[GoalContextHandoffExtension()],

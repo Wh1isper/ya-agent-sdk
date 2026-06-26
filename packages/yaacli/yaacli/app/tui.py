@@ -1787,6 +1787,10 @@ class TUIApp:
         Args:
             agent_id: The ID of the completed background agent.
         """
+        # Show UI notification immediately, even while the main agent is still
+        # running, so users can see that the background subagent returned.
+        self._append_system_output(f"Background task completed: {agent_id}")
+
         # Only trigger if agent is idle - if running, we set a flag to redeliver
         # after the current turn completes (see _check_pending_bus_messages)
         if self._state != TUIState.IDLE:
@@ -1799,9 +1803,6 @@ class TUIApp:
             return
 
         logger.info("Background task %s completed, triggering agent turn", agent_id)
-
-        # Show UI notification that background task completed
-        self._append_system_output(f"Background task completed: {agent_id}")
 
         # Set state atomically BEFORE create_task to prevent race
         self._state = TUIState.RUNNING

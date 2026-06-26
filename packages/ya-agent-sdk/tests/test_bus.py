@@ -2,7 +2,8 @@
 
 from datetime import UTC, datetime
 
-from ya_agent_sdk.context import BusMessage, MessageBus
+import pytest
+from ya_agent_sdk.context import AgentContext, BusMessage, MessageBus
 
 # =============================================================================
 # BusMessage Tests
@@ -86,6 +87,18 @@ def test_message_bus_unsubscribe() -> None:
     # Unsubscribe non-existent is no-op
     bus.unsubscribe("nonexistent")
     assert bus.subscriber_count == 1
+
+
+def test_message_bus_is_subscribed() -> None:
+    """Test subscriber membership check."""
+    bus = MessageBus()
+    assert bus.is_subscribed("main") is False
+
+    bus.subscribe("main")
+    assert bus.is_subscribed("main") is True
+
+    bus.unsubscribe("main")
+    assert bus.is_subscribed("main") is False
 
 
 def test_message_bus_auto_subscribe_on_consume() -> None:
@@ -550,3 +563,35 @@ def test_bus_message_multimodal_in_bus() -> None:
     assert len(messages[0].content) == 2
     assert messages[0].content[0] == "Check this:"
     assert isinstance(messages[0].content[1], ImageUrl)
+
+
+# =============================================================================
+# AgentContext MessageBus Lifecycle Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_agent_context_exit_preserves_pending_main_bus_messages() -> None:
+    """Main context exit should preserve unread bus messages for the next turn."""
+    ctx = AgentContext()
+    async with ctx:
+        ctx.send_message(BusMessage(content="Late result", source="subagent", target="main"))
+        assert ctx.message_bus.has_pending("main") is True
+
+    assert ctx.message_bus.has_pending("main") is True
+    messages = ctx.message_bus.consume("main")
+    assert len(messages) == 1
+    assert messages[0].content == "Late result"
+
+
+@pytest.mark.asyncio
+async def test_agent_context_exit_clears_main_bus_without_pending_messages() -> None:
+    """Main context exit should still clear bus state when no unread work remains."""
+    ctx = AgentContext()
+    async with ctx:
+        ctx.send_message(BusMessage(content="Handled", source="subagent", target="main"))
+        assert len(ctx.consume_messages()) == 1
+        assert ctx.message_bus.has_pending("main") is False
+
+    assert ctx.message_bus.subscriber_count == 0
+    assert len(ctx.message_bus) == 0

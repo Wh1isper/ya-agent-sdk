@@ -64,6 +64,12 @@ class UnifiedSubagentToolClass(Protocol):
 
     _available_subagents: tuple[str, ...]
 
+    @staticmethod
+    def _get_roster_instruction(ctx: RunContext[AgentContext]) -> str | None: ...
+
+    @staticmethod
+    def _can_delegate(ctx: RunContext[AgentContext]) -> bool: ...
+
 
 @dataclass
 class SubagentEntry:
@@ -125,18 +131,61 @@ def _is_self_fork_available(ctx: RunContext[AgentContext]) -> bool:
     return ctx.deps.self_fork_agent is not None
 
 
+def _available_subagent_entries(
+    entries: dict[str, SubagentEntry],
+    parent_toolset: Toolset[Any],
+    ctx: RunContext[AgentContext],
+) -> list[tuple[str, SubagentEntry]]:
+    """Return configured subagents currently available to the parent."""
+    return [(name, entry) for name, entry in entries.items() if _is_subagent_available(entry, parent_toolset, ctx)]
+
+
+def _has_available_target(
+    entries: dict[str, SubagentEntry],
+    parent_toolset: Toolset[Any],
+    ctx: RunContext[AgentContext],
+) -> bool:
+    """Return whether self fork or any configured subagent is callable."""
+    return _is_self_fork_available(ctx) or bool(_available_subagent_entries(entries, parent_toolset, ctx))
+
+
+def _generate_subagent_roster_instruction(
+    entries: dict[str, SubagentEntry],
+    parent_toolset: Toolset[Any],
+    ctx: RunContext[AgentContext],
+) -> str | None:
+    """Generate a concise roster of currently available subagents."""
+    available_entries = _available_subagent_entries(entries, parent_toolset, ctx)
+    self_available = _is_self_fork_available(ctx)
+
+    if not available_entries and not self_available:
+        return None
+
+    lines = ["Available subagents:"]
+    if self_available:
+        lines.append(f'<subagent name="{SELF_SUBAGENT_NAME}">')
+        lines.append(SELF_SUBAGENT_INSTRUCTION)
+        lines.append("</subagent>\n")
+
+    for name, entry in available_entries:
+        lines.append(f'<subagent name="{name}">')
+        lines.append((entry.config.instruction or entry.config.description).strip())
+        lines.append("</subagent>\n")
+
+    return "\n".join(lines).rstrip()
+
+
 def _generate_instruction(
     entries: dict[str, SubagentEntry],
     parent_toolset: Toolset[Any],
     ctx: RunContext[AgentContext],
 ) -> str | None:
     """Generate dynamic instruction listing available subagents."""
-    available_entries = [
-        (name, entry) for name, entry in entries.items() if _is_subagent_available(entry, parent_toolset, ctx)
-    ]
+    roster = _generate_subagent_roster_instruction(entries, parent_toolset, ctx)
+    available_entries = _available_subagent_entries(entries, parent_toolset, ctx)
     self_available = _is_self_fork_available(ctx)
 
-    if not available_entries and not self_available:
+    if roster is None:
         return None
 
     lines = ["Use the delegate tool for bounded subtasks that can return compact results.\n"]
@@ -152,19 +201,8 @@ def _generate_instruction(
     lines.append("Ask each delegate to return concise findings, changed files, tests run, and risks.")
     lines.append("</delegation-best-practices>\n")
 
-    if self_available:
-        lines.append(f'<subagent name="{SELF_SUBAGENT_NAME}">')
-        lines.append(SELF_SUBAGENT_INSTRUCTION)
-        lines.append("</subagent>\n")
-
-    for name, entry in available_entries:
-        instruction = entry.config.instruction
-        lines.append(f'<subagent name="{name}">')
-        if instruction:
-            lines.append(instruction.strip())
-        else:
-            lines.append(entry.config.description)
-        lines.append("</subagent>\n")
+    lines.append(roster)
+    lines.append("")
 
     lines.append("<execution-model>")
     lines.append("Delegate calls are blocking: the parent waits for each delegated result before proceeding.")
@@ -215,6 +253,7 @@ def create_unified_subagent_tool(
     *,
     name: str = "delegate",
     description: str = "Delegate task to a specialized subagent",
+    hidden: bool = False,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
@@ -233,6 +272,7 @@ def create_unified_subagent_tool(
         parent_toolset: The parent toolset to derive tools from.
         name: Tool name (default: "delegate").
         description: Tool description shown to the model.
+        hidden: If True, keep the tool callable by code but hide it from model-visible tools and instructions.
         model: Fallback model for subagents with model="inherit".
         model_settings: Fallback model settings for subagents.
         model_cfg: Fallback ModelConfig for subagents.
@@ -248,6 +288,7 @@ def create_unified_subagent_tool(
         parent_toolset,
         name=name,
         description=description,
+        hidden=hidden,
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
@@ -264,12 +305,89 @@ def _ensure_configs(configs: Sequence[SubagentConfig]) -> None:
         raise ValueError(msg)
 
 
+def _is_unified_tool_available(
+    *,
+    hidden: bool,
+    entries: dict[str, SubagentEntry],
+    parent_toolset: Toolset[Any],
+    ctx: RunContext[AgentContext],
+) -> bool:
+    """Return model-visible availability for the unified subagent tool."""
+    if hidden:
+        return False
+    return _has_available_target(entries, parent_toolset, ctx)
+
+
+async def _get_unified_tool_instruction(
+    *,
+    hidden: bool,
+    entries: dict[str, SubagentEntry],
+    parent_toolset: Toolset[Any],
+    ctx: RunContext[AgentContext],
+) -> str | None:
+    """Return model-visible instructions for the unified subagent tool."""
+    if hidden:
+        return None
+    return _generate_instruction(entries, parent_toolset, ctx)
+
+
+def _get_unified_tool_roster_instruction(
+    entries: dict[str, SubagentEntry],
+    parent_toolset: Toolset[Any],
+    ctx: RunContext[AgentContext],
+) -> str | None:
+    """Return subagent roster instructions for wrappers around a hidden backend."""
+    return _generate_subagent_roster_instruction(entries, parent_toolset, ctx)
+
+
+def _can_unified_tool_delegate(
+    entries: dict[str, SubagentEntry],
+    parent_toolset: Toolset[Any],
+    ctx: RunContext[AgentContext],
+) -> bool:
+    """Return whether the unified backend has at least one callable target."""
+    return _has_available_target(entries, parent_toolset, ctx)
+
+
+async def _call_unified_subagent(
+    tool: BaseTool,
+    ctx: RunContext[AgentContext],
+    *,
+    subagent_name: str,
+    prompt: str,
+    agent_id: str | None,
+    entries: dict[str, SubagentEntry],
+    subagent_names: tuple[str, ...],
+    parent_toolset: Toolset[Any],
+    self_call_func: SubagentCallFunc,
+) -> str:
+    """Call the selected unified subagent target."""
+    if subagent_name == SELF_SUBAGENT_NAME:
+        return await self_call_func(tool, ctx, prompt, agent_id)
+
+    if subagent_name not in entries:
+        available = ", ".join((SELF_SUBAGENT_NAME, *subagent_names))
+        return f"Error: Unknown subagent '{subagent_name}'. Available: {available}"
+
+    entry = entries[subagent_name]
+    if not _is_subagent_available(entry, parent_toolset, ctx):
+        missing = [
+            tool_name
+            for tool_name in entry.required_tools or []
+            if not parent_toolset.is_tool_available(tool_name, ctx)
+        ]
+        return f"Error: Subagent '{subagent_name}' is not available. Missing required tools: {missing}"
+
+    return await entry.call_func(tool, ctx, prompt, agent_id)
+
+
 def _create_unified_subagent_tool(
     configs: Sequence[SubagentConfig],
     parent_toolset: Toolset[Any],
     *,
     name: str = "delegate",
     description: str = "Delegate task to a specialized subagent",
+    hidden: bool = False,
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
@@ -307,21 +425,28 @@ def _create_unified_subagent_tool(
         name = ""
         description = ""
 
-        # Store names for introspection and parameter description
+        # Store names for introspection and wrappers.
         _available_subagents: tuple[str, ...] = subagent_names
 
         tags = frozenset({"delegation"})
 
         def is_available(self, ctx: RunContext[AgentContext]) -> bool:
             """Tool is available if self fork or at least one configured subagent is available."""
-            has_available_subagent = any(
-                _is_subagent_available(entry, _parent_toolset, ctx) for entry in _registry.values()
+            return _is_unified_tool_available(
+                hidden=hidden,
+                entries=_registry,
+                parent_toolset=_parent_toolset,
+                ctx=ctx,
             )
-            return _is_self_fork_available(ctx) or has_available_subagent
 
         async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
             """Generate instruction listing available subagents."""
-            return _generate_instruction(_registry, _parent_toolset, ctx)
+            return await _get_unified_tool_instruction(
+                hidden=hidden,
+                entries=_registry,
+                parent_toolset=_parent_toolset,
+                ctx=ctx,
+            )
 
         async def call(
             self,
@@ -331,32 +456,29 @@ def _create_unified_subagent_tool(
             agent_id: Annotated[str | None, Field(description="Optional agent ID to resume")] = None,
         ) -> str:
             """Delegate task to the specified subagent."""
-            # Built-in self fork
-            if subagent_name == SELF_SUBAGENT_NAME:
-                return await _self_call_func(self, ctx, prompt, agent_id)
+            return await _call_unified_subagent(
+                self,
+                ctx,
+                subagent_name=subagent_name,
+                prompt=prompt,
+                agent_id=agent_id,
+                entries=_registry,
+                subagent_names=subagent_names,
+                parent_toolset=_parent_toolset,
+                self_call_func=_self_call_func,
+            )
 
-            # Validate subagent exists
-            if subagent_name not in _registry:
-                available = ", ".join((SELF_SUBAGENT_NAME, *subagent_names))
-                return f"Error: Unknown subagent '{subagent_name}'. Available: {available}"
+    def _get_roster_instruction(ctx: RunContext[AgentContext]) -> str | None:
+        return _get_unified_tool_roster_instruction(_registry, _parent_toolset, ctx)
 
-            entry = _registry[subagent_name]
-
-            # Check availability
-            if not _is_subagent_available(entry, _parent_toolset, ctx):
-                missing = []
-                if entry.required_tools:
-                    for tool_name in entry.required_tools:
-                        if not _parent_toolset.is_tool_available(tool_name, ctx):
-                            missing.append(tool_name)
-                return f"Error: Subagent '{subagent_name}' is not available. Missing required tools: {missing}"
-
-            # Delegate to subagent
-            return await entry.call_func(self, ctx, prompt, agent_id)
+    def _can_delegate(ctx: RunContext[AgentContext]) -> bool:
+        return _can_unified_tool_delegate(_registry, _parent_toolset, ctx)
 
     # Set class attributes
     UnifiedSubagentTool.name = name
     UnifiedSubagentTool.description = description
+    UnifiedSubagentTool._get_roster_instruction = staticmethod(_get_roster_instruction)
+    UnifiedSubagentTool._can_delegate = staticmethod(_can_delegate)
     UnifiedSubagentTool.__name__ = f"{_to_pascal_case(name)}Tool"
     UnifiedSubagentTool.__qualname__ = UnifiedSubagentTool.__name__
 

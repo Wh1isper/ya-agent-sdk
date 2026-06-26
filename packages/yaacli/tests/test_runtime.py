@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.filters.handoff import process_handoff_message
+from yaacli.background import DELEGATE_BACKEND_TOOL_NAME
 from yaacli.config import (
     GeneralConfig,
     MCPConfig,
@@ -17,7 +18,7 @@ from yaacli.config import (
     YaacliConfig,
 )
 from yaacli.runtime import GoalContextHandoffExtension, create_tui_runtime
-from yaacli.toolsets.background import SpawnDelegateTool, SteerSubagentTool
+from yaacli.toolsets.background import AsyncDelegateTool, SpawnDelegateTool, SteerSubagentTool
 
 # =============================================================================
 # create_tui_runtime Tests
@@ -354,7 +355,7 @@ def test_create_tui_runtime_can_disable_async_subagents(tmp_path: Path) -> None:
     assert SteerSubagentTool.name == "steer_subagent"
 
 
-def test_create_tui_runtime_can_disable_delegate_subagents(tmp_path: Path) -> None:
+async def test_create_tui_runtime_defaults_to_async_delegate_only(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     subagents_dir = config_dir / "subagents"
     subagents_dir.mkdir(parents=True)
@@ -369,11 +370,83 @@ def test_create_tui_runtime_can_disable_delegate_subagents(tmp_path: Path) -> No
         config=config,
         working_dir=tmp_path,
         config_dir=config_dir,
-        enable_delegate_subagents=False,
     )
 
     assert runtime.core_toolset is not None
-    assert "delegate" not in runtime.core_toolset._tool_classes
+    assert runtime.core_toolset._tool_classes["delegate"] is AsyncDelegateTool
+    assert "spawn_delegate" not in runtime.core_toolset._tool_classes
+    assert DELEGATE_BACKEND_TOOL_NAME in runtime.core_toolset._tool_classes
+
+    async with runtime:
+        runtime.env.background_monitor.set_core_toolset(runtime.core_toolset)
+        run_ctx = MagicMock()
+        run_ctx.deps = runtime.ctx
+
+        visible_tools = await runtime.core_toolset.get_tools(run_ctx)
+        assert "delegate" in visible_tools
+        assert "spawn_delegate" not in visible_tools
+        assert DELEGATE_BACKEND_TOOL_NAME not in visible_tools
+
+        instruction_parts = await runtime.core_toolset.get_instructions(run_ctx)
+        instruction_text = "\n".join(part.content for part in instruction_parts or [])
+        assert '<tool-instruction name="delegate">' in instruction_text
+        delegate_instruction = instruction_text.split('<tool-instruction name="delegate">', 1)[1].split(
+            "</tool-instruction>", 1
+        )[0]
+        assert "delegate is asynchronous" in delegate_instruction
+        assert "returns an agent ID immediately" in delegate_instruction
+        assert '<subagent name="helper">' in delegate_instruction
+        assert "Helper subagent" in delegate_instruction
+        assert DELEGATE_BACKEND_TOOL_NAME not in delegate_instruction
+        assert "Delegate calls are blocking" not in delegate_instruction
+
+
+async def test_create_tui_runtime_can_keep_blocking_delegate_and_spawn_delegate(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        "---\nname: helper\ndescription: Helper subagent\n---\n\nYou are a helper.\n"
+    )
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai-chat:gpt-4"),
+    )
+
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        config_dir=config_dir,
+        enable_async_subagents=True,
+        enable_delegate_subagents=True,
+    )
+
+    assert runtime.core_toolset is not None
+    assert runtime.core_toolset._tool_classes["spawn_delegate"] is SpawnDelegateTool
+    assert runtime.core_toolset._tool_classes["delegate"] is not AsyncDelegateTool
+    assert DELEGATE_BACKEND_TOOL_NAME not in runtime.core_toolset._tool_classes
+
+    async with runtime:
+        runtime.env.background_monitor.set_core_toolset(runtime.core_toolset)
+        run_ctx = MagicMock()
+        run_ctx.deps = runtime.ctx
+
+        visible_tools = await runtime.core_toolset.get_tools(run_ctx)
+        assert "delegate" in visible_tools
+        assert "spawn_delegate" in visible_tools
+        assert DELEGATE_BACKEND_TOOL_NAME not in visible_tools
+
+        instruction_parts = await runtime.core_toolset.get_instructions(run_ctx)
+        instruction_text = "\n".join(part.content for part in instruction_parts or [])
+        assert '<tool-instruction name="delegate">' in instruction_text
+        assert '<tool-instruction name="spawn_delegate">' in instruction_text
+        delegate_instruction = instruction_text.split('<tool-instruction name="delegate">', 1)[1].split(
+            "</tool-instruction>", 1
+        )[0]
+        spawn_instruction = instruction_text.split('<tool-instruction name="spawn_delegate">', 1)[1].split(
+            "</tool-instruction>", 1
+        )[0]
+        assert "Delegate calls are blocking" in delegate_instruction
+        assert "Use this to run a subagent asynchronously" in spawn_instruction
 
 
 def test_create_tui_runtime_with_no_model_cfg(tmp_path: Path) -> None:

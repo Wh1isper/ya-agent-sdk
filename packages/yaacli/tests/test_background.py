@@ -13,9 +13,9 @@ from ya_agent_sdk.context.agent import AgentInfo
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from yaacli.app.tui import TUIApp, TUIState
-from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
+from yaacli.background import BACKGROUND_MONITOR_KEY, DELEGATE_BACKEND_TOOL_NAME, BackgroundMonitor
 from yaacli.environment import TUIEnvironment
-from yaacli.toolsets.background import SpawnDelegateTool, SteerSubagentTool
+from yaacli.toolsets.background import AsyncDelegateTool, SpawnDelegateTool, SteerSubagentTool
 
 # =============================================================================
 # BackgroundMonitor Tests (subagent task tracking)
@@ -470,6 +470,35 @@ async def test_shell_monitor_bus_message_target() -> None:
 # =============================================================================
 
 
+class _AvailableDelegateBackend(BaseTool):
+    name = DELEGATE_BACKEND_TOOL_NAME
+    description = "Hidden delegate backend"
+
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        return False
+
+    @staticmethod
+    def _get_roster_instruction(ctx: RunContext[AgentContext]) -> str | None:
+        return '<subagent name="helper">\nHelper subagent\n</subagent>'
+
+    @staticmethod
+    def _can_delegate(ctx: RunContext[AgentContext]) -> bool:
+        return True
+
+    async def call(self, ctx: RunContext[AgentContext], **kwargs: object) -> str:
+        return "ok"
+
+
+class _UnavailableDelegateBackend(_AvailableDelegateBackend):
+    @staticmethod
+    def _get_roster_instruction(ctx: RunContext[AgentContext]) -> str | None:
+        return None
+
+    @staticmethod
+    def _can_delegate(ctx: RunContext[AgentContext]) -> bool:
+        return False
+
+
 def _make_run_ctx(
     *,
     monitor: BackgroundMonitor | None = None,
@@ -536,6 +565,48 @@ def test_tool_available_with_delegate() -> None:
     assert tool.is_available(ctx)
 
 
+def test_spawn_delegate_checks_backend_can_delegate() -> None:
+    """SpawnDelegateTool should respect backend target availability."""
+    monitor = BackgroundMonitor()
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = _UnavailableDelegateBackend()
+    monitor.set_core_toolset(mock_toolset)
+
+    tool = SpawnDelegateTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    assert not tool.is_available(ctx)
+
+
+@pytest.mark.asyncio
+async def test_async_delegate_uses_hidden_backend_roster() -> None:
+    """Async delegate should expose backend roster while keeping async wording."""
+    monitor = BackgroundMonitor()
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = _AvailableDelegateBackend()
+    monitor.set_core_toolset(mock_toolset)
+
+    tool = AsyncDelegateTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    assert tool.is_available(ctx)
+    instruction = await tool.get_instruction(ctx)
+    assert instruction is not None
+    assert "delegate is asynchronous" in instruction
+    assert "returns an agent ID immediately" in instruction
+    assert '<subagent name="helper">' in instruction
+    assert "Helper subagent" in instruction
+    assert "Delegate calls are blocking" not in instruction
+
+
+def test_background_tools_export_keeps_legacy_spawn_name() -> None:
+    """Legacy background_tools export should not include both delegate variants."""
+    from yaacli.toolsets.background import background_tools
+
+    assert SpawnDelegateTool in background_tools
+    assert AsyncDelegateTool not in background_tools
+
+
 @pytest.mark.asyncio
 async def test_tool_call_launches_background_task() -> None:
     """Calling SpawnDelegateTool should launch a background task."""
@@ -579,18 +650,64 @@ async def test_tool_call_launches_background_task() -> None:
     # We don't have a callback set, but the task should complete
     assert not monitor.has_active_tasks
 
-    # Message should be queued for TUI redelivery.
-    assert mock_deps.send_message.call_count == 0
-    assert monitor.has_pending_messages is True
+    # Message is delivered immediately for the active run guard.
+    assert mock_deps.send_message.call_count == 1
+    assert monitor.has_pending_messages is False
 
 
 @pytest.mark.asyncio
 async def test_tool_call_queues_result_for_redelivery() -> None:
-    """Background delegate results should be queued until the TUI redelivers them."""
+    """Background delegate results should be delivered immediately when main is subscribed."""
     monitor = BackgroundMonitor()
 
     mock_delegate = AsyncMock(spec=BaseTool)
     mock_delegate.call = AsyncMock(return_value="Subagent result")
+
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = mock_delegate
+    monitor.set_core_toolset(mock_toolset)
+
+    bus = MessageBus()
+    bus.subscribe("main")
+    mock_deps = MagicMock()
+    mock_deps.resources = MagicMock()
+    mock_deps.resources.get.return_value = monitor
+    mock_deps.subagent_history = {}
+    mock_deps.agent_id = "main"
+    mock_deps.message_bus = bus
+    mock_deps.send_message.side_effect = bus.send
+
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = mock_deps
+
+    result = await SpawnDelegateTool().call(run_ctx, subagent_name="explorer", prompt="Find stuff")
+
+    assert "Spawned delegate" in result
+    tasks = list(monitor.active_tasks.values())
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert bus.has_pending("main") is True
+    messages = bus.consume("main")
+    assert len(messages) == 1
+    assert messages[0].source.startswith("explorer-bg-")
+    assert messages[0].target == "main"
+    assert messages[0].content == "Subagent result"
+
+    # No fallback is queued while the main agent is still subscribed; the
+    # active run consumes the directly delivered message instead.
+    assert monitor.has_pending_messages is False
+    assert monitor.deliver_pending_messages(bus, "main") == 0
+    assert bus.has_pending("main") is False
+
+
+@pytest.mark.asyncio
+async def test_tool_call_redelivery_works_when_main_not_subscribed() -> None:
+    """Fallback redelivery should work if the active main context already exited."""
+    monitor = BackgroundMonitor()
+
+    mock_delegate = AsyncMock(spec=BaseTool)
+    mock_delegate.call = AsyncMock(return_value="Late subagent result")
 
     mock_toolset = MagicMock()
     mock_toolset._get_tool_instance.return_value = mock_delegate
@@ -615,15 +732,13 @@ async def test_tool_call_queues_result_for_redelivery() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
     await asyncio.sleep(0)
 
+    assert mock_deps.send_message.call_count == 0
     assert bus.has_pending("main") is False
-    assert monitor.has_pending_messages is True
     assert monitor.deliver_pending_messages(bus, "main") == 1
     assert bus.has_pending("main") is True
     messages = bus.consume("main")
     assert len(messages) == 1
-    assert messages[0].source.startswith("explorer-bg-")
-    assert messages[0].target == "main"
-    assert messages[0].content == "Subagent result"
+    assert messages[0].content == "Late subagent result"
 
 
 @pytest.mark.asyncio
@@ -683,6 +798,7 @@ async def test_tui_redelivers_background_message_after_running_turn_exits() -> N
     monitor.enqueue_message(BusMessage(content="Subagent result", source="executor-bg-123", target="main"))
     app._on_background_task_complete("executor-bg-123")
 
+    app._append_system_output.assert_called_once_with("Background task completed: executor-bg-123")
     assert app._pending_bus_check_needed is True
     assert bus.has_pending("main") is False
 
@@ -836,7 +952,7 @@ async def test_steer_sends_bus_message() -> None:
 
 @pytest.mark.asyncio
 async def test_steer_finished_agent_suggests_resume() -> None:
-    """Steering a finished subagent should suggest spawn_delegate resume."""
+    """Steering a finished subagent should suggest delegate resume."""
     monitor = BackgroundMonitor()
 
     # Create and immediately complete a task
@@ -861,7 +977,7 @@ async def test_steer_finished_agent_suggests_resume() -> None:
     result = await tool.call(run_ctx, agent_id="searcher-bg-a1b2", message="dig deeper")
 
     assert "already completed" in result
-    assert "spawn_delegate" in result
+    assert "spawn_delegate" not in result
     assert "agent_id" in result
     assert "searcher-bg-a1b2" in result
     assert "delegate" in result
@@ -885,7 +1001,56 @@ async def test_steer_unknown_agent_suggests_resume() -> None:
     result = await tool.call(run_ctx, agent_id="nonexistent-bg-0000", message="hello")
 
     assert "already completed" in result
-    assert "spawn_delegate" in result
+    assert "spawn_delegate" not in result
+    assert "delegate" in result
+
+
+@pytest.mark.asyncio
+async def test_steer_resume_suggests_delegate_in_async_alias_mode() -> None:
+    """Async-only topology should suggest delegate for resume."""
+    monitor = BackgroundMonitor()
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = AsyncDelegateTool()
+    monitor.set_core_toolset(mock_toolset)
+
+    mock_deps = MagicMock()
+    mock_deps.resources = MagicMock()
+    mock_deps.resources.get.return_value = monitor
+    mock_deps.agent_id = "main"
+    mock_deps.agent_registry = {}
+
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = mock_deps
+
+    result = await SteerSubagentTool().call(run_ctx, agent_id="searcher-bg-a1b2", message="dig deeper")
+
+    assert "already completed" in result
+    assert "spawn_delegate" not in result
+    assert 'delegate(subagent_name="searcher"' in result
+
+
+@pytest.mark.asyncio
+async def test_steer_resume_suggests_spawn_delegate_in_dual_mode() -> None:
+    """Dual topology should suggest spawn_delegate for async resume."""
+    monitor = BackgroundMonitor()
+    mock_delegate = MagicMock(spec=BaseTool)
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = mock_delegate
+    monitor.set_core_toolset(mock_toolset)
+
+    mock_deps = MagicMock()
+    mock_deps.resources = MagicMock()
+    mock_deps.resources.get.return_value = monitor
+    mock_deps.agent_id = "main"
+    mock_deps.agent_registry = {}
+
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = mock_deps
+
+    result = await SteerSubagentTool().call(run_ctx, agent_id="searcher-bg-a1b2", message="dig deeper")
+
+    assert "already completed" in result
+    assert 'spawn_delegate(subagent_name="searcher"' in result
 
 
 @pytest.mark.asyncio

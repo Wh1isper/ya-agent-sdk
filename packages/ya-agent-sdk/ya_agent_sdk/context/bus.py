@@ -391,6 +391,10 @@ class MessageBus:
         self._cursors.clear()
         self._consumed_ids.clear()
 
+    def is_subscribed(self, agent_id: str) -> bool:
+        """Return whether the given agent is currently subscribed."""
+        return agent_id in self._cursors
+
     @property
     def subscriber_count(self) -> int:
         """Return the number of registered subscribers."""

@@ -338,6 +338,8 @@ class Toolset(BaseToolset[AgentDepsT]):
         model_settings: ModelSettings | dict[str, Any] | str | None = None,
         model_cfg: ModelConfig | None = None,
         unified: bool = False,
+        unified_tool_name: str = "delegate",
+        hidden: bool = False,
         inherit_hooks: bool = False,
         pre_capabilities: list[AbstractCapability[Any]] | None = None,
         capabilities: list[AbstractCapability[Any]] | None = None,
@@ -349,6 +351,8 @@ class Toolset(BaseToolset[AgentDepsT]):
             model_settings=model_settings,
             model_cfg=model_cfg,
             unified=unified,
+            unified_tool_name=unified_tool_name,
+            hidden=hidden,
             inherit_hooks=inherit_hooks,
             pre_capabilities=pre_capabilities,
             capabilities=capabilities,
@@ -362,6 +366,8 @@ class Toolset(BaseToolset[AgentDepsT]):
         model_settings: ModelSettings | dict[str, Any] | str | None = None,
         model_cfg: ModelConfig | None = None,
         unified: bool = False,
+        unified_tool_name: str = "delegate",
+        hidden: bool = False,
         inherit_hooks: bool = False,
         pre_capabilities: list[AbstractCapability[Any]] | None = None,
         capabilities: list[AbstractCapability[Any]] | None = None,
@@ -378,9 +384,11 @@ class Toolset(BaseToolset[AgentDepsT]):
             model: Fallback model for subagents with 'inherit' or None model.
             model_settings: Fallback model settings for subagents with 'inherit' or None.
             model_cfg: Fallback ModelConfig for subagents.
-            unified: If True, create a single 'delegate' tool that can call any subagent
+            unified: If True, create a single unified tool that can call any subagent
                 by name parameter. If False (default), create separate tools for each
                 subagent.
+            unified_tool_name: Tool name for unified subagents.
+            hidden: Hide generated subagent tools from model-visible tools and instructions while keeping them callable by code.
             inherit_hooks: Whether to inherit hooks from parent toolset.
             pre_capabilities: Parent pre-capabilities to pass to subagents. Each subagent
                 inherits these unless its config.pre_capabilities overrides them.
@@ -426,6 +434,8 @@ class Toolset(BaseToolset[AgentDepsT]):
             unified_tool = _create_unified_subagent_tool(
                 configs,
                 parent_toolset=cast(Any, self),
+                name=unified_tool_name,
+                hidden=hidden,
                 model=model,
                 model_settings=model_settings,
                 model_cfg=model_cfg,
@@ -462,6 +472,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             max_retries=self.max_retries,
             timeout=self.timeout,
             toolset_id=self._id,
+            skip_unavailable=self._skip_unavailable,
             description=self._description,
         )
 

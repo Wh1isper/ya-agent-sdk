@@ -35,8 +35,9 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from pydantic_ai import RunContext
 from ya_agent_environment import BaseResource
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.usage import UsageSnapshot
@@ -50,6 +51,18 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 BACKGROUND_MONITOR_KEY = "background_monitor"
+DELEGATE_BACKEND_TOOL_NAME = "__delegate_backend"
+
+
+@runtime_checkable
+class DelegateBackendTool(Protocol):
+    """Protocol for unified delegate backend helpers used by background tools."""
+
+    @staticmethod
+    def _get_roster_instruction(ctx: RunContext[Any]) -> str | None: ...
+
+    @staticmethod
+    def _can_delegate(ctx: RunContext[Any]) -> bool: ...
 
 
 _SHELL_POLL_INTERVAL = 1.0  # seconds
@@ -216,7 +229,13 @@ class BackgroundMonitor(BaseResource):
                 )
                 continue
             bus.send(message)
-            delivered += 1
+            # Count only notifications that remain unread for this subscriber.
+            # The same message may have already been delivered directly to the
+            # active run's bus and consumed by inject_bus_messages. In that case
+            # this queued copy is only a fallback and must not trigger an empty
+            # wake-up turn.
+            if any(peeked.id == message.id for peeked in bus.peek(agent_id)):
+                delivered += 1
         self._pending_messages = remaining
         return delivered
 
@@ -260,23 +279,56 @@ class BackgroundMonitor(BaseResource):
         """Whether queued usage snapshots are waiting for TUI delivery."""
         return bool(self._pending_usage_snapshots)
 
-    def get_delegate_tool(self) -> BaseTool | None:
-        """Get the delegate tool instance from the core toolset.
+    def get_delegate_tool(self, tool_name: str | None = None) -> BaseTool | None:
+        """Get the delegate backend tool instance from the core toolset.
+
+        Args:
+            tool_name: Preferred backend tool name. When omitted, the hidden
+                backend is preferred and the visible blocking delegate is used
+                as a compatibility fallback.
 
         Returns:
-            The delegate BaseTool instance, or None if not available.
+            The delegate backend BaseTool instance, or None if not available.
         """
         if self._core_toolset is None:
             return None
-        try:
-            return self._core_toolset._get_tool_instance("delegate")
-        except Exception:
+
+        names = (tool_name,) if tool_name else (DELEGATE_BACKEND_TOOL_NAME, "delegate")
+        for name in names:
+            try:
+                return self._core_toolset._get_tool_instance(name)
+            except Exception as exc:
+                logger.debug("Delegate backend tool not found: %s (%s)", name, exc)
+        return None
+
+    def get_delegate_roster_instruction(
+        self,
+        ctx: RunContext[Any],
+        tool_name: str | None = None,
+    ) -> str | None:
+        """Return available subagent roster text from the delegate backend."""
+        delegate = self.get_delegate_tool(tool_name)
+        if not isinstance(delegate, DelegateBackendTool):
             return None
+        return delegate._get_roster_instruction(ctx)
+
+    def can_delegate(self, ctx: RunContext[Any], tool_name: str | None = None) -> bool:
+        """Return whether the delegate backend has at least one callable target."""
+        delegate = self.get_delegate_tool(tool_name)
+        if delegate is None:
+            return False
+        if not isinstance(delegate, DelegateBackendTool):
+            return True
+        return delegate._can_delegate(ctx)
+
+    def has_delegate_backend_tool(self, tool_name: str | None = None) -> bool:
+        """Check if a delegate backend tool exists."""
+        return self.get_delegate_tool(tool_name) is not None
 
     @property
     def has_delegate_tool(self) -> bool:
-        """Check if the delegate tool is available."""
-        return self.get_delegate_tool() is not None
+        """Check if a delegate backend tool exists."""
+        return self.has_delegate_backend_tool()
 
     @property
     def has_active_tasks(self) -> bool:
