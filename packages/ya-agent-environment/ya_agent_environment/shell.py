@@ -439,6 +439,47 @@ class Shell(ABC):
         self._output_buffers[process_id] = buf
         return process_id, buf
 
+    def _finalize_background_task(self, process_id: str, task: asyncio.Task[int]) -> None:
+        """Record completion state for a finished background task.
+
+        Done callbacks normally perform this bookkeeping.  Synchronous readers
+        such as consume_completed_results() also call this method for tasks that
+        are already done, avoiding timing dependence on callback scheduling.
+        """
+        if not task.done():
+            return
+
+        self._background_tasks.pop(process_id, None)
+
+        buf = self._output_buffers.get(process_id)
+        if buf is None:
+            # Buffer already consumed (by kill, wait/drain, or filter injection).
+            self._background_processes.pop(process_id, None)
+            return
+
+        if buf.completed:
+            return
+
+        if task.cancelled():
+            # Don't mark completed; kill_process handles cleanup.
+            return
+
+        try:
+            exit_code = task.result()
+        except Exception:
+            buf.completed = True
+            buf.exit_code = -1
+            return
+
+        buf.completed = True
+        buf.exit_code = exit_code
+
+    def _refresh_completed_tasks(self) -> None:
+        """Synchronously finalize background tasks that are already done."""
+        for process_id, task in list(self._background_tasks.items()):
+            if task.done():
+                self._finalize_background_task(process_id, task)
+
     def _register_background_task(
         self,
         process_id: str,
@@ -457,27 +498,7 @@ class Shell(ABC):
         self._background_tasks[process_id] = task
 
         def _on_done(_t: asyncio.Task[int]) -> None:
-            self._background_tasks.pop(process_id, None)
-
-            buf = self._output_buffers.get(process_id)
-            if buf is None:
-                # Buffer already consumed (by kill or explicit drain)
-                self._background_processes.pop(process_id, None)
-                return
-
-            if _t.cancelled():
-                # Don't mark completed; kill_process handles cleanup
-                return
-
-            try:
-                exit_code = _t.result()
-            except Exception:
-                buf.completed = True
-                buf.exit_code = -1
-                return
-
-            buf.completed = True
-            buf.exit_code = exit_code
+            self._finalize_background_task(process_id, _t)
 
         task.add_done_callback(_on_done)
 
@@ -723,6 +744,7 @@ class Shell(ABC):
         Returns:
             List of CompletedProcess, ordered by discovery.
         """
+        self._refresh_completed_tasks()
         completed_pids = [pid for pid, buf in self._output_buffers.items() if buf.completed]
 
         if not completed_pids:
@@ -781,6 +803,7 @@ class Shell(ABC):
     @property
     def has_background_activity(self) -> bool:
         """Check if there are any active or completed-but-unconsumed background processes."""
+        self._refresh_completed_tasks()
         return bool(self._background_tasks) or any(buf.completed for buf in self._output_buffers.values())
 
     def background_status_summary(self) -> str | None:
@@ -793,6 +816,7 @@ class Shell(ABC):
         - inject_background_results filter (alongside full results)
         - AgentContext.get_context_instructions (user prompt briefing)
         """
+        self._refresh_completed_tasks()
         active = {pid: p for pid, p in self._background_processes.items() if pid in self._background_tasks}
         completed_bufs = {pid: buf for pid, buf in self._output_buffers.items() if buf.completed}
 
