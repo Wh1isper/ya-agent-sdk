@@ -7,7 +7,7 @@ from functools import cache
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
+import httpx2 as httpx
 from pydantic import Field
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
 

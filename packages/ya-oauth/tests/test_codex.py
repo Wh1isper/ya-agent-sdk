@@ -5,7 +5,7 @@ import json
 import os
 from datetime import UTC, datetime
 
-import httpx
+import httpx2 as httpx
 from ya_oauth.codex import CODEX_CLIENT_ID, CODEX_TOKEN_ENDPOINT, CodexOAuthClient
 from ya_oauth.jwt import account_from_id_token
 from ya_oauth.store import OAuthStore

@@ -97,31 +97,31 @@ def test_get_http_client_recreates_after_close() -> None:
 # =============================================================================
 
 
-async def test_safe_request_success(httpx_mock) -> None:
+async def test_safe_request_success(httpx2_mock) -> None:
     """Should make successful request."""
-    httpx_mock.add_response(url="https://example.com/api", json={"status": "ok"})
+    httpx2_mock.add_response(url="https://example.com/api", json={"status": "ok"})
 
     response = await safe_request("https://example.com/api")
     assert response.status_code == 200
     assert response.json() == snapshot({"status": "ok"})
 
 
-async def test_safe_request_follows_redirects(httpx_mock) -> None:
+async def test_safe_request_follows_redirects(httpx2_mock) -> None:
     """Should follow redirects safely."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/old",
         status_code=302,
         headers={"Location": "https://example.com/new"},
     )
-    httpx_mock.add_response(url="https://example.com/new", json={"redirected": True})
+    httpx2_mock.add_response(url="https://example.com/new", json={"redirected": True})
 
     response = await safe_request("https://example.com/old")
     assert response.json() == snapshot({"redirected": True})
 
 
-async def test_safe_request_blocks_redirect_to_private(httpx_mock) -> None:
+async def test_safe_request_blocks_redirect_to_private(httpx2_mock) -> None:
     """Should block redirects to private IPs."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/redirect",
         status_code=302,
         headers={"Location": "http://192.168.1.1/secret"},
@@ -142,26 +142,26 @@ async def test_safe_request_rejects_forbidden_url() -> None:
 # =============================================================================
 
 
-async def test_check_url_accessible_success(httpx_mock) -> None:
+async def test_check_url_accessible_success(httpx2_mock) -> None:
     """Should return True for accessible URLs."""
-    httpx_mock.add_response(url="https://example.com/image.png", method="HEAD")
+    httpx2_mock.add_response(url="https://example.com/image.png", method="HEAD")
 
     result = await check_url_accessible("https://example.com/image.png")
     assert result is True
 
 
-async def test_check_url_accessible_fallback_to_get(httpx_mock) -> None:
+async def test_check_url_accessible_fallback_to_get(httpx2_mock) -> None:
     """Should fallback to GET if HEAD returns 405."""
-    httpx_mock.add_response(url="https://example.com/file", method="HEAD", status_code=405)
-    httpx_mock.add_response(url="https://example.com/file", method="GET", status_code=200)
+    httpx2_mock.add_response(url="https://example.com/file", method="HEAD", status_code=405)
+    httpx2_mock.add_response(url="https://example.com/file", method="GET", status_code=200)
 
     result = await check_url_accessible("https://example.com/file")
     assert result is True
 
 
-async def test_check_url_accessible_failure(httpx_mock) -> None:
+async def test_check_url_accessible_failure(httpx2_mock) -> None:
     """Should return False for inaccessible URLs."""
-    httpx_mock.add_response(url="https://example.com/missing", method="HEAD", status_code=404)
+    httpx2_mock.add_response(url="https://example.com/missing", method="HEAD", status_code=404)
 
     result = await check_url_accessible("https://example.com/missing")
     assert result is False

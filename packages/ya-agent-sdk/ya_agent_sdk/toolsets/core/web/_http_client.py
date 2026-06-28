@@ -9,9 +9,9 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, TypedDict, Unpack
 from urllib.parse import urljoin, urlparse
 
-import httpx
-from httpx._client import UseClientDefault
-from httpx._types import (
+import httpx2 as httpx
+from httpx2._client import UseClientDefault
+from httpx2._types import (
     CookieTypes,
     HeaderTypes,
     QueryParamTypes,

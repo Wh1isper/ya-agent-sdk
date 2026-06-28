@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 from pydantic import AliasChoices, BaseModel, Field
 
 from ya_oauth.jwt import account_from_id_token

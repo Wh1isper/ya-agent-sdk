@@ -4,7 +4,7 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import httpx
+import httpx2 as httpx
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext, ToolConfig
@@ -92,9 +92,9 @@ async def test_search_tool_not_available_without_keys(tmp_path: Path) -> None:
         assert tool.is_available(mock_run_ctx) is False
 
 
-async def test_search_tool_google_search(tmp_path: Path, httpx_mock) -> None:
+async def test_search_tool_google_search(tmp_path: Path, httpx2_mock) -> None:
     """Should use Google when both keys configured."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://www.googleapis.com/customsearch/v1?q=test+query&num=10&key=test-key&cx=test-cx",
         json={
             "items": [
@@ -159,7 +159,7 @@ async def test_search_stock_image_tool_is_available(tmp_path: Path) -> None:
         assert tool.is_available(mock_run_ctx) is True
 
 
-async def test_search_stock_image_tool_search(tmp_path: Path, httpx_mock) -> None:
+async def test_search_stock_image_tool_search(tmp_path: Path, httpx2_mock) -> None:
     """Should search Pixabay and validate URLs."""
 
     # Mock all requests with a callback
@@ -182,7 +182,7 @@ async def test_search_stock_image_tool_search(tmp_path: Path, httpx_mock) -> Non
         # HEAD/GET for URL validation
         return httpx.Response(200)
 
-    httpx_mock.add_callback(mock_callback, is_reusable=True)
+    httpx2_mock.add_callback(mock_callback, is_reusable=True)
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -236,7 +236,7 @@ async def test_search_image_tool_is_available(tmp_path: Path) -> None:
         assert tool.is_available(mock_run_ctx) is True
 
 
-async def test_search_image_tool_search(tmp_path: Path, httpx_mock) -> None:
+async def test_search_image_tool_search(tmp_path: Path, httpx2_mock) -> None:
     """Should search RapidAPI and validate URLs."""
 
     # Mock all requests with a callback
@@ -255,7 +255,7 @@ async def test_search_image_tool_search(tmp_path: Path, httpx_mock) -> None:
         # HEAD/GET for URL validation
         return httpx.Response(200)
 
-    httpx_mock.add_callback(mock_callback, is_reusable=True)
+    httpx2_mock.add_callback(mock_callback, is_reusable=True)
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(

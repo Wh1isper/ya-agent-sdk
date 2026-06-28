@@ -79,7 +79,6 @@ ya-oauth-provider = { workspace = true }
 [dependency-groups]
 dev = [
     "deptry>=0.22.0",
-    "httpx>=0.28.1",
     "pre-commit>=2.20.0",
     "pyright>=1.1.0",
     "pytest>=7.2.0",
@@ -89,5 +88,5 @@ dev = [
 
 [tool.deptry]
 ignore = ["DEP001"]
-package_module_name_map = { "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "httpx" = "httpx", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-environment" = "ya_agent_environment", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-stream-protocol" = "ya_agent_stream_protocol", "ya-oauth" = "ya_oauth", "ya-oauth-provider" = "ya_oauth_provider" }
+package_module_name_map = { "aiosqlite" = "aiosqlite", "alembic" = "alembic", "click" = "click", "fastapi" = "fastapi", "greenlet" = "greenlet", "lark-oapi" = "lark_oapi", "loguru" = "loguru", "pre-commit" = "pre_commit", "pydantic" = "pydantic", "pydantic-settings" = "pydantic_settings", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pyright" = "pyright", "python-dotenv" = "dotenv", "ruff" = "ruff", "sqlalchemy" = "sqlalchemy", "sse-starlette" = "sse_starlette", "uvicorn" = "uvicorn", "ya-agent-environment" = "ya_agent_environment", "ya-agent-sdk" = "ya_agent_sdk", "ya-agent-stream-protocol" = "ya_agent_stream_protocol", "ya-oauth" = "ya_oauth", "ya-oauth-provider" = "ya_oauth_provider" }
 per_rule_ignores = { DEP003 = ["aiosqlite", "alembic", "click", "fastapi", "greenlet", "lark_oapi", "loguru", "pydantic", "pydantic_settings", "sqlalchemy", "uvicorn", "ya_agent_environment", "ya_agent_sdk", "ya_agent_stream_protocol", "ya_claw"], DEP004 = ["pytest"] }

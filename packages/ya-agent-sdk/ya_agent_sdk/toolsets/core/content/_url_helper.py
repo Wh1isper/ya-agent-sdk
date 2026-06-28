@@ -7,7 +7,7 @@ for the LoadMediaUrlTool.
 from enum import StrEnum
 from urllib.parse import urlparse
 
-import httpx
+import httpx2 as httpx
 
 
 class ContentCategory(StrEnum):

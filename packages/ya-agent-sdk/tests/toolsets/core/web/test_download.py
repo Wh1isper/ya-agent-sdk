@@ -16,9 +16,9 @@ def test_download_tool_attributes() -> None:
     assert "Download" in DownloadTool.description
 
 
-async def test_download_tool_single_file(tmp_path: Path, httpx_mock) -> None:
+async def test_download_tool_single_file(tmp_path: Path, httpx2_mock) -> None:
     """Should download a single file."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/file.txt",
         content=b"Hello, World!",
         headers={"Content-Type": "text/plain"},
@@ -51,14 +51,14 @@ async def test_download_tool_single_file(tmp_path: Path, httpx_mock) -> None:
         assert save_path.read_bytes() == b"Hello, World!"
 
 
-async def test_download_tool_multiple_files(tmp_path: Path, httpx_mock) -> None:
+async def test_download_tool_multiple_files(tmp_path: Path, httpx2_mock) -> None:
     """Should download multiple files in parallel."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/file1.txt",
         content=b"File 1",
         headers={"Content-Type": "text/plain"},
     )
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/file2.txt",
         content=b"File 2",
         headers={"Content-Type": "text/plain"},

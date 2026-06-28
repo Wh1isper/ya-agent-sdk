@@ -28,9 +28,9 @@ def test_fetch_tool_attributes() -> None:
     assert "web" in FetchTool.description.lower()
 
 
-async def test_fetch_tool_head_only(tmp_path: Path, httpx_mock) -> None:
+async def test_fetch_tool_head_only(tmp_path: Path, httpx2_mock) -> None:
     """Should return metadata with head_only=True."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/file.json",
         method="HEAD",
         headers={
@@ -61,9 +61,9 @@ async def test_fetch_tool_head_only(tmp_path: Path, httpx_mock) -> None:
         })
 
 
-async def test_fetch_tool_get_text(tmp_path: Path, httpx_mock) -> None:
+async def test_fetch_tool_get_text(tmp_path: Path, httpx2_mock) -> None:
     """Should return text content."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/data.json",
         text='{"key": "value"}',
         headers={"Content-Type": "application/json"},
@@ -83,10 +83,10 @@ async def test_fetch_tool_get_text(tmp_path: Path, httpx_mock) -> None:
         assert result == snapshot('{"key": "value"}')
 
 
-async def test_fetch_tool_get_image(tmp_path: Path, httpx_mock) -> None:
+async def test_fetch_tool_get_image(tmp_path: Path, httpx2_mock) -> None:
     """Should return BinaryContent for images."""
     image_data = b"\x89PNG\r\n\x1a\n"  # PNG header
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/image.png",
         content=image_data,
         headers={"Content-Type": "image/png"},
@@ -111,7 +111,7 @@ async def test_fetch_tool_get_image(tmp_path: Path, httpx_mock) -> None:
         assert result.content[0].media_type == "image/png"
 
 
-async def test_fetch_tool_compresses_image_to_model_limit(tmp_path: Path, httpx_mock) -> None:
+async def test_fetch_tool_compresses_image_to_model_limit(tmp_path: Path, httpx2_mock) -> None:
     """Should compress fetched image content before returning it."""
     from ya_agent_sdk.context import ModelConfig
     from ya_agent_sdk.utils import raw_bytes_limit_for_base64
@@ -121,7 +121,7 @@ async def test_fetch_tool_compresses_image_to_model_limit(tmp_path: Path, httpx_
     raw_budget = raw_bytes_limit_for_base64(max_image_bytes)
     assert len(image_data) > raw_budget
 
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/large-image.png",
         content=image_data,
         headers={"Content-Type": "image/png"},
@@ -148,9 +148,9 @@ async def test_fetch_tool_compresses_image_to_model_limit(tmp_path: Path, httpx_
         assert len(result.content[0].data) <= raw_budget
 
 
-async def test_fetch_tool_reject_large_image_by_content_length(tmp_path: Path, httpx_mock) -> None:
+async def test_fetch_tool_reject_large_image_by_content_length(tmp_path: Path, httpx2_mock) -> None:
     """Should reject large binary responses before buffering them."""
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/huge-image.png",
         content=b"",
         headers={
@@ -176,11 +176,11 @@ async def test_fetch_tool_reject_large_image_by_content_length(tmp_path: Path, h
         })
 
 
-async def test_fetch_tool_uses_tool_config_binary_limit(tmp_path: Path, httpx_mock) -> None:
+async def test_fetch_tool_uses_tool_config_binary_limit(tmp_path: Path, httpx2_mock) -> None:
     """Should honor custom binary size limit from ToolConfig."""
     from ya_agent_sdk.context import ToolConfig
 
-    httpx_mock.add_response(
+    httpx2_mock.add_response(
         url="https://example.com/custom-limit.png",
         content=b"",
         headers={
