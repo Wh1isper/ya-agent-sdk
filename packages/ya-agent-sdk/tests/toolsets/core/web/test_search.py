@@ -128,6 +128,45 @@ async def test_search_tool_google_search(tmp_path: Path, httpx2_mock) -> None:
         })
 
 
+async def test_search_tool_spills_large_payload(tmp_path: Path, httpx2_mock) -> None:
+    """Should spill large search API payloads and return a bounded preview."""
+    items = [
+        {
+            "title": f"Result {index}",
+            "link": f"https://example.com/{index}",
+            "snippet": "x" * 5000,
+        }
+        for index in range(6)
+    ]
+    httpx2_mock.add_response(
+        url="https://www.googleapis.com/customsearch/v1?q=large+query&num=10&key=test-key&cx=test-cx",
+        json={"items": items},
+    )
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
+            )
+        )
+        tool = SearchTool()
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, query="large query")
+        assert isinstance(result, dict)
+        assert result["truncated"] is True
+        assert "output_file_path" in result
+        assert result["items_total"] == 6
+        assert result["items_showing"] < 6
+        assert Path(result["output_file_path"]).read_text()
+
+
 # =============================================================================
 # SearchStockImageTool tests
 # =============================================================================

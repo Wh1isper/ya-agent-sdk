@@ -11,7 +11,7 @@ from PIL import Image
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
-from ya_agent_sdk.toolsets.core.web.fetch import FetchTool
+from ya_agent_sdk.toolsets.core.web.fetch import CONTENT_PREVIEW_LIMIT, FetchTool
 
 
 def _make_random_png(width: int = 1200, height: int = 1200) -> bytes:
@@ -81,6 +81,33 @@ async def test_fetch_tool_get_text(tmp_path: Path, httpx2_mock) -> None:
 
         result = await tool.call(mock_run_ctx, url="https://example.com/data.json")
         assert result == snapshot('{"key": "value"}')
+
+
+async def test_fetch_tool_spills_long_text_to_tmp(tmp_path: Path, httpx2_mock) -> None:
+    """Should spill large text responses instead of returning the full body inline."""
+    long_text = "x" * (CONTENT_PREVIEW_LIMIT + 5000)
+    httpx2_mock.add_response(
+        url="https://example.com/large.txt",
+        text=long_text,
+        headers={"Content-Type": "text/plain", "Content-Length": str(len(long_text))},
+    )
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = FetchTool()
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, url="https://example.com/large.txt")
+        assert isinstance(result, dict)
+        assert result["truncated"] is True
+        assert "output_file_path" in result
+        assert len(result["content"]) <= CONTENT_PREVIEW_LIMIT + 20
+        assert Path(result["output_file_path"]).read_text() == long_text
 
 
 async def test_fetch_tool_get_image(tmp_path: Path, httpx2_mock) -> None:

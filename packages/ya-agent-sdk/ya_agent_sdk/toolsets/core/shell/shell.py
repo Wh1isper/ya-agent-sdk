@@ -5,7 +5,7 @@ using the shell provided by AgentContext, including
 background process management (start, wait, kill).
 """
 
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from pydantic import Field
 from pydantic_ai import ApprovalRequired, RunContext
@@ -17,6 +17,14 @@ from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalFileOperator, LocalShell
 from ya_agent_sdk.environment.sandbox import DockerShell
 from ya_agent_sdk.events import BackgroundShellKilledEvent, BackgroundShellStartEvent
+from ya_agent_sdk.toolsets.core._output import (
+    append_guidance,
+    dump_tool_output,
+    fit_text_fields_to_limit,
+    output_too_large_message,
+    tool_output_size,
+    write_tmp_output,
+)
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.shell.review import (
     ShellReviewBlockedResult,
@@ -43,6 +51,8 @@ class ShellResult(TypedDict, total=False):
     process_id: str  # Present when background=True
     stdout_file_path: str  # Present when stdout exceeds limit
     stderr_file_path: str  # Present when stderr exceeds limit
+    output_file_path: str  # Present when the full structured result exceeds limit
+    truncated: bool
     error: str  # Present on execution error
     hint: str  # Guidance on next available actions
 
@@ -218,6 +228,73 @@ async def _start_background_shell_command(
         )
 
 
+async def _spill_large_shell_streams(
+    file_op: Any,
+    result: dict[str, Any],
+    *,
+    prefix: str,
+) -> None:
+    """Save oversized stdout/stderr streams individually for compatibility."""
+    for field in ("stdout", "stderr"):
+        value = result.get(field)
+        if not isinstance(value, str) or len(value) <= OUTPUT_TRUNCATE_LIMIT:
+            continue
+        output_path = await write_tmp_output(
+            file_op,
+            prefix=f"{prefix}-{field}",
+            content=value,
+            extension="log",
+        )
+        if output_path is not None:
+            result[f"{field}_file_path"] = output_path
+
+
+async def _guard_shell_result(
+    ctx: AgentContext,
+    result: dict[str, Any],
+    *,
+    prefix: str,
+) -> dict[str, Any]:
+    """Guarantee shell result previews stay under the shared output limit."""
+    file_op = ctx.file_operator
+    await _spill_large_shell_streams(file_op, result, prefix=prefix)
+    if tool_output_size(result) <= OUTPUT_TRUNCATE_LIMIT:
+        return result
+
+    full_result = dump_tool_output(result)
+    output_path = await write_tmp_output(
+        file_op,
+        prefix=prefix,
+        content=full_result,
+        extension="json",
+    )
+
+    preview = dict(result)
+    preview["truncated"] = True
+    if output_path is not None:
+        preview["output_file_path"] = output_path
+
+    guidance = output_too_large_message(
+        size=len(full_result),
+        output_path=output_path,
+        noun="shell result",
+    )
+    hint = preview.get("hint")
+    preview["hint"] = append_guidance(hint if isinstance(hint, str) else None, guidance)
+
+    suffix = (
+        "\n...(truncated; full output saved in `output_file_path`)"
+        if output_path is not None
+        else "\n...(truncated; failed to save full output)"
+    )
+    return fit_text_fields_to_limit(
+        preview,
+        text_fields=("stdout", "stderr"),
+        limit=OUTPUT_TRUNCATE_LIMIT,
+        suffix=suffix,
+    )
+
+
 async def _execute_foreground_shell_command(
     ctx: AgentContext,
     shell: Shell,
@@ -241,30 +318,7 @@ async def _execute_foreground_shell_command(
             stderr=stderr,
             return_code=exit_code,
         )
-        file_op = ctx.file_operator
-        if len(stdout) > OUTPUT_TRUNCATE_LIMIT:
-            if file_op is not None:
-                stdout_file = f"stdout-{ctx.run_id[:8]}.log"
-                stdout_path = await file_op.write_tmp_file(stdout_file, stdout)
-                result["stdout"] = (
-                    stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stdout_file_path`)"
-                )
-                result["stdout_file_path"] = stdout_path
-            else:
-                result["stdout"] = stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
-
-        if len(stderr) > OUTPUT_TRUNCATE_LIMIT:
-            if file_op is not None:
-                stderr_file = f"stderr-{ctx.run_id[:8]}.log"
-                stderr_path = await file_op.write_tmp_file(stderr_file, stderr)
-                result["stderr"] = (
-                    stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stderr_file_path`)"
-                )
-                result["stderr_file_path"] = stderr_path
-            else:
-                result["stderr"] = stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
-
-        return result
+        return cast(ShellResult, await _guard_shell_result(ctx, cast(dict[str, Any], result), prefix="shell-exec"))
 
     except Exception as e:
         return ShellResult(
@@ -370,6 +424,8 @@ class ShellWaitResult(TypedDict, total=False):
     process_id: str
     stdout_file_path: str
     stderr_file_path: str
+    output_file_path: str
+    truncated: bool
     error: str
     hint: str  # Guidance on next available actions
 
@@ -403,7 +459,6 @@ class ShellWaitTool(BaseTool):
         ] = DEFAULT_TIMEOUT_SECONDS,
     ) -> ShellWaitResult:
         shell = cast(Shell, ctx.deps.shell)
-        file_op = ctx.deps.file_operator
 
         try:
             stdout, stderr, is_running, exit_code = await shell.wait_process(
@@ -429,29 +484,6 @@ class ShellWaitTool(BaseTool):
             return_code=exit_code if exit_code is not None else -1,
         )
 
-        # Truncation logic (same as ShellTool)
-        if len(stdout) > OUTPUT_TRUNCATE_LIMIT:
-            if file_op is not None:
-                stdout_file = f"stdout-{process_id}.log"
-                stdout_path = await file_op.write_tmp_file(stdout_file, stdout)
-                result["stdout"] = (
-                    stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stdout_file_path`)"
-                )
-                result["stdout_file_path"] = stdout_path
-            else:
-                result["stdout"] = stdout[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
-
-        if len(stderr) > OUTPUT_TRUNCATE_LIMIT:
-            if file_op is not None:
-                stderr_file = f"stderr-{process_id}.log"
-                stderr_path = await file_op.write_tmp_file(stderr_file, stderr)
-                result["stderr"] = (
-                    stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated, full output at `stderr_file_path`)"
-                )
-                result["stderr_file_path"] = stderr_path
-            else:
-                result["stderr"] = stderr[:OUTPUT_TRUNCATE_LIMIT] + "\n...(truncated)"
-
         if is_running:
             result["hint"] = (
                 f"Process {process_id} is still running. "
@@ -460,7 +492,9 @@ class ShellWaitTool(BaseTool):
                 "shell_kill to terminate."
             )
 
-        return result
+        return cast(
+            ShellWaitResult, await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-wait")
+        )
 
 
 class ShellKillResult(TypedDict, total=False):
@@ -470,7 +504,12 @@ class ShellKillResult(TypedDict, total=False):
     killed: bool
     stdout: str
     stderr: str
+    stdout_file_path: str
+    stderr_file_path: str
+    output_file_path: str
+    truncated: bool
     error: str
+    hint: str
 
 
 class ShellKillTool(BaseTool):
@@ -504,11 +543,15 @@ class ShellKillTool(BaseTool):
                     command=bg_command,
                 )
             )
-            return ShellKillResult(
+            result = ShellKillResult(
                 process_id=process_id,
                 killed=True,
                 stdout=stdout,
                 stderr=stderr,
+            )
+            return cast(
+                ShellKillResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-kill"),
             )
         except KeyError:
             return ShellKillResult(

@@ -1,5 +1,6 @@
 """Tests for shell tools."""
 
+import json
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -174,8 +175,11 @@ async def test_shell_tool_stdout_truncation(tmp_path: Path) -> None:
         assert result["return_code"] == 0
         assert "truncated" in result["stdout"]
         assert "stdout_file_path" in result
+        assert "output_file_path" in result
+        assert len(json.dumps(result, ensure_ascii=False)) <= OUTPUT_TRUNCATE_LIMIT
         # Verify file exists
         assert Path(result["stdout_file_path"]).exists()
+        assert Path(result["output_file_path"]).exists()
 
 
 @pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")

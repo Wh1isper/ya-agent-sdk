@@ -13,12 +13,20 @@ from pydantic_ai import RunContext
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core._output import (
+    DEFAULT_OUTPUT_TRUNCATE_LIMIT,
+    fit_text_fields_to_limit,
+    output_too_large_message,
+    tool_output_size,
+    write_tmp_output,
+)
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, verify_url
 
 logger = get_logger(__name__)
 
 CONTENT_TRUNCATE_THRESHOLD = 60000
+CONTENT_PREVIEW_LIMIT = DEFAULT_OUTPUT_TRUNCATE_LIMIT
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
@@ -67,38 +75,55 @@ class ScrapeTool(BaseTool):
                 result = await app.scrape(url=url, formats=["markdown"])
 
                 if result.markdown:
-                    return self._build_success_response(result.markdown)
+                    return await self._build_success_response(ctx, result.markdown)
                 logger.warning(f"Firecrawl returned empty result for {url}, falling back")
             except Exception:
                 logger.exception(f"Firecrawl failed for {url}, falling back")
 
         # Fallback to MarkItDown
-        return await self._fallback_scrape(url)
+        return await self._fallback_scrape(ctx, url)
 
-    async def _fallback_scrape(self, url: str) -> dict[str, Any]:
+    async def _fallback_scrape(self, ctx: RunContext[AgentContext], url: str) -> dict[str, Any]:
         """Fallback scraping using MarkItDown."""
         try:
             result = await anyio.to_thread.run_sync(self._md.convert, url)
-            return self._build_success_response(result.text_content)
+            return await self._build_success_response(ctx, result.text_content)
         except Exception:
             logger.exception(f"Fallback scrape failed for {url}")
             return {"success": False, "error": "Failed to scrape webpage"}
 
-    def _build_success_response(self, content: str) -> dict[str, Any]:
+    async def _build_success_response(self, ctx: RunContext[AgentContext], content: str) -> dict[str, Any]:
         """Build success response with optional truncation."""
-        tips = "All content is returned."
-        truncated = False
         total_length = len(content)
-
-        if len(content) > CONTENT_TRUNCATE_THRESHOLD:
-            content = content[:CONTENT_TRUNCATE_THRESHOLD] + "\n\n... (truncated)"
-            tips = "Content truncated. Consider using `download` to save the full source."
-            truncated = True
-
-        return {
+        response: dict[str, Any] = {
             "success": True,
             "markdown_content": content,
-            "truncated": truncated,
+            "truncated": False,
             "total_length": total_length,
-            "tips": tips,
+            "tips": "All content is returned.",
         }
+        if tool_output_size(response) <= CONTENT_PREVIEW_LIMIT:
+            return response
+
+        output_path = await write_tmp_output(
+            ctx.deps.file_operator,
+            prefix="scrape",
+            content=content,
+            extension="md",
+        )
+        response["truncated"] = True
+        response["tips"] = output_too_large_message(
+            size=total_length,
+            output_path=output_path,
+            noun="Markdown",
+        )
+        if output_path is not None:
+            response["output_file_path"] = output_path
+
+        suffix = "\n\n... (truncated; full Markdown saved in `output_file_path`)"
+        return fit_text_fields_to_limit(
+            response,
+            text_fields=("markdown_content",),
+            limit=CONTENT_PREVIEW_LIMIT,
+            suffix=suffix,
+        )

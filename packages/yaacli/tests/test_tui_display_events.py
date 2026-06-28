@@ -207,10 +207,10 @@ def test_tui_goal_usage_report_shows_delta_with_commas() -> None:
 
     assert app._goal_usage_start_breakdown is None
     assert app._goal_usage_report_pending is False
-    assert any(
+    output_text = " ".join(" ".join(line.split()) for line in app._output_lines)
+    assert (
         "Total tokens used this goal: 1,234 tokens "
-        "(input: 1,000, cache read: 800, cache write: 20, output: 234)" in line
-        for line in app._output_lines
+        "(input: 1,000, cache read: 800, cache write: 20, output: 234)" in output_text
     )
 
 

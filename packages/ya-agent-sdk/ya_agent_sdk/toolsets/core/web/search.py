@@ -5,12 +5,20 @@ from __future__ import annotations
 import asyncio
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core._output import (
+    DEFAULT_OUTPUT_TRUNCATE_LIMIT,
+    append_guidance,
+    dump_tool_output,
+    output_too_large_message,
+    tool_output_size,
+    write_tmp_output,
+)
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.web._http_client import check_url_accessible, get_http_client
 
@@ -20,6 +28,7 @@ if TYPE_CHECKING:
 URL_CHECK_TIMEOUT = 5.0
 URL_VALIDATION_CONCURRENCY = 5
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+_SEARCH_LIST_KEYS = ("items", "results", "hits", "data")
 
 
 @cache
@@ -46,6 +55,103 @@ def _is_tavily_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _build_list_search_preview(result: list[dict[str, Any]], output_path: str | None, note: str) -> dict[str, Any]:
+    preview: dict[str, Any] = {
+        "results": [],
+        "truncated": True,
+        "total_results": len(result),
+        "showing": 0,
+        "note": note,
+    }
+    if output_path is not None:
+        preview["output_file_path"] = output_path
+
+    for item in result:
+        candidate_results = [*preview["results"], item]
+        candidate = {**preview, "results": candidate_results, "showing": len(candidate_results)}
+        if tool_output_size(candidate) > DEFAULT_OUTPUT_TRUNCATE_LIMIT:
+            break
+        preview = candidate
+    return preview
+
+
+def _build_dict_search_base(
+    result: dict[str, Any],
+    output_path: str | None,
+    note: str,
+) -> tuple[dict[str, Any], list[str]]:
+    list_keys = [key for key in _SEARCH_LIST_KEYS if isinstance(result.get(key), list)]
+    preview = dict(result)
+    preview["truncated"] = True
+    preview["note"] = append_guidance(preview.get("note") if isinstance(preview.get("note"), str) else None, note)
+    if output_path is not None:
+        preview["output_file_path"] = output_path
+
+    for key in list_keys:
+        items = result[key]
+        preview[key] = []
+        preview[f"{key}_total"] = len(items)
+        preview[f"{key}_showing"] = 0
+
+    return preview, list_keys
+
+
+def _minimal_search_preview(output_path: str | None, note: str) -> dict[str, Any]:
+    minimal: dict[str, Any] = {"truncated": True, "note": note}
+    if output_path is not None:
+        minimal["output_file_path"] = output_path
+    return minimal
+
+
+def _fill_dict_search_preview(
+    result: dict[str, Any],
+    preview: dict[str, Any],
+    list_keys: list[str],
+) -> dict[str, Any]:
+    for key in list_keys:
+        items = result[key]
+        for item in items:
+            candidate_items = [*preview[key], item]
+            candidate = {
+                **preview,
+                key: candidate_items,
+                f"{key}_showing": len(candidate_items),
+            }
+            if tool_output_size(candidate) > DEFAULT_OUTPUT_TRUNCATE_LIMIT:
+                break
+            preview = candidate
+    return preview
+
+
+async def _guard_search_result(
+    ctx: RunContext[AgentContext],
+    result: list[dict[str, Any]] | dict[str, Any],
+    *,
+    prefix: str,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Spill oversized search API payloads and return a bounded preview."""
+    if tool_output_size(result) <= DEFAULT_OUTPUT_TRUNCATE_LIMIT:
+        return result
+
+    serialized = dump_tool_output(result)
+    output_path = await write_tmp_output(
+        ctx.deps.file_operator,
+        prefix=prefix,
+        content=serialized,
+        extension="json",
+    )
+    note = output_too_large_message(size=len(serialized), output_path=output_path, noun="search results")
+
+    if isinstance(result, list):
+        return _build_list_search_preview(result, output_path, note)
+
+    preview, list_keys = _build_dict_search_base(result, output_path, note)
+    if tool_output_size(preview) > DEFAULT_OUTPUT_TRUNCATE_LIMIT and not list_keys:
+        return _minimal_search_preview(output_path, note)
+
+    return _fill_dict_search_preview(result, preview, list_keys)
 
 
 class SearchTool(BaseTool):
@@ -84,14 +190,18 @@ class SearchTool(BaseTool):
             if isinstance(result, dict) and result.get("success") is False:
                 # Fallback to Brave or Tavily
                 if has_brave:
-                    return await self._search_brave(query, num, cfg.brave_search_api_key)  # type: ignore[arg-type]
+                    result = await self._search_brave(query, num, cfg.brave_search_api_key)  # type: ignore[arg-type]
+                    return await _guard_search_result(ctx, result, prefix="search")
                 if has_tavily:
-                    return await self._search_tavily(query, cfg.tavily_api_key)  # type: ignore[arg-type]
-            return result
+                    result = await self._search_tavily(query, cfg.tavily_api_key)  # type: ignore[arg-type]
+                    return await _guard_search_result(ctx, result, prefix="search")
+            return await _guard_search_result(ctx, result, prefix="search")
         elif has_brave:
-            return await self._search_brave(query, num, cfg.brave_search_api_key)  # type: ignore[arg-type]
+            result = await self._search_brave(query, num, cfg.brave_search_api_key)  # type: ignore[arg-type]
+            return await _guard_search_result(ctx, result, prefix="search")
         elif has_tavily:
-            return await self._search_tavily(query, cfg.tavily_api_key)  # type: ignore[arg-type]
+            result = await self._search_tavily(query, cfg.tavily_api_key)  # type: ignore[arg-type]
+            return await _guard_search_result(ctx, result, prefix="search")
         else:
             return {"success": False, "error": "No search API available"}
 
@@ -204,7 +314,7 @@ class SearchStockImageTool(BaseTool):
             "All image URLs have been verified for accessibility. "
             "You can use the `download` tool to save the images you need."
         )
-        return data
+        return cast(dict[str, Any], await _guard_search_result(ctx, data, prefix="search-stock-image"))
 
     async def _validate_results(self, results: list[dict[str, Any]]) -> None:
         """Validate image URLs in parallel."""
@@ -298,7 +408,7 @@ class SearchImageTool(BaseTool):
             "All image URLs have been verified for accessibility. "
             "You can use the `download` tool to save the images you need."
         )
-        return data
+        return cast(dict[str, Any], await _guard_search_result(ctx, data, prefix="search-image"))
 
     async def _validate_results(self, results: list[dict[str, Any]]) -> None:
         """Validate image URLs in parallel."""

@@ -13,6 +13,11 @@ from pydantic_ai import BinaryContent, RunContext, ToolReturn
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core._output import (
+    DEFAULT_OUTPUT_TRUNCATE_LIMIT,
+    output_too_large_message,
+    write_tmp_output,
+)
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.web._http_client import (
     ForbiddenUrlError,
@@ -25,7 +30,66 @@ from ya_agent_sdk.utils import compress_image_to_model_limit, detect_image_media
 logger = get_logger(__name__)
 
 CONTENT_TRUNCATE_THRESHOLD = 60000
+CONTENT_PREVIEW_LIMIT = DEFAULT_OUTPUT_TRUNCATE_LIMIT
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _append_text_preview(preview_parts: list[str], preview_length: int, chunk: str) -> int:
+    if preview_length >= CONTENT_PREVIEW_LIMIT:
+        return preview_length
+    remaining = CONTENT_PREVIEW_LIMIT - preview_length
+    preview_parts.append(chunk[:remaining])
+    return preview_length + min(len(chunk), remaining)
+
+
+async def _start_text_spill(ctx: RunContext[AgentContext], preview_parts: list[str], chunk: str) -> str | None:
+    if ctx.deps.file_operator is None:
+        return None
+    return await write_tmp_output(
+        ctx.deps.file_operator,
+        prefix="fetch",
+        content="".join(preview_parts) + chunk,
+        extension="txt",
+    )
+
+
+async def _append_text_spill(ctx: RunContext[AgentContext], output_path: str, chunk: str) -> bool:
+    file_operator = ctx.deps.file_operator
+    if file_operator is None:
+        return False
+    try:
+        await file_operator.append_file(output_path, chunk)
+        return True
+    except Exception:
+        logger.warning("Failed to append fetch output to temp file", exc_info=True)
+        return False
+
+
+def _response_total_length(response: httpx.Response, fallback: int) -> int:
+    content_length = response.headers.get("Content-Length")
+    if content_length:
+        with contextlib.suppress(ValueError, OverflowError):
+            return int(content_length)
+    return fallback
+
+
+def _build_truncated_text_response(
+    *,
+    text: str,
+    response: httpx.Response,
+    output_path: str | None,
+    total_length: int,
+) -> dict[str, Any]:
+    total_length = _response_total_length(response, total_length)
+    result: dict[str, Any] = {
+        "content": text + "\n\n... (truncated)",
+        "truncated": True,
+        "tips": output_too_large_message(size=total_length, output_path=output_path, noun="content"),
+        "total_length": total_length,
+    }
+    if output_path is not None:
+        result["output_file_path"] = output_path
+    return result
 
 
 @cache
@@ -206,46 +270,40 @@ class FetchTool(BaseTool):
     async def _read_text_response(
         self, ctx: RunContext[AgentContext], response: httpx.Response
     ) -> str | dict[str, Any]:
-        """Read a text response incrementally and truncate by character budget."""
+        """Read a text response incrementally and spill oversized content to tmp."""
         chunk_size = ctx.deps.tool_config.fetch_stream_chunk_size
-        content_parts: list[str] = []
-        current_length = 0
+        preview_parts: list[str] = []
+        preview_length = 0
+        total_length = 0
+        output_path: str | None = None
         truncated = False
 
         async for chunk in response.aiter_text(chunk_size=chunk_size):
-            remaining = CONTENT_TRUNCATE_THRESHOLD - current_length
-            if remaining <= 0:
-                truncated = True
-                break
+            total_length += len(chunk)
 
-            if len(chunk) <= remaining:
-                content_parts.append(chunk)
-                current_length += len(chunk)
-            else:
-                content_parts.append(chunk[:remaining])
-                current_length += remaining
+            if output_path is not None:
+                if not await _append_text_spill(ctx, output_path, chunk):
+                    output_path = None
+                    truncated = True
+                    break
+            elif total_length > CONTENT_PREVIEW_LIMIT:
                 truncated = True
-                break
+                output_path = await _start_text_spill(ctx, preview_parts, chunk)
+                if output_path is None:
+                    break
 
-        text = "".join(content_parts)
+            preview_length = _append_text_preview(preview_parts, preview_length, chunk)
+
+        text = "".join(preview_parts)
         if not truncated:
             return text
 
-        # Use Content-Length header for total size estimate when available
-        total_length: int | None = None
-        content_length = response.headers.get("Content-Length")
-        if content_length:
-            with contextlib.suppress(ValueError, OverflowError):
-                total_length = int(content_length)
-
-        result: dict[str, Any] = {
-            "content": text + "\n\n... (truncated)",
-            "truncated": True,
-            "tips": "Content truncated. Use `download` to save the full file.",
-        }
-        if total_length is not None:
-            result["total_length"] = total_length
-        return result
+        return _build_truncated_text_response(
+            text=text,
+            response=response,
+            output_path=output_path,
+            total_length=total_length,
+        )
 
     async def _get_request(
         self,

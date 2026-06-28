@@ -97,5 +97,6 @@ async def test_scrape_tool_truncates_long_content(tmp_path: Path) -> None:
 
         assert result["success"] is True
         assert result["truncated"] is True
-        # Content is truncated to threshold + suffix "\n\n... (truncated)"
-        assert len(result["markdown_content"]) <= CONTENT_TRUNCATE_THRESHOLD + 20
+        assert "output_file_path" in result
+        assert Path(result["output_file_path"]).read_text() == long_content
+        assert len(result["markdown_content"]) < CONTENT_TRUNCATE_THRESHOLD

@@ -2,7 +2,6 @@
 
 import json
 import re
-import uuid
 from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -13,6 +12,12 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core._output import (
+    output_too_large_message,
+    tool_output_size,
+    truncate_text,
+    write_tmp_output,
+)
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
 from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_streaming
@@ -89,6 +94,72 @@ def _truncate_results(results: dict[str, Any]) -> dict[str, Any]:
     return truncated
 
 
+def _fits_hard_limit(value: dict[str, Any]) -> bool:
+    return tool_output_size(value) <= _OUTPUT_HARD_LIMIT
+
+
+def _fit_list_metadata(preview: dict[str, Any], key: str, value: list[Any]) -> tuple[dict[str, Any], bool]:
+    kept: list[Any] = []
+    candidate = {**preview, key: kept}
+    for item in value:
+        next_kept = [*kept, item]
+        next_candidate = {**candidate, key: next_kept}
+        if not _fits_hard_limit(next_candidate):
+            break
+        kept = next_kept
+        candidate = next_candidate
+    return (candidate if kept else preview), len(kept) < len(value)
+
+
+def _fit_string_metadata(preview: dict[str, Any], key: str, value: str) -> tuple[dict[str, Any], bool]:
+    suffix = "... (truncated; full metadata saved in `output_file_path`)"
+    for max_chars in (1000, 500, 200, 100, 0):
+        trimmed = truncate_text(value, max_chars, suffix=suffix)
+        candidate = {**preview, key: trimmed}
+        if _fits_hard_limit(candidate):
+            return candidate, trimmed != value
+    return preview, True
+
+
+def _add_metadata_truncated_marker(preview: dict[str, Any], omitted: list[str]) -> dict[str, Any]:
+    if not omitted:
+        return preview
+    candidate = {**preview, "<metadata_truncated>": omitted}
+    if _fits_hard_limit(candidate):
+        return candidate
+    return preview
+
+
+def _add_preview_metadata(preview: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    """Add metadata to a hard-limit preview without letting metadata dominate it."""
+    omitted: list[str] = []
+
+    for key, value in metadata.items():
+        if key == "<system>":
+            continue
+
+        candidate = {**preview, key: value}
+        if _fits_hard_limit(candidate):
+            preview = candidate
+            continue
+
+        if isinstance(value, list):
+            preview, was_omitted = _fit_list_metadata(preview, key, value)
+            if was_omitted:
+                omitted.append(key)
+            continue
+
+        if isinstance(value, str):
+            preview, was_omitted = _fit_string_metadata(preview, key, value)
+            if was_omitted:
+                omitted.append(key)
+            continue
+
+        omitted.append(key)
+
+    return _add_metadata_truncated_marker(preview, omitted)
+
+
 async def _guard_output_size(
     results: dict[str, Any],
     file_operator: FileOperator,
@@ -111,36 +182,25 @@ async def _guard_output_size(
 
     # Phase 2: write full truncated results to temp file, return bounded preview
     logger.info("Truncated results still too large (%d chars), writing to temp file", len(serialized))
-    output_path: str | None = None
-    try:
-        output_file = f"grep-{uuid.uuid4().hex[:12]}.json"
-        output_path = await file_operator.write_tmp_file(output_file, serialized)
-    except Exception:
-        logger.warning("Failed to write grep output to temp file", exc_info=True)
+    output_path = await write_tmp_output(file_operator, prefix="grep", content=serialized, extension="json")
 
     # Extract match keys and metadata
     match_keys = [k for k in truncated if not k.startswith("<")]
     metadata = {k: v for k, v in truncated.items() if k.startswith("<")}
 
-    # Build preview note
-    if output_path is not None:
-        system_msg = (
-            f"Output too large ({len(serialized)} chars). Full results saved to temp file. Use `view` to read it."
-        )
-    else:
-        system_msg = f"Output too large ({len(serialized)} chars). Failed to save temp file; showing truncated preview."
-
     # Build preview incrementally to guarantee it stays within the hard limit
-    preview: dict[str, Any] = {**metadata}
-    preview["<system>"] = system_msg
+    preview: dict[str, Any] = {
+        "<system>": output_too_large_message(size=len(serialized), output_path=output_path, noun="results"),
+    }
     preview["total_matches"] = len(match_keys)
     preview["showing"] = 0
     if output_path is not None:
         preview["output_file_path"] = output_path
+    preview = _add_preview_metadata(preview, metadata)
 
     for key in match_keys:
         candidate = {**preview, key: truncated[key], "showing": preview["showing"] + 1}
-        if len(json.dumps(candidate, default=str, ensure_ascii=False)) > _OUTPUT_HARD_LIMIT:
+        if not _fits_hard_limit(candidate):
             break
         preview = candidate
 
