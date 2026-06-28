@@ -36,6 +36,7 @@ class TUIEnvironment(LocalEnvironment):
         self,
         allowed_paths: list[Path] | None = None,
         default_path: Path | None = None,
+        instructions_paths: list[Path] | None = None,
         shell_timeout: float = 30.0,
         tmp_base_dir: Path | None = None,
         enable_tmp_dir: bool = True,
@@ -46,6 +47,7 @@ class TUIEnvironment(LocalEnvironment):
         super().__init__(
             allowed_paths=allowed_paths,
             default_path=default_path,
+            instructions_paths=instructions_paths,
             shell_timeout=shell_timeout,
             tmp_base_dir=tmp_base_dir,
             enable_tmp_dir=enable_tmp_dir,

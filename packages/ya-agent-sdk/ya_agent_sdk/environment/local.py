@@ -111,6 +111,7 @@ class LocalFileOperator(FileOperator):
         self,
         default_path: Path | None = None,
         allowed_paths: Sequence[Path | PurePath] | None = None,
+        instructions_paths: Sequence[Path | PurePath] | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
         tmp_dir: Path | None = None,
@@ -123,6 +124,8 @@ class LocalFileOperator(FileOperator):
                 If None, no real filesystem access is available (only tmp operations).
             allowed_paths: Directories accessible for file operations.
                 If None, defaults to [default_path] when default_path is set.
+            instructions_paths: Directories included in generated file-tree context.
+                If None, all allowed_paths are included.
             instructions_skip_dirs: Directories to skip in file tree generation.
             instructions_max_depth: Maximum depth for file tree generation.
             tmp_dir: Directory for temporary files.
@@ -136,6 +139,7 @@ class LocalFileOperator(FileOperator):
         super().__init__(
             default_path=default_path,
             allowed_paths=allowed_paths,
+            instructions_paths=instructions_paths,
             instructions_skip_dirs=instructions_skip_dirs,
             instructions_max_depth=instructions_max_depth,
             tmp_dir=tmp_dir,
@@ -1366,6 +1370,7 @@ class LocalEnvironment(Environment):
         self,
         allowed_paths: list[Path] | None = None,
         default_path: Path | None = None,
+        instructions_paths: list[Path] | None = None,
         shell_timeout: float = 30.0,
         tmp_base_dir: Path | None = None,
         enable_tmp_dir: bool = True,
@@ -1381,6 +1386,8 @@ class LocalEnvironment(Environment):
         Args:
             allowed_paths: Directories accessible by both file and shell operations.
             default_path: Default working directory for operations.
+            instructions_paths: Directories included in generated file-tree context.
+                If None, all allowed_paths are included.
             shell_timeout: Default shell command timeout.
             tmp_base_dir: Base directory for creating session temporary directory.
                 If None, uses system default temp directory.
@@ -1406,6 +1413,7 @@ class LocalEnvironment(Environment):
         )
         self._allowed_paths = allowed_paths
         self._default_path = default_path
+        self._instructions_paths = instructions_paths
         self._shell_timeout = shell_timeout
         self._tmp_base_dir = tmp_base_dir
         self._enable_tmp_dir = enable_tmp_dir
@@ -1453,6 +1461,7 @@ class LocalEnvironment(Environment):
             self._file_operator = LocalFileOperator(
                 default_path=default_path,
                 allowed_paths=allowed or None,
+                instructions_paths=self._instructions_paths,
                 tmp_dir=tmp_dir_path,
             )
 

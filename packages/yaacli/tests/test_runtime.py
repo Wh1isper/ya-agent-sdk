@@ -89,6 +89,42 @@ async def test_create_tui_runtime_orders_skill_paths_by_priority(tmp_path: Path)
         assert runtime.env.tmp_dir.resolve() in allowed_paths
 
 
+async def test_create_tui_runtime_filetree_context_uses_workspace_only(tmp_path: Path) -> None:
+    """TUI should keep auxiliary roots accessible without rendering them as file trees."""
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai-chat:gpt-4"),
+    )
+    config_dir = tmp_path / "custom-config"
+    working_dir = tmp_path / "workspace"
+    config_dir.mkdir()
+    working_dir.mkdir()
+    (config_dir / "config-marker.txt").write_text("config")
+    (working_dir / "app.py").write_text("# app")
+
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=working_dir,
+        config_dir=config_dir,
+    )
+
+    async with runtime:
+        instructions = await runtime.env.file_operator.get_context_instructions()
+        assert instructions is not None
+
+        assert instructions.count("<directory path=") == 1
+        assert f'<directory path="{working_dir.resolve()}">' in instructions
+        assert f'<directory path="{Path(tempfile.gettempdir()).resolve()}">' not in instructions
+        assert f'<directory path="{config_dir.resolve()}">' not in instructions
+        assert "app.py" in instructions
+        assert "config-marker.txt" not in instructions
+
+        allowed_paths = runtime.env.file_operator._allowed_paths
+        assert Path(tempfile.gettempdir()).resolve() in allowed_paths
+        assert config_dir.resolve() in allowed_paths
+        assert runtime.env.tmp_dir is not None
+        assert runtime.env.tmp_dir.resolve() in allowed_paths
+
+
 def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None:
     """Runtime uses the persisted model profile at startup."""
     from yaacli.model_profiles import save_selected_model_profile_id

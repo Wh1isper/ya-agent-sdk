@@ -263,6 +263,7 @@ def create_tui_runtime(
         workspace_dir,
         project_config_dir,
     ]
+    env_kwargs["instructions_paths"] = [workspace_dir]
 
     # Shell environment isolation: configurable via config.toml
     env_kwargs["include_os_env"] = config.include_os_env

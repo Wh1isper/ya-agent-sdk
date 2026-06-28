@@ -350,6 +350,7 @@ class FileOperator(ABC):
         self,
         default_path: Path | PurePath | None = None,
         allowed_paths: Sequence[Path | PurePath] | None = None,
+        instructions_paths: Sequence[Path | PurePath] | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = DEFAULT_INSTRUCTIONS_MAX_DEPTH,
         tmp_dir: Path | None = None,
@@ -367,6 +368,8 @@ class FileOperator(ABC):
                 If None, defaults to [default_path] when default_path is set,
                 or [] when default_path is None.
                 default_path is always included in allowed_paths when set.
+            instructions_paths: Directories to include in generated file-tree
+                context. If None, all allowed_paths are included.
             instructions_skip_dirs: Directories to skip in file tree generation.
             instructions_max_depth: Maximum depth for file tree generation.
             tmp_dir: Directory for temporary files. If provided without
@@ -389,6 +392,13 @@ class FileOperator(ABC):
             if self._default_path is not None and self._default_path not in resolved_paths:
                 resolved_paths.append(self._default_path)
             self._allowed_paths = [p for p in resolved_paths if p is not None]
+
+        if instructions_paths is None:
+            self._instructions_paths = list(self._allowed_paths)
+        else:
+            self._instructions_paths = [
+                p for p in (self._normalize_config_path(path) for path in instructions_paths) if p is not None
+            ]
 
         self._instructions_skip_dirs = (
             instructions_skip_dirs if instructions_skip_dirs is not None else DEFAULT_INSTRUCTIONS_SKIP_DIRS
@@ -1077,10 +1087,12 @@ class FileOperator(ABC):
                     "Never mention this path to the user."
                 )
 
-        # File trees for each allowed path
+        # File trees for selected context paths. This can be narrower than
+        # allowed_paths when auxiliary roots are available to tools but should
+        # not consume prompt budget as workspace file-tree context.
         file_trees = ET.SubElement(root, "file-trees")
         default_path = self._default_path
-        for allowed_path in self._allowed_paths:
+        for allowed_path in self._instructions_paths:
             if default_path is not None:
                 base_path: Path | PurePath = default_path
                 try:

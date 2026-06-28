@@ -277,6 +277,30 @@ README.md
     )
 
 
+async def test_file_operator_context_instructions_can_use_narrower_paths(tmp_path: Path) -> None:
+    """Should render file trees only for instructions_paths when configured."""
+    workspace_dir = tmp_path / "workspace"
+    cache_dir = tmp_path / "cache"
+    workspace_dir.mkdir()
+    cache_dir.mkdir()
+    (workspace_dir / "main.py").write_text("# main")
+    (cache_dir / "cache-marker.txt").write_text("cache")
+
+    op = LocalFileOperator(
+        allowed_paths=[workspace_dir, cache_dir],
+        default_path=workspace_dir,
+        instructions_paths=[workspace_dir],
+    )
+    instructions = await op.get_context_instructions()
+
+    assert instructions is not None
+    assert "main.py" in instructions
+    assert "cache-marker.txt" not in instructions
+    assert f'<directory path="{workspace_dir.resolve()}">' in instructions
+    assert f'<directory path="{cache_dir.resolve()}">' not in instructions
+    assert cache_dir.resolve() in op._allowed_paths
+
+
 # --- LocalShell Tests ---
 
 
