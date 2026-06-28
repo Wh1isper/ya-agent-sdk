@@ -23,6 +23,7 @@ Example:
 
 from __future__ import annotations
 
+import tempfile
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -231,10 +232,11 @@ def create_tui_runtime(
             )
 
     # Environment configuration
+    # Include system temp dir so TUI agents can read/write user-specified temp files.
     # Include global config dir in allowed_paths so agent can modify configs directly.
     # Include ~/.agents for shared skills following the Agent Skills open standard.
     # Order matters for skill priority (later = higher priority):
-    #   ~/.yaacli < ~/.agents < project dir < project .yaacli
+    #   system temp < ~/.yaacli < ~/.agents < project dir < project .yaacli
     global_config_dir = config_dir or ConfigManager.DEFAULT_CONFIG_DIR
     active_model_profile = model_profile or get_startup_model_profile(config, global_config_dir)
     active_model = active_model_profile.model if active_model_profile else config.general.model
@@ -252,8 +254,15 @@ def create_tui_runtime(
     else:
         workspace_dir = Path.cwd()
     project_config_dir = workspace_dir / ConfigManager.PROJECT_CONFIG_DIR
+    system_tmp_dir = Path(tempfile.gettempdir())
     env_kwargs["default_path"] = workspace_dir
-    env_kwargs["allowed_paths"] = [global_config_dir, shared_agents_dir, workspace_dir, project_config_dir]
+    env_kwargs["allowed_paths"] = [
+        system_tmp_dir,
+        global_config_dir,
+        shared_agents_dir,
+        workspace_dir,
+        project_config_dir,
+    ]
 
     # Shell environment isolation: configurable via config.toml
     env_kwargs["include_os_env"] = config.include_os_env

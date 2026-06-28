@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -77,12 +78,15 @@ async def test_create_tui_runtime_orders_skill_paths_by_priority(tmp_path: Path)
     async with runtime:
         allowed_paths = runtime.env.file_operator._allowed_paths
         expected_prefix = [
+            Path(tempfile.gettempdir()).resolve(),
             config_dir.resolve(),
             (Path.home() / ".agents").resolve(),
             working_dir.resolve(),
             (working_dir / ".yaacli").resolve(),
         ]
-        assert allowed_paths[:4] == expected_prefix
+        assert allowed_paths[:5] == expected_prefix
+        assert runtime.env.tmp_dir is not None
+        assert runtime.env.tmp_dir.resolve() in allowed_paths
 
 
 def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None:
