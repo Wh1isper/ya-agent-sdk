@@ -3809,11 +3809,11 @@ class TUIApp:
             self._append_system_output(f"Session not found: {session_id}")
 
     def _append_system_output(self, text: str) -> None:
-        """Append system message to output."""
+        """Append system message to output, wrapped to the current terminal width."""
         sys_text = Text()
         sys_text.append("[SYS] ", style="bold yellow")
         sys_text.append(text)
-        self._append_output(self._renderer.render(sys_text).rstrip())
+        self._append_output(self._renderer.render(sys_text, width=self._get_terminal_width()).rstrip())
 
     # =========================================================================
     # Main Run Loop

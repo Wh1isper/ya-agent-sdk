@@ -214,6 +214,32 @@ def test_tui_goal_usage_report_shows_delta_with_commas() -> None:
     )
 
 
+def test_tui_goal_usage_report_wraps_to_terminal_width() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    app._get_terminal_width = MagicMock(return_value=60)  # type: ignore[method-assign]
+    app._goal_usage_start_breakdown = app._session_usage.token_breakdown
+    app._goal_usage_report_pending = True
+
+    app._session_usage.add(
+        "main",
+        "oauth@codex:gpt-5.5",
+        RunUsage(
+            input_tokens=3_650_580,
+            output_tokens=13_400,
+            cache_read_tokens=3_000_000,
+            cache_write_tokens=42_000,
+        ),
+    )
+    app._append_goal_usage_report_if_pending()
+
+    assert len(app._output_lines) == 1
+    assert app._output_lines[0].count("\n") >= 1
+    output_text = " ".join(app._output_lines[0].split())
+    assert "Total tokens used this goal: 3,663,980 tokens" in output_text
+    assert "input: 3,650,580" in output_text
+    assert "output: 13,400" in output_text
+
+
 def test_tui_goal_complete_event_renders_unverified_stop() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
 
