@@ -134,7 +134,7 @@ from yaacli.perf import perf_log_report, perf_report, perf_timer
 from yaacli.runtime import create_tui_runtime
 from yaacli.session import TUIContext
 from yaacli.sessions import get_head_artifact_paths, save_session_turn, trim_sessions
-from yaacli.usage import SessionUsage
+from yaacli.usage import SessionUsage, TokenUsageBreakdown
 
 YAACLI_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="yaacli", stream_metadata_prefix="yaacli")
 YAACLI_AGUI_REPLAY_CONFIG = AguiReplayConfig(
@@ -376,6 +376,10 @@ class TUIApp:
 
     # Session-level usage tracking
     _session_usage: SessionUsage = field(default_factory=SessionUsage, init=False)
+
+    # Goal usage tracking
+    _goal_usage_start_breakdown: TokenUsageBreakdown | None = field(default=None, init=False)
+    _goal_usage_report_pending: bool = field(default=False, init=False)
 
     # Model profile state
     _active_model_profile: ResolvedModelProfile | None = field(default=None, init=False)
@@ -1871,6 +1875,35 @@ class TUIApp:
         self._agent_task = asyncio.create_task(self._run_agent(""))
         self._agent_task.add_done_callback(self._on_agent_task_done)
 
+    def _mark_goal_usage_report_pending(self) -> None:
+        """Mark the active goal usage report to be printed after final usage persistence."""
+        if self._goal_usage_start_breakdown is not None:
+            self._goal_usage_report_pending = True
+
+    def _append_goal_usage_report_if_pending(self) -> None:
+        """Append the token delta for the just-finished goal, if pending."""
+        if not self._goal_usage_report_pending:
+            return
+
+        start_breakdown = self._goal_usage_start_breakdown
+        self._goal_usage_start_breakdown = None
+        self._goal_usage_report_pending = False
+
+        if start_breakdown is None:
+            return
+
+        delta = self._session_usage.token_breakdown.delta_since(start_breakdown)
+        self._append_system_output(
+            "[Goal] Total tokens used this goal: "
+            f"{delta.total_tokens:,} tokens "
+            "("
+            f"input: {delta.input_tokens:,}, "
+            f"cache read: {delta.cache_read_tokens:,}, "
+            f"cache write: {delta.cache_write_tokens:,}, "
+            f"output: {delta.output_tokens:,}"
+            ")"
+        )
+
     def _finish_active_goal(self, reason: GoalCompleteReason) -> None:
         """Finish active goal mode from the TUI layer with an explicit reason."""
         ctx = self.runtime.ctx
@@ -1991,6 +2024,7 @@ class TUIApp:
                 else:
                     goal_stop_reason = GoalCompleteReason.unverified_stop
                 self._finish_active_goal(goal_stop_reason)
+            self._append_goal_usage_report_if_pending()
             self._agent_phase = "idle"
             self._state = TUIState.IDLE
             if self._app:
@@ -2626,6 +2660,7 @@ class TUIApp:
                     f"[Goal] Stopped without verified completion at iteration {message_event.iteration}. "
                     "Task may be incomplete. You can run /goal again to continue."
                 )
+            self._mark_goal_usage_report_pending()
 
         elif isinstance(message_event, ContextUpdateEvent):
             self._current_context_tokens = message_event.total_tokens
@@ -3108,6 +3143,8 @@ class TUIApp:
                     ctx.goal_task = task
                     ctx.goal_iteration = 0
                     ctx.goal_max_iterations = self.config.general.max_goal_iterations
+                    self._goal_usage_start_breakdown = self._session_usage.token_breakdown
+                    self._goal_usage_report_pending = False
                     self._append_system_output(
                         f"[Goal] Starting goal mode ({ctx.goal_max_iterations} max iterations). Ctrl+C to stop."
                     )

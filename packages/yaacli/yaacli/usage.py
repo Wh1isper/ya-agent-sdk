@@ -26,6 +26,30 @@ from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.usage import UsageSnapshot, coerce_run_usage
 
 
+@dataclass(frozen=True)
+class TokenUsageBreakdown:
+    """Aggregated token usage values used for compact delta displays."""
+
+    input_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    output_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        """Total billable prompt/completion tokens, excluding cache detail counters."""
+        return self.input_tokens + self.output_tokens
+
+    def delta_since(self, start: TokenUsageBreakdown) -> TokenUsageBreakdown:
+        """Return a non-negative field-by-field delta from a previous snapshot."""
+        return TokenUsageBreakdown(
+            input_tokens=max(0, self.input_tokens - start.input_tokens),
+            cache_read_tokens=max(0, self.cache_read_tokens - start.cache_read_tokens),
+            cache_write_tokens=max(0, self.cache_write_tokens - start.cache_write_tokens),
+            output_tokens=max(0, self.output_tokens - start.output_tokens),
+        )
+
+
 @dataclass
 class SessionUsage:
     """Session-level usage tracking, aggregated by both agent and model.
@@ -140,9 +164,29 @@ class SessionUsage:
         return sum(u.output_tokens or 0 for u in self.model_usages.values())
 
     @property
+    def total_cache_read_tokens(self) -> int:
+        """Total cache-read tokens across all models."""
+        return sum(u.cache_read_tokens or 0 for u in self.model_usages.values())
+
+    @property
+    def total_cache_write_tokens(self) -> int:
+        """Total cache-write tokens across all models."""
+        return sum(u.cache_write_tokens or 0 for u in self.model_usages.values())
+
+    @property
+    def token_breakdown(self) -> TokenUsageBreakdown:
+        """Current aggregated token usage values."""
+        return TokenUsageBreakdown(
+            input_tokens=self.total_input_tokens,
+            cache_read_tokens=self.total_cache_read_tokens,
+            cache_write_tokens=self.total_cache_write_tokens,
+            output_tokens=self.total_output_tokens,
+        )
+
+    @property
     def total_tokens(self) -> int:
         """Total tokens across all models."""
-        return self.total_input_tokens + self.total_output_tokens
+        return self.token_breakdown.total_tokens
 
     @property
     def total_requests(self) -> int:
@@ -193,6 +237,10 @@ class SessionUsage:
         lines.append("Total:")
         lines.append(f"  Input:  {self.total_input_tokens:,} tokens")
         lines.append(f"  Output: {self.total_output_tokens:,} tokens")
+        if self.total_cache_read_tokens:
+            lines.append(f"  Cache Read:  {self.total_cache_read_tokens:,} tokens")
+        if self.total_cache_write_tokens:
+            lines.append(f"  Cache Write: {self.total_cache_write_tokens:,} tokens")
         lines.append(f"  Total:  {self.total_tokens:,} tokens")
         lines.append(f"  Requests: {self.total_requests}")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import StreamEvent
 from ya_agent_sdk.events import SubagentStartEvent
 from yaacli.app import TUIApp
@@ -189,6 +190,28 @@ def test_tui_display_user_input_attachment_fallback() -> None:
     ])
 
     assert any("[Attached 1 image]" in line for line in app._output_lines)
+
+
+def test_tui_goal_usage_report_shows_delta_with_commas() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    app._session_usage.add("main", "openai-chat:gpt-4o", RunUsage(input_tokens=10_000, output_tokens=500))
+    app._goal_usage_start_breakdown = app._session_usage.token_breakdown
+    app._goal_usage_report_pending = True
+
+    app._session_usage.add(
+        "main",
+        "openai-chat:gpt-4o",
+        RunUsage(input_tokens=1_000, output_tokens=234, cache_read_tokens=800, cache_write_tokens=20),
+    )
+    app._append_goal_usage_report_if_pending()
+
+    assert app._goal_usage_start_breakdown is None
+    assert app._goal_usage_report_pending is False
+    assert any(
+        "Total tokens used this goal: 1,234 tokens "
+        "(input: 1,000, cache read: 800, cache write: 20, output: 234)" in line
+        for line in app._output_lines
+    )
 
 
 def test_tui_goal_complete_event_renders_unverified_stop() -> None:
