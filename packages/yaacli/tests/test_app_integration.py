@@ -33,7 +33,7 @@ from yaacli.app import TUIApp, TUIMode, TUIState
 from yaacli.app.tui import PendingAttachment, _is_benign_contextvar_cleanup_error
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, GeneralConfig, ModelProfileConfig, YaacliConfig
-from yaacli.model_profiles import build_model_profiles
+from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
 
 
 @dataclass
@@ -265,6 +265,49 @@ def test_tui_app_show_tasks_handles_naive_background_process_timestamp():
     assert "Background Processes" in output
     assert "proc-1" in output
     assert "running (" in output
+
+
+@pytest.mark.asyncio
+async def test_tui_model_selector_applies_gateway_websocket_responses_profile(monkeypatch, tmp_path: Path) -> None:
+    """The model selector should not raise for gateway@openai-responses-ws profiles."""
+    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
+    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    config = YaacliConfig(
+        general=GeneralConfig(model="anthropic:claude-sonnet-4-5"),
+        model_profiles={
+            "ws": ModelProfileConfig(
+                label="Responses WS Gateway",
+                model="colorist@openai-responses-ws:gpt-5",
+                model_settings="openai_responses_default",
+                model_cfg="gpt5_270k",
+            )
+        },
+    )
+    config_manager = MockConfigManager(config_dir=tmp_path)
+    app = TUIApp(config=config, config_manager=config_manager)
+
+    runtime = MagicMock()
+    runtime.agent = MagicMock()
+    runtime.ctx = MagicMock()
+    runtime.ctx.model_cfg = MagicMock()
+    runtime.ctx.get_model_extra_headers.return_value = {"unused": "header"}
+    app._runtime = runtime
+    app._model_selector_open = True
+    app._model_selector_profiles = build_model_profiles(config)
+    app._model_selector_index = 1
+
+    await app._apply_model_selector_selection()
+
+    assert runtime.agent.model.model_name == "gpt-5"
+    assert runtime.agent.model.provider.name == "openai"
+    assert app._active_model_profile == ResolvedModelProfile(
+        id="ws",
+        label="Responses WS Gateway",
+        model="colorist@openai-responses-ws:gpt-5",
+        model_settings="openai_responses_default",
+        model_cfg="gpt5_270k",
+    )
+    assert app._model_selector_open is False
 
 
 # =============================================================================
