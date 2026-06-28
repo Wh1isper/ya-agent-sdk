@@ -14,6 +14,8 @@ _OPENAI_PROVIDER_ERROR = (
     "or 'openai-responses:<model>' for the Responses API."
 )
 
+_OPENAI_RESPONSES_WEBSOCKET_PREFIXES = ("openai-responses-rs:", "openai-responses-ws:")
+
 
 def _raise_for_ambiguous_openai_provider(model: str) -> None:
     if model.startswith("openai:"):
@@ -35,6 +37,17 @@ def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None)
     if not isinstance(model, str):
         return legacy_infer_model(model)
     _raise_for_ambiguous_openai_provider(model)
+    if model.startswith(_OPENAI_RESPONSES_WEBSOCKET_PREFIXES):
+        _, model_name = model.split(":", 1)
+        if not model_name:
+            raise ValueError("OpenAI Responses WebSocket model strings must use format openai-responses-rs:<model>")
+        try:
+            from ya_oauth_provider import build_openai_responses_websocket_model
+        except ImportError as exc:
+            raise ImportError(
+                "Responses WebSocket models require ya-oauth-provider. Install ya-agent-sdk[oauth] or ya-oauth-provider."
+            ) from exc
+        return build_openai_responses_websocket_model(model_name)
     if model.startswith("oauth@"):
         provider_name, _, model_name = model.removeprefix("oauth@").partition(":")
         if not provider_name or not model_name:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any
 
 import httpx
+from pydantic_ai.models import get_user_agent
 from ya_oauth.types import OAuthAccount, OAuthTokenSource, TokenSnapshot
 
 _RESERVED_EXTRA_HEADERS = {
@@ -17,6 +18,7 @@ _RESERVED_EXTRA_HEADERS = {
 }
 
 CODEX_ORIGINATOR = "ya_agent_sdk"
+CODEX_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 CODEX_RESPONSE_TOKEN_LIMIT_FIELDS = frozenset({
     "max_tokens",
     "max_completion_tokens",
@@ -54,17 +56,30 @@ class OAuthBearerAuth(httpx.Auth):
             _ensure_codex_responses_instructions(request)
 
     def _apply_headers(self, request: httpx.Request, snapshot: TokenSnapshot) -> None:
-        request.headers["Authorization"] = f"Bearer {snapshot.access_token}"
-        if self.provider_name == "codex":
-            request.headers.update(build_codex_headers(snapshot.account, extra_headers=self.extra_headers))
-        else:
-            request.headers.update(self.extra_headers)
+        request.headers.update(
+            build_oauth_headers(snapshot, provider_name=self.provider_name, extra_headers=self.extra_headers)
+        )
+
+
+def build_oauth_headers(
+    snapshot: TokenSnapshot,
+    *,
+    provider_name: str,
+    extra_headers: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build OAuth request headers for HTTP or WebSocket transports."""
+    headers: dict[str, str] = {"Authorization": f"Bearer {snapshot.access_token}"}
+    if provider_name == "codex":
+        headers.update(build_codex_headers(snapshot.account, extra_headers=extra_headers))
+    else:
+        headers.update(_safe_extra_headers(extra_headers))
+    return headers
 
 
 def build_codex_headers(
     account: OAuthAccount,
     *,
-    extra_headers: dict[str, str] | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Build Codex-compatible request headers."""
     headers: dict[str, str] = {
@@ -78,7 +93,22 @@ def build_codex_headers(
     return headers
 
 
-def _safe_extra_headers(extra_headers: dict[str, str] | None) -> dict[str, str]:
+async def build_codex_websocket_headers(
+    token_source: OAuthTokenSource,
+    *,
+    extra_headers: Mapping[str, str] | None = None,
+    refresh: bool = False,
+) -> dict[str, str]:
+    """Build Codex Responses WebSocket handshake headers."""
+    snapshot = await (token_source.refresh_token() if refresh else token_source.get_token())
+    headers = build_oauth_headers(snapshot, provider_name="codex", extra_headers=extra_headers)
+    headers.setdefault("User-Agent", get_user_agent())
+    existing_beta = headers.get("OpenAI-Beta") or headers.get("openai-beta")
+    headers["OpenAI-Beta"] = CODEX_WEBSOCKET_BETA if not existing_beta else f"{existing_beta},{CODEX_WEBSOCKET_BETA}"
+    return headers
+
+
+def _safe_extra_headers(extra_headers: Mapping[str, str] | None) -> dict[str, str]:
     safe_headers: dict[str, str] = {}
     for key, value in (extra_headers or {}).items():
         if key.lower() in _RESERVED_EXTRA_HEADERS:
@@ -99,20 +129,20 @@ def _ensure_codex_responses_instructions(request: httpx.Request) -> None:
     if not isinstance(body, dict):
         return
 
-    changed = False
-    instructions = body.get("instructions")
-    if not instructions:
-        body["instructions"] = ""
-        changed = True
-    if body.get("store") is not False:
-        body["store"] = False
-        changed = True
+    normalized = normalize_codex_http_payload(body)
+    if normalized != body:
+        _replace_json_body(request, normalized)
+
+
+def normalize_codex_http_payload(body: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a Codex Responses HTTP payload consistently with WebSocket payloads."""
+    normalized = dict(body)
+    if not normalized.get("instructions"):
+        normalized["instructions"] = ""
+    normalized["store"] = False
     for field in CODEX_RESPONSE_TOKEN_LIMIT_FIELDS:
-        if field in body:
-            del body[field]
-            changed = True
-    if changed:
-        _replace_json_body(request, body)
+        normalized.pop(field, None)
+    return normalized
 
 
 def _replace_json_body(request: httpx.Request, body: dict[str, Any]) -> None:

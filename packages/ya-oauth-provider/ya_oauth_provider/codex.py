@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -15,7 +15,13 @@ from pydantic_ai.settings import ModelSettings
 from ya_oauth.codex import CODEX_BASE_URL, create_codex_token_source
 from ya_oauth.types import OAuthTokenSource
 
-from ya_oauth_provider.http import OAuthBearerAuth
+from ya_oauth_provider.http import CODEX_WEBSOCKET_BETA, OAuthBearerAuth, build_codex_websocket_headers
+from ya_oauth_provider.websocket_model import (
+    ResponsesWebsocketMode,
+    WebsocketResponsesModel,
+    env_responses_websocket_mode,
+    normalize_codex_responses_payload,
+)
 
 
 def infer_oauth_model(provider_name: str, model_name: str, *, extra_headers: dict[str, str] | None = None) -> Model:
@@ -31,6 +37,7 @@ def build_codex_model(
     token_source: OAuthTokenSource | None = None,
     extra_headers: dict[str, str] | None = None,
     base_url: str = CODEX_BASE_URL,
+    websocket_mode: ResponsesWebsocketMode | None = None,
 ) -> Model:
     """Build a Codex OAuth-backed OpenAI Responses model."""
     import httpx
@@ -53,7 +60,18 @@ def build_codex_model(
         ),
     )
     provider = OpenAIProvider(api_key="oauth-managed", base_url=base_url, http_client=http_client)
-    return CodexResponsesModel(model_name, provider=provider, profile=_codex_profile())
+    mode = websocket_mode or env_responses_websocket_mode("YA_OAUTH_CODEX_RESPONSES_TRANSPORT", default="auto")
+    if mode == "http":
+        return CodexResponsesModel(model_name, provider=provider, profile=_codex_profile())
+    return CodexWebsocketResponsesModel(
+        model_name,
+        provider=provider,
+        profile=_codex_profile(),
+        token_source=source,
+        extra_headers=extra_headers,
+        base_url=base_url,
+        websocket_mode=mode,
+    )
 
 
 class CodexResponsesModel(OpenAIResponsesModel):
@@ -80,6 +98,50 @@ class CodexResponsesModel(OpenAIResponsesModel):
     ) -> AsyncIterator[StreamedResponse]:
         async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as response:
             yield response
+
+
+class CodexWebsocketResponsesModel(WebsocketResponsesModel):
+    """Codex Responses model that prefers WebSocket and falls back to HTTP."""
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        provider: OpenAIProvider,
+        profile: OpenAIModelProfile,
+        token_source: OAuthTokenSource,
+        extra_headers: Mapping[str, str] | None = None,
+        base_url: str = CODEX_BASE_URL,
+        websocket_mode: ResponsesWebsocketMode = "auto",
+    ) -> None:
+        self._codex_token_source = token_source
+        self._codex_extra_headers = dict(extra_headers or {})
+        super().__init__(
+            model_name,
+            provider=provider,
+            profile=profile,
+            websocket_base_url=base_url,
+            websocket_headers_builder=self._build_codex_websocket_headers,
+            payload_normalizer=normalize_codex_responses_payload,
+            websocket_mode=websocket_mode,
+            websocket_beta=CODEX_WEBSOCKET_BETA,
+        )
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        raise UserError(
+            "Codex OAuth Responses API requires streaming. "
+            "Use agent.run_stream(), agent.iter(), or ya_agent_sdk.stream_agent()."
+        )
+
+    async def _build_codex_websocket_headers(self, extra_headers: Mapping[str, str]) -> dict[str, str]:
+        merged = dict(self._codex_extra_headers)
+        merged.update(extra_headers)
+        return await build_codex_websocket_headers(self._codex_token_source, extra_headers=merged)
 
 
 def _codex_profile() -> OpenAIModelProfile:

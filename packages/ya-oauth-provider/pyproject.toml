@@ -45,6 +45,7 @@ dependencies = [
     "pydantic>=2.12.0",
     "pydantic-ai>=2.0.0,<3",
     "tenacity>=9.0.0",
+    "websockets>=16.0",
     "ya-oauth=={{ version }}",
 ]
 
@@ -56,5 +57,5 @@ ya-oauth = { workspace = true }
 
 [tool.deptry]
 ignore = ["DEP001", "DEP002"]
-package_module_name_map = { "httpx" = "httpx", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-httpx" = "pytest_httpx", "ruff" = "ruff", "pyright" = "pyright", "tenacity" = "tenacity", "ya-oauth" = "ya_oauth" }
-per_rule_ignores = { DEP003 = ["anyio", "httpx", "pydantic-ai", "pytest", "tenacity"], DEP004 = ["pytest"] }
+package_module_name_map = { "httpx" = "httpx", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-httpx" = "pytest_httpx", "ruff" = "ruff", "pyright" = "pyright", "tenacity" = "tenacity", "websockets" = "websockets", "ya-oauth" = "ya_oauth" }
+per_rule_ignores = { DEP003 = ["anyio", "httpx", "pydantic-ai", "pytest", "tenacity", "websockets"], DEP004 = ["pytest"] }

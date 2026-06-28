@@ -4293,6 +4293,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-ai" },
     { name = "tenacity" },
+    { name = "websockets" },
     { name = "ya-oauth" },
 ]
 
@@ -4311,6 +4312,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.0" },
     { name = "pydantic-ai", specifier = ">=2.0.0,<3" },
     { name = "tenacity", specifier = ">=9.0.0" },
+    { name = "websockets", specifier = ">=16.0" },
     { name = "ya-oauth", editable = "packages/ya-oauth" },
 ]
 
