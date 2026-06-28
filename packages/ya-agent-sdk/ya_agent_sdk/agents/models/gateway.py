@@ -18,6 +18,7 @@ _OPENAI_PROVIDER_ERROR = (
     "or 'openai-responses' for the Responses API."
 )
 _OPENAI_PROVIDER_ALIASES: tuple[str, ...] = ("openai", "chat", "responses")
+_OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES: tuple[str, ...] = ("openai-responses-rs", "openai-responses-ws")
 
 
 def normalize_legacy_provider_alias(model: str) -> str:
@@ -167,6 +168,12 @@ def _build_gateway_http_client(
     return http_client
 
 
+def _normalize_gateway_provider_name(provider_name: str) -> str:
+    if provider_name in _OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES:
+        return "openai-responses"
+    return provider_name
+
+
 def _build_gateway_provider(
     provider_name: str,
     gateway_name: str,
@@ -174,6 +181,7 @@ def _build_gateway_provider(
     base_url: str,
     http_client: httpx.AsyncClient,
 ) -> Provider[Any]:
+    provider_name = _normalize_gateway_provider_name(provider_name)
     if provider_name in _OPENAI_PROVIDER_ALIASES:
         raise ValueError(_OPENAI_PROVIDER_ERROR)
     if provider_name in (
@@ -272,6 +280,9 @@ def infer_model(gateway_name: str, model: str, extra_headers: dict[str, str] | N
     provider_factory = make_gateway_provider(gateway_name, extra_headers)
 
     provider_prefix, model_name = _split_provider_and_model(model)
+    if provider_prefix is not None:
+        provider_prefix = _normalize_gateway_provider_name(provider_prefix)
+        model = f"{provider_prefix}:{model_name}"
     if provider_prefix in _OPENAI_PROVIDER_ALIASES:
         raise ValueError(_OPENAI_PROVIDER_ERROR)
     if provider_prefix == "openai-chat":

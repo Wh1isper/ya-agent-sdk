@@ -19,6 +19,9 @@ from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse, check_allow_model_requests
 from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
+from pydantic_ai.models.openai import _drop_sampling_params_for_reasoning as _openai_drop_sampling_params_for_reasoning
+from pydantic_ai.models.openai import _drop_unsupported_params as _openai_drop_unsupported_params
+from pydantic_ai.models.openai import _resolve_openai_service_tier as _openai_resolve_service_tier
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -333,6 +336,8 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         request_params = await self._build_responses_request_params(
             messages, model_settings, model_request_parameters, profile
         )
+        _openai_drop_sampling_params_for_reasoning(profile, model_settings, model_request_parameters)
+        _openai_drop_unsupported_params(profile, model_settings)
         include: list[str] = []
         if profile.get("openai_supports_encrypted_reasoning_content", False):
             include.append("reasoning.encrypted_content")
@@ -362,6 +367,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
             "stream": True,
             "temperature": model_settings.get("temperature"),
             "top_p": model_settings.get("top_p"),
+            "service_tier": _openai_resolve_service_tier(model_settings),
             "conversation": request_params.conversation,
             "top_logprobs": model_settings.get("openai_top_logprobs"),
             "store": model_settings.get("openai_store"),

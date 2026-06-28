@@ -119,3 +119,14 @@ def test_infer_gateway_uses_google_cloud_provider_for_google_prefixes(provider_p
 
     assert model.provider.name == "google-cloud"
     assert model.model_name == "gemini-2.5-pro"
+
+
+def test_infer_gateway_responses_websocket_aliases_use_responses_provider(monkeypatch) -> None:
+    """Gateway mode should treat Responses WebSocket aliases as OpenAI Responses HTTP upstreams."""
+    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
+    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+
+    for provider_prefix in ("openai-responses-rs", "openai-responses-ws"):
+        model = infer_model("colorist", f"{provider_prefix}:gpt-5")
+        assert model.provider.name == "openai"
+        assert model.model_name == "gpt-5"

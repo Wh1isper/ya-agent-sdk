@@ -374,3 +374,41 @@ async def test_websocket_model_falls_back_to_http_before_first_event(monkeypatch
     assert fallback_called is True
     assert model.websocket_fallback_state.failure_count == 1
     assert model.websocket_fallback_state.last_error is not None
+
+
+def test_websocket_payload_maps_responses_model_settings() -> None:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+    from pydantic_ai.models import ModelRequestParameters
+
+    model = build_codex_model("gpt-5.5", token_source=FakeTokenSource())
+    assert isinstance(model, CodexWebsocketResponsesModel)
+
+    payload = anyio.run(
+        model._build_websocket_payload,
+        [ModelRequest(parts=[UserPromptPart(content="hello")])],
+        {
+            "max_tokens": 123,
+            "openai_service_tier": "flex",
+            "openai_store": True,
+            "openai_reasoning_effort": "high",
+            "openai_user": "user-1",
+            "openai_top_logprobs": 2,
+            "openai_logprobs": True,
+            "extra_body": {"metadata": {"source": "test"}},
+            "temperature": 0.7,
+        },
+        ModelRequestParameters(),
+    )
+
+    assert payload["type"] == "response.create"
+    assert payload["stream"] is True
+    assert payload["service_tier"] == "flex"
+    assert payload["store"] is False
+    assert payload["user"] == "user-1"
+    assert "top_logprobs" not in payload
+    assert payload["include"] == ["reasoning.encrypted_content"]
+    assert payload["metadata"] == {"source": "test"}
+    assert payload["instructions"] == ""
+    assert "max_output_tokens" not in payload
+    assert "temperature" not in payload
+    assert "message.output_text.logprobs" not in payload["include"]

@@ -83,3 +83,12 @@ def test_startup_profile_falls_back_to_default_for_stale_selection(tmp_path: Pat
     assert profile is not None
     assert profile.id == DEFAULT_MODEL_PROFILE_ID
     assert profile.model == "anthropic:claude-sonnet-4-5"
+
+
+def test_websocket_responses_provider_uses_openai_response_presets() -> None:
+    from yaacli.cli import PROVIDER_ENV_VARS, PROVIDER_MODEL_CFG, PROVIDER_MODEL_SETTINGS
+
+    for provider in ("openai-responses-rs", "openai-responses-ws"):
+        assert PROVIDER_ENV_VARS[provider] == ("OPENAI_API_KEY", "OPENAI_BASE_URL")
+        assert PROVIDER_MODEL_SETTINGS[provider] == "openai_responses_default"
+        assert PROVIDER_MODEL_CFG[provider] == "gpt5_270k"
