@@ -33,6 +33,7 @@ ResponsesWebsocketMode = Literal["auto", "websocket", "http"]
 _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(ResponseStreamEvent)
 _RESPONSE_CREATE_TYPE = "response.create"
 DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
+DEFAULT_WEBSOCKET_MAX_SIZE = 64 * 1024 * 1024
 _WS_DISABLE_TTL_SECONDS = 300.0
 _RECOVERABLE_HTTP_STATUS_CODES = {401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504}
 
@@ -132,6 +133,7 @@ class _WebsocketResponseStream:
         open_timeout: float = 10.0,
         ping_interval: float | None = 20.0,
         ping_timeout: float | None = 20.0,
+        max_size: int | None = DEFAULT_WEBSOCKET_MAX_SIZE,
         connect: WebsocketConnect = websockets.connect,
     ) -> None:
         self.url = url
@@ -140,6 +142,7 @@ class _WebsocketResponseStream:
         self.open_timeout = open_timeout
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
+        self.max_size = max_size
         self._connect = connect
         self._connection: Any | None = None
         self._events_seen = 0
@@ -157,6 +160,7 @@ class _WebsocketResponseStream:
             open_timeout=self.open_timeout,
             ping_interval=self.ping_interval,
             ping_timeout=self.ping_timeout,
+            max_size=self.max_size,
         )
         self._connection = connection
         await connection.send(json.dumps(self.payload, separators=(",", ":")))
@@ -232,6 +236,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
     _fallback_state: ResponsesWebsocketFallbackState = field(repr=False)
     _websocket_beta: str | None = field(default=None, repr=False)
     _websocket_open_timeout: float = field(default=10.0, repr=False)
+    _websocket_max_size: int | None = field(default=DEFAULT_WEBSOCKET_MAX_SIZE, repr=False)
 
     def __init__(
         self,
@@ -245,6 +250,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         websocket_mode: ResponsesWebsocketMode = "auto",
         websocket_beta: str | None = DEFAULT_WEBSOCKET_BETA,
         websocket_open_timeout: float = 10.0,
+        websocket_max_size: int | None = DEFAULT_WEBSOCKET_MAX_SIZE,
     ) -> None:
         super().__init__(model_name, provider=provider, profile=profile)
         base_url = websocket_base_url or str(self._provider.base_url)
@@ -254,6 +260,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         self._fallback_state = ResponsesWebsocketFallbackState(mode=websocket_mode)
         self._websocket_beta = websocket_beta
         self._websocket_open_timeout = websocket_open_timeout
+        self._websocket_max_size = websocket_max_size
 
     @property
     def websocket_fallback_state(self) -> ResponsesWebsocketFallbackState:
@@ -338,6 +345,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
             headers=headers,
             payload=payload,
             open_timeout=self._websocket_open_timeout,
+            max_size=self._websocket_max_size,
         )
 
     async def _build_websocket_payload(
@@ -472,6 +480,7 @@ def build_openai_responses_websocket_model(
 
 __all__ = [
     "DEFAULT_WEBSOCKET_BETA",
+    "DEFAULT_WEBSOCKET_MAX_SIZE",
     "ResponsesWebsocketFallbackState",
     "ResponsesWebsocketMode",
     "WebsocketResponsesModel",

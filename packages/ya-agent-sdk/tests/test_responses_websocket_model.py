@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.providers.openai import OpenAIProvider
 from ya_agent_sdk.agents.models.websocket import (
     DEFAULT_WEBSOCKET_BETA,
+    DEFAULT_WEBSOCKET_MAX_SIZE,
     WebsocketResponsesModel,
     _WebsocketResponseStream,
     responses_websocket_url,
@@ -35,6 +37,29 @@ async def test_websocket_model_deduplicates_beta_header_case_insensitively() -> 
 
     assert headers["openai-beta"] == DEFAULT_WEBSOCKET_BETA
     assert "OpenAI-Beta" not in headers
+
+
+@pytest.mark.asyncio
+async def test_websocket_model_passes_max_size_to_stream(monkeypatch) -> None:
+    model = WebsocketResponsesModel(
+        "gpt-5",
+        provider=OpenAIProvider(api_key="test-key"),
+        websocket_max_size=123,
+    )
+
+    async def build_payload(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return {"type": "response.create"}
+
+    async def build_headers(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return {}
+
+    monkeypatch.setattr(model, "_build_websocket_payload", build_payload)
+    monkeypatch.setattr(model, "_build_request_options", lambda *_args, **_kwargs: ({}, None))
+    monkeypatch.setattr(model, "_build_websocket_headers", build_headers)
+
+    stream = await model._create_websocket_stream([], {}, ModelRequestParameters())  # type: ignore[arg-type]
+
+    assert stream.max_size == 123
 
 
 @pytest.mark.asyncio
@@ -93,8 +118,10 @@ async def test_websocket_response_stream_filters_non_response_events_and_closes_
             self.closed = True
 
     fake = FakeConnection()
+    connect_kwargs = {}
 
     async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        connect_kwargs.update(kwargs)
         return fake
 
     stream = _WebsocketResponseStream(
@@ -110,6 +137,7 @@ async def test_websocket_response_stream_filters_non_response_events_and_closes_
     assert [event.type for event in events] == ["response.created", "response.completed"]
     assert fake.closed is True
     assert fake.sent == ['{"type":"response.create"}']
+    assert connect_kwargs["max_size"] == DEFAULT_WEBSOCKET_MAX_SIZE
 
 
 @pytest.mark.asyncio
