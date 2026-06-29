@@ -48,6 +48,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - preserves the core execution primitives used across the repository
 - changes here should keep examples, skills, and package docs aligned
 - OAuth-backed model strings use `oauth@provider:model`; Codex currently uses `oauth@codex:gpt-5.5` and receives session/thread headers from `AgentContext.get_model_extra_headers()`
+- Generic OpenAI Responses WebSocket transport lives in `ya-agent-sdk` under `ya_agent_sdk.agents.models.websocket`; aliases `openai-responses-ws:<model>` and `openai-responses-rs:<model>` are SDK core model strings and use `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` for `auto`/`websocket`/`http`
 
 ### `packages/ya-agent-stream-protocol`
 
@@ -66,6 +67,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 
 - Pydantic AI provider/model package for OAuth token sources
 - owns Codex request auth/header alignment, including bearer token, ChatGPT account ID, FedRAMP, originator/version, both underscore/hyphen session and thread headers, and `x-client-request-id`
+- reuses the SDK generic `WebsocketResponsesModel`; only Codex-specific headers, beta header, token refresh, and payload normalization belong here
 - refreshes once on HTTP 401 through the configured token source
 
 ### `packages/yaacli`

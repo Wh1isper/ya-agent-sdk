@@ -32,10 +32,9 @@ ResponsesWebsocketMode = Literal["auto", "websocket", "http"]
 
 _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(ResponseStreamEvent)
 _RESPONSE_CREATE_TYPE = "response.create"
-_DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
+DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 _WS_DISABLE_TTL_SECONDS = 300.0
 _RECOVERABLE_HTTP_STATUS_CODES = {401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504}
-_TOKEN_LIMIT_FIELDS = frozenset({"max_tokens", "max_completion_tokens", "max_output_tokens"})
 
 HeaderBuilder = Callable[[Mapping[str, str]], Awaitable[dict[str, str]]]
 PayloadNormalizer = Callable[[dict[str, Any]], dict[str, Any]]
@@ -121,17 +120,6 @@ def normalize_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in normalized.items() if value is not None}
 
 
-def normalize_codex_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Align Codex Responses payload requirements for both HTTP and WebSocket transports."""
-    normalized = normalize_responses_payload(payload)
-    if not normalized.get("instructions"):
-        normalized["instructions"] = ""
-    normalized["store"] = False
-    for field_name in _TOKEN_LIMIT_FIELDS:
-        normalized.pop(field_name, None)
-    return normalized
-
-
 class _WebsocketResponseStream:
     """Async stream wrapper compatible with Pydantic AI's OpenAI Responses stream adapter."""
 
@@ -155,6 +143,7 @@ class _WebsocketResponseStream:
         self._connect = connect
         self._connection: Any | None = None
         self._events_seen = 0
+        self._function_call_names_by_item_id: dict[str, str] = {}
 
     @property
     def events_seen(self) -> int:
@@ -194,12 +183,37 @@ class _WebsocketResponseStream:
             if isinstance(event_type, str) and not event_type.startswith("response."):
                 logger.debug("Ignoring non-Responses WebSocket event: %s", event_type)
                 continue
+            data = self._normalize_stream_event(data)
             event = _RESPONSES_STREAM_EVENT_ADAPTER.validate_python(data)
             self._events_seen += 1
             yield event
             if event_type in {"response.completed", "response.failed", "response.incomplete"}:
                 await self.close()
                 return
+
+    def _normalize_stream_event(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Normalize gateway WebSocket event shapes to OpenAI SDK canonical events."""
+        event_type = data.get("type")
+        if event_type in {"response.output_item.added", "response.output_item.done"}:
+            self._record_function_call_name(data.get("item"))
+        elif event_type == "response.function_call_arguments.done" and "name" not in data:
+            item_id = data.get("item_id")
+            if isinstance(item_id, str):
+                name = self._function_call_names_by_item_id.get(item_id)
+                if name:
+                    data = dict(data)
+                    data["name"] = name
+        return data
+
+    def _record_function_call_name(self, item: object) -> None:
+        if not isinstance(item, Mapping):
+            return
+        if item.get("type") != "function_call":
+            return
+        item_id = item.get("id")
+        name = item.get("name")
+        if isinstance(item_id, str) and isinstance(name, str):
+            self._function_call_names_by_item_id[item_id] = name
 
     async def close(self) -> None:
         connection = self._connection
@@ -229,7 +243,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         websocket_headers_builder: HeaderBuilder | None = None,
         payload_normalizer: PayloadNormalizer = normalize_responses_payload,
         websocket_mode: ResponsesWebsocketMode = "auto",
-        websocket_beta: str | None = None,
+        websocket_beta: str | None = DEFAULT_WEBSOCKET_BETA,
         websocket_open_timeout: float = 10.0,
     ) -> None:
         super().__init__(model_name, provider=provider, profile=profile)
@@ -387,11 +401,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         else:
             headers = self._default_websocket_headers(extra_headers)
         if self._websocket_beta:
-            existing_beta = headers.get("OpenAI-Beta") or headers.get("openai-beta")
-            if not existing_beta:
-                headers["OpenAI-Beta"] = self._websocket_beta
-            elif self._websocket_beta not in {part.strip() for part in existing_beta.split(",")}:
-                headers["OpenAI-Beta"] = f"{existing_beta},{self._websocket_beta}"
+            headers = _merge_openai_beta_header(headers, self._websocket_beta)
         return headers
 
     def _default_websocket_headers(self, extra_headers: Mapping[str, str]) -> dict[str, str]:
@@ -411,6 +421,18 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         if stream is not None and stream.events_seen > 0:
             return False
         return is_recoverable_websocket_error(exc)
+
+
+def _merge_openai_beta_header(headers: dict[str, str], beta: str) -> dict[str, str]:
+    existing_key = next((key for key in headers if key.lower() == "openai-beta"), "OpenAI-Beta")
+    existing_beta = headers.get(existing_key)
+    if not existing_beta:
+        headers[existing_key] = beta
+        return headers
+    existing_parts = {part.strip() for part in existing_beta.split(",")}
+    if beta not in existing_parts:
+        headers[existing_key] = f"{existing_beta},{beta}"
+    return headers
 
 
 def is_recoverable_websocket_error(exc: BaseException) -> bool:
@@ -449,13 +471,13 @@ def build_openai_responses_websocket_model(
 
 
 __all__ = [
+    "DEFAULT_WEBSOCKET_BETA",
     "ResponsesWebsocketFallbackState",
     "ResponsesWebsocketMode",
     "WebsocketResponsesModel",
     "build_openai_responses_websocket_model",
     "env_responses_websocket_mode",
     "is_recoverable_websocket_error",
-    "normalize_codex_responses_payload",
     "normalize_responses_payload",
     "resolve_websocket_mode",
     "responses_websocket_url",

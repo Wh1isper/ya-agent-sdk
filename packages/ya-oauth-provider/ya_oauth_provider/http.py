@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 from pydantic_ai.models import get_user_agent
+from ya_agent_sdk.agents.models.websocket import DEFAULT_WEBSOCKET_BETA
 from ya_oauth.types import OAuthAccount, OAuthTokenSource, TokenSnapshot
 
 _RESERVED_EXTRA_HEADERS = {
@@ -18,7 +19,7 @@ _RESERVED_EXTRA_HEADERS = {
 }
 
 CODEX_ORIGINATOR = "ya_agent_sdk"
-CODEX_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
+CODEX_WEBSOCKET_BETA = DEFAULT_WEBSOCKET_BETA
 CODEX_RESPONSE_TOKEN_LIMIT_FIELDS = frozenset({
     "max_tokens",
     "max_completion_tokens",
@@ -103,8 +104,6 @@ async def build_codex_websocket_headers(
     snapshot = await (token_source.refresh_token() if refresh else token_source.get_token())
     headers = build_oauth_headers(snapshot, provider_name="codex", extra_headers=extra_headers)
     headers.setdefault("User-Agent", get_user_agent())
-    existing_beta = headers.get("OpenAI-Beta") or headers.get("openai-beta")
-    headers["OpenAI-Beta"] = CODEX_WEBSOCKET_BETA if not existing_beta else f"{existing_beta},{CODEX_WEBSOCKET_BETA}"
     return headers
 
 

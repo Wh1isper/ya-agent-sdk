@@ -31,16 +31,16 @@ def test_agent_context_model_extra_headers_uses_provider_ids() -> None:
     assert ctx.get_model_extra_headers()["x-client-request-id"] == "thread-1"
 
 
-def test_infer_openai_responses_rs_lazy_import(monkeypatch) -> None:
+def test_infer_openai_responses_rs_uses_sdk_websocket_builder(monkeypatch) -> None:
+    from ya_agent_sdk.agents.models import websocket as websocket_models
+
     calls = []
-    module = types.ModuleType("ya_oauth_provider")
 
     def fake_build(model_name: str):  # type: ignore[no-untyped-def]
         calls.append(model_name)
         return "ws-model"
 
-    module.build_openai_responses_websocket_model = fake_build  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "ya_oauth_provider", module)
+    monkeypatch.setattr(websocket_models, "build_openai_responses_websocket_model", fake_build)
 
     assert infer_model("openai-responses-rs:gpt-5") == "ws-model"
     assert infer_model("openai-responses-ws:gpt-5-mini") == "ws-model"

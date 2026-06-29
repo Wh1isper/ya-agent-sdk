@@ -270,14 +270,14 @@ def test_tui_app_show_tasks_handles_naive_background_process_timestamp():
 @pytest.mark.asyncio
 async def test_tui_model_selector_applies_gateway_websocket_responses_profile(monkeypatch, tmp_path: Path) -> None:
     """The model selector should not raise for gateway@openai-responses-ws profiles."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
     config = YaacliConfig(
         general=GeneralConfig(model="anthropic:claude-sonnet-4-5"),
         model_profiles={
             "ws": ModelProfileConfig(
                 label="Responses WS Gateway",
-                model="colorist@openai-responses-ws:gpt-5",
+                model="gateway@openai-responses-ws:gpt-5",
                 model_settings="openai_responses_default",
                 model_cfg="gpt5_270k",
             )
@@ -303,7 +303,7 @@ async def test_tui_model_selector_applies_gateway_websocket_responses_profile(mo
     assert app._active_model_profile == ResolvedModelProfile(
         id="ws",
         label="Responses WS Gateway",
-        model="colorist@openai-responses-ws:gpt-5",
+        model="gateway@openai-responses-ws:gpt-5",
         model_settings="openai_responses_default",
         model_cfg="gpt5_270k",
     )

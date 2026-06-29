@@ -59,6 +59,20 @@ runtime = create_agent("oauth@codex:gpt-5.5")
 
 The SDK passes stable session and thread headers into the OAuth provider. YA Claw sets the provider session header from the session ID and the provider thread header from the run ID.
 
+## OpenAI Responses WebSocket
+
+`ya-agent-sdk` includes a built-in OpenAI Responses WebSocket transport for streaming calls. Use either alias to prefer WebSocket with automatic HTTP fallback:
+
+```python
+from ya_agent_sdk.agents import create_agent
+
+runtime = create_agent("openai-responses-ws:gpt-5.5")
+# Equivalent alias:
+# runtime = create_agent("openai-responses-rs:gpt-5.5")
+```
+
+Set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` to `auto`, `websocket`, or `http` to control the transport. The OAuth Codex provider reuses this SDK transport and only adds Codex-specific headers and payload normalization.
+
 ## Quick Start
 
 For workspace development, copy [`packages/ya-agent-sdk/.env.example`](.env.example) to `packages/ya-agent-sdk/.env`.

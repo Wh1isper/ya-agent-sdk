@@ -168,12 +168,6 @@ def _build_gateway_http_client(
     return http_client
 
 
-def _normalize_gateway_provider_name(provider_name: str) -> str:
-    if provider_name in _OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES:
-        return "openai-responses"
-    return provider_name
-
-
 def _build_gateway_provider(
     provider_name: str,
     gateway_name: str,
@@ -181,12 +175,12 @@ def _build_gateway_provider(
     base_url: str,
     http_client: httpx.AsyncClient,
 ) -> Provider[Any]:
-    provider_name = _normalize_gateway_provider_name(provider_name)
     if provider_name in _OPENAI_PROVIDER_ALIASES:
         raise ValueError(_OPENAI_PROVIDER_ERROR)
     if provider_name in (
         "openai-chat",
         "openai-responses",
+        *_OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES,
     ):
         from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -257,6 +251,21 @@ def _split_provider_and_model(model: str) -> tuple[str | None, str]:
     return provider, model_name
 
 
+def _build_gateway_responses_websocket_model(model_name: str, provider: Provider[Any]) -> Model:
+    """Construct a Responses WebSocket model for OpenAI-compatible gateways."""
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from ya_agent_sdk.agents.models.websocket import WebsocketResponsesModel, env_responses_websocket_mode
+
+    if not isinstance(provider, OpenAIProvider):
+        raise TypeError("Responses WebSocket gateway provider must be an OpenAIProvider")
+    return WebsocketResponsesModel(
+        model_name,
+        provider=provider,
+        websocket_mode=env_responses_websocket_mode("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE", default="auto"),
+    )
+
+
 def infer_model(gateway_name: str, model: str, extra_headers: dict[str, str] | None = None) -> Model:
     """Infer model from string, optionally with extra HTTP headers.
 
@@ -280,11 +289,11 @@ def infer_model(gateway_name: str, model: str, extra_headers: dict[str, str] | N
     provider_factory = make_gateway_provider(gateway_name, extra_headers)
 
     provider_prefix, model_name = _split_provider_and_model(model)
-    if provider_prefix is not None:
-        provider_prefix = _normalize_gateway_provider_name(provider_prefix)
-        model = f"{provider_prefix}:{model_name}"
     if provider_prefix in _OPENAI_PROVIDER_ALIASES:
         raise ValueError(_OPENAI_PROVIDER_ERROR)
+    if provider_prefix in _OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES:
+        provider = provider_factory(provider_prefix)
+        return _build_gateway_responses_websocket_model(model_name, provider)
     if provider_prefix == "openai-chat":
         profile = _build_openai_chat_profile(model_name)
         if profile is not None:

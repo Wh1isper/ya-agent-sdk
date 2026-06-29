@@ -12,15 +12,19 @@ from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
-from ya_oauth.codex import CODEX_BASE_URL, create_codex_token_source
-from ya_oauth.types import OAuthTokenSource
-
-from ya_oauth_provider.http import CODEX_WEBSOCKET_BETA, OAuthBearerAuth, build_codex_websocket_headers
-from ya_oauth_provider.websocket_model import (
+from ya_agent_sdk.agents.models.websocket import (
     ResponsesWebsocketMode,
     WebsocketResponsesModel,
     env_responses_websocket_mode,
-    normalize_codex_responses_payload,
+    normalize_responses_payload,
+)
+from ya_oauth.codex import CODEX_BASE_URL, create_codex_token_source
+from ya_oauth.types import OAuthTokenSource
+
+from ya_oauth_provider.http import (
+    CODEX_RESPONSE_TOKEN_LIMIT_FIELDS,
+    OAuthBearerAuth,
+    build_codex_websocket_headers,
 )
 
 
@@ -124,7 +128,6 @@ class CodexWebsocketResponsesModel(WebsocketResponsesModel):
             websocket_headers_builder=self._build_codex_websocket_headers,
             payload_normalizer=normalize_codex_responses_payload,
             websocket_mode=websocket_mode,
-            websocket_beta=CODEX_WEBSOCKET_BETA,
         )
 
     async def request(
@@ -142,6 +145,17 @@ class CodexWebsocketResponsesModel(WebsocketResponsesModel):
         merged = dict(self._codex_extra_headers)
         merged.update(extra_headers)
         return await build_codex_websocket_headers(self._codex_token_source, extra_headers=merged)
+
+
+def normalize_codex_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Align Codex Responses payload requirements for both HTTP and WebSocket transports."""
+    normalized = normalize_responses_payload(payload)
+    if not normalized.get("instructions"):
+        normalized["instructions"] = ""
+    normalized["store"] = False
+    for field_name in CODEX_RESPONSE_TOKEN_LIMIT_FIELDS:
+        normalized.pop(field_name, None)
+    return normalized
 
 
 def _codex_profile() -> OpenAIModelProfile:

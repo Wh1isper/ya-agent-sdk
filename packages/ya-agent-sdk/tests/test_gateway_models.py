@@ -8,6 +8,7 @@ from ya_agent_sdk.agents.models.gateway import (
     _supports_required_tool_choice,
     infer_model,
 )
+from ya_agent_sdk.agents.models.websocket import WebsocketResponsesModel
 
 
 def test_deepseek_v4_model_detection() -> None:
@@ -42,10 +43,10 @@ def test_deepseek_required_tool_choice_detection() -> None:
 
 def test_infer_gateway_deepseek_v4_uses_reasoning_content_profile(monkeypatch) -> None:
     """Should build OpenAIChatModel with field-mode reasoning_content for DeepSeek V4."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", "openai-chat:deepseek-v4-pro")
+    model = infer_model("gateway", "openai-chat:deepseek-v4-pro")
 
     assert isinstance(model, OpenAIChatModel)
     profile = model.profile
@@ -59,10 +60,10 @@ def test_infer_gateway_deepseek_v4_uses_reasoning_content_profile(monkeypatch) -
 
 def test_infer_gateway_mimo_v2_5_uses_reasoning_content_profile(monkeypatch) -> None:
     """Should build OpenAIChatModel with field-mode reasoning_content for MiMo V2.5."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", "openai-chat:MiMo-V2.5-Pro")
+    model = infer_model("gateway", "openai-chat:MiMo-V2.5-Pro")
 
     assert isinstance(model, OpenAIChatModel)
     profile = model.profile
@@ -75,10 +76,10 @@ def test_infer_gateway_mimo_v2_5_uses_reasoning_content_profile(monkeypatch) -> 
 
 def test_infer_gateway_deepseek_r1_uses_tool_choice_profile_patch(monkeypatch) -> None:
     """Should patch DeepSeek R1 required tool choice support."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", "openai-chat:deepseek-reasoner")
+    model = infer_model("gateway", "openai-chat:deepseek-reasoner")
 
     assert isinstance(model, OpenAIChatModel)
     profile = model.profile
@@ -91,19 +92,19 @@ def test_infer_gateway_deepseek_r1_uses_tool_choice_profile_patch(monkeypatch) -
 @pytest.mark.parametrize("provider_prefix", ["openai", "chat", "responses"])
 def test_infer_gateway_rejects_openai_provider_aliases(provider_prefix: str, monkeypatch) -> None:
     """Should require explicit OpenAI API selection for gateways."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
 
     with pytest.raises(ValueError, match=r"openai-chat.*openai-responses"):
-        infer_model("colorist", f"{provider_prefix}:gpt-4o")
+        infer_model("gateway", f"{provider_prefix}:gpt-4o")
 
 
 def test_infer_gateway_uses_google_provider_for_google(monkeypatch) -> None:
     """Should route the canonical Gemini API provider to GoogleProvider."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", "google:gemini-2.5-pro")
+    model = infer_model("gateway", "google:gemini-2.5-pro")
 
     assert model.provider.name == "google"
     assert model.model_name == "gemini-2.5-pro"
@@ -112,21 +113,23 @@ def test_infer_gateway_uses_google_provider_for_google(monkeypatch) -> None:
 @pytest.mark.parametrize("provider_prefix", ["google-cloud", "google-gla", "google-vertex", "google-custom"])
 def test_infer_gateway_uses_google_cloud_provider_for_google_prefixes(provider_prefix: str, monkeypatch) -> None:
     """Should route google-* provider prefixes to GoogleCloudProvider."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
 
-    model = infer_model("colorist", f"{provider_prefix}:gemini-2.5-pro")
+    model = infer_model("gateway", f"{provider_prefix}:gemini-2.5-pro")
 
     assert model.provider.name == "google-cloud"
     assert model.model_name == "gemini-2.5-pro"
 
 
-def test_infer_gateway_responses_websocket_aliases_use_responses_provider(monkeypatch) -> None:
-    """Gateway mode should treat Responses WebSocket aliases as OpenAI Responses HTTP upstreams."""
-    monkeypatch.setenv("COLORIST_API_KEY", "test-key")
-    monkeypatch.setenv("COLORIST_BASE_URL", "https://example.com/v1")
+def test_infer_gateway_responses_websocket_aliases_use_websocket_model(monkeypatch) -> None:
+    """Gateway mode should route Responses WebSocket aliases through the SDK WebSocket transport."""
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
 
     for provider_prefix in ("openai-responses-rs", "openai-responses-ws"):
-        model = infer_model("colorist", f"{provider_prefix}:gpt-5")
+        model = infer_model("gateway", f"{provider_prefix}:gpt-5")
+        assert isinstance(model, WebsocketResponsesModel)
         assert model.provider.name == "openai"
         assert model.model_name == "gpt-5"
+        assert model.websocket_fallback_state.mode == "auto"

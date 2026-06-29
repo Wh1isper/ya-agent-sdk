@@ -12,6 +12,7 @@ from ya_oauth_provider.codex import (
     CodexWebsocketResponsesModel,
     build_codex_model,
     build_session_headers,
+    normalize_codex_responses_payload,
 )
 from ya_oauth_provider.http import (
     CODEX_WEBSOCKET_BETA,
@@ -19,7 +20,6 @@ from ya_oauth_provider.http import (
     build_codex_headers,
     build_codex_websocket_headers,
 )
-from ya_oauth_provider.websocket_model import normalize_codex_responses_payload, responses_websocket_url
 
 ACCESS_TOKEN_OLD = "fixture-access-token-old"  # noqa: S105
 ACCESS_TOKEN_NEW = "fixture-access-token-new"  # noqa: S105
@@ -105,13 +105,6 @@ def test_build_codex_model_requires_streaming_for_non_stream_request() -> None:
         anyio.run(model.request, [], None, None)  # type: ignore[arg-type]
 
 
-def test_responses_websocket_url() -> None:
-    assert responses_websocket_url("https://chatgpt.com/backend-api/codex") == (
-        "wss://chatgpt.com/backend-api/codex/responses"
-    )
-    assert responses_websocket_url("http://localhost:8080/v1") == "ws://localhost:8080/v1/responses"
-
-
 def test_normalize_codex_responses_payload() -> None:
     assert normalize_codex_responses_payload({
         "model": "gpt-5.5",
@@ -133,10 +126,22 @@ async def test_build_codex_websocket_headers() -> None:
     assert headers["ChatGPT-Account-ID"] == "acct_123"
     assert headers["X-OpenAI-Fedramp"] == "true"
     assert headers["originator"] == "ya_agent_sdk"
-    assert headers["OpenAI-Beta"] == CODEX_WEBSOCKET_BETA
+    assert "OpenAI-Beta" not in headers
+    assert "openai-beta" not in headers
     assert headers["session-id"] == "s1"
     assert headers["thread-id"] == "t1"
     assert headers["x-client-request-id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_codex_websocket_model_adds_core_beta_header_once() -> None:
+    model = build_codex_model("gpt-5.5", token_source=FakeTokenSource())
+    assert isinstance(model, CodexWebsocketResponsesModel)
+
+    headers = await model._build_websocket_headers({"openai-beta": CODEX_WEBSOCKET_BETA})
+
+    assert headers["openai-beta"] == CODEX_WEBSOCKET_BETA
+    assert "OpenAI-Beta" not in headers
 
 
 @pytest.mark.asyncio
@@ -240,89 +245,12 @@ async def test_oauth_bearer_auth_refreshes_once_on_401() -> None:
 
 
 @pytest.mark.asyncio
-async def test_websocket_response_stream_filters_codex_events_and_closes_on_terminal() -> None:
-    from ya_oauth_provider.websocket_model import _WebsocketResponseStream
-
-    class FakeConnection:
-        def __init__(self) -> None:
-            self.sent: list[str] = []
-            self.closed = False
-            self._messages = iter([
-                json.dumps({"type": "codex.rate_limits", "rate_limits": []}),
-                json.dumps({
-                    "type": "response.created",
-                    "sequence_number": 0,
-                    "response": {
-                        "id": "resp_1",
-                        "created_at": 1,
-                        "model": "gpt-5.5",
-                        "object": "response",
-                        "output": [],
-                        "parallel_tool_calls": True,
-                        "tool_choice": "auto",
-                        "tools": [],
-                        "status": "in_progress",
-                    },
-                }),
-                json.dumps({
-                    "type": "response.completed",
-                    "sequence_number": 1,
-                    "response": {
-                        "id": "resp_1",
-                        "created_at": 1,
-                        "model": "gpt-5.5",
-                        "object": "response",
-                        "output": [],
-                        "parallel_tool_calls": True,
-                        "tool_choice": "auto",
-                        "tools": [],
-                        "status": "completed",
-                    },
-                }),
-            ])
-
-        def __aiter__(self):  # type: ignore[no-untyped-def]
-            return self
-
-        async def __anext__(self) -> str:
-            try:
-                return next(self._messages)
-            except StopIteration as exc:
-                raise StopAsyncIteration from exc
-
-        async def send(self, message: str) -> None:
-            self.sent.append(message)
-
-        async def close(self) -> None:
-            self.closed = True
-
-    fake = FakeConnection()
-
-    async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
-        return fake
-
-    stream = _WebsocketResponseStream(
-        url="wss://example.test/responses",
-        headers={},
-        payload={"type": "response.create"},
-        connect=connect,
-    )
-
-    async with stream:
-        events = [event async for event in stream]
-
-    assert [event.type for event in events] == ["response.created", "response.completed"]
-    assert fake.closed is True
-    assert fake.sent == ['{"type":"response.create"}']
-
-
-@pytest.mark.asyncio
 async def test_websocket_model_falls_back_to_http_before_first_event(monkeypatch) -> None:
     from contextlib import asynccontextmanager
 
     from pydantic_ai.messages import ModelRequest, UserPromptPart
     from pydantic_ai.models import ModelRequestParameters, StreamedResponse
-    from ya_oauth_provider.websocket_model import WebsocketResponsesModel
+    from ya_agent_sdk.agents.models.websocket import WebsocketResponsesModel
 
     class DummyStreamedResponse(StreamedResponse):
         @property

@@ -27,9 +27,9 @@ def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None)
 
     Args:
         model: Model string or Model instance.
-        extra_headers: Optional dict of extra HTTP headers for colorist provider.
+        extra_headers: Optional dict of extra HTTP headers for gateway-backed providers.
             Useful for sticky routing via x-session-id header.
-            Only applies to colorist provider (model@colorist format).
+            Applies to gateway-backed model strings such as gateway@provider:model.
 
     Returns:
         The inferred Model instance.
@@ -41,12 +41,8 @@ def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None)
         _, model_name = model.split(":", 1)
         if not model_name:
             raise ValueError("OpenAI Responses WebSocket model strings must use format openai-responses-rs:<model>")
-        try:
-            from ya_oauth_provider import build_openai_responses_websocket_model
-        except ImportError as exc:
-            raise ImportError(
-                "Responses WebSocket models require ya-oauth-provider. Install ya-agent-sdk[oauth] or ya-oauth-provider."
-            ) from exc
+        from ya_agent_sdk.agents.models.websocket import build_openai_responses_websocket_model
+
         return build_openai_responses_websocket_model(model_name)
     if model.startswith("oauth@"):
         provider_name, _, model_name = model.removeprefix("oauth@").partition(":")
