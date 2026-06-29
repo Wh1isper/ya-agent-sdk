@@ -27,13 +27,13 @@ See official docs: [pydantic-ai Models](https://ai.pydantic.dev/models/)
 
 **Common formats:**
 
-| Provider     | Format                                             | Example                                |
-| ------------ | -------------------------------------------------- | -------------------------------------- |
-| OpenAI       | `openai-chat:<model>` / `openai-responses:<model>` | `openai-chat:gpt-4o`                   |
-| OpenAI Responses WebSocket | `openai-responses-ws:<model>` / `openai-responses-rs:<model>` | `openai-responses-ws:gpt-5.5` |
-| Anthropic    | `anthropic:<model>`                                | `anthropic:claude-3-5-sonnet-20241022` |
-| Google       | `google:<model>`                                   | `google:gemini-2.5-pro`                |
-| Google Cloud | `google-cloud:<model>`                             | `google-cloud:gemini-2.5-pro`          |
+| Provider                   | Format                                                        | Example                                |
+| -------------------------- | ------------------------------------------------------------- | -------------------------------------- |
+| OpenAI                     | `openai-chat:<model>` / `openai-responses:<model>`            | `openai-chat:gpt-4o`                   |
+| OpenAI Responses WebSocket | `openai-responses-ws:<model>` / `openai-responses-rs:<model>` | `openai-responses-ws:gpt-5.5`          |
+| Anthropic                  | `anthropic:<model>`                                           | `anthropic:claude-3-5-sonnet-20241022` |
+| Google                     | `google:<model>`                                              | `google:gemini-2.5-pro`                |
+| Google Cloud               | `google-cloud:<model>`                                        | `google-cloud:gemini-2.5-pro`          |
 
 ## OpenAI Responses WebSocket
 
@@ -45,11 +45,11 @@ model = infer_model("openai-responses-ws:gpt-5.5")
 
 Transport mode is controlled by `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE`:
 
-| Value       | Behavior                                      |
-| ----------- | --------------------------------------------- |
+| Value       | Behavior                                                                              |
+| ----------- | ------------------------------------------------------------------------------------- |
 | `auto`      | Prefer WebSocket and temporarily fall back to HTTP on recoverable pre-stream failures |
-| `websocket` | Force WebSocket and surface WebSocket errors  |
-| `http`      | Use the standard HTTP Responses transport     |
+| `websocket` | Force WebSocket and surface WebSocket errors                                          |
+| `http`      | Use the standard HTTP Responses transport                                             |
 
 The OAuth Codex provider reuses this SDK transport and only supplies Codex-specific bearer/account headers, beta header, and payload normalization.
 
