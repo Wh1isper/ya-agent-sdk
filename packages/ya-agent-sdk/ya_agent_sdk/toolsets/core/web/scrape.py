@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import anyio.to_thread
-from markitdown import MarkItDown
 from pydantic import Field
 from pydantic_ai import RunContext
 
@@ -42,7 +41,15 @@ class ScrapeTool(BaseTool):
     description = "Convert websites to Markdown format for content analysis."
 
     def __init__(self) -> None:
-        self._md = MarkItDown(enable_plugins=True)
+        self._md: Any | None = None
+
+    def _get_markitdown(self) -> Any:
+        """Create the MarkItDown converter on first fallback scrape use."""
+        if self._md is None:
+            from markitdown import MarkItDown
+
+            self._md = MarkItDown(enable_plugins=True)
+        return self._md
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         return _load_instruction()
@@ -86,7 +93,8 @@ class ScrapeTool(BaseTool):
     async def _fallback_scrape(self, ctx: RunContext[AgentContext], url: str) -> dict[str, Any]:
         """Fallback scraping using MarkItDown."""
         try:
-            result = await anyio.to_thread.run_sync(self._md.convert, url)
+            md = self._get_markitdown()
+            result = await anyio.to_thread.run_sync(md.convert, url)
             return await self._build_success_response(ctx, result.text_content)
         except Exception:
             logger.exception(f"Fallback scrape failed for {url}")

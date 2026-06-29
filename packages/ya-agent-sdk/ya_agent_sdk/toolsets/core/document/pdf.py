@@ -7,9 +7,11 @@ Install with: pip install ya-agent-sdk[document]
 """
 
 import functools
+import importlib.util
 import tempfile
 from functools import cache
 from pathlib import Path
+from types import ModuleType
 from typing import Annotated, Any, cast
 
 import anyio.to_thread
@@ -23,19 +25,32 @@ from ya_agent_sdk.toolsets.core.base import BaseTool
 
 logger = get_logger(__name__)
 
-# Optional dependency check
-try:
-    import pymupdf
-    import pymupdf.layout
-    import pymupdf4llm
-except ImportError as e:
-    raise ImportError(
-        "The 'pymupdf' and 'pymupdf4llm' packages are required for PdfConvertTool. "
-        "Install with: pip install ya-agent-sdk[document]"
-    ) from e
-
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 DEFAULT_MAX_PAGES = 20
+
+
+@cache
+def _pdf_deps_available() -> bool:
+    """Return whether PDF conversion optional dependencies are installed."""
+    # Only check top-level packages here. Checking dotted modules with
+    # find_spec() can import the parent package and defeat lazy loading.
+    return importlib.util.find_spec("pymupdf") is not None and importlib.util.find_spec("pymupdf4llm") is not None
+
+
+@cache
+def _load_pdf_deps() -> tuple[ModuleType, ModuleType]:
+    """Import PDF conversion dependencies on first actual use."""
+    try:
+        import pymupdf
+        import pymupdf.layout
+        import pymupdf4llm
+    except ImportError as e:
+        raise ImportError(
+            "The 'pymupdf' and 'pymupdf4llm' packages are required for PdfConvertTool. "
+            "Install with: pip install ya-agent-sdk[document]"
+        ) from e
+
+    return pymupdf, pymupdf4llm
 
 
 def _validate_page_params(
@@ -89,9 +104,12 @@ class PdfConvertTool(BaseTool):
     description = "Convert PDF to markdown with image extraction."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
-        """Check if tool is available (requires file_operator)."""
+        """Check if tool is available without importing heavy conversion libraries."""
         if ctx.deps.file_operator is None:
             logger.debug("PdfConvertTool unavailable: file_operator is not configured")
+            return False
+        if not _pdf_deps_available():
+            logger.debug("PdfConvertTool unavailable: pymupdf or pymupdf4llm is not installed")
             return False
         return True
 
@@ -112,6 +130,7 @@ class PdfConvertTool(BaseTool):
             Field(description="Ending page number (1-based, inclusive). Default: 20. Use -1 for all pages."),
         ] = None,
     ) -> dict[str, Any]:
+        pymupdf, pymupdf4llm = _load_pdf_deps()
         file_op = cast(FileOperator, ctx.deps.file_operator)
 
         # Check file exists

@@ -1,5 +1,8 @@
 """Tests for ya_agent_sdk.toolsets.core.web.scrape module."""
 
+import json
+import subprocess
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,6 +12,25 @@ from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext, ToolConfig
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.web.scrape import CONTENT_TRUNCATE_THRESHOLD, ScrapeTool
+
+
+def test_web_toolset_import_does_not_import_markitdown() -> None:
+    """Importing the web toolset should not import MarkItDown."""
+    script = """
+import json
+import sys
+
+import ya_agent_sdk.toolsets.core.web  # noqa: F401
+
+print(json.dumps({"markitdown": "markitdown" in sys.modules}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(result.stdout) == {"markitdown": False}
 
 
 def test_scrape_tool_attributes() -> None:
@@ -61,8 +83,10 @@ async def test_scrape_tool_fallback_to_markitdown(tmp_path: Path) -> None:
         # Mock MarkItDown.convert to avoid actual HTTP request
         mock_result = MagicMock()
         mock_result.text_content = "# Test Page\n\nThis is the content."
+        mock_md = MagicMock()
+        mock_md.convert.return_value = mock_result
 
-        with patch.object(tool._md, "convert", return_value=mock_result):
+        with patch.object(tool, "_get_markitdown", return_value=mock_md):
             result = await tool.call(mock_run_ctx, url="https://example.com")
 
         assert result["success"] is True
@@ -91,8 +115,10 @@ async def test_scrape_tool_truncates_long_content(tmp_path: Path) -> None:
         long_content = "x" * (CONTENT_TRUNCATE_THRESHOLD + 10000)
         mock_result = MagicMock()
         mock_result.text_content = long_content
+        mock_md = MagicMock()
+        mock_md.convert.return_value = mock_result
 
-        with patch.object(tool._md, "convert", return_value=mock_result):
+        with patch.object(tool, "_get_markitdown", return_value=mock_md):
             result = await tool.call(mock_run_ctx, url="https://example.com")
 
         assert result["success"] is True

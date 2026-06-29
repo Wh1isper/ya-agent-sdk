@@ -1,6 +1,9 @@
 """Tests for document conversion tools (PDF and Office)."""
 
+import json
 import shutil
+import subprocess
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -10,9 +13,33 @@ from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core.document.office import OfficeConvertTool, _markitdown_available
+from ya_agent_sdk.toolsets.core.document.pdf import PdfConvertTool, _pdf_deps_available
 
 # Test file directory
 TEST_FILES_DIR = Path(__file__).parent
+HEAVY_DOCUMENT_MODULES = ("markitdown", "pymupdf", "pymupdf4llm")
+
+
+def test_document_toolset_import_does_not_import_heavy_optional_dependencies() -> None:
+    """Importing the document toolset should not import heavy converters."""
+    script = f"""
+import json
+import sys
+
+import ya_agent_sdk.toolsets.core.document  # noqa: F401
+
+heavy_modules = {HEAVY_DOCUMENT_MODULES!r}
+print(json.dumps({{name: name in sys.modules for name in heavy_modules}}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    imported_modules = json.loads(result.stdout)
+    assert imported_modules == dict.fromkeys(HEAVY_DOCUMENT_MODULES, False)
 
 
 @pytest.fixture
@@ -40,12 +67,7 @@ def docx_file(tmp_path: Path) -> Path:
 # --- PDF Convert Tool Tests ---
 
 # Check if PDF tools are available
-try:
-    from ya_agent_sdk.toolsets.core.document.pdf import PdfConvertTool
-
-    PDF_AVAILABLE = True
-except ImportError:
-    PDF_AVAILABLE = False
+PDF_AVAILABLE = _pdf_deps_available()
 
 
 @pytest.mark.skipif(not PDF_AVAILABLE, reason="pymupdf not installed")
@@ -164,12 +186,7 @@ async def test_pdf_convert_page_range(tmp_path: Path, pdf_file: Path) -> None:
 # --- Office Convert Tool Tests ---
 
 # Check if Office tools are available
-try:
-    from ya_agent_sdk.toolsets.core.document.office import OfficeConvertTool
-
-    OFFICE_AVAILABLE = True
-except ImportError:
-    OFFICE_AVAILABLE = False
+OFFICE_AVAILABLE = _markitdown_available()
 
 
 @pytest.mark.skipif(not OFFICE_AVAILABLE, reason="markitdown not installed")

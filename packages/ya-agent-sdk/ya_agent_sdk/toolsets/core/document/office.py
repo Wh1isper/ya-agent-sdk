@@ -8,6 +8,7 @@ Install with: pip install ya-agent-sdk[document]
 
 import base64
 import functools
+import importlib.util
 import re
 import tempfile
 import uuid
@@ -26,17 +27,28 @@ from ya_agent_sdk.toolsets.core.base import BaseTool
 
 logger = get_logger(__name__)
 
-# Optional dependency check
-try:
-    from markitdown import MarkItDown
-except ImportError as e:
-    raise ImportError(
-        "The 'markitdown' package is required for OfficeConvertTool. Install with: pip install ya-agent-sdk[document]"
-    ) from e
-
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 SUPPORTED_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".epub"}
+
+
+@cache
+def _markitdown_available() -> bool:
+    """Return whether the Office conversion optional dependency is installed."""
+    return importlib.util.find_spec("markitdown") is not None
+
+
+@cache
+def _load_markitdown_class() -> type[Any]:
+    """Import MarkItDown on first actual use."""
+    try:
+        from markitdown import MarkItDown
+    except ImportError as e:
+        raise ImportError(
+            "The 'markitdown' package is required for OfficeConvertTool. Install with: pip install ya-agent-sdk[document]"
+        ) from e
+
+    return MarkItDown
 
 
 @cache
@@ -58,9 +70,12 @@ class OfficeConvertTool(BaseTool):
     description = "Convert Office documents (Word, PowerPoint, Excel) and EPub to markdown."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
-        """Check if tool is available (requires file_operator)."""
+        """Check if tool is available without importing MarkItDown."""
         if ctx.deps.file_operator is None:
             logger.debug("OfficeConvertTool unavailable: file_operator is not configured")
+            return False
+        if not _markitdown_available():
+            logger.debug("OfficeConvertTool unavailable: markitdown is not installed")
             return False
         return True
 
@@ -123,7 +138,8 @@ class OfficeConvertTool(BaseTool):
             await _run_in_threadpool(local_images_dir.mkdir, exist_ok=True)
 
             try:
-                md = MarkItDown(enable_plugins=True)
+                markitdown_cls = _load_markitdown_class()
+                md = markitdown_cls(enable_plugins=True)
                 result = await _run_in_threadpool(md.convert, local_source.as_uri(), keep_data_uris=True)
                 content = result.text_content
             except Exception as e:
