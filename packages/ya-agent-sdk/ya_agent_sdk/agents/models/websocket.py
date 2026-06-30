@@ -38,6 +38,7 @@ _RESPONSE_TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.fail
 DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 DEFAULT_WEBSOCKET_MAX_SIZE = 64 * 1024 * 1024
 _WS_DISABLE_TTL_SECONDS = 300.0
+_WS_CLEANUP_TIMEOUT_SECONDS = 2.0
 _RECOVERABLE_HTTP_STATUS_CODES = {401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504}
 
 HeaderBuilder = Callable[[Mapping[str, str]], Awaitable[dict[str, str]]]
@@ -124,26 +125,6 @@ def normalize_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in normalized.items() if value is not None}
 
 
-def _suspend_current_task_cancellation() -> tuple[asyncio.Task[Any] | None, int]:
-    """Temporarily clear cancellation while running best-effort cleanup."""
-    current_task = asyncio.current_task()
-    if current_task is None:
-        return None, 0
-    cleared = 0
-    while current_task.cancelling():
-        current_task.uncancel()
-        cleared += 1
-    return current_task, cleared
-
-
-def _restore_task_cancellation(task: asyncio.Task[Any] | None, count: int) -> None:
-    """Restore cancellation requests cleared for cleanup."""
-    if task is None or count <= 0:
-        return
-    for _ in range(count):
-        task.cancel()
-
-
 class _WebsocketResponseStream:
     """Async stream wrapper compatible with Pydantic AI's OpenAI Responses stream adapter."""
 
@@ -157,6 +138,7 @@ class _WebsocketResponseStream:
         ping_interval: float | None = 20.0,
         ping_timeout: float | None = 20.0,
         max_size: int | None = DEFAULT_WEBSOCKET_MAX_SIZE,
+        cleanup_timeout: float = _WS_CLEANUP_TIMEOUT_SECONDS,
         connect: WebsocketConnect = websockets.connect,
     ) -> None:
         self.url = url
@@ -166,6 +148,7 @@ class _WebsocketResponseStream:
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
         self.max_size = max_size
+        self.cleanup_timeout = cleanup_timeout
         self._connect = connect
         self._connection: Any | None = None
         self._create_sent = False
@@ -194,23 +177,24 @@ class _WebsocketResponseStream:
             await connection.send(json.dumps(self.payload, separators=(",", ":")))
             self._create_sent = True
         except BaseException:
-            task, cleared_cancellations = _suspend_current_task_cancellation()
-            try:
-                await self.close(code=1011, reason="failed to send response.create")
-            finally:
-                _restore_task_cancellation(task, cleared_cancellations)
+            await self._best_effort_cleanup(
+                self.close(code=1011, reason="failed to send response.create"),
+                action="close Responses WebSocket after failed response.create",
+            )
             raise
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        task, cleared_cancellations = _suspend_current_task_cancellation()
-        try:
-            if self._terminal_received:
-                await self.close(code=1000, reason="responses stream completed")
-            else:
-                await self.cancel_and_close(reason="client exited response stream")
-        finally:
-            _restore_task_cancellation(task, cleared_cancellations)
+        if self._terminal_received:
+            await self._best_effort_cleanup(
+                self.close(code=1000, reason="responses stream completed"),
+                action="close completed Responses WebSocket stream",
+            )
+            return
+        await self._best_effort_cleanup(
+            self.cancel_and_close(reason="client exited response stream"),
+            action="cancel and close Responses WebSocket stream",
+        )
 
     def __aiter__(self) -> AsyncIterator[ResponseStreamEvent]:
         return self._iter_events()
@@ -236,7 +220,10 @@ class _WebsocketResponseStream:
             self._events_seen += 1
             yield event
             if event_type in _RESPONSE_TERMINAL_EVENT_TYPES:
-                await self.close(code=1000, reason="responses stream completed")
+                await self._best_effort_cleanup(
+                    self.close(code=1000, reason="responses stream completed"),
+                    action="close completed Responses WebSocket stream",
+                )
                 return
 
     def _normalize_stream_event(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -272,6 +259,15 @@ class _WebsocketResponseStream:
         if data.get("type") in _RESPONSE_TERMINAL_EVENT_TYPES:
             self._terminal_received = True
 
+    async def _best_effort_cleanup(self, cleanup: Awaitable[None], *, action: str) -> None:
+        try:
+            async with asyncio.timeout(self.cleanup_timeout):
+                await cleanup
+        except TimeoutError:
+            logger.debug("Timed out while trying to %s", action)
+        except Exception as exc:
+            logger.debug("Failed to %s: %s", action, exc, exc_info=True)
+
     async def cancel_and_close(self, *, reason: str) -> None:
         await self.cancel_response()
         await self.close(code=1000, reason=reason)
@@ -281,6 +277,8 @@ class _WebsocketResponseStream:
         if connection is None or self._terminal_received or not self._create_sent or self._cancel_sent:
             return
         payload: dict[str, Any] = {"type": _RESPONSE_CANCEL_TYPE}
+        # If the gateway has not emitted response.created yet, this remains a best-effort cancel
+        # for the active response on the current WebSocket connection.
         if self._response_id is not None:
             payload["response_id"] = self._response_id
         self._cancel_sent = True

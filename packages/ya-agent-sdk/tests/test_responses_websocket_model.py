@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -219,6 +220,74 @@ async def test_websocket_response_stream_sends_cancel_on_early_scope_exit() -> N
         '{"type":"response.create"}',
         '{"type":"response.cancel","response_id":"resp_early"}',
     ]
+
+
+@pytest.mark.asyncio
+async def test_websocket_response_stream_cleanup_timeout_does_not_block_scope_exit() -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self.close_started = False
+            self.closed = False
+            self._messages = iter([
+                json.dumps({
+                    "type": "response.created",
+                    "sequence_number": 0,
+                    "response": {
+                        "id": "resp_timeout",
+                        "created_at": 1,
+                        "model": "gpt-5.5",
+                        "object": "response",
+                        "output": [],
+                        "parallel_tool_calls": True,
+                        "tool_choice": "auto",
+                        "tools": [],
+                        "status": "in_progress",
+                    },
+                }),
+            ])
+
+        def __aiter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __anext__(self) -> str:
+            try:
+                return next(self._messages)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            self.close_started = True
+            await asyncio.sleep(10)
+            self.closed = True
+
+    fake = FakeConnection()
+
+    async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return fake
+
+    stream = _WebsocketResponseStream(
+        url="wss://example.test/responses",
+        headers={},
+        payload={"type": "response.create"},
+        cleanup_timeout=0.01,
+        connect=connect,
+    )
+
+    async with stream:
+        async for event in stream:
+            assert event.type == "response.created"
+            break
+
+    assert fake.sent == [
+        '{"type":"response.create"}',
+        '{"type":"response.cancel","response_id":"resp_timeout"}',
+    ]
+    assert fake.close_started is True
+    assert fake.closed is False
 
 
 @pytest.mark.asyncio
