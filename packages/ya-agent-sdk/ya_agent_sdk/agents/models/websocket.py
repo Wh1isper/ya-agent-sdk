@@ -15,7 +15,7 @@ import httpx
 import websockets
 from openai import APIStatusError
 from openai.types.responses import ResponseStreamEvent
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse, check_allow_model_requests
@@ -35,7 +35,6 @@ _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(ResponseStreamEvent)
 _RESPONSE_CREATE_TYPE = "response.create"
 _RESPONSE_CANCEL_TYPE = "response.cancel"
 _RESPONSE_TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.failed", "response.incomplete"})
-_IGNORED_RESPONSES_WEBSOCKET_EVENT_TYPES = frozenset({"response.metadata"})
 DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 DEFAULT_WEBSOCKET_MAX_SIZE = 64 * 1024 * 1024
 _WS_DISABLE_TTL_SECONDS = 300.0
@@ -45,6 +44,32 @@ _RECOVERABLE_HTTP_STATUS_CODES = {401, 403, 404, 408, 409, 425, 429, 500, 502, 5
 HeaderBuilder = Callable[[Mapping[str, str]], Awaitable[dict[str, str]]]
 PayloadNormalizer = Callable[[dict[str, Any]], dict[str, Any]]
 WebsocketConnect = Callable[..., Awaitable[Any]]
+
+
+def _response_stream_event_types() -> frozenset[str]:
+    """Return event types supported by the installed OpenAI Responses SDK."""
+    schema = _RESPONSES_STREAM_EVENT_ADAPTER.json_schema()
+    defs = schema.get("$defs")
+    if not isinstance(defs, dict):
+        return frozenset()
+
+    event_types: set[str] = set()
+    for definition in defs.values():
+        if not isinstance(definition, dict):
+            continue
+        properties = definition.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        type_schema = properties.get("type")
+        if not isinstance(type_schema, dict):
+            continue
+        const = type_schema.get("const")
+        if isinstance(const, str):
+            event_types.add(const)
+    return frozenset(event_types)
+
+
+_OPENAI_RESPONSE_STREAM_EVENT_TYPES = _response_stream_event_types()
 
 
 @dataclass
@@ -152,6 +177,7 @@ class _WebsocketResponseStream:
         self.cleanup_timeout = cleanup_timeout
         self._connect = connect
         self._connection: Any | None = None
+        self._websocket_upgraded = False
         self._create_sent = False
         self._cancel_sent = False
         self._terminal_received = False
@@ -162,6 +188,10 @@ class _WebsocketResponseStream:
     @property
     def events_seen(self) -> int:
         return self._events_seen
+
+    @property
+    def websocket_upgraded(self) -> bool:
+        return self._websocket_upgraded
 
     async def __aenter__(self) -> _WebsocketResponseStream:
         connection = await self._connect(
@@ -174,6 +204,7 @@ class _WebsocketResponseStream:
             max_size=self.max_size,
         )
         self._connection = connection
+        self._websocket_upgraded = True
         try:
             await connection.send(json.dumps(self.payload, separators=(",", ":")))
             self._create_sent = True
@@ -215,11 +246,15 @@ class _WebsocketResponseStream:
             if isinstance(event_type, str) and not event_type.startswith("response."):
                 logger.debug("Ignoring non-Responses WebSocket event: %s", event_type)
                 continue
-            if event_type in _IGNORED_RESPONSES_WEBSOCKET_EVENT_TYPES:
-                logger.debug("Ignoring Responses WebSocket metadata event: %s", event_type)
+            if isinstance(event_type, str) and event_type not in _OPENAI_RESPONSE_STREAM_EVENT_TYPES:
+                logger.debug("Ignoring unsupported Responses WebSocket event after upgrade: %s", event_type)
                 continue
             data = self._normalize_stream_event(data)
-            event = _RESPONSES_STREAM_EVENT_ADAPTER.validate_python(data)
+            try:
+                event = _RESPONSES_STREAM_EVENT_ADAPTER.validate_python(data)
+            except ValidationError:
+                logger.debug("Failed to parse Responses WebSocket event after upgrade: %s", event_type, exc_info=True)
+                raise
             self._record_response_lifecycle(data)
             self._events_seen += 1
             yield event
@@ -501,6 +536,8 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
 
     def _should_fallback_from(self, exc: BaseException, stream: _WebsocketResponseStream | None) -> bool:
         if self._fallback_state.mode != "auto":
+            return False
+        if stream is not None and stream.websocket_upgraded:
             return False
         if stream is not None and stream.events_seen > 0:
             return False
