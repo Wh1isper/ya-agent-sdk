@@ -134,3 +134,18 @@ def test_infer_gateway_responses_websocket_aliases_use_websocket_model(monkeypat
         assert model.provider.name == "openai"
         assert model.model_name == "gpt-5"
         assert model.websocket_fallback_state.mode == "auto"
+
+
+@pytest.mark.asyncio
+async def test_gateway_responses_websocket_headers_include_gateway_authorization(monkeypatch) -> None:
+    """Gateway Responses WebSocket handshakes must carry the gateway bearer token explicitly."""
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
+
+    model = infer_model("gateway", "openai-responses-ws:gpt-5", extra_headers={"x-session-id": "session-1"})
+    assert isinstance(model, WebsocketResponsesModel)
+
+    headers = await model._build_websocket_headers({})
+
+    assert headers["Authorization"] == "Bearer test-key"
+    assert headers["x-session-id"] == "session-1"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import httpx
@@ -9,6 +9,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.models import infer_model as legacy_infer_model
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers import Provider
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from ya_agent_sdk.agents.models.utils import create_async_http_client
 
@@ -182,8 +183,6 @@ def _build_gateway_provider(
         "openai-responses",
         *_OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES,
     ):
-        from pydantic_ai.providers.openai import OpenAIProvider
-
         return OpenAIProvider(api_key=api_key, base_url=base_url, http_client=http_client)
     if provider_name == "anthropic":
         from anthropic import AsyncAnthropic  # pyright: ignore[reportMissingImports]
@@ -251,10 +250,14 @@ def _split_provider_and_model(model: str) -> tuple[str | None, str]:
     return provider, model_name
 
 
-def _build_gateway_responses_websocket_model(model_name: str, provider: Provider[Any]) -> Model:
+def _build_gateway_responses_websocket_model(
+    model_name: str,
+    provider: Provider[Any],
+    *,
+    api_key: str,
+    extra_headers: dict[str, str] | None = None,
+) -> Model:
     """Construct a Responses WebSocket model for OpenAI-compatible gateways."""
-    from pydantic_ai.providers.openai import OpenAIProvider
-
     from ya_agent_sdk.agents.models.websocket import WebsocketResponsesModel, env_responses_websocket_mode
 
     if not isinstance(provider, OpenAIProvider):
@@ -262,8 +265,44 @@ def _build_gateway_responses_websocket_model(model_name: str, provider: Provider
     return WebsocketResponsesModel(
         model_name,
         provider=provider,
+        websocket_headers_builder=_gateway_responses_websocket_headers_builder(
+            provider,
+            api_key=api_key,
+            extra_headers=extra_headers,
+        ),
         websocket_mode=env_responses_websocket_mode("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE", default="auto"),
     )
+
+
+def _gateway_responses_websocket_headers_builder(
+    provider: OpenAIProvider,
+    *,
+    api_key: str,
+    extra_headers: dict[str, str] | None,
+) -> Callable[[Mapping[str, str]], Awaitable[dict[str, str]]]:
+    """Build gateway WebSocket handshake headers without relying on OpenAI client internals.
+
+    Newer OpenAI client versions no longer expose the Authorization header through
+    default_headers in the same way as older versions. HTTP gateway requests still
+    receive Authorization through the httpx request hook, but WebSocket handshakes
+    bypass that hook, so the gateway token must be added explicitly here.
+    """
+
+    async def _builder(request_extra_headers: Mapping[str, str]) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        default_headers = provider.client.default_headers
+        if isinstance(default_headers, Mapping):
+            for key, value in default_headers.items():
+                if value is None or value.__class__.__name__ in {"Omit", "NotGiven"}:
+                    continue
+                headers[str(key)] = str(value)
+        headers.update(extra_headers or {})
+        headers.update(request_extra_headers)
+        if not any(key.lower() == "authorization" for key in headers):
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+    return _builder
 
 
 def infer_model(gateway_name: str, model: str, extra_headers: dict[str, str] | None = None) -> Model:
@@ -293,7 +332,16 @@ def infer_model(gateway_name: str, model: str, extra_headers: dict[str, str] | N
         raise ValueError(_OPENAI_PROVIDER_ERROR)
     if provider_prefix in _OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES:
         provider = provider_factory(provider_prefix)
-        return _build_gateway_responses_websocket_model(model_name, provider)
+        api_key, _base_url = _read_gateway_credentials(
+            f"{gateway_name.upper()}_API_KEY",
+            f"{gateway_name.upper()}_BASE_URL",
+        )
+        return _build_gateway_responses_websocket_model(
+            model_name,
+            provider,
+            api_key=api_key,
+            extra_headers=extra_headers,
+        )
     if provider_prefix == "openai-chat":
         profile = _build_openai_chat_profile(model_name)
         if profile is not None:
