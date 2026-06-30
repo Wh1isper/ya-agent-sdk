@@ -35,6 +35,7 @@ _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(ResponseStreamEvent)
 _RESPONSE_CREATE_TYPE = "response.create"
 _RESPONSE_CANCEL_TYPE = "response.cancel"
 _RESPONSE_TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.failed", "response.incomplete"})
+_IGNORED_RESPONSES_WEBSOCKET_EVENT_TYPES = frozenset({"response.metadata"})
 DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 DEFAULT_WEBSOCKET_MAX_SIZE = 64 * 1024 * 1024
 _WS_DISABLE_TTL_SECONDS = 300.0
@@ -213,6 +214,9 @@ class _WebsocketResponseStream:
                 raise _websocket_error_from_event(data)
             if isinstance(event_type, str) and not event_type.startswith("response."):
                 logger.debug("Ignoring non-Responses WebSocket event: %s", event_type)
+                continue
+            if event_type in _IGNORED_RESPONSES_WEBSOCKET_EVENT_TYPES:
+                logger.debug("Ignoring Responses WebSocket metadata event: %s", event_type)
                 continue
             data = self._normalize_stream_event(data)
             event = _RESPONSES_STREAM_EVENT_ADAPTER.validate_python(data)

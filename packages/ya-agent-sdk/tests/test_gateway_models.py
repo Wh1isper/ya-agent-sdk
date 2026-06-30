@@ -126,6 +126,7 @@ def test_infer_gateway_responses_websocket_aliases_use_websocket_model(monkeypat
     """Gateway mode should route Responses WebSocket aliases through the SDK WebSocket transport."""
     monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
     monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
+    monkeypatch.delenv("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE", raising=False)
 
     for provider_prefix in ("openai-responses-rs", "openai-responses-ws"):
         model = infer_model("gateway", f"{provider_prefix}:gpt-5")
