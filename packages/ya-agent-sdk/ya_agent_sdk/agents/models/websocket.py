@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -32,6 +33,8 @@ ResponsesWebsocketMode = Literal["auto", "websocket", "http"]
 
 _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(ResponseStreamEvent)
 _RESPONSE_CREATE_TYPE = "response.create"
+_RESPONSE_CANCEL_TYPE = "response.cancel"
+_RESPONSE_TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.failed", "response.incomplete"})
 DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 DEFAULT_WEBSOCKET_MAX_SIZE = 64 * 1024 * 1024
 _WS_DISABLE_TTL_SECONDS = 300.0
@@ -121,6 +124,26 @@ def normalize_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in normalized.items() if value is not None}
 
 
+def _suspend_current_task_cancellation() -> tuple[asyncio.Task[Any] | None, int]:
+    """Temporarily clear cancellation while running best-effort cleanup."""
+    current_task = asyncio.current_task()
+    if current_task is None:
+        return None, 0
+    cleared = 0
+    while current_task.cancelling():
+        current_task.uncancel()
+        cleared += 1
+    return current_task, cleared
+
+
+def _restore_task_cancellation(task: asyncio.Task[Any] | None, count: int) -> None:
+    """Restore cancellation requests cleared for cleanup."""
+    if task is None or count <= 0:
+        return
+    for _ in range(count):
+        task.cancel()
+
+
 class _WebsocketResponseStream:
     """Async stream wrapper compatible with Pydantic AI's OpenAI Responses stream adapter."""
 
@@ -145,6 +168,10 @@ class _WebsocketResponseStream:
         self.max_size = max_size
         self._connect = connect
         self._connection: Any | None = None
+        self._create_sent = False
+        self._cancel_sent = False
+        self._terminal_received = False
+        self._response_id: str | None = None
         self._events_seen = 0
         self._function_call_names_by_item_id: dict[str, str] = {}
 
@@ -163,11 +190,27 @@ class _WebsocketResponseStream:
             max_size=self.max_size,
         )
         self._connection = connection
-        await connection.send(json.dumps(self.payload, separators=(",", ":")))
+        try:
+            await connection.send(json.dumps(self.payload, separators=(",", ":")))
+            self._create_sent = True
+        except BaseException:
+            task, cleared_cancellations = _suspend_current_task_cancellation()
+            try:
+                await self.close(code=1011, reason="failed to send response.create")
+            finally:
+                _restore_task_cancellation(task, cleared_cancellations)
+            raise
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        await self.close()
+        task, cleared_cancellations = _suspend_current_task_cancellation()
+        try:
+            if self._terminal_received:
+                await self.close(code=1000, reason="responses stream completed")
+            else:
+                await self.cancel_and_close(reason="client exited response stream")
+        finally:
+            _restore_task_cancellation(task, cleared_cancellations)
 
     def __aiter__(self) -> AsyncIterator[ResponseStreamEvent]:
         return self._iter_events()
@@ -189,10 +232,11 @@ class _WebsocketResponseStream:
                 continue
             data = self._normalize_stream_event(data)
             event = _RESPONSES_STREAM_EVENT_ADAPTER.validate_python(data)
+            self._record_response_lifecycle(data)
             self._events_seen += 1
             yield event
-            if event_type in {"response.completed", "response.failed", "response.incomplete"}:
-                await self.close()
+            if event_type in _RESPONSE_TERMINAL_EVENT_TYPES:
+                await self.close(code=1000, reason="responses stream completed")
                 return
 
     def _normalize_stream_event(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -219,11 +263,41 @@ class _WebsocketResponseStream:
         if isinstance(item_id, str) and isinstance(name, str):
             self._function_call_names_by_item_id[item_id] = name
 
-    async def close(self) -> None:
+    def _record_response_lifecycle(self, data: Mapping[str, Any]) -> None:
+        response = data.get("response")
+        if isinstance(response, Mapping):
+            response_id = response.get("id")
+            if isinstance(response_id, str):
+                self._response_id = response_id
+        if data.get("type") in _RESPONSE_TERMINAL_EVENT_TYPES:
+            self._terminal_received = True
+
+    async def cancel_and_close(self, *, reason: str) -> None:
+        await self.cancel_response()
+        await self.close(code=1000, reason=reason)
+
+    async def cancel_response(self) -> None:
+        connection = self._connection
+        if connection is None or self._terminal_received or not self._create_sent or self._cancel_sent:
+            return
+        payload: dict[str, Any] = {"type": _RESPONSE_CANCEL_TYPE}
+        if self._response_id is not None:
+            payload["response_id"] = self._response_id
+        self._cancel_sent = True
+        try:
+            await connection.send(json.dumps(payload, separators=(",", ":")))
+        except Exception as exc:
+            logger.debug("Failed to send Responses WebSocket cancel event: %s", exc, exc_info=True)
+
+    async def close(self, *, code: int = 1000, reason: str = "client closed response stream") -> None:
         connection = self._connection
         self._connection = None
-        if connection is not None:
-            await connection.close()
+        if connection is None:
+            return
+        try:
+            await connection.close(code=code, reason=reason)
+        except Exception as exc:
+            logger.debug("Failed to close Responses WebSocket connection: %s", exc, exc_info=True)
 
 
 @dataclass(init=False)
