@@ -304,34 +304,28 @@ subagent_tools = load_builtin_subagent_tools(parent_toolset, model="anthropic:cl
 
 ## Best Practices
 
-1. **Use Unified Subagent**: Prefer `create_unified_subagent_tool` over individual tools for cleaner interface
-2. **Focused Responsibility**: Each subagent should have a clear, specific purpose
-3. **Minimal Required Tools**: Only require essential tools; use `optional_tools` for nice-to-haves
-4. **Clear Instructions**: Write `instruction` to help parent agent decide when to delegate
-5. **Handle Missing Tools**: Subagents auto-disable when required tools are unavailable
-6. **Execution Model**: Delegate calls are blocking. Multiple delegates in the same model response run concurrently (parallel-but-blocking), but the agent waits until all complete. This is not async/fire-and-forget.
+1. **Use Unified Subagent**: Prefer `create_unified_subagent_tool` over individual tools for cleaner interface.
+2. **Focused Responsibility**: Each subagent should have a clear, specific purpose.
+3. **Minimal Required Tools**: Only require essential tools; use `optional_tools` for nice-to-haves.
+4. **Behavior-Focused Instructions**: Write `instruction` to help the parent decide when delegation is useful. Do not repeat tool capability lists that are already present in schemas.
+5. **Delegate Meaningful Work**: Delegate bounded subtasks with clear scope, independent value, specialist fit, or useful parallelism. Do not delegate tiny one-step actions or simple lookups.
+6. **Parent Owns Integration**: The parent agent remains responsible for planning, integrating results, user-facing synthesis, and final decisions.
+7. **Handle Missing Tools**: Subagents auto-disable when required tools are unavailable.
+8. **Execution Model**: Delegate calls are blocking. Multiple delegates in the same model response run concurrently (parallel-but-blocking), but the agent waits until all complete. This is not async/fire-and-forget.
 
 ## Integration with Task Manager
 
-Subagents work well with the task manager for concurrent execution of independent tasks.
-Note that delegate calls are **blocking** -- multiple delegates in the same model response
-run concurrently, but the agent cannot do other work while waiting for them.
+Use task tracking with subagents only when the overall workflow is complex enough to benefit from visible progress, ownership, or dependency state.
+Do not create tasks merely because a subagent is available.
 
-```python
-# In your workflow:
-# 1. Create tasks with task_create
-# 2. Call multiple delegates in a single response for concurrent execution
-# 3. Agent is blocked until ALL delegates in that response complete
-# 4. Update task status when subagents return
-```
+Recommended flow for tracked delegated work:
 
-The task manager can assign tasks to subagents using the `owner` field:
+1. Create tasks only for meaningful work items with independent value, ownership, dependency, or delegation target.
+2. Assign `owner` when useful for visibility.
+3. Include the task ID, expected outcome, constraints, and reporting expectations in the delegation prompt.
+4. Update task status when delegated work starts and when results are integrated, blocked, or completed.
 
-```python
-task_update(task_id="TASK-1", owner="debugger", status="in_progress")
-# Then delegate to debugger subagent
-delegate(subagent_name="debugger", prompt="Fix the error in TASK-1...")
-```
+If no task list is needed, delegate directly and do not ask the subagent to create or claim tasks.
 
 ## See Also
 

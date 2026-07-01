@@ -160,11 +160,9 @@ def _build_gateway_http_client(
         "converse",
     )
 
-    if extra_headers and needs_extra_headers_patch:
-        http_client = create_async_http_client(extra_headers=extra_headers)
-    else:
-        http_client = create_async_http_client()
-
+    http_client = create_async_http_client(
+        extra_headers=extra_headers if extra_headers and needs_extra_headers_patch else None,
+    )
     http_client.event_hooks = {"request": [_request_hook(api_key)]}
     return http_client
 

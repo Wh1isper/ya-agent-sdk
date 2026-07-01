@@ -35,6 +35,23 @@ See official docs: [pydantic-ai Models](https://ai.pydantic.dev/models/)
 | Google                     | `google:<model>`                                              | `google:gemini-2.5-pro`                |
 | Google Cloud               | `google-cloud:<model>`                                        | `google-cloud:gemini-2.5-pro`          |
 
+## Model Request Auto Retry
+
+By default, `ya-agent-sdk` uses Pydantic AI's tenacity-based HTTP retry transport for transient model provider failures. This applies to SDK-created HTTP model clients, gateway model clients, OAuth Codex HTTP fallback, and pre-stream Responses WebSocket connect/create failures.
+
+Retries are intended for transport-level or clearly transient failures only: network/request errors, stream errors before a usable stream is returned, and HTTP statuses `408,409,425,429,500,502,503,504`. `Retry-After` headers are respected for rate limits.
+
+Configure with environment variables:
+
+| Variable                                              | Default                           | Description                                           |
+| ----------------------------------------------------- | --------------------------------- | ----------------------------------------------------- |
+| `YA_AGENT_MODEL_REQUEST_RETRY_ENABLED`                | `true`                            | Enable retry transport and WebSocket pre-stream retry |
+| `YA_AGENT_MODEL_REQUEST_RETRY_ATTEMPTS`               | `5`                               | Total attempts including the first try                |
+| `YA_AGENT_MODEL_REQUEST_RETRY_BACKOFF_MULTIPLIER`     | `1`                               | Exponential backoff multiplier                        |
+| `YA_AGENT_MODEL_REQUEST_RETRY_MAX_WAIT_SECONDS`       | `30`                              | Max exponential backoff wait                          |
+| `YA_AGENT_MODEL_REQUEST_RETRY_AFTER_MAX_WAIT_SECONDS` | `300`                             | Max wait honored from `Retry-After`                   |
+| `YA_AGENT_MODEL_REQUEST_RETRY_STATUS_CODES`           | `408,409,425,429,500,502,503,504` | Comma-separated retryable HTTP statuses               |
+
 ## OpenAI Responses WebSocket
 
 `ya-agent-sdk` directly includes the generic OpenAI Responses WebSocket transport. The `openai-responses-ws:<model>` and `openai-responses-rs:<model>` aliases prefer WebSocket for streaming calls and fall back to HTTP in `auto` mode when a recoverable error happens before the first stream event.

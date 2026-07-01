@@ -198,9 +198,12 @@ class AsyncDelegateTool(SpawnDelegateTool):
 
         lines = [
             "In this TUI, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.",
+            "Delegate only bounded subtasks with clear scope, independent value, or useful parallelism; do not delegate tiny one-step actions or simple lookups.",
+            "The parent agent owns planning, integration, user-facing synthesis, and final decisions.",
             "After calling delegate, do not wait, poll, or loop for the result. If no other immediate work remains, finish your current response; the CLI will automatically notify you when the result arrives.",
             "Use steer_subagent(agent_id=..., message=...) to redirect, refine, or add constraints to a running background subagent.",
             "Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.",
+            "If using task tracking, pass the relevant task ID; otherwise do not ask delegates to create or claim tasks.",
             "",
             roster,
         ]

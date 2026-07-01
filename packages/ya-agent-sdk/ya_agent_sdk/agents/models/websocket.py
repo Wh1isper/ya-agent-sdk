@@ -26,6 +26,13 @@ from pydantic_ai.models.openai import _resolve_openai_service_tier as _openai_re
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
+from tenacity import AsyncRetrying, retry_if_exception
+
+from ya_agent_sdk.agents.models.utils import (
+    ModelRequestRetryOptions,
+    build_model_request_retry_config,
+    env_model_request_retry_options,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +51,7 @@ _RECOVERABLE_HTTP_STATUS_CODES = {401, 403, 404, 408, 409, 425, 429, 500, 502, 5
 HeaderBuilder = Callable[[Mapping[str, str]], Awaitable[dict[str, str]]]
 PayloadNormalizer = Callable[[dict[str, Any]], dict[str, Any]]
 WebsocketConnect = Callable[..., Awaitable[Any]]
+WebsocketCreateAttempt = Callable[[], Awaitable["_WebsocketResponseStream"]]
 
 
 def _response_stream_event_types() -> frozenset[str]:
@@ -194,6 +202,8 @@ class _WebsocketResponseStream:
         return self._websocket_upgraded
 
     async def __aenter__(self) -> _WebsocketResponseStream:
+        if self._connection is not None:
+            return self
         connection = await self._connect(
             self.url,
             additional_headers=self.headers,
@@ -348,6 +358,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
     _websocket_beta: str | None = field(default=None, repr=False)
     _websocket_open_timeout: float = field(default=10.0, repr=False)
     _websocket_max_size: int | None = field(default=DEFAULT_WEBSOCKET_MAX_SIZE, repr=False)
+    _websocket_retry_options: ModelRequestRetryOptions = field(repr=False)
 
     def __init__(
         self,
@@ -362,6 +373,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         websocket_beta: str | None = DEFAULT_WEBSOCKET_BETA,
         websocket_open_timeout: float = 10.0,
         websocket_max_size: int | None = DEFAULT_WEBSOCKET_MAX_SIZE,
+        websocket_retry_options: ModelRequestRetryOptions | None = None,
     ) -> None:
         super().__init__(model_name, provider=provider, profile=profile)
         base_url = websocket_base_url or str(self._provider.base_url)
@@ -372,6 +384,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         self._websocket_beta = websocket_beta
         self._websocket_open_timeout = websocket_open_timeout
         self._websocket_max_size = websocket_max_size
+        self._websocket_retry_options = websocket_retry_options or env_model_request_retry_options()
 
     @property
     def websocket_fallback_state(self) -> ResponsesWebsocketFallbackState:
@@ -404,10 +417,12 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
 
         stream: _WebsocketResponseStream | None = None
         try:
-            stream = await self._create_websocket_stream(
-                cast(list[ModelRequest | ModelResponse], messages),
-                settings,
-                prepared_parameters,
+            stream = await self._create_websocket_stream_with_retry(
+                lambda: self._create_websocket_stream(
+                    cast(list[ModelRequest | ModelResponse], messages),
+                    settings,
+                    prepared_parameters,
+                )
             )
             async with stream:
                 response = await self._process_streamed_response(
@@ -438,6 +453,25 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
     ) -> AsyncIterator[StreamedResponse]:
         async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as response:
             yield response
+
+    async def _create_websocket_stream_with_retry(self, attempt: WebsocketCreateAttempt) -> _WebsocketResponseStream:
+        if not self._websocket_retry_options.should_retry:
+            return await attempt()
+
+        retrying = AsyncRetrying(
+            **build_model_request_retry_config(
+                self._websocket_retry_options,
+                retry=retry_if_exception(
+                    lambda exc: _is_retryable_websocket_request_error(exc, self._websocket_retry_options)
+                ),
+            )
+        )
+        async for retry_attempt in retrying:
+            with retry_attempt:
+                stream = await attempt()
+                await stream.__aenter__()
+                return stream
+        raise RuntimeError("Responses WebSocket retry controller did not make any attempts")
 
     async def _create_websocket_stream(
         self,
@@ -568,6 +602,16 @@ def is_recoverable_websocket_error(exc: BaseException) -> bool:
     return isinstance(exc, (TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException))
 
 
+def _is_retryable_websocket_request_error(exc: BaseException, options: ModelRequestRetryOptions) -> bool:
+    if isinstance(exc, ModelHTTPError):
+        return exc.status_code in options.status_codes
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in options.status_codes
+    if _is_upstream_websocket_connect_error(exc):
+        return True
+    return isinstance(exc, (TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException))
+
+
 def _is_upstream_websocket_connect_error(exc: BaseException) -> bool:
     if not isinstance(exc, UnexpectedModelBehavior):
         return False
@@ -593,10 +637,12 @@ def build_openai_responses_websocket_model(
 ) -> WebsocketResponsesModel:
     from pydantic_ai.providers.openai import OpenAIProvider
 
+    from ya_agent_sdk.agents.models.utils import create_async_http_client
+
     mode = websocket_mode or env_responses_websocket_mode("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE", default="auto")
     return WebsocketResponsesModel(
         model_name,
-        provider=OpenAIProvider(),
+        provider=OpenAIProvider(http_client=create_async_http_client()),
         websocket_mode=mode,
     )
 

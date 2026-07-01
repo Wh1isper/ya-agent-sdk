@@ -8,6 +8,7 @@ import pytest
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.providers.openai import OpenAIProvider
+from ya_agent_sdk.agents.models.utils import ModelRequestRetryOptions
 from ya_agent_sdk.agents.models.websocket import (
     DEFAULT_WEBSOCKET_BETA,
     DEFAULT_WEBSOCKET_MAX_SIZE,
@@ -619,3 +620,68 @@ async def test_websocket_response_stream_restores_function_call_done_name_from_o
     done_event = events[-1]
     assert done_event.type == "response.function_call_arguments.done"
     assert done_event.name == "sample_tool"
+
+
+@pytest.mark.asyncio
+async def test_websocket_model_retries_recoverable_connect_errors_before_http_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    http_calls = 0
+    http_response = object()
+    model = WebsocketResponsesModel(
+        "gpt-5",
+        provider=OpenAIProvider(api_key="test-key"),
+        websocket_retry_options=ModelRequestRetryOptions(attempts=3, max_wait_seconds=0),
+    )
+
+    async def create_websocket_stream(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("temporary connect timeout")
+
+    @asynccontextmanager
+    async def request_stream_http(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal http_calls
+        http_calls += 1
+        yield http_response
+
+    monkeypatch.setattr(model, "_create_websocket_stream", create_websocket_stream)
+    monkeypatch.setattr(model, "_request_stream_http", request_stream_http)
+
+    async with model.request_stream([], {}, ModelRequestParameters()) as response:  # type: ignore[arg-type]
+        assert response is http_response
+
+    assert attempts == 3
+    assert http_calls == 1
+    assert model.websocket_fallback_state.failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_websocket_model_can_disable_pre_stream_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    http_response = object()
+    model = WebsocketResponsesModel(
+        "gpt-5",
+        provider=OpenAIProvider(api_key="test-key"),
+        websocket_retry_options=ModelRequestRetryOptions(enabled=False),
+    )
+
+    async def create_websocket_stream(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("temporary connect timeout")
+
+    @asynccontextmanager
+    async def request_stream_http(*args, **kwargs):  # type: ignore[no-untyped-def]
+        yield http_response
+
+    monkeypatch.setattr(model, "_create_websocket_stream", create_websocket_stream)
+    monkeypatch.setattr(model, "_request_stream_http", request_stream_http)
+
+    async with model.request_stream([], {}, ModelRequestParameters()) as response:  # type: ignore[arg-type]
+        assert response is http_response
+
+    assert attempts == 1

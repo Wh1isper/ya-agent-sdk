@@ -106,7 +106,7 @@ def test_infer_model_normalizes_legacy_google_provider_aliases(
 ) -> None:
     calls = []
 
-    def fake_legacy_infer(model):  # type: ignore[no-untyped-def]
+    def fake_legacy_infer(model, *_args):  # type: ignore[no-untyped-def]
         calls.append(model)
         return model
 

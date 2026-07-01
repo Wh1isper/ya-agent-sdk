@@ -30,9 +30,9 @@ class Task(BaseModel):
 
     Attributes:
         id: Unique task identifier (e.g., "1", "2").
-        subject: Task title in imperative form (e.g., "Run tests").
-        description: Detailed task description.
-        active_form: Present progressive form shown during in_progress (e.g., "Running tests").
+        subject: Concise task title, usually in the user's language.
+        description: Detailed task description or acceptance criteria.
+        active_form: Natural in-progress phrasing shown during in_progress.
         status: Current task status.
         owner: Optional task owner/assignee.
         blocks: List of task IDs that this task blocks.
@@ -113,9 +113,9 @@ class TaskManager(BaseModel):
         """Create a new task.
 
         Args:
-            subject: Task title in imperative form.
-            description: Detailed task description.
-            active_form: Present progressive form for in_progress status.
+            subject: Concise task title, usually in the user's language.
+            description: Detailed task description or acceptance criteria.
+            active_form: Natural in-progress phrasing for in_progress status.
             metadata: Optional additional metadata.
 
         Returns:

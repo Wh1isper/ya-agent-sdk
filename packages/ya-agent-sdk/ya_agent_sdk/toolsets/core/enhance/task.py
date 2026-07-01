@@ -45,10 +45,12 @@ def _build_task_event(ctx: RunContext[AgentContext]) -> TaskEvent:
 class TaskCreateParams(BaseModel):
     """Parameters for creating a new task."""
 
-    subject: str = Field(..., description="Task title in imperative form (e.g., 'Run tests').")
-    description: str = Field(..., description="Detailed task description.")
+    subject: str = Field(..., description="Concise task title in the user's language.")
+    description: str = Field(
+        ..., description="Detailed task description or acceptance criteria in the user's language."
+    )
     active_form: str | None = Field(
-        None, description="Present progressive form shown during in_progress (e.g., 'Running tests')."
+        None, description="Natural in-progress phrasing in the user's language, shown during in_progress."
     )
     metadata: dict[str, Any] | None = Field(None, description="Optional additional metadata.")
 
@@ -70,11 +72,14 @@ class TaskCreateTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
-        subject: Annotated[str, Field(description="Task title in imperative form (e.g., 'Run tests').")],
-        description: Annotated[str, Field(description="Detailed task description.")],
+        subject: Annotated[str, Field(description="Concise task title in the user's language.")],
+        description: Annotated[
+            str,
+            Field(description="Detailed task description or acceptance criteria in the user's language."),
+        ],
         active_form: Annotated[
             str | None,
-            Field(description="Present progressive form shown during in_progress (e.g., 'Running tests')."),
+            Field(description="Natural in-progress phrasing in the user's language, shown during in_progress."),
         ] = None,
         metadata: Annotated[dict[str, Any] | None, Field(description="Optional additional metadata.")] = None,
     ) -> str:

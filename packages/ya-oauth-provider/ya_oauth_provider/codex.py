@@ -46,23 +46,17 @@ def build_codex_model(
     """Build a Codex OAuth-backed OpenAI Responses model."""
     import httpx
     from pydantic_ai.models import get_user_agent
-    from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig
-    from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
+    from ya_agent_sdk.agents.models.utils import create_model_request_retry_transport
 
     source = token_source or create_codex_token_source()
-    http_client = httpx.AsyncClient(
-        auth=OAuthBearerAuth(source, provider_name="codex", extra_headers=extra_headers),
-        headers={"User-Agent": get_user_agent()},
-        timeout=httpx.Timeout(timeout=900, connect=5, read=300),
-        transport=AsyncTenacityTransport(
-            config=RetryConfig(
-                retry=retry_if_exception_type((httpx.HTTPError, httpx.StreamError)),
-                wait=wait_exponential(multiplier=1, max=10),
-                stop=stop_after_attempt(10),
-                reraise=True,
-            )
-        ),
-    )
+    transport = create_model_request_retry_transport()
+    auth = OAuthBearerAuth(source, provider_name="codex", extra_headers=extra_headers)
+    headers = {"User-Agent": get_user_agent()}
+    timeout = httpx.Timeout(timeout=900, connect=5, read=300)
+    if transport is None:
+        http_client = httpx.AsyncClient(auth=auth, headers=headers, timeout=timeout)
+    else:
+        http_client = httpx.AsyncClient(auth=auth, headers=headers, timeout=timeout, transport=transport)
     provider = OpenAIProvider(api_key="oauth-managed", base_url=base_url, http_client=http_client)
     mode = websocket_mode or env_responses_websocket_mode("YA_OAUTH_CODEX_RESPONSES_TRANSPORT", default="auto")
     if mode == "http":

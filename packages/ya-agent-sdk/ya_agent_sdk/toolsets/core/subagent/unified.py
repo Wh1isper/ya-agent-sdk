@@ -188,18 +188,26 @@ def _generate_instruction(
     if roster is None:
         return None
 
-    lines = ["Use the delegate tool for bounded subtasks that can return compact results.\n"]
-    lines.append("<delegation-best-practices>")
-    lines.append("Plan first, then call multiple delegates in the same response for independent work.")
+    lines = ["Use the delegate tool for bounded subtasks whose results can be integrated by the parent.\n"]
+    lines.append("<delegation-guidelines>")
+    lines.append("Delegate only when a subtask has a clear scope, useful independent value, or can run in parallel.")
+    lines.append("Do not delegate tiny one-step actions, simple lookups, or work the parent can finish directly.")
+    lines.append("The parent agent owns planning, integration, user-facing synthesis, and final decisions.")
     if self_available:
         lines.append(
-            "Use self forks for full-context plan steps, mid-task repository exploration, "
-            "assumption checks, approach comparisons, and implementation spikes."
+            "Use self forks for full-context plan checks, repository exploration, "
+            "assumption validation, approach comparison, or implementation spikes."
         )
     if available_entries:
-        lines.append("Use named specialist subagents when a listed role matches the task.")
-    lines.append("Ask each delegate to return concise findings, changed files, tests run, and risks.")
-    lines.append("</delegation-best-practices>\n")
+        lines.append("Use named specialist subagents only when a listed role clearly matches the subtask.")
+    lines.append("Give each delegate expected outcome, scope boundaries, constraints, and reporting expectations.")
+    lines.append(
+        "Ask delegates to return concise findings, changed files if any, tests run, risks, and follow-up needs."
+    )
+    lines.append(
+        "If using task tracking, pass the relevant task ID; otherwise do not ask delegates to create or claim tasks."
+    )
+    lines.append("</delegation-guidelines>\n")
 
     lines.append(roster)
     lines.append("")
