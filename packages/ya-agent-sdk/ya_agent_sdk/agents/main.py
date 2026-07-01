@@ -517,7 +517,8 @@ def create_agent(
 
         compact_model: Model for legacy compact filter. Falls back to AgentSettings.
         compact_model_settings: Model settings for legacy compact filter.
-        compact_model_cfg: ModelConfig for compact filter. Defaults to main model_cfg.
+        compact_model_cfg: Optional compact-specific ModelConfig override. When
+            None, compact uses the runtime context model_cfg.
         use_cache_friendly_compact_filter: Select the cache-friendly compact filter by default.
             Set to False to use the legacy compact agent implementation.
 
@@ -617,13 +618,13 @@ def create_agent(
     ]
     compact_filter = (
         create_cache_friendly_compact_filter(
-            model_cfg=compact_model_cfg or effective_model_cfg,
+            model_cfg=compact_model_cfg,
         )
         if use_cache_friendly_compact_filter
         else create_compact_filter(
             model=compact_model,
             model_settings=compact_model_settings,
-            model_cfg=compact_model_cfg or effective_model_cfg,
+            model_cfg=compact_model_cfg,
             main_model=model,
             main_model_settings=model_settings,
         )
