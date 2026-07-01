@@ -70,13 +70,16 @@ def test_get_builtin_subagent_configs_content() -> None:
     debugger = configs["debugger"]
     assert "error" in debugger.instruction.lower() or "debug" in debugger.instruction.lower()
 
-    # Explorer should have system_prompt mentioning exploration tools
+    # Explorer should focus on behavior instead of repeating tool capability lists
     explorer = configs["explorer"]
-    assert "grep" in explorer.system_prompt or "glob" in explorer.system_prompt
+    assert "Exploration Strategies" in explorer.system_prompt
+    assert "tool capability" not in explorer.system_prompt
 
-    # Searcher should have system_prompt mentioning search tools
+    # Searcher should focus on search strategy instead of repeating tool names
     searcher = configs["searcher"]
-    assert "search_with_tavily" in searcher.system_prompt or "search_with_google" in searcher.system_prompt
+    assert "Search Strategies" in searcher.system_prompt
+    assert "search_with_tavily" not in searcher.system_prompt
+    assert "search_with_google" not in searcher.system_prompt
 
 
 def test_load_builtin_subagent_tools_import() -> None:

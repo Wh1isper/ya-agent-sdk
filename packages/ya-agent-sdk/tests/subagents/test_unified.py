@@ -217,9 +217,10 @@ async def test_unified_tool_instruction_contains_self_when_runtime_supports_fork
 
     assert instruction is not None
     assert '<subagent name="self">' in instruction
-    assert "Plan first" in instruction
-    assert "full-context plan steps" in instruction
-    assert "mid-task repository exploration" in instruction
+    assert "Delegate only when a subtask has a clear scope" in instruction
+    assert "The parent agent owns planning" in instruction
+    assert "full-context plan checks" in instruction
+    assert "repository exploration" in instruction
 
 
 async def test_unified_tool_instruction_contains_available_subagents(mock_run_ctx) -> None:
