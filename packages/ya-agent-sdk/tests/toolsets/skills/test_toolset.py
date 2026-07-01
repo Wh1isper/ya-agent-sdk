@@ -88,7 +88,12 @@ async def test_skill_toolset_get_instructions(mock_run_ctx_with_skills: MagicMoc
     assert "global-skill" in instruction_text
     assert "A project-specific skill" in instruction_text
     assert "A global skill available everywhere" in instruction_text
-    assert "<skill-usage-instructions>" in instruction_text
+    assert "<skill-routing-policy>" in instruction_text
+    assert "Skill use is mandatory when applicable" in instruction_text
+    assert "<skill-activation-procedure>" in instruction_text
+    assert "MUST read the matching skill's SKILL.md" in instruction_text
+    assert "chain them deliberately" in instruction_text
+    assert "re-check <available-skills> at phase boundaries" in instruction_text
 
 
 async def test_skill_toolset_no_file_operator():

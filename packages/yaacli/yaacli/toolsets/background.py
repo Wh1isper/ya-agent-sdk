@@ -85,7 +85,9 @@ class SpawnDelegateTool(BaseTool):
         lines = [
             "Use this to run a subagent asynchronously when immediate results are not required.",
             "Use the same subagent_name values listed for delegate.",
-            "The call returns right away with an agent ID; the final result is delivered via message bus.",
+            "The call returns right away with an agent ID; do not wait, poll, or loop for the result.",
+            "If no other immediate work remains after spawning, finish your current response; the CLI will automatically notify you when the result arrives via message bus.",
+            "Use steer_subagent(agent_id=..., message=...) to redirect or refine a running background subagent.",
             "Pass agent_id to resume a previous background subagent.",
         ]
         if task_info:
@@ -165,8 +167,10 @@ class SpawnDelegateTool(BaseTool):
         action = "Resumed" if is_resume else "Spawned"
         return (
             f"{action} delegate: {subagent_name} (id: {agent_id}). "
-            "Result will be delivered via message bus when complete. "
-            "You can continue with other work."
+            "Do not wait, poll, or loop for the result. "
+            "If you have no other immediate work, finish your current response now; "
+            "the CLI will automatically notify you when the result arrives via message bus. "
+            f'To adjust the running subagent, call steer_subagent(agent_id="{agent_id}", message=...).'
         )
 
     @staticmethod
@@ -194,6 +198,8 @@ class AsyncDelegateTool(SpawnDelegateTool):
 
         lines = [
             "In this TUI, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.",
+            "After calling delegate, do not wait, poll, or loop for the result. If no other immediate work remains, finish your current response; the CLI will automatically notify you when the result arrives.",
+            "Use steer_subagent(agent_id=..., message=...) to redirect, refine, or add constraints to a running background subagent.",
             "Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.",
             "",
             roster,
@@ -234,7 +240,8 @@ class SteerSubagentTool(BaseTool):
         return (
             "Send additional guidance to a running background subagent.\n"
             "The message is injected into the subagent's context on its next LLM call.\n"
-            "Use this to redirect, refine, or add constraints to an in-progress task."
+            "Use this to redirect, refine, or add constraints to an in-progress task.\n"
+            "Do not poll after steering; the CLI will automatically notify you when the subagent completes."
         )
 
     async def call(

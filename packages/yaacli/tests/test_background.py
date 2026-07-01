@@ -594,6 +594,10 @@ async def test_async_delegate_uses_hidden_backend_roster() -> None:
     assert instruction is not None
     assert "delegate is asynchronous" in instruction
     assert "returns an agent ID immediately" in instruction
+    assert "do not wait, poll, or loop" in instruction
+    assert "finish your current response" in instruction
+    assert "automatically notify you" in instruction
+    assert "steer_subagent" in instruction
     assert '<subagent name="helper">' in instruction
     assert "Helper subagent" in instruction
     assert "Delegate calls are blocking" not in instruction
@@ -634,9 +638,13 @@ async def test_tool_call_launches_background_task() -> None:
     tool = SpawnDelegateTool()
     result = await tool.call(run_ctx, subagent_name="explorer", prompt="Find stuff")
 
-    # Should return immediately with a status message
+    # Should return immediately with a status message that prevents polling loops.
     assert "Spawned delegate" in result
     assert "explorer" in result
+    assert "Do not wait, poll, or loop" in result
+    assert "finish your current response now" in result
+    assert "automatically notify you" in result
+    assert "steer_subagent" in result
 
     # A background task should be registered
     assert len(monitor.active_tasks) == 1
@@ -1206,6 +1214,8 @@ async def test_steer_instruction_only_with_active_tasks() -> None:
     instruction = await tool.get_instruction(ctx)
     assert instruction is not None
     assert "Send additional guidance" in instruction
+    assert "Do not poll after steering" in instruction
+    assert "automatically notify you" in instruction
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

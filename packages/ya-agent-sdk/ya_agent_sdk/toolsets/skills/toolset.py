@@ -338,7 +338,26 @@ class SkillToolset(BaseToolset[AgentContext]):
         if not skills:
             return None
 
-        lines = ["<available-skills>"]
+        lines = ["<skill-routing-policy>"]
+        lines.append("Skill use is mandatory when applicable.")
+        lines.append("At the start of every new user task, compare the request against <available-skills>.")
+        lines.append(
+            "If one or more skills match, you MUST read the matching skill's SKILL.md before planning or executing the task."
+        )
+        lines.append("Prefer reading a possibly relevant skill over guessing from memory or improvising.")
+        lines.append(
+            "After reading a skill, follow its workflow unless it conflicts with higher-priority instructions or the user's explicit request."
+        )
+        lines.append(
+            "If multiple skills match, chain them deliberately: read the most specific skill first, then read supporting skills before their workflow steps are needed."
+        )
+        lines.append(
+            "For multi-phase tasks, re-check <available-skills> at phase boundaries and activate additional skills when the next phase matches them."
+        )
+        lines.append("If you intentionally skip an apparently relevant skill, briefly state why.")
+        lines.append("</skill-routing-policy>")
+        lines.append("")
+        lines.append("<available-skills>")
 
         for name, config in sorted(skills.items()):
             lines.append(f'<skill name="{name}">')
@@ -348,17 +367,16 @@ class SkillToolset(BaseToolset[AgentContext]):
 
         lines.append("</available-skills>")
         lines.append("")
-        lines.append("<skill-usage-instructions>")
-        lines.append("Before starting a task, check if any available skill matches the user's request.")
+        lines.append("<skill-activation-procedure>")
+        lines.append("1. Identify matching skills from the descriptions in <available-skills>.")
+        lines.append("2. Read each matching skill by opening the SKILL.md file under the shown <path>.")
         lines.append(
-            "Skills contain expert knowledge and proven workflows -- always prefer following a skill over improvising."
+            "3. If the task has multiple phases or adjacent domains, identify and read additional skills for those phases before executing them."
         )
-        lines.append("")
-        lines.append("When a user request matches a skill's description:")
-        lines.append("1. Read the skill's SKILL.md file to get detailed instructions")
-        lines.append("2. Follow the skill's guidelines to complete the task")
-        lines.append("3. Use available file and shell tools to execute the skill's instructions")
-        lines.append("</skill-usage-instructions>")
+        lines.append("4. Read any additional reference files, scripts, or examples named by the activated skills.")
+        lines.append("5. Use available file, shell, web, or other tools to execute the activated skills' workflows.")
+        lines.append("6. Treat <available-skills> as an index only; the authoritative instructions live in SKILL.md.")
+        lines.append("</skill-activation-procedure>")
 
         return "\n".join(lines)
 
