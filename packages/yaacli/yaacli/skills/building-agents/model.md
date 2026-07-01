@@ -43,14 +43,14 @@ Retries are intended for transport-level or clearly transient failures only: net
 
 Configure with environment variables:
 
-| Variable                                             | Default                           | Description                                      |
-| ---------------------------------------------------- | --------------------------------- | ------------------------------------------------ |
-| `YA_AGENT_MODEL_REQUEST_RETRY_ENABLED`               | `true`                            | Enable retry transport and WebSocket pre-stream retry |
-| `YA_AGENT_MODEL_REQUEST_RETRY_ATTEMPTS`              | `5`                               | Total attempts including the first try           |
-| `YA_AGENT_MODEL_REQUEST_RETRY_BACKOFF_MULTIPLIER`    | `1`                               | Exponential backoff multiplier                   |
-| `YA_AGENT_MODEL_REQUEST_RETRY_MAX_WAIT_SECONDS`      | `30`                              | Max exponential backoff wait                     |
-| `YA_AGENT_MODEL_REQUEST_RETRY_AFTER_MAX_WAIT_SECONDS` | `300`                             | Max wait honored from `Retry-After`              |
-| `YA_AGENT_MODEL_REQUEST_RETRY_STATUS_CODES`          | `408,409,425,429,500,502,503,504` | Comma-separated retryable HTTP statuses          |
+| Variable                                              | Default                           | Description                                           |
+| ----------------------------------------------------- | --------------------------------- | ----------------------------------------------------- |
+| `YA_AGENT_MODEL_REQUEST_RETRY_ENABLED`                | `true`                            | Enable retry transport and WebSocket pre-stream retry |
+| `YA_AGENT_MODEL_REQUEST_RETRY_ATTEMPTS`               | `5`                               | Total attempts including the first try                |
+| `YA_AGENT_MODEL_REQUEST_RETRY_BACKOFF_MULTIPLIER`     | `1`                               | Exponential backoff multiplier                        |
+| `YA_AGENT_MODEL_REQUEST_RETRY_MAX_WAIT_SECONDS`       | `30`                              | Max exponential backoff wait                          |
+| `YA_AGENT_MODEL_REQUEST_RETRY_AFTER_MAX_WAIT_SECONDS` | `300`                             | Max wait honored from `Retry-After`                   |
+| `YA_AGENT_MODEL_REQUEST_RETRY_STATUS_CODES`           | `408,409,425,429,500,502,503,504` | Comma-separated retryable HTTP statuses               |
 
 ## OpenAI Responses WebSocket
 
