@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 
 import pytest
 from pydantic_ai.exceptions import UnexpectedModelBehavior
@@ -345,6 +346,86 @@ async def test_websocket_model_does_not_fallback_after_successful_upgrade() -> N
     async with stream:
         assert stream.websocket_upgraded is True
         assert model._should_fallback_from(UnexpectedModelBehavior("parse failed"), stream) is False
+
+
+@pytest.mark.asyncio
+async def test_websocket_model_falls_back_to_http_for_upstream_connect_error_after_gateway_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self.closed = False
+            self.close_code: int | None = None
+            self.close_reason: str | None = None
+            self._messages = iter([
+                json.dumps({
+                    "type": "error",
+                    "message": "Failed to connect to upstream Responses WebSocket",
+                }),
+            ])
+
+        def __aiter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __anext__(self) -> str:
+            try:
+                return next(self._messages)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            self.closed = True
+            self.close_code = code
+            self.close_reason = reason
+
+    fake = FakeConnection()
+
+    async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return fake
+
+    stream = _WebsocketResponseStream(
+        url="wss://example.test/responses",
+        headers={},
+        payload={"type": "response.create"},
+        connect=connect,
+    )
+    model = WebsocketResponsesModel("gpt-5", provider=OpenAIProvider(api_key="test-key"))
+    http_response = object()
+    http_calls = 0
+
+    async def create_websocket_stream(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return stream
+
+    @asynccontextmanager
+    async def request_stream_http(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal http_calls
+        http_calls += 1
+        yield http_response
+
+    monkeypatch.setattr(model, "_create_websocket_stream", create_websocket_stream)
+    monkeypatch.setattr(model, "_request_stream_http", request_stream_http)
+
+    async with model.request_stream([], {}, ModelRequestParameters()) as response:  # type: ignore[arg-type]
+        assert response is http_response
+
+    assert http_calls == 1
+    assert model.websocket_fallback_state.failure_count == 1
+    assert model.websocket_fallback_state.disabled_until is not None
+    assert model.websocket_fallback_state.last_error is not None
+    assert "Failed to connect to upstream Responses WebSocket" in model.websocket_fallback_state.last_error
+    assert stream.websocket_upgraded is True
+    assert stream.events_seen == 0
+    assert fake.closed is True
+    assert fake.close_code == 1000
+    assert fake.close_reason == "client exited response stream"
+    assert fake.sent == [
+        '{"type":"response.create"}',
+        '{"type":"response.cancel"}',
+    ]
 
 
 @pytest.mark.asyncio

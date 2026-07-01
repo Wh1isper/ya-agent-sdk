@@ -537,11 +537,13 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
     def _should_fallback_from(self, exc: BaseException, stream: _WebsocketResponseStream | None) -> bool:
         if self._fallback_state.mode != "auto":
             return False
-        if stream is not None and stream.websocket_upgraded:
-            return False
         if stream is not None and stream.events_seen > 0:
             return False
-        return is_recoverable_websocket_error(exc)
+        if not is_recoverable_websocket_error(exc):
+            return False
+        if stream is not None and stream.websocket_upgraded:
+            return _is_upstream_websocket_connect_error(exc)
+        return True
 
 
 def _merge_openai_beta_header(headers: dict[str, str], beta: str) -> dict[str, str]:
@@ -561,7 +563,15 @@ def is_recoverable_websocket_error(exc: BaseException) -> bool:
         return exc.status_code in _RECOVERABLE_HTTP_STATUS_CODES
     if isinstance(exc, APIStatusError):
         return exc.status_code in _RECOVERABLE_HTTP_STATUS_CODES
+    if _is_upstream_websocket_connect_error(exc):
+        return True
     return isinstance(exc, (TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException))
+
+
+def _is_upstream_websocket_connect_error(exc: BaseException) -> bool:
+    if not isinstance(exc, UnexpectedModelBehavior):
+        return False
+    return "failed to connect to upstream responses websocket" in str(exc).lower()
 
 
 def _websocket_error_from_event(data: Mapping[str, Any]) -> BaseException:
