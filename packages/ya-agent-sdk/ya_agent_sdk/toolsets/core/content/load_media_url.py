@@ -109,7 +109,7 @@ class LoadMediaUrlTool(BaseTool):
             if not has_vision:
                 return (
                     f"The URL '{url}' points to an image, but the current model does not support vision capability. "
-                    "Use the `read_image` tool instead to analyze this image."
+                    "Use the `view` tool instead to analyze this image."
                 )
             return ImageUrl(url=url)
 
@@ -117,7 +117,7 @@ class LoadMediaUrlTool(BaseTool):
             if not has_video:
                 return (
                     f"The URL '{url}' points to a video, but the current model does not support video understanding. "
-                    "Use the `read_video` tool instead to analyze this video."
+                    "Use the `view` tool instead to analyze this video."
                 )
             return VideoUrl(url=url)
 
@@ -125,7 +125,7 @@ class LoadMediaUrlTool(BaseTool):
             if not has_audio:
                 return (
                     f"The URL '{url}' points to audio, but the current model does not support audio understanding. "
-                    "Use the `read_audio` tool instead to analyze this audio."
+                    "Use the `view` tool instead to analyze this audio."
                 )
             return AudioUrl(url=url)
 

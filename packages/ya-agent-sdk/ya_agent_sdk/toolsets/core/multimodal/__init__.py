@@ -8,11 +8,8 @@ from ya_agent_sdk.toolsets.core.multimodal.audio import ReadAudioTool
 from ya_agent_sdk.toolsets.core.multimodal.image import ReadImageTool
 from ya_agent_sdk.toolsets.core.multimodal.video import ReadVideoTool
 
-tools: list[type[BaseTool]] = [
-    ReadImageTool,
-    ReadVideoTool,
-    ReadAudioTool,
-]
+tools: list[type[BaseTool]] = []
+"""Deprecated: use the view tool directly."""
 
 __all__ = [
     "ReadAudioTool",

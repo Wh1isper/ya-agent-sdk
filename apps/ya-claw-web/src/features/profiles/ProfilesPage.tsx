@@ -526,7 +526,7 @@ function ProfileEditor({
                 <TextField
                   label="Builtin toolsets"
                   registration={form.register('builtin_toolsets')}
-                  placeholder="core, web, multimodal, document"
+                  placeholder="core, web, document"
                   helper="Comma-separated"
                 />
                 <TextField

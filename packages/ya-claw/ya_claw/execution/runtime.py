@@ -20,7 +20,6 @@ from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extrac
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.document import tools as document_tools
 from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from ya_agent_sdk.toolsets.core.multimodal import tools as multimodal_tools
 from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
 from ya_agent_sdk.toolsets.core.web import tools as web_tools
 from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillToolset
@@ -124,7 +123,6 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
     "filesystem": list(filesystem_tools),
     "shell": list(shell_tools),
     "web": list(web_tools),
-    "multimodal": list(multimodal_tools),
     "document": list(document_tools),
     "background": [
         SpawnDelegateTool,

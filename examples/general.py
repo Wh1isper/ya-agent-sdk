@@ -66,7 +66,6 @@ from ya_agent_sdk.toolsets.core.context import tools as context_tools
 from ya_agent_sdk.toolsets.core.document import tools as document_tools
 from ya_agent_sdk.toolsets.core.enhance import tools as enhance_tools
 from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from ya_agent_sdk.toolsets.core.multimodal import tools as multimodal_tools
 from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
 from ya_agent_sdk.toolsets.core.subagent import tools as subagent_tools
 from ya_agent_sdk.toolsets.core.web import tools as web_tools
@@ -316,7 +315,6 @@ async def main():
             *document_tools,
             *enhance_tools,
             *filesystem_tools,
-            *multimodal_tools,
             *shell_tools,
             *web_tools,
             *subagent_tools,

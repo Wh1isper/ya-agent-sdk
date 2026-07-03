@@ -18,13 +18,13 @@
 </supported_urls>
 
 {% if not has_vision %}
-<note>Image loading not supported. Use `read_image` tool instead.</note>
+<note>Image loading not supported. Use `view` tool instead.</note>
 {% endif %}
 {% if not has_video %}
-<note>Video/YouTube loading not supported. Use `read_video` tool instead.</note>
+<note>Video/YouTube loading not supported. Use `view` tool instead.</note>
 {% endif %}
 {% if not has_audio %}
-<note>Audio loading not supported. Use `read_audio` tool instead.</note>
+<note>Audio loading not supported. Use `view` tool instead.</note>
 {% endif %}
 
 </load-media-url-tool>
