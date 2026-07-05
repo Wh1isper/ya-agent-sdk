@@ -6,12 +6,13 @@ import os
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx2
 import pytest
 from PIL import Image
 from pydantic_ai import BinaryContent, RunContext, ToolReturn, VideoUrl
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig, ToolConfig
 from ya_agent_sdk.toolsets.core.content import LoadMediaUrlTool, ReadMediaTool, tools
 
@@ -165,6 +166,7 @@ def _run_context(
         model_cfg=model_cfg or ModelConfig(capabilities=set(capabilities)),
         tool_config=tool_config or ToolConfig(),
     )
+    ctx.tool_call_id = None
     return ctx
 
 
@@ -213,17 +215,34 @@ async def test_read_media_returns_youtube_video_url_for_youtube_url_model() -> N
     assert result.content[0].media_type == "video/mp4"
 
 
-async def test_read_media_returns_fallback_for_youtube_without_youtube_url_capability() -> None:
-    result = await ReadMediaTool().call(
-        _run_context(ModelCapability.video_understanding),
-        url="https://youtu.be/9hE5-98ZeCg",
-    )
+async def test_read_media_uses_video_fallback_for_youtube_without_youtube_url_capability() -> None:
+    captured_kwargs: dict[str, object] = {}
+    url = "https://youtu.be/9hE5-98ZeCg"
 
-    assert isinstance(result, dict)
-    assert result["success"] is False
-    assert "does not support direct YouTube URLs" in result["error"]
-    assert "`download`" in result["fallback"]
-    assert "`view`" in result["fallback"]
+    async def mock_get_video_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        captured_kwargs.update(kwargs)
+        return "This video shows a test scene.", "test-video-model", RunUsage()
+
+    with patch(
+        "ya_agent_sdk.agents.video_understanding.get_video_description",
+        side_effect=mock_get_video_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(
+                ModelCapability.video_understanding,
+                tool_config=ToolConfig(video_understanding_model="google:gemini-2.5-flash"),
+            ),
+            url=url,
+            instructions="Summarize the video.",
+        )
+
+    assert isinstance(result, str)
+    assert result == "Video description (via video understanding agent):\nThis video shows a test scene."
+    assert captured_kwargs["video_url"] == url
+    assert captured_kwargs["video_data"] is None
+    assert captured_kwargs["media_type"] == "video/mp4"
+    assert captured_kwargs["instruction"] == "Summarize the video."
+    assert captured_kwargs["model"] == "google:gemini-2.5-flash"
 
 
 async def test_read_media_returns_image_binary_with_instructions(httpx2_mock: Any) -> None:
@@ -269,6 +288,38 @@ async def test_read_media_returns_video_binary_from_extension_when_content_type_
     assert isinstance(result.content[0], BinaryContent)
     assert result.content[0].data == video_data
     assert result.content[0].media_type == "video/mp4"
+
+
+async def test_read_media_uses_video_fallback_with_binary_for_non_youtube_video(httpx2_mock: Any) -> None:
+    captured_kwargs: dict[str, object] = {}
+    video_data = b"video bytes"
+    httpx2_mock.add_response(
+        url="https://example.com/movie.mp4",
+        content=video_data,
+        headers={"Content-Type": "video/mp4"},
+    )
+
+    async def mock_get_video_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        captured_kwargs.update(kwargs)
+        return "This video shows a binary test scene.", "test-video-model", RunUsage()
+
+    with patch(
+        "ya_agent_sdk.agents.video_understanding.get_video_description",
+        side_effect=mock_get_video_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(tool_config=ToolConfig(video_understanding_model="google:gemini-2.5-flash")),
+            url="https://example.com/movie.mp4",
+            instructions="Give timestamped notes.",
+        )
+
+    assert isinstance(result, str)
+    assert result == "Video description (via video understanding agent):\nThis video shows a binary test scene."
+    assert captured_kwargs["video_url"] is None
+    assert captured_kwargs["video_data"] == video_data
+    assert captured_kwargs["media_type"] == "video/mp4"
+    assert captured_kwargs["instruction"] == "Give timestamped notes."
+    assert captured_kwargs["model"] == "google:gemini-2.5-flash"
 
 
 async def test_read_media_rejects_declared_oversized_media_before_reading(httpx2_mock: Any) -> None:
@@ -352,18 +403,120 @@ async def test_read_media_compresses_images_to_model_limit(httpx2_mock: Any) -> 
     assert len(result.content[0].data) <= raw_budget
 
 
-async def test_read_media_returns_fallback_for_missing_model_capability(httpx2_mock: Any) -> None:
+async def test_read_media_uses_image_fallback_for_missing_model_capability(httpx2_mock: Any) -> None:
+    captured_kwargs: dict[str, object] = {}
     httpx2_mock.add_response(
         url="https://example.com/image.png",
         content=PNG_1X1,
         headers={"Content-Type": "image/png"},
     )
 
-    result = await ReadMediaTool().call(_run_context(), url="https://example.com/image.png")
+    async def mock_get_image_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        captured_kwargs.update(kwargs)
+        return "This image contains one transparent pixel.", "test-image-model", RunUsage()
+
+    with patch(
+        "ya_agent_sdk.agents.image_understanding.get_image_description",
+        side_effect=mock_get_image_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(tool_config=ToolConfig(image_understanding_model="openai-chat:gpt-4o")),
+            url="https://example.com/image.png",
+            instructions="Extract all visible text.",
+        )
+
+    assert isinstance(result, str)
+    assert result == "Image description (via image analysis):\nThis image contains one transparent pixel."
+    assert captured_kwargs["image_url"] is None
+    assert captured_kwargs["image_data"] == PNG_1X1
+    assert captured_kwargs["media_type"] == "image/png"
+    assert captured_kwargs["instruction"] == "Extract all visible text."
+    assert captured_kwargs["model"] == "openai-chat:gpt-4o"
+
+
+async def test_read_media_uses_image_fallback_for_non_inline_image_format(httpx2_mock: Any) -> None:
+    captured_kwargs: dict[str, object] = {}
+    avif_data = b"avif bytes"
+    httpx2_mock.add_response(
+        url="https://example.com/avatar.avif",
+        content=avif_data,
+        headers={"Content-Type": "image/avif"},
+    )
+
+    async def mock_get_image_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        captured_kwargs.update(kwargs)
+        return "This image is an avatar.", "test-image-model", RunUsage()
+
+    with patch(
+        "ya_agent_sdk.agents.image_understanding.get_image_description",
+        side_effect=mock_get_image_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(tool_config=ToolConfig(image_understanding_model="google:gemini-2.5-flash")),
+            url="https://example.com/avatar.avif",
+            instructions="Describe the avatar.",
+        )
+
+    assert isinstance(result, str)
+    assert result == "Image description (via image analysis):\nThis image is an avatar."
+    assert captured_kwargs["image_url"] is None
+    assert captured_kwargs["image_data"] == avif_data
+    assert captured_kwargs["media_type"] == "image/avif"
+    assert captured_kwargs["instruction"] == "Describe the avatar."
+    assert captured_kwargs["model"] == "google:gemini-2.5-flash"
+
+
+async def test_read_media_uses_audio_fallback_for_missing_model_capability(httpx2_mock: Any) -> None:
+    captured_kwargs: dict[str, object] = {}
+    audio_data = b"audio bytes"
+    httpx2_mock.add_response(
+        url="https://example.com/audio.mp3",
+        content=audio_data,
+        headers={"Content-Type": "audio/mpeg"},
+    )
+
+    async def mock_get_audio_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        captured_kwargs.update(kwargs)
+        return "This audio contains speech.", "test-audio-model", RunUsage()
+
+    with patch(
+        "ya_agent_sdk.agents.audio_understanding.get_audio_description",
+        side_effect=mock_get_audio_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(tool_config=ToolConfig(audio_understanding_model="google:gemini-2.5-flash")),
+            url="https://example.com/audio.mp3",
+            instructions="Transcribe the speech.",
+        )
+
+    assert isinstance(result, str)
+    assert result == "Audio description (via audio understanding agent):\nThis audio contains speech."
+    assert captured_kwargs["audio_url"] is None
+    assert captured_kwargs["audio_data"] == audio_data
+    assert captured_kwargs["media_type"] == "audio/mpeg"
+    assert captured_kwargs["instruction"] == "Transcribe the speech."
+    assert captured_kwargs["model"] == "google:gemini-2.5-flash"
+
+
+async def test_read_media_returns_error_when_image_fallback_fails(httpx2_mock: Any) -> None:
+    httpx2_mock.add_response(
+        url="https://example.com/image.png",
+        content=PNG_1X1,
+        headers={"Content-Type": "image/png"},
+    )
+
+    async def mock_get_image_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        raise RuntimeError("analysis failed")
+
+    with patch(
+        "ya_agent_sdk.agents.image_understanding.get_image_description",
+        side_effect=mock_get_image_description,
+    ):
+        result = await ReadMediaTool().call(_run_context(), url="https://example.com/image.png")
 
     assert isinstance(result, dict)
     assert result["success"] is False
-    assert "does not support vision" in result["error"]
+    assert "fallback image analysis failed" in result["error"]
     assert "`download`" in result["fallback"]
     assert "`view`" in result["fallback"]
 

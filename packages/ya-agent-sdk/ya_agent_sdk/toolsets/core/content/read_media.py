@@ -37,6 +37,7 @@ IMAGE_MEDIA_TYPE_MAP = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".avif": "image/avif",
 }
 VIDEO_MEDIA_TYPE_MAP = {
     ".mp4": "video/mp4",
@@ -153,17 +154,6 @@ class ReadMediaTool(BaseTool):
             return model_cfg.has_capability(ModelCapability.video_understanding)
         return model_cfg.has_capability(ModelCapability.audio_understanding)
 
-    def _unsupported_capability_error(self, url: str, kind: MediaKind) -> dict[str, Any]:
-        if kind == "image":
-            capability = "vision"
-        elif kind == "video":
-            capability = "video understanding"
-        else:
-            capability = "audio understanding"
-        return _error(
-            f"The URL '{url}' appears to be {kind} media, but the current model does not support {capability}."
-        )
-
     def _max_inline_bytes(self, ctx: RunContext[AgentContext], kind: MediaKind) -> int:
         tool_config = ctx.deps.tool_config
         if kind == "image":
@@ -263,6 +253,17 @@ class ReadMediaTool(BaseTool):
         )
         return compressed_data, compressed_media_type
 
+    def _fallback_image_media_type(self, data: bytes, media_type: str | None, *, url: str) -> str | None:
+        detected_type = detect_image_media_type(data)
+        if detected_type is not None:
+            return detected_type
+
+        media_type = _main_content_type(media_type)
+        if media_type:
+            return media_type
+
+        return _extension_media_type(url, "image")
+
     def _build_media_return(
         self,
         *,
@@ -275,23 +276,217 @@ class ReadMediaTool(BaseTool):
             return_value = f"{return_value}\n\nAnalysis instructions:\n{instructions.strip()}"
         return ToolReturn(return_value=return_value, content=[content])
 
-    def _read_youtube_url(
+    def _record_understanding_usage(
+        self,
+        ctx: RunContext[AgentContext],
+        *,
+        agent_name: str,
+        model_id: str,
+        usage: Any,
+    ) -> None:
+        tool_call_id = getattr(ctx, "tool_call_id", None)
+        if not tool_call_id:
+            return
+
+        ctx.deps.update_usage_snapshot_entry(
+            agent_id=agent_name,
+            agent_name=agent_name,
+            model_id=model_id,
+            usage=usage,
+            source=agent_name,
+            usage_id=tool_call_id,
+            ledger_key=tool_call_id,
+        )
+
+    async def _describe_image(
+        self,
+        ctx: RunContext[AgentContext],
+        *,
+        source: str,
+        media_type: str,
+        instructions: str | None,
+        image_data: bytes,
+    ) -> str | dict[str, Any]:
+        """Describe image via the fallback image-understanding agent."""
+        try:
+            from ya_agent_sdk.agents.image_understanding import get_image_description
+
+            model = None
+            model_settings = None
+            if ctx.deps.tool_config:
+                tool_config = ctx.deps.tool_config
+                model = tool_config.image_understanding_model
+                model_settings = tool_config.image_understanding_model_settings
+
+            description, model_id, usage = await get_image_description(
+                image_url=None,
+                image_data=image_data,
+                media_type=media_type,
+                instruction=instructions,
+                model=model,
+                model_settings=model_settings,
+                model_wrapper=ctx.deps.model_wrapper,
+                wrapper_metadata=ctx.deps.get_wrapper_metadata(),
+            )
+
+            self._record_understanding_usage(
+                ctx,
+                agent_name="image_understanding",
+                model_id=model_id,
+                usage=usage,
+            )
+            return f"Image description (via image analysis):\n{description}"
+        except Exception as e:
+            logger.warning("Failed to analyze image URL %s with image understanding: %s", source, e)
+            return _error(
+                f"The URL '{source}' appears to be image media, but the current model does not support vision "
+                "and fallback image analysis failed."
+            )
+
+    async def _describe_video(
+        self,
+        ctx: RunContext[AgentContext],
+        *,
+        source: str,
+        media_type: str,
+        instructions: str | None,
+        video_url: str | None = None,
+        video_data: bytes | None = None,
+    ) -> str | dict[str, Any]:
+        """Describe video via the fallback video-understanding agent."""
+        try:
+            from ya_agent_sdk.agents.video_understanding import get_video_description
+
+            model = None
+            model_settings = None
+            if ctx.deps.tool_config:
+                tool_config = ctx.deps.tool_config
+                model = tool_config.video_understanding_model
+                model_settings = tool_config.video_understanding_model_settings
+
+            description, model_id, usage = await get_video_description(
+                video_url=video_url,
+                video_data=video_data,
+                media_type=media_type,
+                instruction=instructions,
+                model=model,
+                model_settings=model_settings,
+                model_wrapper=ctx.deps.model_wrapper,
+                wrapper_metadata=ctx.deps.get_wrapper_metadata(),
+            )
+
+            self._record_understanding_usage(
+                ctx,
+                agent_name="video_understanding",
+                model_id=model_id,
+                usage=usage,
+            )
+            return f"Video description (via video understanding agent):\n{description}"
+        except Exception as e:
+            logger.warning("Failed to analyze video URL %s with video understanding: %s", source, e)
+            return _error(
+                f"The URL '{source}' appears to be video media, but the current model does not support video "
+                "understanding and fallback video analysis failed."
+            )
+
+    async def _describe_audio(
+        self,
+        ctx: RunContext[AgentContext],
+        *,
+        source: str,
+        media_type: str,
+        instructions: str | None,
+        audio_data: bytes,
+    ) -> str | dict[str, Any]:
+        """Describe audio via the fallback audio-understanding agent."""
+        try:
+            from ya_agent_sdk.agents.audio_understanding import get_audio_description
+
+            model = None
+            model_settings = None
+            if ctx.deps.tool_config:
+                tool_config = ctx.deps.tool_config
+                model = tool_config.audio_understanding_model
+                model_settings = tool_config.audio_understanding_model_settings
+
+            description, model_id, usage = await get_audio_description(
+                audio_url=None,
+                audio_data=audio_data,
+                media_type=media_type,
+                instruction=instructions,
+                model=model,
+                model_settings=model_settings,
+                model_wrapper=ctx.deps.model_wrapper,
+                wrapper_metadata=ctx.deps.get_wrapper_metadata(),
+            )
+
+            self._record_understanding_usage(
+                ctx,
+                agent_name="audio_understanding",
+                model_id=model_id,
+                usage=usage,
+            )
+            return f"Audio description (via audio understanding agent):\n{description}"
+        except Exception as e:
+            logger.warning("Failed to analyze audio URL %s with audio understanding: %s", source, e)
+            return _error(
+                f"The URL '{source}' appears to be audio media, but the current model does not support audio "
+                "understanding and fallback audio analysis failed."
+            )
+
+    async def _read_youtube_url(
         self,
         ctx: RunContext[AgentContext],
         *,
         url: str,
         instructions: str | None,
-    ) -> dict[str, Any] | ToolReturn:
-        if not self._model_supports(ctx, "video"):
-            return self._unsupported_capability_error(url, "video")
-        if not ctx.deps.model_cfg.has_youtube_url:
-            return _error(
-                f"The URL '{url}' appears to be a YouTube video, but the current model does not support direct YouTube URLs."
+    ) -> str | dict[str, Any] | ToolReturn:
+        if self._model_supports(ctx, "video") and ctx.deps.model_cfg.has_youtube_url:
+            return self._build_media_return(
+                kind="video",
+                content=VideoUrl(url=url),
+                instructions=instructions,
             )
 
-        return self._build_media_return(
-            kind="video",
-            content=VideoUrl(url=url),
+        return await self._describe_video(
+            ctx,
+            source=url,
+            video_url=url,
+            media_type="video/mp4",
+            instructions=instructions,
+        )
+
+    async def _describe_media_fallback(
+        self,
+        ctx: RunContext[AgentContext],
+        *,
+        kind: MediaKind,
+        source: str,
+        data: bytes,
+        media_type: str,
+        instructions: str | None,
+    ) -> str | dict[str, Any]:
+        if kind == "image":
+            return await self._describe_image(
+                ctx,
+                source=source,
+                image_data=data,
+                media_type=media_type,
+                instructions=instructions,
+            )
+        if kind == "video":
+            return await self._describe_video(
+                ctx,
+                source=source,
+                video_data=data,
+                media_type=media_type,
+                instructions=instructions,
+            )
+        return await self._describe_audio(
+            ctx,
+            source=source,
+            audio_data=data,
+            media_type=media_type,
             instructions=instructions,
         )
 
@@ -302,14 +497,11 @@ class ReadMediaTool(BaseTool):
         *,
         url: str,
         instructions: str | None,
-    ) -> dict[str, Any] | ToolReturn:
+    ) -> str | dict[str, Any] | ToolReturn:
         category, media_type = self._category_and_media_type(response, url)
         kind = _kind_for_category(category)
         if kind is None:
             return _error(f"The URL '{url}' does not look like a supported image, video, or audio resource.")
-
-        if not self._model_supports(ctx, kind):
-            return self._unsupported_capability_error(url, kind)
 
         max_bytes = self._max_inline_bytes(ctx, kind)
         declared_size = self._declared_size(response)
@@ -320,13 +512,29 @@ class ReadMediaTool(BaseTool):
         if isinstance(body, dict):
             return body
 
+        model_supports_kind = self._model_supports(ctx, kind)
         if kind == "image":
-            prepared_image = await self._prepare_image(ctx, body, media_type, url=url)
-            if isinstance(prepared_image, dict):
-                return prepared_image
-            body, media_type = prepared_image
+            if model_supports_kind:
+                prepared_image = await self._prepare_image(ctx, body, media_type, url=url)
+                if isinstance(prepared_image, dict):
+                    return prepared_image
+                body, media_type = prepared_image
+            else:
+                media_type = self._fallback_image_media_type(body, media_type, url=url)
+                if media_type is None:
+                    return _error(f"Could not determine an image media type for URL '{url}'.")
         elif media_type is None:
             return _error(f"Could not determine a media type for URL '{url}'.")
+
+        if not model_supports_kind:
+            return await self._describe_media_fallback(
+                ctx,
+                kind=kind,
+                source=url,
+                data=body,
+                media_type=media_type,
+                instructions=instructions,
+            )
 
         return self._build_media_return(
             kind=kind,
@@ -348,13 +556,13 @@ class ReadMediaTool(BaseTool):
                 default=None,
             ),
         ] = None,
-    ) -> dict[str, Any] | ToolReturn:
+    ) -> str | dict[str, Any] | ToolReturn:
         """Download a media URL into bounded in-memory binary content."""
         if not is_valid_http_url(url):
             return _error(f"Only HTTP and HTTPS URLs are supported. The provided URL '{url}' is not supported.")
 
         if _is_youtube_url(url):
-            return self._read_youtube_url(ctx, url=url, instructions=instructions)
+            return await self._read_youtube_url(ctx, url=url, instructions=instructions)
 
         try:
             async with safe_stream_request(
