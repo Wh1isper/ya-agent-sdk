@@ -107,14 +107,74 @@ def _kind_for_category(category: ContentCategory) -> MediaKind | None:
 
 
 def _fallback_guidance() -> str:
-    return (
-        "Use `download` to save the URL to a local file, compress or transcode it if needed, "
-        "then call `view` on the local path with focused `instructions`."
-    )
+    return "Use `download` to save the URL to a local file, then call `view` on it with focused `instructions`."
 
 
 def _error(message: str) -> dict[str, Any]:
     return {"success": False, "error": message, "fallback": _fallback_guidance()}
+
+
+def _fallback_analysis_error(
+    *,
+    source: str,
+    kind: MediaKind,
+    exc: Exception,
+) -> dict[str, Any]:
+    return _error(f"{_analysis_failure_reason(kind=kind, exc=exc)} URL: '{source}'.")
+
+
+def _analysis_failure_reason(*, kind: MediaKind, exc: Exception) -> str:
+    status_code, reason_phrase = _http_status_from_exception(exc)
+    if status_code is not None:
+        if status_code == 429:
+            return (
+                f"{kind.capitalize()} analysis is rate limited by the configured {kind} understanding model "
+                f"(429 Too Many Requests)."
+            )
+        if reason_phrase:
+            return f"{kind.capitalize()} analysis request failed with HTTP {status_code} {reason_phrase}."
+        return f"{kind.capitalize()} analysis request failed with HTTP {status_code}."
+
+    message = str(exc).splitlines()[0].strip()
+    if " for url " in message:
+        message = message.split(" for url ", maxsplit=1)[0].rstrip()
+    if not message:
+        return f"{kind.capitalize()} analysis failed."
+    return f"{kind.capitalize()} analysis failed: {message}."
+
+
+def _http_status_from_exception(exc: BaseException) -> tuple[int | None, str | None]:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            reason_phrase = getattr(response, "reason_phrase", None)
+            return status_code, str(reason_phrase) if reason_phrase else None
+
+        cause = getattr(current, "cause", None)
+        if isinstance(cause, BaseException):
+            current = cause
+            continue
+        current = current.__cause__ or current.__context__
+    return None, None
+
+
+def _url_read_error(*, url: str, exc: Exception) -> dict[str, Any]:
+    status_code, reason_phrase = _http_status_from_exception(exc)
+    if status_code is not None:
+        if reason_phrase:
+            return _error(f"Failed to read media URL: HTTP {status_code} {reason_phrase}. URL: '{url}'.")
+        return _error(f"Failed to read media URL: HTTP {status_code}. URL: '{url}'.")
+
+    message = str(exc).splitlines()[0].strip()
+    if " for url " in message:
+        message = message.split(" for url ", maxsplit=1)[0].rstrip()
+    if message:
+        return _error(f"Failed to read media URL: {message}. URL: '{url}'.")
+    return _error(f"Failed to read media URL '{url}'.")
 
 
 class ReadMediaTool(BaseTool):
@@ -338,9 +398,10 @@ class ReadMediaTool(BaseTool):
             return f"Image description (via image analysis):\n{description}"
         except Exception as e:
             logger.warning("Failed to analyze image URL %s with image understanding: %s", source, e)
-            return _error(
-                f"The URL '{source}' appears to be image media, but the current model does not support vision "
-                "and fallback image analysis failed."
+            return _fallback_analysis_error(
+                source=source,
+                kind="image",
+                exc=e,
             )
 
     async def _describe_video(
@@ -384,9 +445,10 @@ class ReadMediaTool(BaseTool):
             return f"Video description (via video understanding agent):\n{description}"
         except Exception as e:
             logger.warning("Failed to analyze video URL %s with video understanding: %s", source, e)
-            return _error(
-                f"The URL '{source}' appears to be video media, but the current model does not support video "
-                "understanding and fallback video analysis failed."
+            return _fallback_analysis_error(
+                source=source,
+                kind="video",
+                exc=e,
             )
 
     async def _describe_audio(
@@ -429,9 +491,10 @@ class ReadMediaTool(BaseTool):
             return f"Audio description (via audio understanding agent):\n{description}"
         except Exception as e:
             logger.warning("Failed to analyze audio URL %s with audio understanding: %s", source, e)
-            return _error(
-                f"The URL '{source}' appears to be audio media, but the current model does not support audio "
-                "understanding and fallback audio analysis failed."
+            return _fallback_analysis_error(
+                source=source,
+                kind="audio",
+                exc=e,
             )
 
     async def _read_youtube_url(
@@ -490,6 +553,37 @@ class ReadMediaTool(BaseTool):
             instructions=instructions,
         )
 
+    async def _prepare_image_or_describe(
+        self,
+        ctx: RunContext[AgentContext],
+        *,
+        data: bytes,
+        media_type: str | None,
+        url: str,
+        instructions: str | None,
+        model_supports_image: bool,
+    ) -> tuple[bytes, str] | str | dict[str, Any]:
+        if model_supports_image:
+            prepared_image = await self._prepare_image(ctx, data, media_type, url=url)
+            if not isinstance(prepared_image, dict):
+                return prepared_image
+
+            fallback_media_type = self._fallback_image_media_type(data, media_type, url=url)
+            if fallback_media_type is None:
+                return prepared_image
+            return await self._describe_image(
+                ctx,
+                source=url,
+                image_data=data,
+                media_type=fallback_media_type,
+                instructions=instructions,
+            )
+
+        fallback_media_type = self._fallback_image_media_type(data, media_type, url=url)
+        if fallback_media_type is None:
+            return _error(f"Could not determine an image media type for URL '{url}'.")
+        return data, fallback_media_type
+
     async def _read_response(
         self,
         ctx: RunContext[AgentContext],
@@ -514,15 +608,17 @@ class ReadMediaTool(BaseTool):
 
         model_supports_kind = self._model_supports(ctx, kind)
         if kind == "image":
-            if model_supports_kind:
-                prepared_image = await self._prepare_image(ctx, body, media_type, url=url)
-                if isinstance(prepared_image, dict):
-                    return prepared_image
-                body, media_type = prepared_image
-            else:
-                media_type = self._fallback_image_media_type(body, media_type, url=url)
-                if media_type is None:
-                    return _error(f"Could not determine an image media type for URL '{url}'.")
+            prepared_image = await self._prepare_image_or_describe(
+                ctx,
+                data=body,
+                media_type=media_type,
+                url=url,
+                instructions=instructions,
+                model_supports_image=model_supports_kind,
+            )
+            if isinstance(prepared_image, str | dict):
+                return prepared_image
+            body, media_type = prepared_image
         elif media_type is None:
             return _error(f"Could not determine a media type for URL '{url}'.")
 
@@ -576,9 +672,9 @@ class ReadMediaTool(BaseTool):
 
         except ForbiddenUrlError as e:
             return _error(f"URL forbidden: {e}")
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to read media URL %s", url)
-            return _error(f"Failed to read media URL '{url}'.")
+            return _url_read_error(url=url, exc=e)
 
 
 __all__ = ["ReadMediaTool"]

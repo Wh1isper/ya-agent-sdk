@@ -69,6 +69,12 @@ agent_stream_resume_prompt = "The previous streaming model request failed before
 # ANTHROPIC_API_KEY = "sk-ant-..."
 # OPENAI_API_KEY = "sk-..."
 # GOOGLE_API_KEY = "..."
+#
+# Fallback media understanding models used by `view` and `read_media`
+# when the main model lacks native image, video, or audio capability.
+# YA_AGENT_IMAGE_UNDERSTANDING_MODEL = "google:gemini-2.5-flash"
+# YA_AGENT_VIDEO_UNDERSTANDING_MODEL = "google:gemini-2.5-flash"
+# YA_AGENT_AUDIO_UNDERSTANDING_MODEL = "google:gemini-2.5-flash"
 
 [oauth_refresh]
 # Proactively refresh OAuth-backed model provider tokens during CLI lifetime.

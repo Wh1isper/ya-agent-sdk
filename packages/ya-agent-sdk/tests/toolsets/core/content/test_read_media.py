@@ -245,6 +245,39 @@ async def test_read_media_uses_video_fallback_for_youtube_without_youtube_url_ca
     assert captured_kwargs["model"] == "google:gemini-2.5-flash"
 
 
+async def test_read_media_reports_video_fallback_failure_cause_for_youtube() -> None:
+    class FakeHTTPStatusError(Exception):
+        response = type("Response", (), {"status_code": 429, "reason_phrase": "Too Many Requests"})()
+
+    class FakeVideoAnalysisError(Exception):
+        cause = FakeHTTPStatusError("gateway request failed")
+
+    async def mock_get_video_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        raise FakeVideoAnalysisError("Failed to analyze video")
+
+    url = "https://www.youtube.com/watch?v=9hE5-98ZeCg"
+    with patch(
+        "ya_agent_sdk.agents.video_understanding.get_video_description",
+        side_effect=mock_get_video_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(tool_config=ToolConfig(video_understanding_model="google:gemini-2.5-flash")),
+            url=url,
+        )
+
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error"] == (
+        "Video analysis is rate limited by the configured video understanding model (429 Too Many Requests). "
+        f"URL: '{url}'."
+    )
+    assert "llm-gateway" not in result["error"]
+    assert "FakeVideoAnalysisError" not in result["error"]
+    assert url in result["error"]
+    assert "`download`" in result["fallback"]
+    assert "`view`" in result["fallback"]
+
+
 async def test_read_media_returns_image_binary_with_instructions(httpx2_mock: Any) -> None:
     httpx2_mock.add_response(
         url="https://example.com/image.png",
@@ -337,14 +370,13 @@ async def test_read_media_rejects_declared_oversized_media_before_reading(httpx2
         url="https://example.com/huge.png",
     )
 
-    assert result == {
-        "success": False,
-        "error": "The image URL is too large to read into memory safely (2048 bytes). Maximum supported size is 1024 bytes.",
-        "fallback": (
-            "Use `download` to save the URL to a local file, compress or transcode it if needed, "
-            "then call `view` on the local path with focused `instructions`."
-        ),
-    }
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error"] == (
+        "The image URL is too large to read into memory safely (2048 bytes). Maximum supported size is 1024 bytes."
+    )
+    assert "`download`" in result["fallback"]
+    assert "`view`" in result["fallback"]
 
 
 class _ChunkedResponse:
@@ -466,6 +498,41 @@ async def test_read_media_uses_image_fallback_for_non_inline_image_format(httpx2
     assert captured_kwargs["model"] == "google:gemini-2.5-flash"
 
 
+async def test_read_media_uses_image_fallback_for_non_inline_image_format_with_vision_model(
+    httpx2_mock: Any,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+    avif_data = b"avif bytes"
+    httpx2_mock.add_response(
+        url="https://example.com/avatar.avif",
+        content=avif_data,
+        headers={"Content-Type": "image/avif"},
+    )
+
+    async def mock_get_image_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        captured_kwargs.update(kwargs)
+        return "This image is an avatar.", "test-image-model", RunUsage()
+
+    with patch(
+        "ya_agent_sdk.agents.image_understanding.get_image_description",
+        side_effect=mock_get_image_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(
+                ModelCapability.vision,
+                tool_config=ToolConfig(image_understanding_model="google:gemini-2.5-flash"),
+            ),
+            url="https://example.com/avatar.avif",
+            instructions="Describe the avatar.",
+        )
+
+    assert isinstance(result, str)
+    assert result == "Image description (via image analysis):\nThis image is an avatar."
+    assert captured_kwargs["image_url"] is None
+    assert captured_kwargs["image_data"] == avif_data
+    assert captured_kwargs["media_type"] == "image/avif"
+
+
 async def test_read_media_uses_audio_fallback_for_missing_model_capability(httpx2_mock: Any) -> None:
     captured_kwargs: dict[str, object] = {}
     audio_data = b"audio bytes"
@@ -516,7 +583,24 @@ async def test_read_media_returns_error_when_image_fallback_fails(httpx2_mock: A
 
     assert isinstance(result, dict)
     assert result["success"] is False
-    assert "fallback image analysis failed" in result["error"]
+    assert result["error"] == "Image analysis failed: analysis failed. URL: 'https://example.com/image.png'."
+    assert "`download`" in result["fallback"]
+    assert "`view`" in result["fallback"]
+
+
+async def test_read_media_reports_http_status_when_url_read_fails(httpx2_mock: Any) -> None:
+    httpx2_mock.add_response(
+        url="https://example.com/missing.png",
+        status_code=404,
+        text="not found",
+        headers={"Content-Type": "text/plain"},
+    )
+
+    result = await ReadMediaTool().call(_run_context(ModelCapability.vision), url="https://example.com/missing.png")
+
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error"] == "Failed to read media URL: HTTP 404 Not Found. URL: 'https://example.com/missing.png'."
     assert "`download`" in result["fallback"]
     assert "`view`" in result["fallback"]
 
