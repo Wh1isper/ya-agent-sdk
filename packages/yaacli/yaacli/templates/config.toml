@@ -47,7 +47,7 @@ model = ""
 # max_videos = 0
 # compact_threshold = 0.90
 # proactive_context_management_threshold = 0.5
-# capabilities = ["vision"]  # Options: vision, video_understanding, document_understanding
+# capabilities = ["vision"]  # Options: vision, image_url, video_understanding, video_url, youtube_url, audio_understanding, document_understanding
 
 # Maximum requests per session
 max_requests = 1000

@@ -18,6 +18,7 @@ from ya_agent_sdk.context import (
 )
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps, filter_mcp_config
 from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.content import tools as content_tools
 from ya_agent_sdk.toolsets.core.document import tools as document_tools
 from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
 from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
@@ -120,6 +121,7 @@ Prefer concise, action-oriented execution.
 """.strip()
 
 _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
+    "content": list(content_tools),
     "filesystem": list(filesystem_tools),
     "shell": list(shell_tools),
     "web": list(web_tools),
@@ -158,7 +160,7 @@ _BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
     ],
 }
 _BUILTIN_TOOLSET_ALIASES: dict[str, list[str]] = {
-    "core": ["filesystem", "shell", "background", "session", "schedule", "workflow", "agency"],
+    "core": ["content", "filesystem", "shell", "background", "session", "schedule", "workflow", "agency"],
 }
 _UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "workflow", "heartbeat", "agency", "agency_handoff"})
 

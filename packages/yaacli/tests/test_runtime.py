@@ -348,6 +348,7 @@ def test_create_tui_runtime_with_model_cfg_gemini(tmp_path: Path) -> None:
     assert runtime.ctx.model_cfg.context_window == 1_000_000
     assert ModelCapability.vision in runtime.ctx.model_cfg.capabilities
     assert ModelCapability.video_understanding in runtime.ctx.model_cfg.capabilities
+    assert ModelCapability.youtube_url in runtime.ctx.model_cfg.capabilities
 
 
 def test_create_tui_runtime_with_model_cfg_dict(tmp_path: Path) -> None:

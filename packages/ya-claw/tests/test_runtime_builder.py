@@ -206,6 +206,7 @@ def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
 
     resolved_tool_names = [getattr(tool, "name", tool.__name__) for tool in builder._resolve_builtin_tools(["core"])]
 
+    assert "read_media" in resolved_tool_names
     assert "view" in resolved_tool_names
     assert "shell_exec" in resolved_tool_names
     assert "spawn_delegate" in resolved_tool_names
@@ -231,6 +232,7 @@ def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_
 
     resolved_tool_names = [getattr(tool, "name", tool.__name__) for tool in builder._resolve_builtin_tools(["core"])]
 
+    assert "read_media" in resolved_tool_names
     assert "view" in resolved_tool_names
     assert "write" in resolved_tool_names
     assert "shell_exec" in resolved_tool_names
@@ -279,6 +281,7 @@ def test_runtime_builder_filters_async_subagent_management_tools(tmp_path: Path)
     assert "get_async_subagent" not in resolved_tool_names
     assert "steer_async_subagent" not in resolved_tool_names
     assert "cancel_async_subagent" not in resolved_tool_names
+    assert "read_media" in resolved_tool_names
     assert "view" in resolved_tool_names
     assert "shell_exec" in resolved_tool_names
 

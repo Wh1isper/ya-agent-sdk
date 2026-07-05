@@ -258,6 +258,9 @@ class ModelCapability(StrEnum):
     video_url = "video_url"
     """Model supports receiving videos via URL."""
 
+    youtube_url = "youtube_url"
+    """Model supports receiving public YouTube videos directly by URL."""
+
     reasoning_required = "reasoning_required"
     """Provider requires assistant messages to include reasoning content."""
 
@@ -871,6 +874,11 @@ class ModelConfig(BaseModel):
     def has_video_understanding(self) -> bool:
         """Check if the model supports video understanding."""
         return ModelCapability.video_understanding in self.capabilities
+
+    @property
+    def has_youtube_url(self) -> bool:
+        """Check if the model supports receiving public YouTube videos directly by URL."""
+        return ModelCapability.youtube_url in self.capabilities
 
     @property
     def has_audio_understanding(self) -> bool:

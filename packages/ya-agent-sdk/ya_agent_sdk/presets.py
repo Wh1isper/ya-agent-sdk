@@ -1417,6 +1417,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "capabilities": {
             ModelCapability.vision,
             ModelCapability.video_understanding,
+            ModelCapability.youtube_url,
             ModelCapability.audio_understanding,
             ModelCapability.document_understanding,
         },
@@ -1432,6 +1433,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "capabilities": {
             ModelCapability.vision,
             ModelCapability.video_understanding,
+            ModelCapability.youtube_url,
             ModelCapability.audio_understanding,
             ModelCapability.document_understanding,
         },

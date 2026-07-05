@@ -937,6 +937,7 @@ def test_model_cfg_capabilities() -> None:
     cfg_gemini = get_model_cfg("gemini_1m")
     assert ModelCapability.vision in cfg_gemini["capabilities"]
     assert ModelCapability.video_understanding in cfg_gemini["capabilities"]
+    assert ModelCapability.youtube_url in cfg_gemini["capabilities"]
     assert ModelCapability.document_understanding in cfg_gemini["capabilities"]
 
 
