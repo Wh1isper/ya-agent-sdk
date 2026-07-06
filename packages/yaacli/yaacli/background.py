@@ -128,6 +128,8 @@ class BackgroundMonitor(BaseResource):
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._task_info: dict[str, BackgroundTaskInfo] = {}
         self._task_results: dict[str, BackgroundTaskResult] = {}
+        self._delivered_task_results: set[str] = set()
+        self._waiting_task_results: set[str] = set()
         self._core_toolset: Toolset[Any] | None = None
         self._completion_callback: Callable[[str], None] | None = None
 
@@ -231,6 +233,13 @@ class BackgroundMonitor(BaseResource):
             target = message.target
             if target is not None and target != agent_id:
                 remaining.append(pending)
+                continue
+            if self.is_task_result_delivered(message.source) and pending.shell_process_id is None:
+                logger.debug(
+                    "Dropping delivered background task notification: source=%s target=%s",
+                    message.source,
+                    message.target,
+                )
                 continue
             if not self._is_pending_message_deliverable(pending):
                 logger.debug(
@@ -367,6 +376,45 @@ class BackgroundMonitor(BaseResource):
         """Cache the terminal result for a background subagent task."""
         self._task_results[result.agent_id] = result
 
+    def begin_task_result_wait(self, agent_id: str) -> None:
+        """Mark that the main agent is actively waiting for a task result."""
+        self._waiting_task_results.add(agent_id)
+
+    def end_task_result_wait(self, agent_id: str) -> None:
+        """Clear active wait state for a task result."""
+        self._waiting_task_results.discard(agent_id)
+
+    def get_task_result_message_id(self, agent_id: str) -> str:
+        """Return the stable bus message id for a background task result."""
+        return f"background-task-result:{agent_id}"
+
+    def mark_task_result_delivered(
+        self, agent_id: str, bus: MessageBus | None = None, target: str | None = None
+    ) -> None:
+        """Mark a task result as already delivered through wait_subagent.
+
+        This also drops queued fallback notifications and marks the stable
+        active-run bus message as consumed for the target subscriber when
+        possible, preventing duplicate result delivery after wait_subagent.
+        """
+        self._delivered_task_results.add(agent_id)
+        message_id = self.get_task_result_message_id(agent_id)
+        self._pending_messages = [
+            pending
+            for pending in self._pending_messages
+            if pending.shell_process_id is not None or pending.message.id != message_id
+        ]
+        if bus is not None and target is not None:
+            bus.mark_consumed(target, {message_id})
+
+    def is_task_result_delivered(self, agent_id: str) -> bool:
+        """Return whether a task result has already been delivered through wait_subagent."""
+        return agent_id in self._delivered_task_results
+
+    def should_deliver_task_result_message(self, agent_id: str) -> bool:
+        """Return whether completion should still be sent through the message bus."""
+        return agent_id not in self._delivered_task_results and agent_id not in self._waiting_task_results
+
     def get_task_result(self, agent_id: str) -> BackgroundTaskResult | None:
         """Return cached terminal result for a background subagent task, if any."""
         return self._task_results.get(agent_id)
@@ -396,7 +444,11 @@ class BackgroundMonitor(BaseResource):
         done, _pending = await asyncio.wait({task}, timeout=timeout)
         if not done:
             return None
-        return self._task_results.get(agent_id)
+
+        result = self._task_results.get(agent_id)
+        if result is not None:
+            return result
+        return self._record_missing_task_result(agent_id)
 
     async def wait_for_agents(
         self,
@@ -413,8 +465,24 @@ class BackgroundMonitor(BaseResource):
                 await asyncio.wait(tasks, timeout=timeout)
 
         for agent_id in agent_ids:
-            results[agent_id] = self._task_results.get(agent_id)
+            result = self._task_results.get(agent_id)
+            task = self._tasks.get(agent_id)
+            if result is None and task is not None and task.done():
+                result = self._record_missing_task_result(agent_id)
+            results[agent_id] = result
         return results
+
+    def _record_missing_task_result(self, agent_id: str) -> BackgroundTaskResult:
+        """Record a failed result for a task that finished without a terminal result."""
+        info = self._task_info.get(agent_id)
+        result = BackgroundTaskResult(
+            agent_id=agent_id,
+            subagent_name=info.subagent_name if info is not None else agent_id.rsplit("-bg-", 1)[0],
+            status="failed",
+            error="Background task finished without recording a result.",
+        )
+        self.record_task_result(result)
+        return result
 
     def known_task_ids(self) -> list[str]:
         """Return ids for running or cached-result background subagents."""
@@ -728,6 +796,8 @@ class BackgroundMonitor(BaseResource):
         self._tasks.clear()
         self._task_info.clear()
         self._task_results.clear()
+        self._delivered_task_results.clear()
+        self._waiting_task_results.clear()
         self._core_toolset = None
         self._completion_callback = None
         self._shell = None

@@ -295,6 +295,33 @@ def test_message_bus_peek_unsubscribed() -> None:
     assert bus.peek("main") == []
 
 
+def test_message_bus_mark_consumed() -> None:
+    """mark_consumed should skip selected unread messages for one subscriber."""
+    bus = MessageBus()
+    bus.subscribe("main")
+    bus.subscribe("other")
+    bus.send(BusMessage(id="skip-me", content="Skip", source="user", target="main"))
+    bus.send(BusMessage(id="keep-me", content="Keep", source="user", target="main"))
+    bus.send(BusMessage(id="other-only", content="Other", source="user", target="other"))
+
+    assert bus.mark_consumed("main", {"skip-me", "other-only", "missing"}) == 1
+
+    main_messages = bus.consume("main")
+    assert [msg.id for msg in main_messages] == ["keep-me"]
+
+    other_messages = bus.consume("other")
+    assert [msg.id for msg in other_messages] == ["other-only"]
+
+
+def test_message_bus_mark_consumed_unsubscribed() -> None:
+    """mark_consumed should be a no-op for unsubscribed agents."""
+    bus = MessageBus()
+    bus.send(BusMessage(id="msg", content="Hello", source="user", target="main"))
+
+    assert bus.mark_consumed("main", {"msg"}) == 0
+    assert bus.peek("main") == []
+
+
 def test_message_bus_clear() -> None:
     """Test clearing all messages and cursors."""
     bus = MessageBus()

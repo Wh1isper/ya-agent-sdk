@@ -384,6 +384,28 @@ class MessageBus:
             if (msg.target is None or msg.target == agent_id) and msg.id not in consumed
         ]
 
+    def mark_consumed(self, agent_id: str, message_ids: set[str]) -> int:
+        """Mark specific unread messages as consumed for a subscriber.
+
+        Args:
+            agent_id: The subscriber ID that should skip these messages.
+            message_ids: Message IDs to mark as consumed.
+
+        Returns:
+            Number of currently unread messages that were marked consumed.
+        """
+        if agent_id not in self._cursors or not message_ids:
+            return 0
+
+        cursor = self._cursors[agent_id]
+        consumed = self._consumed_ids[agent_id]
+        marked = 0
+        for msg in self._messages[cursor:]:
+            if msg.id in message_ids and (msg.target is None or msg.target == agent_id) and msg.id not in consumed:
+                consumed.add(msg.id)
+                marked += 1
+        return marked
+
     def clear(self) -> None:
         """Clear all messages and reset subscribers."""
         self._messages.clear()

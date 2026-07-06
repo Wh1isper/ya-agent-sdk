@@ -16,13 +16,14 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Annotated, Any, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
 from ya_agent_environment import Shell
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.context.bus import BusMessage
+from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.events import BackgroundShellStartEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.subagent.factory import generate_unique_id
@@ -146,6 +147,7 @@ class SpawnDelegateTool(BaseTool):
                 )
                 monitor.enqueue_usage_snapshot(deps.build_usage_snapshot())
                 message = BusMessage(
+                    id=monitor.get_task_result_message_id(agent_id),
                     content=result,
                     source=agent_id,
                     target=deps.agent_id,
@@ -155,10 +157,13 @@ class SpawnDelegateTool(BaseTool):
                 # final output. If the target is no longer subscribed, queue a
                 # TUI-managed fallback instead; direct-sending to an unsubscribed
                 # bus would make later fallback redelivery look like a duplicate.
-                if deps.message_bus.is_subscribed(deps.agent_id):
-                    deps.send_message(message)
-                else:
-                    monitor.enqueue_message(message)
+                # If wait_subagent is already waiting on this task, let the tool
+                # return the result and avoid a duplicate bus delivery.
+                if monitor.should_deliver_task_result_message(agent_id):
+                    if deps.message_bus.is_subscribed(deps.agent_id):
+                        deps.send_message(message)
+                    else:
+                        monitor.enqueue_message(message)
                 logger.info("Spawned delegate '%s' (%s) completed", subagent_name, agent_id)
             except asyncio.CancelledError:
                 monitor.record_task_result(
@@ -182,14 +187,16 @@ class SpawnDelegateTool(BaseTool):
                     )
                 )
                 message = BusMessage(
+                    id=monitor.get_task_result_message_id(agent_id),
                     content=error_message,
                     source=agent_id,
                     target=deps.agent_id,
                 )
-                if deps.message_bus.is_subscribed(deps.agent_id):
-                    deps.send_message(message)
-                else:
-                    monitor.enqueue_message(message)
+                if monitor.should_deliver_task_result_message(agent_id):
+                    if deps.message_bus.is_subscribed(deps.agent_id):
+                        deps.send_message(message)
+                    else:
+                        monitor.enqueue_message(message)
             finally:
                 # Notify completion so TUI can trigger a new agent turn if idle
                 monitor.notify_completion(agent_id)
@@ -273,8 +280,9 @@ class WaitSubagentTool(BaseTool):
         return (
             "Use wait_subagent only as a bounded fan-in point when you cannot continue without a "
             "background subagent result. Do not repeatedly call it in a polling loop. "
-            "Omit agent_id to wait for all known active background subagents. Prefer finishing the "
-            "current response when no immediate integration work remains."
+            "Omit agent_id to wait for all known background subagents, including active tasks "
+            "and cached terminal results. Prefer finishing the current response when no immediate "
+            "integration work remains."
         )
 
     async def call(
@@ -296,14 +304,23 @@ class WaitSubagentTool(BaseTool):
 
         timeout = self._normalize_timeout(timeout_seconds)
         if agent_id is not None:
-            return await self._wait_for_one(monitor, agent_id, timeout)
-        return await self._wait_for_all(monitor, timeout)
+            return await self._wait_for_one(
+                monitor,
+                agent_id,
+                timeout,
+                bus=ctx.deps.message_bus,
+                target=ctx.deps.agent_id,
+            )
+        return await self._wait_for_all(monitor, timeout, bus=ctx.deps.message_bus, target=ctx.deps.agent_id)
 
     async def _wait_for_one(
         self,
         monitor: BackgroundMonitor,
         agent_id: str,
         timeout: float,
+        *,
+        bus: MessageBus,
+        target: str,
     ) -> dict[str, Any]:
         """Wait for a single background subagent."""
         known_ids = set(monitor.known_task_ids())
@@ -315,7 +332,11 @@ class WaitSubagentTool(BaseTool):
                 "known_agent_ids": sorted(known_ids),
             }
 
-        result = await monitor.wait_for_agent(agent_id, timeout=timeout)
+        monitor.begin_task_result_wait(agent_id)
+        try:
+            result = await monitor.wait_for_agent(agent_id, timeout=timeout)
+        finally:
+            monitor.end_task_result_wait(agent_id)
         if result is None:
             return {
                 "status": "running",
@@ -323,15 +344,29 @@ class WaitSubagentTool(BaseTool):
                 "timed_out": True,
                 "message": "Subagent is still running.",
             }
+        monitor.mark_task_result_delivered(agent_id, bus=bus, target=target)
         return self._format_result(result)
 
-    async def _wait_for_all(self, monitor: BackgroundMonitor, timeout: float) -> dict[str, Any]:
+    async def _wait_for_all(
+        self,
+        monitor: BackgroundMonitor,
+        timeout: float,
+        *,
+        bus: MessageBus,
+        target: str,
+    ) -> dict[str, Any]:
         """Wait for all active background subagents and include cached completed results."""
         agent_ids = monitor.known_task_ids()
         if not agent_ids:
             return {"status": "empty", "timed_out": False, "results": []}
 
-        results_by_id = await monitor.wait_for_agents(agent_ids, timeout=timeout)
+        for known_agent_id in agent_ids:
+            monitor.begin_task_result_wait(known_agent_id)
+        try:
+            results_by_id = await monitor.wait_for_agents(agent_ids, timeout=timeout)
+        finally:
+            for known_agent_id in agent_ids:
+                monitor.end_task_result_wait(known_agent_id)
         formatted_results = []
         timed_out = False
         for agent_id in agent_ids:
@@ -345,6 +380,7 @@ class WaitSubagentTool(BaseTool):
                     "message": "Subagent is still running.",
                 })
             else:
+                monitor.mark_task_result_delivered(agent_id, bus=bus, target=target)
                 formatted_results.append(self._format_result(result))
 
         if timed_out and any(item.get("status") != "running" for item in formatted_results):
@@ -379,6 +415,8 @@ class WaitSubagentTool(BaseTool):
     @classmethod
     def _normalize_timeout(cls, timeout_seconds: float) -> float:
         """Clamp timeout to a safe finite range."""
+        if not math.isfinite(timeout_seconds):
+            return cls.max_timeout_seconds
         if timeout_seconds < 0:
             return 0.0
         return min(timeout_seconds, cls.max_timeout_seconds)
