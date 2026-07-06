@@ -13,9 +13,14 @@ from ya_agent_sdk.context.agent import AgentInfo
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from yaacli.app.tui import TUIApp, TUIState
-from yaacli.background import BACKGROUND_MONITOR_KEY, DELEGATE_BACKEND_TOOL_NAME, BackgroundMonitor
+from yaacli.background import (
+    BACKGROUND_MONITOR_KEY,
+    DELEGATE_BACKEND_TOOL_NAME,
+    BackgroundMonitor,
+    BackgroundTaskResult,
+)
 from yaacli.environment import TUIEnvironment
-from yaacli.toolsets.background import AsyncDelegateTool, SpawnDelegateTool, SteerSubagentTool
+from yaacli.toolsets.background import AsyncDelegateTool, SpawnDelegateTool, SteerSubagentTool, WaitSubagentTool
 
 # =============================================================================
 # BackgroundMonitor Tests (subagent task tracking)
@@ -594,9 +599,10 @@ async def test_async_delegate_uses_hidden_backend_roster() -> None:
     assert instruction is not None
     assert "delegate is asynchronous" in instruction
     assert "returns an agent ID immediately" in instruction
-    assert "do not wait, poll, or loop" in instruction
-    assert "finish your current response" in instruction
-    assert "automatically notify you" in instruction
+    assert "do not manually poll or loop" in instruction
+    assert "wait_subagent once with a bounded timeout" in instruction
+    assert "finish the current response" in instruction
+    assert "let the CLI notify you" in instruction
     assert "steer_subagent" in instruction
     assert '<subagent name="helper">' in instruction
     assert "Helper subagent" in instruction
@@ -608,7 +614,172 @@ def test_background_tools_export_keeps_legacy_spawn_name() -> None:
     from yaacli.toolsets.background import background_tools
 
     assert SpawnDelegateTool in background_tools
+    assert WaitSubagentTool in background_tools
     assert AsyncDelegateTool not in background_tools
+
+
+@pytest.mark.asyncio
+async def test_wait_subagent_unavailable_without_work() -> None:
+    """WaitSubagentTool should be unavailable when no background work exists."""
+    monitor = BackgroundMonitor()
+    tool = WaitSubagentTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    assert not tool.is_available(ctx)
+
+
+@pytest.mark.asyncio
+async def test_wait_subagent_unavailable_for_subagent() -> None:
+    """WaitSubagentTool should be unavailable outside the main agent."""
+    monitor = BackgroundMonitor()
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id="helper-bg-a1b2",
+            subagent_name="helper",
+            status="completed",
+            content="done",
+        )
+    )
+    tool = WaitSubagentTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="helper-bg-a1b2")
+
+    assert not tool.is_available(ctx)
+
+
+@pytest.mark.asyncio
+async def test_wait_subagent_returns_cached_result() -> None:
+    """WaitSubagentTool should return completed cached results immediately."""
+    monitor = BackgroundMonitor()
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id="helper-bg-a1b2",
+            subagent_name="helper",
+            status="completed",
+            content="done",
+        )
+    )
+    tool = WaitSubagentTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    assert tool.is_available(ctx)
+    result = await tool.call(ctx, agent_id="helper-bg-a1b2", timeout_seconds=0)
+
+    assert result["status"] == "completed"
+    assert result["agent_id"] == "helper-bg-a1b2"
+    assert result["subagent_name"] == "helper"
+    assert result["result"] == "done"
+    assert result["timed_out"] is False
+
+
+@pytest.mark.asyncio
+async def test_wait_subagent_unknown_agent() -> None:
+    """WaitSubagentTool should report unknown ids without waiting."""
+    monitor = BackgroundMonitor()
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id="helper-bg-a1b2",
+            subagent_name="helper",
+            status="completed",
+            content="done",
+        )
+    )
+    tool = WaitSubagentTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    result = await tool.call(ctx, agent_id="missing-bg-z9", timeout_seconds=0)
+
+    assert result["status"] == "not_found"
+    assert result["agent_id"] == "missing-bg-z9"
+    assert result["known_agent_ids"] == ["helper-bg-a1b2"]
+
+
+@pytest.mark.asyncio
+async def test_wait_subagent_timeout_does_not_cancel_task() -> None:
+    """Timeout should return running without cancelling the background task."""
+    monitor = BackgroundMonitor()
+
+    async def sleeper() -> None:
+        await asyncio.sleep(1)
+
+    task = asyncio.create_task(sleeper())
+    monitor.register_task("helper-bg-a1b2", task, subagent_name="helper", prompt="work")
+    tool = WaitSubagentTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    result = await tool.call(ctx, agent_id="helper-bg-a1b2", timeout_seconds=0.01)
+
+    assert result["status"] == "running"
+    assert result["timed_out"] is True
+    assert not task.done()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_wait_subagent_waits_for_active_task_result() -> None:
+    """WaitSubagentTool should wait until a running task records its result."""
+    monitor = BackgroundMonitor()
+
+    async def complete() -> None:
+        await asyncio.sleep(0.01)
+        monitor.record_task_result(
+            BackgroundTaskResult(
+                agent_id="helper-bg-a1b2",
+                subagent_name="helper",
+                status="completed",
+                content="done",
+            )
+        )
+
+    task = asyncio.create_task(complete())
+    monitor.register_task("helper-bg-a1b2", task, subagent_name="helper", prompt="work")
+    tool = WaitSubagentTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    result = await tool.call(ctx, agent_id="helper-bg-a1b2", timeout_seconds=1)
+
+    assert result["status"] == "completed"
+    assert result["result"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_wait_subagent_waits_for_all_known_agents() -> None:
+    """Omitting agent_id should wait for all known background agents."""
+    monitor = BackgroundMonitor()
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id="cached-bg-a1b2",
+            subagent_name="cached",
+            status="completed",
+            content="cached done",
+        )
+    )
+
+    async def complete() -> None:
+        await asyncio.sleep(0.01)
+        monitor.record_task_result(
+            BackgroundTaskResult(
+                agent_id="active-bg-c3d4",
+                subagent_name="active",
+                status="completed",
+                content="active done",
+            )
+        )
+
+    task = asyncio.create_task(complete())
+    monitor.register_task("active-bg-c3d4", task, subagent_name="active", prompt="work")
+    tool = WaitSubagentTool()
+    ctx = _make_run_ctx(monitor=monitor, agent_id="main")
+
+    result = await tool.call(ctx, timeout_seconds=1)
+
+    assert result["status"] == "completed"
+    assert result["timed_out"] is False
+    results_by_id = {item["agent_id"]: item for item in result["results"]}
+    assert results_by_id["cached-bg-a1b2"]["result"] == "cached done"
+    assert results_by_id["active-bg-c3d4"]["result"] == "active done"
 
 
 @pytest.mark.asyncio
@@ -641,7 +812,8 @@ async def test_tool_call_launches_background_task() -> None:
     # Should return immediately with a status message that prevents polling loops.
     assert "Spawned delegate" in result
     assert "explorer" in result
-    assert "Do not wait, poll, or loop" in result
+    assert "Do not manually poll or loop" in result
+    assert "wait_subagent once with a bounded timeout" in result
     assert "finish your current response now" in result
     assert "automatically notify you" in result
     assert "steer_subagent" in result

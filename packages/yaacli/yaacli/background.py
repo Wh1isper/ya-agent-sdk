@@ -81,6 +81,18 @@ class BackgroundTaskInfo:
 
 
 @dataclass
+class BackgroundTaskResult:
+    """Cached terminal result for a background subagent task."""
+
+    agent_id: str
+    subagent_name: str
+    status: Literal["completed", "failed", "cancelled"]
+    content: str | None = None
+    error: str | None = None
+    completed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass
 class PendingBackgroundMessage:
     """Queued background notification waiting for TUI-managed delivery."""
 
@@ -115,6 +127,7 @@ class BackgroundMonitor(BaseResource):
         # --- Subagent task tracking ---
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._task_info: dict[str, BackgroundTaskInfo] = {}
+        self._task_results: dict[str, BackgroundTaskResult] = {}
         self._core_toolset: Toolset[Any] | None = None
         self._completion_callback: Callable[[str], None] | None = None
 
@@ -344,6 +357,68 @@ class BackgroundMonitor(BaseResource):
     def task_infos(self) -> dict[str, BackgroundTaskInfo]:
         """All background task metadata, keyed by agent_id (copy)."""
         return dict(self._task_info)
+
+    @property
+    def task_results(self) -> dict[str, BackgroundTaskResult]:
+        """Terminal background task results, keyed by agent_id (copy)."""
+        return dict(self._task_results)
+
+    def record_task_result(self, result: BackgroundTaskResult) -> None:
+        """Cache the terminal result for a background subagent task."""
+        self._task_results[result.agent_id] = result
+
+    def get_task_result(self, agent_id: str) -> BackgroundTaskResult | None:
+        """Return cached terminal result for a background subagent task, if any."""
+        return self._task_results.get(agent_id)
+
+    async def wait_for_agent(
+        self,
+        agent_id: str,
+        timeout: float | None = None,
+    ) -> BackgroundTaskResult | None:
+        """Wait for a background subagent to finish without cancelling it on timeout.
+
+        Args:
+            agent_id: Background subagent id to wait for.
+            timeout: Maximum seconds to wait. None waits indefinitely.
+
+        Returns:
+            Cached terminal result when available; None for timeout or unknown id.
+        """
+        result = self._task_results.get(agent_id)
+        if result is not None:
+            return result
+
+        task = self._tasks.get(agent_id)
+        if task is None:
+            return None
+
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if not done:
+            return None
+        return self._task_results.get(agent_id)
+
+    async def wait_for_agents(
+        self,
+        agent_ids: list[str],
+        timeout: float | None = None,
+    ) -> dict[str, BackgroundTaskResult | None]:
+        """Wait for multiple background subagents and return cached results by id."""
+        results: dict[str, BackgroundTaskResult | None] = {}
+        pending_ids = [agent_id for agent_id in agent_ids if agent_id not in self._task_results]
+
+        if pending_ids:
+            tasks = [self._tasks[agent_id] for agent_id in pending_ids if agent_id in self._tasks]
+            if tasks:
+                await asyncio.wait(tasks, timeout=timeout)
+
+        for agent_id in agent_ids:
+            results[agent_id] = self._task_results.get(agent_id)
+        return results
+
+    def known_task_ids(self) -> list[str]:
+        """Return ids for running or cached-result background subagents."""
+        return sorted(set(self._tasks) | set(self._task_results))
 
     def register_task(
         self,
@@ -652,6 +727,7 @@ class BackgroundMonitor(BaseResource):
         # Clear all state
         self._tasks.clear()
         self._task_info.clear()
+        self._task_results.clear()
         self._core_toolset = None
         self._completion_callback = None
         self._shell = None

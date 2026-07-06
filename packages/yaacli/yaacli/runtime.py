@@ -56,7 +56,13 @@ from yaacli.guards import attach_goal_guard
 from yaacli.logging import get_logger
 from yaacli.model_profiles import ResolvedModelProfile, get_startup_model_profile, resolve_profile_model_cfg
 from yaacli.session import TUIContext
-from yaacli.toolsets.background import AsyncDelegateTool, MonitoredShellTool, SpawnDelegateTool, SteerSubagentTool
+from yaacli.toolsets.background import (
+    AsyncDelegateTool,
+    MonitoredShellTool,
+    SpawnDelegateTool,
+    SteerSubagentTool,
+    WaitSubagentTool,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
@@ -340,9 +346,9 @@ def create_tui_runtime(
     selected_background_tools: list[type[BaseTool]] = [MonitoredShellTool]
     if enable_async_subagents:
         if enable_delegate_subagents:
-            selected_background_tools.extend([SpawnDelegateTool, SteerSubagentTool])
+            selected_background_tools.extend([SpawnDelegateTool, SteerSubagentTool, WaitSubagentTool])
         else:
-            selected_background_tools.extend([AsyncDelegateTool, SteerSubagentTool])
+            selected_background_tools.extend([AsyncDelegateTool, SteerSubagentTool, WaitSubagentTool])
 
     # Build final tools list
     all_tools: list[type[BaseTool]] = [

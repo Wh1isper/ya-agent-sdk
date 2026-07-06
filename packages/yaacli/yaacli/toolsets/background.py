@@ -8,15 +8,15 @@ running background subagents via the shared message bus.
 
 Example:
     from ya_agent_sdk.toolsets.core.base import Toolset
-    from yaacli.toolsets.background import SpawnDelegateTool, SteerSubagentTool
+    from yaacli.toolsets.background import SpawnDelegateTool, SteerSubagentTool, WaitSubagentTool
 
-    toolset = Toolset(tools=[..., SpawnDelegateTool, SteerSubagentTool])
+    toolset = Toolset(tools=[..., SpawnDelegateTool, SteerSubagentTool, WaitSubagentTool])
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from pydantic import Field
 from pydantic_ai import RunContext
@@ -27,7 +27,12 @@ from ya_agent_sdk.events import BackgroundShellStartEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.subagent.factory import generate_unique_id
 
-from yaacli.background import BACKGROUND_MONITOR_KEY, DELEGATE_BACKEND_TOOL_NAME, BackgroundMonitor
+from yaacli.background import (
+    BACKGROUND_MONITOR_KEY,
+    DELEGATE_BACKEND_TOOL_NAME,
+    BackgroundMonitor,
+    BackgroundTaskResult,
+)
 from yaacli.logging import get_logger
 
 logger = get_logger(__name__)
@@ -85,7 +90,8 @@ class SpawnDelegateTool(BaseTool):
         lines = [
             "Use this to run a subagent asynchronously when immediate results are not required.",
             "Use the same subagent_name values listed for delegate.",
-            "The call returns right away with an agent ID; do not wait, poll, or loop for the result.",
+            "The call returns right away with an agent ID; do not manually poll or loop for the result.",
+            "If the delegated result is required before you can answer or integrate work, call wait_subagent once with a bounded timeout.",
             "If no other immediate work remains after spawning, finish your current response; the CLI will automatically notify you when the result arrives via message bus.",
             "Use steer_subagent(agent_id=..., message=...) to redirect or refine a running background subagent.",
             "Pass agent_id to resume a previous background subagent.",
@@ -130,6 +136,14 @@ class SpawnDelegateTool(BaseTool):
                     prompt=prompt,
                     agent_id=agent_id,
                 )
+                monitor.record_task_result(
+                    BackgroundTaskResult(
+                        agent_id=agent_id,
+                        subagent_name=subagent_name,
+                        status="completed",
+                        content=result,
+                    )
+                )
                 monitor.enqueue_usage_snapshot(deps.build_usage_snapshot())
                 message = BusMessage(
                     content=result,
@@ -146,10 +160,29 @@ class SpawnDelegateTool(BaseTool):
                 else:
                     monitor.enqueue_message(message)
                 logger.info("Spawned delegate '%s' (%s) completed", subagent_name, agent_id)
+            except asyncio.CancelledError:
+                monitor.record_task_result(
+                    BackgroundTaskResult(
+                        agent_id=agent_id,
+                        subagent_name=subagent_name,
+                        status="cancelled",
+                        error="Background delegate task was cancelled.",
+                    )
+                )
+                raise
             except Exception as e:
                 logger.warning("Spawned delegate '%s' (%s) failed: %s", subagent_name, agent_id, e)
+                error_message = f"Spawned delegate '{subagent_name}' (id: {agent_id}) failed: {e}"
+                monitor.record_task_result(
+                    BackgroundTaskResult(
+                        agent_id=agent_id,
+                        subagent_name=subagent_name,
+                        status="failed",
+                        error=str(e),
+                    )
+                )
                 message = BusMessage(
-                    content=f"Spawned delegate '{subagent_name}' (id: {agent_id}) failed: {e}",
+                    content=error_message,
                     source=agent_id,
                     target=deps.agent_id,
                 )
@@ -167,7 +200,8 @@ class SpawnDelegateTool(BaseTool):
         action = "Resumed" if is_resume else "Spawned"
         return (
             f"{action} delegate: {subagent_name} (id: {agent_id}). "
-            "Do not wait, poll, or loop for the result. "
+            "Do not manually poll or loop for the result. "
+            "If you need the result before continuing, call wait_subagent once with a bounded timeout. "
             "If you have no other immediate work, finish your current response now; "
             "the CLI will automatically notify you when the result arrives via message bus. "
             f'To adjust the running subagent, call steer_subagent(agent_id="{agent_id}", message=...).'
@@ -200,7 +234,7 @@ class AsyncDelegateTool(SpawnDelegateTool):
             "In this TUI, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.",
             "Delegate only bounded subtasks with clear scope, independent value, or useful parallelism; do not delegate tiny one-step actions or simple lookups.",
             "The parent agent owns planning, integration, user-facing synthesis, and final decisions.",
-            "After calling delegate, do not wait, poll, or loop for the result. If no other immediate work remains, finish your current response; the CLI will automatically notify you when the result arrives.",
+            "After calling delegate, do not manually poll or loop. If the delegated result is required before you can answer or integrate the work, call wait_subagent once with a bounded timeout. Otherwise finish the current response and let the CLI notify you when the result arrives.",
             "Use steer_subagent(agent_id=..., message=...) to redirect, refine, or add constraints to a running background subagent.",
             "Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.",
             "If using task tracking, pass the relevant task ID; otherwise do not ask delegates to create or claim tasks.",
@@ -212,6 +246,147 @@ class AsyncDelegateTool(SpawnDelegateTool):
             lines.append("")
             lines.append(task_info)
         return "\n".join(lines)
+
+
+class WaitSubagentTool(BaseTool):
+    """Wait for background subagents to finish and return cached results."""
+
+    name = "wait_subagent"
+    description = "Wait for one or more background subagents to finish and return their results."
+    tags = frozenset({"delegation"})
+    max_timeout_seconds = 300.0
+
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        """Available only for main agent with active or cached background subagent work."""
+        if ctx.deps.agent_id != "main":
+            return False
+        monitor = _get_background_monitor(ctx)
+        if monitor is None:
+            return False
+        return monitor.has_active_tasks or bool(monitor.task_results)
+
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        """Generate instruction for bounded fan-in waits."""
+        monitor = _get_background_monitor(ctx)
+        if monitor is None or not (monitor.has_active_tasks or monitor.task_results):
+            return None
+        return (
+            "Use wait_subagent only as a bounded fan-in point when you cannot continue without a "
+            "background subagent result. Do not repeatedly call it in a polling loop. "
+            "Omit agent_id to wait for all known active background subagents. Prefer finishing the "
+            "current response when no immediate integration work remains."
+        )
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        agent_id: Annotated[
+            str | None,
+            Field(description="Optional background subagent ID to wait for. Omit to wait for all active subagents."),
+        ] = None,
+        timeout_seconds: Annotated[
+            float,
+            Field(description="Maximum seconds to wait before returning without cancelling the subagent."),
+        ] = 30.0,
+    ) -> dict[str, Any]:
+        """Wait for one or all background subagents with a bounded timeout."""
+        monitor = _get_background_monitor(ctx)
+        if monitor is None:
+            return {"status": "error", "error": "BackgroundMonitor not available"}
+
+        timeout = self._normalize_timeout(timeout_seconds)
+        if agent_id is not None:
+            return await self._wait_for_one(monitor, agent_id, timeout)
+        return await self._wait_for_all(monitor, timeout)
+
+    async def _wait_for_one(
+        self,
+        monitor: BackgroundMonitor,
+        agent_id: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Wait for a single background subagent."""
+        known_ids = set(monitor.known_task_ids())
+        if agent_id not in known_ids:
+            return {
+                "status": "not_found",
+                "agent_id": agent_id,
+                "timed_out": False,
+                "known_agent_ids": sorted(known_ids),
+            }
+
+        result = await monitor.wait_for_agent(agent_id, timeout=timeout)
+        if result is None:
+            return {
+                "status": "running",
+                "agent_id": agent_id,
+                "timed_out": True,
+                "message": "Subagent is still running.",
+            }
+        return self._format_result(result)
+
+    async def _wait_for_all(self, monitor: BackgroundMonitor, timeout: float) -> dict[str, Any]:
+        """Wait for all active background subagents and include cached completed results."""
+        agent_ids = monitor.known_task_ids()
+        if not agent_ids:
+            return {"status": "empty", "timed_out": False, "results": []}
+
+        results_by_id = await monitor.wait_for_agents(agent_ids, timeout=timeout)
+        formatted_results = []
+        timed_out = False
+        for agent_id in agent_ids:
+            result = results_by_id.get(agent_id)
+            if result is None:
+                timed_out = True
+                formatted_results.append({
+                    "status": "running",
+                    "agent_id": agent_id,
+                    "timed_out": True,
+                    "message": "Subagent is still running.",
+                })
+            else:
+                formatted_results.append(self._format_result(result))
+
+        if timed_out and any(item.get("status") != "running" for item in formatted_results):
+            status = "partial"
+        elif timed_out:
+            status = "running"
+        else:
+            status = "completed"
+
+        return {
+            "status": status,
+            "timed_out": timed_out,
+            "results": formatted_results,
+        }
+
+    @staticmethod
+    def _format_result(result: BackgroundTaskResult) -> dict[str, Any]:
+        """Format a cached terminal result for tool output."""
+        payload: dict[str, Any] = {
+            "status": result.status,
+            "agent_id": result.agent_id,
+            "subagent_name": result.subagent_name,
+            "timed_out": False,
+            "completed_at": result.completed_at.isoformat(),
+        }
+        if result.content is not None:
+            payload["result"] = result.content
+        if result.error is not None:
+            payload["error"] = result.error
+        return payload
+
+    @classmethod
+    def _normalize_timeout(cls, timeout_seconds: float) -> float:
+        """Clamp timeout to a safe finite range."""
+        if timeout_seconds < 0:
+            return 0.0
+        return min(timeout_seconds, cls.max_timeout_seconds)
+
+    @staticmethod
+    def _get_monitor(ctx: RunContext[AgentContext]) -> BackgroundMonitor | None:
+        """Get BackgroundMonitor from resources."""
+        return _get_background_monitor(ctx)
 
 
 class SteerSubagentTool(BaseTool):
@@ -406,5 +581,6 @@ class MonitoredShellTool(BaseTool):
 background_tools: list[type[BaseTool]] = [
     SpawnDelegateTool,
     SteerSubagentTool,
+    WaitSubagentTool,
     MonitoredShellTool,
 ]

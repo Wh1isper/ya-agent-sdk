@@ -19,7 +19,7 @@ from yaacli.config import (
     YaacliConfig,
 )
 from yaacli.runtime import GoalContextHandoffExtension, create_tui_runtime
-from yaacli.toolsets.background import AsyncDelegateTool, SpawnDelegateTool, SteerSubagentTool
+from yaacli.toolsets.background import AsyncDelegateTool, SpawnDelegateTool, SteerSubagentTool, WaitSubagentTool
 
 # =============================================================================
 # create_tui_runtime Tests
@@ -391,9 +391,11 @@ def test_create_tui_runtime_can_disable_async_subagents(tmp_path: Path) -> None:
     assert runtime.core_toolset is not None
     assert "spawn_delegate" not in runtime.core_toolset._tool_classes
     assert "steer_subagent" not in runtime.core_toolset._tool_classes
+    assert "wait_subagent" not in runtime.core_toolset._tool_classes
     assert "shell_monitor" in runtime.core_toolset._tool_classes
     assert SpawnDelegateTool.name == "spawn_delegate"
     assert SteerSubagentTool.name == "steer_subagent"
+    assert WaitSubagentTool.name == "wait_subagent"
 
 
 async def test_create_tui_runtime_defaults_to_async_delegate_only(tmp_path: Path) -> None:
@@ -415,6 +417,7 @@ async def test_create_tui_runtime_defaults_to_async_delegate_only(tmp_path: Path
 
     assert runtime.core_toolset is not None
     assert runtime.core_toolset._tool_classes["delegate"] is AsyncDelegateTool
+    assert runtime.core_toolset._tool_classes["wait_subagent"] is WaitSubagentTool
     assert "spawn_delegate" not in runtime.core_toolset._tool_classes
     assert DELEGATE_BACKEND_TOOL_NAME in runtime.core_toolset._tool_classes
 
@@ -426,6 +429,7 @@ async def test_create_tui_runtime_defaults_to_async_delegate_only(tmp_path: Path
         visible_tools = await runtime.core_toolset.get_tools(run_ctx)
         assert "delegate" in visible_tools
         assert "spawn_delegate" not in visible_tools
+        assert "wait_subagent" not in visible_tools
         assert DELEGATE_BACKEND_TOOL_NAME not in visible_tools
 
         instruction_parts = await runtime.core_toolset.get_instructions(run_ctx)
@@ -463,6 +467,7 @@ async def test_create_tui_runtime_can_keep_blocking_delegate_and_spawn_delegate(
 
     assert runtime.core_toolset is not None
     assert runtime.core_toolset._tool_classes["spawn_delegate"] is SpawnDelegateTool
+    assert runtime.core_toolset._tool_classes["wait_subagent"] is WaitSubagentTool
     assert runtime.core_toolset._tool_classes["delegate"] is not AsyncDelegateTool
     assert DELEGATE_BACKEND_TOOL_NAME not in runtime.core_toolset._tool_classes
 
@@ -474,6 +479,7 @@ async def test_create_tui_runtime_can_keep_blocking_delegate_and_spawn_delegate(
         visible_tools = await runtime.core_toolset.get_tools(run_ctx)
         assert "delegate" in visible_tools
         assert "spawn_delegate" in visible_tools
+        assert "wait_subagent" not in visible_tools
         assert DELEGATE_BACKEND_TOOL_NAME not in visible_tools
 
         instruction_parts = await runtime.core_toolset.get_instructions(run_ctx)
