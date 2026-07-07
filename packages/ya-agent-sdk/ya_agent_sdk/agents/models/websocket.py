@@ -633,6 +633,7 @@ def _websocket_error_from_event(data: Mapping[str, Any]) -> BaseException:
 def build_openai_responses_websocket_model(
     model_name: str,
     *,
+    extra_headers: Mapping[str, str] | None = None,
     websocket_mode: ResponsesWebsocketMode | None = None,
 ) -> WebsocketResponsesModel:
     from pydantic_ai.providers.openai import OpenAIProvider
@@ -640,9 +641,25 @@ def build_openai_responses_websocket_model(
     from ya_agent_sdk.agents.models.utils import create_async_http_client
 
     mode = websocket_mode or env_responses_websocket_mode("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE", default="auto")
+    resolved_extra_headers = dict(extra_headers or {})
+    provider = OpenAIProvider(http_client=create_async_http_client(extra_headers=resolved_extra_headers))
+
+    async def _headers_builder(request_extra_headers: Mapping[str, str]) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        default_headers = provider.client.default_headers
+        if isinstance(default_headers, Mapping):
+            for key, value in default_headers.items():
+                if value is None or _is_omitted(value):
+                    continue
+                headers[str(key)] = str(value)
+        headers.update(resolved_extra_headers)
+        headers.update(request_extra_headers)
+        return headers
+
     return WebsocketResponsesModel(
         model_name,
-        provider=OpenAIProvider(http_client=create_async_http_client()),
+        provider=provider,
+        websocket_headers_builder=_headers_builder if resolved_extra_headers else None,
         websocket_mode=mode,
     )
 

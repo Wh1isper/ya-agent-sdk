@@ -386,6 +386,12 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
 # =============================================================================
 
 
+def _model_uses_context_headers(model: Model | KnownModelName | str | None) -> bool:
+    if not isinstance(model, str):
+        return False
+    return model.startswith(("oauth@codex:", "openai-responses-rs:", "openai-responses-ws:"))
+
+
 def _load_system_prompt(
     template: str | None = None,
     template_vars: dict[str, Any] | None = None,
@@ -716,9 +722,7 @@ def create_agent(
     effective_system_prompt = _load_system_prompt(system_prompt, system_prompt_template_vars)
 
     # --- Create Model with Wrapper ---
-    model_extra_headers = (
-        ctx.get_model_extra_headers() if isinstance(model, str) and model.startswith("oauth@codex:") else None
-    )
+    model_extra_headers = ctx.get_model_extra_headers() if _model_uses_context_headers(model) else None
     base_model = infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else model
     effective_model: Model | None = base_model
     if base_model is not None and ctx.model_wrapper is not None:

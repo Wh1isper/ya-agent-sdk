@@ -75,7 +75,7 @@ def infer_model(model: str | Model, extra_headers: dict[str, str] | None = None)
             raise ValueError("OpenAI Responses WebSocket model strings must use format openai-responses-rs:<model>")
         from ya_agent_sdk.agents.models.websocket import build_openai_responses_websocket_model
 
-        return build_openai_responses_websocket_model(model_name)
+        return build_openai_responses_websocket_model(model_name, extra_headers=extra_headers)
     if model.startswith("oauth@"):
         provider_name, _, model_name = model.removeprefix("oauth@").partition(":")
         if not provider_name or not model_name:

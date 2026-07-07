@@ -14,6 +14,7 @@ from ya_agent_sdk.agents.models.websocket import (
     DEFAULT_WEBSOCKET_MAX_SIZE,
     WebsocketResponsesModel,
     _WebsocketResponseStream,
+    build_openai_responses_websocket_model,
     responses_websocket_url,
 )
 
@@ -41,6 +42,22 @@ async def test_websocket_model_deduplicates_beta_header_case_insensitively() -> 
 
     assert headers["openai-beta"] == DEFAULT_WEBSOCKET_BETA
     assert "OpenAI-Beta" not in headers
+
+
+@pytest.mark.asyncio
+async def test_build_openai_responses_websocket_model_adds_extra_headers_to_handshake(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    model = build_openai_responses_websocket_model(
+        "gpt-5",
+        extra_headers={"x-session-id": "session-1", "session-id": "session-1"},
+    )
+
+    headers = await model._build_websocket_headers({"thread-id": "thread-1"})
+
+    assert headers["x-session-id"] == "session-1"
+    assert headers["session-id"] == "session-1"
+    assert headers["thread-id"] == "thread-1"
+    assert headers["OpenAI-Beta"] == DEFAULT_WEBSOCKET_BETA
 
 
 @pytest.mark.asyncio

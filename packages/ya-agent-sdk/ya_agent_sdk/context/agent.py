@@ -1458,6 +1458,7 @@ class AgentContext(BaseModel):
         return {
             "session_id": session_id,
             "session-id": session_id,
+            "x-session-id": session_id,
             "thread_id": thread_id,
             "thread-id": thread_id,
             "x-client-request-id": thread_id,
