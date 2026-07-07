@@ -331,7 +331,7 @@ async def test_websocket_response_stream_sends_cancel_on_early_scope_exit() -> N
 
 
 @pytest.mark.asyncio
-async def test_websocket_model_does_not_fallback_after_successful_upgrade() -> None:
+async def test_websocket_model_can_fallback_after_upgrade_before_first_response_event() -> None:
     class FakeConnection:
         def __init__(self) -> None:
             self.sent: list[str] = []
@@ -363,7 +363,8 @@ async def test_websocket_model_does_not_fallback_after_successful_upgrade() -> N
 
     async with stream:
         assert stream.websocket_upgraded is True
-        assert model._should_fallback_from(UnexpectedModelBehavior("parse failed"), stream) is False
+        assert stream.events_seen == 0
+        assert model._should_fallback_from(UnexpectedModelBehavior("parse failed"), stream) is True
 
 
 @pytest.mark.asyncio
@@ -411,7 +412,11 @@ async def test_websocket_model_falls_back_to_http_for_upstream_connect_error_aft
         payload={"type": "response.create"},
         connect=connect,
     )
-    model = WebsocketResponsesModel("gpt-5", provider=OpenAIProvider(api_key="test-key"))
+    model = WebsocketResponsesModel(
+        "gpt-5",
+        provider=OpenAIProvider(api_key="test-key"),
+        websocket_retry_options=ModelRequestRetryOptions(enabled=False),
+    )
     http_response = object()
     http_calls = 0
 
@@ -672,6 +677,105 @@ async def test_websocket_model_retries_recoverable_connect_errors_before_http_fa
     assert attempts == 3
     assert http_calls == 1
     assert model.websocket_fallback_state.failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_websocket_model_retries_upstream_timeout_before_first_response_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConnection:
+        def __init__(self, messages: list[str]) -> None:
+            self.sent: list[str] = []
+            self.closed = False
+            self.close_code: int | None = None
+            self.close_reason: str | None = None
+            self._messages = iter(messages)
+
+        def __aiter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __anext__(self) -> str:
+            try:
+                return next(self._messages)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            self.closed = True
+            self.close_code = code
+            self.close_reason = reason
+
+    attempts = 0
+    http_calls = 0
+    first_connection = FakeConnection([
+        json.dumps({
+            "type": "error",
+            "message": "Upstream WebSocket connection timed out",
+        }),
+    ])
+    second_connection = FakeConnection([
+        json.dumps({
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_retry_success",
+                "created_at": 1,
+                "model": "gpt-5.5",
+                "object": "response",
+                "output": [],
+                "parallel_tool_calls": True,
+                "tool_choice": "auto",
+                "tools": [],
+                "status": "in_progress",
+            },
+        }),
+    ])
+    connections = [first_connection, second_connection]
+    model = WebsocketResponsesModel(
+        "gpt-5",
+        provider=OpenAIProvider(api_key="test-key"),
+        websocket_retry_options=ModelRequestRetryOptions(attempts=3, max_wait_seconds=0),
+    )
+
+    async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return connections.pop(0)
+
+    async def create_websocket_stream(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal attempts
+        attempts += 1
+        return _WebsocketResponseStream(
+            url="wss://example.test/responses",
+            headers={},
+            payload={"type": "response.create"},
+            connect=connect,
+        )
+
+    @asynccontextmanager
+    async def request_stream_http(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal http_calls
+        http_calls += 1
+        yield object()
+
+    monkeypatch.setattr(model, "_create_websocket_stream", create_websocket_stream)
+    monkeypatch.setattr(model, "_request_stream_http", request_stream_http)
+
+    async with model.request_stream([], {}, ModelRequestParameters()) as response:  # type: ignore[arg-type]
+        assert response is not None
+
+    assert attempts == 2
+    assert http_calls == 0
+    assert model.websocket_fallback_state.failure_count == 0
+    assert first_connection.closed is True
+    assert first_connection.close_code == 1000
+    assert first_connection.close_reason == "client exited response stream"
+    assert first_connection.sent == [
+        '{"type":"response.create"}',
+        '{"type":"response.cancel"}',
+    ]
+    assert second_connection.closed is True
 
 
 @pytest.mark.asyncio

@@ -417,19 +417,16 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
 
         stream: _WebsocketResponseStream | None = None
         try:
-            stream = await self._create_websocket_stream_with_retry(
+            stream, response = await self._create_websocket_response_with_retry(
                 lambda: self._create_websocket_stream(
                     cast(list[ModelRequest | ModelResponse], messages),
                     settings,
                     prepared_parameters,
-                )
+                ),
+                settings,
+                prepared_parameters,
             )
             async with stream:
-                response = await self._process_streamed_response(
-                    cast(Any, stream),
-                    settings,
-                    prepared_parameters,
-                )
                 self._fallback_state.mark_success()
                 yield response
         except BaseException as exc:
@@ -454,9 +451,14 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as response:
             yield response
 
-    async def _create_websocket_stream_with_retry(self, attempt: WebsocketCreateAttempt) -> _WebsocketResponseStream:
+    async def _create_websocket_response_with_retry(
+        self,
+        attempt: WebsocketCreateAttempt,
+        model_settings: OpenAIResponsesModelSettings,
+        model_request_parameters: ModelRequestParameters,
+    ) -> tuple[_WebsocketResponseStream, StreamedResponse]:
         if not self._websocket_retry_options.should_retry:
-            return await attempt()
+            return await self._create_websocket_response(attempt, model_settings, model_request_parameters)
 
         retrying = AsyncRetrying(
             **build_model_request_retry_config(
@@ -468,10 +470,27 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         )
         async for retry_attempt in retrying:
             with retry_attempt:
-                stream = await attempt()
-                await stream.__aenter__()
-                return stream
+                return await self._create_websocket_response(attempt, model_settings, model_request_parameters)
         raise RuntimeError("Responses WebSocket retry controller did not make any attempts")
+
+    async def _create_websocket_response(
+        self,
+        attempt: WebsocketCreateAttempt,
+        model_settings: OpenAIResponsesModelSettings,
+        model_request_parameters: ModelRequestParameters,
+    ) -> tuple[_WebsocketResponseStream, StreamedResponse]:
+        stream = await attempt()
+        try:
+            await stream.__aenter__()
+            response = await self._process_streamed_response(
+                cast(Any, stream),
+                model_settings,
+                model_request_parameters,
+            )
+        except BaseException:
+            await stream.__aexit__(None, None, None)
+            raise
+        return stream, response
 
     async def _create_websocket_stream(
         self,
@@ -573,11 +592,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
             return False
         if stream is not None and stream.events_seen > 0:
             return False
-        if not is_recoverable_websocket_error(exc):
-            return False
-        if stream is not None and stream.websocket_upgraded:
-            return _is_upstream_websocket_connect_error(exc)
-        return True
+        return is_recoverable_websocket_error(exc)
 
 
 def _merge_openai_beta_header(headers: dict[str, str], beta: str) -> dict[str, str]:
@@ -597,9 +612,9 @@ def is_recoverable_websocket_error(exc: BaseException) -> bool:
         return exc.status_code in _RECOVERABLE_HTTP_STATUS_CODES
     if isinstance(exc, APIStatusError):
         return exc.status_code in _RECOVERABLE_HTTP_STATUS_CODES
-    if _is_upstream_websocket_connect_error(exc):
-        return True
-    return isinstance(exc, (TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException))
+    return isinstance(
+        exc, (UnexpectedModelBehavior, TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException)
+    )
 
 
 def _is_retryable_websocket_request_error(exc: BaseException, options: ModelRequestRetryOptions) -> bool:
@@ -607,15 +622,9 @@ def _is_retryable_websocket_request_error(exc: BaseException, options: ModelRequ
         return exc.status_code in options.status_codes
     if isinstance(exc, APIStatusError):
         return exc.status_code in options.status_codes
-    if _is_upstream_websocket_connect_error(exc):
-        return True
-    return isinstance(exc, (TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException))
-
-
-def _is_upstream_websocket_connect_error(exc: BaseException) -> bool:
-    if not isinstance(exc, UnexpectedModelBehavior):
-        return False
-    return "failed to connect to upstream responses websocket" in str(exc).lower()
+    return isinstance(
+        exc, (UnexpectedModelBehavior, TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException)
+    )
 
 
 def _websocket_error_from_event(data: Mapping[str, Any]) -> BaseException:
