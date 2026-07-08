@@ -934,8 +934,8 @@ def test_agency_global_tools_are_available_only_for_agency_runs(tmp_path: Path) 
     submit_instruction = asyncio.run(tools[-1].get_instruction(agency_ctx))  # type: ignore[arg-type]
     assert submit_instruction is not None
     assert '<tool-instruction name="submit_to_session">' in submit_instruction
-    assert "proactive context, reminders, or nudges" in submit_instruction
-    assert "`exchange`" in submit_instruction
+    assert "global conversation awareness" in submit_instruction
+    assert "useful context exchange" in submit_instruction
 
     api_tool_names = [
         getattr(tool, "name", tool.__name__)

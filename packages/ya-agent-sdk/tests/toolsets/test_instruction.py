@@ -59,6 +59,32 @@ class ToolWithNoInstruction(BaseTool):
         return "ok"
 
 
+class ToolWithBlankStringInstruction(BaseTool):
+    """Tool returning blank plain string instruction."""
+
+    name = "blank_string_tool"
+    description = "Test tool with blank string instruction"
+
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
+        return "   \n"
+
+    async def call(self, ctx: RunContext[AgentContext]) -> str:
+        return "ok"
+
+
+class ToolWithBlankGroupedInstruction(BaseTool):
+    """Tool returning blank grouped instruction."""
+
+    name = "blank_grouped_tool"
+    description = "Test tool with blank grouped instruction"
+
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction:
+        return Instruction(group="blank-group", content="   \n")
+
+    async def call(self, ctx: RunContext[AgentContext]) -> str:
+        return "ok"
+
+
 class UnavailableTool(BaseTool):
     """Tool that is not available."""
 
@@ -188,6 +214,14 @@ async def test_get_instructions_mixed_tools(mock_run_context: RunContext[AgentCo
 async def test_get_instructions_empty(mock_run_context: RunContext[AgentContext]):
     """Test get_instructions with only no-instruction tools."""
     toolset = Toolset(tools=[ToolWithNoInstruction])
+    instructions = await toolset.get_instructions(mock_run_context)
+    assert instructions is None
+
+
+@pytest.mark.asyncio
+async def test_get_instructions_skips_blank_content(mock_run_context: RunContext[AgentContext]):
+    """Test get_instructions with tools returning blank instruction content."""
+    toolset = Toolset(tools=[ToolWithBlankStringInstruction, ToolWithBlankGroupedInstruction])
     instructions = await toolset.get_instructions(mock_run_context)
     assert instructions is None
 

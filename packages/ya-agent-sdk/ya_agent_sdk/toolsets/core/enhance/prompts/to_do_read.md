@@ -1,8 +1,4 @@
 <todo-read-guidelines>
-
-<when-to-read>
-- Only call `to_do_read` when you need to recover lost state (e.g., after summary or context reset)
-- Prefer relying on the last `to_do_write` result; avoid redundant reads
-</when-to-read>
-
+Use only to recover task state after compaction, handoff, or uncertainty about the current list.
+Avoid redundant reads when the latest task update is already visible in context.
 </todo-read-guidelines>

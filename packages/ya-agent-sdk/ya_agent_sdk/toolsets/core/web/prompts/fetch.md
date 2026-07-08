@@ -1,11 +1,8 @@
 <fetch-tool>
-Read web files or check resource availability via HTTP.
-
 <best-practices>
-- Use head_only=True to check existence without downloading content
-- Images are returned inline as BinaryContent for visual analysis
-- For large files (>60K chars), content is truncated; use `download` instead
-- For PDF files, download first then use `pdf_convert` tool
-- Returns content_type, content_length, status_code for HEAD requests
+- Use HEAD checks for existence or metadata before downloading.
+- Use download for large files, binary files, PDFs, or content you need to keep locally.
+- Use scrape for web page text extraction.
+- Do not use fetched snippets as a substitute for downloading when exact bytes, attachments, or conversions matter.
 </best-practices>
 </fetch-tool>

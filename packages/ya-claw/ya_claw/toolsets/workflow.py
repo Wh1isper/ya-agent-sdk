@@ -57,10 +57,7 @@ class ListWorkflowsTool(BaseTool):
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         if _get_workflow_client(ctx) is None:
             return None
-        return (
-            "List reusable workflow definitions. Use only_current_session=true for workflows related to this "
-            "conversation, and broader filters for global reusable workflows."
-        )
+        return "Check current-session workflows before creating duplicates; broaden filters only for reusable global workflows."
 
     async def call(
         self,
@@ -134,8 +131,8 @@ class CreateWorkflowTool(BaseTool):
         if _get_workflow_client(ctx) is None:
             return None
         return (
-            "Create durable workflows as JSON objects with schema ya-claw.workflow.v1, inputs, policy, nodes, "
-            "and optional result.from_node. Agent-created workflows default to session scope."
+            "Create durable workflows only when the sequence is likely to be reused, supervised, or scheduled. "
+            "Keep agent-created workflow scope session-local unless global reuse is intentional."
         )
 
     async def call(

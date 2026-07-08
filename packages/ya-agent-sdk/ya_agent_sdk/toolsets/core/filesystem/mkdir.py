@@ -1,7 +1,5 @@
 """Mkdir tool for creating directories."""
 
-from functools import cache
-from pathlib import Path
 from typing import Annotated, cast
 
 from pydantic import Field
@@ -14,15 +12,6 @@ from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._types import BatchMkdirResponse, MkdirResult, MkdirSummary
 
 logger = get_logger(__name__)
-
-_PROMPTS_DIR = Path(__file__).parent / "prompts"
-
-
-@cache
-def _load_instruction() -> str:
-    """Load mkdir instruction from prompts/mkdir.md."""
-    prompt_file = _PROMPTS_DIR / "mkdir.md"
-    return prompt_file.read_text()
 
 
 class MkdirTool(BaseTool):
@@ -38,10 +27,6 @@ class MkdirTool(BaseTool):
             logger.debug("MkdirTool unavailable: file_operator is not configured")
             return False
         return True
-
-    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
-        """Load instruction from prompts/mkdir.md."""
-        return _load_instruction()
 
     async def call(
         self,

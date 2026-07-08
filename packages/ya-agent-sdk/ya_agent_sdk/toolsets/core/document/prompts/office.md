@@ -1,9 +1,5 @@
 <office-convert-guidelines>
-
-<best-practices>
-- Use pdf_convert for PDF files, this tool is for Office and EPub only
-- The exported markdown and images are in `export_{filename}/` next to the source file
-- For large documents with many images, conversion may take longer
-</best-practices>
-
+Use Office conversion for Office and EPub sources; use PDF conversion for PDFs.
+After conversion, inspect the returned markdown/export paths instead of rereading the binary source.
+For large or media-heavy documents, work from the converted markdown first and open extracted assets only when needed.
 </office-convert-guidelines>

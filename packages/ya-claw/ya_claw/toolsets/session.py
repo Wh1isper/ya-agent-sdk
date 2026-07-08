@@ -392,15 +392,6 @@ class ListSessionTurnsTool(BaseTool):
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_self_client(ctx) is not None
 
-    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
-        if _get_self_client(ctx) is None:
-            return None
-        return (
-            "List completed turns from the current YA Claw session. "
-            "Use this to inspect earlier successful work in this conversation. "
-            "The tool is scoped to the current session and returns trimmed JSON."
-        )
-
     async def call(
         self,
         ctx: RunContext[AgentContext],
@@ -451,14 +442,6 @@ class GetRunTraceTool(BaseTool):
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_self_client(ctx) is not None
-
-    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
-        if _get_self_client(ctx) is None:
-            return None
-        return (
-            "Get tool-call and tool-response trace for a run in the current YA Claw session. "
-            "Use run IDs returned by list_session_turns. The tool rejects runs outside the current session."
-        )
 
     async def call(
         self,

@@ -655,6 +655,8 @@ async def test_instructions_include_discovered_tools(weather_toolset, mock_run_c
     assert "Previously discovered tools" in instruction_text
     assert "get_weather" in instruction_text
     assert "get_forecast" in instruction_text
+    assert "location" not in instruction_text
+    assert "Get the current weather" not in instruction_text
 
 
 @pytest.mark.anyio

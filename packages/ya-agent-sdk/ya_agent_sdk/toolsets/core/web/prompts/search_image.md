@@ -1,12 +1,6 @@
 <search-image-tool>
-Search real-time images via RapidAPI (similar to Google Images).
-
 <best-practices>
-- Best for: celebrities, fictional characters, products, brands, current events
-- PRIORITY USE: First choice when accuracy for specific entities matters
-- Image URLs are auto-verified for accessibility before returning
-- Use size parameter (large/medium/any) to filter results
-- Use `download` tool to save images you need
-- For generic stock photos/illustrations, use search_stock_image instead
+- Prefer for specific people, products, brands, fictional characters, and current events.
+- Use stock image search for generic concepts, backgrounds, or illustrative assets.
 </best-practices>
 </search-image-tool>

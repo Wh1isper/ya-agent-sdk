@@ -49,10 +49,10 @@ class SpawnDelegateTool(BaseTool):
 
         task_info = monitor.get_context_instruction()
         lines = [
-            "Same subagent names as the `delegate` tool.",
-            "Use this for long-running tasks within the current run.",
-            "The subagent runs in the background and its result is delivered via message bus.",
-            "The current run waits for background subagents before committing; timed-out tasks are cancelled.",
+            "Use current-run background subagents only for bounded work with clear scope, independent value, or useful parallelism.",
+            "Use session-backed async subagents instead for work that needs durable execution beyond the current run.",
+            "Do not spawn tiny steps or work whose result the parent cannot integrate before commit.",
+            "The current run waits before committing; do not poll manually.",
         ]
         if task_info:
             lines.append("")
@@ -168,11 +168,7 @@ class SteerSubagentTool(BaseTool):
         monitor = _get_background_monitor(ctx)
         if monitor is None or not monitor.has_active_tasks:
             return None
-        return (
-            "Send additional guidance to a running background subagent.\n"
-            "The message is injected into the subagent's context on its next LLM call.\n"
-            "Use this to redirect, refine, or add constraints to an in-progress task."
-        )
+        return "Steer a running background subagent only to redirect, refine, or add constraints."
 
     async def call(
         self,

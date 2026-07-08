@@ -667,7 +667,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
             parts.append("\nAvailable tool namespaces:")
             for ns_meta in sorted(namespace_entries, key=lambda m: m.name):
                 tool_count = len(ns_meta.namespace_tool_names) if ns_meta.namespace_tool_names else 0
-                parts.append(f"- {ns_meta.name}: {ns_meta.description} ({tool_count} tools)")
+                parts.append(f"- {ns_meta.name} ({tool_count} tools)")
 
         # Add previously discovered tools summary (from context state)
         discovered = self._get_discovered_tools_summary(ctx)
@@ -691,15 +691,13 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 for tool_name in ns_meta.namespace_tool_names:
                     meta = self._search_entries.get(tool_name)
                     if meta:
-                        params = ", ".join(meta.parameter_names) if meta.parameter_names else ""
-                        lines.append(f"- {meta.name}({params}): {meta.description} [{ns_id}]")
+                        lines.append(f"- {meta.name} [{ns_id}]")
 
         # Loose tools
         for tool_name in sorted(loaded_tools):
             meta = self._search_entries.get(tool_name)
             if meta:
-                params = ", ".join(meta.parameter_names) if meta.parameter_names else ""
-                lines.append(f"- {meta.name}({params}): {meta.description}")
+                lines.append(f"- {meta.name}")
 
         return lines
 

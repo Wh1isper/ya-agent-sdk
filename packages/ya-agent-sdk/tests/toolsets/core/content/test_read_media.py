@@ -188,7 +188,6 @@ async def test_read_media_instruction_describes_download_view_fallback() -> None
     instruction = await ReadMediaTool().get_instruction(_run_context(ModelCapability.vision))
 
     assert instruction is not None
-    assert "read_media" in instruction
     assert "YouTube" in instruction
     assert "`download`" in instruction
     assert "`view`" in instruction

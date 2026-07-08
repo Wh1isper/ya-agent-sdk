@@ -1552,9 +1552,9 @@ async def test_steer_instruction_only_with_active_tasks() -> None:
 
     instruction = await tool.get_instruction(ctx)
     assert instruction is not None
-    assert "Send additional guidance" in instruction
+    assert "Steer a running background subagent only" in instruction
     assert "Do not poll after steering" in instruction
-    assert "automatically notify you" in instruction
+    assert "CLI will notify you" in instruction
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

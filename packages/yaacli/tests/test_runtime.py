@@ -493,7 +493,7 @@ async def test_create_tui_runtime_can_keep_blocking_delegate_and_spawn_delegate(
             "</tool-instruction>", 1
         )[0]
         assert "Delegate calls are blocking" in delegate_instruction
-        assert "Use this to run a subagent asynchronously" in spawn_instruction
+        assert "Use asynchronous delegation only for bounded work" in spawn_instruction
 
 
 def test_create_tui_runtime_with_no_model_cfg(tmp_path: Path) -> None:

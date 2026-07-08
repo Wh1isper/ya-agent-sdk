@@ -18,13 +18,18 @@ async def test_move_tool_attributes(agent_context: AgentContext) -> None:
     mock_run_ctx = MagicMock(spec=RunContext)
     mock_run_ctx.deps = agent_context
     instruction = await tool.get_instruction(mock_run_ctx)
-    assert instruction is not None
+    assert instruction is None
 
 
-def test_copy_tool_attributes(agent_context: AgentContext) -> None:
+async def test_copy_tool_attributes(agent_context: AgentContext) -> None:
     """Should have correct name and description."""
     assert CopyTool.name == "copy"
     assert "Copy" in CopyTool.description
+    tool = CopyTool()
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = agent_context
+    instruction = await tool.get_instruction(mock_run_ctx)
+    assert instruction is None
 
 
 # --- MoveTool tests ---

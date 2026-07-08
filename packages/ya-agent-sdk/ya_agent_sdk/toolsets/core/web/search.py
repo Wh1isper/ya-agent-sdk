@@ -32,11 +32,6 @@ _SEARCH_LIST_KEYS = ("items", "results", "hits", "data")
 
 
 @cache
-def _load_search_instruction() -> str:
-    return (_PROMPTS_DIR / "search.md").read_text()
-
-
-@cache
 def _load_search_stock_image_instruction() -> str:
     return (_PROMPTS_DIR / "search_stock_image.md").read_text()
 
@@ -167,11 +162,6 @@ class SearchTool(BaseTool):
         has_brave = bool(cfg.brave_search_api_key)
         has_tavily = bool(cfg.tavily_api_key) and _is_tavily_available()
         return has_google or has_brave or has_tavily
-
-    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
-        if not self.is_available(ctx):
-            return None
-        return _load_search_instruction()
 
     async def call(
         self,

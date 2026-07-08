@@ -18,7 +18,7 @@ async def test_mkdir_tool_attributes(agent_context: AgentContext) -> None:
     mock_run_ctx = MagicMock(spec=RunContext)
     mock_run_ctx.deps = agent_context
     instruction = await tool.get_instruction(mock_run_ctx)
-    assert instruction is not None
+    assert instruction is None
 
 
 async def test_mkdir_single_directory(tmp_path: Path) -> None:

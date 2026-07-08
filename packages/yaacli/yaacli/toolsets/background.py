@@ -89,13 +89,11 @@ class SpawnDelegateTool(BaseTool):
         task_info = monitor.get_context_instruction()
 
         lines = [
-            "Use this to run a subagent asynchronously when immediate results are not required.",
-            "Use the same subagent_name values listed for delegate.",
-            "The call returns right away with an agent ID; do not manually poll or loop for the result.",
-            "If the delegated result is required before you can answer or integrate work, call wait_subagent once with a bounded timeout.",
-            "If no other immediate work remains after spawning, finish your current response; the CLI will automatically notify you when the result arrives via message bus.",
-            "Use steer_subagent(agent_id=..., message=...) to redirect or refine a running background subagent.",
-            "Pass agent_id to resume a previous background subagent.",
+            "Use asynchronous delegation only for bounded work with clear scope, independent value, or useful parallelism.",
+            "Give the subagent enough context, expected output, and constraints to work independently.",
+            "Do not poll or loop for results; wait once with a bounded timeout only when integration is blocked.",
+            "If no immediate integration work remains, finish the current response and let the CLI notify you on completion.",
+            "Steer running subagents only when their scope or constraints need correction.",
         ]
         if task_info:
             lines.append("")
@@ -240,10 +238,11 @@ class AsyncDelegateTool(SpawnDelegateTool):
         lines = [
             "In this TUI, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.",
             "Delegate only bounded subtasks with clear scope, independent value, or useful parallelism; do not delegate tiny one-step actions or simple lookups.",
+            "Give delegates enough context, expected output, and constraints to work independently.",
             "The parent agent owns planning, integration, user-facing synthesis, and final decisions.",
-            "After calling delegate, do not manually poll or loop. If the delegated result is required before you can answer or integrate the work, call wait_subagent once with a bounded timeout. Otherwise finish the current response and let the CLI notify you when the result arrives.",
-            "Use steer_subagent(agent_id=..., message=...) to redirect, refine, or add constraints to a running background subagent.",
-            "Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.",
+            "After delegating, do not manually poll or loop; call wait_subagent once with a bounded timeout only when integration is blocked.",
+            "Otherwise finish the current response and let the CLI notify you.",
+            "Use steer_subagent only when a running subagent's scope or constraints need correction.",
             "If using task tracking, pass the relevant task ID; otherwise do not ask delegates to create or claim tasks.",
             "",
             roster,
@@ -280,9 +279,7 @@ class WaitSubagentTool(BaseTool):
         return (
             "Use wait_subagent only as a bounded fan-in point when you cannot continue without a "
             "background subagent result. Do not repeatedly call it in a polling loop. "
-            "Omit agent_id to wait for all known background subagents, including active tasks "
-            "and cached terminal results. Prefer finishing the current response when no immediate "
-            "integration work remains."
+            "Prefer finishing the current response when no immediate integration work remains."
         )
 
     async def call(
@@ -454,10 +451,8 @@ class SteerSubagentTool(BaseTool):
         if monitor is None or not monitor.has_active_tasks:
             return None
         return (
-            "Send additional guidance to a running background subagent.\n"
-            "The message is injected into the subagent's context on its next LLM call.\n"
-            "Use this to redirect, refine, or add constraints to an in-progress task.\n"
-            "Do not poll after steering; the CLI will automatically notify you when the subagent completes."
+            "Steer a running background subagent only to redirect, refine, or add constraints. "
+            "Do not poll after steering; the CLI will notify you when the subagent completes."
         )
 
     async def call(
@@ -553,10 +548,8 @@ class MonitoredShellTool(BaseTool):
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
         """Instruction for the monitored shell tool."""
         return (
-            "Start a background shell process that automatically notifies you when new output is available.\n"
-            "The process works with all existing shell tools (shell_wait, shell_kill, shell_input, etc.).\n"
-            "Use this instead of shell_exec(background=True) when you want to be notified of output "
-            "without having to poll manually."
+            "Use monitored shell for long-running processes where new output should wake the agent. "
+            "Prefer it over ordinary background shell when waiting would otherwise require polling; keep foreground shell for short commands."
         )
 
     async def call(

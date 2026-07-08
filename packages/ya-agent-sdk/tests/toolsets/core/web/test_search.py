@@ -46,6 +46,26 @@ async def test_search_tool_is_available_with_google(tmp_path: Path) -> None:
         assert tool.is_available(mock_run_ctx) is True
 
 
+async def test_search_tool_has_no_instruction_when_available(tmp_path: Path) -> None:
+    """Should rely on schema only when no search-specific best practice exists."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
+            )
+        )
+        tool = SearchTool()
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        assert await tool.get_instruction(mock_run_ctx) is None
+
+
 async def test_search_tool_is_available_with_tavily(tmp_path: Path) -> None:
     """Should be available when Tavily key is configured."""
     async with AsyncExitStack() as stack:

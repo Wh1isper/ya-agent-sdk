@@ -1,3 +1,2 @@
-Search for available tools by keyword or description. Use this when you need a tool
-that is not currently visible. Returns matching tool names and descriptions.
-After searching, discovered tools become available for use in subsequent turns.
+Use tool search only when a needed tool is not currently visible.
+Search with a narrow capability phrase, then use the discovered tool directly on a later turn.

@@ -1,7 +1,5 @@
 """Move and Copy tools for file operations."""
 
-from functools import cache
-from pathlib import Path
 from typing import Annotated, cast
 
 from pydantic import Field
@@ -15,22 +13,6 @@ from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._types import CopyResult, MoveResult, PathPair
 
 logger = get_logger(__name__)
-
-_PROMPTS_DIR = Path(__file__).parent / "prompts"
-
-
-@cache
-def _load_move_instruction() -> str:
-    """Load move instruction from prompts/move.md."""
-    prompt_file = _PROMPTS_DIR / "move.md"
-    return prompt_file.read_text()
-
-
-@cache
-def _load_copy_instruction() -> str:
-    """Load copy instruction from prompts/copy.md."""
-    prompt_file = _PROMPTS_DIR / "copy.md"
-    return prompt_file.read_text()
 
 
 class MoveTool(BaseTool):
@@ -46,10 +28,6 @@ class MoveTool(BaseTool):
             logger.debug("MoveTool unavailable: file_operator is not configured")
             return False
         return True
-
-    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
-        """Load instruction from prompts/move.md."""
-        return _load_move_instruction()
 
     async def call(
         self,
@@ -119,10 +97,6 @@ class CopyTool(BaseTool):
             logger.debug("CopyTool unavailable: file_operator is not configured")
             return False
         return True
-
-    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
-        """Load instruction from prompts/copy.md."""
-        return _load_copy_instruction()
 
     async def call(
         self,
