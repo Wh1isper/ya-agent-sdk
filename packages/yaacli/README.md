@@ -86,8 +86,14 @@ model_cfg = "claude_200k"
 
 [model_profiles.fast]
 label = "Fast"
-model = "openai-responses:gpt-5-mini"
-model_settings = "openai_responses_low"
+model = "openai-responses:gpt-5.6-luna"
+model_settings = "openai_responses_luna"
+model_cfg = "gpt5_270k"
+
+[model_profiles.sol]
+label = "GPT-5.6 Sol"
+model = "openai-responses:gpt-5.6-sol"
+model_settings = "openai_responses_max"
 model_cfg = "gpt5_270k"
 
 [model_profiles.codex_oauth]

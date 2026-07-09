@@ -29,7 +29,7 @@ See official docs: [pydantic-ai Models](https://ai.pydantic.dev/models/)
 
 | Provider                   | Format                                                        | Example                                |
 | -------------------------- | ------------------------------------------------------------- | -------------------------------------- |
-| OpenAI                     | `openai-chat:<model>` / `openai-responses:<model>`            | `openai-chat:gpt-4o`                   |
+| OpenAI                     | `openai-chat:<model>` / `openai-responses:<model>`            | `openai-responses:gpt-5.6-sol`         |
 | OpenAI Responses WebSocket | `openai-responses-ws:<model>` / `openai-responses-rs:<model>` | `openai-responses-ws:gpt-5.5`          |
 | Anthropic                  | `anthropic:<model>`                                           | `anthropic:claude-3-5-sonnet-20241022` |
 | Google                     | `google:<model>`                                              | `google:gemini-2.5-pro`                |
@@ -69,6 +69,30 @@ Transport mode is controlled by `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE`:
 | `http`      | Use the standard HTTP Responses transport                                             |
 
 The OAuth Codex provider reuses this SDK transport and only supplies Codex-specific bearer/account headers, beta header, and payload normalization.
+
+## OpenAI Responses Presets
+
+OpenAI Responses presets configure reasoning effort, reasoning summaries, storage, max output tokens, and optional priority service tier.
+
+- `openai_responses_max` uses GPT-5.6 Sol's `max` reasoning effort with detailed reasoning summaries.
+- `openai_responses_gpt5_6_sol`, `openai_responses_gpt56_sol`, and `openai_responses_sol` are aliases for `openai_responses_max`.
+- `openai_responses_terra` maps to the balanced `openai_responses_medium` preset.
+- `openai_responses_luna` maps to the lower-latency `openai_responses_low` preset.
+- `openai_responses_max_fast` combines `max` effort with the priority service tier.
+- `openai_responses_xhigh` remains available for GPT-5.5 and providers that expose `xhigh` rather than `max`.
+
+Example:
+
+```python
+from ya_agent_sdk.agents import create_agent
+
+runtime = create_agent(
+    "openai-responses:gpt-5.6-sol",
+    model_settings="openai_responses_max",
+)
+```
+
+Use existing GPT-5 `model_cfg` presets unless your provider documents a different GPT-5.6 context window. The OpenAI preview announcement describes `ultra` as a product mode that leverages subagents, but does not publish a stable Responses API payload field; configure it with inline `model_settings` only after your provider documents the exact field.
 
 ## Google Vertex AI Configuration
 
@@ -175,10 +199,7 @@ Naming convention: `{GATEWAY_NAME}_API_KEY` and `{GATEWAY_NAME}_BASE_URL`
 For session affinity scenarios, pass `extra_headers`:
 
 ```python
-model = infer_model(
-    "mygateway@gemini:gemini-1.5-pro",
-    extra_headers={"x-session-id": "unique-session-id"}
-)
+model = infer_model("mygateway@gemini:gemini-1.5-pro", extra_headers={"x-session-id": "unique-session-id"})
 ```
 
 **Note**: `extra_headers` only applies to Gateway mode, primarily for providers like `gemini` and `bedrock` that require header injection via http_client.
@@ -200,10 +221,7 @@ Claude Opus 4.7 uses adaptive thinking as the primary thinking mode. The `xhigh`
 from pydantic_ai import Agent
 from ya_agent_sdk.agents.models import infer_model
 
-agent = Agent(
-    model=infer_model("mygateway@openai-chat:gpt-4o"),
-    system_prompt="You are a helpful assistant."
-)
+agent = Agent(model=infer_model("mygateway@openai-chat:gpt-4o"), system_prompt="You are a helpful assistant.")
 ```
 
 ## References

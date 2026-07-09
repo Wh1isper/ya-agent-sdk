@@ -9,7 +9,8 @@ Naming Convention:
 - `{provider}_{api}_{level}` - for providers with multiple APIs, e.g., `openai_responses_high`
 
 Thinking Levels:
-- `xhigh`: Frontier reasoning depth for the hardest agentic workloads
+- `max`: Maximum reasoning effort for GPT-5.6 Sol and future models that expose it
+- `xhigh`: Frontier reasoning depth for hard agentic workloads
 - `high`: Strong reasoning depth, higher latency
 - `medium`: Balanced reasoning (default)
 - `low`: Minimal reasoning, lower latency
@@ -304,8 +305,9 @@ class ModelSettingsPreset(StrEnum):
     ANTHROPIC_1M_CM_LOW_INTERLEAVED_THINKING = "anthropic_1m_cm_low_interleaved_thinking"
     ANTHROPIC_1M_CM_OFF_INTERLEAVED_THINKING = "anthropic_1m_cm_off_interleaved_thinking"
 
-    # OpenAI Chat Completions presets (GPT-4, etc.)
+    # OpenAI Chat Completions presets (GPT-4, GPT-5 series, etc.)
     OPENAI_DEFAULT = "openai_default"
+    OPENAI_MAX = "openai_max"
     OPENAI_XHIGH = "openai_xhigh"
     OPENAI_HIGH = "openai_high"
     OPENAI_MEDIUM = "openai_medium"
@@ -313,11 +315,13 @@ class ModelSettingsPreset(StrEnum):
 
     # OpenAI Responses API presets (o1, o3, GPT-5 reasoning models)
     OPENAI_RESPONSES_DEFAULT = "openai_responses_default"
+    OPENAI_RESPONSES_MAX = "openai_responses_max"
     OPENAI_RESPONSES_XHIGH = "openai_responses_xhigh"
     OPENAI_RESPONSES_HIGH = "openai_responses_high"
     OPENAI_RESPONSES_MEDIUM = "openai_responses_medium"
     OPENAI_RESPONSES_LOW = "openai_responses_low"
     OPENAI_RESPONSES_DEFAULT_FAST = "openai_responses_default_fast"
+    OPENAI_RESPONSES_MAX_FAST = "openai_responses_max_fast"
     OPENAI_RESPONSES_XHIGH_FAST = "openai_responses_xhigh_fast"
     OPENAI_RESPONSES_HIGH_FAST = "openai_responses_high_fast"
     OPENAI_RESPONSES_MEDIUM_FAST = "openai_responses_medium_fast"
@@ -648,13 +652,14 @@ ANTHROPIC_1M_CM_OFF_INTERLEAVED_THINKING = ANTHROPIC_1M_CM_OFF
 
 
 def _openai_chat_settings(
-    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None,
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None,
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Create OpenAI Chat Completions settings.
 
     Note: reasoning_effort is supported for reasoning-capable OpenAI models via Chat Completions API.
-    GPT-5.5 supports ``none``, ``low``, ``medium``, ``high``, and ``xhigh``.
+    GPT-5.5 supports ``none``, ``low``, ``medium``, ``high``, and ``xhigh``;
+    GPT-5.6 Sol adds ``max`` for its deepest reasoning mode.
 
     Args:
         reasoning_effort: Reasoning intensity for reasoning-capable OpenAI models.
@@ -677,11 +682,17 @@ OPENAI_DEFAULT: dict[str, Any] = _openai_chat_settings(
 )
 """OpenAI Chat default: Same as medium, balanced reasoning and max_tokens."""
 
+OPENAI_MAX: dict[str, Any] = _openai_chat_settings(
+    reasoning_effort="max",
+    max_tokens=32 * K_TOKENS,
+)
+"""OpenAI Chat max: GPT-5.6 Sol maximum reasoning effort for hardest workloads."""
+
 OPENAI_XHIGH: dict[str, Any] = _openai_chat_settings(
     reasoning_effort="xhigh",
     max_tokens=32 * K_TOKENS,
 )
-"""OpenAI Chat xhigh: Highest reasoning effort for hard agentic workloads."""
+"""OpenAI Chat xhigh: Very high reasoning effort for hard agentic workloads."""
 
 OPENAI_HIGH: dict[str, Any] = _openai_chat_settings(
     reasoning_effort="high",
@@ -708,7 +719,7 @@ OPENAI_LOW: dict[str, Any] = _openai_chat_settings(
 
 
 def _openai_responses_settings(
-    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"],
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"],
     reasoning_summary: Literal["detailed", "concise", "auto"] = "auto",
     max_tokens: int | None = None,
     openai_service_tier: Literal["auto", "default", "flex", "priority"] | None = None,
@@ -716,7 +727,7 @@ def _openai_responses_settings(
     """Create OpenAI Responses API settings for reasoning models.
 
     Args:
-        reasoning_effort: Reasoning intensity. GPT-5.5 supports 'none', 'low', 'medium', 'high', and 'xhigh'.
+        reasoning_effort: Reasoning intensity. GPT-5.5 supports 'none', 'low', 'medium', 'high', and 'xhigh'; GPT-5.6 Sol adds 'max'.
         reasoning_summary: Summary level of reasoning process.
         max_tokens: Maximum output tokens (None for model default).
         openai_service_tier: OpenAI service tier for the model request.
@@ -743,12 +754,19 @@ OPENAI_RESPONSES_DEFAULT: dict[str, Any] = _openai_responses_settings(
 )
 """OpenAI Responses default: Same as medium, balanced reasoning effort."""
 
+OPENAI_RESPONSES_MAX: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="max",
+    reasoning_summary="detailed",
+    max_tokens=64 * K_TOKENS,
+)
+"""OpenAI Responses max: GPT-5.6 Sol maximum reasoning effort with detailed summary."""
+
 OPENAI_RESPONSES_XHIGH: dict[str, Any] = _openai_responses_settings(
     reasoning_effort="xhigh",
     reasoning_summary="detailed",
     max_tokens=64 * K_TOKENS,
 )
-"""OpenAI Responses xhigh: Highest reasoning effort with detailed summary."""
+"""OpenAI Responses xhigh: Very high reasoning effort with detailed summary."""
 
 OPENAI_RESPONSES_HIGH: dict[str, Any] = _openai_responses_settings(
     reasoning_effort="high",
@@ -779,13 +797,21 @@ OPENAI_RESPONSES_DEFAULT_FAST: dict[str, Any] = _openai_responses_settings(
 )
 """OpenAI Responses default fast: Balanced reasoning on the priority service tier."""
 
+OPENAI_RESPONSES_MAX_FAST: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="max",
+    reasoning_summary="detailed",
+    max_tokens=64 * K_TOKENS,
+    openai_service_tier="priority",
+)
+"""OpenAI Responses max fast: GPT-5.6 Sol maximum reasoning on the priority service tier."""
+
 OPENAI_RESPONSES_XHIGH_FAST: dict[str, Any] = _openai_responses_settings(
     reasoning_effort="xhigh",
     reasoning_summary="detailed",
     max_tokens=64 * K_TOKENS,
     openai_service_tier="priority",
 )
-"""OpenAI Responses xhigh fast: Highest reasoning effort on the priority service tier."""
+"""OpenAI Responses xhigh fast: Very high reasoning effort on the priority service tier."""
 
 OPENAI_RESPONSES_HIGH_FAST: dict[str, Any] = _openai_responses_settings(
     reasoning_effort="high",
@@ -1113,17 +1139,20 @@ _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
     ModelSettingsPreset.ANTHROPIC_1M_CM_OFF_INTERLEAVED_THINKING.value: ANTHROPIC_1M_CM_OFF_INTERLEAVED_THINKING,
     # OpenAI Chat
     ModelSettingsPreset.OPENAI_DEFAULT.value: OPENAI_DEFAULT,
+    ModelSettingsPreset.OPENAI_MAX.value: OPENAI_MAX,
     ModelSettingsPreset.OPENAI_XHIGH.value: OPENAI_XHIGH,
     ModelSettingsPreset.OPENAI_HIGH.value: OPENAI_HIGH,
     ModelSettingsPreset.OPENAI_MEDIUM.value: OPENAI_MEDIUM,
     ModelSettingsPreset.OPENAI_LOW.value: OPENAI_LOW,
     # OpenAI Responses
     ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT.value: OPENAI_RESPONSES_DEFAULT,
+    ModelSettingsPreset.OPENAI_RESPONSES_MAX.value: OPENAI_RESPONSES_MAX,
     ModelSettingsPreset.OPENAI_RESPONSES_XHIGH.value: OPENAI_RESPONSES_XHIGH,
     ModelSettingsPreset.OPENAI_RESPONSES_HIGH.value: OPENAI_RESPONSES_HIGH,
     ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM.value: OPENAI_RESPONSES_MEDIUM,
     ModelSettingsPreset.OPENAI_RESPONSES_LOW.value: OPENAI_RESPONSES_LOW,
     ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT_FAST.value: OPENAI_RESPONSES_DEFAULT_FAST,
+    ModelSettingsPreset.OPENAI_RESPONSES_MAX_FAST.value: OPENAI_RESPONSES_MAX_FAST,
     ModelSettingsPreset.OPENAI_RESPONSES_XHIGH_FAST.value: OPENAI_RESPONSES_XHIGH_FAST,
     ModelSettingsPreset.OPENAI_RESPONSES_HIGH_FAST.value: OPENAI_RESPONSES_HIGH_FAST,
     ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM_FAST.value: OPENAI_RESPONSES_MEDIUM_FAST,
@@ -1166,6 +1195,11 @@ _PRESET_ALIASES: dict[str, str] = {
     "anthropic_1m_cm_interleaved": ModelSettingsPreset.ANTHROPIC_1M_CM_DEFAULT_INTERLEAVED_THINKING.value,
     "openai": ModelSettingsPreset.OPENAI_DEFAULT.value,
     "openai_responses": ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT.value,
+    "openai_responses_gpt5_6_sol": ModelSettingsPreset.OPENAI_RESPONSES_MAX.value,
+    "openai_responses_gpt56_sol": ModelSettingsPreset.OPENAI_RESPONSES_MAX.value,
+    "openai_responses_sol": ModelSettingsPreset.OPENAI_RESPONSES_MAX.value,
+    "openai_responses_terra": ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM.value,
+    "openai_responses_luna": ModelSettingsPreset.OPENAI_RESPONSES_LOW.value,
     "deepseek": ModelSettingsPreset.DEEPSEEK_V4_DEFAULT.value,
     "deepseek_v4": ModelSettingsPreset.DEEPSEEK_V4_DEFAULT.value,
     "mimo": ModelSettingsPreset.MIMO_V2_5_PRO_DEFAULT.value,

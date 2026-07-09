@@ -73,6 +73,17 @@ runtime = create_agent("openai-responses-ws:gpt-5.5")
 
 Set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` to `auto`, `websocket`, or `http` to control the transport. The OAuth Codex provider reuses this SDK transport and only adds Codex-specific headers and payload normalization.
 
+For GPT-5.6 Sol, use the Responses presets that include the new `max` reasoning effort:
+
+```python
+runtime = create_agent(
+    "openai-responses:gpt-5.6-sol",
+    model_settings="openai_responses_max",
+)
+```
+
+Terra and Luna convenience aliases are available as `openai_responses_terra` and `openai_responses_luna`. Keep using the existing GPT-5 `model_cfg` presets unless the provider documents a different context window for your deployment.
+
 ## Quick Start
 
 For workspace development, copy [`packages/ya-agent-sdk/.env.example`](.env.example) to `packages/ya-agent-sdk/.env`.
@@ -130,7 +141,9 @@ For Anthropic models, `anthropic` now resolves to adaptive thinking by default.
 
 - Use `anthropic` for the default adaptive preset.
 - Use `anthropic_adaptive_xhigh` for Claude Opus 4.7 long-horizon coding and agentic workloads.
+- Use `openai_responses_max` or `openai_responses_gpt5_6_sol` for GPT-5.6 Sol maximum reasoning effort.
 - Use `openai_responses_xhigh` for GPT-5.5 hard asynchronous agentic tasks and evals.
+- Use `openai_responses_terra` or `openai_responses_luna` for GPT-5.6 balanced or low-latency tiers.
 - Use `anthropic_off` when you want thinking disabled.
 - Use `anthropic_400k` or `claude_400k` for a 400K context window between `claude_200k` and `claude_1m`.
 

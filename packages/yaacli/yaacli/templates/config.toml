@@ -7,12 +7,14 @@
 # Examples:
 #   - anthropic:claude-sonnet-4-5
 #   - openai-chat:gpt-4o
+#   - openai-responses:gpt-5.6-sol
 #   - google:gemini-2.5-pro
 #   - oauth@codex:gpt-5.5  # run `ya-oauth login codex` first
 model = ""
 
 # Model settings: preset name or custom dict
-# Available presets: anthropic_default, openai_default, gemini_thinking_level_default, etc.
+# Available presets: anthropic_default, openai_default, openai_responses_max,
+# openai_responses_gpt5_6_sol, gemini_thinking_level_default, etc.
 # model_settings = "anthropic_default"
 
 # Model config for context management (context window, capabilities, etc.)
@@ -24,8 +26,14 @@ model = ""
 # The last selected profile is remembered in ~/.yaacli/state.json.
 # [model_profiles.fast]
 # label = "Fast"
-# model = "openai-responses:gpt-5-mini"
-# model_settings = "openai_responses_low"
+# model = "openai-responses:gpt-5.6-luna"
+# model_settings = "openai_responses_luna"
+# model_cfg = "gpt5_270k"
+#
+# [model_profiles.sol]
+# label = "GPT-5.6 Sol"
+# model = "openai-responses:gpt-5.6-sol"
+# model_settings = "openai_responses_max"
 # model_cfg = "gpt5_270k"
 #
 # [model_profiles.deep]

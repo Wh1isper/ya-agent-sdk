@@ -76,6 +76,7 @@ from ya_agent_sdk.presets import (
     OPENAI_DEFAULT,
     OPENAI_HIGH,
     OPENAI_LOW,
+    OPENAI_MAX,
     OPENAI_MEDIUM,
     OPENAI_RESPONSES_DEFAULT,
     OPENAI_RESPONSES_DEFAULT_FAST,
@@ -83,6 +84,8 @@ from ya_agent_sdk.presets import (
     OPENAI_RESPONSES_HIGH_FAST,
     OPENAI_RESPONSES_LOW,
     OPENAI_RESPONSES_LOW_FAST,
+    OPENAI_RESPONSES_MAX,
+    OPENAI_RESPONSES_MAX_FAST,
     OPENAI_RESPONSES_MEDIUM,
     OPENAI_RESPONSES_MEDIUM_FAST,
     OPENAI_RESPONSES_XHIGH,
@@ -377,11 +380,13 @@ def test_anthropic_adaptive_max_tokens_ordering() -> None:
 
 def test_openai_chat_presets_structure() -> None:
     """Test that OpenAI Chat presets have expected structure."""
-    for preset in [OPENAI_DEFAULT, OPENAI_XHIGH, OPENAI_HIGH, OPENAI_MEDIUM, OPENAI_LOW]:
+    for preset in [OPENAI_DEFAULT, OPENAI_MAX, OPENAI_XHIGH, OPENAI_HIGH, OPENAI_MEDIUM, OPENAI_LOW]:
         assert "openai_reasoning_effort" in preset
         assert "max_tokens" in preset
 
+    assert OPENAI_MAX["openai_reasoning_effort"] == "max"
     assert OPENAI_XHIGH["openai_reasoning_effort"] == "xhigh"
+    assert OPENAI_MAX["max_tokens"] == OPENAI_XHIGH["max_tokens"]
     assert OPENAI_XHIGH["max_tokens"] > OPENAI_HIGH["max_tokens"]
 
 
@@ -389,11 +394,13 @@ def test_openai_responses_presets_structure() -> None:
     """Test that OpenAI Responses presets have expected structure."""
     for preset in [
         OPENAI_RESPONSES_DEFAULT,
+        OPENAI_RESPONSES_MAX,
         OPENAI_RESPONSES_XHIGH,
         OPENAI_RESPONSES_HIGH,
         OPENAI_RESPONSES_MEDIUM,
         OPENAI_RESPONSES_LOW,
         OPENAI_RESPONSES_DEFAULT_FAST,
+        OPENAI_RESPONSES_MAX_FAST,
         OPENAI_RESPONSES_XHIGH_FAST,
         OPENAI_RESPONSES_HIGH_FAST,
         OPENAI_RESPONSES_MEDIUM_FAST,
@@ -404,6 +411,7 @@ def test_openai_responses_presets_structure() -> None:
 
     for preset in [
         OPENAI_RESPONSES_DEFAULT_FAST,
+        OPENAI_RESPONSES_MAX_FAST,
         OPENAI_RESPONSES_XHIGH_FAST,
         OPENAI_RESPONSES_HIGH_FAST,
         OPENAI_RESPONSES_MEDIUM_FAST,
@@ -411,11 +419,14 @@ def test_openai_responses_presets_structure() -> None:
     ]:
         assert preset["openai_service_tier"] == "priority"
 
+    assert OPENAI_RESPONSES_MAX["openai_reasoning_effort"] == "max"
+    assert OPENAI_RESPONSES_MAX_FAST["openai_reasoning_effort"] == "max"
     assert OPENAI_RESPONSES_XHIGH["openai_reasoning_effort"] == "xhigh"
     assert OPENAI_RESPONSES_XHIGH_FAST["openai_reasoning_effort"] == "xhigh"
     assert OPENAI_RESPONSES_HIGH_FAST["openai_reasoning_effort"] == "high"
     assert OPENAI_RESPONSES_MEDIUM_FAST["openai_reasoning_effort"] == "medium"
     assert OPENAI_RESPONSES_LOW_FAST["openai_reasoning_effort"] == "low"
+    assert OPENAI_RESPONSES_MAX["max_tokens"] == OPENAI_RESPONSES_XHIGH["max_tokens"]
     assert OPENAI_RESPONSES_XHIGH["max_tokens"] > OPENAI_RESPONSES_HIGH["max_tokens"]
 
 
@@ -459,11 +470,20 @@ def test_get_model_settings_by_enum() -> None:
     settings_1m_interleaved = get_model_settings(ModelSettingsPreset.ANTHROPIC_1M_HIGH_INTERLEAVED_THINKING)
     assert settings_1m_interleaved == ANTHROPIC_1M_HIGH_INTERLEAVED_THINKING
 
+    settings_openai_max = get_model_settings(ModelSettingsPreset.OPENAI_MAX)
+    assert settings_openai_max == OPENAI_MAX
+
     settings_openai_xhigh = get_model_settings(ModelSettingsPreset.OPENAI_XHIGH)
     assert settings_openai_xhigh == OPENAI_XHIGH
 
+    settings_openai_responses_max = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_MAX)
+    assert settings_openai_responses_max == OPENAI_RESPONSES_MAX
+
     settings_openai_responses_xhigh = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_XHIGH)
     assert settings_openai_responses_xhigh == OPENAI_RESPONSES_XHIGH
+
+    settings_openai_responses_max_fast = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_MAX_FAST)
+    assert settings_openai_responses_max_fast == OPENAI_RESPONSES_MAX_FAST
 
     settings_openai_responses_high_fast = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_HIGH_FAST)
     assert settings_openai_responses_high_fast == OPENAI_RESPONSES_HIGH_FAST
@@ -487,11 +507,20 @@ def test_get_model_settings_by_string() -> None:
     settings_1m = get_model_settings("anthropic_1m_high")
     assert settings_1m == ANTHROPIC_1M_HIGH
 
+    settings_openai_max = get_model_settings("openai_max")
+    assert settings_openai_max == OPENAI_MAX
+
     settings_openai_xhigh = get_model_settings("openai_xhigh")
     assert settings_openai_xhigh == OPENAI_XHIGH
 
+    settings_openai_responses_max = get_model_settings("openai_responses_max")
+    assert settings_openai_responses_max == OPENAI_RESPONSES_MAX
+
     settings_openai_responses_xhigh = get_model_settings("openai_responses_xhigh")
     assert settings_openai_responses_xhigh == OPENAI_RESPONSES_XHIGH
+
+    settings_openai_responses_max_fast = get_model_settings("openai_responses_max_fast")
+    assert settings_openai_responses_max_fast == OPENAI_RESPONSES_MAX_FAST
 
     settings_openai_responses_high_fast = get_model_settings("openai_responses_high_fast")
     assert settings_openai_responses_high_fast == OPENAI_RESPONSES_HIGH_FAST
@@ -544,6 +573,21 @@ def test_get_model_settings_by_alias() -> None:
 
     settings = get_model_settings("openai")
     assert settings == OPENAI_DEFAULT
+
+    settings = get_model_settings("openai_responses_gpt5_6_sol")
+    assert settings == OPENAI_RESPONSES_MAX
+
+    settings = get_model_settings("openai_responses_gpt56_sol")
+    assert settings == OPENAI_RESPONSES_MAX
+
+    settings = get_model_settings("openai_responses_sol")
+    assert settings == OPENAI_RESPONSES_MAX
+
+    settings = get_model_settings("openai_responses_terra")
+    assert settings == OPENAI_RESPONSES_MEDIUM
+
+    settings = get_model_settings("openai_responses_luna")
+    assert settings == OPENAI_RESPONSES_LOW
 
     settings = get_model_settings("deepseek")
     assert settings == DEEPSEEK_V4_DEFAULT
@@ -697,16 +741,24 @@ def test_list_presets() -> None:
         "openai_default",
         "openai_high",
         "openai_low",
+        "openai_max",
         "openai_medium",
         "openai_responses",
         "openai_responses_default",
         "openai_responses_default_fast",
+        "openai_responses_gpt56_sol",
+        "openai_responses_gpt5_6_sol",
         "openai_responses_high",
         "openai_responses_high_fast",
         "openai_responses_low",
         "openai_responses_low_fast",
+        "openai_responses_luna",
+        "openai_responses_max",
+        "openai_responses_max_fast",
         "openai_responses_medium",
         "openai_responses_medium_fast",
+        "openai_responses_sol",
+        "openai_responses_terra",
         "openai_responses_xhigh",
         "openai_responses_xhigh_fast",
         "openai_xhigh",
