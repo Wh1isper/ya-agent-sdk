@@ -1,7 +1,7 @@
 """ModelSettings presets for different providers and thinking levels.
 
 This module provides pre-configured ModelSettings for common use cases across
-different model providers (Anthropic, OpenAI, DeepSeek, Gemini). Each provider has presets
+different model providers (Anthropic, OpenAI, DeepSeek, Grok, Gemini). Each provider has presets
 for different "thinking levels" (reasoning intensity).
 
 Naming Convention:
@@ -336,6 +336,12 @@ class ModelSettingsPreset(StrEnum):
     # MiMo V2.5 presets (OpenAI-compatible API)
     MIMO_V2_5_DEFAULT = "mimo_v2_5"
     MIMO_V2_5_PRO_DEFAULT = "mimo_v2_5_pro"
+
+    # Grok 4.5 presets (xAI)
+    GROK_4_5_DEFAULT = "grok_4_5_default"
+    GROK_4_5_HIGH = "grok_4_5_high"
+    GROK_4_5_MEDIUM = "grok_4_5_medium"
+    GROK_4_5_LOW = "grok_4_5_low"
 
     # Gemini thinking_budget presets (for Gemini 2.5)
     GEMINI_THINKING_BUDGET_DEFAULT = "gemini_thinking_budget_default"
@@ -934,6 +940,63 @@ MIMO_V2_5_PRO_DEFAULT: dict[str, Any] = _mimo_v2_5_settings()
 
 
 # =============================================================================
+# Grok 4.5 Presets (xAI)
+# =============================================================================
+
+
+def _grok_4_5_settings(
+    *,
+    reasoning_effort: Literal["low", "medium", "high"] = "high",
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Create Grok 4.5 xAI model settings.
+
+    Grok 4.5 supports ``reasoning_effort`` values ``low``, ``medium``, and
+    ``high``. Reasoning cannot be disabled, and the xAI API defaults to
+    ``high`` when not specified.
+
+    Args:
+        reasoning_effort: Thinking intensity for Grok 4.5.
+        max_tokens: Maximum output tokens.
+
+    Returns:
+        Dict suitable for XaiModelSettings.
+    """
+    settings: dict[str, Any] = {
+        "xai_reasoning_effort": reasoning_effort,
+        "xai_include_encrypted_content": True,
+    }
+    if max_tokens is not None:
+        settings["max_tokens"] = max_tokens
+    return settings
+
+
+GROK_4_5_DEFAULT: dict[str, Any] = _grok_4_5_settings(
+    reasoning_effort="high",
+    max_tokens=32 * K_TOKENS,
+)
+"""Grok 4.5 default: high reasoning effort, matching the xAI API default."""
+
+GROK_4_5_HIGH: dict[str, Any] = _grok_4_5_settings(
+    reasoning_effort="high",
+    max_tokens=32 * K_TOKENS,
+)
+"""Grok 4.5 high: deepest supported reasoning effort."""
+
+GROK_4_5_MEDIUM: dict[str, Any] = _grok_4_5_settings(
+    reasoning_effort="medium",
+    max_tokens=16 * K_TOKENS,
+)
+"""Grok 4.5 medium: balanced reasoning effort."""
+
+GROK_4_5_LOW: dict[str, Any] = _grok_4_5_settings(
+    reasoning_effort="low",
+    max_tokens=8 * K_TOKENS,
+)
+"""Grok 4.5 low: latency-sensitive reasoning effort."""
+
+
+# =============================================================================
 # Gemini thinking_budget Presets (for Gemini 2.5)
 # =============================================================================
 
@@ -1165,6 +1228,11 @@ _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
     # MiMo V2.5
     ModelSettingsPreset.MIMO_V2_5_DEFAULT.value: MIMO_V2_5_DEFAULT,
     ModelSettingsPreset.MIMO_V2_5_PRO_DEFAULT.value: MIMO_V2_5_PRO_DEFAULT,
+    # Grok 4.5
+    ModelSettingsPreset.GROK_4_5_DEFAULT.value: GROK_4_5_DEFAULT,
+    ModelSettingsPreset.GROK_4_5_HIGH.value: GROK_4_5_HIGH,
+    ModelSettingsPreset.GROK_4_5_MEDIUM.value: GROK_4_5_MEDIUM,
+    ModelSettingsPreset.GROK_4_5_LOW.value: GROK_4_5_LOW,
     # Gemini thinking_budget (for Gemini 2.5)
     ModelSettingsPreset.GEMINI_THINKING_BUDGET_DEFAULT.value: GEMINI_THINKING_BUDGET_DEFAULT,
     ModelSettingsPreset.GEMINI_THINKING_BUDGET_HIGH.value: GEMINI_THINKING_BUDGET_HIGH,
@@ -1205,6 +1273,12 @@ _PRESET_ALIASES: dict[str, str] = {
     "mimo": ModelSettingsPreset.MIMO_V2_5_PRO_DEFAULT.value,
     "mimo_v2.5": ModelSettingsPreset.MIMO_V2_5_DEFAULT.value,
     "mimo_v2.5_pro": ModelSettingsPreset.MIMO_V2_5_PRO_DEFAULT.value,
+    "xai": ModelSettingsPreset.GROK_4_5_DEFAULT.value,
+    "grok": ModelSettingsPreset.GROK_4_5_DEFAULT.value,
+    "grok_4.5": ModelSettingsPreset.GROK_4_5_DEFAULT.value,
+    "grok_4.5_latest": ModelSettingsPreset.GROK_4_5_DEFAULT.value,
+    "grok_4_5": ModelSettingsPreset.GROK_4_5_DEFAULT.value,
+    "grok_4_5_latest": ModelSettingsPreset.GROK_4_5_DEFAULT.value,
     "gemini_2.5": ModelSettingsPreset.GEMINI_THINKING_BUDGET_DEFAULT.value,
     "gemini_3": ModelSettingsPreset.GEMINI_THINKING_LEVEL_DEFAULT.value,
     "gemini": ModelSettingsPreset.GEMINI_THINKING_LEVEL_DEFAULT.value,  # Default to Gemini 3
@@ -1332,6 +1406,9 @@ class ModelConfigPreset(StrEnum):
     MIMO_V2_5_1M = "mimo_v2_5_1m"
     MIMO_V2_5_PRO_1M = "mimo_v2_5_pro_1m"
 
+    # Grok models
+    GROK_4_5_500K = "grok_4_5_500k"
+
     # Gemini models
     GEMINI_200K = "gemini_200k"
     GEMINI_1M = "gemini_1m"
@@ -1439,6 +1516,17 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
             ModelCapability.reasoning_foreign_incompatible,
         },
     },
+    # Grok 4.5 models (text + image, no video support)
+    ModelConfigPreset.GROK_4_5_500K.value: {
+        "context_window": 500_000,
+        "max_images": 20,
+        "max_videos": 0,
+        "support_gif": False,
+        "split_large_images": True,
+        "image_split_max_height": 4096,
+        "image_split_overlap": 50,
+        "capabilities": {ModelCapability.vision},
+    },
     # Gemini models (vision + video support)
     ModelConfigPreset.GEMINI_200K.value: {
         "context_window": 200_000,
@@ -1489,6 +1577,12 @@ _MODEL_CFG_ALIASES: dict[str, str] = {
     "mimo_v2.5_pro": ModelConfigPreset.MIMO_V2_5_PRO_1M.value,
     "mimo_v2_5": ModelConfigPreset.MIMO_V2_5_1M.value,
     "mimo_v2_5_pro": ModelConfigPreset.MIMO_V2_5_PRO_1M.value,
+    "xai": ModelConfigPreset.GROK_4_5_500K.value,
+    "grok": ModelConfigPreset.GROK_4_5_500K.value,
+    "grok_4.5": ModelConfigPreset.GROK_4_5_500K.value,
+    "grok_4.5_latest": ModelConfigPreset.GROK_4_5_500K.value,
+    "grok_4_5": ModelConfigPreset.GROK_4_5_500K.value,
+    "grok_4_5_latest": ModelConfigPreset.GROK_4_5_500K.value,
     "gemini": ModelConfigPreset.GEMINI_200K.value,
 }
 

@@ -70,6 +70,10 @@ from ya_agent_sdk.presets import (
     DEEPSEEK_V4_HIGH,
     DEEPSEEK_V4_MAX,
     DEEPSEEK_V4_OFF,
+    GROK_4_5_DEFAULT,
+    GROK_4_5_HIGH,
+    GROK_4_5_LOW,
+    GROK_4_5_MEDIUM,
     INHERIT,
     MIMO_V2_5_DEFAULT,
     MIMO_V2_5_PRO_DEFAULT,
@@ -531,6 +535,21 @@ def test_get_model_settings_by_string() -> None:
     settings_mimo = get_model_settings("mimo_v2_5_pro")
     assert settings_mimo == MIMO_V2_5_PRO_DEFAULT
 
+    settings_grok = get_model_settings("grok_4_5_high")
+    assert settings_grok == GROK_4_5_HIGH
+
+
+def test_grok_4_5_presets_structure() -> None:
+    """Test Grok 4.5 reasoning effort presets."""
+    assert GROK_4_5_DEFAULT == GROK_4_5_HIGH
+    assert GROK_4_5_DEFAULT["xai_reasoning_effort"] == "high"
+    assert GROK_4_5_DEFAULT["xai_include_encrypted_content"] is True
+    assert GROK_4_5_DEFAULT["max_tokens"] == 32 * 1024
+    assert GROK_4_5_MEDIUM["xai_reasoning_effort"] == "medium"
+    assert GROK_4_5_MEDIUM["max_tokens"] == 16 * 1024
+    assert GROK_4_5_LOW["xai_reasoning_effort"] == "low"
+    assert GROK_4_5_LOW["max_tokens"] == 8 * 1024
+
 
 def test_get_model_settings_by_alias() -> None:
     """Test getting model settings by alias."""
@@ -603,6 +622,18 @@ def test_get_model_settings_by_alias() -> None:
 
     settings = get_model_settings("mimo_v2.5_pro")
     assert settings == MIMO_V2_5_PRO_DEFAULT
+
+    settings = get_model_settings("xai")
+    assert settings == GROK_4_5_DEFAULT
+
+    settings = get_model_settings("grok")
+    assert settings == GROK_4_5_DEFAULT
+
+    settings = get_model_settings("grok_4.5")
+    assert settings == GROK_4_5_DEFAULT
+
+    settings = get_model_settings("grok_4_5_latest")
+    assert settings == GROK_4_5_DEFAULT
 
 
 def test_get_model_settings_invalid() -> None:
@@ -729,6 +760,15 @@ def test_list_presets() -> None:
         "gemini_thinking_level_low",
         "gemini_thinking_level_medium",
         "gemini_thinking_level_minimal",
+        "grok",
+        "grok_4.5",
+        "grok_4.5_latest",
+        "grok_4_5",
+        "grok_4_5_default",
+        "grok_4_5_high",
+        "grok_4_5_latest",
+        "grok_4_5_low",
+        "grok_4_5_medium",
         "high",
         "low",
         "medium",
@@ -762,6 +802,7 @@ def test_list_presets() -> None:
         "openai_responses_xhigh",
         "openai_responses_xhigh_fast",
         "openai_xhigh",
+        "xai",
     ])
 
 
@@ -985,6 +1026,13 @@ def test_model_cfg_capabilities() -> None:
         ModelCapability.reasoning_foreign_incompatible,
     }
 
+    # Grok 4.5: vision, no video
+    cfg_grok = get_model_cfg("grok_4_5_500k")
+    assert cfg_grok["context_window"] == 500_000
+    assert cfg_grok["max_images"] == 20
+    assert cfg_grok["max_videos"] == 0
+    assert cfg_grok["capabilities"] == {ModelCapability.vision}
+
     # Gemini: vision + video + document
     cfg_gemini = get_model_cfg("gemini_1m")
     assert ModelCapability.vision in cfg_gemini["capabilities"]
@@ -1017,6 +1065,10 @@ def test_get_model_cfg_by_enum() -> None:
     cfg_mimo_pro = get_model_cfg(ModelConfigPreset.MIMO_V2_5_PRO_1M)
     assert cfg_mimo_pro["context_window"] == 1_000_000
     assert cfg_mimo_pro["max_videos"] == 0
+
+    cfg_grok = get_model_cfg(ModelConfigPreset.GROK_4_5_500K)
+    assert cfg_grok["context_window"] == 500_000
+    assert cfg_grok["max_videos"] == 0
 
     cfg_gemini = get_model_cfg(ModelConfigPreset.GEMINI_1M)
     assert cfg_gemini["context_window"] == 1_000_000
@@ -1055,6 +1107,10 @@ def test_get_model_cfg_by_string() -> None:
     cfg_mimo_pro = get_model_cfg("mimo_v2_5_pro_1m")
     assert cfg_mimo_pro["context_window"] == 1_000_000
     assert cfg_mimo_pro["max_videos"] == 0
+
+    cfg_grok = get_model_cfg("grok_4_5_500k")
+    assert cfg_grok["context_window"] == 500_000
+    assert cfg_grok["max_videos"] == 0
 
 
 def test_get_model_cfg_by_alias() -> None:
@@ -1098,6 +1154,18 @@ def test_get_model_cfg_by_alias() -> None:
 
     cfg = get_model_cfg("mimo_v2_5_pro")
     assert cfg["context_window"] == 1_000_000
+
+    cfg = get_model_cfg("xai")
+    assert cfg["context_window"] == 500_000
+
+    cfg = get_model_cfg("grok")
+    assert cfg["context_window"] == 500_000
+
+    cfg = get_model_cfg("grok_4.5_latest")
+    assert cfg["context_window"] == 500_000
+
+    cfg = get_model_cfg("grok_4_5_latest")
+    assert cfg["context_window"] == 500_000
 
 
 def test_get_model_cfg_invalid() -> None:
@@ -1160,6 +1228,12 @@ def test_list_model_cfg_presets() -> None:
         "gpt5",
         "gpt5_1m",
         "gpt5_270k",
+        "grok",
+        "grok_4.5",
+        "grok_4.5_latest",
+        "grok_4_5",
+        "grok_4_5_500k",
+        "grok_4_5_latest",
         "mimo",
         "mimo_v2.5",
         "mimo_v2.5_pro",
@@ -1168,4 +1242,5 @@ def test_list_model_cfg_presets() -> None:
         "mimo_v2_5_pro",
         "mimo_v2_5_pro_1m",
         "openai",
+        "xai",
     ])

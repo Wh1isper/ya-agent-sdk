@@ -46,6 +46,7 @@ PROVIDER_ENV_VARS = {
     "google-gla": ("GOOGLE_API_KEY", None),
     "google-vertex": ("GOOGLE_API_KEY", None),
     "gemini": ("GOOGLE_API_KEY", None),
+    "xai": ("XAI_API_KEY", None),
     "bedrock": (None, None),  # Uses AWS credentials
 }
 
@@ -62,6 +63,7 @@ PROVIDER_MODEL_SETTINGS = {
     "google-gla": "gemini_thinking_budget_default",
     "google-vertex": "gemini_thinking_budget_default",
     "gemini": "gemini_thinking_budget_default",
+    "xai": "grok_4_5_default",
     "bedrock": None,
 }
 
@@ -81,6 +83,7 @@ PROVIDER_MODEL_CFG = {
     "google-gla": "gemini_1m",
     "google-vertex": "gemini_1m",
     "gemini": "gemini_1m",
+    "xai": "grok_4_5_500k",
     "bedrock": None,
 }
 
@@ -206,6 +209,7 @@ def run_setup_wizard(config_manager: ConfigManager) -> bool:
     click.echo("    - anthropic:claude-sonnet-4-20250514")
     click.echo("    - openai-chat:gpt-4o")
     click.echo("    - google:gemini-2.5-pro")
+    click.echo("    - xai:grok-4.5")
     click.echo("    - mygateway@anthropic:claude-sonnet-4")
     click.echo()
 

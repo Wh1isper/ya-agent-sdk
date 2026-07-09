@@ -9,17 +9,18 @@
 #   - openai-chat:gpt-4o
 #   - openai-responses:gpt-5.6-sol
 #   - google:gemini-2.5-pro
+#   - xai:grok-4.5
 #   - oauth@codex:gpt-5.5  # run `ya-oauth login codex` first
 model = ""
 
 # Model settings: preset name or custom dict
 # Available presets: anthropic_default, openai_default, openai_responses_max,
-# openai_responses_gpt5_6_sol, gemini_thinking_level_default, etc.
+# openai_responses_gpt5_6_sol, grok_4_5_default, gemini_thinking_level_default, etc.
 # model_settings = "anthropic_default"
 
 # Model config for context management (context window, capabilities, etc.)
-# Presets: claude_200k, claude_1m, gpt5_270k, gemini_200k, gemini_1m
-# Aliases: claude, anthropic, openai, gemini
+# Presets: claude_200k, claude_1m, gpt5_270k, grok_4_5_500k, gemini_200k, gemini_1m
+# Aliases: claude, anthropic, openai, xai, grok, gemini
 # model_cfg = "claude_200k"
 #
 # /model can switch between selectable profiles for the current session.
@@ -47,6 +48,12 @@ model = ""
 # model = "oauth@codex:gpt-5.5"
 # model_settings = "openai_responses_high"
 # model_cfg = "gpt5_270k"
+#
+# [model_profiles.grok]
+# label = "Grok 4.5"
+# model = "xai:grok-4.5"
+# model_settings = "grok_4_5_default"
+# model_cfg = "grok_4_5_500k"
 #
 # Or custom configuration:
 # [general.model_cfg]
@@ -77,6 +84,7 @@ agent_stream_resume_prompt = "The previous streaming model request failed before
 # ANTHROPIC_API_KEY = "sk-ant-..."
 # OPENAI_API_KEY = "sk-..."
 # GOOGLE_API_KEY = "..."
+# XAI_API_KEY = "xai-..."
 #
 # Fallback media understanding models used by `view` and `read_media`
 # when the main model lacks native image, video, or audio capability.

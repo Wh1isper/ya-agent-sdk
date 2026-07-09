@@ -92,3 +92,11 @@ def test_websocket_responses_provider_uses_openai_response_presets() -> None:
         assert PROVIDER_ENV_VARS[provider] == ("OPENAI_API_KEY", "OPENAI_BASE_URL")
         assert PROVIDER_MODEL_SETTINGS[provider] == "openai_responses_default"
         assert PROVIDER_MODEL_CFG[provider] == "gpt5_270k"
+
+
+def test_xai_provider_uses_grok_4_5_presets() -> None:
+    from yaacli.cli import PROVIDER_ENV_VARS, PROVIDER_MODEL_CFG, PROVIDER_MODEL_SETTINGS
+
+    assert PROVIDER_ENV_VARS["xai"] == ("XAI_API_KEY", None)
+    assert PROVIDER_MODEL_SETTINGS["xai"] == "grok_4_5_default"
+    assert PROVIDER_MODEL_CFG["xai"] == "grok_4_5_500k"

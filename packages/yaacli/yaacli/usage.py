@@ -21,6 +21,7 @@ Example:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.usage import UsageSnapshot, coerce_run_usage
@@ -48,6 +49,86 @@ class TokenUsageBreakdown:
             cache_write_tokens=max(0, self.cache_write_tokens - start.cache_write_tokens),
             output_tokens=max(0, self.output_tokens - start.output_tokens),
         )
+
+
+@dataclass(frozen=True)
+class TokenCostEstimate:
+    """Estimated USD cost for a model usage entry."""
+
+    input_cost: Decimal
+    output_cost: Decimal
+
+    @property
+    def total_cost(self) -> Decimal:
+        """Total estimated USD cost."""
+        return self.input_cost + self.output_cost
+
+
+@dataclass(frozen=True)
+class ModelTokenPrice:
+    """Simple per-million-token pricing used for local cost estimates."""
+
+    input_mtok: Decimal
+    cached_input_mtok: Decimal | None
+    output_mtok: Decimal
+
+    def estimate(self, usage: RunUsage) -> TokenCostEstimate:
+        """Estimate USD cost for a RunUsage value."""
+        input_tokens = usage.input_tokens or 0
+        cache_read_tokens = usage.cache_read_tokens or 0
+        cached_input_tokens = min(input_tokens, cache_read_tokens) if self.cached_input_mtok is not None else 0
+        uncached_input_tokens = max(0, input_tokens - cached_input_tokens)
+        output_tokens = usage.output_tokens or 0
+
+        input_cost = (Decimal(uncached_input_tokens) * self.input_mtok) / Decimal(1_000_000)
+        if self.cached_input_mtok is not None:
+            input_cost += (Decimal(cached_input_tokens) * self.cached_input_mtok) / Decimal(1_000_000)
+        output_cost = (Decimal(output_tokens) * self.output_mtok) / Decimal(1_000_000)
+        return TokenCostEstimate(input_cost=input_cost, output_cost=output_cost)
+
+
+_GROK_4_5_PRICE = ModelTokenPrice(
+    input_mtok=Decimal("2.00"),
+    cached_input_mtok=Decimal("0.50"),
+    output_mtok=Decimal("6.00"),
+)
+
+_GROK_4_5_MODEL_REFS = frozenset({
+    "grok-4.5",
+    "grok-4.5-latest",
+    "grok-build-latest",
+    "x-ai/grok-4.5",
+    "x-ai/grok-4.5-latest",
+})
+
+
+def _normalize_model_ref(model_id: str) -> str:
+    """Normalize YA/Pydantic model IDs to provider model references for pricing."""
+    normalized = model_id.strip().lower()
+    if "@" in normalized:
+        _gateway_or_oauth, normalized = normalized.split("@", 1)
+    if ":" in normalized:
+        _provider, normalized = normalized.rsplit(":", 1)
+    return normalized
+
+
+def estimate_model_usage_cost(model_id: str, usage: RunUsage) -> TokenCostEstimate | None:
+    """Estimate model usage cost when a local price table is available."""
+    model_ref = _normalize_model_ref(model_id)
+    if model_ref in _GROK_4_5_MODEL_REFS:
+        return _GROK_4_5_PRICE.estimate(usage)
+    return None
+
+
+def _format_usd(value: Decimal) -> str:
+    """Format a USD Decimal compactly for CLI output."""
+    if value == 0:
+        return "$0.00"
+    if value < Decimal("0.0001"):
+        return "<$0.0001"
+    if value < Decimal("0.01"):
+        return f"${value:.4f}"
+    return f"${value:.2f}"
 
 
 @dataclass
@@ -193,11 +274,28 @@ class SessionUsage:
         """Total LLM requests across all models."""
         return sum(u.requests or 0 for u in self.model_usages.values())
 
+    @property
+    def estimated_total_cost(self) -> TokenCostEstimate | None:
+        """Estimated total cost across models with known local prices."""
+        input_cost = Decimal(0)
+        output_cost = Decimal(0)
+        has_estimate = False
+        for model_id, usage in self.model_usages.items():
+            estimate = estimate_model_usage_cost(model_id, usage)
+            if estimate is None:
+                continue
+            input_cost += estimate.input_cost
+            output_cost += estimate.output_cost
+            has_estimate = True
+        if not has_estimate:
+            return None
+        return TokenCostEstimate(input_cost=input_cost, output_cost=output_cost)
+
     def is_empty(self) -> bool:
         """Check if no usage has been recorded."""
         return len(self.model_usages) == 0
 
-    def _format_usage_entry(self, name: str, usage: RunUsage) -> list[str]:
+    def _format_usage_entry(self, name: str, usage: RunUsage, *, model_id: str | None = None) -> list[str]:
         """Format a single usage entry."""
         lines = [f"  {name}:"]
         lines.append(f"    Input:  {usage.input_tokens or 0:,} tokens")
@@ -208,6 +306,8 @@ class SessionUsage:
             lines.append(f"    Cache Write: {usage.cache_write_tokens:,} tokens")
         if usage.requests:
             lines.append(f"    Requests: {usage.requests}")
+        if model_id is not None and (cost := estimate_model_usage_cost(model_id, usage)) is not None:
+            lines.append(f"    Estimated Cost: {_format_usd(cost.total_cost)}")
         return lines
 
     def format_summary(self) -> str:
@@ -224,7 +324,7 @@ class SessionUsage:
         # By Model breakdown
         lines.append("By Model:")
         for model_id, usage in sorted(self.model_usages.items()):
-            lines.extend(self._format_usage_entry(model_id, usage))
+            lines.extend(self._format_usage_entry(model_id, usage, model_id=model_id))
             lines.append("")
 
         # By Agent breakdown
@@ -243,5 +343,7 @@ class SessionUsage:
             lines.append(f"  Cache Write: {self.total_cache_write_tokens:,} tokens")
         lines.append(f"  Total:  {self.total_tokens:,} tokens")
         lines.append(f"  Requests: {self.total_requests}")
+        if (cost := self.estimated_total_cost) is not None:
+            lines.append(f"  Estimated Cost: {_format_usd(cost.total_cost)}")
 
         return "\n".join(lines)
