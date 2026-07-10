@@ -36,6 +36,7 @@ _PIL_FORMAT_TO_MEDIA_TYPE: dict[str, ImageMediaType] = {
     "WEBP": "image/webp",
 }
 _SUPPORTED_IMAGE_MEDIA_TYPES = frozenset(_PIL_FORMAT_TO_MEDIA_TYPE.values())
+_MAX_IMAGE_PROCESSING_PIXELS = 80_000_000
 
 
 def normalize_image_media_type(data: bytes, media_type: str | None = None) -> ImageMediaType:
@@ -65,13 +66,40 @@ def detect_image_media_type(data: bytes) -> ImageMediaType | None:
         an unsupported image format).
     """
     try:
-        img = Image.open(io.BytesIO(data))
-        fmt = img.format  # e.g. "JPEG", "PNG", "GIF", "WEBP"
-        if fmt is None:
-            return None
-        return _PIL_FORMAT_TO_MEDIA_TYPE.get(fmt.upper())
+        with Image.open(io.BytesIO(data)) as img:
+            fmt = img.format  # e.g. "JPEG", "PNG", "GIF", "WEBP"
+            if fmt is None:
+                return None
+            return _PIL_FORMAT_TO_MEDIA_TYPE.get(fmt.upper())
     except Exception:
         return None
+
+
+def get_image_dimensions(data: bytes) -> tuple[int, int] | None:
+    """Return image dimensions without fully decoding pixel data."""
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+def image_exceeds_limits(
+    image_bytes: bytes,
+    *,
+    max_bytes: int | None = None,
+    max_dimension: int = 0,
+) -> bool:
+    """Return whether an image exceeds limits or its dimensions cannot be validated."""
+    if max_bytes is not None and len(image_bytes) > max_bytes:
+        return True
+    if max_dimension <= 0:
+        return False
+
+    dimensions = get_image_dimensions(image_bytes)
+    # Treat unreadable dimensions as requiring processing so callers fail closed
+    # instead of forwarding malformed or unsupported binary data to a model API.
+    return dimensions is None or max(dimensions) > max_dimension
 
 
 def get_available_port() -> int:
@@ -151,44 +179,56 @@ def get_tool_name_from_id(tool_id: str, message_history: list[ModelMessage]) -> 
 
 async def compress_image_data(
     image_bytes: bytes,
-    max_bytes: int = 5 * 1024 * 1024,
+    max_bytes: int | None = 5 * 1024 * 1024,
     media_type: ImageMediaType = "image/jpeg",
+    max_dimension: int = 0,
 ) -> tuple[bytes, ImageMediaType]:
-    """Compress an image to fit within a maximum byte size.
+    """Compress an image to fit byte-size and per-axis dimension limits.
 
     Uses a multi-step strategy:
-    1. If already under the limit, return as-is.
-    2. Convert to JPEG and reduce quality progressively (95 -> 20).
-    3. If still too large, resize the image (halve dimensions) and repeat.
+    1. If already within both limits, return as-is.
+    2. Resize proportionally when either dimension exceeds ``max_dimension``.
+    3. Convert to JPEG and reduce quality progressively (95 -> 20).
+    4. If still too large, resize the image (halve dimensions) and repeat.
 
     Args:
         image_bytes: The raw image data as bytes.
-        max_bytes: Maximum allowed size in bytes. Defaults to 5 MB.
+        max_bytes: Maximum allowed raw size in bytes. ``None`` disables the
+            byte-size limit.
         media_type: The original MIME type. Used to detect format when
-            the image is already small enough.
+            the image is already within both limits.
+        max_dimension: Maximum allowed width or height in pixels. A non-positive
+            value disables the dimension limit.
 
     Returns:
         A tuple of (compressed_bytes, media_type). The media_type will be
         ``"image/jpeg"`` if compression was applied, or the detected/original
-        type if the image was already small enough.
+        type if the image was already within both limits.
     """
-    return await run_in_threadpool(_compress_image_data_sync, image_bytes, max_bytes, media_type)
+    return await run_in_threadpool(
+        _compress_image_data_sync,
+        image_bytes,
+        max_bytes,
+        media_type,
+        max_dimension,
+    )
 
 
 async def compress_image_to_model_limit(
     image_bytes: bytes,
     max_encoded_bytes: int,
     media_type: str | None = "image/jpeg",
+    max_dimension: int = 0,
 ) -> tuple[bytes, ImageMediaType]:
-    """Compress an image so its base64-encoded payload fits a model API limit."""
+    """Compress an image so it fits model API byte and dimension limits."""
     normalized_media_type = normalize_image_media_type(image_bytes, media_type)
-    if max_encoded_bytes <= 0:
-        return image_bytes, normalized_media_type
+    max_raw_bytes = raw_bytes_limit_for_base64(max_encoded_bytes) if max_encoded_bytes > 0 else None
 
     return await compress_image_data(
         image_bytes=image_bytes,
-        max_bytes=raw_bytes_limit_for_base64(max_encoded_bytes),
+        max_bytes=max_raw_bytes,
         media_type=normalized_media_type,
+        max_dimension=max_dimension,
     )
 
 
@@ -197,52 +237,83 @@ def raw_bytes_limit_for_base64(max_encoded_bytes: int) -> int:
     return (max_encoded_bytes // 4) * 3
 
 
+def _prepare_image_for_jpeg(
+    image: Image.Image,
+    *,
+    resize_to_dimension: int | None,
+) -> Image.Image:
+    """Resize an image if needed and convert it to RGB for JPEG output."""
+    if resize_to_dimension is not None:
+        image.thumbnail((resize_to_dimension, resize_to_dimension), Image.Resampling.LANCZOS)
+
+    if image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        alpha = rgba.getchannel("A")
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        try:
+            background.paste(rgba, mask=alpha)
+        finally:
+            alpha.close()
+            rgba.close()
+        return background
+    if image.mode != "RGB":
+        return image.convert("RGB")
+    return image
+
+
 def _compress_image_data_sync(
     image_bytes: bytes,
-    max_bytes: int = 5 * 1024 * 1024,
+    max_bytes: int | None = 5 * 1024 * 1024,
     media_type: ImageMediaType = "image/jpeg",
+    max_dimension: int = 0,
 ) -> tuple[bytes, ImageMediaType]:
     """Synchronous implementation of compress_image_data."""
-    if len(image_bytes) <= max_bytes:
-        detected = detect_image_media_type(image_bytes)
+    img = Image.open(io.BytesIO(image_bytes))
+    detected = _PIL_FORMAT_TO_MEDIA_TYPE.get((img.format or "").upper())
+    exceeds_bytes = max_bytes is not None and len(image_bytes) > max_bytes
+    exceeds_dimensions = max_dimension > 0 and max(img.size) > max_dimension
+    if not exceeds_bytes and not exceeds_dimensions:
         return image_bytes, detected or media_type
 
-    img = Image.open(io.BytesIO(image_bytes))
+    pixel_count = img.width * img.height
+    if pixel_count > _MAX_IMAGE_PROCESSING_PIXELS:
+        raise ValueError(
+            f"Image has {pixel_count} pixels, exceeding the safe processing limit "
+            f"of {_MAX_IMAGE_PROCESSING_PIXELS} pixels"
+        )
 
     # Skip animated images (multi-frame GIF/WebP) -- JPEG cannot preserve animation.
-    # Return original data so the downstream filter can drop it with a clear hint.
+    # Return original data so callers can reject it with a clear hint when it
+    # remains outside the configured limits.
     n_frames = getattr(img, "n_frames", 1) or 1
     if n_frames > 1:
-        return image_bytes, detect_image_media_type(image_bytes) or media_type
+        return image_bytes, detected or media_type
 
-    # Convert to RGB for JPEG output, compositing alpha onto white background
-    # to keep transparent content legible (avoids black-background artifacts).
-    if img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info):
-        rgba = img.convert("RGBA")
-        background = Image.new("RGB", img.size, (255, 255, 255))
-        background.paste(rgba, mask=rgba.split()[3])
-        img = background
-    elif img.mode != "RGB":
-        img = img.convert("RGB")
+    # Resize before color conversion to avoid allocating multiple full-size
+    # buffers for highly compressed images with very large pixel dimensions.
+    img = _prepare_image_for_jpeg(
+        img,
+        resize_to_dimension=max_dimension if exceeds_dimensions else None,
+    )
 
-    # Strategy: reduce JPEG quality, then resize if needed
+    # Strategy: reduce JPEG quality, then resize if needed.
     for _resize_pass in range(5):  # At most 5 resize passes (1/32 of original)
         for quality in (95, 85, 75, 60, 45, 30, 20):
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=quality, optimize=True)
             result = buf.getvalue()
-            if len(result) <= max_bytes:
+            if max_bytes is None or len(result) <= max_bytes:
                 return result, "image/jpeg"
 
-        # Still too large -- halve dimensions and try again
+        # Still too large -- halve dimensions and try again.
         w, h = img.size
         img = img.resize((max(1, w // 2), max(1, h // 2)), Image.Resampling.LANCZOS)
 
-    # Final fallback: return the smallest we could produce
+    # Final fallback: return the smallest we could produce.
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=20, optimize=True)
     result = buf.getvalue()
-    if len(result) > max_bytes:
+    if max_bytes is not None and len(result) > max_bytes:
         logger.warning(
             "Image compression could not reach target size: %d bytes > %d bytes limit",
             len(result),

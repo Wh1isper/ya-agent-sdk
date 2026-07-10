@@ -90,6 +90,12 @@ model = "openai-responses:gpt-5.6-luna"
 model_settings = "openai_responses_luna"
 model_cfg = "gpt5_270k"
 
+[model_profiles.pro]
+label = "GPT-5.6 Pro"
+model = "openai-responses:gpt-5.6"
+model_settings = "openai_responses_pro"
+model_cfg = "gpt5_270k"
+
 [model_profiles.sol]
 label = "GPT-5.6 Sol"
 model = "openai-responses:gpt-5.6-sol"
@@ -100,7 +106,7 @@ model_cfg = "gpt5_270k"
 label = "Codex OAuth"
 model = "oauth@codex:gpt-5.5"
 model_settings = "openai_responses_high"
-model_cfg = "gpt5_270k"
+model_cfg = "gpt5_350k"
 ```
 
 `[general]` is the startup fallback profile. The last selected profile is remembered in `~/.yaacli/state.json` and restored on the next launch when that profile still exists.

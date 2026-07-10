@@ -22,6 +22,13 @@ def _make_random_png(width: int = 1200, height: int = 1200) -> bytes:
     return buffer.getvalue()
 
 
+def _make_wide_png() -> bytes:
+    image = Image.new("RGB", (8100, 81), color="blue")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_fetch_tool_attributes() -> None:
     """Should have correct name and description."""
     assert FetchTool.name == "fetch"
@@ -112,7 +119,7 @@ async def test_fetch_tool_spills_long_text_to_tmp(tmp_path: Path, httpx2_mock) -
 
 async def test_fetch_tool_get_image(tmp_path: Path, httpx2_mock) -> None:
     """Should return BinaryContent for images."""
-    image_data = b"\x89PNG\r\n\x1a\n"  # PNG header
+    image_data = _make_random_png(width=1, height=1)
     httpx2_mock.add_response(
         url="https://example.com/image.png",
         content=image_data,
@@ -173,6 +180,36 @@ async def test_fetch_tool_compresses_image_to_model_limit(tmp_path: Path, httpx2
         assert isinstance(result.content[0], BinaryContent)
         assert result.content[0].media_type == "image/jpeg"
         assert len(result.content[0].data) <= raw_budget
+
+
+async def test_fetch_tool_resizes_image_that_exceeds_dimension_limit(tmp_path: Path, httpx2_mock) -> None:
+    """Should resize low-byte fetched images before returning them."""
+    from ya_agent_sdk.context import ModelConfig
+
+    image_data = _make_wide_png()
+    httpx2_mock.add_response(
+        url="https://example.com/wide-image.png",
+        content=image_data,
+        headers={"Content-Type": "image/png"},
+    )
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env, model_cfg=ModelConfig(max_image_dimension=8000)))
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await FetchTool().call(mock_run_ctx, url="https://example.com/wide-image.png")
+
+        assert isinstance(result, ToolReturn)
+        assert result.content is not None
+        assert len(result.content) == 1
+        assert isinstance(result.content[0], BinaryContent)
+        assert result.content[0].media_type == "image/jpeg"
+        with Image.open(BytesIO(result.content[0].data)) as image:
+            assert image.size == (8000, 80)
 
 
 async def test_fetch_tool_reject_large_image_by_content_length(tmp_path: Path, httpx2_mock) -> None:

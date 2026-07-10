@@ -72,8 +72,13 @@ The OAuth Codex provider reuses this SDK transport and only supplies Codex-speci
 
 ## OpenAI Responses Presets
 
-OpenAI Responses presets configure reasoning effort, reasoning summaries, storage, max output tokens, and optional priority service tier.
+OpenAI Responses presets configure reasoning effort, reasoning summaries, storage, max output tokens, optional priority service tier, and GPT-5.6 reasoning mode.
 
+- Existing effort presets use the API's default `standard` reasoning mode.
+- `openai_responses_pro_low`, `openai_responses_pro_medium`, `openai_responses_pro_high`, `openai_responses_pro_xhigh`, and `openai_responses_pro_max` pair GPT-5.6 `pro` mode with an explicit effort.
+- `openai_responses_pro` is the medium-effort convenience preset.
+- `openai_responses_standard` is an alias for `openai_responses_default`.
+- `openai_responses_gpt5_6_pro` and `openai_responses_gpt56_pro` are aliases for `openai_responses_pro`.
 - `openai_responses_max` uses GPT-5.6 Sol's `max` reasoning effort with detailed reasoning summaries.
 - `openai_responses_gpt5_6_sol`, `openai_responses_gpt56_sol`, and `openai_responses_sol` are aliases for `openai_responses_max`.
 - `openai_responses_terra` maps to the balanced `openai_responses_medium` preset.
@@ -87,12 +92,14 @@ Example:
 from ya_agent_sdk.agents import create_agent
 
 runtime = create_agent(
-    "openai-responses:gpt-5.6-sol",
-    model_settings="openai_responses_max",
+    "openai-responses:gpt-5.6",
+    model_settings="openai_responses_pro",
 )
 ```
 
-Use existing GPT-5 `model_cfg` presets unless your provider documents a different GPT-5.6 context window. The OpenAI preview announcement describes `ultra` as a product mode that leverages subagents, but does not publish a stable Responses API payload field; configure it with inline `model_settings` only after your provider documents the exact field.
+Pro-effort presets send one authoritative, complete `reasoning` object through `extra_body` until Pydantic AI exposes a model setting for `reasoning.mode`. Select the matching pro-effort preset rather than overriding `openai_reasoning_effort` separately. This preserves `mode`, `effort`, and `summary` for both HTTP and WebSocket Responses transports.
+
+Use `gpt5_350k` for subscription-backed Codex access with a 350K context window. Use the other GPT-5 `model_cfg` presets when they match the provider's documented context window. The OpenAI preview announcement describes `ultra` as a product mode that leverages subagents, but does not publish a stable Responses API payload field; configure it with inline `model_settings` only after your provider documents the exact field.
 
 ## Google Vertex AI Configuration
 

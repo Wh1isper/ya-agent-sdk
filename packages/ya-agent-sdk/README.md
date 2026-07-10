@@ -73,16 +73,16 @@ runtime = create_agent("openai-responses-ws:gpt-5.5")
 
 Set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` to `auto`, `websocket`, or `http` to control the transport. The OAuth Codex provider reuses this SDK transport and only adds Codex-specific headers and payload normalization.
 
-For GPT-5.6 Sol, use the Responses presets that include the new `max` reasoning effort:
+GPT-5.6 supports independent reasoning effort and reasoning mode controls. Use `openai_responses_pro` for `pro` mode with balanced `medium` effort:
 
 ```python
 runtime = create_agent(
-    "openai-responses:gpt-5.6-sol",
-    model_settings="openai_responses_max",
+    "openai-responses:gpt-5.6",
+    model_settings="openai_responses_pro",
 )
 ```
 
-Terra and Luna convenience aliases are available as `openai_responses_terra` and `openai_responses_luna`. Keep using the existing GPT-5 `model_cfg` presets unless the provider documents a different context window for your deployment.
+Choose `openai_responses_pro_low`, `openai_responses_pro_medium`, `openai_responses_pro_high`, `openai_responses_pro_xhigh`, or `openai_responses_pro_max` to pair pro mode with an explicit effort. `openai_responses_pro` is the medium-effort convenience preset. Existing OpenAI Responses effort presets remain in the default `standard` mode. GPT-5.6 Sol can use `openai_responses_max` for `max` reasoning effort. Terra and Luna convenience aliases are available as `openai_responses_terra` and `openai_responses_luna`. Use `gpt5_350k` for subscription-backed Codex access with a 350K context window; keep using the other GPT-5 `model_cfg` presets when they match the provider's documented context window.
 
 ## Quick Start
 
@@ -141,6 +141,7 @@ For Anthropic models, `anthropic` now resolves to adaptive thinking by default.
 
 - Use `anthropic` for the default adaptive preset.
 - Use `anthropic_adaptive_xhigh` for Claude Opus 4.7 long-horizon coding and agentic workloads.
+- Use `openai_responses_pro` or `openai_responses_gpt5_6_pro` for GPT-5.6 pro reasoning mode.
 - Use `openai_responses_max` or `openai_responses_gpt5_6_sol` for GPT-5.6 Sol maximum reasoning effort.
 - Use `openai_responses_xhigh` for GPT-5.5 hard asynchronous agentic tasks and evals.
 - Use `openai_responses_terra` or `openai_responses_luna` for GPT-5.6 balanced or low-latency tiers.

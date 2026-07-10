@@ -1,5 +1,6 @@
 """Tests for image compression utilities and filter."""
 
+import base64
 import io
 import os
 from types import MappingProxyType
@@ -10,7 +11,7 @@ from PIL import Image
 from pydantic_ai.messages import BinaryContent, ModelRequest, ToolReturnPart, UserPromptPart
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.filters.image import _raw_bytes_limit_for_base64, compress_large_images
-from ya_agent_sdk.utils import compress_image_data
+from ya_agent_sdk.utils import compress_image_data, image_exceeds_limits
 
 
 def _make_png(width: int, height: int) -> bytes:
@@ -24,6 +25,14 @@ def _make_png(width: int, height: int) -> bytes:
 def _make_rgba_png(width: int, height: int) -> bytes:
     """Create a RGBA PNG image (with alpha channel)."""
     img = Image.new("RGBA", (width, height), color=(255, 0, 0, 128))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _make_1bit_png(width: int, height: int) -> bytes:
+    """Create a highly compressed monochrome PNG with large pixel dimensions."""
+    img = Image.new("1", (width, height), color=0)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -50,6 +59,15 @@ def _make_large_png(min_bytes: int = 6 * 1024 * 1024) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def test_image_limit_check_fails_closed_for_unreadable_dimensions():
+    """Unreadable dimensions must force processing instead of passing through."""
+    assert image_exceeds_limits(
+        b"not an image",
+        max_bytes=None,
+        max_dimension=8000,
+    )
+
+
 @pytest.mark.anyio
 async def test_compress_small_image_passthrough():
     """Images already under the limit should pass through unchanged."""
@@ -60,6 +78,68 @@ async def test_compress_small_image_passthrough():
     # Should return the same bytes (no re-encoding)
     assert result_data == small_png
     assert result_type == "image/png"  # detected from content
+
+
+@pytest.mark.anyio
+async def test_compress_resizes_image_that_only_exceeds_dimension_limit():
+    """A low-byte image must still be resized when one dimension is too large."""
+    wide_png = _make_png(8100, 81)
+    assert len(wide_png) < 1024 * 1024
+
+    result_data, result_type = await compress_image_data(
+        wide_png,
+        max_bytes=5 * 1024 * 1024,
+        max_dimension=8000,
+    )
+
+    assert result_type == "image/jpeg"
+    with Image.open(io.BytesIO(result_data)) as image:
+        assert image.size == (8000, 80)
+
+
+@pytest.mark.anyio
+async def test_compress_preserves_image_at_exact_dimension_limit():
+    """An image exactly at the per-axis limit should remain unchanged."""
+    boundary_png = _make_png(8000, 80)
+
+    result_data, result_type = await compress_image_data(
+        boundary_png,
+        max_bytes=5 * 1024 * 1024,
+        max_dimension=8000,
+    )
+
+    assert result_data == boundary_png
+    assert result_type == "image/png"
+
+
+@pytest.mark.anyio
+async def test_compress_resizes_vertical_image_proportionally():
+    """Dimension resizing should apply equally to portrait images."""
+    tall_png = _make_png(81, 8100)
+
+    result_data, result_type = await compress_image_data(
+        tall_png,
+        max_bytes=5 * 1024 * 1024,
+        max_dimension=8000,
+    )
+
+    assert result_type == "image/jpeg"
+    with Image.open(io.BytesIO(result_data)) as image:
+        assert image.size == (80, 8000)
+
+
+@pytest.mark.anyio
+async def test_compress_rejects_images_above_safe_processing_pixel_limit():
+    """Highly compressed images must not trigger unbounded pixel allocation."""
+    image_data = _make_1bit_png(9_000, 9_000)
+    assert len(image_data) < 1024 * 1024
+
+    with pytest.raises(ValueError, match="safe processing limit"):
+        await compress_image_data(
+            image_data,
+            max_bytes=5 * 1024 * 1024,
+            max_dimension=8000,
+        )
 
 
 @pytest.mark.anyio
@@ -127,17 +207,23 @@ async def test_compress_large_image_to_5mb():
 # ---------------------------------------------------------------------------
 
 
-def _make_ctx(max_image_bytes: int = 5 * 1024 * 1024) -> MagicMock:
-    """Create a mock RunContext with the given max_image_bytes."""
+def _make_ctx(
+    max_image_bytes: int = 5 * 1024 * 1024,
+    max_image_dimension: int = 8000,
+) -> MagicMock:
+    """Create a mock RunContext with the given image limits."""
     ctx = MagicMock()
     ctx.deps = MagicMock(spec=AgentContext)
-    ctx.deps.model_cfg = ModelConfig(max_image_bytes=max_image_bytes)
+    ctx.deps.model_cfg = ModelConfig(
+        max_image_bytes=max_image_bytes,
+        max_image_dimension=max_image_dimension,
+    )
     return ctx
 
 
 @pytest.mark.anyio
-async def test_filter_disabled_when_zero():
-    """Filter should be no-op when max_image_bytes is 0."""
+async def test_filter_keeps_image_when_byte_limit_is_disabled():
+    """Disabling the byte limit should keep images within the dimension limit."""
     ctx = _make_ctx(max_image_bytes=0)
     large_png = _make_png(4000, 4000)
 
@@ -156,6 +242,28 @@ async def test_filter_disabled_when_zero():
     content = list(part.content)
     assert isinstance(content[0], BinaryContent)
     assert content[0].data == large_png  # not compressed
+
+
+@pytest.mark.anyio
+async def test_filter_is_disabled_only_when_both_image_limits_are_zero():
+    """Setting both image limits to zero should leave an oversized image unchanged."""
+    wide_png = _make_png(8100, 81)
+    ctx = _make_ctx(max_image_bytes=0, max_image_dimension=0)
+    messages = [
+        ModelRequest(
+            parts=[
+                UserPromptPart(content=[BinaryContent(data=wide_png, media_type="image/png")]),
+            ]
+        ),
+    ]
+
+    result = await compress_large_images(ctx, messages)
+
+    part = result[0].parts[0]
+    assert isinstance(part, UserPromptPart)
+    content = list(part.content)
+    assert isinstance(content[0], BinaryContent)
+    assert content[0].data == wide_png
 
 
 @pytest.mark.anyio
@@ -180,6 +288,30 @@ async def test_filter_compresses_oversized_image():
     assert isinstance(content[0], BinaryContent)
     assert len(content[0].data) <= max_bytes
     assert content[0].media_type == "image/jpeg"
+
+
+@pytest.mark.anyio
+async def test_filter_resizes_image_that_only_exceeds_dimension_limit():
+    """Filter should resize low-byte images whose width exceeds the provider limit."""
+    wide_png = _make_png(8100, 81)
+    ctx = _make_ctx(max_image_bytes=0, max_image_dimension=8000)
+    messages = [
+        ModelRequest(
+            parts=[
+                UserPromptPart(content=[BinaryContent(data=wide_png, media_type="image/png")]),
+            ]
+        ),
+    ]
+
+    result = await compress_large_images(ctx, messages)
+
+    part = result[0].parts[0]
+    assert isinstance(part, UserPromptPart)
+    content = list(part.content)
+    assert isinstance(content[0], BinaryContent)
+    assert content[0].media_type == "image/jpeg"
+    with Image.open(io.BytesIO(content[0].data)) as image:
+        assert image.size == (8000, 80)
 
 
 @pytest.mark.anyio
@@ -268,6 +400,29 @@ async def test_filter_with_large_image():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("max_image_bytes", [1, 2, 3])
+async def test_filter_enforces_tiny_positive_encoded_byte_limits(max_image_bytes: int):
+    """Positive encoded budgets below one base64 block must not disable filtering."""
+    image_data = _make_png(10, 10)
+    ctx = _make_ctx(max_image_bytes=max_image_bytes, max_image_dimension=0)
+    messages = [
+        ModelRequest(
+            parts=[
+                UserPromptPart(content=[BinaryContent(data=image_data, media_type="image/png")]),
+            ]
+        ),
+    ]
+
+    result = await compress_large_images(ctx, messages)
+
+    part = result[0].parts[0]
+    assert isinstance(part, UserPromptPart)
+    content = list(part.content)
+    assert isinstance(content[0], str)
+    assert "removed" in content[0]
+
+
+@pytest.mark.anyio
 async def test_filter_drops_image_when_compression_fails():
     """Filter should drop the image and insert a hint when compress_image_data raises."""
     large_png = _make_png(4000, 4000)
@@ -283,7 +438,7 @@ async def test_filter_drops_image_when_compression_fails():
     ]
 
     with patch(
-        "ya_agent_sdk.filters.image.compress_image_data",
+        "ya_agent_sdk.filters.image.compress_image_to_model_limit",
         new_callable=AsyncMock,
         side_effect=RuntimeError("boom"),
     ):
@@ -315,9 +470,9 @@ async def test_filter_drops_image_when_still_over_limit():
         ),
     ]
 
-    # Mock compress_image_data to return data that's still over the raw budget
+    # Mock compression to return data that's still over the raw budget
     with patch(
-        "ya_agent_sdk.filters.image.compress_image_data",
+        "ya_agent_sdk.filters.image.compress_image_to_model_limit",
         new_callable=AsyncMock,
         return_value=(b"x" * (max_raw + 1), "image/jpeg"),
     ):
@@ -345,6 +500,30 @@ async def test_compress_animated_gif_skipped():
     # Should return original bytes unchanged (animation preserved)
     assert result_data == gif_bytes
     assert result_type == "image/gif"
+
+
+@pytest.mark.anyio
+async def test_filter_drops_oversized_animated_image():
+    """Animated images that cannot be safely resized must not reach the model."""
+    frames = [Image.new("RGB", (200, 20), color=c) for c in ((255, 0, 0), (0, 255, 0))]
+    buf = io.BytesIO()
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], loop=0)
+    ctx = _make_ctx(max_image_bytes=0, max_image_dimension=100)
+    messages = [
+        ModelRequest(
+            parts=[
+                UserPromptPart(content=[BinaryContent(data=buf.getvalue(), media_type="image/gif")]),
+            ]
+        ),
+    ]
+
+    result = await compress_large_images(ctx, messages)
+
+    part = result[0].parts[0]
+    assert isinstance(part, UserPromptPart)
+    content = list(part.content)
+    assert isinstance(content[0], str)
+    assert "removed" in content[0]
 
 
 @pytest.mark.anyio
@@ -431,6 +610,7 @@ async def test_filter_compresses_image_near_base64_boundary():
         f"Compressed image ({len(content[0].data)} bytes) exceeds "
         f"raw budget ({raw_budget} bytes) for {api_limit} byte API limit"
     )
+    assert len(base64.b64encode(content[0].data)) <= api_limit
 
 
 @pytest.mark.anyio

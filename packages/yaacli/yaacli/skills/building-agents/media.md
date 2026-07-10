@@ -213,6 +213,19 @@ capabilities=[
 
 This ensures you upload processed (compressed, resized) images rather than raw data.
 
+### Image Limits
+
+`ModelConfig` applies both an encoded byte budget and a per-axis pixel limit to binary images:
+
+```python
+model_cfg = ModelConfig(
+    max_image_bytes=5 * 1024 * 1024,
+    max_image_dimension=8000,
+)
+```
+
+The default 8,000-pixel dimension limit is compatible with Anthropic APIs, including Vertex AI. Binary images returned by `view`, `read_media`, and `fetch` are resized before they are attached, and the history filter provides a final fallback for user attachments and third-party tool results. Set either value to `0` to disable that individual limit.
+
 ## Custom Uploader Example
 
 Implement your own uploader for other storage backends:

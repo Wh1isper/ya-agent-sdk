@@ -39,6 +39,7 @@ async def test_agent_context_no_parent_by_default(env: LocalEnvironment) -> None
 async def test_model_config_image_split_defaults() -> None:
     """Should provide sensible defaults for image splitting."""
     cfg = ModelConfig()
+    assert cfg.max_image_dimension == 8000
     assert cfg.split_large_images is True
     assert cfg.image_split_max_height == 4096
     assert cfg.image_split_overlap == 50
@@ -46,7 +47,13 @@ async def test_model_config_image_split_defaults() -> None:
 
 async def test_model_config_image_split_custom_values() -> None:
     """Should allow overriding image splitting config values."""
-    cfg = ModelConfig(split_large_images=False, image_split_max_height=2048, image_split_overlap=64)
+    cfg = ModelConfig(
+        max_image_dimension=6000,
+        split_large_images=False,
+        image_split_max_height=2048,
+        image_split_overlap=64,
+    )
+    assert cfg.max_image_dimension == 6000
     assert cfg.split_large_images is False
     assert cfg.image_split_max_height == 2048
     assert cfg.image_split_overlap == 64

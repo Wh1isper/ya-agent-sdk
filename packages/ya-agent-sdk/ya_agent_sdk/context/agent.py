@@ -842,11 +842,21 @@ class ModelConfig(BaseModel):
 
     When set to a positive value, binary images whose *encoded* size would
     exceed this limit are compressed (converted to JPEG with reduced quality
-    and/or resized) before being sent to the model.  Set to 0 to disable
-    compression.
+    and/or resized) before being sent to the model. Set to 0 to disable only
+    the byte-size limit; ``max_image_dimension`` remains independently active.
+    Set both limits to 0 to disable image compression entirely.
 
     Default is 5 MB (5_242_880 bytes), matching the limit of most providers
     (e.g. Anthropic, GCP Vertex AI).
+    """
+
+    max_image_dimension: int = Field(default=8000, ge=0)
+    """Maximum allowed width or height in pixels for binary images.
+
+    Images with either dimension above this value are resized proportionally
+    before being sent to a model. Set to 0 to disable dimension-based resizing.
+    The default matches the 8,000-pixel limit enforced by Anthropic-compatible
+    APIs, including models accessed through Google Vertex AI.
     """
 
     split_large_images: bool = True

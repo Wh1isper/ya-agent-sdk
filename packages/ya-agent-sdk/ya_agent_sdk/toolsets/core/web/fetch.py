@@ -25,7 +25,12 @@ from ya_agent_sdk.toolsets.core.web._http_client import (
     safe_stream_request,
     verify_url,
 )
-from ya_agent_sdk.utils import compress_image_to_model_limit, detect_image_media_type, raw_bytes_limit_for_base64
+from ya_agent_sdk.utils import (
+    compress_image_to_model_limit,
+    detect_image_media_type,
+    image_exceeds_limits,
+    raw_bytes_limit_for_base64,
+)
 
 logger = get_logger(__name__)
 
@@ -187,13 +192,16 @@ class FetchTool(BaseTool):
         *,
         source: str,
     ) -> tuple[bytes, str] | dict[str, Any]:
-        """Compress fetched image data to the configured model API image limit."""
-        max_encoded_bytes = ctx.deps.model_cfg.max_image_bytes if ctx.deps.model_cfg else 0
-        if max_encoded_bytes <= 0:
-            return image_data, media_type
-
-        max_raw_bytes = raw_bytes_limit_for_base64(max_encoded_bytes)
-        if len(image_data) <= max_raw_bytes:
+        """Compress fetched image data to configured model byte and dimension limits."""
+        model_cfg = ctx.deps.model_cfg
+        max_encoded_bytes = model_cfg.max_image_bytes if model_cfg else 0
+        max_dimension = model_cfg.max_image_dimension if model_cfg else 0
+        max_raw_bytes = raw_bytes_limit_for_base64(max_encoded_bytes) if max_encoded_bytes > 0 else None
+        if not image_exceeds_limits(
+            image_data,
+            max_bytes=max_raw_bytes,
+            max_dimension=max_dimension,
+        ):
             return image_data, media_type
 
         try:
@@ -201,6 +209,7 @@ class FetchTool(BaseTool):
                 image_data,
                 max_encoded_bytes=max_encoded_bytes,
                 media_type=media_type,
+                max_dimension=max_dimension,
             )
         except Exception:
             logger.exception("Failed to compress fetched image from %s before inlining", source)
@@ -209,12 +218,16 @@ class FetchTool(BaseTool):
                 "error": "Fetched image could not be compressed for inline model input.",
             }
 
-        if len(compressed_data) > max_raw_bytes:
+        if image_exceeds_limits(
+            compressed_data,
+            max_bytes=max_raw_bytes,
+            max_dimension=max_dimension,
+        ):
             return {
                 "success": False,
                 "error": (
-                    f"Fetched image could not be compressed below the {max_encoded_bytes} byte API limit "
-                    "after accounting for base64 encoding."
+                    "Fetched image could not be compressed within the configured model image limits "
+                    f"({max_encoded_bytes} encoded bytes, {max_dimension} pixels per dimension)."
                 ),
             }
 

@@ -14,12 +14,12 @@
 model = ""
 
 # Model settings: preset name or custom dict
-# Available presets: anthropic_default, openai_default, openai_responses_max,
-# openai_responses_gpt5_6_sol, grok_4_5_default, gemini_thinking_level_default, etc.
+# Available presets: anthropic_default, openai_default, openai_responses_pro,
+# openai_responses_max, grok_4_5_default, gemini_thinking_level_default, etc.
 # model_settings = "anthropic_default"
 
 # Model config for context management (context window, capabilities, etc.)
-# Presets: claude_200k, claude_1m, gpt5_270k, grok_4_5_500k, gemini_200k, gemini_1m
+# Presets: claude_200k, claude_1m, gpt5_270k, gpt5_350k, grok_4_5_500k, gemini_200k, gemini_1m
 # Aliases: claude, anthropic, openai, xai, grok, gemini
 # model_cfg = "claude_200k"
 #
@@ -29,6 +29,12 @@ model = ""
 # label = "Fast"
 # model = "openai-responses:gpt-5.6-luna"
 # model_settings = "openai_responses_luna"
+# model_cfg = "gpt5_270k"
+#
+# [model_profiles.pro]
+# label = "GPT-5.6 Pro"
+# model = "openai-responses:gpt-5.6"
+# model_settings = "openai_responses_pro"
 # model_cfg = "gpt5_270k"
 #
 # [model_profiles.sol]
@@ -47,7 +53,7 @@ model = ""
 # label = "Codex OAuth"
 # model = "oauth@codex:gpt-5.5"
 # model_settings = "openai_responses_high"
-# model_cfg = "gpt5_270k"
+# model_cfg = "gpt5_350k"
 #
 # [model_profiles.grok]
 # label = "Grok 4.5"

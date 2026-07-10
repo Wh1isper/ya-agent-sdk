@@ -22,7 +22,12 @@ from ya_agent_sdk.toolsets.core.content._url_helper import (
     is_valid_http_url,
 )
 from ya_agent_sdk.toolsets.core.web._http_client import ForbiddenUrlError, safe_stream_request
-from ya_agent_sdk.utils import compress_image_to_model_limit, detect_image_media_type, raw_bytes_limit_for_base64
+from ya_agent_sdk.utils import (
+    compress_image_to_model_limit,
+    detect_image_media_type,
+    image_exceeds_limits,
+    raw_bytes_limit_for_base64,
+)
 
 logger = get_logger(__name__)
 
@@ -282,11 +287,13 @@ class ReadMediaTool(BaseTool):
             )
 
         max_encoded_bytes = ctx.deps.model_cfg.max_image_bytes
-        if max_encoded_bytes <= 0:
-            return data, media_type
-
-        max_raw_bytes = raw_bytes_limit_for_base64(max_encoded_bytes)
-        if len(data) <= max_raw_bytes:
+        max_dimension = ctx.deps.model_cfg.max_image_dimension
+        max_raw_bytes = raw_bytes_limit_for_base64(max_encoded_bytes) if max_encoded_bytes > 0 else None
+        if not image_exceeds_limits(
+            data,
+            max_bytes=max_raw_bytes,
+            max_dimension=max_dimension,
+        ):
             return data, media_type
 
         try:
@@ -294,15 +301,20 @@ class ReadMediaTool(BaseTool):
                 data,
                 max_encoded_bytes=max_encoded_bytes,
                 media_type=media_type,
+                max_dimension=max_dimension,
             )
         except Exception:
             logger.exception("Failed to compress remote image from %s before inlining", url)
             return _error(f"Image from URL '{url}' could not be compressed for inline model input.")
 
-        if len(compressed_data) > max_raw_bytes:
+        if image_exceeds_limits(
+            compressed_data,
+            max_bytes=max_raw_bytes,
+            max_dimension=max_dimension,
+        ):
             return _error(
-                f"Image from URL '{url}' could not be compressed below the {max_encoded_bytes} byte API limit "
-                "after accounting for base64 encoding."
+                f"Image from URL '{url}' could not be compressed within the configured model image limits "
+                f"({max_encoded_bytes} encoded bytes, {max_dimension} pixels per dimension)."
             )
 
         logger.info(
@@ -563,26 +575,35 @@ class ReadMediaTool(BaseTool):
         instructions: str | None,
         model_supports_image: bool,
     ) -> tuple[bytes, str] | str | dict[str, Any]:
-        if model_supports_image:
-            prepared_image = await self._prepare_image(ctx, data, media_type, url=url)
-            if not isinstance(prepared_image, dict):
-                return prepared_image
+        prepared_image = await self._prepare_image(ctx, data, media_type, url=url)
+        if not isinstance(prepared_image, dict):
+            return prepared_image
 
-            fallback_media_type = self._fallback_image_media_type(data, media_type, url=url)
-            if fallback_media_type is None:
-                return prepared_image
-            return await self._describe_image(
-                ctx,
-                source=url,
-                image_data=data,
-                media_type=fallback_media_type,
-                instructions=instructions,
-            )
+        model_cfg = ctx.deps.model_cfg
+        max_encoded_bytes = model_cfg.max_image_bytes
+        max_raw_bytes = raw_bytes_limit_for_base64(max_encoded_bytes) if max_encoded_bytes > 0 else None
+        if image_exceeds_limits(
+            data,
+            max_bytes=max_raw_bytes,
+            max_dimension=model_cfg.max_image_dimension,
+        ):
+            # Compression failures and unverifiable dimensions must fail closed;
+            # otherwise the original image could exceed the fallback model limits.
+            return prepared_image
 
         fallback_media_type = self._fallback_image_media_type(data, media_type, url=url)
         if fallback_media_type is None:
-            return _error(f"Could not determine an image media type for URL '{url}'.")
-        return data, fallback_media_type
+            return prepared_image
+        if not model_supports_image:
+            return data, fallback_media_type
+
+        return await self._describe_image(
+            ctx,
+            source=url,
+            image_data=data,
+            media_type=fallback_media_type,
+            instructions=instructions,
+        )
 
     async def _read_response(
         self,

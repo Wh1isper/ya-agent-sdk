@@ -30,6 +30,13 @@ def _make_random_png(width: int = 1200, height: int = 1200) -> bytes:
     return buffer.getvalue()
 
 
+def _make_wide_png() -> bytes:
+    image = Image.new("RGB", (8100, 81), color="blue")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 async def test_view_tool_attributes(agent_context: AgentContext) -> None:
     """Should have correct name and description."""
     assert ViewTool.name == "view"
@@ -348,6 +355,38 @@ async def test_view_compresses_image_to_model_limit(tmp_path: Path) -> None:
         assert isinstance(result.content[0], BinaryContent)
         assert result.content[0].media_type == "image/jpeg"
         assert len(result.content[0].data) <= raw_budget
+
+
+async def test_view_resizes_image_that_exceeds_dimension_limit(tmp_path: Path) -> None:
+    """Should resize low-byte images before returning inline model content."""
+    from ya_agent_sdk.context import ModelCapability, ModelConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                model_cfg=ModelConfig(
+                    max_image_dimension=8000,
+                    capabilities={ModelCapability.vision},
+                ),
+            )
+        )
+        test_file = tmp_path / "wide.png"
+        test_file.write_bytes(_make_wide_png())
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await ViewTool().call(mock_run_ctx, file_path="wide.png")
+
+        assert isinstance(result, ToolReturn)
+        assert len(result.content) == 1
+        assert isinstance(result.content[0], BinaryContent)
+        assert result.content[0].media_type == "image/jpeg"
+        with Image.open(BytesIO(result.content[0].data)) as image:
+            assert image.size == (8000, 80)
 
 
 async def test_view_reject_large_image_inline(tmp_path: Path) -> None:

@@ -4,9 +4,12 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 
+import httpx
 import pytest
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from openai import AsyncOpenAI
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from ya_agent_sdk.agents.models.utils import ModelRequestRetryOptions
 from ya_agent_sdk.agents.models.websocket import (
@@ -17,12 +20,58 @@ from ya_agent_sdk.agents.models.websocket import (
     build_openai_responses_websocket_model,
     responses_websocket_url,
 )
+from ya_agent_sdk.presets import OPENAI_RESPONSES_PRO
 
 
 def test_responses_websocket_url() -> None:
     assert responses_websocket_url("https://api.openai.com/v1") == "wss://api.openai.com/v1/responses"
     assert responses_websocket_url("http://localhost:8080/v1") == "ws://localhost:8080/v1/responses"
     assert responses_websocket_url("wss://example.test/custom", path="events") == "wss://example.test/custom/events"
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_pro_preset_reaches_http_request_body() -> None:
+    captured_body: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(
+            400,
+            request=request,
+            json={"error": {"message": "stop after capture", "type": "test_error"}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = AsyncOpenAI(api_key="test-key", http_client=http_client)
+        model = OpenAIResponsesModel(
+            "gpt-5.6",
+            provider=OpenAIProvider(openai_client=client),
+        )
+        with pytest.raises(ModelHTTPError):
+            await model.request([], OPENAI_RESPONSES_PRO.copy(), ModelRequestParameters())
+
+    assert captured_body["reasoning"] == {
+        "mode": "pro",
+        "effort": "medium",
+        "summary": "auto",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_responses_pro_preset_reaches_websocket_payload() -> None:
+    model = WebsocketResponsesModel("gpt-5.6", provider=OpenAIProvider(api_key="test-key"))
+
+    payload = await model._build_websocket_payload(
+        [],
+        OPENAI_RESPONSES_PRO.copy(),  # type: ignore[arg-type]
+        ModelRequestParameters(),
+    )
+
+    assert payload["reasoning"] == {
+        "mode": "pro",
+        "effort": "medium",
+        "summary": "auto",
+    }
 
 
 @pytest.mark.asyncio

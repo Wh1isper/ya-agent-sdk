@@ -34,7 +34,7 @@ YAACLI config:
 [general]
 model = "oauth@codex:gpt-5.5"
 model_settings = "openai_responses_high"
-model_cfg = "gpt5_270k"
+model_cfg = "gpt5_350k"
 ```
 
 YA Claw profile:
@@ -43,7 +43,7 @@ YA Claw profile:
 - name: codex-oauth
   model: oauth@codex:gpt-5.5
   model_settings_preset: openai_responses_high
-  model_config_preset: gpt5_270k
+  model_config_preset: gpt5_350k
   builtin_toolsets:
     - core
 ```

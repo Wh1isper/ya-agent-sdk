@@ -51,7 +51,13 @@ from pydantic_ai.tools import RunContext
 
 from ya_agent_sdk._logger import logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.utils import ImageMediaType, compress_image_data, raw_bytes_limit_for_base64, split_image_data
+from ya_agent_sdk.utils import (
+    ImageMediaType,
+    compress_image_to_model_limit,
+    image_exceeds_limits,
+    raw_bytes_limit_for_base64,
+    split_image_data,
+)
 
 
 def _raw_bytes_limit_for_base64(max_encoded_bytes: int) -> int:
@@ -342,19 +348,25 @@ async def _compress_binary_image_content(
     item: BinaryContent,
     *,
     max_image_bytes: int,
-    max_raw_bytes: int,
+    max_raw_bytes: int | None,
+    max_image_dimension: int,
 ) -> tuple[object, bool]:
-    """Compress a BinaryContent image if it exceeds the raw byte budget."""
-    if len(item.data) <= max_raw_bytes:
+    """Compress BinaryContent that exceeds model byte or dimension limits."""
+    if not image_exceeds_limits(
+        item.data,
+        max_bytes=max_raw_bytes,
+        max_dimension=max_image_dimension,
+    ):
         return item, False
 
     original_size = len(item.data)
     original_media_type = cast(ImageMediaType, item.media_type)
     try:
-        compressed_data, compressed_type = await compress_image_data(
+        compressed_data, compressed_type = await compress_image_to_model_limit(
             image_bytes=item.data,
-            max_bytes=max_raw_bytes,
+            max_encoded_bytes=max_image_bytes,
             media_type=original_media_type,
+            max_dimension=max_image_dimension,
         )
     except Exception:
         logger.exception("Failed to compress image; dropping it")
@@ -364,27 +376,31 @@ async def _compress_binary_image_content(
             True,
         )
 
-    if len(compressed_data) > max_raw_bytes:
+    if image_exceeds_limits(
+        compressed_data,
+        max_bytes=max_raw_bytes,
+        max_dimension=max_image_dimension,
+    ):
         logger.warning(
-            "Image compression could not reach target: %d raw bytes > %d raw byte limit "
-            "(base64 limit: %d bytes); dropping image",
+            "Image compression could not satisfy model limits "
+            "(raw bytes=%d, raw byte limit=%s, max dimension=%d); dropping image",
             len(compressed_data),
             max_raw_bytes,
-            max_image_bytes,
+            max_image_dimension,
         )
         return (
             f"<system-reminder>An image ({original_size} bytes) was removed because it could not be "
-            f"compressed below the {max_image_bytes} byte API limit (accounting for base64 encoding). "
+            "compressed within the configured model image byte and dimension limits. "
             "If you need this image, try resizing or converting it to a smaller format first, "
             "then use the view tool again.</system-reminder>",
             True,
         )
 
     logger.info(
-        "Compressed image from %d bytes to %d bytes (%.0f%% reduction)",
+        "Prepared image for model limits: %d bytes -> %d bytes (max dimension=%d)",
         original_size,
         len(compressed_data),
-        (1 - len(compressed_data) / original_size) * 100,
+        max_image_dimension,
     )
     return BinaryContent(data=compressed_data, media_type=compressed_type), True
 
@@ -393,7 +409,8 @@ async def _compress_sequence_content(
     items: list[object] | tuple[object, ...],
     *,
     max_image_bytes: int,
-    max_raw_bytes: int,
+    max_raw_bytes: int | None,
+    max_image_dimension: int,
 ) -> tuple[list[object] | tuple[object, ...], bool]:
     """Compress image content nested inside a sequence."""
     modified = False
@@ -403,6 +420,7 @@ async def _compress_sequence_content(
             child,
             max_image_bytes=max_image_bytes,
             max_raw_bytes=max_raw_bytes,
+            max_image_dimension=max_image_dimension,
         )
         new_items.append(new_child)
         modified = modified or child_modified
@@ -413,7 +431,8 @@ async def _compress_mapping_content(
     item: Mapping[object, object],
     *,
     max_image_bytes: int,
-    max_raw_bytes: int,
+    max_raw_bytes: int | None,
+    max_image_dimension: int,
 ) -> tuple[dict[object, object], bool]:
     """Compress image content nested inside a mapping."""
     modified = False
@@ -423,6 +442,7 @@ async def _compress_mapping_content(
             value,
             max_image_bytes=max_image_bytes,
             max_raw_bytes=max_raw_bytes,
+            max_image_dimension=max_image_dimension,
         )
         new_dict[key] = new_value
         modified = modified or value_modified
@@ -433,7 +453,8 @@ async def _compress_content_item(
     item: object,
     *,
     max_image_bytes: int,
-    max_raw_bytes: int,
+    max_raw_bytes: int | None,
+    max_image_dimension: int,
 ) -> tuple[object, bool]:
     """Compress BinaryContent images in an arbitrary content item."""
     if isinstance(item, BinaryContent) and item.media_type.startswith("image/"):
@@ -441,38 +462,33 @@ async def _compress_content_item(
             item,
             max_image_bytes=max_image_bytes,
             max_raw_bytes=max_raw_bytes,
+            max_image_dimension=max_image_dimension,
         )
     if isinstance(item, (list, tuple)):
         return await _compress_sequence_content(
             item,
             max_image_bytes=max_image_bytes,
             max_raw_bytes=max_raw_bytes,
+            max_image_dimension=max_image_dimension,
         )
     if isinstance(item, Mapping):
         return await _compress_mapping_content(
             item,
             max_image_bytes=max_image_bytes,
             max_raw_bytes=max_raw_bytes,
+            max_image_dimension=max_image_dimension,
         )
     return item, False
 
 
 async def _compress_content_list(
     content_list: list[UserContent | object],
+    *,
     max_image_bytes: int,
+    max_image_dimension: int,
 ) -> bool:
-    """Compress oversized images in a content list in-place. Returns True if modified.
-
-    ``max_image_bytes`` is the API limit on the *base64-encoded* image payload.
-    Internally we convert this to a raw-byte budget so that the encoded result
-    stays within the limit.
-
-    If compression cannot bring the image under the limit, the image is dropped
-    and replaced with a system reminder hinting the agent to compress first.
-    """
-    # API limits apply to the base64-encoded payload which is ~4/3x the raw size.
-    # Compute the raw-byte budget so compressed images stay under the limit after encoding.
-    max_raw_bytes = _raw_bytes_limit_for_base64(max_image_bytes)
+    """Compress images that exceed model byte or dimension limits in-place."""
+    max_raw_bytes = _raw_bytes_limit_for_base64(max_image_bytes) if max_image_bytes > 0 else None
     modified = False
 
     for idx, item in enumerate(content_list):
@@ -480,6 +496,7 @@ async def _compress_content_list(
             item,
             max_image_bytes=max_image_bytes,
             max_raw_bytes=max_raw_bytes,
+            max_image_dimension=max_image_dimension,
         )
         if item_modified:
             content_list[idx] = new_item
@@ -495,12 +512,13 @@ async def compress_large_images(
     """Compress oversized binary image content in message history.
 
     This is a pydantic-ai history_processor that compresses BinaryContent images
-    whose size exceeds ``max_image_bytes`` (configured in ModelConfig). Images are
-    converted to JPEG with progressively reduced quality and, if necessary, resized
-    until they fit within the limit.  If compression cannot meet the target,
-    the image is dropped and replaced with a system reminder.
+    whose encoded size exceeds ``max_image_bytes`` or whose width/height exceeds
+    ``max_image_dimension`` (configured in ModelConfig). Images are converted to
+    JPEG with progressively reduced quality and, if necessary, resized until they
+    fit both limits. If compression cannot meet the target, the image is dropped
+    and replaced with a system reminder.
 
-    Set ``max_image_bytes`` to 0 in ModelConfig to disable this filter.
+    Set both limits to 0 in ModelConfig to disable this filter.
 
     Args:
         ctx: Runtime context containing AgentContext with model configuration.
@@ -511,8 +529,9 @@ async def compress_large_images(
     """
     model_cfg = ctx.deps.model_cfg
     max_image_bytes = model_cfg.max_image_bytes if model_cfg else 0
+    max_image_dimension = model_cfg.max_image_dimension if model_cfg else 0
 
-    if max_image_bytes <= 0:
+    if max_image_bytes <= 0 and max_image_dimension <= 0:
         return message_history
 
     for message in message_history:
@@ -527,7 +546,11 @@ async def compress_large_images(
                 content_list: list[UserContent | object] = (
                     list(part.content) if isinstance(part.content, Sequence) else [part.content]
                 )
-                modified = await _compress_content_list(content_list, max_image_bytes)
+                modified = await _compress_content_list(
+                    content_list,
+                    max_image_bytes=max_image_bytes,
+                    max_image_dimension=max_image_dimension,
+                )
 
                 if modified:
                     part.content = cast(list[UserContent], content_list)
@@ -535,7 +558,11 @@ async def compress_large_images(
 
             if isinstance(part, ToolReturnPart):
                 tool_content_list: list[object] = list(part.content_items(mode="raw"))
-                modified = await _compress_content_list(tool_content_list, max_image_bytes)
+                modified = await _compress_content_list(
+                    tool_content_list,
+                    max_image_bytes=max_image_bytes,
+                    max_image_dimension=max_image_dimension,
+                )
 
                 if modified:
                     tool_return = cast(Any, part)

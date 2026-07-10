@@ -15,6 +15,10 @@ Thinking Levels:
 - `medium`: Balanced reasoning (default)
 - `low`: Minimal reasoning, lower latency
 
+OpenAI Reasoning Modes (GPT-5.6 Responses API):
+- `standard`: Default execution mode used by existing OpenAI Responses presets
+- `pro`: More model work at higher latency and token usage; use `openai_responses_pro_{level}`
+
 Adaptive Thinking (Anthropic Opus 4.7 / Opus 4.6 / Sonnet 4.6):
 - Uses `thinking.type: "adaptive"` instead of fixed budget_tokens
 - Claude dynamically determines when and how much to think
@@ -320,6 +324,12 @@ class ModelSettingsPreset(StrEnum):
     OPENAI_RESPONSES_HIGH = "openai_responses_high"
     OPENAI_RESPONSES_MEDIUM = "openai_responses_medium"
     OPENAI_RESPONSES_LOW = "openai_responses_low"
+    OPENAI_RESPONSES_PRO = "openai_responses_pro"
+    OPENAI_RESPONSES_PRO_MAX = "openai_responses_pro_max"
+    OPENAI_RESPONSES_PRO_XHIGH = "openai_responses_pro_xhigh"
+    OPENAI_RESPONSES_PRO_HIGH = "openai_responses_pro_high"
+    OPENAI_RESPONSES_PRO_MEDIUM = "openai_responses_pro_medium"
+    OPENAI_RESPONSES_PRO_LOW = "openai_responses_pro_low"
     OPENAI_RESPONSES_DEFAULT_FAST = "openai_responses_default_fast"
     OPENAI_RESPONSES_MAX_FAST = "openai_responses_max_fast"
     OPENAI_RESPONSES_XHIGH_FAST = "openai_responses_xhigh_fast"
@@ -729,6 +739,7 @@ def _openai_responses_settings(
     reasoning_summary: Literal["detailed", "concise", "auto"] = "auto",
     max_tokens: int | None = None,
     openai_service_tier: Literal["auto", "default", "flex", "priority"] | None = None,
+    reasoning_mode: Literal["standard", "pro"] | None = None,
 ) -> dict[str, Any]:
     """Create OpenAI Responses API settings for reasoning models.
 
@@ -737,19 +748,31 @@ def _openai_responses_settings(
         reasoning_summary: Summary level of reasoning process.
         max_tokens: Maximum output tokens (None for model default).
         openai_service_tier: OpenAI service tier for the model request.
+        reasoning_mode: GPT-5.6 Responses API execution mode. ``standard`` is the
+            API default; ``pro`` performs more model work at higher latency and cost.
 
     Returns:
         Dict suitable for OpenAIResponsesModelSettings.
     """
-    settings: dict[str, Any] = {
-        "openai_store": False,
-        "openai_reasoning_effort": reasoning_effort,
-        "openai_reasoning_summary": reasoning_summary,
-    }
+    settings: dict[str, Any] = {"openai_store": False}
+    if reasoning_mode is None:
+        settings["openai_reasoning_effort"] = reasoning_effort
+        settings["openai_reasoning_summary"] = reasoning_summary
     if max_tokens is not None:
         settings["max_tokens"] = max_tokens
     if openai_service_tier is not None:
         settings["openai_service_tier"] = openai_service_tier
+    if reasoning_mode is not None:
+        # Pydantic AI does not yet expose a model setting for reasoning.mode.
+        # Keep the complete reasoning object authoritative in extra_body because
+        # both HTTP and WebSocket transports shallowly merge this top-level field.
+        settings["extra_body"] = {
+            "reasoning": {
+                "mode": reasoning_mode,
+                "effort": reasoning_effort,
+                "summary": reasoning_summary,
+            }
+        }
     return settings
 
 
@@ -794,6 +817,49 @@ OPENAI_RESPONSES_LOW: dict[str, Any] = _openai_responses_settings(
     max_tokens=8 * K_TOKENS,
 )
 """OpenAI Responses low: Minimal reasoning, faster responses."""
+
+OPENAI_RESPONSES_PRO_MAX: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="max",
+    reasoning_summary="detailed",
+    max_tokens=64 * K_TOKENS,
+    reasoning_mode="pro",
+)
+"""OpenAI Responses pro max: GPT-5.6 pro mode with maximum reasoning effort."""
+
+OPENAI_RESPONSES_PRO_XHIGH: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="xhigh",
+    reasoning_summary="detailed",
+    max_tokens=64 * K_TOKENS,
+    reasoning_mode="pro",
+)
+"""OpenAI Responses pro xhigh: GPT-5.6 pro mode with very high reasoning effort."""
+
+OPENAI_RESPONSES_PRO_HIGH: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="high",
+    reasoning_summary="detailed",
+    max_tokens=32 * K_TOKENS,
+    reasoning_mode="pro",
+)
+"""OpenAI Responses pro high: GPT-5.6 pro mode with strong reasoning effort."""
+
+OPENAI_RESPONSES_PRO_MEDIUM: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="medium",
+    reasoning_summary="auto",
+    max_tokens=16 * K_TOKENS,
+    reasoning_mode="pro",
+)
+"""OpenAI Responses pro medium: GPT-5.6 pro mode with balanced reasoning effort."""
+
+OPENAI_RESPONSES_PRO_LOW: dict[str, Any] = _openai_responses_settings(
+    reasoning_effort="low",
+    reasoning_summary="concise",
+    max_tokens=8 * K_TOKENS,
+    reasoning_mode="pro",
+)
+"""OpenAI Responses pro low: GPT-5.6 pro mode with minimal reasoning effort."""
+
+OPENAI_RESPONSES_PRO = OPENAI_RESPONSES_PRO_MEDIUM
+"""OpenAI Responses pro: Convenience alias for pro mode with medium effort."""
 
 OPENAI_RESPONSES_DEFAULT_FAST: dict[str, Any] = _openai_responses_settings(
     reasoning_effort="medium",
@@ -1214,6 +1280,12 @@ _PRESET_REGISTRY: dict[str, dict[str, Any]] = {
     ModelSettingsPreset.OPENAI_RESPONSES_HIGH.value: OPENAI_RESPONSES_HIGH,
     ModelSettingsPreset.OPENAI_RESPONSES_MEDIUM.value: OPENAI_RESPONSES_MEDIUM,
     ModelSettingsPreset.OPENAI_RESPONSES_LOW.value: OPENAI_RESPONSES_LOW,
+    ModelSettingsPreset.OPENAI_RESPONSES_PRO.value: OPENAI_RESPONSES_PRO,
+    ModelSettingsPreset.OPENAI_RESPONSES_PRO_MAX.value: OPENAI_RESPONSES_PRO_MAX,
+    ModelSettingsPreset.OPENAI_RESPONSES_PRO_XHIGH.value: OPENAI_RESPONSES_PRO_XHIGH,
+    ModelSettingsPreset.OPENAI_RESPONSES_PRO_HIGH.value: OPENAI_RESPONSES_PRO_HIGH,
+    ModelSettingsPreset.OPENAI_RESPONSES_PRO_MEDIUM.value: OPENAI_RESPONSES_PRO_MEDIUM,
+    ModelSettingsPreset.OPENAI_RESPONSES_PRO_LOW.value: OPENAI_RESPONSES_PRO_LOW,
     ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT_FAST.value: OPENAI_RESPONSES_DEFAULT_FAST,
     ModelSettingsPreset.OPENAI_RESPONSES_MAX_FAST.value: OPENAI_RESPONSES_MAX_FAST,
     ModelSettingsPreset.OPENAI_RESPONSES_XHIGH_FAST.value: OPENAI_RESPONSES_XHIGH_FAST,
@@ -1263,6 +1335,9 @@ _PRESET_ALIASES: dict[str, str] = {
     "anthropic_1m_cm_interleaved": ModelSettingsPreset.ANTHROPIC_1M_CM_DEFAULT_INTERLEAVED_THINKING.value,
     "openai": ModelSettingsPreset.OPENAI_DEFAULT.value,
     "openai_responses": ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT.value,
+    "openai_responses_standard": ModelSettingsPreset.OPENAI_RESPONSES_DEFAULT.value,
+    "openai_responses_gpt5_6_pro": ModelSettingsPreset.OPENAI_RESPONSES_PRO.value,
+    "openai_responses_gpt56_pro": ModelSettingsPreset.OPENAI_RESPONSES_PRO.value,
     "openai_responses_gpt5_6_sol": ModelSettingsPreset.OPENAI_RESPONSES_MAX.value,
     "openai_responses_gpt56_sol": ModelSettingsPreset.OPENAI_RESPONSES_MAX.value,
     "openai_responses_sol": ModelSettingsPreset.OPENAI_RESPONSES_MAX.value,
@@ -1396,6 +1471,7 @@ class ModelConfigPreset(StrEnum):
 
     # OpenAI models (GPT-5 series)
     GPT5_270K = "gpt5_270k"
+    GPT5_350K = "gpt5_350k"
     GPT5_1M = "gpt5_1m"
 
     # DeepSeek models
@@ -1450,6 +1526,16 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
     # OpenAI GPT-5 series (vision, no video support)
     ModelConfigPreset.GPT5_270K.value: {
         "context_window": 270_000,
+        "max_images": 20,
+        "max_videos": 0,  # GPT doesn't support video
+        "support_gif": False,
+        "split_large_images": True,
+        "image_split_max_height": 4096,
+        "image_split_overlap": 50,
+        "capabilities": {ModelCapability.vision},
+    },
+    ModelConfigPreset.GPT5_350K.value: {
+        "context_window": 350_000,
         "max_images": 20,
         "max_videos": 0,  # GPT doesn't support video
         "support_gif": False,

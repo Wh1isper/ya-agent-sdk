@@ -92,6 +92,12 @@ from ya_agent_sdk.presets import (
     OPENAI_RESPONSES_MAX_FAST,
     OPENAI_RESPONSES_MEDIUM,
     OPENAI_RESPONSES_MEDIUM_FAST,
+    OPENAI_RESPONSES_PRO,
+    OPENAI_RESPONSES_PRO_HIGH,
+    OPENAI_RESPONSES_PRO_LOW,
+    OPENAI_RESPONSES_PRO_MAX,
+    OPENAI_RESPONSES_PRO_MEDIUM,
+    OPENAI_RESPONSES_PRO_XHIGH,
     OPENAI_RESPONSES_XHIGH,
     OPENAI_RESPONSES_XHIGH_FAST,
     OPENAI_XHIGH,
@@ -396,7 +402,7 @@ def test_openai_chat_presets_structure() -> None:
 
 def test_openai_responses_presets_structure() -> None:
     """Test that OpenAI Responses presets have expected structure."""
-    for preset in [
+    standard_presets = [
         OPENAI_RESPONSES_DEFAULT,
         OPENAI_RESPONSES_MAX,
         OPENAI_RESPONSES_XHIGH,
@@ -409,7 +415,8 @@ def test_openai_responses_presets_structure() -> None:
         OPENAI_RESPONSES_HIGH_FAST,
         OPENAI_RESPONSES_MEDIUM_FAST,
         OPENAI_RESPONSES_LOW_FAST,
-    ]:
+    ]
+    for preset in standard_presets:
         assert "openai_reasoning_effort" in preset
         assert "openai_reasoning_summary" in preset
 
@@ -423,6 +430,25 @@ def test_openai_responses_presets_structure() -> None:
     ]:
         assert preset["openai_service_tier"] == "priority"
 
+    pro_presets = [
+        OPENAI_RESPONSES_PRO,
+        OPENAI_RESPONSES_PRO_MAX,
+        OPENAI_RESPONSES_PRO_XHIGH,
+        OPENAI_RESPONSES_PRO_HIGH,
+        OPENAI_RESPONSES_PRO_MEDIUM,
+        OPENAI_RESPONSES_PRO_LOW,
+    ]
+    for preset in pro_presets:
+        assert "openai_reasoning_effort" not in preset
+        assert "openai_reasoning_summary" not in preset
+        assert preset["extra_body"]["reasoning"]["mode"] == "pro"
+
+    assert OPENAI_RESPONSES_PRO == OPENAI_RESPONSES_PRO_MEDIUM
+    assert OPENAI_RESPONSES_PRO_MAX["extra_body"]["reasoning"]["effort"] == "max"
+    assert OPENAI_RESPONSES_PRO_XHIGH["extra_body"]["reasoning"]["effort"] == "xhigh"
+    assert OPENAI_RESPONSES_PRO_HIGH["extra_body"]["reasoning"]["effort"] == "high"
+    assert OPENAI_RESPONSES_PRO_MEDIUM["extra_body"]["reasoning"]["effort"] == "medium"
+    assert OPENAI_RESPONSES_PRO_LOW["extra_body"]["reasoning"]["effort"] == "low"
     assert OPENAI_RESPONSES_MAX["openai_reasoning_effort"] == "max"
     assert OPENAI_RESPONSES_MAX_FAST["openai_reasoning_effort"] == "max"
     assert OPENAI_RESPONSES_XHIGH["openai_reasoning_effort"] == "xhigh"
@@ -489,6 +515,12 @@ def test_get_model_settings_by_enum() -> None:
     settings_openai_responses_max_fast = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_MAX_FAST)
     assert settings_openai_responses_max_fast == OPENAI_RESPONSES_MAX_FAST
 
+    settings_openai_responses_pro = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_PRO)
+    assert settings_openai_responses_pro == OPENAI_RESPONSES_PRO
+
+    settings_openai_responses_pro_high = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_PRO_HIGH)
+    assert settings_openai_responses_pro_high == OPENAI_RESPONSES_PRO_HIGH
+
     settings_openai_responses_high_fast = get_model_settings(ModelSettingsPreset.OPENAI_RESPONSES_HIGH_FAST)
     assert settings_openai_responses_high_fast == OPENAI_RESPONSES_HIGH_FAST
 
@@ -525,6 +557,12 @@ def test_get_model_settings_by_string() -> None:
 
     settings_openai_responses_max_fast = get_model_settings("openai_responses_max_fast")
     assert settings_openai_responses_max_fast == OPENAI_RESPONSES_MAX_FAST
+
+    settings_openai_responses_pro = get_model_settings("openai_responses_pro")
+    assert settings_openai_responses_pro == OPENAI_RESPONSES_PRO
+
+    settings_openai_responses_pro_high = get_model_settings("openai_responses_pro_high")
+    assert settings_openai_responses_pro_high == OPENAI_RESPONSES_PRO_HIGH
 
     settings_openai_responses_high_fast = get_model_settings("openai_responses_high_fast")
     assert settings_openai_responses_high_fast == OPENAI_RESPONSES_HIGH_FAST
@@ -592,6 +630,15 @@ def test_get_model_settings_by_alias() -> None:
 
     settings = get_model_settings("openai")
     assert settings == OPENAI_DEFAULT
+
+    settings = get_model_settings("openai_responses_standard")
+    assert settings == OPENAI_RESPONSES_DEFAULT
+
+    settings = get_model_settings("openai_responses_gpt5_6_pro")
+    assert settings == OPENAI_RESPONSES_PRO
+
+    settings = get_model_settings("openai_responses_gpt56_pro")
+    assert settings == OPENAI_RESPONSES_PRO
 
     settings = get_model_settings("openai_responses_gpt5_6_sol")
     assert settings == OPENAI_RESPONSES_MAX
@@ -786,7 +833,9 @@ def test_list_presets() -> None:
         "openai_responses",
         "openai_responses_default",
         "openai_responses_default_fast",
+        "openai_responses_gpt56_pro",
         "openai_responses_gpt56_sol",
+        "openai_responses_gpt5_6_pro",
         "openai_responses_gpt5_6_sol",
         "openai_responses_high",
         "openai_responses_high_fast",
@@ -797,7 +846,14 @@ def test_list_presets() -> None:
         "openai_responses_max_fast",
         "openai_responses_medium",
         "openai_responses_medium_fast",
+        "openai_responses_pro",
+        "openai_responses_pro_high",
+        "openai_responses_pro_low",
+        "openai_responses_pro_max",
+        "openai_responses_pro_medium",
+        "openai_responses_pro_xhigh",
         "openai_responses_sol",
+        "openai_responses_standard",
         "openai_responses_terra",
         "openai_responses_xhigh",
         "openai_responses_xhigh_fast",
@@ -954,6 +1010,13 @@ def test_model_cfg_presets_structure() -> None:
     assert cfg_1m["image_split_max_height"] == 4096
     assert cfg_1m["image_split_overlap"] == 50
 
+    cfg_gpt_350k = get_model_cfg("gpt5_350k")
+    assert cfg_gpt_350k["context_window"] == 350_000
+    assert cfg_gpt_350k["max_videos"] == 0  # GPT doesn't support video
+    assert cfg_gpt_350k["split_large_images"] is True
+    assert cfg_gpt_350k["image_split_max_height"] == 4096
+    assert cfg_gpt_350k["image_split_overlap"] == 50
+
     cfg_gpt_1m = get_model_cfg("gpt5_1m")
     assert cfg_gpt_1m["context_window"] == 922_000
     assert cfg_gpt_1m["max_videos"] == 0  # GPT doesn't support video
@@ -1002,6 +1065,10 @@ def test_model_cfg_capabilities() -> None:
     assert ModelCapability.vision in cfg_gpt["capabilities"]
     assert ModelCapability.video_understanding not in cfg_gpt["capabilities"]
 
+    cfg_gpt_350k = get_model_cfg("gpt5_350k")
+    assert ModelCapability.vision in cfg_gpt_350k["capabilities"]
+    assert ModelCapability.video_understanding not in cfg_gpt_350k["capabilities"]
+
     cfg_gpt_1m = get_model_cfg("gpt5_1m")
     assert ModelCapability.vision in cfg_gpt_1m["capabilities"]
     assert ModelCapability.video_understanding not in cfg_gpt_1m["capabilities"]
@@ -1049,6 +1116,10 @@ def test_get_model_cfg_by_enum() -> None:
     cfg_400k = get_model_cfg(ModelConfigPreset.CLAUDE_400K)
     assert cfg_400k["context_window"] == 400_000
 
+    cfg_gpt_350k = get_model_cfg(ModelConfigPreset.GPT5_350K)
+    assert cfg_gpt_350k["context_window"] == 350_000
+    assert cfg_gpt_350k["max_videos"] == 0  # GPT doesn't support video
+
     cfg_gpt = get_model_cfg(ModelConfigPreset.GPT5_1M)
     assert cfg_gpt["context_window"] == 922_000
     assert cfg_gpt["max_videos"] == 0  # GPT doesn't support video
@@ -1086,6 +1157,10 @@ def test_get_model_cfg_by_string() -> None:
     cfg_gpt = get_model_cfg("gpt5_270k")
     assert cfg_gpt["context_window"] == 270_000
     assert cfg_gpt["max_videos"] == 0  # GPT doesn't support video
+
+    cfg_gpt_350k = get_model_cfg("gpt5_350k")
+    assert cfg_gpt_350k["context_window"] == 350_000
+    assert cfg_gpt_350k["max_videos"] == 0  # GPT doesn't support video
 
     cfg_gpt_1m = get_model_cfg("gpt5_1m")
     assert cfg_gpt_1m["context_window"] == 922_000
@@ -1228,6 +1303,7 @@ def test_list_model_cfg_presets() -> None:
         "gpt5",
         "gpt5_1m",
         "gpt5_270k",
+        "gpt5_350k",
         "grok",
         "grok_4.5",
         "grok_4.5_latest",

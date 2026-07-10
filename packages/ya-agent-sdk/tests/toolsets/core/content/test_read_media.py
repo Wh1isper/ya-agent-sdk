@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx2
 import pytest
@@ -175,6 +175,13 @@ def _make_random_png(width: int = 1200, height: int = 1200) -> bytes:
     image = Image.frombytes("RGB", (width, height), raw)
     buffer = BytesIO()
     image.save(buffer, format="PNG", compress_level=1)
+    return buffer.getvalue()
+
+
+def _make_wide_png() -> bytes:
+    image = Image.new("RGB", (8100, 81), color="blue")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -434,6 +441,93 @@ async def test_read_media_compresses_images_to_model_limit(httpx2_mock: Any) -> 
     assert len(result.content[0].data) <= raw_budget
 
 
+async def test_read_media_resizes_image_that_exceeds_dimension_limit(httpx2_mock: Any) -> None:
+    image_data = _make_wide_png()
+    httpx2_mock.add_response(
+        url="https://example.com/wide-image.png",
+        content=image_data,
+        headers={"Content-Type": "image/png", "Content-Length": str(len(image_data))},
+    )
+
+    result = await ReadMediaTool().call(
+        _run_context(
+            model_cfg=ModelConfig(
+                max_image_dimension=8000,
+                capabilities={ModelCapability.vision},
+            ),
+        ),
+        url="https://example.com/wide-image.png",
+    )
+
+    assert isinstance(result, ToolReturn)
+    assert result.content is not None
+    assert len(result.content) == 1
+    assert isinstance(result.content[0], BinaryContent)
+    assert result.content[0].media_type == "image/jpeg"
+    with Image.open(BytesIO(result.content[0].data)) as image:
+        assert image.size == (8000, 80)
+
+
+async def test_read_media_resizes_image_before_fallback_analysis(httpx2_mock: Any) -> None:
+    captured_kwargs: dict[str, object] = {}
+    image_data = _make_wide_png()
+    httpx2_mock.add_response(
+        url="https://example.com/wide-fallback.png",
+        content=image_data,
+        headers={"Content-Type": "image/png"},
+    )
+
+    async def mock_get_image_description(**kwargs: object) -> tuple[str, str, RunUsage]:
+        captured_kwargs.update(kwargs)
+        return "A wide image.", "test-image-model", RunUsage()
+
+    with patch(
+        "ya_agent_sdk.agents.image_understanding.get_image_description",
+        side_effect=mock_get_image_description,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(tool_config=ToolConfig(image_understanding_model="openai-chat:gpt-4o")),
+            url="https://example.com/wide-fallback.png",
+        )
+
+    assert result == "Image description (via image analysis):\nA wide image."
+    fallback_data = captured_kwargs["image_data"]
+    assert isinstance(fallback_data, bytes)
+    assert captured_kwargs["media_type"] == "image/jpeg"
+    with Image.open(BytesIO(fallback_data)) as image:
+        assert image.size == (8000, 80)
+
+
+async def test_read_media_does_not_fallback_with_original_when_compression_fails(httpx2_mock: Any) -> None:
+    image_data = _make_wide_png()
+    httpx2_mock.add_response(
+        url="https://example.com/compression-failure.png",
+        content=image_data,
+        headers={"Content-Type": "image/png"},
+    )
+
+    with (
+        patch(
+            "ya_agent_sdk.toolsets.core.content.read_media.compress_image_to_model_limit",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ),
+        patch(
+            "ya_agent_sdk.agents.image_understanding.get_image_description",
+            new_callable=AsyncMock,
+        ) as fallback_mock,
+    ):
+        result = await ReadMediaTool().call(
+            _run_context(tool_config=ToolConfig(image_understanding_model="openai-chat:gpt-4o")),
+            url="https://example.com/compression-failure.png",
+        )
+
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert "could not be compressed" in result["error"]
+    fallback_mock.assert_not_awaited()
+
+
 async def test_read_media_uses_image_fallback_for_missing_model_capability(httpx2_mock: Any) -> None:
     captured_kwargs: dict[str, object] = {}
     httpx2_mock.add_response(
@@ -483,7 +577,10 @@ async def test_read_media_uses_image_fallback_for_non_inline_image_format(httpx2
         side_effect=mock_get_image_description,
     ):
         result = await ReadMediaTool().call(
-            _run_context(tool_config=ToolConfig(image_understanding_model="google:gemini-2.5-flash")),
+            _run_context(
+                model_cfg=ModelConfig(max_image_dimension=0),
+                tool_config=ToolConfig(image_understanding_model="google:gemini-2.5-flash"),
+            ),
             url="https://example.com/avatar.avif",
             instructions="Describe the avatar.",
         )
@@ -518,7 +615,10 @@ async def test_read_media_uses_image_fallback_for_non_inline_image_format_with_v
     ):
         result = await ReadMediaTool().call(
             _run_context(
-                ModelCapability.vision,
+                model_cfg=ModelConfig(
+                    max_image_dimension=0,
+                    capabilities={ModelCapability.vision},
+                ),
                 tool_config=ToolConfig(image_understanding_model="google:gemini-2.5-flash"),
             ),
             url="https://example.com/avatar.avif",
