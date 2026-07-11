@@ -2640,14 +2640,14 @@ email = [
 
 [[package]]
 name = "pydantic-ai"
-version = "2.8.0"
+version = "2.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic-ai-slim", extra = ["anthropic", "cli", "evals", "google", "logfire", "mcp", "openai", "retries", "web"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/10/d0/245bc184bb3d72d94fdb45cb11e0a40a580096d35ab4992cd1b08a5fff23/pydantic_ai-2.8.0.tar.gz", hash = "sha256:21ee7c1fe9642ce46692d0c3f03864360628b9b33534c83c168e8f65a7387892", size = 18520, upload-time = "2026-07-10T02:06:03.044Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/cb/1d5b06a9301b211c5dc4f705d82af1ed5ca3dfab59d55c590e5065ff09de/pydantic_ai-2.9.0.tar.gz", hash = "sha256:5b4a46bd717960272133a8ac46f5130f92723983bd8f3e861393a8fd1f507c93", size = 18520, upload-time = "2026-07-11T03:19:27.088Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/c5/d5ae1c38c9c40c04e31641b67c081ea47be5e659c96a62672516d05ccd3d/pydantic_ai-2.8.0-py3-none-any.whl", hash = "sha256:7f5807083f445f81c2c663abb34164cbc3a082daf33517db80a9a7fd42defde9", size = 7715, upload-time = "2026-07-10T02:05:55.26Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/2d/dffa4f32729780a9d8bc74f1e0f77ef74f363a8bc5e46ec70ff8c0343ab1/pydantic_ai-2.9.0-py3-none-any.whl", hash = "sha256:e1470c69141d39d633ef0e0bf2b7e9f93a533f82d9e4a931e762f631b077b0e7", size = 7714, upload-time = "2026-07-11T03:19:18.439Z" },
 ]
 
 [package.optional-dependencies]
@@ -2657,7 +2657,7 @@ xai = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "2.8.0"
+version = "2.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "genai-prices" },
@@ -2668,9 +2668,9 @@ dependencies = [
     { name = "pydantic-graph" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/dd/fb919e88f72b508dc5642839908d23df985d4d58e7b25ed1903439bb95d7/pydantic_ai_slim-2.8.0.tar.gz", hash = "sha256:5137a76796a508c4b2dac6dca6f841a0660926877aaa19d6f8db9f13fde87d57", size = 781933, upload-time = "2026-07-10T02:06:05.167Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/4a/4461ff8c0f05864512ba1c6f3788e01afdf8f8aab73a460dd5b43942fd8b/pydantic_ai_slim-2.9.0.tar.gz", hash = "sha256:11b812833eb75cfcc31c86b6e2db75e28cade6bb746844e28a40eb51b04a09d3", size = 788767, upload-time = "2026-07-11T03:19:29.155Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/42/3152c837e84e1c2e7b50e155e5fe94992d7efa37224425f4042639f378f4/pydantic_ai_slim-2.8.0-py3-none-any.whl", hash = "sha256:ddf8ac31442d5433ffff7c47af895088c230448fd28926a713c0f47aa2affc12", size = 958565, upload-time = "2026-07-10T02:05:58Z" },
+    { url = "https://files.pythonhosted.org/packages/80/a9/bea5cb793b4d6ea4d9763189f09c83334ca9d5dea6e4f2a0aa51bc714029/pydantic_ai_slim-2.9.0-py3-none-any.whl", hash = "sha256:560a860cb67cf7732b16fb40e1d9205d75c02934e75e41db7ccb104ebc9ea266", size = 965375, upload-time = "2026-07-11T03:19:21.493Z" },
 ]
 
 [package.optional-dependencies]
@@ -2786,7 +2786,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-evals"
-version = "2.8.0"
+version = "2.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2796,14 +2796,14 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ec/f9/2187d2d2df7ba954e16892d2fe315c8218ac7c58586d27a48d013e718f4a/pydantic_evals-2.8.0.tar.gz", hash = "sha256:4a978e141adb2d1397ebb0dee70986c966022f69b052240780c2e7bb7304efcf", size = 85016, upload-time = "2026-07-10T02:06:06.486Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ad/51/53a8332aaa155da35c181da510616edbd806c0e2408f853309ca12d27492/pydantic_evals-2.9.0.tar.gz", hash = "sha256:2d2bcd5d8b8a71ad41dc73973bca4b7ec1be2b745457c355ee40f130cddc6a1b", size = 85016, upload-time = "2026-07-11T03:19:30.485Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/5b/5241652041192dc7591e7751038d7c895989a1166e31628a6d712069a1dc/pydantic_evals-2.8.0-py3-none-any.whl", hash = "sha256:90841ce756e4298930ee2c4b0f8f53830036469e514bd0e89aa7f66dfed83bdf", size = 100350, upload-time = "2026-07-10T02:05:59.617Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/5a/731aae59b7a8d3f1cb78cba09b9c5f5bf961d7561874c22a511ce3dde957/pydantic_evals-2.9.0-py3-none-any.whl", hash = "sha256:54e56d4782b67e82a72fba856049ebd0f521bf7aa645bd98782c0b658c8d20ef", size = 100348, upload-time = "2026-07-11T03:19:23.322Z" },
 ]
 
 [[package]]
 name = "pydantic-graph"
-version = "2.8.0"
+version = "2.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -2811,9 +2811,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/5d/ab38e65ebaea0fa7eda1651605ed88978eca484b5354019bdea51b2d736b/pydantic_graph-2.8.0.tar.gz", hash = "sha256:f64936ffe69fceb4aaab8fb795cacb1d00f66b08bb3b1889c3ff4413f180ae81", size = 43909, upload-time = "2026-07-10T02:06:07.421Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/23/fb107ccbcba5f96e0afed576def01b5c846ffd665ff9c885dbe77d5a551d/pydantic_graph-2.9.0.tar.gz", hash = "sha256:a6d146cfd97b086e4334afc6717b2d078a3f102631cfe05e421fda2ca5a7046f", size = 43907, upload-time = "2026-07-11T03:19:31.616Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/f5/2d19309e920924505291918f2518b4832f547fc5eb4605760a0f7074097a/pydantic_graph-2.8.0-py3-none-any.whl", hash = "sha256:9b44a06d413586299a2d9ffb76efc1aa1d3b2268984332b03af24dd0c32dad35", size = 51645, upload-time = "2026-07-10T02:06:00.937Z" },
+    { url = "https://files.pythonhosted.org/packages/db/d0/5070abd3b43f3e6f54019fe9bc225abab9dda922d40dff794f9872e0d507/pydantic_graph-2.9.0-py3-none-any.whl", hash = "sha256:0ee8ad7b69d628037f3194d506b6c7099e416f25e477f9590da110cdaf48c649", size = 51646, upload-time = "2026-07-11T03:19:24.877Z" },
 ]
 
 [[package]]
@@ -4171,11 +4171,11 @@ requires-dist = [
     { name = "pathspec", specifier = ">=0.12.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pydantic-ai", specifier = ">=2.0.0,<3" },
-    { name = "pydantic-ai", marker = "extra == 'all'", specifier = ">=2.0.0,<3" },
-    { name = "pydantic-ai", marker = "extra == 'examples'", specifier = ">=2.0.0,<3" },
-    { name = "pydantic-ai", extras = ["xai"], marker = "extra == 'all'", specifier = ">=2.0.0,<3" },
-    { name = "pydantic-ai", extras = ["xai"], marker = "extra == 'xai'", specifier = ">=2.0.0,<3" },
+    { name = "pydantic-ai", specifier = ">=2.9.0,<3" },
+    { name = "pydantic-ai", marker = "extra == 'all'", specifier = ">=2.9.0,<3" },
+    { name = "pydantic-ai", marker = "extra == 'examples'", specifier = ">=2.9.0,<3" },
+    { name = "pydantic-ai", extras = ["xai"], marker = "extra == 'all'", specifier = ">=2.9.0,<3" },
+    { name = "pydantic-ai", extras = ["xai"], marker = "extra == 'xai'", specifier = ">=2.9.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pymupdf", marker = "extra == 'all'", specifier = ">=1.26.6" },
     { name = "pymupdf", marker = "extra == 'document'", specifier = ">=1.26.6" },
@@ -4211,7 +4211,7 @@ dev = [
     { name = "inline-snapshot", specifier = ">=0.20.0" },
     { name = "markitdown", extras = ["docx", "pptx", "xlsx", "xls", "pdf"], specifier = ">=0.1.5" },
     { name = "pre-commit", specifier = ">=2.20.0" },
-    { name = "pydantic-ai", specifier = ">=2.0.0,<3" },
+    { name = "pydantic-ai", specifier = ">=2.9.0,<3" },
     { name = "pymupdf", specifier = ">=1.26.6" },
     { name = "pymupdf-layout", specifier = ">=1.26.6" },
     { name = "pymupdf4llm", specifier = ">=0.2.8" },
@@ -4247,7 +4247,7 @@ dev = [
 requires-dist = [
     { name = "ag-ui-protocol", specifier = ">=0.1.18" },
     { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pydantic-ai", specifier = ">=2.0.0,<3" },
+    { name = "pydantic-ai", specifier = ">=2.9.0,<3" },
     { name = "ya-agent-sdk", editable = "packages/ya-agent-sdk" },
 ]
 
@@ -4394,7 +4394,7 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.12.0" },
-    { name = "pydantic-ai", specifier = ">=2.0.0,<3" },
+    { name = "pydantic-ai", specifier = ">=2.9.0,<3" },
     { name = "tenacity", specifier = ">=9.0.0" },
     { name = "ya-agent-sdk", editable = "packages/ya-agent-sdk" },
     { name = "ya-oauth", editable = "packages/ya-oauth" },
@@ -4451,7 +4451,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pydantic-ai", specifier = ">=2.0.0,<3" },
+    { name = "pydantic-ai", specifier = ">=2.9.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=10.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },

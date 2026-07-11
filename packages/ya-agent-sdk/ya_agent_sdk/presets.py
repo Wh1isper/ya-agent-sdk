@@ -754,25 +754,17 @@ def _openai_responses_settings(
     Returns:
         Dict suitable for OpenAIResponsesModelSettings.
     """
-    settings: dict[str, Any] = {"openai_store": False}
-    if reasoning_mode is None:
-        settings["openai_reasoning_effort"] = reasoning_effort
-        settings["openai_reasoning_summary"] = reasoning_summary
+    settings: dict[str, Any] = {
+        "openai_store": False,
+        "openai_reasoning_effort": reasoning_effort,
+        "openai_reasoning_summary": reasoning_summary,
+    }
     if max_tokens is not None:
         settings["max_tokens"] = max_tokens
     if openai_service_tier is not None:
         settings["openai_service_tier"] = openai_service_tier
     if reasoning_mode is not None:
-        # Pydantic AI does not yet expose a model setting for reasoning.mode.
-        # Keep the complete reasoning object authoritative in extra_body because
-        # both HTTP and WebSocket transports shallowly merge this top-level field.
-        settings["extra_body"] = {
-            "reasoning": {
-                "mode": reasoning_mode,
-                "effort": reasoning_effort,
-                "summary": reasoning_summary,
-            }
-        }
+        settings["openai_reasoning_mode"] = reasoning_mode
     return settings
 
 

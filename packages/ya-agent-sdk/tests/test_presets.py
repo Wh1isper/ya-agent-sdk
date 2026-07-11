@@ -402,13 +402,19 @@ def test_openai_chat_presets_structure() -> None:
 
 def test_openai_responses_presets_structure() -> None:
     """Test that OpenAI Responses presets have expected structure."""
-    standard_presets = [
+    responses_presets = [
         OPENAI_RESPONSES_DEFAULT,
         OPENAI_RESPONSES_MAX,
         OPENAI_RESPONSES_XHIGH,
         OPENAI_RESPONSES_HIGH,
         OPENAI_RESPONSES_MEDIUM,
         OPENAI_RESPONSES_LOW,
+        OPENAI_RESPONSES_PRO,
+        OPENAI_RESPONSES_PRO_MAX,
+        OPENAI_RESPONSES_PRO_XHIGH,
+        OPENAI_RESPONSES_PRO_HIGH,
+        OPENAI_RESPONSES_PRO_MEDIUM,
+        OPENAI_RESPONSES_PRO_LOW,
         OPENAI_RESPONSES_DEFAULT_FAST,
         OPENAI_RESPONSES_MAX_FAST,
         OPENAI_RESPONSES_XHIGH_FAST,
@@ -416,7 +422,7 @@ def test_openai_responses_presets_structure() -> None:
         OPENAI_RESPONSES_MEDIUM_FAST,
         OPENAI_RESPONSES_LOW_FAST,
     ]
-    for preset in standard_presets:
+    for preset in responses_presets:
         assert "openai_reasoning_effort" in preset
         assert "openai_reasoning_summary" in preset
 
@@ -439,16 +445,15 @@ def test_openai_responses_presets_structure() -> None:
         OPENAI_RESPONSES_PRO_LOW,
     ]
     for preset in pro_presets:
-        assert "openai_reasoning_effort" not in preset
-        assert "openai_reasoning_summary" not in preset
-        assert preset["extra_body"]["reasoning"]["mode"] == "pro"
+        assert preset["openai_reasoning_mode"] == "pro"
+        assert "extra_body" not in preset
 
     assert OPENAI_RESPONSES_PRO == OPENAI_RESPONSES_PRO_MEDIUM
-    assert OPENAI_RESPONSES_PRO_MAX["extra_body"]["reasoning"]["effort"] == "max"
-    assert OPENAI_RESPONSES_PRO_XHIGH["extra_body"]["reasoning"]["effort"] == "xhigh"
-    assert OPENAI_RESPONSES_PRO_HIGH["extra_body"]["reasoning"]["effort"] == "high"
-    assert OPENAI_RESPONSES_PRO_MEDIUM["extra_body"]["reasoning"]["effort"] == "medium"
-    assert OPENAI_RESPONSES_PRO_LOW["extra_body"]["reasoning"]["effort"] == "low"
+    assert OPENAI_RESPONSES_PRO_MAX["openai_reasoning_effort"] == "max"
+    assert OPENAI_RESPONSES_PRO_XHIGH["openai_reasoning_effort"] == "xhigh"
+    assert OPENAI_RESPONSES_PRO_HIGH["openai_reasoning_effort"] == "high"
+    assert OPENAI_RESPONSES_PRO_MEDIUM["openai_reasoning_effort"] == "medium"
+    assert OPENAI_RESPONSES_PRO_LOW["openai_reasoning_effort"] == "low"
     assert OPENAI_RESPONSES_MAX["openai_reasoning_effort"] == "max"
     assert OPENAI_RESPONSES_MAX_FAST["openai_reasoning_effort"] == "max"
     assert OPENAI_RESPONSES_XHIGH["openai_reasoning_effort"] == "xhigh"
