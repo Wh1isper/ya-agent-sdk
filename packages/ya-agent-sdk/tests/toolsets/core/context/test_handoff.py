@@ -19,7 +19,7 @@ def test_handoff_message_render() -> None:
 
 
 def test_handoff_message_render_with_auto_load_files() -> None:
-    """Should render handoff message, auto_load_files is not included in render."""
+    """Should keep inspection paths separate from the rendered summary."""
     msg = HandoffMessage(
         content="Working on API implementation",
         auto_load_files=["main.py", "config.py"],
@@ -27,8 +27,7 @@ def test_handoff_message_render_with_auto_load_files() -> None:
     result = msg.render()
     assert "# Context Summary" in result
     assert "Working on API implementation" in result
-    # auto_load_files should not be in the rendered output
-    # They are stored separately for the filter to process
+    # Paths are stored separately for the prompt-only reminder processor.
     assert msg.auto_load_files == ["main.py", "config.py"]
 
 
@@ -37,6 +36,9 @@ def test_handoff_tool_attributes(agent_context: AgentContext) -> None:
     assert HandoffTool.name == "summarize"
     assert "Summarize current work" in HandoffTool.description
     assert "clear context" in HandoffTool.description
+    path_description = HandoffMessage.model_fields["auto_load_files"].description
+    assert path_description is not None
+    assert "file contents are not loaded into context" in path_description
 
 
 def test_handoff_tool_initialization(agent_context: AgentContext) -> None:
@@ -86,7 +88,7 @@ async def test_handoff_tool_call(agent_context: AgentContext) -> None:
 
 
 async def test_handoff_tool_call_sets_auto_load_files(agent_context: AgentContext) -> None:
-    """Should set auto_load_files on context."""
+    """Should store file inspection reminder paths on context."""
     tool = HandoffTool()
 
     mock_run_ctx = MagicMock(spec=RunContext)

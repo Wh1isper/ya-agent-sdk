@@ -106,7 +106,8 @@ async def process_handoff_message(
 
     The restored history is a single request containing the context summary,
     original prompt, user steering, and a system reminder that handoff already
-    completed. Downstream filters like auto_load_files can append to that request.
+    completed. Downstream filters can append a prompt-only file inspection
+    reminder to that request.
 
     Note: Subagents created via enter_subagent() have handoff_message cleared,
     so they won't be affected by the main agent's handoff state.

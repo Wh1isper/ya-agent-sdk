@@ -39,6 +39,10 @@ from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+_FILE_INSPECTION_PATHS_DESCRIPTION = """File paths the resumed agent may need to inspect after summary.
+Only the paths are added to a reminder; file contents are not loaded into context.
+Use for: key config files, source code being edited, important references.
+"""
 
 
 @cache
@@ -69,10 +73,7 @@ class HandoffMessage(BaseModel):
 
     auto_load_files: list[str] = Field(
         default_factory=list,
-        description="""File paths to auto-load after summary.
-Files will be read and injected into context on next request.
-Use for: key config files, source code being edited, important references.
-""",
+        description=_FILE_INSPECTION_PATHS_DESCRIPTION,
     )
 
     def render(self) -> str:
@@ -115,19 +116,14 @@ The summary will be injected into the new context automatically.
         ],
         auto_load_files: Annotated[
             list[str] | None,
-            Field(
-                description="""File paths to auto-load after summary.
-Files will be read and injected into context on next request.
-Use for: key config files, source code being edited, important references.
-""",
-            ),
+            Field(description=_FILE_INSPECTION_PATHS_DESCRIPTION),
         ] = None,
     ) -> str:
         message = HandoffMessage(content=content, auto_load_files=auto_load_files or [])
         # Store rendered message for history processor to pick up
         rendered = message.render()
         ctx.deps.handoff_message = rendered
-        # Append auto_load_files for the auto_load_files filter to process
-        # Use extend instead of assignment to preserve any files set by external callers
+        # Preserve the compatibility field for the prompt-only inspection reminder.
+        # Use extend instead of assignment to keep paths set by external callers.
         ctx.deps.auto_load_files.extend(message.auto_load_files)
         return f"Summary complete. Context refreshed.\n\n{rendered}"

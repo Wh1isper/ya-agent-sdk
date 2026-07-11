@@ -530,8 +530,8 @@ def create_agent(
 
         pre_capabilities: Pydantic AI capabilities that run before SDK history
             capabilities. Use this for ProcessHistory capabilities that must see
-            the raw message history before compact, handoff, auto-load, and runtime
-            instruction filters.
+            the raw message history before compact, handoff, file inspection reminder,
+            and runtime instruction filters.
         capabilities: Pydantic AI capabilities to attach after SDK history capabilities.
             Capabilities bundle tools, lifecycle hooks, instructions, and model settings
             into reusable composable units. See pydantic-ai capabilities documentation.

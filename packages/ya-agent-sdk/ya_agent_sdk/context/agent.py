@@ -971,7 +971,7 @@ class ResumableState(BaseModel):
     """Security-related runtime configuration."""
 
     auto_load_files: list[str] = Field(default_factory=list)
-    """Files to auto-load on next request. Set by handoff/context tools or external callers."""
+    """File paths to mention for on-demand inspection on the next request."""
 
     tasks: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Serialized tasks from TaskManager, keyed by task ID."""
@@ -1233,7 +1233,7 @@ class AgentContext(BaseModel):
     """
 
     auto_load_files: list[str] = Field(default_factory=list)
-    """Files to auto-load on next request. Set by handoff/context tools or external callers."""
+    """File paths to mention for on-demand inspection on the next request."""
 
     task_manager: TaskManager = Field(default_factory=TaskManager)
     """Task manager for tracking tasks and dependencies within the session."""

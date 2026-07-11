@@ -53,7 +53,7 @@ Focus on interactions that would be wasteful or annoying to repeat.
 Keep content concise but complete. Do not duplicate task details unless extra explanation is needed.
 </content-structure>
 
-<auto-load-files>
-Auto-load only files needed immediately after summary. Avoid large files, files already described in content, and temporary files.
-</auto-load-files>
+<files-to-inspect>
+List only files that may need to be inspected immediately after summary. Their paths will be added to a reminder, but their contents will not be loaded into context. The resumed agent should inspect them on demand with filesystem tools. Avoid temporary files and files already described sufficiently in the summary.
+</files-to-inspect>
 </summarize-guidelines>
