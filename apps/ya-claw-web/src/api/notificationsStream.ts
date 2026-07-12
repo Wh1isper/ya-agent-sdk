@@ -15,14 +15,26 @@ import { queryKeys } from './queryKeys'
 
 export type NotificationStatus = 'idle' | 'connecting' | 'connected' | 'error'
 
+class FatalNotificationStreamError extends Error {}
+
 export function useNotificationStream() {
   const baseUrl = useConnectionStore((state) => state.baseUrl)
   const apiToken = useConnectionStore((state) => state.apiToken)
+  const connectionScope = useConnectionStore((state) => state.connectionScope)
+  const invalidateConnection = useConnectionStore(
+    (state) => state.invalidateConnection,
+  )
   const queryClient = useQueryClient()
   const [status, setStatus] = useState<NotificationStatus>('idle')
-  const lastEventIdRef = useRef<string | null>(null)
+  const replayCursorRef = useRef<{
+    connectionScope: string
+    lastEventId: string | null
+  }>({ connectionScope, lastEventId: null })
 
   useEffect(() => {
+    if (replayCursorRef.current.connectionScope !== connectionScope) {
+      replayCursorRef.current = { connectionScope, lastEventId: null }
+    }
     if (!apiToken.trim()) {
       setStatus('idle')
       return
@@ -31,45 +43,82 @@ export function useNotificationStream() {
     const controller = new AbortController()
     setStatus('connecting')
 
-    void fetchEventSource(
+    const streamPromise = fetchEventSource(
       `${baseUrl.replace(/\/$/, '')}/api/v1/claw/notifications`,
       {
         signal: controller.signal,
         headers: {
           Authorization: `Bearer ${apiToken.trim()}`,
-          ...(lastEventIdRef.current
-            ? { 'Last-Event-ID': lastEventIdRef.current }
+          ...(replayCursorRef.current.lastEventId
+            ? { 'Last-Event-ID': replayCursorRef.current.lastEventId }
             : {}),
         },
         openWhenHidden: true,
         async onopen(response) {
           if (!response.ok) {
-            setStatus('error')
-            throw new Error(
-              `notification stream failed with ${response.status}`,
-            )
+            if (response.status === 401) {
+              setStatus('error')
+              invalidateConnection(
+                'Your API token is invalid or expired.',
+                connectionScope,
+              )
+              throw new FatalNotificationStreamError(
+                'notification stream authentication failed',
+              )
+            }
+            if (response.status >= 400 && response.status < 500) {
+              setStatus('error')
+              throw new FatalNotificationStreamError(
+                `notification stream failed with ${response.status}`,
+              )
+            }
+            setStatus('connecting')
+            return
           }
           setStatus('connected')
         },
         onmessage(message) {
-          if (message.id) {
-            lastEventIdRef.current = message.id
+          if (
+            message.id &&
+            replayCursorRef.current.connectionScope === connectionScope
+          ) {
+            replayCursorRef.current.lastEventId = message.id
           }
           if (!message.data) return
-          const event = JSON.parse(message.data) as NotificationEvent
-          invalidateForNotification(queryClient, event)
+          try {
+            const event = JSON.parse(message.data) as NotificationEvent
+            invalidateForNotification(queryClient, event)
+          } catch (error) {
+            console.warn('Ignored malformed YA Claw notification', error)
+          }
+        },
+        onclose() {
+          if (!controller.signal.aborted) {
+            setStatus('connecting')
+            throw new Error('notification stream closed')
+          }
         },
         onerror(error) {
-          setStatus('error')
-          throw error
+          if (error instanceof FatalNotificationStreamError) throw error
+          if (!controller.signal.aborted) setStatus('connecting')
+          return 2_000
         },
       },
     )
+    void streamPromise.catch((error: unknown) => {
+      if (
+        controller.signal.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      ) {
+        return
+      }
+      setStatus('error')
+    })
 
     return () => {
       controller.abort()
     }
-  }, [apiToken, baseUrl, queryClient])
+  }, [apiToken, baseUrl, connectionScope, invalidateConnection, queryClient])
 
   return status
 }

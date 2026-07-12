@@ -1,13 +1,20 @@
-import { AppShell } from './app/AppShell'
-import { ConnectionGate } from './app/ConnectionGate'
-import { Providers } from './app/Providers'
+import { RouterProvider } from '@tanstack/react-router'
+import { useEffect } from 'react'
 
-function App() {
+import { Providers } from './app/Providers'
+import { registerAppRouter, router, type AppRouter } from './app/router'
+import './styles.css'
+
+type AppProps = {
+  appRouter?: AppRouter
+}
+
+function App({ appRouter = router }: AppProps) {
+  useEffect(() => registerAppRouter(appRouter), [appRouter])
+
   return (
     <Providers>
-      <ConnectionGate>
-        <AppShell />
-      </ConnectionGate>
+      <RouterProvider router={appRouter} />
     </Providers>
   )
 }

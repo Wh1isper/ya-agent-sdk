@@ -1,5 +1,6 @@
-import type { AguiEvent } from '../../types'
+import { parseApiDate } from '../../lib/date'
 import { getEventTone } from '../../lib/status'
+import type { AguiEvent } from '../../types'
 
 export function isTerminalAguiEvent(event: AguiEvent) {
   const eventType = typeof event.type === 'string' ? event.type : ''
@@ -43,13 +44,13 @@ export function eventNameLabel(event: AguiEvent) {
 
 export function eventTimestampLabel(event: AguiEvent) {
   const timestamp = event.timestamp as unknown
-  if (typeof timestamp === 'number') {
-    return new Date(timestamp).toLocaleTimeString()
-  }
-  if (typeof timestamp === 'string' && timestamp.trim()) {
-    const parsed = Date.parse(timestamp)
-    if (Number.isFinite(parsed)) return new Date(parsed).toLocaleTimeString()
-    return timestamp
+  if (
+    typeof timestamp === 'number' ||
+    (typeof timestamp === 'string' && timestamp.trim())
+  ) {
+    const parsed = parseApiDate(timestamp)
+    if (Number.isFinite(parsed.getTime())) return parsed.toLocaleTimeString()
+    return typeof timestamp === 'string' ? timestamp : ''
   }
   return ''
 }

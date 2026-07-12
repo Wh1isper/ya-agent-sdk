@@ -1,3 +1,4 @@
+import { parseApiDate } from '../../lib/date'
 import { formatShortId } from '../../lib/utils'
 import type { RunSummary, SessionSummary } from '../../types'
 
@@ -34,7 +35,7 @@ export function sessionLabel(session: SessionSummary) {
 
 export function formatDate(value?: string | null) {
   if (!value) return 'none'
-  const date = new Date(value)
+  const date = parseApiDate(value)
   if (Number.isNaN(date.getTime())) return 'unknown'
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from collections.abc import Iterator
+from urllib.parse import quote
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ya_claw.config import ClawSettings
+from ya_claw.controller.workspace_files import WorkspaceDownload, WorkspaceFilesController
 from ya_claw.controller.workspace_runtime import WorkspaceRuntimeController
 from ya_claw.notifications import NotificationHub
 from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.workspace import EnvironmentFactory, WorkspaceProvider
+from ya_claw.workspace.file_models import WorkspaceFileListResponse, WorkspaceTextFileResponse
 from ya_claw.workspace.runtime_models import (
     SessionSandboxState,
     SessionWorkspaceState,
@@ -18,6 +24,7 @@ from ya_claw.workspace.runtime_models import (
 
 router = APIRouter(tags=["workspace"])
 workspace_controller = WorkspaceRuntimeController()
+workspace_files_controller = WorkspaceFilesController()
 
 
 @router.get("/workspace/runtime", response_model=WorkspaceRuntimeStatus)
@@ -43,6 +50,71 @@ async def get_session_workspace(request: Request, session_id: str) -> SessionWor
             workspace_provider=_get_workspace_provider(request),
             session_id=session_id,
         )
+
+
+@router.get("/sessions/{session_id}/workspace/files", response_model=WorkspaceFileListResponse)
+async def list_session_workspace_files(
+    request: Request,
+    session_id: str,
+    path: str | None = Query(default=None),
+    include_hidden: bool = False,
+    limit: int = Query(default=200, ge=1, le=1000),
+    cursor: str | None = Query(default=None, max_length=4096),
+    offset: int = Query(default=0, ge=0, le=100_000),
+) -> WorkspaceFileListResponse:
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await workspace_files_controller.list_files(
+            db_session=db_session,
+            workspace_provider=_get_workspace_provider(request),
+            session_id=session_id,
+            path=path,
+            include_hidden=include_hidden,
+            limit=limit,
+            offset=offset,
+            cursor=cursor,
+        )
+
+
+@router.get("/sessions/{session_id}/workspace/file", response_model=WorkspaceTextFileResponse)
+async def read_session_workspace_file(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1),
+) -> WorkspaceTextFileResponse:
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await workspace_files_controller.read_text_file(
+            db_session=db_session,
+            workspace_provider=_get_workspace_provider(request),
+            session_id=session_id,
+            path=path,
+        )
+
+
+@router.get("/sessions/{session_id}/workspace/file:download", response_model=None)
+async def download_session_workspace_file(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1),
+) -> StreamingResponse:
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        download = await workspace_files_controller.open_download(
+            db_session=db_session,
+            workspace_provider=_get_workspace_provider(request),
+            session_id=session_id,
+            path=path,
+            max_bytes=_get_settings(request).workspace_download_max_bytes,
+        )
+    return StreamingResponse(
+        _stream_download(download),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": _attachment_header(download.filename),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/sessions/{session_id}/sandbox", response_model=SessionSandboxState)
@@ -82,6 +154,29 @@ async def stop_session_sandbox(request: Request, session_id: str) -> SessionSand
             runtime_state=_get_runtime_state(request),
             session_id=session_id,
         )
+
+
+def _stream_download(download: WorkspaceDownload) -> Iterator[bytes]:
+    bytes_sent = 0
+    try:
+        while True:
+            bytes_remaining = download.max_bytes - bytes_sent
+            chunk = download.file.read(min(64 * 1024, bytes_remaining + 1))
+            if not chunk:
+                return
+            bytes_sent += len(chunk)
+            if bytes_sent > download.max_bytes:
+                raise RuntimeError("Workspace file exceeded the configured download limit while streaming.")
+            yield chunk
+    finally:
+        download.file.close()
+
+
+def _attachment_header(filename: str) -> str:
+    quoted_filename = quote(filename, safe="")
+    if quoted_filename == filename:
+        return f'attachment; filename="{filename}"'
+    return f"attachment; filename*=utf-8''{quoted_filename}"
 
 
 def _get_settings(request: Request) -> ClawSettings:

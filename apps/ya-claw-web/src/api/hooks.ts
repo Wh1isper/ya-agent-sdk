@@ -5,7 +5,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { toast } from 'sonner'
 
 import { useConnectionStore } from '../stores/connectionStore'
@@ -26,12 +26,27 @@ import type {
 import { ClawApiClient } from './client'
 import { queryKeys } from './queryKeys'
 
+function pollingInterval(milliseconds: number) {
+  return import.meta.env.MODE === 'test' ? false : milliseconds
+}
+
 export function useApiClient() {
   const baseUrl = useConnectionStore((state) => state.baseUrl)
   const apiToken = useConnectionStore((state) => state.apiToken)
+  const connectionScope = useConnectionStore((state) => state.connectionScope)
+  const invalidateConnection = useConnectionStore(
+    (state) => state.invalidateConnection,
+  )
   return useMemo(
-    () => new ClawApiClient({ baseUrl, apiToken }),
-    [apiToken, baseUrl],
+    () =>
+      new ClawApiClient({
+        baseUrl,
+        apiToken,
+        connectionScope,
+        onUnauthorized: (scope) =>
+          invalidateConnection('Your API token is invalid or expired.', scope),
+      }),
+    [apiToken, baseUrl, connectionScope, invalidateConnection],
   )
 }
 
@@ -39,8 +54,8 @@ export function useHealthQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.health,
-    queryFn: () => api.health(),
-    refetchInterval: 15_000,
+    queryFn: ({ signal }) => api.health({ signal }),
+    refetchInterval: pollingInterval(15_000),
     retry: 1,
   })
 }
@@ -49,7 +64,7 @@ export function useClawInfoQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.clawInfo,
-    queryFn: () => api.clawInfo(),
+    queryFn: ({ signal }) => api.clawInfo({ signal }),
     staleTime: 60_000,
     retry: 1,
   })
@@ -59,8 +74,8 @@ export function useWorkspaceRuntimeQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.workspaceRuntime,
-    queryFn: () => api.getWorkspaceRuntime(),
-    refetchInterval: 15_000,
+    queryFn: ({ signal }) => api.getWorkspaceRuntime({ signal }),
+    refetchInterval: pollingInterval(15_000),
     staleTime: 10_000,
     retry: 1,
   })
@@ -72,11 +87,159 @@ export function useSessionWorkspaceQuery(sessionId: string | null) {
     queryKey: sessionId
       ? queryKeys.sessionWorkspace(sessionId)
       : ['session-workspace', 'none'],
-    queryFn: () => api.getSessionWorkspace(sessionId ?? ''),
+    queryFn: ({ signal }) =>
+      api.getSessionWorkspace(sessionId ?? '', { signal }),
     enabled: Boolean(sessionId),
-    placeholderData: keepPreviousData,
-    refetchInterval: 2_000,
+    refetchInterval: pollingInterval(2_000),
     staleTime: 1_000,
+  })
+}
+
+type WorkspacePageParam = { cursor?: string; offset?: number }
+
+const WORKSPACE_AUTO_LOAD_MAX_PAGES = 50
+const WORKSPACE_AUTO_LOAD_MAX_ITEMS = 25_000
+
+export function useWorkspaceFilesQuery(
+  sessionId: string | null,
+  path: string | null,
+  options: { autoLoadAll?: boolean } = {},
+) {
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  const normalizedPath = path ?? ''
+  const queryKey = queryKeys.workspaceFiles(sessionId ?? 'none', normalizedPath)
+  const query = useInfiniteQuery({
+    queryKey,
+    queryFn: ({ pageParam, signal }) =>
+      api.listWorkspaceFiles(sessionId ?? '', {
+        path,
+        cursor: pageParam.cursor,
+        offset: pageParam.offset,
+        signal,
+      }),
+    enabled: Boolean(sessionId),
+    initialPageParam: {} as WorkspacePageParam,
+    getNextPageParam: (
+      lastPage,
+      allPages,
+      _lastPageParam,
+      allPageParams,
+    ): WorkspacePageParam | undefined => {
+      if (
+        !(
+          lastPage.has_more ||
+          lastPage.truncated ||
+          lastPage.next_cursor ||
+          lastPage.next_offset != null
+        )
+      ) {
+        return undefined
+      }
+      // A continuation that returned no entries cannot derive a safe fallback
+      // offset, even if a buggy server still advertises another page.
+      if (lastPage.items.length === 0) return undefined
+      if (
+        options.autoLoadAll &&
+        (allPages.length >= WORKSPACE_AUTO_LOAD_MAX_PAGES ||
+          allPages.reduce((count, page) => count + page.items.length, 0) >=
+            WORKSPACE_AUTO_LOAD_MAX_ITEMS)
+      ) {
+        return undefined
+      }
+
+      if (lastPage.next_cursor) {
+        const cursorWasRequested = allPageParams.some(
+          (pageParam) => pageParam.cursor === lastPage.next_cursor,
+        )
+        return cursorWasRequested ? undefined : { cursor: lastPage.next_cursor }
+      }
+
+      // Continue safely against older servers that only exposed offsets or
+      // `truncated`; the offset must advance and must not have been requested.
+      const currentOffset = lastPage.offset ?? 0
+      const nextOffset =
+        lastPage.next_offset ?? currentOffset + lastPage.items.length
+      const offsetWasRequested = allPageParams.some(
+        (pageParam) => pageParam.offset === nextOffset,
+      )
+      if (nextOffset <= currentOffset || offsetWasRequested) return undefined
+      return { offset: nextOffset }
+    },
+    select: (data) => {
+      const firstPage = data.pages[0]
+      const lastPage = data.pages[data.pages.length - 1]
+      if (!firstPage || !lastPage) return undefined
+      const itemsByCanonicalPath = new Map(
+        data.pages
+          .flatMap((page) => page.items)
+          .map((item) => [item.path, item] as const),
+      )
+      return {
+        ...firstPage,
+        items: [...itemsByCanonicalPath.values()],
+        has_more: lastPage.has_more,
+        next_cursor: lastPage.next_cursor ?? null,
+        next_offset: lastPage.next_offset,
+        truncated: lastPage.truncated,
+      }
+    },
+    // A failed continuation must remain stopped until the user explicitly
+    // retries. Automatic query retries would violate that contract.
+    retry: false,
+    staleTime: 5_000,
+  })
+
+  useEffect(() => {
+    const activeQueryKey = queryKeys.workspaceFiles(
+      sessionId ?? 'none',
+      normalizedPath,
+    )
+    return () => {
+      void queryClient.cancelQueries({ queryKey: activeQueryKey, exact: true })
+    }
+  }, [normalizedPath, queryClient, sessionId])
+
+  const continuationKey =
+    query.data?.next_cursor ?? query.data?.next_offset ?? null
+  const {
+    fetchNextPage,
+    hasNextPage,
+    isFetchNextPageError,
+    isFetchingNextPage,
+  } = query
+  useEffect(() => {
+    if (
+      options.autoLoadAll &&
+      hasNextPage &&
+      !isFetchingNextPage &&
+      !isFetchNextPageError
+    ) {
+      void fetchNextPage()
+    }
+  }, [
+    continuationKey,
+    fetchNextPage,
+    hasNextPage,
+    isFetchNextPageError,
+    isFetchingNextPage,
+    options.autoLoadAll,
+  ])
+
+  return query
+}
+
+export function useWorkspaceFileQuery(
+  sessionId: string | null,
+  path: string | null,
+) {
+  const api = useApiClient()
+  return useQuery({
+    queryKey: queryKeys.workspaceFile(sessionId ?? 'none', path ?? ''),
+    queryFn: ({ signal }) =>
+      api.getWorkspaceFile(sessionId ?? '', path ?? '', { signal }),
+    enabled: Boolean(sessionId && path),
+    staleTime: 10_000,
   })
 }
 
@@ -120,9 +283,9 @@ export function useBridgeConversationsQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.bridgeConversations,
-    queryFn: () => api.listBridgeConversations(),
+    queryFn: ({ signal }) => api.listBridgeConversations({ signal }),
     placeholderData: keepPreviousData,
-    refetchInterval: 10_000,
+    refetchInterval: pollingInterval(10_000),
     staleTime: 5_000,
   })
 }
@@ -134,9 +297,9 @@ export function useBridgeEventsQuery(filters: {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.bridgeEvents(filters.conversationId, filters.status),
-    queryFn: () => api.listBridgeEvents(filters),
+    queryFn: ({ signal }) => api.listBridgeEvents(filters, { signal }),
     placeholderData: keepPreviousData,
-    refetchInterval: 10_000,
+    refetchInterval: pollingInterval(10_000),
     staleTime: 5_000,
   })
 }
@@ -145,9 +308,9 @@ export function useSessionsQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.sessions,
-    queryFn: () => api.listSessions(),
+    queryFn: ({ signal }) => api.listSessions({ signal }),
     placeholderData: keepPreviousData,
-    refetchInterval: 5_000,
+    refetchInterval: pollingInterval(5_000),
     staleTime: 2_000,
   })
 }
@@ -156,9 +319,8 @@ export function useSessionQuery(sessionId: string | null) {
   const api = useApiClient()
   return useQuery({
     queryKey: sessionId ? queryKeys.session(sessionId) : ['session', 'none'],
-    queryFn: () => api.getSession(sessionId ?? ''),
+    queryFn: ({ signal }) => api.getSession(sessionId ?? '', { signal }),
     enabled: Boolean(sessionId),
-    placeholderData: keepPreviousData,
     staleTime: 5_000,
   })
 }
@@ -173,18 +335,18 @@ export function useSessionHistoryQuery(
     queryKey: sessionId
       ? queryKeys.sessionHistory(sessionId, runsLimit)
       : ['session-history', 'none', runsLimit],
-    queryFn: ({ pageParam }: { pageParam: number | null }) =>
+    queryFn: ({ pageParam, signal }) =>
       api.getSession(sessionId ?? '', {
         runsLimit,
         beforeSequenceNo: pageParam,
         includeMessage: true,
         includeInputParts: true,
+        signal,
       }),
     enabled: Boolean(sessionId),
     initialPageParam: null as number | null,
     getNextPageParam: (lastPage) =>
       lastPage.session.runs_next_before_sequence_no ?? undefined,
-    placeholderData: keepPreviousData,
     staleTime: 5_000,
   })
 }
@@ -193,9 +355,9 @@ export function useAgencyConfigQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.agencyConfig,
-    queryFn: () => api.getAgencyConfig(),
+    queryFn: ({ signal }) => api.getAgencyConfig({ signal }),
     placeholderData: keepPreviousData,
-    refetchInterval: 10_000,
+    refetchInterval: pollingInterval(10_000),
     staleTime: 5_000,
   })
 }
@@ -204,9 +366,9 @@ export function useAgencyStatusQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.agencyStatus,
-    queryFn: () => api.getAgencyStatus(),
+    queryFn: ({ signal }) => api.getAgencyStatus({ signal }),
     placeholderData: keepPreviousData,
-    refetchInterval: 5_000,
+    refetchInterval: pollingInterval(5_000),
     staleTime: 2_000,
   })
 }
@@ -215,9 +377,9 @@ export function useAgencyFiresQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.agencyFires,
-    queryFn: () => api.listAgencyFires(),
+    queryFn: ({ signal }) => api.listAgencyFires({ signal }),
     placeholderData: keepPreviousData,
-    refetchInterval: 5_000,
+    refetchInterval: pollingInterval(5_000),
     staleTime: 2_000,
   })
 }
@@ -265,9 +427,8 @@ export function useRunQuery(runId: string | null) {
   const api = useApiClient()
   return useQuery({
     queryKey: runId ? queryKeys.run(runId) : ['run', 'none'],
-    queryFn: () => api.getRun(runId ?? ''),
+    queryFn: ({ signal }) => api.getRun(runId ?? '', { signal }),
     enabled: Boolean(runId),
-    placeholderData: keepPreviousData,
     staleTime: 5_000,
   })
 }
@@ -276,9 +437,8 @@ export function useRunTraceQuery(runId: string | null) {
   const api = useApiClient()
   return useQuery({
     queryKey: runId ? queryKeys.runTrace(runId) : ['run-trace', 'none'],
-    queryFn: () => api.getRunTrace(runId ?? ''),
+    queryFn: ({ signal }) => api.getRunTrace(runId ?? '', { signal }),
     enabled: Boolean(runId),
-    placeholderData: keepPreviousData,
     staleTime: 10_000,
   })
 }
@@ -287,7 +447,7 @@ export function useProfilesQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.profiles,
-    queryFn: () => api.listProfiles(),
+    queryFn: ({ signal }) => api.listProfiles({ signal }),
     placeholderData: keepPreviousData,
     staleTime: 10_000,
   })
@@ -299,9 +459,8 @@ export function useProfileQuery(profileName: string | null) {
     queryKey: profileName
       ? queryKeys.profile(profileName)
       : ['profile', 'none'],
-    queryFn: () => api.getProfile(profileName ?? ''),
+    queryFn: ({ signal }) => api.getProfile(profileName ?? '', { signal }),
     enabled: Boolean(profileName),
-    placeholderData: keepPreviousData,
     staleTime: 10_000,
   })
 }
@@ -440,10 +599,10 @@ export function useWorkflowsQuery(filters: WorkflowListFilters = {}) {
   const key = stableFiltersKey(filters)
   return useQuery({
     queryKey: queryKeys.workflows(key),
-    queryFn: () => api.listWorkflows(filters),
+    queryFn: ({ signal }) => api.listWorkflows(filters, { signal }),
     placeholderData: keepPreviousData,
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: pollingInterval(15_000),
   })
 }
 
@@ -453,9 +612,8 @@ export function useWorkflowQuery(workflowId: string | null) {
     queryKey: workflowId
       ? queryKeys.workflow(workflowId)
       : ['workflow', 'none'],
-    queryFn: () => api.getWorkflow(workflowId ?? ''),
+    queryFn: ({ signal }) => api.getWorkflow(workflowId ?? '', { signal }),
     enabled: Boolean(workflowId),
-    placeholderData: keepPreviousData,
     staleTime: 10_000,
   })
 }
@@ -465,10 +623,10 @@ export function useWorkflowRunsQuery(filters: WorkflowRunListFilters = {}) {
   const key = stableFiltersKey(filters)
   return useQuery({
     queryKey: queryKeys.workflowRuns(key),
-    queryFn: () => api.listWorkflowRuns(filters),
+    queryFn: ({ signal }) => api.listWorkflowRuns(filters, { signal }),
     placeholderData: keepPreviousData,
     staleTime: 5_000,
-    refetchInterval: 5_000,
+    refetchInterval: pollingInterval(5_000),
   })
 }
 
@@ -478,11 +636,11 @@ export function useWorkflowRunQuery(workflowRunId: string | null) {
     queryKey: workflowRunId
       ? queryKeys.workflowRun(workflowRunId)
       : ['workflow-run', 'none'],
-    queryFn: () => api.getWorkflowRun(workflowRunId ?? ''),
+    queryFn: ({ signal }) =>
+      api.getWorkflowRun(workflowRunId ?? '', { signal }),
     enabled: Boolean(workflowRunId),
-    placeholderData: keepPreviousData,
     staleTime: 3_000,
-    refetchInterval: 5_000,
+    refetchInterval: pollingInterval(5_000),
   })
 }
 
@@ -492,11 +650,11 @@ export function useWorkflowEventsQuery(workflowRunId: string | null) {
     queryKey: workflowRunId
       ? queryKeys.workflowEvents(workflowRunId)
       : ['workflow-events', 'none'],
-    queryFn: () => api.listWorkflowEvents(workflowRunId ?? ''),
+    queryFn: ({ signal }) =>
+      api.listWorkflowEvents(workflowRunId ?? '', { signal }),
     enabled: Boolean(workflowRunId),
-    placeholderData: keepPreviousData,
     staleTime: 3_000,
-    refetchInterval: 5_000,
+    refetchInterval: pollingInterval(5_000),
   })
 }
 
@@ -626,10 +784,10 @@ export function useSchedulesQuery(filters: ScheduleListFilters = {}) {
   const key = stableFiltersKey(filters)
   return useQuery({
     queryKey: queryKeys.schedules(key),
-    queryFn: () => api.listSchedules(filters),
+    queryFn: ({ signal }) => api.listSchedules(filters, { signal }),
     placeholderData: keepPreviousData,
     staleTime: 10_000,
-    refetchInterval: 30_000,
+    refetchInterval: pollingInterval(30_000),
   })
 }
 
@@ -639,10 +797,10 @@ export function useScheduleQuery(scheduleId: string | null) {
     queryKey: scheduleId
       ? queryKeys.schedule(scheduleId)
       : ['schedule', 'none'],
-    queryFn: () => api.getSchedule(scheduleId ?? ''),
+    queryFn: ({ signal }) => api.getSchedule(scheduleId ?? '', { signal }),
     enabled: Boolean(scheduleId),
-    placeholderData: keepPreviousData,
     staleTime: 10_000,
+    refetchInterval: pollingInterval(30_000),
   })
 }
 
@@ -652,7 +810,8 @@ export function useScheduleFiresQuery(scheduleId: string | null) {
     queryKey: scheduleId
       ? queryKeys.scheduleFires(scheduleId)
       : ['schedule-fires', 'none'],
-    queryFn: () => api.listScheduleFires(scheduleId ?? ''),
+    queryFn: ({ signal }) =>
+      api.listScheduleFires(scheduleId ?? '', { signal }),
     enabled: Boolean(scheduleId),
     placeholderData: keepPreviousData,
     staleTime: 10_000,
@@ -743,7 +902,7 @@ export function useHeartbeatConfigQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.heartbeatConfig,
-    queryFn: () => api.getHeartbeatConfig(),
+    queryFn: ({ signal }) => api.getHeartbeatConfig({ signal }),
     staleTime: 10_000,
   })
 }
@@ -752,8 +911,8 @@ export function useHeartbeatStatusQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.heartbeatStatus,
-    queryFn: () => api.getHeartbeatStatus(),
-    refetchInterval: 15_000,
+    queryFn: ({ signal }) => api.getHeartbeatStatus({ signal }),
+    refetchInterval: pollingInterval(15_000),
     staleTime: 10_000,
   })
 }
@@ -762,7 +921,7 @@ export function useHeartbeatFiresQuery() {
   const api = useApiClient()
   return useQuery({
     queryKey: queryKeys.heartbeatFires,
-    queryFn: () => api.listHeartbeatFires(),
+    queryFn: ({ signal }) => api.listHeartbeatFires({ signal }),
     placeholderData: keepPreviousData,
     staleTime: 10_000,
   })

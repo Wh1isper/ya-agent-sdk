@@ -139,6 +139,7 @@ class ClawSettings(BaseSettings):
     database_pool_recycle_seconds: int = 3600
 
     workspace_provider_backend: Literal["local", "docker"] = "docker"
+    workspace_download_max_bytes: PositiveInt = 100 * 1024 * 1024
     workspace_provider_docker_image: str = _DEFAULT_WORKSPACE_DOCKER_IMAGE
     workspace_provider_docker_host_workspace_dir: Path | None = None
     workspace_provider_docker_uid: int | None = None

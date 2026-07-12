@@ -11,9 +11,15 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          react: ['react', 'react-dom'],
+          router: ['@tanstack/react-router'],
           query: ['@tanstack/react-query'],
-          editor: ['@monaco-editor/react'],
+          radix: [
+            '@radix-ui/react-dialog',
+            '@radix-ui/react-dropdown-menu',
+            '@radix-ui/react-tabs',
+          ],
+          forms: ['react-hook-form'],
+          icons: ['lucide-react'],
           markdown: ['react-markdown', 'remark-gfm'],
         },
       },
@@ -35,6 +41,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    maxWorkers: 4,
     setupFiles: './src/test/setup.ts',
   },
 })

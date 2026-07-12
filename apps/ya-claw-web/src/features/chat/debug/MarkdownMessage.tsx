@@ -2,11 +2,12 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { cn } from '../../../lib/utils'
+import { remarkNormalizeRouteHeadings } from '../markdownHeadings'
 
 export function MarkdownMessage({ content }: { content: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkNormalizeRouteHeadings]}
       components={{
         a: ({ className, ...props }) => (
           <a
@@ -40,7 +41,7 @@ export function MarkdownMessage({ content }: { content: string }) {
           </code>
         ),
         h1: ({ className, ...props }) => (
-          <h1
+          <h2
             className={cn(
               'mb-3 mt-5 text-xl font-semibold text-slate-950',
               className,
@@ -51,7 +52,7 @@ export function MarkdownMessage({ content }: { content: string }) {
         h2: ({ className, ...props }) => (
           <h2
             className={cn(
-              'mb-3 mt-5 text-lg font-semibold text-slate-950',
+              'mb-3 mt-5 text-xl font-semibold text-slate-950',
               className,
             )}
             {...props}
@@ -60,7 +61,34 @@ export function MarkdownMessage({ content }: { content: string }) {
         h3: ({ className, ...props }) => (
           <h3
             className={cn(
+              'mb-3 mt-5 text-lg font-semibold text-slate-950',
+              className,
+            )}
+            {...props}
+          />
+        ),
+        h4: ({ className, ...props }) => (
+          <h4
+            className={cn(
               'mb-2 mt-4 text-base font-semibold text-slate-950',
+              className,
+            )}
+            {...props}
+          />
+        ),
+        h5: ({ className, ...props }) => (
+          <h5
+            className={cn(
+              'mb-2 mt-4 text-sm font-semibold text-slate-950',
+              className,
+            )}
+            {...props}
+          />
+        ),
+        h6: ({ className, ...props }) => (
+          <h6
+            className={cn(
+              'mb-2 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-800',
               className,
             )}
             {...props}

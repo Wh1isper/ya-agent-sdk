@@ -1,3 +1,5 @@
+import { parseApiDate } from './date'
+
 const DATETIME_LOCAL_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
 
@@ -26,7 +28,7 @@ export function formatDateTime(
   options: Intl.DateTimeFormatOptions = {},
 ) {
   if (!value) return 'not scheduled'
-  const date = value instanceof Date ? value : new Date(value)
+  const date = parseApiDate(value)
   if (Number.isNaN(date.getTime())) return 'invalid date'
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
@@ -55,7 +57,7 @@ export function toZonedDatetimeLocalValue(
   timeZone = getBrowserTimeZone(),
 ) {
   if (!value) return ''
-  const date = new Date(value)
+  const date = parseApiDate(value)
   if (Number.isNaN(date.getTime())) return ''
   const parts = getDateTimeParts(date, timeZone)
   return `${padYear(parts.year)}-${pad(parts.month)}-${pad(parts.day)}T${pad(
@@ -118,16 +120,54 @@ function zonedDateTimePartsToUtcTimestamp(
     parts.minute,
     parts.second,
   )
-  let utcTimestamp = localTimestamp
-  for (let index = 0; index < 4; index += 1) {
-    const offset = getTimeZoneOffsetMs(new Date(utcTimestamp), timeZone)
-    const nextTimestamp = localTimestamp - offset
-    if (Math.abs(nextTimestamp - utcTimestamp) < 1) {
-      return nextTimestamp
-    }
-    utcTimestamp = nextTimestamp
+  const offsets = new Set<number>()
+  for (let hours = -36; hours <= 36; hours += 6) {
+    offsets.add(
+      getTimeZoneOffsetMs(
+        new Date(localTimestamp + hours * 60 * 60 * 1000),
+        timeZone,
+      ),
+    )
   }
-  return utcTimestamp
+
+  const candidates = [...offsets]
+    .map((offset) => localTimestamp - offset)
+    // A local wall-clock time in a DST gap has no instant that formats back to
+    // all of its original fields. A fall-back overlap has two such instants.
+    .filter((timestamp) =>
+      dateTimePartsEqual(
+        getDateTimeParts(new Date(timestamp), timeZone),
+        parts,
+      ),
+    )
+    .sort((left, right) => left - right)
+
+  if (candidates.length === 0) {
+    throw new Error(
+      `The local time ${formatDatetimeLocalParts(parts)} does not exist in ${timeZone} because of a timezone transition. Choose another time.`,
+    )
+  }
+
+  // Deterministic fall-back policy: when a wall-clock time occurs twice, use
+  // the earlier instant (the pre-transition offset).
+  return candidates[0]
+}
+
+function dateTimePartsEqual(left: DateTimeParts, right: DateTimeParts) {
+  return (
+    left.year === right.year &&
+    left.month === right.month &&
+    left.day === right.day &&
+    left.hour === right.hour &&
+    left.minute === right.minute &&
+    left.second === right.second
+  )
+}
+
+function formatDatetimeLocalParts(parts: DateTimeParts) {
+  return `${padYear(parts.year)}-${pad(parts.month)}-${pad(parts.day)} ${pad(
+    parts.hour,
+  )}:${pad(parts.minute)}:${pad(parts.second)}`
 }
 
 function getTimeZoneOffsetMs(date: Date, timeZone: string) {

@@ -8,16 +8,44 @@ import {
 } from '../../api/hooks'
 import { EmptyState } from '../../components/EmptyState'
 import { StatusBadge } from '../../components/StatusBadge'
+import { QueryError, QuerySkeleton } from '../../components/ui'
+import { parseApiDate } from '../../lib/date'
 
 export function HeartbeatPage() {
   const config = useHeartbeatConfigQuery()
   const status = useHeartbeatStatusQuery()
   const fires = useHeartbeatFiresQuery()
   const triggerHeartbeat = useTriggerHeartbeatMutation()
+  const queries = [config, status, fires]
+
+  if (queries.some((query) => query.isError)) {
+    const failed = queries.find((query) => query.isError)
+    return (
+      <div className="p-4 sm:p-6">
+        <QueryError
+          title="Heartbeat could not be loaded"
+          error={failed?.error}
+          onRetry={() =>
+            void Promise.all(queries.map((query) => query.refetch()))
+          }
+        />
+      </div>
+    )
+  }
+
+  if (queries.some((query) => query.isLoading && query.data === undefined)) {
+    return (
+      <div className="p-4 sm:p-6">
+        <QuerySkeleton rows={5} />
+      </div>
+    )
+  }
+
+  const heartbeatEnabled = config.data?.enabled === true
 
   return (
-    <div className="space-y-6 overflow-auto p-6">
-      <div className="flex items-center justify-between gap-4">
+    <div className="space-y-6 overflow-auto p-4 sm:p-6">
+      <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-medium text-blue-600">Runtime timer</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950">
@@ -28,17 +56,31 @@ export function HeartbeatPage() {
             runs.
           </p>
         </div>
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-          onClick={() => triggerHeartbeat.mutate()}
-        >
-          <Play className="h-4 w-4" />
-          Trigger
-        </button>
+        <div className="text-right">
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            disabled={!heartbeatEnabled || triggerHeartbeat.isPending}
+            title={
+              heartbeatEnabled
+                ? 'Trigger a heartbeat now'
+                : 'Heartbeat is disabled in runtime configuration'
+            }
+            onClick={() => triggerHeartbeat.mutate()}
+          >
+            <Play className="h-4 w-4" />
+            {triggerHeartbeat.isPending ? 'Triggering' : 'Trigger'}
+          </button>
+          {!heartbeatEnabled ? (
+            <p className="mt-2 max-w-xs text-xs text-slate-500">
+              Enable heartbeat in runtime configuration before triggering a
+              fire.
+            </p>
+          ) : null}
+        </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <Metric
           icon={RadioTower}
           label="Enabled"
@@ -61,12 +103,12 @@ export function HeartbeatPage() {
         />
       </div>
 
-      <section className="grid grid-cols-2 gap-4">
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-sm font-semibold text-slate-950">
             Effective config
           </h2>
-          <dl className="mt-4 grid grid-cols-2 gap-4 text-sm">
+          <dl className="mt-4 grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
             <Detail
               label="Profile"
               value={`${config.data?.profile_name ?? 'unknown'} (${formatProfileSource(config.data?.profile_source)})`}
@@ -117,7 +159,23 @@ export function HeartbeatPage() {
           ) : (
             <EmptyState
               title="No heartbeat fires"
-              description="Heartbeat has not fired yet."
+              description={
+                heartbeatEnabled
+                  ? 'Heartbeat has not fired yet. Trigger it now to verify the runtime timer.'
+                  : 'Heartbeat is disabled. Enable it in runtime configuration to start firing.'
+              }
+              action={
+                heartbeatEnabled ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+                    disabled={triggerHeartbeat.isPending}
+                    onClick={() => triggerHeartbeat.mutate()}
+                  >
+                    <Play className="h-4 w-4" /> Trigger now
+                  </button>
+                ) : null
+              }
             />
           )}
         </div>
@@ -129,7 +187,7 @@ export function HeartbeatPage() {
           {(fires.data?.fires ?? []).map((fire) => (
             <div
               key={fire.id}
-              className="grid grid-cols-[1fr_120px_160px_1fr] items-center gap-3 rounded-xl border border-slate-100 p-3 text-sm"
+              className="grid grid-cols-1 gap-2 rounded-xl border border-slate-100 p-3 text-sm sm:grid-cols-2 xl:grid-cols-[1fr_120px_160px_1fr] xl:items-center xl:gap-3"
             >
               <span className="mono text-xs text-slate-500">
                 {fire.id.slice(0, 12)}
@@ -148,7 +206,23 @@ export function HeartbeatPage() {
           {fires.data?.fires.length === 0 ? (
             <EmptyState
               title="No fires"
-              description="No heartbeat history yet."
+              description={
+                heartbeatEnabled
+                  ? 'No heartbeat history yet. Trigger a fire to verify the automation.'
+                  : 'Heartbeat is disabled in runtime configuration.'
+              }
+              action={
+                heartbeatEnabled ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+                    disabled={triggerHeartbeat.isPending}
+                    onClick={() => triggerHeartbeat.mutate()}
+                  >
+                    <Play className="h-4 w-4" /> Trigger now
+                  </button>
+                ) : null
+              }
             />
           ) : null}
         </div>
@@ -189,7 +263,7 @@ function Detail({
   wide?: boolean
 }) {
   return (
-    <div className={wide ? 'col-span-2' : ''}>
+    <div className={wide ? 'sm:col-span-2' : ''}>
       <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
         {label}
       </dt>
@@ -200,7 +274,7 @@ function Detail({
 
 function formatDate(value?: string | null) {
   if (!value) return 'not scheduled'
-  return new Date(value).toLocaleString()
+  return parseApiDate(value).toLocaleString()
 }
 
 function mapFireStatus(status: string, runStatus?: string | null) {

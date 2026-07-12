@@ -1,7 +1,8 @@
 import { BrainCircuit, RefreshCcw, RotateCcw } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Group, Panel } from 'react-resizable-panels'
 
+import { navigateApp } from '../../app/navigation'
 import {
   useAgencyConfigQuery,
   useAgencyFiresQuery,
@@ -11,8 +12,12 @@ import {
   useRunTraceQuery,
   useSessionHistoryQuery,
 } from '../../api/hooks'
+import { QueryError, QuerySkeleton } from '../../components/ui'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import type { StreamStatus } from '../../lib/status'
+import { buildAgencyPath } from '../../lib/urlState'
 import { formatShortId } from '../../lib/utils'
+import { useLayoutStore } from '../../stores/layoutStore'
 import {
   buildTimelineFromRuns,
   reduceAguiEvent,
@@ -34,11 +39,21 @@ export function AgencyPage() {
   const status = useAgencyStatusQuery()
   const fires = useAgencyFiresQuery()
   const mutations = useAgencyMutations()
+  const routeSessionId = useLayoutStore(
+    (state) => state.selectedAgencySessionId,
+  )
+  const routeRunId = useLayoutStore((state) =>
+    state.route === 'agency' ? state.selectedRunId : null,
+  )
   const [fireSearch, setFireSearch] = useState('')
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(routeRunId)
 
-  const agencySessionId =
+  const currentAgencySessionId =
     status.data?.agency_session_id ?? config.data?.agency_session_id ?? null
+  const agencySessionId = routeSessionId ?? currentAgencySessionId
+  const viewingHistoricalSession = Boolean(
+    routeSessionId && routeSessionId !== currentAgencySessionId,
+  )
   const sessionHistory = useSessionHistoryQuery(agencySessionId, {
     runsLimit: 6,
   })
@@ -63,8 +78,13 @@ export function AgencyPage() {
   )
 
   useEffect(() => {
-    const preferredRunId =
-      status.data?.active_run_id ?? status.data?.latest_run_id ?? null
+    setSelectedRunId(routeRunId)
+  }, [agencySessionId, routeRunId])
+
+  useEffect(() => {
+    const preferredRunId = viewingHistoricalSession
+      ? null
+      : (status.data?.active_run_id ?? status.data?.latest_run_id ?? null)
     if (preferredRunId && !selectedRunId) {
       setSelectedRunId(preferredRunId)
       return
@@ -77,19 +97,38 @@ export function AgencyPage() {
     selectedRunId,
     status.data?.active_run_id,
     status.data?.latest_run_id,
+    viewingHistoricalSession,
+  ])
+
+  const attemptedLatestRunRef = useRef<string | null>(null)
+  const refetchSessionHistory = sessionHistory.refetch
+  useEffect(() => {
+    const latestRunId = viewingHistoricalSession
+      ? null
+      : (status.data?.latest_run_id ?? status.data?.active_run_id ?? null)
+    if (!latestRunId || agencyRuns.some((run) => run.id === latestRunId)) {
+      attemptedLatestRunRef.current = null
+      return
+    }
+    if (attemptedLatestRunRef.current === latestRunId) return
+    attemptedLatestRunRef.current = latestRunId
+    void refetchSessionHistory()
+  }, [
+    agencyRuns,
+    refetchSessionHistory,
+    status.data?.active_run_id,
+    status.data?.latest_run_id,
+    viewingHistoricalSession,
   ])
 
   useEffect(() => {
-    const latestRunId = status.data?.latest_run_id ?? status.data?.active_run_id
-    if (latestRunId && !agencyRuns.some((run) => run.id === latestRunId)) {
-      void sessionHistory.refetch()
+    const runSessionId = selectedRunDetail?.run.session_id
+    if (!selectedRunId || !runSessionId || runSessionId === agencySessionId) {
+      return
     }
-  }, [
-    agencyRuns,
-    sessionHistory,
-    status.data?.active_run_id,
-    status.data?.latest_run_id,
-  ])
+    const path = buildAgencyPath(runSessionId, selectedRunId)
+    if (window.location.pathname !== path) navigateApp(path, true)
+  }, [agencySessionId, selectedRunDetail, selectedRunId])
 
   const selectedRun = useMemo(() => {
     const detailRun = selectedRunDetail?.run
@@ -102,10 +141,12 @@ export function AgencyPage() {
     return agencyRuns.find((run) => run.id === selectedRunId) ?? null
   }, [agencyRuns, selectedRunDetail, selectedRunId])
 
+  const selectedRunSessionId =
+    selectedRunDetail?.run.session_id ?? agencySessionId
   const live = useRunEventStream(
     selectedRunId,
     selectedRun?.status ?? null,
-    agencySessionId,
+    selectedRunSessionId,
   )
   const liveEvents = useMemo(
     () => (selectedRunId ? live.events : []),
@@ -149,19 +190,60 @@ export function AgencyPage() {
     Boolean(selectedRunId && selectedRunQuery.isLoading)
   const selectedRunArtifactsPruned = Boolean(
     selectedRun &&
-      selectedRun.status !== 'queued' &&
-      selectedRun.status !== 'running' &&
-      selectedRunDetail?.run.has_message === false &&
-      replayEvents.length === 0,
+    selectedRun.status !== 'queued' &&
+    selectedRun.status !== 'running' &&
+    selectedRunDetail?.run.has_message === false &&
+    replayEvents.length === 0,
   )
+  const foundationQueries = [config, status, fires]
+  const queryStates = [
+    ...foundationQueries,
+    sessionHistory,
+    selectedRunQuery,
+    selectedRunTrace,
+  ]
+  const fatalFoundationQuery = foundationQueries.find(
+    (query) => query.isError && query.data === undefined,
+  )
+  const nonBlockingFailedQuery = queryStates.find(
+    (query) => query.isError && query !== fatalFoundationQuery,
+  )
+  const foundationLoading = foundationQueries.some(
+    (query) => query.isLoading && query.data === undefined,
+  )
+
+  async function refetchAgencyData() {
+    const requests: Array<Promise<unknown>> = [
+      config.refetch(),
+      status.refetch(),
+      fires.refetch(),
+    ]
+    if (agencySessionId) requests.push(sessionHistory.refetch())
+    if (selectedRunId) {
+      requests.push(selectedRunQuery.refetch(), selectedRunTrace.refetch())
+    }
+    await Promise.all(requests)
+  }
+
+  function selectAgencyRun(
+    runId: string | null,
+    sessionId: string | null = agencySessionId,
+  ) {
+    setSelectedRunId(runId)
+    if (!sessionId) return
+    const path = buildAgencyPath(sessionId, runId)
+    if (window.location.pathname !== path) navigateApp(path)
+  }
+
+  function selectAgencyFireRun(sessionId: string | null, runId: string | null) {
+    selectAgencyRun(runId, sessionId ?? agencySessionId)
+  }
+
   async function clearAgency() {
     if (mutations.clear.isPending) return
-    const confirmed = window.confirm(
-      'Clear agency state and start a fresh singleton session on the next agency run?',
-    )
-    if (!confirmed) return
     const response = await mutations.clear.mutateAsync()
     setSelectedRunId(null)
+    navigateApp('/automation/agency', true)
     if (response.new_agency_session_id) {
       await sessionHistory.refetch()
     }
@@ -171,10 +253,10 @@ export function AgencyPage() {
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-slate-100">
       <div className="flex shrink-0 flex-col gap-3 border-b border-slate-200 bg-white px-3 py-3 sm:h-16 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-0">
         <div className="flex min-w-0 items-center gap-2 text-sm text-slate-600 sm:gap-3">
-          <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 font-medium text-slate-700">
-            <BrainCircuit className="h-3.5 w-3.5" />
-            Agency
-          </span>
+          <h1 className="inline-flex shrink-0 items-center gap-2 text-base font-semibold text-slate-950">
+            <BrainCircuit className="h-4 w-4" />
+            Proactive agent
+          </h1>
           {selectedRun ? (
             <span className="mono truncate text-xs text-slate-500">
               Run {selectedRun.sequence_no} ·{' '}
@@ -191,29 +273,29 @@ export function AgencyPage() {
             status={streamStatus}
             eventCount={effectiveLiveEvents.length}
           />
-          <button
-            type="button"
-            className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 py-2 font-medium text-rose-700 shadow-sm transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-            onClick={() => void clearAgency()}
-            disabled={mutations.clear.isPending}
-            title="Clear agency state and start fresh on the next agency run."
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            {mutations.clear.isPending ? 'Clearing' : 'Clear agency'}
-          </button>
+          <ConfirmDialog
+            title="Clear proactive agent state?"
+            description="This clears the current singleton agency state. YA Claw will start a fresh agency session on the next proactive run."
+            confirmLabel="Clear agency"
+            danger
+            pending={mutations.clear.isPending}
+            onConfirm={clearAgency}
+            trigger={
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 py-2 font-medium text-rose-700 shadow-sm transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={mutations.clear.isPending}
+                title="Clear agency state and start fresh on the next agency run."
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {mutations.clear.isPending ? 'Clearing' : 'Clear agency'}
+              </button>
+            }
+          />
           <button
             type="button"
             className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
-            onClick={() => {
-              void Promise.all([
-                config.refetch(),
-                status.refetch(),
-                fires.refetch(),
-                sessionHistory.refetch(),
-                selectedRunId ? selectedRunQuery.refetch() : Promise.resolve(),
-                selectedRunId ? selectedRunTrace.refetch() : Promise.resolve(),
-              ])
-            }}
+            onClick={() => void refetchAgencyData()}
           >
             <RefreshCcw className="h-3.5 w-3.5" />
             Refresh
@@ -221,32 +303,145 @@ export function AgencyPage() {
         </div>
       </div>
 
-      <Group orientation="horizontal" className="hidden min-h-0 flex-1 lg:flex">
-        <Panel defaultSize="26%" minSize="260px" maxSize="36%">
-          <AgencyFireList
-            fires={fires.data?.fires ?? []}
-            loading={fires.isLoading}
-            search={fireSearch}
-            selectedRunId={selectedRunId}
-            onSearchChange={setFireSearch}
-            onSelectRun={setSelectedRunId}
+      {viewingHistoricalSession ? (
+        <div
+          className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 sm:px-5"
+          role="status"
+        >
+          <span>
+            Viewing historical proactive session{' '}
+            <span className="mono font-semibold">
+              {formatShortId(agencySessionId, 12)}
+            </span>
+          </span>
+          <button
+            type="button"
+            className="font-semibold underline underline-offset-2"
+            onClick={() => navigateApp('/automation/agency', true)}
+          >
+            Return to current session
+          </button>
+        </div>
+      ) : null}
+
+      {fatalFoundationQuery ? (
+        <div className="shrink-0 p-3 sm:p-4">
+          <QueryError
+            title="Agency data could not be loaded"
+            error={fatalFoundationQuery.error}
+            onRetry={() => void refetchAgencyData()}
           />
-        </Panel>
-        <ResizeHandle />
-        <Panel defaultSize="74%" minSize="64%">
-          <Group orientation="horizontal" className="h-full min-h-0">
-            <Panel defaultSize="68%" minSize="44%">
-              <div className="flex h-full min-h-0 flex-col overflow-hidden">
-                <RunStrip
-                  runs={runs}
+        </div>
+      ) : null}
+      {!fatalFoundationQuery && nonBlockingFailedQuery ? (
+        <div className="shrink-0 p-3 sm:px-4 sm:py-2">
+          <QueryError
+            compact
+            title="Some agency details could not be loaded"
+            error={nonBlockingFailedQuery.error}
+            onRetry={() => void refetchAgencyData()}
+          />
+        </div>
+      ) : null}
+      {foundationLoading ? (
+        <div className="shrink-0 p-3 sm:p-4">
+          <QuerySkeleton rows={2} />
+        </div>
+      ) : null}
+
+      {!fatalFoundationQuery && !foundationLoading ? (
+        <>
+          <div
+            className="hidden min-h-0 flex-1 lg:block"
+            data-testid="agency-desktop-layout"
+          >
+            <Group orientation="horizontal" className="h-full min-h-0">
+              <Panel defaultSize="26%" minSize="260px" maxSize="36%">
+                <AgencyFireList
+                  fires={fires.data?.fires ?? []}
+                  loading={fires.isLoading}
+                  search={fireSearch}
                   selectedRunId={selectedRunId}
-                  history={history}
-                  loadingOlder={sessionHistory.isFetchingNextPage}
-                  onLoadOlder={() => void sessionHistory.fetchNextPage()}
-                  onSelectRun={setSelectedRunId}
+                  onSearchChange={setFireSearch}
+                  onSelectRun={selectAgencyFireRun}
                 />
-                <AgencyStatusBar config={config.data} status={status.data} />
-                <AgencyConfigBar config={config.data} />
+              </Panel>
+              <ResizeHandle />
+              <Panel defaultSize="74%" minSize="64%">
+                <Group orientation="horizontal" className="h-full min-h-0">
+                  <Panel defaultSize="68%" minSize="44%">
+                    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+                      <RunStrip
+                        runs={runs}
+                        selectedRunId={selectedRunId}
+                        history={history}
+                        loadingOlder={sessionHistory.isFetchingNextPage}
+                        onLoadOlder={() => void sessionHistory.fetchNextPage()}
+                        onSelectRun={selectAgencyRun}
+                      />
+                      <AgencyStatusBar
+                        config={config.data}
+                        status={status.data}
+                      />
+                      <AgencyConfigBar config={config.data} />
+                      <TimelinePanel
+                        timeline={timeline}
+                        loading={contentLoading}
+                        artifactsPruned={selectedRunArtifactsPruned}
+                        history={history}
+                        loadingOlder={sessionHistory.isFetchingNextPage}
+                        onLoadOlder={() => sessionHistory.fetchNextPage()}
+                        historyLoadingDisabled={Boolean(selectedRunId)}
+                      />
+                    </div>
+                  </Panel>
+                  <ResizeHandle />
+                  <Panel defaultSize="32%" minSize="280px">
+                    <AgencyInspectorPanel
+                      config={config.data}
+                      status={status.data}
+                      fires={fires.data?.fires ?? []}
+                      run={selectedRun}
+                      detail={selectedRunDetail}
+                      trace={selectedTrace}
+                      traceLoading={
+                        Boolean(selectedRunId) &&
+                        selectedRunTrace.isFetching &&
+                        !selectedTrace
+                      }
+                    />
+                  </Panel>
+                </Group>
+              </Panel>
+            </Group>
+          </div>
+
+          <div
+            className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden"
+            data-testid="agency-mobile-layout"
+          >
+            <div className="h-[min(14rem,38%)] min-h-40 shrink-0">
+              <AgencyFireList
+                fires={fires.data?.fires ?? []}
+                loading={fires.isLoading}
+                search={fireSearch}
+                selectedRunId={selectedRunId}
+                onSearchChange={setFireSearch}
+                onSelectRun={selectAgencyFireRun}
+              />
+            </div>
+            <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              <RunStrip
+                runs={runs}
+                selectedRunId={selectedRunId}
+                history={history}
+                loadingOlder={sessionHistory.isFetchingNextPage}
+                onLoadOlder={() => void sessionHistory.fetchNextPage()}
+                onSelectRun={selectAgencyRun}
+              />
+              <AgencyStatusBar config={config.data} status={status.data} />
+              <AgencyConfigBar config={config.data} />
+              <div className="h-80 min-h-64">
                 <TimelinePanel
                   timeline={timeline}
                   loading={contentLoading}
@@ -257,75 +452,25 @@ export function AgencyPage() {
                   historyLoadingDisabled={Boolean(selectedRunId)}
                 />
               </div>
-            </Panel>
-            <ResizeHandle />
-            <Panel defaultSize="32%" minSize="280px">
-              <AgencyInspectorPanel
-                config={config.data}
-                status={status.data}
-                fires={fires.data?.fires ?? []}
-                run={selectedRun}
-                detail={selectedRunDetail}
-                trace={selectedTrace}
-                traceLoading={
-                  Boolean(selectedRunId) &&
-                  selectedRunTrace.isFetching &&
-                  !selectedTrace
-                }
-              />
-            </Panel>
-          </Group>
-        </Panel>
-      </Group>
-
-      <div className="grid min-h-0 flex-1 grid-rows-[14rem_minmax(0,1fr)] overflow-hidden lg:hidden">
-        <AgencyFireList
-          fires={fires.data?.fires ?? []}
-          loading={fires.isLoading}
-          search={fireSearch}
-          selectedRunId={selectedRunId}
-          onSearchChange={setFireSearch}
-          onSelectRun={setSelectedRunId}
-        />
-        <div className="min-h-0 overflow-hidden">
-          <div className="flex h-full min-h-0 flex-col overflow-hidden">
-            <RunStrip
-              runs={runs}
-              selectedRunId={selectedRunId}
-              history={history}
-              loadingOlder={sessionHistory.isFetchingNextPage}
-              onLoadOlder={() => void sessionHistory.fetchNextPage()}
-              onSelectRun={setSelectedRunId}
-            />
-            <AgencyStatusBar config={config.data} status={status.data} />
-            <AgencyConfigBar config={config.data} />
-            <TimelinePanel
-              timeline={timeline}
-              loading={contentLoading}
-              artifactsPruned={selectedRunArtifactsPruned}
-              history={history}
-              loadingOlder={sessionHistory.isFetchingNextPage}
-              onLoadOlder={() => sessionHistory.fetchNextPage()}
-              historyLoadingDisabled={Boolean(selectedRunId)}
-            />
-            <div className="min-h-[22rem] shrink-0 border-t border-slate-200">
-              <AgencyInspectorPanel
-                config={config.data}
-                status={status.data}
-                fires={fires.data?.fires ?? []}
-                run={selectedRun}
-                detail={selectedRunDetail}
-                trace={selectedTrace}
-                traceLoading={
-                  Boolean(selectedRunId) &&
-                  selectedRunTrace.isFetching &&
-                  !selectedTrace
-                }
-              />
+              <div className="h-[28rem] min-h-[22rem] border-t border-slate-200">
+                <AgencyInspectorPanel
+                  config={config.data}
+                  status={status.data}
+                  fires={fires.data?.fires ?? []}
+                  run={selectedRun}
+                  detail={selectedRunDetail}
+                  trace={selectedTrace}
+                  traceLoading={
+                    Boolean(selectedRunId) &&
+                    selectedRunTrace.isFetching &&
+                    !selectedTrace
+                  }
+                />
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        </>
+      ) : null}
     </div>
   )
 }

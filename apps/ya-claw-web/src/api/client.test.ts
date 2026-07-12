@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ClawApiClient } from './client'
+import { ApiError, ClawApiClient } from './client'
 
-function mockJsonResponse(body: unknown) {
-  return Promise.resolve({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve(body),
-  } as Response)
+function mockJsonResponse(body: unknown, status = 200) {
+  return Promise.resolve(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  )
 }
 
 describe('ClawApiClient schedule and workflow query serialization', () => {
@@ -75,5 +76,156 @@ describe('ClawApiClient schedule and workflow query serialization', () => {
       'research',
     ])
     expect(workflowsUrl.searchParams.get('limit')).toBe('10')
+  })
+
+  it('serializes workspace directory pagination without exposing host paths', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      mockJsonResponse({
+        session_id: 'session-1',
+        path: '/workspace/reports',
+        items: [],
+        limit: 25,
+        offset: 50,
+        has_more: false,
+        next_cursor: null,
+        next_offset: null,
+        truncated: false,
+      }),
+    )
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'token',
+    })
+
+    await api.listWorkspaceFiles('session/1', {
+      path: '/workspace/reports',
+      includeHidden: true,
+      limit: 25,
+      cursor: 'cursor-token',
+    })
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
+    expect(url.pathname).toBe('/api/v1/sessions/session%2F1/workspace/files')
+    expect(url.searchParams.get('path')).toBe('/workspace/reports')
+    expect(url.searchParams.get('include_hidden')).toBe('true')
+    expect(url.searchParams.get('limit')).toBe('25')
+    expect(url.searchParams.get('cursor')).toBe('cursor-token')
+    expect(url.searchParams.has('offset')).toBe(false)
+  })
+
+  it('preserves text error details and reports a useful status message', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('token rejected', { status: 401 }),
+    )
+    const onUnauthorized = vi.fn()
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'bad-token',
+      connectionScope: 'scope-1',
+      onUnauthorized,
+    })
+
+    await expect(api.clawInfo()).rejects.toMatchObject({
+      status: 401,
+      detail: 'token rejected',
+      message: 'The API token is invalid or expired',
+    } satisfies Partial<ApiError>)
+    expect(onUnauthorized).toHaveBeenCalledWith('scope-1')
+  })
+
+  it('does not invalidate the connection for ordinary 403 responses', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('forbidden', { status: 403 }),
+    )
+    const onUnauthorized = vi.fn()
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'limited-token',
+      connectionScope: 'scope-1',
+      onUnauthorized,
+    })
+
+    await expect(api.clawInfo()).rejects.toMatchObject({ status: 403 })
+    expect(onUnauthorized).not.toHaveBeenCalled()
+  })
+
+  it('uses the same 401-only invalidation rule for downloads', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
+      .mockResolvedValueOnce(new Response('expired', { status: 401 }))
+    const onUnauthorized = vi.fn()
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'token',
+      connectionScope: 'download-scope',
+      onUnauthorized,
+    })
+
+    await expect(
+      api.downloadWorkspaceFile('session', 'report.txt'),
+    ).rejects.toMatchObject({ status: 403 })
+    expect(onUnauthorized).not.toHaveBeenCalled()
+
+    await expect(
+      api.downloadWorkspaceFile('session', 'report.txt'),
+    ).rejects.toMatchObject({ status: 401 })
+    expect(onUnauthorized).toHaveBeenCalledOnce()
+    expect(onUnauthorized).toHaveBeenCalledWith('download-scope')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards query cancellation signals so abort stops the fetch', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'))
+          })
+        }),
+    )
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'token',
+    })
+
+    const request = api.listSessions({ signal: controller.signal })
+    controller.abort()
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal)
+  })
+
+  it('encodes session and run identifiers as path segments', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(() => mockJsonResponse({}))
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'token',
+    })
+
+    await api.getSession('session/with?reserved')
+    await api.getRun('run/#reserved')
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/sessions/session%2Fwith%3Freserved?',
+    )
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
+      '/runs/run%2F%23reserved?',
+    )
+  })
+
+  it('supports empty successful responses', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, { status: 204 }),
+    )
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'token',
+    })
+
+    await expect(api.deleteProfile('default')).resolves.toBeUndefined()
   })
 })

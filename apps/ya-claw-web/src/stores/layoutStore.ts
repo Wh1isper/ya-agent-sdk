@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 import {
+  buildAgencyPath,
   buildChatPath,
   buildProfilePath,
   buildRoutePath,
@@ -14,11 +15,13 @@ export type AppRoute =
   | 'overview'
   | 'chat'
   | 'debug'
+  | 'automation'
   | 'agency'
   | 'schedules'
   | 'workflows'
   | 'bridges'
   | 'heartbeat'
+  | 'workspace'
   | 'profiles'
   | 'settings'
 
@@ -33,15 +36,38 @@ export type LayoutState = {
   selectedAgencySessionId: string | null
   selectedProfileName: string | null
   inspectorTab: string
+  advancedMode: boolean
+  railCollapsed: boolean
   setRoute: (route: AppRoute) => void
   selectSession: (sessionId: string | null) => void
   selectRun: (runId: string | null) => void
-  selectProfile: (profileName: string | null) => void
+  selectProfile: (
+    profileName: string | null,
+    options?: { replace?: boolean },
+  ) => void
   setInspectorTab: (tab: string) => void
+  setAdvancedMode: (enabled: boolean) => void
+  setRailCollapsed: (collapsed: boolean) => void
+  resetConnectionSelection: () => void
   syncFromUrl: () => void
 }
 
 const initialUrlSelection = parseUrlSelection()
+
+function persistedLayoutPreferences(persistedState: unknown) {
+  const persisted = persistedState as Record<string, unknown> | null
+  return {
+    ...(typeof persisted?.inspectorTab === 'string'
+      ? { inspectorTab: persisted.inspectorTab }
+      : {}),
+    ...(typeof persisted?.advancedMode === 'boolean'
+      ? { advancedMode: persisted.advancedMode }
+      : {}),
+    ...(typeof persisted?.railCollapsed === 'boolean'
+      ? { railCollapsed: persisted.railCollapsed }
+      : {}),
+  }
+}
 
 export const useLayoutStore = create<LayoutState>()(
   persist(
@@ -71,6 +97,8 @@ export const useLayoutStore = create<LayoutState>()(
           : null,
       selectedProfileName: initialUrlSelection.selectedProfileName,
       inspectorTab: 'summary',
+      advancedMode: false,
+      railCollapsed: false,
       setRoute: (route) => {
         const state = get()
         const selectedSessionId =
@@ -90,19 +118,15 @@ export const useLayoutStore = create<LayoutState>()(
         pushBrowserPath(
           route === 'chat' || route === 'debug'
             ? buildChatPath(selectedSessionId, selectedRunId, route)
-            : route === 'agency' && selectedSessionId
-              ? `/agency/sessions/${encodeURIComponent(selectedSessionId)}`
+            : route === 'agency'
+              ? buildAgencyPath(selectedSessionId)
               : buildRoutePath(route),
         )
         set({ route, selectedSessionId, selectedRunId })
       },
       selectSession: (selectedSessionId) => {
         if (get().route === 'agency') {
-          pushBrowserPath(
-            selectedSessionId
-              ? `/agency/sessions/${encodeURIComponent(selectedSessionId)}`
-              : '/agency',
-          )
+          pushBrowserPath(buildAgencyPath(selectedSessionId))
           set({
             selectedSessionId,
             selectedRunId: null,
@@ -113,40 +137,61 @@ export const useLayoutStore = create<LayoutState>()(
         }
         const route = get().route === 'debug' ? 'debug' : 'chat'
         pushBrowserPath(buildChatPath(selectedSessionId, null, route))
-        set((state) => {
-          const selectedRunId = selectedSessionId ? state.selectedRunId : null
-          return route === 'debug'
+        set(
+          route === 'debug'
             ? {
                 selectedSessionId,
-                selectedRunId,
+                selectedRunId: null,
                 selectedDebugSessionId: selectedSessionId,
-                selectedDebugRunId: selectedRunId,
+                selectedDebugRunId: null,
                 route,
               }
             : {
                 selectedSessionId,
-                selectedRunId,
+                selectedRunId: null,
                 selectedChatSessionId: selectedSessionId,
-                selectedChatRunId: selectedRunId,
+                selectedChatRunId: null,
                 route,
-              }
-        })
+              },
+        )
       },
       selectRun: (selectedRunId) => {
         const route = get().route === 'debug' ? 'debug' : 'chat'
         const selectedSessionId = get().selectedSessionId
-        pushBrowserPath(buildChatPath(selectedSessionId, selectedRunId, route))
+        replaceBrowserPath(
+          buildChatPath(selectedSessionId, selectedRunId, route),
+        )
         set(
           route === 'debug'
             ? { selectedRunId, selectedDebugRunId: selectedRunId, route }
             : { selectedRunId, selectedChatRunId: selectedRunId, route },
         )
       },
-      selectProfile: (selectedProfileName) => {
-        pushBrowserPath(buildProfilePath(selectedProfileName))
-        set({ selectedProfileName, route: 'profiles' })
+      selectProfile: (selectedProfileName, options) => {
+        const path = buildProfilePath(selectedProfileName)
+        if (options?.replace) {
+          replaceBrowserPath(path)
+        } else {
+          pushBrowserPath(path)
+        }
       },
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),
+      setAdvancedMode: (advancedMode) => set({ advancedMode }),
+      setRailCollapsed: (railCollapsed) => set({ railCollapsed }),
+      resetConnectionSelection: () => {
+        replaceBrowserPath(buildRoutePath('overview'), true)
+        set({
+          route: 'overview',
+          selectedSessionId: null,
+          selectedRunId: null,
+          selectedChatSessionId: null,
+          selectedChatRunId: null,
+          selectedDebugSessionId: null,
+          selectedDebugRunId: null,
+          selectedAgencySessionId: null,
+          selectedProfileName: null,
+        })
+      },
       syncFromUrl: () => {
         const next = parseUrlSelection()
         set({
@@ -179,8 +224,8 @@ export const useLayoutStore = create<LayoutState>()(
                 next.selectedRunId,
                 next.route,
               )
-            : next.route === 'agency' && next.selectedSessionId
-              ? `/agency/sessions/${encodeURIComponent(next.selectedSessionId)}`
+            : next.route === 'agency'
+              ? buildAgencyPath(next.selectedSessionId, next.selectedRunId)
               : next.route === 'profiles'
                 ? buildProfilePath(next.selectedProfileName)
                 : buildRoutePath(next.route),
@@ -189,8 +234,16 @@ export const useLayoutStore = create<LayoutState>()(
     }),
     {
       name: 'ya-claw-layout',
+      version: 1,
       partialize: (state) => ({
         inspectorTab: state.inspectorTab,
+        advancedMode: state.advancedMode,
+        railCollapsed: state.railCollapsed,
+      }),
+      migrate: (persistedState) => persistedLayoutPreferences(persistedState),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...persistedLayoutPreferences(persistedState),
       }),
     },
   ),

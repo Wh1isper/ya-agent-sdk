@@ -86,6 +86,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - local filesystem stores committed session continuity data
 - requires `YA_CLAW_API_TOKEN` before service startup
 - defaults: SQLite at `~/.ya-claw/ya_claw.sqlite3`, runtime data at `~/.ya-claw/data`, workspace root at `~/.ya-claw/workspace`, Docker workspace image `ghcr.io/wh1isper/ya-claw-workspace:latest`
+- browser workspace downloads have a configurable per-file cap through `YA_CLAW_WORKSPACE_DOWNLOAD_MAX_BYTES` (100 MiB by default); the server enforces the cap both before and during streaming
 - implementation style: organize runtime code by `api/`, `controller/`, and `orm/`
 - internal data objects use Pydantic `BaseModel`
 - code prefers explicit typing and `isinstance` checks

@@ -61,7 +61,10 @@ export function TimelinePanel({
       return
     }
     if (!stickToBottomRef.current) return
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    const bottom = bottomRef.current
+    if (bottom && typeof bottom.scrollIntoView === 'function') {
+      bottom.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    }
   }, [timeline.blocks.length])
 
   async function loadOlder() {
@@ -110,6 +113,7 @@ export function TimelinePanel({
         ) : (
           <EmptyState
             icon={MessageSquare}
+            headingLevel={2}
             title="No replay yet"
             description="Select a run with committed AGUI messages or start a new debug turn."
             className="mx-auto max-w-4xl bg-white"

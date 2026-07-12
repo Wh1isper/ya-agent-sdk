@@ -47,6 +47,10 @@ import type {
   WorkspaceResolveResponse,
   WorkspaceRuntimeStatus,
 } from '../types'
+import type {
+  WorkspaceFileContentResponse,
+  WorkspaceFileListResponse,
+} from '../features/workspace/types'
 
 export class ApiError extends Error {
   status: number
@@ -60,22 +64,50 @@ export class ApiError extends Error {
   }
 }
 
+export type ApiRequestOptions = {
+  signal?: AbortSignal
+}
+
 export type ApiClientConfig = {
   baseUrl: string
   apiToken: string
+  connectionScope?: string
+  onUnauthorized?: (connectionScope: string) => void
 }
 
 function normalizeBaseUrl(baseUrl: string) {
   return baseUrl.replace(/\/$/, '')
 }
 
+function parseResponseBody(rawBody: string): unknown {
+  if (!rawBody) return null
+  try {
+    return JSON.parse(rawBody) as unknown
+  } catch {
+    return rawBody
+  }
+}
+
+function messageForStatus(status: number) {
+  if (status === 401) return 'The API token is invalid or expired'
+  if (status === 403) return 'This token cannot access the requested resource'
+  if (status === 404) return 'The requested YA Claw resource was not found'
+  if (status === 409) return 'The runtime state changed; refresh and try again'
+  if (status >= 500) return 'The YA Claw runtime returned an internal error'
+  return `Request failed with ${status}`
+}
+
 export class ClawApiClient {
   private readonly baseUrl: string
   private readonly apiToken: string
+  private readonly connectionScope: string
+  private readonly onUnauthorized?: (connectionScope: string) => void
 
   constructor(config: ApiClientConfig) {
     this.baseUrl = normalizeBaseUrl(config.baseUrl)
     this.apiToken = config.apiToken
+    this.connectionScope = config.connectionScope ?? 'unscoped'
+    this.onUnauthorized = config.onUnauthorized
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -87,42 +119,63 @@ export class ClawApiClient {
       headers.set('Authorization', `Bearer ${this.apiToken.trim()}`)
     }
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      ...init,
-      headers,
-    })
-
-    if (!response.ok) {
-      let detail: unknown = null
-      try {
-        detail = await response.json()
-      } catch {
-        detail = await response.text()
+    let response: Response
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        ...init,
+        headers,
+      })
+    } catch (error) {
+      if (
+        init.signal?.aborted ||
+        (typeof error === 'object' &&
+          error !== null &&
+          'name' in error &&
+          error.name === 'AbortError')
+      ) {
+        throw error
       }
       throw new ApiError(
-        `Request failed with ${response.status}`,
-        response.status,
-        detail,
+        'Unable to reach the YA Claw runtime',
+        0,
+        error instanceof Error ? error.message : error,
       )
     }
 
-    if (response.status === 204) {
+    const rawBody = response.status === 204 ? '' : await response.text()
+    const parsedBody = parseResponseBody(rawBody)
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        this.onUnauthorized?.(this.connectionScope)
+      }
+      throw new ApiError(
+        messageForStatus(response.status),
+        response.status,
+        parsedBody,
+      )
+    }
+
+    if (!rawBody) {
       return undefined as T
     }
 
-    return (await response.json()) as T
+    return parsedBody as T
   }
 
-  health() {
-    return this.request<HealthStatus>('/healthz')
+  health(options: ApiRequestOptions = {}) {
+    return this.request<HealthStatus>('/healthz', options)
   }
 
-  clawInfo() {
-    return this.request<ClawInfo>('/api/v1/claw/info')
+  clawInfo(options: ApiRequestOptions = {}) {
+    return this.request<ClawInfo>('/api/v1/claw/info', options)
   }
 
-  getWorkspaceRuntime() {
-    return this.request<WorkspaceRuntimeStatus>('/api/v1/workspace/runtime')
+  getWorkspaceRuntime(options: ApiRequestOptions = {}) {
+    return this.request<WorkspaceRuntimeStatus>(
+      '/api/v1/workspace/runtime',
+      options,
+    )
   }
 
   resolveWorkspace(metadata: Record<string, unknown>) {
@@ -132,35 +185,100 @@ export class ClawApiClient {
     })
   }
 
-  getSessionWorkspace(sessionId: string) {
+  getSessionWorkspace(sessionId: string, options: ApiRequestOptions = {}) {
     return this.request<SessionWorkspaceState>(
-      `/api/v1/sessions/${sessionId}/workspace`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace`,
+      options,
     )
+  }
+
+  listWorkspaceFiles(
+    sessionId: string,
+    options: {
+      path?: string | null
+      includeHidden?: boolean
+      limit?: number
+      cursor?: string
+      offset?: number
+      signal?: AbortSignal
+    } = {},
+  ) {
+    const params = new URLSearchParams()
+    if (options.path) params.set('path', options.path)
+    params.set('include_hidden', String(options.includeHidden ?? false))
+    params.set('limit', String(options.limit ?? 500))
+    if (options.cursor !== undefined) params.set('cursor', options.cursor)
+    if (options.offset !== undefined)
+      params.set('offset', String(options.offset))
+    return this.request<WorkspaceFileListResponse>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/files?${params.toString()}`,
+      { signal: options.signal },
+    )
+  }
+
+  getWorkspaceFile(
+    sessionId: string,
+    path: string,
+    options: ApiRequestOptions = {},
+  ) {
+    const params = new URLSearchParams({ path })
+    return this.request<WorkspaceFileContentResponse>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/file?${params.toString()}`,
+      options,
+    )
+  }
+
+  async downloadWorkspaceFile(
+    sessionId: string,
+    path: string,
+    options: ApiRequestOptions = {},
+  ) {
+    const params = new URLSearchParams({ path })
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/file:download?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${this.apiToken.trim()}` },
+        signal: options.signal,
+      },
+    )
+    if (!response.ok) {
+      const rawBody = await response.text()
+      if (response.status === 401) {
+        this.onUnauthorized?.(this.connectionScope)
+      }
+      throw new ApiError(
+        messageForStatus(response.status),
+        response.status,
+        parseResponseBody(rawBody),
+      )
+    }
+    return response.blob()
   }
 
   getSessionSandbox(sessionId: string) {
     return this.request<SessionSandboxState>(
-      `/api/v1/sessions/${sessionId}/sandbox`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/sandbox`,
     )
   }
 
   prepareSessionSandbox(sessionId: string) {
     return this.request<SessionSandboxState>(
-      `/api/v1/sessions/${sessionId}/sandbox:prepare`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/sandbox:prepare`,
       { method: 'POST' },
     )
   }
 
   stopSessionSandbox(sessionId: string) {
     return this.request<SessionSandboxState>(
-      `/api/v1/sessions/${sessionId}/sandbox:stop`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/sandbox:stop`,
       { method: 'POST' },
     )
   }
 
-  listBridgeConversations() {
+  listBridgeConversations(options: ApiRequestOptions = {}) {
     return this.request<BridgeConversationListResponse>(
       '/api/v1/bridges/conversations',
+      options,
     )
   }
 
@@ -169,6 +287,7 @@ export class ClawApiClient {
       conversationId?: string | null
       status?: BridgeEventStatus | 'all'
     } = {},
+    options: ApiRequestOptions = {},
   ) {
     const params = new URLSearchParams()
     if (filters.conversationId) {
@@ -180,11 +299,12 @@ export class ClawApiClient {
     const query = params.toString()
     return this.request<BridgeEventListResponse>(
       `/api/v1/bridges/events${query ? `?${query}` : ''}`,
+      options,
     )
   }
 
-  listSessions() {
-    return this.request<SessionSummary[]>('/api/v1/sessions')
+  listSessions(options: ApiRequestOptions = {}) {
+    return this.request<SessionSummary[]>('/api/v1/sessions', options)
   }
 
   getSession(
@@ -194,6 +314,7 @@ export class ClawApiClient {
       beforeSequenceNo?: number | null
       includeMessage?: boolean
       includeInputParts?: boolean
+      signal?: AbortSignal
     } = {},
   ) {
     const params = new URLSearchParams()
@@ -204,7 +325,8 @@ export class ClawApiClient {
       params.set('before_sequence_no', String(options.beforeSequenceNo))
     }
     return this.request<SessionGetResponse>(
-      `/api/v1/sessions/${sessionId}?${params.toString()}`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`,
+      { signal: options.signal },
     )
   }
 
@@ -221,7 +343,7 @@ export class ClawApiClient {
 
   submitSessionInput(sessionId: string, payload: SessionSubmitRequest) {
     return this.request<SessionSubmitResponse>(
-      `/api/v1/sessions/${sessionId}/submit`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/submit`,
       {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -229,16 +351,16 @@ export class ClawApiClient {
     )
   }
 
-  getAgencyConfig() {
-    return this.request<AgencyConfigResponse>('/api/v1/agency/config')
+  getAgencyConfig(options: ApiRequestOptions = {}) {
+    return this.request<AgencyConfigResponse>('/api/v1/agency/config', options)
   }
 
-  getAgencyStatus() {
-    return this.request<AgencyStatusResponse>('/api/v1/agency/status')
+  getAgencyStatus(options: ApiRequestOptions = {}) {
+    return this.request<AgencyStatusResponse>('/api/v1/agency/status', options)
   }
 
-  listAgencyFires() {
-    return this.request<AgencyFireListResponse>('/api/v1/agency/fires')
+  listAgencyFires(options: ApiRequestOptions = {}) {
+    return this.request<AgencyFireListResponse>('/api/v1/agency/fires', options)
   }
 
   clearAgency() {
@@ -247,35 +369,46 @@ export class ClawApiClient {
     })
   }
 
-  getRun(runId: string) {
+  getRun(runId: string, options: ApiRequestOptions = {}) {
     return this.request<RunGetResponse>(
-      `/api/v1/runs/${runId}?include_message=true`,
+      `/api/v1/runs/${encodeURIComponent(runId)}?include_message=true`,
+      options,
     )
   }
 
-  getRunTrace(runId: string) {
-    return this.request<RunTraceResponse>(`/api/v1/runs/${runId}/trace`)
+  getRunTrace(runId: string, options: ApiRequestOptions = {}) {
+    return this.request<RunTraceResponse>(
+      `/api/v1/runs/${encodeURIComponent(runId)}/trace`,
+      options,
+    )
   }
 
   interruptRun(runId: string) {
-    return this.request<RunDetail>(`/api/v1/runs/${runId}/interrupt`, {
-      method: 'POST',
-    })
+    return this.request<RunDetail>(
+      `/api/v1/runs/${encodeURIComponent(runId)}/interrupt`,
+      {
+        method: 'POST',
+      },
+    )
   }
 
   cancelRun(runId: string) {
-    return this.request<RunDetail>(`/api/v1/runs/${runId}/cancel`, {
-      method: 'POST',
-    })
+    return this.request<RunDetail>(
+      `/api/v1/runs/${encodeURIComponent(runId)}/cancel`,
+      {
+        method: 'POST',
+      },
+    )
   }
 
-  listProfiles() {
-    return this.request<ProfileSummary[]>('/api/v1/profiles')
+  listProfiles(options: ApiRequestOptions = {}) {
+    return this.request<ProfileSummary[]>('/api/v1/profiles', options)
   }
 
-  getProfile(profileName: string) {
+  getProfile(profileName: string, options: ApiRequestOptions = {}) {
     return this.request<ProfileDetail>(
       `/api/v1/profiles/${encodeURIComponent(profileName)}`,
+      options,
     )
   }
 
@@ -305,7 +438,10 @@ export class ClawApiClient {
     })
   }
 
-  listWorkflows(filters: WorkflowListFilters = {}) {
+  listWorkflows(
+    filters: WorkflowListFilters = {},
+    options: ApiRequestOptions = {},
+  ) {
     const params = new URLSearchParams()
     if (filters.query?.trim()) params.set('query', filters.query.trim())
     if (filters.tags?.length) {
@@ -327,12 +463,14 @@ export class ClawApiClient {
     const query = params.toString()
     return this.request<WorkflowDefinitionListResponse>(
       `/api/v1/workflows${query ? `?${query}` : ''}`,
+      options,
     )
   }
 
-  getWorkflow(workflowId: string) {
+  getWorkflow(workflowId: string, options: ApiRequestOptions = {}) {
     return this.request<WorkflowDefinitionDetail>(
       `/api/v1/workflows/${encodeURIComponent(workflowId)}`,
+      options,
     )
   }
 
@@ -370,7 +508,10 @@ export class ClawApiClient {
     )
   }
 
-  listWorkflowRuns(filters: WorkflowRunListFilters = {}) {
+  listWorkflowRuns(
+    filters: WorkflowRunListFilters = {},
+    options: ApiRequestOptions = {},
+  ) {
     const params = new URLSearchParams()
     if (filters.workflowId?.trim())
       params.set('workflow_id', filters.workflowId.trim())
@@ -395,18 +536,21 @@ export class ClawApiClient {
     const query = params.toString()
     return this.request<WorkflowRunListResponse>(
       `/api/v1/workflow-runs${query ? `?${query}` : ''}`,
+      options,
     )
   }
 
-  getWorkflowRun(workflowRunId: string) {
+  getWorkflowRun(workflowRunId: string, options: ApiRequestOptions = {}) {
     return this.request<WorkflowRunDetail>(
       `/api/v1/workflow-runs/${encodeURIComponent(workflowRunId)}`,
+      options,
     )
   }
 
-  listWorkflowEvents(workflowRunId: string) {
+  listWorkflowEvents(workflowRunId: string, options: ApiRequestOptions = {}) {
     return this.request<WorkflowEventListResponse>(
       `/api/v1/workflow-runs/${encodeURIComponent(workflowRunId)}/events`,
+      options,
     )
   }
 
@@ -434,7 +578,10 @@ export class ClawApiClient {
     )
   }
 
-  listSchedules(filters: ScheduleListFilters = {}) {
+  listSchedules(
+    filters: ScheduleListFilters = {},
+    options: ApiRequestOptions = {},
+  ) {
     const params = new URLSearchParams()
     if (filters.includeDeleted) params.set('include_deleted', 'true')
     if (filters.includeWorkflow === false)
@@ -455,12 +602,14 @@ export class ClawApiClient {
     const query = params.toString()
     return this.request<ScheduleListResponse>(
       `/api/v1/schedules${query ? `?${query}` : ''}`,
+      options,
     )
   }
 
-  getSchedule(scheduleId: string) {
+  getSchedule(scheduleId: string, options: ApiRequestOptions = {}) {
     return this.request<ScheduleSummary>(
       `/api/v1/schedules/${encodeURIComponent(scheduleId)}`,
+      options,
     )
   }
 
@@ -498,22 +647,26 @@ export class ClawApiClient {
     )
   }
 
-  listScheduleFires(scheduleId: string) {
+  listScheduleFires(scheduleId: string, options: ApiRequestOptions = {}) {
     return this.request<ScheduleFireListResponse>(
       `/api/v1/schedules/${encodeURIComponent(scheduleId)}/fires`,
+      options,
     )
   }
 
-  getHeartbeatConfig() {
-    return this.request<HeartbeatConfig>('/api/v1/heartbeat/config')
+  getHeartbeatConfig(options: ApiRequestOptions = {}) {
+    return this.request<HeartbeatConfig>('/api/v1/heartbeat/config', options)
   }
 
-  getHeartbeatStatus() {
-    return this.request<HeartbeatStatus>('/api/v1/heartbeat/status')
+  getHeartbeatStatus(options: ApiRequestOptions = {}) {
+    return this.request<HeartbeatStatus>('/api/v1/heartbeat/status', options)
   }
 
-  listHeartbeatFires() {
-    return this.request<HeartbeatFireListResponse>('/api/v1/heartbeat/fires')
+  listHeartbeatFires(options: ApiRequestOptions = {}) {
+    return this.request<HeartbeatFireListResponse>(
+      '/api/v1/heartbeat/fires',
+      options,
+    )
   }
 
   triggerHeartbeat() {

@@ -91,21 +91,52 @@ export function WorkspaceStatusBar({
   runtime,
   sessionId,
   state,
+  error,
+  onRetry,
 }: {
   runtime: WorkspaceRuntimeStatus | null
   sessionId: string | null
   state: SessionWorkspaceState | null
+  error?: unknown
+  onRetry?: () => void
 }) {
   const sandbox = state?.sandbox_state ?? null
   const controls = useSessionSandboxMutations(sessionId)
   const canPrepare = Boolean(
     sessionId &&
-      runtime?.capabilities.sandbox_prepare &&
-      sandbox?.ready_state !== 'ready',
+    runtime?.capabilities.sandbox_prepare &&
+    sandbox?.ready_state !== 'ready',
   )
   const canStop = Boolean(
     sessionId && runtime?.capabilities.sandbox_stop && sandbox?.container_id,
   )
+
+  if (error) {
+    return (
+      <div
+        className="flex shrink-0 flex-col gap-2 border-b border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900 sm:flex-row sm:items-center sm:justify-between sm:px-4"
+        role="alert"
+      >
+        <div>
+          <p className="font-semibold">Workspace status unavailable</p>
+          <p className="mt-0.5 text-rose-700">
+            {error instanceof Error
+              ? error.message
+              : 'The runtime did not return workspace status.'}
+          </p>
+        </div>
+        {onRetry ? (
+          <button
+            type="button"
+            className="self-start rounded-full border border-rose-200 bg-white px-3 py-1 font-medium text-rose-700 transition hover:bg-rose-100 sm:self-auto"
+            onClick={onRetry}
+          >
+            Try again
+          </button>
+        ) : null}
+      </div>
+    )
+  }
 
   return (
     <div className="flex shrink-0 flex-col gap-2 border-b border-slate-200 bg-blue-50/60 px-3 py-2 text-xs text-blue-950 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-4">

@@ -9,7 +9,7 @@ repos:
       - id: check-json
         exclude: ^.devcontainer/devcontainer.json
       - id: pretty-format-json
-        exclude: ^.devcontainer/devcontainer\.json$
+        exclude: ^(.devcontainer/devcontainer\.json|apps/ya-claw-web/.*\.json)$
         args: [--autofix]
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -27,8 +27,8 @@ repos:
         name: prettier web files
         entry: prettier --write
         language: node
-        additional_dependencies: [prettier@3.6.2]
-        files: ^apps/ya-claw-web/.*\.(ts|tsx|css|html|md)$
+        additional_dependencies: [prettier@3.8.3]
+        files: ^apps/ya-claw-web/.*\.(ts|tsx|css|html|md|json)$
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: "v0.15.20"
     hooks:

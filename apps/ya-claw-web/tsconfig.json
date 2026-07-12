@@ -3,11 +3,7 @@
     "allowImportingTsExtensions": false,
     "isolatedModules": true,
     "jsx": "react-jsx",
-    "lib": [
-      "ES2020",
-      "DOM",
-      "DOM.Iterable"
-    ],
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "noEmit": true,
@@ -17,7 +13,5 @@
     "target": "ES2020",
     "useDefineForClassFields": true
   },
-  "include": [
-    "src"
-  ]
+  "include": ["src"]
 }

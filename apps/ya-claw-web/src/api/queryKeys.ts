@@ -4,6 +4,10 @@ export const queryKeys = {
   workspaceRuntime: ['workspace-runtime'] as const,
   sessionWorkspace: (sessionId: string) =>
     ['session-workspace', sessionId] as const,
+  workspaceFiles: (sessionId: string, path: string) =>
+    ['workspace-files', sessionId, path] as const,
+  workspaceFile: (sessionId: string, path: string) =>
+    ['workspace-file', sessionId, path] as const,
   sessionSandbox: (sessionId: string) =>
     ['session-sandbox', sessionId] as const,
   bridgeConversations: ['bridge-conversations'] as const,

@@ -19,12 +19,15 @@ export function AgencyFireList({
   search: string
   selectedRunId: string | null
   onSearchChange: (value: string) => void
-  onSelectRun: (runId: string | null) => void
+  onSelectRun: (sessionId: string | null, runId: string | null) => void
 }) {
   const filteredFires = fires.filter((fire) => fireMatchesSearch(fire, search))
 
   return (
-    <aside className="flex h-full min-h-0 flex-col overflow-hidden border-b border-r border-slate-200 bg-white lg:border-b-0">
+    <aside
+      aria-label="Agency fires"
+      className="flex h-full min-h-0 flex-col overflow-hidden border-b border-r border-slate-200 bg-white lg:border-b-0"
+    >
       <div className="border-b border-slate-200 p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -44,6 +47,7 @@ export function AgencyFireList({
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="Search fires"
+            aria-label="Search agency fires"
           />
         </div>
       </div>
@@ -86,7 +90,7 @@ function FireRow({
 }: {
   fire: AgencyFireSummary
   selected: boolean
-  onSelectRun: (runId: string | null) => void
+  onSelectRun: (sessionId: string | null, runId: string | null) => void
 }) {
   const runId = selectedRunIdFromFire(fire)
   return (
@@ -98,7 +102,7 @@ function FireRow({
           ? 'border-blue-200 bg-blue-50 shadow-sm ring-1 ring-blue-100'
           : 'border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50/40',
       )}
-      onClick={() => onSelectRun(runId)}
+      onClick={() => onSelectRun(fire.agency_session_id ?? null, runId)}
       disabled={!runId}
     >
       <div className="flex items-start justify-between gap-2">
