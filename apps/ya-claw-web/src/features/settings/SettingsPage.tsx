@@ -149,7 +149,7 @@ export function SettingsPage() {
           open={logoutConfirmOpen}
           onOpenChange={setLogoutConfirmOpen}
           title="Discard connection changes and disconnect?"
-          description="Your unsaved backend URL or API token edits will be lost and the active session credential will be cleared."
+          description="Your unsaved backend URL or API token edits will be lost and the saved credential will be cleared from this browser."
           confirmLabel="Discard and disconnect"
           cancelLabel="Keep editing"
           danger
@@ -239,7 +239,7 @@ export function SettingsPage() {
                   }}
                 >
                   <LogOut className="h-4 w-4" />
-                  Logout
+                  Disconnect
                 </button>
               </div>
             </div>
@@ -252,12 +252,13 @@ export function SettingsPage() {
                   configured backend.
                 </li>
                 <li>
-                  The token stays in browser memory for this session. It is not
-                  written to persisted browser storage.
+                  The backend URL is stored locally. The API token is saved only
+                  when you select “Remember this connection” on the connection
+                  screen.
                 </li>
                 <li>
-                  Only the backend URL is persisted locally so the console can
-                  restore the endpoint after a reload.
+                  Disconnect removes the local token. A saved token can be used
+                  by anyone with access to this browser profile.
                 </li>
               </ul>
             </div>

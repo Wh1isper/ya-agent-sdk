@@ -111,6 +111,7 @@ describe('SettingsPage runtime and connection diagnostics', () => {
     useConnectionStore.setState({
       baseUrl: 'https://claw.example.test',
       apiToken: 'session-secret',
+      rememberConnection: false,
       connectionIssue: null,
       connectionScope: 'test-scope',
     })
@@ -125,7 +126,9 @@ describe('SettingsPage runtime and connection diagnostics', () => {
     expect(screen.getByText('Docker Daemon')).toBeVisible()
     expect(screen.getByText('Docker daemon is available')).toBeVisible()
     expect(screen.getByText('File Browse')).toBeVisible()
-    expect(screen.getByText(/token stays in browser memory/i)).toBeVisible()
+    expect(
+      screen.getByText(/api token is saved only when you select/i),
+    ).toBeVisible()
     expect(screen.queryByText('session-secret')).not.toBeInTheDocument()
   })
 
@@ -155,7 +158,7 @@ describe('SettingsPage runtime and connection diagnostics', () => {
         withResolver: true,
       }),
     )
-    await user.click(screen.getByRole('button', { name: 'Logout' }))
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }))
     expect(
       screen.getByRole('dialog', {
         name: 'Discard connection changes and disconnect?',
@@ -192,7 +195,7 @@ describe('SettingsPage runtime and connection diagnostics', () => {
     })
     expect(screen.getByLabelText('Backend URL')).toBeDisabled()
     expect(tokenInput).toBeDisabled()
-    await user.click(screen.getByRole('button', { name: 'Logout' }))
+    await user.click(screen.getByRole('button', { name: 'Disconnect' }))
     await user.click(
       screen.getByRole('button', { name: 'Discard and disconnect' }),
     )

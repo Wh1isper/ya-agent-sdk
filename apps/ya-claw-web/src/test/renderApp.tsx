@@ -42,6 +42,7 @@ export async function renderApp({
   useConnectionStore.setState({
     baseUrl,
     apiToken: connected ? TEST_API_TOKEN : '',
+    rememberConnection: false,
     connectionScope: 'integration-test-scope',
     connectionIssue: null,
   })

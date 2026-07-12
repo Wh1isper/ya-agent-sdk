@@ -63,6 +63,29 @@ describe('App MSW integration safety net', () => {
     ).toBe(true)
   })
 
+  it('persists a connection when the user explicitly opts in', async () => {
+    const { user } = await renderApp()
+
+    await user.type(screen.getByLabelText('API token'), TEST_API_TOKEN)
+    await user.click(
+      screen.getByLabelText('Remember this connection on this device'),
+    )
+    await user.click(screen.getByRole('button', { name: 'Test and connect' }))
+
+    expect(
+      await screen.findByRole('heading', {
+        name: 'What should YA Claw work on?',
+      }),
+    ).toBeInTheDocument()
+    const persisted = JSON.parse(
+      localStorage.getItem('ya-claw-connection') ?? '{}',
+    ) as { state?: { apiToken?: string; rememberConnection?: boolean } }
+    expect(persisted.state).toMatchObject({
+      apiToken: TEST_API_TOKEN,
+      rememberConnection: true,
+    })
+  })
+
   it('falls back to the legacy session list when the page endpoint is unavailable', async () => {
     let legacyRequests = 0
     apiServer.use(

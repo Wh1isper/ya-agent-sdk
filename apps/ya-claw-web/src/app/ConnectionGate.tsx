@@ -20,6 +20,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
   const setConnection = useConnectionStore((state) => state.setConnection)
   const [draftBaseUrl, setDraftBaseUrl] = useState(baseUrl)
   const [draftToken, setDraftToken] = useState('')
+  const [rememberConnection, setRememberConnection] = useState(false)
   const [showToken, setShowToken] = useState(false)
   const [error, setError] = useState<string | null>(connectionIssue)
   const [isValidating, setIsValidating] = useState(false)
@@ -49,6 +50,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
       setConnection({
         baseUrl: normalizedBaseUrl,
         apiToken: normalizedToken,
+        rememberConnection,
       })
     } catch (validationError) {
       setError(getConnectionErrorMessage(validationError))
@@ -73,8 +75,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
         </div>
 
         <p className="mt-5 text-sm leading-6 text-[var(--muted-foreground)]">
-          Verify the runtime and authenticate before opening the workspace. Your
-          token stays in memory and is cleared when you disconnect.
+          Verify the runtime and authenticate before opening the workspace.
         </p>
 
         {error ? (
@@ -104,7 +105,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
               disabled={isValidating}
             />
             <span className="mt-1.5 block text-xs text-[var(--subtle-foreground)]">
-              The URL is remembered. Credentials are not persisted.
+              The URL is remembered on this browser.
             </span>
           </label>
 
@@ -130,6 +131,26 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
                 {showToken ? 'Hide' : 'Show'}
               </button>
             </div>
+          </label>
+
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-[var(--muted-foreground)]">
+            <input
+              className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+              type="checkbox"
+              aria-label="Remember this connection on this device"
+              checked={rememberConnection}
+              onChange={(event) => setRememberConnection(event.target.checked)}
+              disabled={isValidating}
+            />
+            <span>
+              <span className="font-medium text-[var(--foreground)]">
+                Remember this connection on this device
+              </span>
+              <span className="mt-1 block text-xs leading-5">
+                This stores the API token in this browser&apos;s local storage
+                so it survives reloads. Use only on a trusted personal device.
+              </span>
+            </span>
           </label>
 
           <button

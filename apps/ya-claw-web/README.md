@@ -23,5 +23,10 @@ The development server proxies `/api` and `/healthz` to
 `http://127.0.0.1:9042`. Set `VITE_CLAW_PROXY_TARGET` to use a different
 backend origin.
 
-The API token is entered through the connection screen and remains in browser
-memory for the active page session.
+The API token is entered through the connection screen. By default it remains
+in browser memory for the active page session. Users can explicitly select
+**Remember this connection on this device** to store the token in browser
+`localStorage` and restore the connection after reloads or browser restarts.
+Use this option only on a trusted personal browser profile. **Disconnect**
+removes the local copy of the token; it does not revoke the bearer token on the
+server.
