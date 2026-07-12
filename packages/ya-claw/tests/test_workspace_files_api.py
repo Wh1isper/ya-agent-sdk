@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 from fastapi.testclient import TestClient
 from ya_claw.api.workspace import _stream_download
 from ya_claw.app import create_app
 from ya_claw.config import ClawSettings, get_settings
+from ya_claw.controller import windows_workspace_files as windows_workspace_files_module
 from ya_claw.controller import workspace_files as workspace_files_module
 from ya_claw.controller.workspace_files import WorkspaceDownload
 from ya_claw.db.engine import create_engine
@@ -362,13 +367,22 @@ def test_workspace_files_reject_traversal_and_host_or_relative_paths(client: Tes
     outside_mount_response = client.get(
         f"/api/v1/sessions/{session_id}/workspace/file",
         headers=_auth_headers(),
+        params={"path": "/outside.txt"},
+    )
+    host_path_response = client.get(
+        f"/api/v1/sessions/{session_id}/workspace/file",
+        headers=_auth_headers(),
         params={"path": str(outside_file)},
     )
 
     assert traversal_response.status_code == 400
     assert relative_response.status_code == 400
     assert outside_mount_response.status_code == 403
-    assert "must not leak" not in traversal_response.text + relative_response.text + outside_mount_response.text
+    assert host_path_response.status_code == 403
+    combined_response = (
+        traversal_response.text + relative_response.text + outside_mount_response.text + host_path_response.text
+    )
+    assert "must not leak" not in combined_response
 
 
 def test_workspace_files_block_symlink_escape(client: TestClient, tmp_path: Path) -> None:
@@ -401,6 +415,170 @@ def test_workspace_files_block_symlink_escape(client: TestClient, tmp_path: Path
     assert download_response.status_code == 403
     assert "outside secret" not in read_response.text + download_response.text
     assert str(outside_file) not in read_response.text + download_response.text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows junctions")
+def test_workspace_files_block_windows_junction_escape(client: TestClient, tmp_path: Path) -> None:
+    session_id = _create_session(client)
+    workspace = get_settings().resolved_workspace_dir
+    outside_directory = tmp_path / "junction-outside"
+    outside_directory.mkdir()
+    (outside_directory / "secret.txt").write_text("junction outside secret", encoding="utf-8")
+    junction = workspace / "junction"
+    subprocess.run(  # noqa: S603 - fixed test arguments create a temporary junction
+        [os.environ["COMSPEC"], "/c", "mklink", "/J", str(junction), str(outside_directory)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    try:
+        list_response = client.get(
+            f"/api/v1/sessions/{session_id}/workspace/files",
+            headers=_auth_headers(),
+            params={"path": "/workspace"},
+        )
+        nested_list_response = client.get(
+            f"/api/v1/sessions/{session_id}/workspace/files",
+            headers=_auth_headers(),
+            params={"path": "/workspace/junction"},
+        )
+        read_response = client.get(
+            f"/api/v1/sessions/{session_id}/workspace/file",
+            headers=_auth_headers(),
+            params={"path": "/workspace/junction/secret.txt"},
+        )
+        download_response = client.get(
+            f"/api/v1/sessions/{session_id}/workspace/file:download",
+            headers=_auth_headers(),
+            params={"path": "/workspace/junction/secret.txt"},
+        )
+
+        assert list_response.status_code == 200
+        junction_entry = next(item for item in list_response.json()["items"] if item["name"] == "junction")
+        assert junction_entry["kind"] == "symlink"
+        assert nested_list_response.status_code == 403
+        assert read_response.status_code == 403
+        assert download_response.status_code == 403
+        combined_response = nested_list_response.text + read_response.text + download_response.text
+        assert "junction outside secret" not in combined_response
+        assert str(outside_directory) not in combined_response
+    finally:
+        junction.rmdir()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows handle sharing semantics")
+def test_windows_directory_handles_block_component_replacement(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = _create_session(client)
+    workspace = get_settings().resolved_workspace_dir
+    nested_directory = workspace / "nested"
+    nested_directory.mkdir()
+    (nested_directory / "safe.txt").write_text("safe workspace data", encoding="utf-8")
+    displaced_directory = workspace / "nested-before-race"
+    outside_directory = tmp_path / "windows-race-outside"
+    outside_directory.mkdir()
+    (outside_directory / "secret.txt").write_text("windows race secret", encoding="utf-8")
+
+    real_open_handle = windows_workspace_files_module._open_handle
+    blocked_replacements = 0
+
+    def racing_open_handle(
+        path: Path,
+        *,
+        expect_directory: bool,
+    ) -> windows_workspace_files_module._WindowsHandle:
+        nonlocal blocked_replacements
+        opened_handle = real_open_handle(path, expect_directory=expect_directory)
+        if expect_directory and path == nested_directory:
+            try:
+                nested_directory.rename(displaced_directory)
+            except OSError:
+                blocked_replacements += 1
+            else:
+                displaced_directory.rename(nested_directory)
+                raise AssertionError("A pinned Windows directory was renameable.")
+        return opened_handle
+
+    monkeypatch.setattr(windows_workspace_files_module, "_open_handle", racing_open_handle)
+    list_response = client.get(
+        f"/api/v1/sessions/{session_id}/workspace/files",
+        headers=_auth_headers(),
+        params={"path": "/workspace/nested"},
+    )
+    read_response = client.get(
+        f"/api/v1/sessions/{session_id}/workspace/file",
+        headers=_auth_headers(),
+        params={"path": "/workspace/nested/safe.txt"},
+    )
+
+    assert blocked_replacements == 2
+    assert list_response.status_code == 200
+    assert [item["name"] for item in list_response.json()["items"]] == ["safe.txt"]
+    assert read_response.status_code == 200
+    assert read_response.json()["content"] == "safe workspace data"
+
+
+def test_workspace_files_path_fallback_reads_files_and_blocks_symlinks(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = _create_session(client)
+    workspace = get_settings().resolved_workspace_dir
+    (workspace / "safe.txt").write_text("safe workspace data", encoding="utf-8")
+    outside_file = tmp_path / "fallback-outside.txt"
+    outside_file.write_text("outside fallback secret", encoding="utf-8")
+    (workspace / "escape.txt").symlink_to(outside_file)
+    monkeypatch.setattr(workspace_files_module, "_OPEN_SUPPORTS_DIR_FD", False)
+    monkeypatch.setattr(workspace_files_module, "_PATH_FALLBACK_SUPPORTED", True)
+
+    @contextmanager
+    def pinned_directory(root: Path, relative_parts: tuple[str, ...]) -> Iterator[Path]:
+        yield root.joinpath(*relative_parts)
+
+    def open_regular_file(root: Path, relative_parts: tuple[str, ...]) -> tuple[BinaryIO, int]:
+        target = root.joinpath(*relative_parts)
+        if target.is_symlink():
+            raise workspace_files_module.WindowsWorkspaceError("unsafe")
+        return target.open("rb"), target.stat().st_size
+
+    monkeypatch.setattr(workspace_files_module, "pinned_windows_directory", pinned_directory)
+    monkeypatch.setattr(workspace_files_module, "open_windows_regular_file", open_regular_file)
+
+    list_response = client.get(
+        f"/api/v1/sessions/{session_id}/workspace/files",
+        headers=_auth_headers(),
+        params={"path": "/workspace"},
+    )
+    read_response = client.get(
+        f"/api/v1/sessions/{session_id}/workspace/file",
+        headers=_auth_headers(),
+        params={"path": "/workspace/safe.txt"},
+    )
+    download_response = client.get(
+        f"/api/v1/sessions/{session_id}/workspace/file:download",
+        headers=_auth_headers(),
+        params={"path": "/workspace/safe.txt"},
+    )
+    escape_response = client.get(
+        f"/api/v1/sessions/{session_id}/workspace/file",
+        headers=_auth_headers(),
+        params={"path": "/workspace/escape.txt"},
+    )
+
+    assert list_response.status_code == 200
+    assert [item["name"] for item in list_response.json()["items"]] == ["escape.txt", "safe.txt"]
+    assert read_response.status_code == 200
+    assert read_response.json()["content"] == "safe workspace data"
+    assert download_response.status_code == 200
+    assert download_response.content == b"safe workspace data"
+    assert escape_response.status_code == 403
+    assert "outside fallback secret" not in escape_response.text
+    assert str(outside_file) not in escape_response.text
 
 
 def test_workspace_files_block_intermediate_directory_symlink(client: TestClient, tmp_path: Path) -> None:
@@ -474,6 +652,9 @@ def test_workspace_files_resist_intermediate_directory_replacement_race(
 
     real_open = os.open
     replacement_performed = False
+    uses_secure_descriptors = workspace_files_module._secure_fd_operations_available()
+    if not uses_secure_descriptors:
+        pytest.skip("requires descriptor-relative no-follow traversal")
 
     def racing_open(
         path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
@@ -483,10 +664,13 @@ def test_workspace_files_resist_intermediate_directory_replacement_race(
         dir_fd: int | None = None,
     ) -> int:
         nonlocal replacement_performed
-        if path == "nested" and dir_fd is not None and not replacement_performed:
+        descriptor_race = path == "nested" and dir_fd is not None
+        if descriptor_race and not replacement_performed:
             nested_directory.rename(displaced_directory)
             nested_directory.symlink_to(outside_directory, target_is_directory=True)
             replacement_performed = True
+        if dir_fd is None:
+            return real_open(path, flags, mode)
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(workspace_files_module.os, "open", racing_open)
