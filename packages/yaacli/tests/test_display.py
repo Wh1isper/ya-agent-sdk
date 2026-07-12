@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 
+from prompt_toolkit.formatted_text import ANSI
 from yaacli.display import (
     EventRenderer,
     RenderDirective,
@@ -296,6 +297,18 @@ def test_renderer_render_markdown():
     # Should contain the text content
     assert "Title" in result
     assert "bold" in result
+
+
+def test_renderer_markdown_link_is_compatible_with_prompt_toolkit_ansi():
+    """Markdown links must not leak unsupported OSC 8 control sequences into the TUI."""
+    renderer = RichRenderer(width=80)
+    result = renderer.render_markdown("[PR: 8](https://github.com/Wh1isper/starweaver/pull/67)")
+
+    assert "\x1b]8;" not in result
+    parsed_text = "".join(text for _, text, *_ in ANSI(result).__pt_formatted_text__())
+    assert "PR: 8" in parsed_text
+    assert "https://github.com/Wh1isper/starweaver/pull/67" in parsed_text
+    assert "8;id=" not in parsed_text
 
 
 def test_renderer_render_panel():

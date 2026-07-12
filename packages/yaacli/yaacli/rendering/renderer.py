@@ -43,7 +43,10 @@ class RichRenderer:
 
     def render_markdown(self, text: str, code_theme: str = "monokai", width: int | None = None) -> str:
         """Render markdown text to ANSI string."""
-        return self.render(Markdown(text, code_theme=code_theme), width=width)
+        # prompt_toolkit's ANSI parser does not support Rich's OSC 8 hyperlinks.
+        # Render link destinations as ordinary text instead of leaking OSC control
+        # sequences and their metadata into the TUI output.
+        return self.render(Markdown(text, code_theme=code_theme, hyperlinks=False), width=width)
 
     def render_text(self, text: str, style: str | None = None) -> str:
         """Render styled text to ANSI string."""
