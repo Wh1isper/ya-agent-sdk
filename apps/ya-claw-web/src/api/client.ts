@@ -29,6 +29,7 @@ import type {
   ScheduleUpdateRequest,
   SessionCreateResponse,
   SessionGetResponse,
+  SessionListResponse,
   SessionSandboxState,
   SessionSubmitRequest,
   SessionSubmitResponse,
@@ -307,6 +308,27 @@ export class ClawApiClient {
     return this.request<SessionSummary[]>('/api/v1/sessions', options)
   }
 
+  listSessionsPage(
+    options: {
+      limit?: number
+      beforeUpdatedAt?: string | null
+      beforeId?: string | null
+      signal?: AbortSignal
+    } = {},
+  ) {
+    const params = new URLSearchParams()
+    params.set('limit', String(options.limit ?? 50))
+    params.set('include_latest_output', 'false')
+    if (options.beforeUpdatedAt) {
+      params.set('before_updated_at', options.beforeUpdatedAt)
+    }
+    if (options.beforeId) params.set('before_id', options.beforeId)
+    return this.request<SessionListResponse>(
+      `/api/v1/sessions/page?${params.toString()}`,
+      { signal: options.signal },
+    )
+  }
+
   getSession(
     sessionId: string,
     options: {
@@ -314,6 +336,7 @@ export class ClawApiClient {
       beforeSequenceNo?: number | null
       includeMessage?: boolean
       includeInputParts?: boolean
+      includeHeadPayload?: boolean
       signal?: AbortSignal
     } = {},
   ) {
@@ -321,6 +344,10 @@ export class ClawApiClient {
     params.set('runs_limit', String(options.runsLimit ?? 20))
     params.set('include_message', String(options.includeMessage ?? true))
     params.set('include_input_parts', String(options.includeInputParts ?? true))
+    params.set(
+      'include_head_payload',
+      String(options.includeHeadPayload ?? true),
+    )
     if (typeof options.beforeSequenceNo === 'number') {
       params.set('before_sequence_no', String(options.beforeSequenceNo))
     }
@@ -371,7 +398,7 @@ export class ClawApiClient {
 
   getRun(runId: string, options: ApiRequestOptions = {}) {
     return this.request<RunGetResponse>(
-      `/api/v1/runs/${encodeURIComponent(runId)}?include_message=true`,
+      `/api/v1/runs/${encodeURIComponent(runId)}?include_state=false&include_message=true`,
       options,
     )
   }

@@ -92,7 +92,12 @@ export function ChatPage() {
     !composingNew && selectedSessionId ? selectedSessionId : null
   const effectiveRunId =
     !composingNew && selectedSessionId ? selectedRunId : null
-  const selectedSession = useSessionQuery(effectiveSessionId)
+  const selectedSession = useSessionQuery(effectiveSessionId, {
+    runsLimit: 1,
+    includeMessage: false,
+    includeInputParts: false,
+    includeHeadPayload: false,
+  })
   const sessionWorkspace = useSessionWorkspaceQuery(effectiveSessionId)
   const activeSessionData = effectiveSessionId
     ? selectedSession.data
@@ -105,16 +110,6 @@ export function ChatPage() {
   const sessionHistory = useSessionHistoryQuery(effectiveSessionId, {
     runsLimit: 3,
   })
-  const selectedRun = useRunQuery(resolvedRunId)
-  const activeRunData =
-    resolvedRunId && selectedRun.data?.session.id === effectiveSessionId
-      ? selectedRun.data
-      : undefined
-  const runSessionMismatch = Boolean(
-    resolvedRunId &&
-    selectedRun.data &&
-    selectedRun.data.session.id !== effectiveSessionId,
-  )
   const historyPages = useMemo(
     () =>
       sessionHistory.data?.pages ??
@@ -124,6 +119,21 @@ export function ChatPage() {
   const historyRuns = useMemo(
     () => mergeSessionHistoryPages(historyPages).runs,
     [historyPages],
+  )
+  const resolvedRunIsInHistory = historyRuns.some(
+    (run) => run.id === resolvedRunId,
+  )
+  const selectedRun = useRunQuery(resolvedRunId, {
+    enabled: sessionHistory.isFetched && !resolvedRunIsInHistory,
+  })
+  const activeRunData =
+    resolvedRunId && selectedRun.data?.session.id === effectiveSessionId
+      ? selectedRun.data
+      : undefined
+  const runSessionMismatch = Boolean(
+    resolvedRunId &&
+    selectedRun.data &&
+    selectedRun.data.session.id !== effectiveSessionId,
   )
   const activeRun = useMemo(
     () =>
@@ -137,7 +147,7 @@ export function ChatPage() {
   )
   const live = useRunEventStream(
     resolvedRunId,
-    activeRunData?.run.status ?? null,
+    activeRun?.status ?? null,
     effectiveSessionId,
   )
   const selectedRunReplayEvents = useMemo(
@@ -301,11 +311,14 @@ export function ChatPage() {
         sessions={conversationSessions}
         selectedSessionId={effectiveSessionId}
         loading={sessions.isLoading}
+        loadingMore={sessions.isFetchingNextPage}
+        hasMore={Boolean(sessions.hasNextPage)}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onNewChat={startNewChat}
         onSelect={selectChat}
         onRefresh={() => sessions.refetch()}
+        onLoadMore={() => sessions.fetchNextPage()}
       />
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-50">
@@ -733,28 +746,37 @@ function ChatSidebar({
   sessions,
   selectedSessionId,
   loading,
+  loadingMore,
+  hasMore,
   open,
   onClose,
   onNewChat,
   onSelect,
   onRefresh,
+  onLoadMore,
 }: {
   sessions: SessionSummary[]
   selectedSessionId: string | null
   loading: boolean
+  loadingMore: boolean
+  hasMore: boolean
   open: boolean
   onClose: () => void
   onNewChat: () => void
   onSelect: (session: SessionSummary) => void
   onRefresh: () => void
+  onLoadMore: () => Promise<unknown>
 }) {
   const contentProps = {
     sessions,
     selectedSessionId,
     loading,
+    loadingMore,
+    hasMore,
     onNewChat,
     onSelect,
     onRefresh,
+    onLoadMore,
   }
 
   useEffect(() => {
@@ -794,18 +816,24 @@ function ChatSidebarContent({
   sessions,
   selectedSessionId,
   loading,
+  loadingMore,
+  hasMore,
   mobile = false,
   onNewChat,
   onSelect,
   onRefresh,
+  onLoadMore,
 }: {
   sessions: SessionSummary[]
   selectedSessionId: string | null
   loading: boolean
+  loadingMore: boolean
+  hasMore: boolean
   mobile?: boolean
   onNewChat: () => void
   onSelect: (session: SessionSummary) => void
   onRefresh: () => void
+  onLoadMore: () => Promise<unknown>
 }) {
   return (
     <>
@@ -878,6 +906,16 @@ function ChatSidebarContent({
               </button>
             )
           })}
+          {hasMore ? (
+            <button
+              type="button"
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60"
+              disabled={loadingMore}
+              onClick={() => void onLoadMore()}
+            >
+              {loadingMore ? 'Loading…' : 'Load older conversations'}
+            </button>
+          ) : null}
         </div>
       </div>
     </>

@@ -50,7 +50,7 @@ describe('App MSW integration safety net', () => {
           '/healthz',
           '/api/v1/claw/info',
           '/api/v1/workspace/runtime',
-          '/api/v1/sessions',
+          '/api/v1/sessions/page',
           '/api/v1/schedules',
           '/api/v1/heartbeat/status',
         ]),
@@ -61,6 +61,29 @@ describe('App MSW integration safety net', () => {
         (request) => request.authorization === `Bearer ${TEST_API_TOKEN}`,
       ),
     ).toBe(true)
+  })
+
+  it('falls back to the legacy session list when the page endpoint is unavailable', async () => {
+    let legacyRequests = 0
+    apiServer.use(
+      http.get('*/api/v1/sessions/page', () =>
+        HttpResponse.json({ detail: 'Not found' }, { status: 404 }),
+      ),
+      http.get('*/api/v1/sessions', () => {
+        legacyRequests += 1
+        return HttpResponse.json([])
+      }),
+    )
+
+    await renderApp({ connected: true })
+
+    expect(
+      await screen.findByRole('heading', {
+        level: 1,
+        name: 'What should YA Claw work on?',
+      }),
+    ).toBeVisible()
+    await waitFor(() => expect(legacyRequests).toBe(1))
   })
 
   it('preserves a requested deep link after connecting', async () => {
@@ -126,7 +149,7 @@ describe('App MSW integration safety net', () => {
 
   it('keeps the Conversations page heading when its list query fails', async () => {
     apiServer.use(
-      http.get('*/api/v1/sessions', () =>
+      http.get('*/api/v1/sessions/page', () =>
         HttpResponse.json({ detail: 'unavailable' }, { status: 503 }),
       ),
     )
@@ -150,7 +173,7 @@ describe('App MSW integration safety net', () => {
 
   it('returns to reauthentication when an authenticated query receives 401', async () => {
     apiServer.use(
-      http.get('*/api/v1/sessions', () =>
+      http.get('*/api/v1/sessions/page', () =>
         HttpResponse.json({ detail: 'expired' }, { status: 401 }),
       ),
     )
@@ -170,7 +193,7 @@ describe('App MSW integration safety net', () => {
     const firstCachedSessionId = 'first-cached-session'
     const requestedSessionIds: string[] = []
     apiServer.use(
-      http.get('*/api/v1/sessions', () =>
+      http.get('*/api/v1/sessions/page', () =>
         HttpResponse.json([
           {
             id: firstCachedSessionId,
@@ -239,7 +262,7 @@ describe('App MSW integration safety net', () => {
   it('keeps a conversation usable when optional list, history, and workspace queries fail', async () => {
     const sessionId = 'partially-available-conversation'
     apiServer.use(
-      http.get('*/api/v1/sessions', () =>
+      http.get('*/api/v1/sessions/page', () =>
         HttpResponse.json({ detail: 'List unavailable' }, { status: 503 }),
       ),
       http.get('*/api/v1/sessions/:sessionId/workspace', () =>
@@ -320,7 +343,7 @@ describe('App MSW integration safety net', () => {
   it('preserves an invalid conversation deep link and shows not found', async () => {
     const missingSessionId = 'missing-conversation'
     apiServer.use(
-      http.get('*/api/v1/sessions', () =>
+      http.get('*/api/v1/sessions/page', () =>
         HttpResponse.json([
           {
             id: 'existing-session',
@@ -363,7 +386,7 @@ describe('App MSW integration safety net', () => {
 
   it('preserves explicit new-conversation intent when history exists', async () => {
     apiServer.use(
-      http.get('*/api/v1/sessions', () =>
+      http.get('*/api/v1/sessions/page', () =>
         HttpResponse.json([
           {
             id: 'bridge-session-1',

@@ -208,7 +208,10 @@ describe('ChatPage route authority', () => {
     expect(
       screen.getByRole('heading', { level: 1, name: 'Conversation session-a' }),
     ).toBeVisible()
-    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith('session-a')
+    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith(
+      'session-a',
+      expect.objectContaining({ runsLimit: 1, includeHeadPayload: false }),
+    )
 
     window.history.pushState(null, '', '/conversations/sessions/session-b')
     view.rerender(
@@ -217,7 +220,10 @@ describe('ChatPage route authority', () => {
       </main>,
     )
 
-    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith('session-b')
+    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith(
+      'session-b',
+      expect.objectContaining({ runsLimit: 1, includeHeadPayload: false }),
+    )
     expect(hooks.useSessionWorkspaceQuery).toHaveBeenLastCalledWith('session-b')
     expect(hooks.useSessionHistoryQuery).toHaveBeenLastCalledWith('session-b', {
       runsLimit: 3,

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import (
@@ -20,6 +22,7 @@ from ya_claw.controller.models import (
     SessionDetail,
     SessionForkRequest,
     SessionGetResponse,
+    SessionListResponse,
     SessionRunCreateRequest,
     SessionSubmitRequest,
     SessionSubmitResponse,
@@ -263,17 +266,92 @@ class SessionController:
         *,
         settings: ClawSettings | None = None,
         include_internal: bool = False,
+        limit: int | None = None,
+        before_updated_at: datetime | None = None,
+        before_id: str | None = None,
+        include_latest_output: bool = True,
+        reconcile_workspace: bool = True,
     ) -> list[SessionSummary]:
-        logger.debug("Listing sessions include_internal={}", include_internal)
+        logger.debug(
+            "Listing sessions include_internal={} limit={} before_updated_at={} before_id={} include_latest_output={} reconcile_workspace={}",
+            include_internal,
+            limit,
+            before_updated_at,
+            before_id,
+            include_latest_output,
+            reconcile_workspace,
+        )
         statement: Select[tuple[SessionRecord]] = select(SessionRecord)
         if not include_internal:
             statement = statement.where(SessionRecord.session_type == "conversation")
-        statement = statement.order_by(SessionRecord.updated_at.desc())
+        if isinstance(before_updated_at, datetime):
+            if isinstance(before_id, str) and before_id:
+                statement = statement.where(
+                    or_(
+                        SessionRecord.updated_at < before_updated_at,
+                        and_(
+                            SessionRecord.updated_at == before_updated_at,
+                            SessionRecord.id < before_id,
+                        ),
+                    )
+                )
+            else:
+                statement = statement.where(SessionRecord.updated_at < before_updated_at)
+        statement = statement.order_by(SessionRecord.updated_at.desc(), SessionRecord.id.desc())
+        if isinstance(limit, int):
+            statement = statement.limit(min(max(limit, 1), 200))
         result = await db_session.execute(statement)
         records = list(result.scalars().all())
-        if settings is not None:
+        if settings is not None and reconcile_workspace:
             await self._reconcile_workspace_states(db_session, settings=settings, records=records)
-        return await self._build_summaries(db_session, records)
+        return await self._build_summaries(
+            db_session,
+            records,
+            include_latest_output=include_latest_output,
+        )
+
+    async def list_page(
+        self,
+        db_session: AsyncSession,
+        *,
+        settings: ClawSettings | None = None,
+        include_internal: bool = False,
+        limit: int = 50,
+        before_updated_at: datetime | None = None,
+        before_id: str | None = None,
+        include_latest_output: bool = False,
+    ) -> SessionListResponse:
+        if (before_updated_at is None) != (before_id is None):
+            raise HTTPException(
+                status_code=422,
+                detail="before_updated_at and before_id must be provided together.",
+            )
+        normalized_limit = min(max(limit, 1), 100)
+        summaries = await self.list(
+            db_session,
+            settings=settings,
+            include_internal=include_internal,
+            limit=normalized_limit + 1,
+            before_updated_at=before_updated_at,
+            before_id=before_id,
+            include_latest_output=include_latest_output,
+            reconcile_workspace=False,
+        )
+        has_more = len(summaries) > normalized_limit
+        page_summaries = summaries[:normalized_limit]
+        count_statement = select(func.count(SessionRecord.id))
+        if not include_internal:
+            count_statement = count_statement.where(SessionRecord.session_type == "conversation")
+        total = int((await db_session.scalar(count_statement)) or 0)
+        next_anchor = page_summaries[-1] if has_more and page_summaries else None
+        return SessionListResponse(
+            sessions=page_summaries,
+            total=total,
+            limit=normalized_limit,
+            has_more=has_more,
+            next_before_updated_at=next_anchor.updated_at if next_anchor is not None else None,
+            next_before_id=next_anchor.id if next_anchor is not None else None,
+        )
 
     async def get(
         self,
@@ -285,14 +363,16 @@ class SessionController:
         before_sequence_no: int | None = None,
         include_message: bool = False,
         include_input_parts: bool = False,
+        include_head_payload: bool = True,
     ) -> SessionGetResponse:
         logger.debug(
-            "Fetching session session_id={} runs_limit={} before_sequence_no={} include_message={} include_input_parts={}",
+            "Fetching session session_id={} runs_limit={} before_sequence_no={} include_message={} include_input_parts={} include_head_payload={}",
             session_id,
             runs_limit,
             before_sequence_no,
             include_message,
             include_input_parts,
+            include_head_payload,
         )
         record = await db_session.get(SessionRecord, session_id)
         if not isinstance(record, SessionRecord):
@@ -311,7 +391,7 @@ class SessionController:
         )
         state_payload = None
         message_payload = None
-        if isinstance(record.head_success_run_id, str):
+        if include_head_payload and isinstance(record.head_success_run_id, str):
             state_payload = read_run_state_blob_if_exists(settings, record.head_success_run_id)
             if include_message:
                 message_payload = read_run_message_blob_if_exists(settings, record.head_success_run_id)
@@ -520,22 +600,58 @@ class SessionController:
         summaries = await self._build_summaries(db_session, [record])
         return summaries[0]
 
-    async def _build_summaries(self, db_session: AsyncSession, records: list[SessionRecord]) -> list[SessionSummary]:
+    async def _build_summaries(
+        self,
+        db_session: AsyncSession,
+        records: list[SessionRecord],
+        *,
+        include_latest_output: bool = True,
+    ) -> list[SessionSummary]:
         if not records:
             return []
 
         session_ids = [record.id for record in records]
-        statement: Select[tuple[RunRecord]] = (
-            select(RunRecord)
+        run_stats = (
+            select(
+                RunRecord.session_id.label("session_id"),
+                func.count(RunRecord.id).label("run_count"),
+                func.max(RunRecord.sequence_no).label("latest_sequence_no"),
+            )
             .where(RunRecord.session_id.in_(session_ids))
-            .order_by(RunRecord.session_id.asc(), RunRecord.sequence_no.desc(), RunRecord.id.desc())
+            .group_by(RunRecord.session_id)
+            .subquery()
         )
-        result = await db_session.execute(statement)
-        run_records = list(result.scalars().all())
-
-        grouped_runs: dict[str, list[RunRecord]] = {session_id: [] for session_id in session_ids}
-        for run_record in run_records:
-            grouped_runs.setdefault(run_record.session_id, []).append(run_record)
+        latest_run_statement = select(RunRecord, run_stats.c.run_count).join(
+            run_stats,
+            and_(
+                RunRecord.session_id == run_stats.c.session_id,
+                RunRecord.sequence_no == run_stats.c.latest_sequence_no,
+            ),
+        )
+        if not include_latest_output:
+            latest_run_statement = latest_run_statement.options(
+                load_only(
+                    RunRecord.id,
+                    RunRecord.session_id,
+                    RunRecord.sequence_no,
+                    RunRecord.restore_from_run_id,
+                    RunRecord.status,
+                    RunRecord.trigger_type,
+                    RunRecord.profile_name,
+                    RunRecord.input_parts,
+                    RunRecord.run_metadata,
+                    RunRecord.error_message,
+                    RunRecord.termination_reason,
+                    RunRecord.created_at,
+                    RunRecord.started_at,
+                    RunRecord.finished_at,
+                    RunRecord.committed_at,
+                )
+            )
+        latest_run_result = await db_session.execute(latest_run_statement)
+        latest_runs: dict[str, tuple[RunRecord, int]] = {
+            run_record.session_id: (run_record, int(run_count)) for run_record, run_count in latest_run_result.all()
+        }
 
         memory_result = await db_session.execute(
             select(SessionMemoryStateRecord).where(SessionMemoryStateRecord.source_session_id.in_(session_ids))
@@ -545,16 +661,24 @@ class SessionController:
         }
         summaries: list[SessionSummary] = []
         for record in records:
-            runs = grouped_runs.get(record.id, [])
-            latest_run_record = runs[0] if runs else None
-            latest_run = run_summary_from_record(latest_run_record) if latest_run_record is not None else None
+            latest_run_entry = latest_runs.get(record.id)
+            latest_run_record = latest_run_entry[0] if latest_run_entry is not None else None
+            run_count = latest_run_entry[1] if latest_run_entry is not None else 0
+            latest_run = (
+                run_summary_from_record(
+                    latest_run_record,
+                    include_output_text=include_latest_output,
+                )
+                if latest_run_record is not None
+                else None
+            )
             active_interactions = (
                 active_interactions_from_run_record(latest_run_record) if latest_run_record is not None else None
             )
             summaries.append(
                 session_summary_from_record(
                     record,
-                    run_count=len(runs),
+                    run_count=run_count,
                     latest_run=latest_run,
                     memory_state=memory_states.get(record.id),
                     active_interactions=active_interactions,

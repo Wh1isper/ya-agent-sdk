@@ -1,5 +1,5 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
-import { useQueryClient } from '@tanstack/react-query'
+import { type InfiniteData, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
 import { useConnectionStore } from '../stores/connectionStore'
@@ -7,6 +7,7 @@ import type {
   NotificationEvent,
   RunStatus,
   SessionGetResponse,
+  SessionListResponse,
   SessionSandboxState,
   SessionSummary,
   SessionWorkspaceState,
@@ -134,6 +135,25 @@ function stringPayloadField(
   return null
 }
 
+function nullableStringPayloadField(
+  payload: Record<string, unknown>,
+  name: string,
+): string | null | undefined {
+  if (!(name in payload)) return undefined
+  const value = payload[name]
+  return value === null || typeof value === 'string' ? value : undefined
+}
+
+function objectPayloadField(
+  payload: Record<string, unknown>,
+  name: string,
+): Record<string, unknown> | undefined {
+  const value = payload[name]
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
 function runStatusFromNotification(event: NotificationEvent) {
   const status = stringPayloadField(event.payload, 'status')
   return isRunStatus(status) ? status : null
@@ -159,6 +179,37 @@ function isSessionSandboxState(value: unknown): value is SessionSandboxState {
   return typeof candidate.status === 'string'
 }
 
+function patchSessionPages(
+  queryClient: ReturnType<typeof useQueryClient>,
+  update: (session: SessionSummary) => SessionSummary,
+) {
+  queryClient.setQueryData<InfiniteData<SessionListResponse>>(
+    queryKeys.sessions,
+    (previous) => {
+      if (!previous) return previous
+      const updatedSessions = previous.pages
+        .flatMap((page) => page.sessions.map(update))
+        .sort(
+          (left, right) =>
+            right.updated_at.localeCompare(left.updated_at) ||
+            right.id.localeCompare(left.id),
+        )
+      let offset = 0
+      return {
+        ...previous,
+        pages: previous.pages.map((page) => {
+          const sessions = updatedSessions.slice(
+            offset,
+            offset + page.sessions.length,
+          )
+          offset += page.sessions.length
+          return { ...page, sessions }
+        }),
+      }
+    },
+  )
+}
+
 function patchSessionWorkspaceFromNotification(
   queryClient: ReturnType<typeof useQueryClient>,
   event: NotificationEvent,
@@ -175,18 +226,16 @@ function patchSessionWorkspaceFromNotification(
     sandbox_state: sandboxState,
   })
 
-  queryClient.setQueryData<SessionSummary[]>(queryKeys.sessions, (previous) =>
-    previous?.map((session) =>
-      session.id === sessionId
-        ? {
-            ...session,
-            workspace_state: applyWorkspaceState(session.workspace_state),
-          }
-        : session,
-    ),
+  patchSessionPages(queryClient, (session) =>
+    session.id === sessionId
+      ? {
+          ...session,
+          workspace_state: applyWorkspaceState(session.workspace_state),
+        }
+      : session,
   )
-  queryClient.setQueryData<SessionGetResponse>(
-    queryKeys.session(sessionId),
+  queryClient.setQueriesData<SessionGetResponse>(
+    { queryKey: queryKeys.session(sessionId) },
     (previous) =>
       previous
         ? {
@@ -223,15 +272,11 @@ function patchSessionStatusFromNotification(
   if (!runStatus) return
   const sessionStatus = sessionStatusFromRunStatus(runStatus)
 
-  queryClient.setQueryData<SessionSummary[]>(queryKeys.sessions, (previous) =>
-    previous?.map((session) =>
-      session.id === sessionId
-        ? { ...session, status: sessionStatus }
-        : session,
-    ),
+  patchSessionPages(queryClient, (session) =>
+    session.id === sessionId ? { ...session, status: sessionStatus } : session,
   )
-  queryClient.setQueryData<SessionGetResponse>(
-    queryKeys.session(sessionId),
+  queryClient.setQueriesData<SessionGetResponse>(
+    { queryKey: queryKeys.session(sessionId) },
     (previous) =>
       previous
         ? {
@@ -241,18 +286,82 @@ function patchSessionStatusFromNotification(
         : previous,
   )
   if (runId) {
-    queryClient.setQueryData<SessionSummary[]>(queryKeys.sessions, (previous) =>
-      previous?.map((session) => {
-        if (session.id !== sessionId || session.latest_run?.id !== runId) {
-          return session
-        }
-        return {
-          ...session,
-          latest_run: { ...session.latest_run, status: runStatus },
-        }
-      }),
-    )
+    patchSessionPages(queryClient, (session) => {
+      if (session.id !== sessionId || session.latest_run?.id !== runId) {
+        return session
+      }
+      return {
+        ...session,
+        latest_run: { ...session.latest_run, status: runStatus },
+      }
+    })
   }
+}
+
+function patchSessionSummaryFromNotification(
+  queryClient: ReturnType<typeof useQueryClient>,
+  event: NotificationEvent,
+  sessionId: string | null,
+) {
+  if (!sessionId || event.type !== 'session.updated') return
+  const payload = event.payload
+  const rawStatus = stringPayloadField(payload, 'status')
+  const status = isRunStatus(rawStatus)
+    ? sessionStatusFromRunStatus(rawStatus)
+    : undefined
+  const statusReason = nullableStringPayloadField(payload, 'status_reason')
+  const statusDetail = objectPayloadField(payload, 'status_detail')
+  const profileName = nullableStringPayloadField(payload, 'profile_name')
+  const headRunId = nullableStringPayloadField(payload, 'head_run_id')
+  const activeRunId = nullableStringPayloadField(payload, 'active_run_id')
+  const latestRunId = nullableStringPayloadField(payload, 'latest_run_id')
+  const updatedAt = nullableStringPayloadField(payload, 'updated_at')
+  const terminationReason = nullableStringPayloadField(
+    payload,
+    'termination_reason',
+  )
+  const errorMessage = nullableStringPayloadField(payload, 'error_message')
+
+  const updateSession = <T extends SessionSummary>(session: T): T => {
+    if (session.id !== sessionId) return session
+    const latestRun =
+      session.latest_run && latestRunId === session.latest_run.id
+        ? {
+            ...session.latest_run,
+            ...(rawStatus && isRunStatus(rawStatus)
+              ? { status: rawStatus }
+              : {}),
+            ...(terminationReason !== undefined
+              ? { termination_reason: terminationReason }
+              : {}),
+            ...(errorMessage !== undefined
+              ? { error_message: errorMessage }
+              : {}),
+          }
+        : session.latest_run
+    return {
+      ...session,
+      ...(status ? { status } : {}),
+      ...(typeof statusReason === 'string'
+        ? { status_reason: statusReason }
+        : {}),
+      ...(statusDetail ? { status_detail: statusDetail } : {}),
+      ...(profileName !== undefined ? { profile_name: profileName } : {}),
+      ...(headRunId !== undefined ? { head_run_id: headRunId } : {}),
+      ...(activeRunId !== undefined ? { active_run_id: activeRunId } : {}),
+      ...(updatedAt ? { updated_at: updatedAt } : {}),
+      latest_run: latestRun,
+    } as T
+  }
+
+  patchSessionPages(queryClient, updateSession)
+  queryClient.setQueriesData<SessionGetResponse>(
+    { queryKey: queryKeys.session(sessionId) },
+    (previous) =>
+      previous
+        ? { ...previous, session: updateSession(previous.session) }
+        : previous,
+  )
 }
 
 function invalidateForNotification(
@@ -271,8 +380,11 @@ function invalidateForNotification(
     event.type === 'agency.source_session.submitted'
   ) {
     patchSessionStatusFromNotification(queryClient, event, sessionId, runId)
+    patchSessionSummaryFromNotification(queryClient, event, sessionId)
     patchSessionWorkspaceFromNotification(queryClient, event, sessionId)
-    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+    if (event.type === 'session.created' || event.type === 'run.created') {
+      void queryClient.resetQueries({ queryKey: queryKeys.sessions })
+    }
     if (sessionId) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.session(sessionId),

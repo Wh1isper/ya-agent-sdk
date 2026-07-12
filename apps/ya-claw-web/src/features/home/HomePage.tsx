@@ -97,7 +97,7 @@ export function HomePage() {
             <div className="min-w-0">
               <h2 className="font-semibold text-amber-950">Needs attention</h2>
               <p className="mt-1 text-sm text-amber-800">
-                {`${attention.length} conversation${attention.length === 1 ? '' : 's'} ended without completing.`}
+                {`${attention.length} recent conversation${attention.length === 1 ? '' : 's'} ended without completing (latest ${rows.length} checked).`}
               </p>
               <Link
                 to="/activity"
@@ -115,7 +115,7 @@ export function HomePage() {
           icon={Activity}
           label="Active work"
           value={String(active.length)}
-          detail={`${rows.length} conversations`}
+          detail={`${sessions.total} total · latest ${rows.length} checked`}
         />
         <Metric
           icon={Workflow}

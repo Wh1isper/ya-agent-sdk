@@ -1761,6 +1761,9 @@ async def _publish_run_status_notification(
                 "latest_run_id": run_record.id,
                 "latest_run_sequence_no": run_record.sequence_no,
                 "latest_run_status": run_record.status,
+                "termination_reason": run_record.termination_reason,
+                "error_message": run_record.error_message,
+                "updated_at": (run_record.finished_at or run_record.started_at or run_record.created_at).isoformat(),
             },
         )
 

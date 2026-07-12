@@ -808,6 +808,15 @@ export type SessionDetail = SessionSummary & {
   runs_next_before_sequence_no?: number | null
 }
 
+export type SessionListResponse = {
+  sessions: SessionSummary[]
+  total: number
+  limit: number
+  has_more: boolean
+  next_before_updated_at?: string | null
+  next_before_id?: string | null
+}
+
 export type SessionGetResponse = {
   session: SessionDetail
   state?: Record<string, unknown> | null

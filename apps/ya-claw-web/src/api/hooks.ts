@@ -23,7 +23,7 @@ import type {
   WorkflowRunListFilters,
   WorkflowTriggerRequest,
 } from '../types'
-import { ClawApiClient } from './client'
+import { ApiError, ClawApiClient } from './client'
 import { queryKeys } from './queryKeys'
 
 function pollingInterval(milliseconds: number) {
@@ -248,7 +248,7 @@ export function useSessionSandboxMutations(sessionId: string | null) {
   const queryClient = useQueryClient()
   const refresh = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+      queryClient.resetQueries({ queryKey: queryKeys.sessions }),
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaceRuntime }),
       sessionId
         ? queryClient.invalidateQueries({
@@ -304,22 +304,120 @@ export function useBridgeEventsQuery(filters: {
   })
 }
 
-export function useSessionsQuery() {
-  const api = useApiClient()
-  return useQuery({
-    queryKey: queryKeys.sessions,
-    queryFn: ({ signal }) => api.listSessions({ signal }),
-    placeholderData: keepPreviousData,
-    refetchInterval: pollingInterval(5_000),
-    staleTime: 2_000,
-  })
+type SessionPageParam = {
+  beforeUpdatedAt?: string
+  beforeId?: string
 }
 
-export function useSessionQuery(sessionId: string | null) {
+const SESSION_PAGE_SIZE = 50
+
+export function useSessionsQuery() {
   const api = useApiClient()
+  const query = useInfiniteQuery({
+    queryKey: queryKeys.sessions,
+    queryFn: async ({ pageParam, signal }) => {
+      try {
+        const response = await api.listSessionsPage({
+          limit: SESSION_PAGE_SIZE,
+          beforeUpdatedAt: pageParam.beforeUpdatedAt,
+          beforeId: pageParam.beforeId,
+          signal,
+        })
+        if (Array.isArray(response)) {
+          return {
+            sessions: response,
+            total: response.length,
+            limit: response.length,
+            has_more: false,
+            next_before_updated_at: null,
+            next_before_id: null,
+          }
+        }
+        return response
+      } catch (error) {
+        if (
+          error instanceof ApiError &&
+          [404, 405].includes(error.status) &&
+          !pageParam.beforeUpdatedAt
+        ) {
+          const sessions = await api.listSessions({ signal })
+          return {
+            sessions,
+            total: sessions.length,
+            limit: sessions.length,
+            has_more: false,
+            next_before_updated_at: null,
+            next_before_id: null,
+          }
+        }
+        throw error
+      }
+    },
+    initialPageParam: {} as SessionPageParam,
+    getNextPageParam: (lastPage): SessionPageParam | undefined =>
+      lastPage.has_more &&
+      lastPage.next_before_updated_at &&
+      lastPage.next_before_id
+        ? {
+            beforeUpdatedAt: lastPage.next_before_updated_at,
+            beforeId: lastPage.next_before_id,
+          }
+        : undefined,
+    select: (data) => {
+      const sessionsById = new Map(
+        data.pages
+          .flatMap((page) => page.sessions)
+          .map((session) => [session.id, session] as const),
+      )
+      return {
+        sessions: [...sessionsById.values()],
+        total: data.pages[0]?.total ?? 0,
+      }
+    },
+    // The notification stream patches status changes and resets this query for
+    // new sessions/runs. Avoid interval refetches because an infinite query
+    // would otherwise redownload every page the user has opened.
+    staleTime: 10_000,
+  })
+  return {
+    ...query,
+    data: query.data?.sessions,
+    total: query.data?.total ?? 0,
+  }
+}
+
+export function useSessionQuery(
+  sessionId: string | null,
+  options: {
+    runsLimit?: number
+    includeMessage?: boolean
+    includeInputParts?: boolean
+    includeHeadPayload?: boolean
+  } = {},
+) {
+  const api = useApiClient()
+  const runsLimit = options.runsLimit ?? 20
+  const includeMessage = options.includeMessage ?? true
+  const includeInputParts = options.includeInputParts ?? true
+  const includeHeadPayload = options.includeHeadPayload ?? true
   return useQuery({
-    queryKey: sessionId ? queryKeys.session(sessionId) : ['session', 'none'],
-    queryFn: ({ signal }) => api.getSession(sessionId ?? '', { signal }),
+    queryKey: sessionId
+      ? [
+          ...queryKeys.session(sessionId),
+          runsLimit,
+          includeMessage,
+          includeInputParts,
+          includeHeadPayload,
+        ]
+      : ['session', 'none'],
+    queryFn: ({ signal }) =>
+      api.getSession(sessionId ?? '', {
+        runsLimit,
+        includeMessage,
+        includeInputParts,
+        includeHeadPayload,
+        signal,
+      }),
     enabled: Boolean(sessionId),
     staleTime: 5_000,
   })
@@ -341,6 +439,7 @@ export function useSessionHistoryQuery(
         beforeSequenceNo: pageParam,
         includeMessage: true,
         includeInputParts: true,
+        includeHeadPayload: false,
         signal,
       }),
     enabled: Boolean(sessionId),
@@ -397,7 +496,7 @@ export function useAgencyMutations() {
       queryClient.invalidateQueries({ queryKey: queryKeys.agencyConfig }),
       queryClient.invalidateQueries({ queryKey: queryKeys.agencyStatus }),
       queryClient.invalidateQueries({ queryKey: queryKeys.agencyFires }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+      queryClient.resetQueries({ queryKey: queryKeys.sessions }),
       queryClient.invalidateQueries({ queryKey: ['session-history'] }),
       ...sessionIds.flatMap((agencySessionId) => [
         queryClient.invalidateQueries({
@@ -423,12 +522,15 @@ export function useAgencyMutations() {
   }
 }
 
-export function useRunQuery(runId: string | null) {
+export function useRunQuery(
+  runId: string | null,
+  options: { enabled?: boolean } = {},
+) {
   const api = useApiClient()
   return useQuery({
     queryKey: runId ? queryKeys.run(runId) : ['run', 'none'],
     queryFn: ({ signal }) => api.getRun(runId ?? '', { signal }),
-    enabled: Boolean(runId),
+    enabled: Boolean(runId) && (options.enabled ?? true),
     staleTime: 5_000,
   })
 }
@@ -476,7 +578,7 @@ export function useCreateSessionMutation() {
     }) => api.createSession(payload),
     onSuccess: async (response) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+        queryClient.resetQueries({ queryKey: queryKeys.sessions }),
         queryClient.invalidateQueries({
           queryKey: queryKeys.session(response.session.id),
         }),
@@ -496,7 +598,7 @@ export function useSubmitSessionInputMutation(sessionId: string | null) {
       api.submitSessionInput(sessionId ?? '', payload),
     onSuccess: async (response) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+        queryClient.resetQueries({ queryKey: queryKeys.sessions }),
         sessionId
           ? queryClient.invalidateQueries({
               queryKey: queryKeys.session(sessionId),
@@ -520,7 +622,7 @@ export function useRunControlMutations(runId: string | null) {
   const queryClient = useQueryClient()
   const refresh = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+      queryClient.resetQueries({ queryKey: queryKeys.sessions }),
       runId
         ? queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) })
         : Promise.resolve(),
@@ -890,7 +992,7 @@ export function useTriggerScheduleMutation() {
         queryClient.invalidateQueries({
           queryKey: queryKeys.scheduleFires(fire.schedule_id),
         }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+        queryClient.resetQueries({ queryKey: queryKeys.sessions }),
         queryClient.invalidateQueries({ queryKey: ['workflows'] }),
         queryClient.invalidateQueries({ queryKey: ['workflow-runs'] }),
       ])
@@ -937,7 +1039,7 @@ export function useTriggerHeartbeatMutation() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.heartbeatStatus }),
         queryClient.invalidateQueries({ queryKey: queryKeys.heartbeatFires }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
+        queryClient.resetQueries({ queryKey: queryKeys.sessions }),
       ])
     },
   })

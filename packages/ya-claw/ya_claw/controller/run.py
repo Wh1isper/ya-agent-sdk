@@ -40,6 +40,7 @@ from ya_claw.controller.store import (
     ensure_run_dir,
     read_run_message_blob_if_exists,
     read_run_state_blob_if_exists,
+    run_blob_path,
 )
 from ya_claw.execution.state_machine import cancel_run, interrupt_run, queue_run
 from ya_claw.orm.tables import RunRecord, SessionRecord
@@ -201,10 +202,10 @@ class RunController:
         if not isinstance(session_record, SessionRecord):
             raise HTTPException(status_code=404, detail=f"Session '{run_record.session_id}' was not found.")
 
-        state_payload = read_run_state_blob_if_exists(settings, run_id)
-        message_events = read_run_message_blob_if_exists(settings, run_id)
-        has_state = state_payload is not None
-        has_message = message_events is not None
+        has_state = run_blob_path(settings, run_id, "state.json").is_file()
+        has_message = run_blob_path(settings, run_id, "message.json").is_file()
+        state_payload = read_run_state_blob_if_exists(settings, run_id) if include_state and has_state else None
+        message_events = read_run_message_blob_if_exists(settings, run_id) if include_message and has_message else None
 
         return RunGetResponse(
             session=await self._build_session_summary(db_session, session_record),

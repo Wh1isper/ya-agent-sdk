@@ -60,9 +60,25 @@ export function DebugPage() {
   const [isComposingNew, setIsComposingNew] = useState(false)
   const autoSelectedSessionRef = useRef(false)
   const sessions = useSessionsQuery()
+  const {
+    fetchNextPage: fetchNextSessionPage,
+    hasNextPage: hasNextSessionPage,
+    isFetchingNextPage: isFetchingNextSessionPage,
+  } = sessions
+  const sessionFilterActive =
+    Boolean(sessionSearch.trim()) ||
+    statusFilter !== 'all' ||
+    sourceFilter !== 'all' ||
+    profileFilter !== 'all' ||
+    timeFilter !== 'all'
   const workspaceRuntime = useWorkspaceRuntimeQuery()
   const selectedSessionWorkspace = useSessionWorkspaceQuery(selectedSessionId)
-  const selectedSession = useSessionQuery(selectedSessionId)
+  const selectedSession = useSessionQuery(selectedSessionId, {
+    runsLimit: 1,
+    includeMessage: false,
+    includeInputParts: false,
+    includeHeadPayload: false,
+  })
   const activeSessionData = selectedSessionId ? selectedSession.data : undefined
   const resolvedRunId =
     selectedRunId ??
@@ -98,6 +114,21 @@ export function DebugPage() {
   const failedDetailQuery = detailQueries.find((query) => query.isError)
   const workspaceError =
     workspaceRuntime.error ?? selectedSessionWorkspace.error
+
+  useEffect(() => {
+    if (
+      sessionFilterActive &&
+      hasNextSessionPage &&
+      !isFetchingNextSessionPage
+    ) {
+      void fetchNextSessionPage()
+    }
+  }, [
+    fetchNextSessionPage,
+    hasNextSessionPage,
+    isFetchingNextSessionPage,
+    sessionFilterActive,
+  ])
 
   useEffect(() => {
     const firstSessionId = sessions.data?.[0]?.id
@@ -356,8 +387,11 @@ export function DebugPage() {
                 ariaLabel="Desktop activity sessions"
                 search={sessionSearch}
                 loading={sessions.isLoading}
+                loadingMore={sessions.isFetchingNextPage}
+                hasMore={Boolean(sessions.hasNextPage)}
                 error={sessions.error}
                 onRetry={() => void sessions.refetch()}
+                onLoadMore={() => sessions.fetchNextPage()}
                 onSearchChange={setSessionSearch}
                 filters={{
                   status: statusFilter,
@@ -467,8 +501,11 @@ export function DebugPage() {
             ariaLabel="Mobile activity sessions"
             search={sessionSearch}
             loading={sessions.isLoading}
+            loadingMore={sessions.isFetchingNextPage}
+            hasMore={Boolean(sessions.hasNextPage)}
             error={sessions.error}
             onRetry={() => void sessions.refetch()}
+            onLoadMore={() => sessions.fetchNextPage()}
             onSearchChange={setSessionSearch}
             filters={{
               status: statusFilter,

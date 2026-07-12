@@ -91,7 +91,7 @@ class SessionRecord(Base):
             f"session_type IN {_ALLOWED_SESSION_TYPES!s}",
             name="ck_sessions_session_type",
         ),
-        Index("ix_sessions_session_type_updated", "session_type", "updated_at"),
+        Index("ix_sessions_type_updated_id", "session_type", "updated_at", "id"),
         Index("ix_sessions_source_session", "source_session_id"),
         Index("ix_sessions_type_source_unique", "session_type", "source_session_id", unique=True),
     )
@@ -124,6 +124,7 @@ class RunRecord(Base):
         ),
         Index("ix_runs_session_created_at", "session_id", "created_at"),
         Index("ix_runs_session_sequence_no", "session_id", "sequence_no", unique=True),
+        Index("ix_runs_session_status_sequence", "session_id", "status", "sequence_no"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)

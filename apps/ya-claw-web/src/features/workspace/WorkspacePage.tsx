@@ -233,20 +233,34 @@ export function WorkspacePage() {
             controls affect execution only; this browser remains read-only.
           </p>
         </div>
-        <label className="min-w-56 text-sm font-medium">
-          Conversation
-          <select
-            className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none focus:ring-2 focus:ring-[var(--focus)]"
-            value={sessionId ?? ''}
-            onChange={(event) => setSessionId(event.target.value || null)}
-          >
-            {(sessions.data ?? []).map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.latest_run?.input_preview || session.id.slice(0, 12)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="min-w-56">
+          <label className="text-sm font-medium">
+            Conversation
+            <select
+              className="mt-1.5 h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none focus:ring-2 focus:ring-[var(--focus)]"
+              value={sessionId ?? ''}
+              onChange={(event) => setSessionId(event.target.value || null)}
+            >
+              {(sessions.data ?? []).map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.latest_run?.input_preview || session.id.slice(0, 12)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {sessions.hasNextPage ? (
+            <button
+              type="button"
+              className="mt-2 text-xs font-semibold text-[var(--primary)] disabled:opacity-60"
+              disabled={sessions.isFetchingNextPage}
+              onClick={() => void sessions.fetchNextPage()}
+            >
+              {sessions.isFetchingNextPage
+                ? 'Loading conversations…'
+                : 'Load older conversations'}
+            </button>
+          ) : null}
+        </div>
       </section>
 
       {!sessions.isLoading && (sessions.data ?? []).length === 0 ? (

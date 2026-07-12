@@ -175,6 +175,36 @@ describe('ClawApiClient schedule and workflow query serialization', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it('serializes lightweight session pagination cursors', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      mockJsonResponse({
+        sessions: [],
+        total: 1000,
+        limit: 50,
+        has_more: false,
+      }),
+    )
+    const api = new ClawApiClient({
+      baseUrl: 'http://claw.local',
+      apiToken: 'token',
+    })
+
+    await api.listSessionsPage({
+      limit: 25,
+      beforeUpdatedAt: '2026-07-12T07:00:00Z',
+      beforeId: 'session-25',
+    })
+
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
+    expect(url.pathname).toBe('/api/v1/sessions/page')
+    expect(url.searchParams.get('limit')).toBe('25')
+    expect(url.searchParams.get('before_updated_at')).toBe(
+      '2026-07-12T07:00:00Z',
+    )
+    expect(url.searchParams.get('before_id')).toBe('session-25')
+    expect(url.searchParams.get('include_latest_output')).toBe('false')
+  })
+
   it('forwards query cancellation signals so abort stops the fetch', async () => {
     const controller = new AbortController()
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(

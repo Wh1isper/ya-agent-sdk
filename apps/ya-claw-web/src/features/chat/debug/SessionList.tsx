@@ -18,10 +18,13 @@ export function SessionList({
   selectedSessionId,
   search,
   loading,
+  loadingMore,
+  hasMore,
   error,
   filters,
   profileOptions,
   onRetry,
+  onLoadMore,
   onSearchChange,
   onFilterChange,
   onClearFilters,
@@ -32,10 +35,13 @@ export function SessionList({
   selectedSessionId: string | null
   search: string
   loading: boolean
+  loadingMore: boolean
+  hasMore: boolean
   error: unknown
   filters: Record<'status' | 'source' | 'profile' | 'time', string>
   profileOptions: string[]
   onRetry: () => void
+  onLoadMore: () => Promise<unknown>
   onSearchChange: (value: string) => void
   onFilterChange: (
     filter: 'status' | 'source' | 'profile' | 'time',
@@ -137,7 +143,7 @@ export function SessionList({
             onRetry={onRetry}
           />
         ) : null}
-        {!loading && !error && sessions.length === 0 ? (
+        {!loading && !loadingMore && !error && sessions.length === 0 ? (
           <EmptyState
             icon={MessageSquare}
             title={search.trim() ? 'No matching sessions' : 'No sessions'}
@@ -212,6 +218,16 @@ export function SessionList({
               </button>
             )
           })}
+          {hasMore ? (
+            <button
+              type="button"
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-60"
+              disabled={loadingMore}
+              onClick={() => void onLoadMore()}
+            >
+              {loadingMore ? 'Loading…' : 'Load older activity'}
+            </button>
+          ) : null}
         </div>
       </div>
     </aside>

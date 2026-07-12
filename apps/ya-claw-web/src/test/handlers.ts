@@ -64,6 +64,16 @@ export const apiHandlers: HttpHandler[] = [
   http.get('*/api/v1/workspace/runtime', ({ request }) =>
     authorizedJson(request, workspaceRuntimeFixture),
   ),
+  http.get('*/api/v1/sessions/page', ({ request }) =>
+    authorizedJson(request, {
+      sessions: sessionsFixture,
+      total: sessionsFixture.length,
+      limit: 50,
+      has_more: false,
+      next_before_updated_at: null,
+      next_before_id: null,
+    }),
+  ),
   http.get('*/api/v1/sessions', ({ request }) =>
     authorizedJson(request, sessionsFixture),
   ),

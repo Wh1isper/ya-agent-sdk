@@ -330,8 +330,9 @@ Every HTTP route except `/healthz` expects `Authorization: Bearer <YA_CLAW_API_T
 - `GET /healthz` — service health probe with storage and runtime component status
 - `POST /api/v1/sessions` — create a session with optional first queued run and return JSON
 - `POST /api/v1/sessions:stream` — create a session with a first run and stream foreground SSE events
-- `GET /api/v1/sessions` — list sessions
-- `GET /api/v1/sessions/{session_id}` — inspect a session plus paginated runs, top-level committed state, and optional compacted message replay lists
+- `GET /api/v1/sessions` — list sessions using the backwards-compatible unpaginated response; optional keyset parameters are available for transitional clients
+- `GET /api/v1/sessions/page` — list lightweight session pages ordered by `(updated_at, id)`, with `total`, `has_more`, and continuation anchors; this endpoint skips live Docker reconciliation and latest-run output text by default
+- `GET /api/v1/sessions/{session_id}` — inspect a session plus paginated runs, top-level committed state, and optional compacted message replay lists; set `include_head_payload=false` when only the run page is needed
 - `POST /api/v1/sessions/{session_id}/memory:extract` — enqueue a background memory extract run for the source session
 - `POST /api/v1/sessions/{session_id}/memory:summarize` — enqueue a background memory summary run for the source session
 - `POST /api/v1/sessions/{session_id}/runs` — create a run under a session and return JSON

@@ -524,6 +524,15 @@ class SessionDetail(SessionSummary):
     runs_next_before_sequence_no: int | None = None
 
 
+class SessionListResponse(BaseModel):
+    sessions: list[SessionSummary] = Field(default_factory=list)
+    total: int = 0
+    limit: int
+    has_more: bool = False
+    next_before_updated_at: datetime | None = None
+    next_before_id: str | None = None
+
+
 class SessionCreateResponse(BaseModel):
     session: SessionSummary
     run: RunDetail | None = None
@@ -705,6 +714,7 @@ def run_summary_from_record(
     *,
     message: list[dict[str, Any]] | None = None,
     include_input_parts: bool = False,
+    include_output_text: bool = True,
 ) -> RunSummary:
     input_parts = parse_input_parts(list(record.input_parts))
     termination_reason = TerminationReason(record.termination_reason) if record.termination_reason else None
@@ -718,7 +728,7 @@ def run_summary_from_record(
         profile_name=record.profile_name,
         input_preview=extract_input_preview(input_parts),
         input_parts=input_parts if include_input_parts else None,
-        output_text=record.output_text,
+        output_text=record.output_text if include_output_text else None,
         error_message=record.error_message,
         termination_reason=termination_reason,
         created_at=record.created_at,

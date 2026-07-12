@@ -79,6 +79,58 @@ async def test_session_controller_creates_session_and_initial_run(
     assert sessions[0].latest_run.id == response.run.id
 
 
+async def test_session_controller_lists_lightweight_keyset_pages(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = SessionController()
+    runtime_state = create_runtime_state()
+    created_sessions = []
+    for index in range(3):
+        created = await controller.create(
+            db_session,
+            settings,
+            runtime_state,
+            SessionCreateRequest(
+                input_parts=[{"type": "text", "text": f"prompt-{index}"}],
+            ),
+        )
+        assert created.run is not None
+        run_record = await db_session.get(RunRecord, created.run.id)
+        session_record = await db_session.get(SessionRecord, created.session.id)
+        assert isinstance(run_record, RunRecord)
+        assert isinstance(session_record, SessionRecord)
+        run_record.output_text = "large output" * 100
+        session_record.updated_at = datetime(2026, 1, 1, tzinfo=UTC)
+        created_sessions.append(created.session.id)
+    await db_session.commit()
+
+    async def unexpected_workspace_reconcile(*args: object, **kwargs: object) -> None:
+        raise AssertionError((args, kwargs))
+
+    monkeypatch.setattr(controller, "_reconcile_workspace_states", unexpected_workspace_reconcile)
+    first_page = await controller.list_page(db_session, settings=settings, limit=2)
+    second_page = await controller.list_page(
+        db_session,
+        settings=settings,
+        limit=2,
+        before_updated_at=first_page.next_before_updated_at,
+        before_id=first_page.next_before_id,
+    )
+
+    assert first_page.total == 3
+    assert first_page.has_more is True
+    assert first_page.next_before_updated_at is not None
+    assert first_page.next_before_id is not None
+    assert len(first_page.sessions) == 2
+    assert all(session.latest_run is not None for session in first_page.sessions)
+    assert all(session.latest_run.output_text is None for session in first_page.sessions if session.latest_run)
+    assert second_page.has_more is False
+    assert len(second_page.sessions) == 1
+    assert {session.id for session in [*first_page.sessions, *second_page.sessions]} == set(created_sessions)
+
+
 async def test_session_controller_get_embeds_paginated_runs_with_optional_message(
     db_session: AsyncSession,
     settings: ClawSettings,

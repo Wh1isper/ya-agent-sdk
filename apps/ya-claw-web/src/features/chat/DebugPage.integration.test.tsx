@@ -140,7 +140,10 @@ describe('DebugPage cross-session run isolation', () => {
   it('blocks another session run before starting SSE or rendering run details', () => {
     renderDebugPage()
 
-    expect(hooks.useSessionQuery).toHaveBeenCalledWith('session-a')
+    expect(hooks.useSessionQuery).toHaveBeenCalledWith(
+      'session-a',
+      expect.objectContaining({ runsLimit: 1, includeHeadPayload: false }),
+    )
     expect(hooks.useRunQuery).toHaveBeenCalledWith('run-b')
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Run does not belong to this session',
@@ -284,7 +287,10 @@ describe('DebugPage cross-session run isolation', () => {
     )
 
     const view = renderDebugPage()
-    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith('session-a')
+    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith(
+      'session-a',
+      expect.objectContaining({ runsLimit: 1, includeHeadPayload: false }),
+    )
 
     window.history.pushState(null, '', '/activity/sessions/session-b')
     view.rerender(
@@ -293,7 +299,10 @@ describe('DebugPage cross-session run isolation', () => {
       </QueryClientProvider>,
     )
 
-    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith('session-b')
+    expect(hooks.useSessionQuery).toHaveBeenLastCalledWith(
+      'session-b',
+      expect.objectContaining({ runsLimit: 1, includeHeadPayload: false }),
+    )
     expect(hooks.useSessionWorkspaceQuery).toHaveBeenLastCalledWith('session-b')
     expect(hooks.useSessionHistoryQuery).toHaveBeenLastCalledWith('session-b', {
       runsLimit: 3,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,6 +26,7 @@ from ya_claw.controller.models import (
     SessionCreateResponse,
     SessionForkRequest,
     SessionGetResponse,
+    SessionListResponse,
     SessionRunCreateRequest,
     SessionSubmitRequest,
     SessionSubmitResponse,
@@ -108,11 +110,49 @@ async def create_session_stream(request: Request, payload: SessionCreateRequest)
 
 
 @router.get("", response_model=list[SessionSummary])
-async def list_sessions(request: Request, include_internal: bool = False) -> list[SessionSummary]:
+async def list_sessions(
+    request: Request,
+    include_internal: bool = False,
+    limit: int | None = None,
+    before_updated_at: datetime | None = None,
+    before_id: str | None = None,
+    include_latest_output: bool = True,
+) -> list[SessionSummary]:
     settings = _get_settings(request)
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
-        return await session_controller.list(db_session, settings=settings, include_internal=include_internal)
+        return await session_controller.list(
+            db_session,
+            settings=settings,
+            include_internal=include_internal,
+            limit=limit,
+            before_updated_at=before_updated_at,
+            before_id=before_id,
+            include_latest_output=include_latest_output,
+        )
+
+
+@router.get("/page", response_model=SessionListResponse)
+async def list_sessions_page(
+    request: Request,
+    include_internal: bool = False,
+    limit: int = 50,
+    before_updated_at: datetime | None = None,
+    before_id: str | None = None,
+    include_latest_output: bool = False,
+) -> SessionListResponse:
+    settings = _get_settings(request)
+    session_factory = _get_session_factory(request)
+    async with session_factory() as db_session:
+        return await session_controller.list_page(
+            db_session,
+            settings=settings,
+            include_internal=include_internal,
+            limit=limit,
+            before_updated_at=before_updated_at,
+            before_id=before_id,
+            include_latest_output=include_latest_output,
+        )
 
 
 @router.get("/{session_id}", response_model=SessionGetResponse)
@@ -123,6 +163,7 @@ async def get_session(
     before_sequence_no: int | None = None,
     include_message: bool = False,
     include_input_parts: bool = False,
+    include_head_payload: bool = True,
 ) -> SessionGetResponse:
     settings = _get_settings(request)
     session_factory = _get_session_factory(request)
@@ -135,6 +176,7 @@ async def get_session(
             before_sequence_no=before_sequence_no,
             include_message=include_message,
             include_input_parts=include_input_parts,
+            include_head_payload=include_head_payload,
         )
 
 
@@ -474,6 +516,9 @@ async def _publish_run_notification(request: Request, event_type: str, run: RunD
                 "latest_run_id": run.id,
                 "latest_run_sequence_no": run.sequence_no,
                 "latest_run_status": run.status,
+                "termination_reason": run.termination_reason,
+                "error_message": run.error_message,
+                "updated_at": (run.finished_at or run.started_at or run.created_at).isoformat(),
             },
         )
 

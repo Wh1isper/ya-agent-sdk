@@ -94,7 +94,8 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - session metadata lives in the database
 - committed continuity blobs live in `run-store/{run_id}/state.json` and `run-store/{run_id}/message.json`
 - `message.json` stores the compacted replay list of AGUI-aligned events as a top-level JSON array
-- session GET exposes paginated runs with optional raw `input_parts` and compacted message replay lists, returns optional top-level committed state/message from `head_success_run_id`, and derives session status from the latest run
+- session GET exposes paginated runs with optional raw `input_parts` and compacted message replay lists, returns optional top-level committed state/message from `head_success_run_id` (skippable with `include_head_payload=false`), and derives session status from the latest run
+- the Web session index uses `GET /api/v1/sessions/page`, a lightweight `(updated_at, id)` keyset page with total count; it omits latest-run output and live Docker reconciliation by default, while the backwards-compatible `GET /api/v1/sessions` list remains available
 - session turns API returns successful completed turns with raw `input_parts` and `output_text`
 - run GET returns `session + run + optional state + optional message`; run trace API returns compact tool-call/tool-response projections from `message.json`
 - built-in `session` toolset lets agents inspect only their current session via internal HTTP client tools `list_session_turns` and `get_run_trace`; session ID and bearer token stay inside the client resource

@@ -151,6 +151,17 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
         list_sessions_response = client.get("/api/v1/sessions", headers=_auth_headers())
         assert list_sessions_response.status_code == 200
         sessions_payload = list_sessions_response.json()
+        list_sessions_page_response = client.get(
+            "/api/v1/sessions/page?limit=1&include_latest_output=false",
+            headers=_auth_headers(),
+        )
+        assert list_sessions_page_response.status_code == 200
+        sessions_page_payload = list_sessions_page_response.json()
+        invalid_sessions_page_response = client.get(
+            "/api/v1/sessions/page?before_id=incomplete-cursor",
+            headers=_auth_headers(),
+        )
+        assert invalid_sessions_page_response.status_code == 422
 
         session_detail_response = client.get(
             f"/api/v1/sessions/{session_payload['id']}?include_message=true",
@@ -173,6 +184,11 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
     assert sessions_payload[0]["run_count"] == 2
     assert sessions_payload[0]["head_run_id"] == rerun_payload["id"]
     assert sessions_payload[0]["latest_run"]["id"] == rerun_payload["id"]
+    assert sessions_page_payload["total"] == 1
+    assert sessions_page_payload["limit"] == 1
+    assert sessions_page_payload["has_more"] is False
+    assert sessions_page_payload["sessions"][0]["latest_run"]["id"] == rerun_payload["id"]
+    assert sessions_page_payload["sessions"][0]["latest_run"]["output_text"] is None
     assert detail_payload["session"]["runs"][0]["id"] == rerun_payload["id"]
     assert detail_payload["session"]["runs_limit"] == 20
     assert detail_payload["session"]["runs_has_more"] is False

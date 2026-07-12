@@ -233,6 +233,29 @@ Suggested run summary fields:
 
 Session and run GET endpoints should return the structured record plus committed blobs.
 
+### Session List Page
+
+`GET /api/v1/sessions/page?limit=50`
+
+The Web UI uses this lightweight keyset endpoint instead of polling the backwards-compatible unpaginated session list. Results are ordered by descending `(updated_at, id)`. Continue with both anchors returned by the previous page:
+
+```http
+GET /api/v1/sessions/page?limit=50&before_updated_at=2026-07-12T07:00:00Z&before_id=session_123
+```
+
+```json
+{
+  "sessions": [],
+  "total": 3000,
+  "limit": 50,
+  "has_more": true,
+  "next_before_updated_at": "2026-07-12T07:00:00Z",
+  "next_before_id": "session_123"
+}
+```
+
+The page endpoint omits `latest_run.output_text` and returns the last persisted workspace state by default. It does not synchronously inspect every Docker sandbox. Selected-session workspace endpoints remain the source for live sandbox reconciliation.
+
 ### Session GET
 
 `GET /api/v1/sessions/{session_id}?include_message=true&include_input_parts=true`
@@ -259,7 +282,7 @@ Session and run GET endpoints should return the structured record plus committed
 }
 ```
 
-`include_input_parts=true` includes each listed run's original `input_parts` for UI replay.
+`include_input_parts=true` includes each listed run's original `input_parts` for UI replay. `include_head_payload=false` skips the top-level committed `state` and `message` reads while preserving paginated run messages, which avoids returning the same head payload on every history page.
 
 ### Session Turns
 
