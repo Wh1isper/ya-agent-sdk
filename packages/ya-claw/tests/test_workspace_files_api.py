@@ -100,7 +100,11 @@ def test_workspace_files_list_read_and_download_use_virtual_paths(client: TestCl
         },
     )
     mounted_workspace.mkdir(parents=True, exist_ok=True)
-    (mounted_workspace / "notes.txt").write_bytes("hello, 世界\n".encode())
+    notes_content = "hello, 世界\n"
+    notes_bytes = notes_content.encode("utf-8")
+    notes_path = mounted_workspace / "notes.txt"
+    notes_path.write_bytes(notes_bytes)
+    assert notes_path.read_bytes() == notes_bytes
     (mounted_workspace / "artifact.bin").write_bytes(b"\x00\xffartifact")
     (mounted_workspace / ".secret").write_text("hidden", encoding="utf-8")
     (mounted_workspace / "src").mkdir()
@@ -202,9 +206,9 @@ def test_workspace_files_list_read_and_download_use_virtual_paths(client: TestCl
     assert read_response.json() == {
         "session_id": session_id,
         "path": "/workspace/project/notes.txt",
-        "content": "hello, 世界\n",
+        "content": notes_content,
         "encoding": "utf-8",
-        "size_bytes": len("hello, 世界\n".encode()),
+        "size_bytes": len(notes_bytes),
     }
     assert str(mounted_workspace) not in read_response.text
 

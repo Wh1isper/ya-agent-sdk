@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
@@ -30,6 +30,11 @@ from ya_claw.controller.models import (
     run_detail_from_record,
     run_summary_from_record,
     session_summary_from_record,
+)
+from ya_claw.controller.session_lifecycle import (
+    SESSION_PRUNE_CLAIM,
+    SessionPruneClaimedError,
+    lock_session_reference,
 )
 from ya_claw.controller.store import (
     ensure_run_dir,
@@ -73,10 +78,31 @@ class RunController:
             )
             db_session.add(session_record)
         else:
-            session_record = await db_session.get(SessionRecord, session_id)
+            await db_session.execute(
+                update(SessionRecord)
+                .where(
+                    SessionRecord.id == session_id,
+                    SessionRecord.active_run_id.is_(None),
+                )
+                .values(
+                    active_run_id=None,
+                    updated_at=SessionRecord.updated_at,
+                )
+            )
+            session_record = await db_session.get(
+                SessionRecord,
+                session_id,
+                populate_existing=True,
+                with_for_update=True,
+            )
             if not isinstance(session_record, SessionRecord):
                 raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
             if isinstance(session_record.active_run_id, str):
+                if session_record.active_run_id == SESSION_PRUNE_CLAIM:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Session '{session_id}' is being pruned and cannot accept a new run.",
+                    )
                 raise HTTPException(
                     status_code=409,
                     detail=f"Session '{session_id}' already has an active run '{session_record.active_run_id}'.",
@@ -415,21 +441,46 @@ class RunController:
         restore_record = await db_session.get(RunRecord, restore_from_run_id)
         if not isinstance(restore_record, RunRecord):
             raise HTTPException(status_code=404, detail=f"Run '{restore_from_run_id}' was not found.")
-        if restore_record.session_id == session_id:
+        restore_session_id = restore_record.session_id
+        if restore_session_id == session_id:
             return restore_record
+
         session_record = await db_session.get(SessionRecord, session_id)
         ancestor_session_id = session_record.parent_session_id if isinstance(session_record, SessionRecord) else None
-        while isinstance(ancestor_session_id, str):
-            if restore_record.session_id == ancestor_session_id:
-                return restore_record
+        while isinstance(ancestor_session_id, str) and restore_session_id != ancestor_session_id:
             ancestor_record = await db_session.get(SessionRecord, ancestor_session_id)
             ancestor_session_id = (
                 ancestor_record.parent_session_id if isinstance(ancestor_record, SessionRecord) else None
             )
-        raise HTTPException(
-            status_code=422,
-            detail=f"Run '{restore_from_run_id}' is not a valid restore source for session '{session_id}'.",
+        if restore_session_id != ancestor_session_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Run '{restore_from_run_id}' is not a valid restore source for session '{session_id}'.",
+            )
+
+        try:
+            restore_session = await lock_session_reference(db_session, restore_session_id)
+        except SessionPruneClaimedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Restore source session '{restore_session_id}' is being pruned.",
+            ) from exc
+        if not isinstance(restore_session, SessionRecord):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Restore source session '{restore_session_id}' is no longer available.",
+            )
+        locked_restore_record = await db_session.get(
+            RunRecord,
+            restore_from_run_id,
+            populate_existing=True,
         )
+        if not isinstance(locked_restore_record, RunRecord) or locked_restore_record.session_id != restore_session_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Restore source run '{restore_from_run_id}' is no longer available.",
+            )
+        return locked_restore_record
 
     async def _build_session_summary(
         self,

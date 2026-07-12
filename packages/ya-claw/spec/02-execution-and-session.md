@@ -166,7 +166,7 @@ Workspace resolution uses session metadata plus run metadata. A run inherits the
 Docker sandbox scope follows trigger type:
 
 - API, bridge, and memory runs use the session-scoped Docker sandbox generation
-- schedule and heartbeat runs use run-scoped Docker sandboxes and close them at terminal state
+- schedule, workflow, and heartbeat runs use run-scoped Docker sandboxes and close them at terminal state
 - local backend runs use resolved path bindings and skip Docker sandbox lifecycle
 
 ## Execution Registry and Runtime State

@@ -3,15 +3,17 @@ from __future__ import annotations
 import shutil
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, inspect, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ya_claw.config import ClawSettings
+from ya_claw.controller.session_lifecycle import SESSION_PRUNE_CLAIM
 from ya_claw.orm.tables import (
     HeartbeatFireRecord,
     RunRecord,
@@ -20,8 +22,22 @@ from ya_claw.orm.tables import (
     SessionRecord,
     utc_now,
 )
+from ya_claw.workspace.docker_lifecycle import (
+    build_docker_container_labels,
+    build_docker_container_ref,
+    delete_docker_container_cache,
+    remove_docker_container,
+)
+from ya_claw.workspace.provider import get_docker_container_lock
 
 _ACTIVE_RUN_STATUSES = frozenset({"queued", "running"})
+
+
+@dataclass(frozen=True, slots=True)
+class _DockerSandboxAsset:
+    container_ref: str
+    cache_path: Path
+    expected_labels: dict[str, str]
 
 
 class SessionPruneResult(BaseModel):
@@ -34,6 +50,7 @@ class SessionPruneResult(BaseModel):
     hidden_once_schedules: int = 0
     reclaimed_bytes: int = 0
     failed_run_store_paths: list[str] = Field(default_factory=list)
+    failed_docker_sandbox_session_ids: list[str] = Field(default_factory=list)
 
     def merge(self, other: SessionPruneResult) -> None:
         self.pruned_run_store_dirs += other.pruned_run_store_dirs
@@ -45,9 +62,22 @@ class SessionPruneResult(BaseModel):
         self.hidden_once_schedules += other.hidden_once_schedules
         self.reclaimed_bytes += other.reclaimed_bytes
         self.failed_run_store_paths.extend(other.failed_run_store_paths)
+        self.failed_docker_sandbox_session_ids.extend(other.failed_docker_sandbox_session_ids)
 
 
 class SessionPruneController:
+    async def release_all_prune_claims(self, db_session: AsyncSession) -> None:
+        connection = await db_session.connection()
+        has_sessions_table = await connection.run_sync(
+            lambda sync_connection: inspect(sync_connection).has_table(SessionRecord.__tablename__)
+        )
+        if not has_sessions_table:
+            return
+        await db_session.execute(
+            update(SessionRecord).where(SessionRecord.active_run_id == SESSION_PRUNE_CLAIM).values(active_run_id=None)
+        )
+        await db_session.commit()
+
     async def prune_once(self, db_session: AsyncSession, settings: ClawSettings) -> SessionPruneResult:
         result = SessionPruneResult()
         if settings.session_prune_enabled:
@@ -97,13 +127,42 @@ class SessionPruneController:
 
     async def _select_generated_session_ids(self, db_session: AsyncSession, settings: ClawSettings) -> list[str]:
         batch_size = max(settings.session_prune_batch_size, 1)
-        session_ids: list[str] = []
-        session_ids.extend(await self._select_heartbeat_session_ids(db_session, settings, batch_size=batch_size))
-        if len(session_ids) >= batch_size:
-            return session_ids[:batch_size]
-        remaining = batch_size - len(session_ids)
-        session_ids.extend(await self._select_schedule_session_ids(db_session, settings, batch_size=remaining))
-        return _dedupe(session_ids)[:batch_size]
+        claim_retry_limit = max(batch_size // 2, 1)
+        claimed_session_ids = await self._select_claimed_session_ids(
+            db_session,
+            batch_size=claim_retry_limit,
+        )
+        # Keep at least one fresh-candidate slot even when batch_size is one so
+        # permanently failing claims cannot stop the queue from advancing.
+        fresh_budget = max(batch_size - len(claimed_session_ids), 1)
+        excluded_session_ids = set(claimed_session_ids)
+        fresh_session_ids = await self._select_heartbeat_session_ids(
+            db_session,
+            settings,
+            batch_size=fresh_budget,
+            excluded_session_ids=excluded_session_ids,
+        )
+        excluded_session_ids.update(fresh_session_ids)
+        remaining = fresh_budget - len(fresh_session_ids)
+        if remaining > 0:
+            fresh_session_ids.extend(
+                await self._select_schedule_session_ids(
+                    db_session,
+                    settings,
+                    batch_size=remaining,
+                    excluded_session_ids=excluded_session_ids,
+                )
+            )
+        return _dedupe([*claimed_session_ids, *fresh_session_ids])
+
+    async def _select_claimed_session_ids(self, db_session: AsyncSession, *, batch_size: int) -> list[str]:
+        result = await db_session.execute(
+            select(SessionRecord.id)
+            .where(SessionRecord.active_run_id == SESSION_PRUNE_CLAIM)
+            .order_by(SessionRecord.updated_at.asc(), SessionRecord.id.asc())
+            .limit(batch_size)
+        )
+        return [session_id for session_id in result.scalars().all() if isinstance(session_id, str)]
 
     async def _select_heartbeat_session_ids(
         self,
@@ -111,12 +170,18 @@ class SessionPruneController:
         settings: ClawSettings,
         *,
         batch_size: int,
+        excluded_session_ids: set[str] | None = None,
     ) -> list[str]:
+        excluded = excluded_session_ids or set()
         keep_recent = max(settings.session_prune_heartbeat_keep_recent, 1)
         cutoff = _cutoff_from_days(settings.session_prune_heartbeat_older_than_days)
+        claimed_session_ids = select(SessionRecord.id).where(SessionRecord.active_run_id == SESSION_PRUNE_CLAIM)
         result = await db_session.execute(
             select(HeartbeatFireRecord)
-            .where(HeartbeatFireRecord.session_id.is_not(None))
+            .where(
+                HeartbeatFireRecord.session_id.is_not(None),
+                HeartbeatFireRecord.session_id.not_in(claimed_session_ids),
+            )
             .order_by(
                 HeartbeatFireRecord.scheduled_at.desc(),
                 HeartbeatFireRecord.created_at.desc(),
@@ -135,7 +200,7 @@ class SessionPruneController:
         for record in ordered_records[keep_recent:]:
             if cutoff is not None and not _is_older_than(record.scheduled_at, cutoff):
                 continue
-            if isinstance(record.session_id, str):
+            if isinstance(record.session_id, str) and record.session_id not in excluded:
                 candidates.append(record.session_id)
             if len(candidates) >= batch_size:
                 break
@@ -147,12 +212,18 @@ class SessionPruneController:
         settings: ClawSettings,
         *,
         batch_size: int,
+        excluded_session_ids: set[str] | None = None,
     ) -> list[str]:
+        excluded = excluded_session_ids or set()
         keep_recent = max(settings.session_prune_schedule_keep_recent, 1)
         cutoff = _cutoff_from_days(settings.session_prune_schedule_older_than_days)
+        claimed_session_ids = select(SessionRecord.id).where(SessionRecord.active_run_id == SESSION_PRUNE_CLAIM)
         result = await db_session.execute(
             select(ScheduleFireRecord)
-            .where(ScheduleFireRecord.created_session_id.is_not(None))
+            .where(
+                ScheduleFireRecord.created_session_id.is_not(None),
+                ScheduleFireRecord.created_session_id.not_in(claimed_session_ids),
+            )
             .order_by(
                 ScheduleFireRecord.schedule_id.asc(),
                 ScheduleFireRecord.scheduled_at.desc(),
@@ -179,7 +250,7 @@ class SessionPruneController:
             for record in records_by_schedule[schedule_id][keep_recent:]:
                 if cutoff is not None and not _is_older_than(record.scheduled_at, cutoff):
                     continue
-                if isinstance(record.created_session_id, str):
+                if isinstance(record.created_session_id, str) and record.created_session_id not in excluded:
                     candidates.append(record.created_session_id)
                 if len(candidates) >= batch_size:
                     return candidates
@@ -210,12 +281,41 @@ class SessionPruneController:
         settings: ClawSettings,
         session_ids: Iterable[str],
     ) -> SessionPruneResult:
-        normalized_session_ids = await self._filter_deletable_session_ids(db_session, _dedupe(session_ids))
-        if not normalized_session_ids:
+        requested_session_ids = _dedupe(session_ids)
+        candidates = await self._filter_deletable_session_ids(db_session, requested_session_ids)
+        rejected_session_ids = [session_id for session_id in requested_session_ids if session_id not in candidates]
+        if rejected_session_ids:
+            await self._release_prune_claims(db_session, rejected_session_ids)
+        claimed_session_ids = await self._claim_sessions_for_prune(db_session, candidates)
+        if not claimed_session_ids:
             return SessionPruneResult()
 
+        cleaned_session_ids, failed_docker_sandbox_session_ids = await self._cleanup_docker_sandboxes(
+            db_session,
+            settings,
+            claimed_session_ids,
+        )
+        if not cleaned_session_ids:
+            return SessionPruneResult(
+                failed_docker_sandbox_session_ids=failed_docker_sandbox_session_ids,
+            )
+
+        claimed_result = await db_session.execute(
+            select(SessionRecord.id).where(
+                SessionRecord.id.in_(cleaned_session_ids),
+                SessionRecord.active_run_id == SESSION_PRUNE_CLAIM,
+            )
+        )
+        deletable_session_ids = [
+            session_id for session_id in claimed_result.scalars().all() if isinstance(session_id, str)
+        ]
+        if not deletable_session_ids:
+            return SessionPruneResult(
+                failed_docker_sandbox_session_ids=failed_docker_sandbox_session_ids,
+            )
+
         runs_result = await db_session.execute(
-            select(RunRecord.id).where(RunRecord.session_id.in_(normalized_session_ids))
+            select(RunRecord.id).where(RunRecord.session_id.in_(deletable_session_ids))
         )
         run_ids = [run_id for run_id in runs_result.scalars().all() if isinstance(run_id, str)]
         run_paths = [settings.run_store_dir / run_id for run_id in run_ids]
@@ -223,21 +323,135 @@ class SessionPruneController:
 
         await db_session.execute(
             update(SessionRecord)
-            .where(SessionRecord.parent_session_id.in_(normalized_session_ids))
+            .where(SessionRecord.parent_session_id.in_(deletable_session_ids))
             .values(parent_session_id=None)
         )
         if run_ids:
             await db_session.execute(delete(RunRecord).where(RunRecord.id.in_(run_ids)))
-        await db_session.execute(delete(SessionRecord).where(SessionRecord.id.in_(normalized_session_ids)))
+        await db_session.execute(
+            delete(SessionRecord).where(
+                SessionRecord.id.in_(deletable_session_ids),
+                SessionRecord.active_run_id == SESSION_PRUNE_CLAIM,
+            )
+        )
         await db_session.commit()
 
         file_result = self._delete_run_store_paths(run_paths)
         return SessionPruneResult(
             deleted_runs=len(run_ids),
-            deleted_sessions=len(normalized_session_ids),
+            deleted_sessions=len(deletable_session_ids),
             reclaimed_bytes=reclaimed_bytes,
             failed_run_store_paths=file_result.failed_run_store_paths,
+            failed_docker_sandbox_session_ids=failed_docker_sandbox_session_ids,
         )
+
+    async def _claim_sessions_for_prune(
+        self,
+        db_session: AsyncSession,
+        session_ids: list[str],
+    ) -> list[str]:
+        if not session_ids:
+            return []
+        claimable_active_run = or_(
+            SessionRecord.active_run_id.is_(None),
+            SessionRecord.active_run_id == SESSION_PRUNE_CLAIM,
+        )
+        # Acquire a write lock before the active-run recheck. This is a no-op update so
+        # SQLite serializes writers too; the follow-up SELECT gets a fresh PostgreSQL
+        # READ COMMITTED snapshot after any concurrent run-creation transaction commits.
+        await db_session.execute(
+            update(SessionRecord)
+            .where(
+                SessionRecord.id.in_(session_ids),
+                claimable_active_run,
+            )
+            .values(
+                active_run_id=SessionRecord.active_run_id,
+                updated_at=SessionRecord.updated_at,
+            )
+        )
+        eligible_result = await db_session.execute(
+            select(SessionRecord.id).where(
+                SessionRecord.id.in_(session_ids),
+                claimable_active_run,
+            )
+        )
+        eligible_session_ids = [
+            session_id for session_id in eligible_result.scalars().all() if isinstance(session_id, str)
+        ]
+        # Reference-creation paths lock the referenced session row before commit.
+        # Rechecking every deletability condition while those row locks are held
+        # closes races with new runs, forks, schedules, and restore references.
+        claimable_session_ids = await self._filter_deletable_session_ids(db_session, eligible_session_ids)
+        if claimable_session_ids:
+            await db_session.execute(
+                update(SessionRecord)
+                .where(
+                    SessionRecord.id.in_(claimable_session_ids),
+                    SessionRecord.active_run_id.is_(None),
+                )
+                .values(active_run_id=SESSION_PRUNE_CLAIM)
+            )
+        await db_session.commit()
+        result = await db_session.execute(
+            select(SessionRecord.id).where(
+                SessionRecord.id.in_(session_ids),
+                SessionRecord.active_run_id == SESSION_PRUNE_CLAIM,
+            )
+        )
+        return [session_id for session_id in result.scalars().all() if isinstance(session_id, str)]
+
+    async def _release_prune_claims(self, db_session: AsyncSession, session_ids: list[str]) -> None:
+        if not session_ids:
+            return
+        await db_session.execute(
+            update(SessionRecord)
+            .where(
+                SessionRecord.id.in_(session_ids),
+                SessionRecord.active_run_id == SESSION_PRUNE_CLAIM,
+            )
+            .values(active_run_id=None)
+        )
+        await db_session.commit()
+
+    async def _cleanup_docker_sandboxes(
+        self,
+        db_session: AsyncSession,
+        settings: ClawSettings,
+        session_ids: list[str],
+    ) -> tuple[list[str], list[str]]:
+        records_by_id, assets_by_session_id, invalid_session_ids = await _load_docker_sandbox_assets(
+            db_session,
+            settings,
+            session_ids,
+        )
+        cleaned_session_ids: list[str] = []
+        failed_session_ids: list[str] = []
+        for session_id in session_ids:
+            if not isinstance(records_by_id.get(session_id), SessionRecord):
+                continue
+            if session_id in invalid_session_ids:
+                failed_session_ids.append(session_id)
+                logger.warning(
+                    "Session prune retained Docker-backed session with incomplete sandbox identity session_id={}",
+                    session_id,
+                )
+                continue
+            assets = _dedupe_docker_assets(assets_by_session_id.get(session_id, []))
+            failed_asset = await _cleanup_docker_sandbox_assets(assets)
+            if failed_asset is None:
+                cleaned_session_ids.append(session_id)
+                continue
+
+            failed_session_ids.append(session_id)
+            logger.warning(
+                "Session prune retained Docker-backed session after sandbox cleanup failure session_id={} "
+                "container_ref={} cache_path={}",
+                session_id,
+                failed_asset.container_ref,
+                failed_asset.cache_path,
+            )
+        return cleaned_session_ids, failed_session_ids
 
     async def _filter_deletable_session_ids(self, db_session: AsyncSession, session_ids: list[str]) -> list[str]:
         if not session_ids:
@@ -249,7 +463,11 @@ class SessionPruneController:
         for record in records:
             if record.id in protected_session_ids:
                 continue
-            if isinstance(record.active_run_id, str) and record.active_run_id.strip() != "":
+            if (
+                isinstance(record.active_run_id, str)
+                and record.active_run_id.strip() != ""
+                and record.active_run_id != SESSION_PRUNE_CLAIM
+            ):
                 continue
             candidate_ids.append(record.id)
         if not candidate_ids:
@@ -582,6 +800,156 @@ def _path_size(path: Path) -> int:
         if child.is_file():
             total_size += child.stat().st_size
     return total_size
+
+
+async def _load_docker_sandbox_assets(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+    session_ids: list[str],
+) -> tuple[dict[str, SessionRecord], dict[str, list[_DockerSandboxAsset]], set[str]]:
+    records_result = await db_session.execute(select(SessionRecord).where(SessionRecord.id.in_(session_ids)))
+    records_by_id = {
+        record.id: record for record in records_result.scalars().all() if isinstance(record, SessionRecord)
+    }
+    runs_result = await db_session.execute(select(RunRecord).where(RunRecord.session_id.in_(session_ids)))
+    assets_by_session_id: dict[str, list[_DockerSandboxAsset]] = defaultdict(list)
+    invalid_session_ids: set[str] = set()
+    for record in records_by_id.values():
+        _record_docker_sandbox_asset(
+            settings,
+            session_id=record.id,
+            run_id=None,
+            metadata=record.session_metadata,
+            assets_by_session_id=assets_by_session_id,
+            invalid_session_ids=invalid_session_ids,
+        )
+    for run_record in runs_result.scalars().all():
+        if isinstance(run_record, RunRecord):
+            _record_docker_sandbox_asset(
+                settings,
+                session_id=run_record.session_id,
+                run_id=run_record.id,
+                metadata=run_record.run_metadata,
+                assets_by_session_id=assets_by_session_id,
+                invalid_session_ids=invalid_session_ids,
+            )
+    return records_by_id, assets_by_session_id, invalid_session_ids
+
+
+def _record_docker_sandbox_asset(
+    settings: ClawSettings,
+    *,
+    session_id: str,
+    run_id: str | None,
+    metadata: object,
+    assets_by_session_id: dict[str, list[_DockerSandboxAsset]],
+    invalid_session_ids: set[str],
+) -> None:
+    asset, valid = _docker_sandbox_asset(
+        settings,
+        session_id=session_id,
+        run_id=run_id,
+        metadata=metadata,
+    )
+    if not valid:
+        invalid_session_ids.add(session_id)
+    elif asset is not None:
+        assets_by_session_id[session_id].append(asset)
+
+
+async def _cleanup_docker_sandbox_assets(
+    assets: list[_DockerSandboxAsset],
+) -> _DockerSandboxAsset | None:
+    for asset in assets:
+        lock = get_docker_container_lock(
+            cache_path=asset.cache_path,
+            container_ref=asset.container_ref,
+        )
+        async with lock:
+            container_removed = await remove_docker_container(
+                asset.container_ref,
+                expected_labels=asset.expected_labels,
+            )
+            cache_deleted = container_removed and await delete_docker_container_cache(asset.cache_path)
+        if not container_removed or not cache_deleted:
+            return asset
+    return None
+
+
+def _docker_sandbox_asset(
+    settings: ClawSettings,
+    *,
+    session_id: str,
+    run_id: str | None,
+    metadata: object,
+) -> tuple[_DockerSandboxAsset | None, bool]:
+    if not isinstance(metadata, dict):
+        return None, True
+    sandbox = metadata.get("sandbox")
+    if not isinstance(sandbox, dict) or sandbox.get("provider") != "docker":
+        return None, True
+
+    scope = sandbox.get("scope")
+    generation = sandbox.get("generation")
+    metadata_session_id = sandbox.get("session_id")
+    metadata_run_id = sandbox.get("run_id")
+    if (
+        scope not in {"session", "run"}
+        or not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+        or metadata_session_id != session_id
+        or not _is_safe_identity_component(session_id)
+    ):
+        return None, False
+    if scope == "run" and (run_id is None or metadata_run_id != run_id or not _is_safe_identity_component(run_id)):
+        return None, False
+    expected_run_id = run_id if scope == "run" else None
+    try:
+        container_ref = build_docker_container_ref(
+            scope=scope,
+            session_id=session_id,
+            run_id=expected_run_id,
+            generation=generation,
+        )
+        expected_labels = build_docker_container_labels(
+            scope=scope,
+            session_id=session_id,
+            run_id=expected_run_id,
+            generation=generation,
+        )
+    except ValueError:
+        return None, False
+
+    cache_root = settings.resolved_workspace_provider_docker_container_cache_dir
+    if scope == "run" and run_id is not None:
+        cache_path = cache_root / "runs" / run_id / "workspace.json"
+    else:
+        cache_path = cache_root / "sessions" / session_id / "workspace.json"
+    return (
+        _DockerSandboxAsset(
+            container_ref=container_ref,
+            cache_path=cache_path,
+            expected_labels=expected_labels,
+        ),
+        True,
+    )
+
+
+def _dedupe_docker_assets(assets: list[_DockerSandboxAsset]) -> list[_DockerSandboxAsset]:
+    seen: set[tuple[str, Path, tuple[tuple[str, str], ...]]] = set()
+    deduped: list[_DockerSandboxAsset] = []
+    for asset in assets:
+        key = (asset.container_ref, asset.cache_path, tuple(sorted(asset.expected_labels.items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(asset)
+    return deduped
+
+
+def _is_safe_identity_component(value: str) -> bool:
+    return value.strip() == value and value not in {"", ".", ".."} and "/" not in value and "\\" not in value
 
 
 def _dedupe(values: Iterable[str]) -> list[str]:

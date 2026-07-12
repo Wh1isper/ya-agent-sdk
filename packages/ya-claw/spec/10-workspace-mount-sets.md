@@ -121,7 +121,7 @@ Workspace resolution follows this order:
 
 A run-level workspace binding is a whole-binding replacement. Patch-style editing belongs to client-side session update flows.
 
-Session continuation inherits the session workspace. Forked sessions copy the source session workspace into the child session by default. A fork request can supply a new workspace binding for the child session. Bridge-triggered runs and memory sessions inherit the source session workspace when they execute in session context. Schedule and heartbeat runs inherit workspace binding for file access and use run-scoped Docker sandboxes for container lifecycle.
+Session continuation inherits the session workspace. Forked sessions copy the source session workspace into the child session by default. A fork request can supply a new workspace binding for the child session. Bridge-triggered runs and memory sessions inherit the source session workspace when they execute in session context. Schedule, workflow, and heartbeat runs inherit workspace binding for file access and use run-scoped Docker sandboxes for container lifecycle.
 
 ## Validation
 
@@ -244,7 +244,7 @@ The fingerprint excludes volatile fields such as container ID, last start time, 
 Docker has two sandbox scopes:
 
 - `session`: conversation/API/bridge/memory runs reuse one session-owned sandbox generation
-- `run`: schedule and heartbeat runs use a run-owned sandbox and close it when the run finishes
+- `run`: schedule, workflow, and heartbeat runs use a run-owned sandbox and close it when the run finishes
 
 Session-scoped Docker uses one active generation state. The generation state is a single durable JSON object and is replaced when the workspace fingerprint changes.
 
@@ -305,7 +305,7 @@ It uses the same fingerprint model with a run-specific container ref:
 ya-claw-run-{run_id_short}
 ```
 
-Schedule and heartbeat containers close when the run reaches a terminal state. Their durable value lives in workspace files and run artifacts. The run-scoped cache file supports diagnostics and can be removed during run-store pruning.
+Schedule, workflow, and heartbeat containers close when the run reaches a terminal state. Their durable value lives in workspace files and run artifacts. The run-scoped cache file supports diagnostics and can be removed during run-store pruning.
 
 ## Retention Policy
 
@@ -315,7 +315,7 @@ Docker supports two session-level retention policies:
 SandboxRetentionPolicy = Literal["stop_on_idle", "keep_warm"]
 ```
 
-Run-scoped schedule and heartbeat sandboxes always use terminal cleanup.
+Run-scoped schedule, workflow, and heartbeat sandboxes always use terminal cleanup.
 
 Default policy:
 
@@ -332,7 +332,7 @@ Default idle TTL:
 Policy behavior:
 
 - `stop_on_idle`: keep the session container available while the session is active, then stop it after the idle TTL
-- `keep_warm`: keep the session container running until explicit session cleanup, service shutdown, or operator cleanup
+- `keep_warm`: keep the session container running across runs and service restarts until explicit session, retention, or operator cleanup
 
 A stopped session sandbox keeps its generation state. The next run starts the same generation again when the fingerprint still matches. A changed fingerprint creates the next generation.
 
@@ -354,7 +354,7 @@ stateDiagram-v2
     stopped --> starting: next run with new generation
 ```
 
-Workspace changes take effect on the next run. The active run keeps its resolved workspace snapshot and sandbox generation. Schedule and heartbeat runs always receive a fresh run-scoped generation and close it at terminal state.
+Workspace changes take effect on the next run. The active run keeps its resolved workspace snapshot and sandbox generation. Schedule, workflow, and heartbeat runs always receive a fresh run-scoped generation and close it at terminal state.
 
 ## Docker Switching Algorithm
 
@@ -379,7 +379,7 @@ The active run refreshes `last_used_at` for session-scoped Docker sandboxes whil
 
 The idle TTL cleaner is owned by the Claw server. It scans session-scoped Docker sandbox states, stops containers whose `last_used_at + idle_ttl_seconds` has passed, deletes the session `workspace.json` cache file, and writes the refreshed `status`, `container_id`, and `last_used_at` fields back to the session sandbox state. The next run starts the same generation again when the fingerprint still matches. TTL cleanup and run startup share the same cache-path lock so stop/delete and start/write operations cannot race inside one service process.
 
-Run-scoped schedule and heartbeat runs use this sequence:
+Run-scoped schedule, workflow, and heartbeat runs use this sequence:
 
 1. resolve the logical workspace binding for the fire
 2. merge provider extra mounts into the concrete environment mount list

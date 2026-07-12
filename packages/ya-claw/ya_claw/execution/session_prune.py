@@ -23,6 +23,9 @@ class SessionPruneDispatcher:
         self._stopping = asyncio.Event()
 
     async def startup(self) -> None:
+        if not (self._settings.session_prune_enabled and self._settings.session_prune_generated_sessions_enabled):
+            async with self._session_factory() as db_session:
+                await self._controller.release_all_prune_claims(db_session)
         if not self._should_run():
             logger.info("Session prune dispatcher disabled")
             return
@@ -71,7 +74,7 @@ class SessionPruneDispatcher:
                 logger.info(
                     "Session prune completed pruned_run_store_dirs={} deleted_runs={} deleted_sessions={} "
                     "deleted_orphan_run_dirs={} deleted_schedule_fires={} deleted_heartbeat_fires={} "
-                    "hidden_once_schedules={} reclaimed_bytes={} failed_paths={}",
+                    "hidden_once_schedules={} reclaimed_bytes={} failed_paths={} failed_docker_sandboxes={}",
                     result.pruned_run_store_dirs,
                     result.deleted_runs,
                     result.deleted_sessions,
@@ -81,6 +84,7 @@ class SessionPruneDispatcher:
                     result.hidden_once_schedules,
                     result.reclaimed_bytes,
                     len(result.failed_run_store_paths),
+                    len(result.failed_docker_sandbox_session_ids),
                 )
             except asyncio.CancelledError:
                 raise

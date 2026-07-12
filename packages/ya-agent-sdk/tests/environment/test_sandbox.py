@@ -360,6 +360,30 @@ async def test_sandbox_environment_enter_creates_new_container(tmp_path: Path) -
     mock_container.remove.assert_called_once()
 
 
+async def test_sandbox_environment_removes_container_when_stop_fails(tmp_path: Path) -> None:
+    """Cleanup should still remove a container that is already stopped or cannot be stopped."""
+    env = SandboxEnvironment(
+        mounts=[VirtualMount(tmp_path, Path("/workspace"))],
+        image="python:3.11",
+        cleanup_on_exit=True,
+    )
+
+    mock_container = MagicMock()
+    mock_container.id = "new123"
+    mock_container.stop.side_effect = docker.errors.APIError("container is already stopped")
+
+    mock_client = MagicMock()
+    mock_client.containers.run.return_value = mock_container
+    mock_client.containers.get.return_value = mock_container
+    env._client = mock_client
+
+    async with env:
+        assert env._container_id == "new123"
+
+    mock_container.stop.assert_called_once_with(timeout=10)
+    mock_container.remove.assert_called_once_with(force=True)
+
+
 async def test_sandbox_environment_passes_docker_exec_options_to_shell(tmp_path: Path) -> None:
     """Should pass docker exec options to created DockerShell."""
     env = SandboxEnvironment(

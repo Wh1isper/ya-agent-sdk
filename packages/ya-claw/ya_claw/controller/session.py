@@ -34,6 +34,7 @@ from ya_claw.controller.models import (
     session_turn_from_record,
 )
 from ya_claw.controller.run import RunController
+from ya_claw.controller.session_lifecycle import SessionPruneClaimedError, lock_session_reference
 from ya_claw.controller.store import read_run_message_blob_if_exists, read_run_state_blob_if_exists
 from ya_claw.controller.workspace_runtime import reconcile_session_sandbox_metadata
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
@@ -440,7 +441,13 @@ class SessionController:
             request.restore_from_run_id,
             request.profile_name,
         )
-        source_record = await db_session.get(SessionRecord, session_id)
+        try:
+            source_record = await lock_session_reference(db_session, session_id)
+        except SessionPruneClaimedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session '{session_id}' is being pruned and cannot be forked.",
+            ) from exc
         if not isinstance(source_record, SessionRecord):
             raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
 

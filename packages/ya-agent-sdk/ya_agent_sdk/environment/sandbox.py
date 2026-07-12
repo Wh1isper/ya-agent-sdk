@@ -672,12 +672,16 @@ class SandboxEnvironment(Environment):
         def _stop() -> None:
             try:
                 container = self.client.containers.get(container_id)
-                container.stop(timeout=10)
-                container.remove(force=True)
             except docker.errors.NotFound:
-                pass  # Container already gone
+                return  # Container already gone
             except docker.errors.APIError:
-                pass  # Best effort cleanup
+                return  # Best effort cleanup
+
+            # Removal must still run when the container is already stopped or stop fails.
+            with contextlib.suppress(docker.errors.NotFound, docker.errors.APIError):
+                container.stop(timeout=10)
+            with contextlib.suppress(docker.errors.NotFound, docker.errors.APIError):
+                container.remove(force=True)
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _stop)

@@ -16,7 +16,7 @@ Both surfaces submit work through the same queued-run execution model. Their own
 - keep heartbeat configuration runtime-owned and visible to the console
 - load `HEARTBEAT.md` only for heartbeat-triggered runs
 - inherit workspace binding from the owning or configured session when a timed run needs workspace files
-- use run-scoped Docker sandboxes for schedule and heartbeat runs and close them at terminal state
+- use run-scoped Docker sandboxes for schedule, workflow, and heartbeat runs and close them at terminal state
 - support periodic workflow triggering through the schedule storage and dispatcher model while presenting workflow recurrence in the Workflows console
 
 ## Time-based Work Types

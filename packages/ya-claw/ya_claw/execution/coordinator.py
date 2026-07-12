@@ -60,6 +60,7 @@ from ya_claw.workspace import (
     WorkspaceProvider,
     build_workspace_sandbox_metadata,
 )
+from ya_claw.workspace.docker_lifecycle import build_docker_container_ref
 from ya_claw.workspace.models import (
     SANDBOX_SCOPE_RUN,
     SANDBOX_SCOPE_SESSION,
@@ -1849,9 +1850,12 @@ def _next_sandbox_generation(*, existing: dict[str, Any], fingerprint: str, scop
 
 
 def _build_scoped_container_ref(*, scope: SandboxScopeLiteral, session_id: str, run_id: str, generation: int) -> str:
-    if scope == SANDBOX_SCOPE_RUN:
-        return f"ya-claw-run-{run_id[:12]}"
-    return f"ya-claw-session-{session_id[:12]}-g{generation}"
+    return build_docker_container_ref(
+        scope=scope,
+        session_id=session_id,
+        run_id=run_id,
+        generation=generation,
+    )
 
 
 def _utc_now_iso() -> str:

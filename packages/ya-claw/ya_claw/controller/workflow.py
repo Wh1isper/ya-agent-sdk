@@ -23,6 +23,7 @@ from ya_claw.controller.models import (
     parse_input_parts,
 )
 from ya_claw.controller.run import RunController
+from ya_claw.controller.session_lifecycle import lock_session_reference
 from ya_claw.orm.tables import (
     RunRecord,
     SessionRecord,
@@ -1247,6 +1248,9 @@ class WorkflowController:
         if mode == "fork":
             parent_session_id = await self._resolve_fork_parent_session_id(db_session, record, node)
             if parent_session_id is not None:
+                parent_session = await lock_session_reference(db_session, parent_session_id)
+                if parent_session is None:
+                    raise RuntimeError(f"Workflow fork parent session '{parent_session_id}' was not found")
                 fork_session = SessionRecord(
                     id=uuid4().hex,
                     parent_session_id=parent_session_id,

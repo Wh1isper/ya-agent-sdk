@@ -40,6 +40,7 @@ from ya_agent_sdk.environment.virtual_path import (
     normalize_virtual_path as normalize_agent_virtual_path,
 )
 
+from ya_claw.workspace.docker_lifecycle import docker_container_labels_from_metadata
 from ya_claw.workspace.models import (
     SANDBOX_METADATA_KEY,
     SANDBOX_SCOPE_RUN,
@@ -486,6 +487,7 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
                     volumes=volumes,
                     working_dir=work_dir,
                     environment=environment,
+                    labels=docker_container_labels_from_metadata(self._sandbox_metadata),
                     detach=True,
                     stdin_open=True,
                     tty=True,

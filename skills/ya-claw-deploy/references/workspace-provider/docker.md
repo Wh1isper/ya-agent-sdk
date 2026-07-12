@@ -84,7 +84,7 @@ Docker sandbox scope follows the run source:
 | Source                                  | Scope     | Container ref format                    | Cleanup behavior                          |
 | --------------------------------------- | --------- | --------------------------------------- | ----------------------------------------- |
 | API, bridge, memory, foreground session | `session` | `ya-claw-session-{session_id_short}-gN` | Reused until idle TTL or explicit cleanup |
-| schedule and heartbeat                  | `run`     | `ya-claw-run-{run_id_short}`            | Stopped when the run exits                |
+| schedule, workflow, and heartbeat       | `run`     | `ya-claw-run-{run_id_short}`            | Stopped when the run exits                |
 
 Session-scoped Docker stores one active generation in session metadata. The generation increments when the workspace fingerprint changes. Fingerprint inputs include logical mounts, provider extra mounts, Docker image, UID, GID, cwd, and backend.
 
@@ -100,7 +100,11 @@ Run-scoped cache path:
 ${YA_CLAW_WORKSPACE_PROVIDER_DOCKER_CONTAINER_CACHE_DIR}/runs/{run_id}/workspace.json
 ```
 
-The cache file stores the current container ID, generation, fingerprint, container ref, Docker image, image digest, and lifecycle metadata. On each run, YA Claw resolves the current Docker image digest before trusting the cached container. A changed image digest takes precedence over container existence: YA Claw removes the stale container and starts a new container from the current image. YA Claw also starts stopped containers, checks Docker health when available, recreates failed containers, and writes refreshed metadata.
+The cache file stores the current container ID, generation, fingerprint, container ref, Docker image, image digest, and lifecycle metadata. New containers carry YA Claw ownership labels for the full session ID, sandbox scope, generation, and run ID when run-scoped. Session pruning derives container names and cache paths from trusted database IDs and settings, then verifies all ownership labels before removal; metadata-provided container IDs, refs, and cache paths are not deletion authority.
+
+Containers created by releases before ownership labels were introduced are intentionally not removed automatically. After upgrading, if generated-session pruning reports repeated Docker sandbox cleanup failures, inspect the deterministic `ya-claw-session-*` or `ya-claw-run-*` container, remove that legacy container manually after confirming it belongs to the deployment, and let the next run recreate it with ownership labels. This fail-closed behavior prevents an unlabelled name collision from deleting an unrelated container.
+
+On each run, YA Claw resolves the current Docker image digest before trusting the cached container. A changed image digest takes precedence over container existence: YA Claw removes the stale container and starts a new container from the current image. YA Claw also starts stopped containers, checks Docker health when available, recreates failed containers, and writes refreshed metadata.
 
 ## Idle TTL
 
@@ -112,12 +116,12 @@ last_used_at + idle_ttl_seconds <= now
 
 Retention policies:
 
-| Policy         | Behavior                                                                        |
-| -------------- | ------------------------------------------------------------------------------- |
-| `stop_on_idle` | Stop the session container after the idle TTL. Next run restarts it.            |
-| `keep_warm`    | Keep the session container running until service, session, or operator cleanup. |
+| Policy         | Behavior                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| `stop_on_idle` | Stop the session container after the idle TTL. Next run restarts it.                        |
+| `keep_warm`    | Keep the session container running across runs and service restarts until explicit cleanup. |
 
-Run-scoped schedule and heartbeat sandboxes always use terminal cleanup.
+Run-scoped schedule, workflow, and heartbeat sandboxes always use terminal cleanup.
 
 ## Docker Permission
 

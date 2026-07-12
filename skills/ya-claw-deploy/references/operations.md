@@ -197,7 +197,7 @@ YA_CLAW_SESSION_PRUNE_HEARTBEAT_KEEP_RECENT=10
 YA_CLAW_SESSION_PRUNE_HEARTBEAT_OLDER_THAN_DAYS=7
 ```
 
-This mode deletes `sessions` and `runs` rows for old heartbeat sessions and schedule isolate/fork generated sessions. It protects active schedule source/target sessions, parent sessions, active sessions, active run sessions, and sessions referenced by external `restore_from_run_id` links.
+This mode deletes `sessions` and `runs` rows for old heartbeat sessions and schedule isolate/fork generated sessions. Before deleting a Docker-backed session, pruning places a persistent claim on the session, removes all recorded session- and run-scoped sandbox containers and caches, and only then deletes database rows. A failed sandbox cleanup keeps the claim as a durable retry queue entry; later prune passes scan claims directly and do not depend on retained fire records. New runs, forks, schedule references, child sessions, and restore references reject or wait for a claimed session. If generated-session pruning is disabled before a service restart, startup releases leftover claims instead of leaving sessions unavailable. The filter also protects active schedule source/target sessions, parent sessions, active sessions, active run sessions, and sessions referenced by external `restore_from_run_id` links.
 
 Fire-record database retention is separately enabled:
 

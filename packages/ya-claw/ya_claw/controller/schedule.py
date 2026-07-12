@@ -22,6 +22,7 @@ from ya_claw.controller.models import (
 )
 from ya_claw.controller.run import RunController
 from ya_claw.controller.session import SessionController
+from ya_claw.controller.session_lifecycle import SessionPruneClaimedError, lock_session_reference
 from ya_claw.controller.workflow import WorkflowController, WorkflowTriggerRequest, render_template
 from ya_claw.execution.dispatcher import RunDispatcher
 from ya_claw.orm.tables import RunRecord, ScheduleFireRecord, ScheduleRecord, SessionRecord, utc_now
@@ -779,7 +780,13 @@ class ScheduleController:
     async def _require_session(self, db_session: AsyncSession, session_id: str | None) -> SessionRecord:
         if not isinstance(session_id, str) or session_id.strip() == "":
             raise HTTPException(status_code=422, detail="session_id is required.")
-        record = await db_session.get(SessionRecord, session_id)
+        try:
+            record = await lock_session_reference(db_session, session_id)
+        except SessionPruneClaimedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Session '{session_id}' is being pruned and cannot be referenced by a schedule.",
+            ) from exc
         if not isinstance(record, SessionRecord):
             raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
         return record

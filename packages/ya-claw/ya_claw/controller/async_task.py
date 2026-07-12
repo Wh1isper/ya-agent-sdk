@@ -35,6 +35,7 @@ from ya_claw.controller.models import (
     session_summary_from_record,
 )
 from ya_claw.controller.run import RunController
+from ya_claw.controller.session_lifecycle import lock_session_reference
 from ya_claw.controller.store import read_run_message_blob_if_exists, read_run_state_blob_if_exists
 from ya_claw.orm.tables import RunRecord, SessionAsyncTaskRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -320,6 +321,10 @@ class AsyncTaskController:
         context: dict[str, Any],
         wake_policy: str,
     ) -> AsyncTaskDetail:
+        locked_parent = await lock_session_reference(db_session, parent_session.id)
+        if locked_parent is None:
+            raise RuntimeError(f"Async task parent session '{parent_session.id}' was not found")
+        parent_session = locked_parent
         task_id = uuid4().hex
         child_session_id = uuid4().hex
         task_metadata = _task_metadata(

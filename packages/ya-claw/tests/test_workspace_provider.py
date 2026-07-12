@@ -218,6 +218,12 @@ async def test_reusable_sandbox_environment_passes_workspace_identity_to_docker(
         workspace_uid=1234,
         workspace_gid=2345,
         workspace_environment={"LARK_APP_ID": "cli_test"},
+        sandbox_metadata={
+            "scope": "session",
+            "generation": 2,
+            "session_id": "session-1",
+            "run_id": "run-1",
+        },
     )
     environment._client = FakeDockerClient()
 
@@ -226,6 +232,12 @@ async def test_reusable_sandbox_environment_passes_workspace_identity_to_docker(
     assert container_id == "container-123"
     assert captured_run_kwargs["name"] == "workspace-container"
     assert captured_run_kwargs["working_dir"] == "/workspace"
+    assert captured_run_kwargs["labels"] == {
+        "io.ya-claw.workspace.managed": "true",
+        "io.ya-claw.workspace.scope": "session",
+        "io.ya-claw.workspace.session-id": "session-1",
+        "io.ya-claw.workspace.generation": "2",
+    }
     assert captured_run_kwargs["environment"] == {
         "LARK_APP_ID": "cli_test",
         "YA_CLAW_WORKSPACE_STARTUP_DIR": "/workspace",

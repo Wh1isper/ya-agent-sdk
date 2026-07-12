@@ -19,6 +19,7 @@ from ya_claw.agency.lifecycle import AgencyLifecycle
 from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
 from ya_claw.controller.models import DispatchMode, MemoryJobKind, TriggerType
+from ya_claw.controller.session_lifecycle import lock_session_reference
 from ya_claw.execution.state_machine import queue_run
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -408,6 +409,10 @@ class MemoryLifecycle:
         return state
 
     async def _ensure_memory_session(self, db_session: AsyncSession, source_session: SessionRecord) -> SessionRecord:
+        locked_source = await lock_session_reference(db_session, source_session.id)
+        if locked_source is None:
+            raise RuntimeError(f"Memory source session '{source_session.id}' was not found")
+        source_session = locked_source
         statement = select(SessionRecord).where(
             SessionRecord.session_type == "memory",
             SessionRecord.source_session_id == source_session.id,

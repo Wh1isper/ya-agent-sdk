@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_claw.config import ClawSettings
+from ya_claw.controller.models import RunCreateRequest, SessionForkRequest
+from ya_claw.controller.run import RunController
+from ya_claw.controller.schedule import ScheduleController, ScheduleCreateRequest
+from ya_claw.controller.session import SessionController
+from ya_claw.controller.session_lifecycle import SESSION_PRUNE_CLAIM, lock_session_reference
 from ya_claw.controller.session_prune import SessionPruneController
 from ya_claw.db.engine import create_engine, create_session_factory
+from ya_claw.execution.session_prune import SessionPruneDispatcher
 from ya_claw.orm.base import Base
 from ya_claw.orm.tables import HeartbeatFireRecord, RunRecord, ScheduleFireRecord, ScheduleRecord, SessionRecord
+from ya_claw.runtime_state import create_runtime_state
 
 
 @pytest.fixture
@@ -212,6 +221,510 @@ async def test_prune_generated_schedule_sessions_groups_by_schedule_id(
     assert remaining_sessions == {"schedule-session-2"}
     assert result.deleted_sessions == 2
     assert result.deleted_runs == 2
+
+
+async def test_prune_removes_docker_sandbox_before_deleting_session(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_path = settings.runtime_data_dir / "docker-workspace-containers" / "sessions" / "session-1" / "workspace.json"
+    run_cache_path = settings.runtime_data_dir / "docker-workspace-containers" / "runs" / "run-1" / "workspace.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    run_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text('{"container_id":"container-1"}\n', encoding="utf-8")
+    run_cache_path.write_text('{"container_id":"run-container-1"}\n', encoding="utf-8")
+    db_session.add(
+        SessionRecord(
+            id="session-1",
+            profile_name="default",
+            session_metadata={
+                "sandbox": {
+                    "provider": "docker",
+                    "scope": "session",
+                    "generation": 1,
+                    "session_id": "session-1",
+                    "container_id": None,
+                    "container_ref": "untrusted-session-ref",
+                    "cache_path": "/untrusted/session-cache.json",
+                }
+            },
+        )
+    )
+    db_session.add(
+        RunRecord(
+            id="run-1",
+            session_id="session-1",
+            sequence_no=1,
+            status="completed",
+            trigger_type="schedule",
+            input_parts=[],
+            run_metadata={
+                "sandbox": {
+                    "provider": "docker",
+                    "scope": "run",
+                    "generation": 1,
+                    "session_id": "session-1",
+                    "run_id": "run-1",
+                    "container_ref": "untrusted-run-ref",
+                    "cache_path": "/untrusted/run-cache.json",
+                }
+            },
+        )
+    )
+    await db_session.commit()
+    removed_assets: list[tuple[str, dict[str, str]]] = []
+
+    async def fake_remove(container_ref: str, *, expected_labels: dict[str, str]) -> bool:
+        removed_assets.append((container_ref, expected_labels))
+        return True
+
+    monkeypatch.setattr("ya_claw.controller.session_prune.remove_docker_container", fake_remove)
+
+    result = await SessionPruneController()._delete_sessions(db_session, settings, ["session-1"])
+
+    assert [container_ref for container_ref, _labels in removed_assets] == [
+        "ya-claw-session-session-1-g1",
+        "ya-claw-run-run-1",
+    ]
+    assert removed_assets[0][1]["io.ya-claw.workspace.session-id"] == "session-1"
+    assert removed_assets[0][1]["io.ya-claw.workspace.scope"] == "session"
+    assert removed_assets[1][1]["io.ya-claw.workspace.run-id"] == "run-1"
+    assert result.deleted_sessions == 1
+    assert result.deleted_runs == 1
+    assert result.failed_docker_sandbox_session_ids == []
+    assert await db_session.get(SessionRecord, "session-1") is None
+    assert not cache_path.exists()
+    assert not run_cache_path.exists()
+
+
+async def test_prune_retains_session_when_docker_sandbox_removal_fails(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_session.add(
+        SessionRecord(
+            id="session-1",
+            profile_name="default",
+            session_metadata={
+                "sandbox": {
+                    "provider": "docker",
+                    "scope": "session",
+                    "generation": 1,
+                    "session_id": "session-1",
+                    "container_id": "container-1",
+                    "container_ref": "ya-claw-session-session-1-g1",
+                }
+            },
+        )
+    )
+    await db_session.commit()
+
+    async def fake_remove(container_ref: str, *, expected_labels: dict[str, str]) -> bool:
+        assert container_ref == "ya-claw-session-session-1-g1"
+        assert expected_labels["io.ya-claw.workspace.managed"] == "true"
+        return False
+
+    monkeypatch.setattr("ya_claw.controller.session_prune.remove_docker_container", fake_remove)
+
+    result = await SessionPruneController()._delete_sessions(db_session, settings, ["session-1"])
+
+    assert result.deleted_sessions == 0
+    assert result.failed_docker_sandbox_session_ids == ["session-1"]
+    retained = await db_session.get(SessionRecord, "session-1")
+    assert isinstance(retained, SessionRecord)
+    assert retained.active_run_id == SESSION_PRUNE_CLAIM
+
+    settings.session_prune_generated_sessions_enabled = True
+
+    async def fake_remove_retry(container_ref: str, *, expected_labels: dict[str, str]) -> bool:
+        assert container_ref == "ya-claw-session-session-1-g1"
+        assert expected_labels["io.ya-claw.workspace.managed"] == "true"
+        return True
+
+    monkeypatch.setattr("ya_claw.controller.session_prune.remove_docker_container", fake_remove_retry)
+    retry_result = await SessionPruneController().prune_once(db_session, settings)
+
+    assert retry_result.deleted_sessions == 1
+    assert await db_session.get(SessionRecord, "session-1") is None
+
+
+async def test_prune_retains_session_with_incomplete_docker_identity(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_session.add(
+        SessionRecord(
+            id="session-1",
+            profile_name="default",
+            session_metadata={
+                "sandbox": {
+                    "provider": "docker",
+                    "scope": "session",
+                    "container_ref": "someone-elses-container",
+                    "cache_path": "/untrusted/cache.json",
+                }
+            },
+        )
+    )
+    await db_session.commit()
+
+    async def unexpected_remove(container_ref: str, *, expected_labels: dict[str, str]) -> bool:
+        raise AssertionError((container_ref, expected_labels))
+
+    monkeypatch.setattr("ya_claw.controller.session_prune.remove_docker_container", unexpected_remove)
+
+    result = await SessionPruneController()._delete_sessions(db_session, settings, ["session-1"])
+
+    assert result.deleted_sessions == 0
+    assert result.failed_docker_sandbox_session_ids == ["session-1"]
+    retained = await db_session.get(SessionRecord, "session-1")
+    assert isinstance(retained, SessionRecord)
+    assert retained.active_run_id == SESSION_PRUNE_CLAIM
+
+
+async def test_claim_retry_keeps_fresh_candidate_capacity(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    settings.session_prune_batch_size = 1
+    settings.session_prune_generated_sessions_enabled = True
+    settings.session_prune_heartbeat_keep_recent = 1
+    settings.session_prune_heartbeat_older_than_days = 0
+    now = datetime(2026, 4, 26, 5, 30, tzinfo=UTC)
+    db_session.add(
+        SessionRecord(
+            id="claimed-session",
+            profile_name="default",
+            active_run_id=SESSION_PRUNE_CLAIM,
+            updated_at=now,
+        )
+    )
+    db_session.add(
+        SessionRecord(
+            id="claimed-session-2",
+            profile_name="default",
+            active_run_id=SESSION_PRUNE_CLAIM,
+            updated_at=now + timedelta(seconds=1),
+        )
+    )
+    db_session.add(
+        HeartbeatFireRecord(
+            id="claimed-heartbeat-fire",
+            scheduled_at=now + timedelta(seconds=30),
+            status="submitted",
+            dedupe_key="claimed-heartbeat-fire",
+            session_id="claimed-session-2",
+            fire_metadata={},
+            created_at=now + timedelta(seconds=30),
+        )
+    )
+    for index in range(2):
+        session_id = f"heartbeat-session-{index}"
+        fire_id = f"heartbeat-fire-{index}"
+        db_session.add(SessionRecord(id=session_id, profile_name="default"))
+        db_session.add(
+            HeartbeatFireRecord(
+                id=fire_id,
+                scheduled_at=now + timedelta(minutes=index),
+                status="submitted",
+                dedupe_key=fire_id,
+                session_id=session_id,
+                fire_metadata={},
+                created_at=now + timedelta(minutes=index),
+            )
+        )
+    await db_session.commit()
+
+    selected = await SessionPruneController()._select_generated_session_ids(db_session, settings)
+
+    assert selected == ["claimed-session", "heartbeat-session-0"]
+
+
+async def test_existing_prune_claim_preserves_session_updated_at(
+    db_session: AsyncSession,
+) -> None:
+    original_updated_at = datetime(2025, 1, 2, 3, 4, 5)
+    db_session.add(
+        SessionRecord(
+            id="session-1",
+            profile_name="default",
+            active_run_id=SESSION_PRUNE_CLAIM,
+            updated_at=original_updated_at,
+        )
+    )
+    await db_session.commit()
+
+    claimed = await SessionPruneController()._claim_sessions_for_prune(db_session, ["session-1"])
+
+    assert claimed == ["session-1"]
+    refreshed = await db_session.get(SessionRecord, "session-1", populate_existing=True)
+    assert isinstance(refreshed, SessionRecord)
+    assert refreshed.updated_at == original_updated_at
+
+
+async def test_reference_lock_preserves_session_updated_at(
+    db_session: AsyncSession,
+) -> None:
+    original_updated_at = datetime(2025, 1, 2, 3, 4, 5)
+    db_session.add(
+        SessionRecord(
+            id="session-1",
+            profile_name="default",
+            updated_at=original_updated_at,
+        )
+    )
+    await db_session.commit()
+
+    locked = await lock_session_reference(db_session, "session-1")
+    await db_session.commit()
+
+    assert isinstance(locked, SessionRecord)
+    refreshed = await db_session.get(SessionRecord, "session-1", populate_existing=True)
+    assert isinstance(refreshed, SessionRecord)
+    assert refreshed.updated_at == original_updated_at
+
+
+async def test_prune_claim_blocks_new_run_creation(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    db_session.add(SessionRecord(id="session-1", profile_name="default"))
+    await db_session.commit()
+    prune_controller = SessionPruneController()
+
+    claimed = await prune_controller._claim_sessions_for_prune(db_session, ["session-1"])
+
+    assert claimed == ["session-1"]
+    with pytest.raises(HTTPException) as exc_info:
+        await RunController().create(
+            db_session,
+            settings,
+            create_runtime_state(),
+            RunCreateRequest(session_id="session-1", input_parts=[{"type": "text", "text": "hello"}]),
+        )
+    assert exc_info.value.status_code == 409
+    assert "being pruned" in str(exc_info.value.detail)
+    assert not (await db_session.execute(select(RunRecord.id))).scalars().all()
+
+
+async def test_prune_claim_blocks_new_fork_and_schedule_references(
+    db_session: AsyncSession,
+) -> None:
+    source = SessionRecord(
+        id="session-1",
+        profile_name="default",
+        head_run_id="run-1",
+        head_success_run_id="run-1",
+        active_run_id=SESSION_PRUNE_CLAIM,
+    )
+    db_session.add(source)
+    db_session.add(
+        RunRecord(
+            id="run-1",
+            session_id="session-1",
+            sequence_no=1,
+            status="completed",
+            trigger_type="api",
+            input_parts=[],
+            run_metadata={},
+        )
+    )
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as fork_exc:
+        await SessionController().fork(db_session, "session-1", SessionForkRequest())
+    assert fork_exc.value.status_code == 409
+
+    await db_session.rollback()
+    with pytest.raises(HTTPException) as schedule_exc:
+        await ScheduleController().create(
+            db_session,
+            ScheduleCreateRequest(
+                name="blocked",
+                prompt="hello",
+                cron="* * * * *",
+                owner_session_id="session-1",
+                start_from_current_session=True,
+            ),
+        )
+    assert schedule_exc.value.status_code == 409
+
+
+async def test_prune_recovery_releases_claim_when_session_becomes_protected(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    db_session.add(
+        SessionRecord(
+            id="session-1",
+            profile_name="default",
+            active_run_id=SESSION_PRUNE_CLAIM,
+        )
+    )
+    db_session.add(
+        ScheduleRecord(
+            id="schedule-1",
+            name="protected",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            execution_mode="continue_session",
+            target_session_id="session-1",
+            input_parts_template=[],
+            status="active",
+        )
+    )
+    await db_session.commit()
+
+    result = await SessionPruneController()._delete_sessions(db_session, settings, ["session-1"])
+
+    assert result.deleted_sessions == 0
+    retained = await db_session.get(SessionRecord, "session-1", populate_existing=True)
+    assert isinstance(retained, SessionRecord)
+    assert retained.active_run_id is None
+
+
+async def test_prune_claim_rechecks_new_queued_run(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    db_session.add(SessionRecord(id="session-1", profile_name="default"))
+    await db_session.commit()
+    controller = SessionPruneController()
+    candidates = await controller._filter_deletable_session_ids(db_session, ["session-1"])
+    assert candidates == ["session-1"]
+    db_session.add(
+        RunRecord(
+            id="run-1",
+            session_id="session-1",
+            sequence_no=1,
+            status="queued",
+            trigger_type="api",
+            input_parts=[],
+            run_metadata={},
+        )
+    )
+    await db_session.commit()
+
+    claimed = await controller._claim_sessions_for_prune(db_session, candidates)
+
+    assert claimed == []
+    retained = await db_session.get(SessionRecord, "session-1", populate_existing=True)
+    assert isinstance(retained, SessionRecord)
+    assert retained.active_run_id is None
+
+
+async def test_prune_claim_waits_for_concurrent_run_transaction(
+    db_engine: AsyncEngine,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    async with session_factory() as seed_session:
+        seed_session.add(SessionRecord(id="session-1", profile_name="default"))
+        await seed_session.commit()
+
+    async with session_factory() as run_session, session_factory() as prune_session:
+        await run_session.execute(
+            update(SessionRecord)
+            .where(SessionRecord.id == "session-1")
+            .values(active_run_id=SessionRecord.active_run_id)
+        )
+        run_session.add(
+            RunRecord(
+                id="run-1",
+                session_id="session-1",
+                sequence_no=1,
+                status="queued",
+                trigger_type="api",
+                input_parts=[],
+                run_metadata={},
+            )
+        )
+        await run_session.flush()
+        claim_task = asyncio.create_task(
+            SessionPruneController()._claim_sessions_for_prune(prune_session, ["session-1"])
+        )
+        await asyncio.sleep(0.05)
+        assert not claim_task.done()
+
+        await run_session.commit()
+        assert await claim_task == []
+
+
+async def test_run_creation_waits_for_concurrent_prune_claim(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    async with session_factory() as seed_session:
+        seed_session.add(SessionRecord(id="session-1", profile_name="default"))
+        await seed_session.commit()
+
+    async with session_factory() as prune_session, session_factory() as run_session:
+        await prune_session.execute(
+            update(SessionRecord).where(SessionRecord.id == "session-1").values(active_run_id=SESSION_PRUNE_CLAIM)
+        )
+        create_task = asyncio.create_task(
+            RunController().create(
+                run_session,
+                settings,
+                create_runtime_state(),
+                RunCreateRequest(session_id="session-1", input_parts=[{"type": "text", "text": "hello"}]),
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not create_task.done()
+
+        await prune_session.commit()
+        with pytest.raises(HTTPException) as exc_info:
+            await create_task
+        assert exc_info.value.status_code == 409
+
+
+async def test_prune_retries_persisted_claim_after_restart(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    db_session.add(
+        SessionRecord(
+            id="session-1",
+            profile_name="default",
+            active_run_id=SESSION_PRUNE_CLAIM,
+        )
+    )
+    await db_session.commit()
+
+    result = await SessionPruneController()._delete_sessions(db_session, settings, ["session-1"])
+
+    assert result.deleted_sessions == 1
+    assert await db_session.get(SessionRecord, "session-1") is None
+
+
+async def test_disabled_generated_prune_releases_persisted_claim_on_startup(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    settings.session_prune_enabled = False
+    settings.session_prune_generated_sessions_enabled = False
+    session_factory = create_session_factory(db_engine)
+    async with session_factory() as seed_session:
+        seed_session.add(
+            SessionRecord(
+                id="session-1",
+                profile_name="default",
+                active_run_id=SESSION_PRUNE_CLAIM,
+            )
+        )
+        await seed_session.commit()
+
+    dispatcher = SessionPruneDispatcher(settings=settings, session_factory=session_factory)
+    await dispatcher.startup()
+
+    async with session_factory() as verify_session:
+        record = await verify_session.get(SessionRecord, "session-1")
+        assert isinstance(record, SessionRecord)
+        assert record.active_run_id is None
 
 
 async def test_prune_orphan_run_store_dirs(
