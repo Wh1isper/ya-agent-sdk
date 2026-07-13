@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import DeferredToolRequests
+from pydantic_ai import DeferredToolRequests, RunContext
 from ya_agent_sdk.agents.main import stream_agent
 from ya_agent_sdk.context import ResumableState, ShellReviewAction, ShellReviewConfig
 from ya_agent_sdk.environment import SandboxEnvironment, VirtualMount
@@ -374,6 +375,66 @@ def test_runtime_builder_rejects_profile_stdio_mcp(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unsupported transport"):
         builder._resolve_runtime_toolsets(profile=profile, binding=binding)
+
+
+async def test_runtime_builder_discovers_workspace_skills_through_virtual_paths(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+    builder = ClawRuntimeBuilder(settings=settings)
+    host_path = tmp_path / "workspace"
+    skill_dir = host_path / ".agents" / "skills" / "workspace-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: workspace-skill
+description: A workspace skill exposed through the Claw virtual path.
+---
+
+# Workspace Skill
+""",
+        encoding="utf-8",
+    )
+    binding = _build_workspace_binding(host_path)
+    environment = MappedLocalEnvironment(
+        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
+        host_cwd=host_path,
+    )
+    profile = ResolvedProfile(
+        name="default",
+        model="test",
+        model_settings=None,
+        model_config=None,
+        builtin_toolsets=[],
+        workspace_backend_hint="local",
+    )
+    runtime = builder.build(
+        profile=profile,
+        binding=binding,
+        environment=environment,
+        restore_state=None,
+        session_id="session-1",
+        run_id="run-1",
+        restore_from_run_id=None,
+        dispatch_mode="async",
+        source_kind="api",
+        source_metadata={},
+        claw_metadata={},
+    )
+
+    async with runtime:
+        skill_toolset = next(toolset for toolset in runtime.agent._user_toolsets if isinstance(toolset, SkillToolset))
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = runtime.ctx
+        instructions = await skill_toolset.get_instructions(run_ctx)
+
+    assert instructions is not None
+    instruction_text = "\n".join(str(part.content) for part in instructions)
+    assert "workspace-skill" in instruction_text
+    assert "<path>/workspace/.agents/skills/workspace-skill</path>" in instruction_text
 
 
 async def test_runtime_builder_streams_with_pydantic_ai_test_model_and_exports_state(tmp_path: Path) -> None:

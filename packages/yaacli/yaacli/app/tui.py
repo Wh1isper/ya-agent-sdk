@@ -1259,17 +1259,21 @@ class TUIApp:
             self._sync_transcript_state()
 
     def _update_streaming_text(self, delta: str) -> None:
-        """Append a fragment and periodically render a lightweight preview."""
+        """Append a fragment and periodically re-render the Markdown preview."""
         if self._streaming_text_buffer is None:
             self._streaming_text_buffer = self._new_stream_accumulator()
         self._streaming_text_buffer.append(delta)
         now = time.monotonic()
         if now - self._last_stream_render_time < self._stream_render_interval:
             return
-        self._last_stream_render_time = now
         self._streaming_text = self._streaming_text_buffer.text()
-        with perf_timer("stream_render_preview"):
-            rendered = self._renderer.render_text(self._streaming_text).rstrip("\n")
+        with perf_timer("stream_render_markdown"):
+            rendered = self._renderer.render_markdown(
+                self._streaming_text,
+                code_theme=self._get_code_theme(),
+                width=self._get_terminal_width(),
+            ).rstrip("\n")
+        self._last_stream_render_time = time.monotonic()
         if not self._update_block_by_id(self._streaming_block_id, rendered) and rendered:
             self._streaming_block_id = self._append_block(rendered)
             self._sync_transcript_state()
@@ -1278,7 +1282,7 @@ class TUIApp:
         self._throttled_invalidate()
 
     def _finalize_streaming_text(self) -> None:
-        """Render complete Markdown once when the streamed part ends."""
+        """Render the complete Markdown when the streamed part ends."""
         complete_text = self._streaming_text_buffer.text() if self._streaming_text_buffer is not None else ""
         if complete_text:
             rendered = self._renderer.render_markdown(

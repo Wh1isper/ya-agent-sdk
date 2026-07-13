@@ -53,6 +53,22 @@ def _history_processors_from_agent(runtime) -> list:
     ]
 
 
+def test_compact_prompts_preserve_only_activated_skills() -> None:
+    context_description = CondenseResult.model_fields["context"].description
+    assert context_description is not None
+    prompts = (
+        compact_module.DEFAULT_COMPACT_INSTRUCTION,
+        compact_module.CACHE_FRIENDLY_COMPACT_INSTRUCTION,
+        compact_module._load_system_prompt(),
+        context_description,
+    )
+
+    for prompt in prompts:
+        assert "activated" in prompt.lower()
+        assert "merely inspected or rejected" in prompt
+        assert "Do not carry a merely inspected or rejected candidate's workflow" in prompt
+
+
 # Full tag set including application-level tags for testing
 _ALL_TAGS = (*_DEFAULT_INJECTED_TAGS, PROJECT_GUIDANCE_TAG, USER_RULES_TAG)
 

@@ -49,6 +49,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - changes here should keep examples, skills, and package docs aligned
 - OAuth-backed model strings use `oauth@provider:model`; Codex currently uses `oauth@codex:gpt-5.5`, uses the `gpt5_350k` model config for its subscription context window, and receives session/thread headers from `AgentContext.get_model_extra_headers()`
 - Generic OpenAI Responses WebSocket transport lives in `ya-agent-sdk` under `ya_agent_sdk.agents.models.websocket`; aliases `openai-responses-ws:<model>` and `openai-responses-rs:<model>` are SDK core model strings and use `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` for `auto`/`websocket`/`http`
+- Skill routing is two-stage: inspect plausible candidates with high recall, then activate only direct scope matches; inspected candidates are non-binding, activated skills are mandatory within scope, and compaction carries forward only activated skills still relevant to unfinished work
 
 ### `packages/ya-agent-stream-protocol`
 

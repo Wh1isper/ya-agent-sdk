@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 import yaml
@@ -31,7 +31,7 @@ class SkillConfig(BaseModel):
 
     This model represents the configuration extracted from a SKILL.md file
     with YAML frontmatter. Only name and description are required in the
-    frontmatter; the body content is loaded separately when the skill is activated.
+    frontmatter; the body content is read separately during candidate inspection.
     """
 
     name: str
@@ -41,8 +41,8 @@ class SkillConfig(BaseModel):
     """Description shown to the model when selecting skills. Should explain
     what the skill does and when to use it."""
 
-    path: Path
-    """Path to the skill directory containing SKILL.md."""
+    path: PurePath
+    """Agent-facing path to the skill directory containing SKILL.md."""
 
     content_hash: str = ""
     """Hash of the frontmatter content for change detection."""
@@ -52,10 +52,10 @@ class SkillConfig(BaseModel):
 
 
 def _compute_frontmatter_hash(yaml_content: str) -> str:
-    """Compute hash of frontmatter content for change detection.
+    """Compute a hash of the raw YAML frontmatter for change detection.
 
-    Only hashes the frontmatter (name + description) since that's what
-    affects the system prompt. Body content changes don't invalidate cache.
+    All frontmatter fields and formatting affect this hash. Body content does
+    not, because the body is read on demand rather than injected into the catalog.
 
     Args:
         yaml_content: The YAML frontmatter string.
@@ -66,7 +66,7 @@ def _compute_frontmatter_hash(yaml_content: str) -> str:
     return hashlib.sha256(yaml_content.encode("utf-8")).hexdigest()
 
 
-def parse_skill_markdown(content: str, skill_path: Path | None = None) -> SkillConfig:
+def parse_skill_markdown(content: str, skill_path: PurePath | None = None) -> SkillConfig:
     """Parse skill configuration from markdown with YAML frontmatter.
 
     The markdown file should have YAML frontmatter delimited by '---' at the
@@ -74,7 +74,7 @@ def parse_skill_markdown(content: str, skill_path: Path | None = None) -> SkillC
 
     Args:
         content: Markdown content with YAML frontmatter.
-        skill_path: Path to the skill directory (optional).
+        skill_path: Agent-facing path to the skill directory (optional).
 
     Returns:
         SkillConfig with parsed configuration.
@@ -134,7 +134,7 @@ def parse_skill_markdown(content: str, skill_path: Path | None = None) -> SkillC
     return SkillConfig(
         name=name,
         description=description,
-        path=skill_path or Path("."),
+        path=skill_path if skill_path is not None else Path("."),
         content_hash=_compute_frontmatter_hash(yaml_content),
         extra=extra,
     )

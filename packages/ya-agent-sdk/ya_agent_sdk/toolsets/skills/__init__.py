@@ -23,7 +23,7 @@ Usage::
 
     async with create_agent(
         model="anthropic:claude-sonnet-4",
-        tools=[skill_toolset],
+        toolsets=[skill_toolset],
     ) as runtime:
         # Skills from all allowed_paths/skills/ directories will be available
         ...

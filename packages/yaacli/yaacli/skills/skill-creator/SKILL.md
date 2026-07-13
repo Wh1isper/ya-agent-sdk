@@ -65,8 +65,8 @@ skill-name/
 
 Every SKILL.md consists of:
 
-- **Frontmatter** (YAML): Contains `name` and `description` fields. These are the only fields that Claude reads to determine when the skill gets used, thus it is very important to be clear and comprehensive in describing what the skill is, and when it should be used.
-- **Body** (Markdown): Instructions and guidance for using the skill. Only loaded AFTER the skill triggers (if at all).
+- **Frontmatter** (YAML): Contains `name` and `description` fields. These are the fields Claude initially reads to discover candidate skills, so they must state the skill's actual purpose and scope clearly.
+- **Body** (Markdown): Instructions and guidance for using the skill. Loaded when the skill is inspected as a candidate, before the stricter activation decision.
 
 #### Bundled Resources (optional)
 
@@ -116,8 +116,8 @@ The skill should only contain the information needed for an AI agent to do the j
 Skills use a three-level loading system to manage context efficiently:
 
 1. **Metadata (name + description)** - Always in context (~100 words)
-2. **SKILL.md body** - When skill triggers (<5k words)
-3. **Bundled resources** - As needed by Claude (Unlimited because scripts can be executed without reading into context window)
+2. **SKILL.md body** - When the skill is inspected as a candidate (<5k words)
+3. **Bundled resources** - During inspection, read only a specific reference needed to judge scope or applicability. After activation, follow the applicable workflow to read references, use assets, or execute scripts.
 
 #### Progressive Disclosure Patterns
 
@@ -223,7 +223,7 @@ For example, when building an image-editor skill, relevant questions include:
 - "What functionality should the image-editor skill support? Editing, rotating, anything else?"
 - "Can you give some examples of how this skill would be used?"
 - "I can imagine users asking for things like 'Remove the red-eye from this image' or 'Rotate this image'. Are there other ways you imagine this skill being used?"
-- "What would a user say that should trigger this skill?"
+- "What would make this skill a plausible candidate, and what would confirm that its workflow actually applies?"
 
 To avoid overwhelming users, avoid asking too many questions in a single message. Start with the most important questions and follow up as needed for better effectiveness.
 
@@ -306,10 +306,12 @@ Any example files and directories not needed for the skill should be deleted. Th
 Write the YAML frontmatter with `name` and `description`:
 
 - `name`: The skill name
-- `description`: This is the primary triggering mechanism for your skill, and helps Claude understand when to use the skill.
-  - Include both what the Skill does and specific triggers/contexts for when to use it.
-  - Include all "when to use" information here - Not in the body. The body is only loaded after triggering, so "When to Use This Skill" sections in the body are not helpful to Claude.
-  - Example description for a `docx` skill: "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. Use when Claude needs to work with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks"
+- `description`: This is the primary candidate-discovery signal for your skill and helps Claude decide whether to inspect it.
+  - Describe the skill's actual purpose, supported actions or deliverables, and any specialized capability it governs.
+  - Include concrete contexts for when the skill applies and, where confusion is likely, important adjacent tasks it does not cover.
+  - Avoid keyword stuffing and broad rules such as "trigger on any mention of analysis, comparison, or report." Shared words alone must not imply that the workflow applies.
+  - Include all scope and "when to inspect" information here, not only in the body. The body is loaded during candidate inspection and is then used for a stricter activation decision.
+  - Example description for a `docx` skill: "Create and edit professional .docx documents while preserving formatting, tracked changes, and comments. Use when the requested action or deliverable is a Word document. Do not use for general prose drafting that does not require .docx output or editing."
 
 Do not include any other fields in YAML frontmatter.
 

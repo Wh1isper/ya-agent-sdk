@@ -47,17 +47,24 @@ def test_all_append_paths_share_real_line_and_byte_limits() -> None:
     assert app._total_line_count == sum(app._block_line_counts)
 
 
-def test_streaming_markdown_is_rendered_only_when_finalized() -> None:
+def test_streaming_markdown_is_rendered_before_finalization_and_throttled() -> None:
     app = make_app()
-    app._renderer.render_markdown = MagicMock(wraps=app._renderer.render_markdown)  # type: ignore[method-assign]
+    app._renderer.render_markdown = MagicMock(return_value="MARKDOWN_PREVIEW\n")  # type: ignore[method-assign]
+    app._renderer.render_text = MagicMock(return_value="PLAIN_PREVIEW\n")  # type: ignore[method-assign]
 
     app._start_streaming_text("")
-    for _ in range(1000):
-        app._update_streaming_text("token ")
+    with patch("yaacli.app.tui.time.monotonic", side_effect=[1.0, 1.01, 1.02]):
+        app._update_streaming_text("**bold**")
+        app._update_streaming_text(" text")
 
-    assert app._renderer.render_markdown.call_count == 0
-    app._finalize_streaming_text()
     assert app._renderer.render_markdown.call_count == 1
+    assert app._renderer.render_markdown.call_args.args[0] == "**bold**"
+    app._renderer.render_text.assert_not_called()
+    assert app._output_lines == ["MARKDOWN_PREVIEW"]
+
+    app._finalize_streaming_text()
+    assert app._renderer.render_markdown.call_count == 2
+    assert app._renderer.render_markdown.call_args.args[0] == "**bold** text"
 
 
 def test_streaming_ui_retains_only_bounded_raw_tail() -> None:
