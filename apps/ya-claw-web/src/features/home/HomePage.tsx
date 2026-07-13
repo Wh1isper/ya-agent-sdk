@@ -221,9 +221,9 @@ export function HomePage() {
       ) : null}
 
       <section className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)]">
-          <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
-            <div>
+        <div className="min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+          <div className="flex min-w-0 items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
+            <div className="min-w-0">
               <h2 className="font-semibold">Recent conversations</h2>
               <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
                 Continue where you left off
@@ -231,7 +231,7 @@ export function HomePage() {
             </div>
             <Link
               to="/conversations"
-              className="text-sm font-semibold text-[var(--primary)]"
+              className="shrink-0 text-sm font-semibold text-[var(--primary)]"
             >
               View all
             </Link>
@@ -258,7 +258,7 @@ export function HomePage() {
           </div>
         </div>
 
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+        <div className="min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface)]">
           <div className="border-b border-[var(--border)] px-5 py-4">
             <h2 className="font-semibold">Upcoming automation</h2>
             <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
@@ -306,11 +306,11 @@ function RecentConversationLink({ session }: { session: SessionSummary }) {
   const channel = sessionChannel(session)
   const content = (
     <>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold">
           {sessionTitle(session)}
         </p>
-        <p className="mt-1 text-xs text-[var(--subtle-foreground)]">
+        <p className="mt-1 truncate text-xs text-[var(--subtle-foreground)]">
           {channelLabel(channel)} · {session.profile_name ?? 'Default agent'} ·{' '}
           {formatRelative(session.updated_at)}
         </p>
@@ -319,7 +319,7 @@ function RecentConversationLink({ session }: { session: SessionSummary }) {
     </>
   )
   const className =
-    'flex items-center justify-between gap-4 px-5 py-4 transition hover:bg-[var(--subtle)]'
+    'flex min-w-0 items-center justify-between gap-4 px-5 py-4 transition hover:bg-[var(--subtle)]'
 
   return (
     <Link

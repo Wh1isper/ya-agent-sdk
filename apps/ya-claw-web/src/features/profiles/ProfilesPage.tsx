@@ -28,6 +28,7 @@ import {
 import { EmptyState } from '../../components/EmptyState'
 import { JsonView } from '../../components/JsonView'
 import { isNewerApiTimestamp } from '../../lib/date'
+import { buildProfilePath } from '../../lib/urlState'
 import { StatusBadge } from '../../components/StatusBadge'
 import { ConfirmDialog, QueryError } from '../../components/ui'
 import {
@@ -413,11 +414,21 @@ function ProfileEditor({
   const loadedVersionRef = useRef<string | null>(null)
   const pendingRemoteProfileRef = useRef<ProfileDetail | null>(null)
   const isDirty = form.formState.isDirty
+  const allowedSavedProfileNavigationPathRef = useRef<string | null>(null)
   const [expandedSubagents, setExpandedSubagents] = useState<
     Record<number, boolean>
   >({})
   const navigationBlocker = useBlocker({
-    shouldBlockFn: () => isDirty,
+    shouldBlockFn: ({ current, next }) => {
+      const allowedPath = allowedSavedProfileNavigationPathRef.current
+      const isSavedProfileRedirect =
+        current.pathname === '/agents/new' && next.pathname === allowedPath
+      if (isSavedProfileRedirect) {
+        allowedSavedProfileNavigationPathRef.current = null
+        return false
+      }
+      return isDirty
+    },
     disabled: !isDirty,
     enableBeforeUnload: isDirty,
     withResolver: true,
@@ -494,6 +505,9 @@ function ProfileEditor({
       loadedVersionRef.current = saved.updated_at
       pendingRemoteProfileRef.current = null
       setRemoteUpdateAvailable(false)
+      allowedSavedProfileNavigationPathRef.current = buildProfilePath(
+        saved.name,
+      )
       selectProfile(saved.name)
     } catch (error) {
       if (operationGenerationRef.current === operationGeneration) {

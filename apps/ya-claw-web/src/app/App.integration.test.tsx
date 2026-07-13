@@ -121,6 +121,122 @@ describe('App MSW integration safety net', () => {
     expect(await screen.findByLabelText('Name')).toBeVisible()
   })
 
+  it('does not block navigation to a newly saved agent', async () => {
+    const savedProfile = {
+      name: 'saved-agent',
+      model: 'openai:gpt-4.1-mini',
+      enabled: true,
+      updated_at: '2026-07-13T00:00:00Z',
+      created_at: '2026-07-13T00:00:00Z',
+      builtin_toolsets: ['session'],
+      toolsets: [],
+      subagents: [],
+      include_builtin_subagents: true,
+      unified_subagents: true,
+      need_user_approve_tools: [],
+      need_user_approve_mcps: [],
+      enabled_mcps: [],
+      disabled_mcps: [],
+      mcp_servers: {},
+    }
+    apiServer.use(
+      http.put('*/api/v1/profiles/:profileName', ({ params }) => {
+        expect(params.profileName).toBe(savedProfile.name)
+        return HttpResponse.json(savedProfile)
+      }),
+      http.get('*/api/v1/profiles', () => HttpResponse.json([savedProfile])),
+      http.get('*/api/v1/profiles/:profileName', () =>
+        HttpResponse.json(savedProfile),
+      ),
+    )
+
+    const { router, user } = await renderApp({
+      connected: true,
+      route: '/agents/new',
+    })
+
+    await user.type(screen.getByLabelText('Name'), savedProfile.name)
+    await user.click(screen.getByRole('button', { name: 'Save agent' }))
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe(
+        `/agents/by-name/${savedProfile.name}`,
+      )
+    })
+    expect(
+      screen.queryByRole('dialog', {
+        name: 'Discard unsaved agent changes?',
+      }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks manual navigation away from a dirty new agent', async () => {
+    const { router, user } = await renderApp({
+      connected: true,
+      route: '/agents/new',
+    })
+
+    const name = await screen.findByLabelText('Name')
+    await user.type(name, 'draft-agent')
+    await user.click(screen.getAllByRole('link', { name: /Settings/ })[0])
+
+    expect(
+      await screen.findByRole('dialog', {
+        name: 'Discard unsaved agent changes?',
+      }),
+    ).toBeVisible()
+    expect(router.state.location.pathname).toBe('/agents/new')
+    expect(name).toHaveValue('draft-agent')
+  })
+
+  it('keeps long recent conversation text constrained on narrow Home layouts', async () => {
+    const longTitle =
+      'conversation-with-an-extremely-long-unbroken-title-that-must-not-expand-the-page'
+    const longProfileName =
+      'agent-with-an-extremely-long-unbroken-profile-name-that-must-not-expand-the-page'
+    apiServer.use(
+      http.get('*/api/v1/sessions/page', () =>
+        HttpResponse.json({
+          sessions: [
+            {
+              id: 'long-session',
+              profile_name: longProfileName,
+              session_type: 'conversation',
+              metadata: { title: longTitle },
+              created_at: '2026-07-13T00:00:00Z',
+              updated_at: '2026-07-13T00:00:00Z',
+              status: 'idle',
+              run_count: 0,
+              head_run_id: null,
+              head_success_run_id: null,
+              active_run_id: null,
+              latest_run: null,
+            },
+          ],
+          total: 1,
+          limit: 50,
+          has_more: false,
+          next_before_updated_at: null,
+          next_before_id: null,
+        }),
+      ),
+    )
+
+    await renderApp({ connected: true, viewport: { width: 320 } })
+
+    const conversation = await screen.findByRole('link', {
+      name: new RegExp(longTitle),
+    })
+    const text = conversation.querySelectorAll('p')
+    const card = conversation.parentElement?.parentElement
+
+    expect(card).toHaveClass('min-w-0')
+    expect(conversation).toHaveClass('min-w-0')
+    expect(text[0]).toHaveClass('truncate')
+    expect(text[1]).toHaveClass('truncate')
+    expect(conversation.querySelector('div')).toHaveClass('min-w-0', 'flex-1')
+  })
+
   it('keeps an invalid credential in the connection gate', async () => {
     apiServer.use(
       http.get('*/api/v1/claw/info', () =>
