@@ -51,7 +51,7 @@ def test_get_builtin_subagent_configs() -> None:
     assert isinstance(configs, dict)
 
     # Should have known builtin subagents
-    assert sorted(configs.keys()) == snapshot(["code-reviewer", "debugger", "executor", "explorer", "searcher"])
+    assert sorted(configs.keys()) == snapshot(["code-reviewer", "executor", "explorer"])
 
     # All values should be SubagentConfig
     for name, config in configs.items():
@@ -66,20 +66,10 @@ def test_get_builtin_subagent_configs_content() -> None:
     """Test that builtin configs have expected content."""
     configs = get_builtin_subagent_configs()
 
-    # Debugger should have instruction
-    debugger = configs["debugger"]
-    assert "error" in debugger.instruction.lower() or "debug" in debugger.instruction.lower()
-
     # Explorer should focus on behavior instead of repeating tool capability lists
     explorer = configs["explorer"]
     assert "Exploration Strategies" in explorer.system_prompt
     assert "tool capability" not in explorer.system_prompt
-
-    # Searcher should focus on search strategy instead of repeating tool names
-    searcher = configs["searcher"]
-    assert "Search Strategies" in searcher.system_prompt
-    assert "search_with_tavily" not in searcher.system_prompt
-    assert "search_with_google" not in searcher.system_prompt
 
 
 def test_load_builtin_subagent_tools_import() -> None:
@@ -222,7 +212,7 @@ def test_load_builtin_subagent_tools_with_preset_model_settings(agent_context) -
         model_settings="anthropic_medium",
     )
 
-    assert len(tools) == snapshot(5)
+    assert len(tools) == snapshot(3)
     for tool_cls in tools:
         assert issubclass(tool_cls, BaseTool)
 
