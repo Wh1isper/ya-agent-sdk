@@ -34,6 +34,24 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Release version: $version"
 
+      - name: Validate release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RESOLVED_VERSION: ${{ steps.release_version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tag must use canonical vMAJOR.MINOR.PATCH format; got '$RELEASE_TAG'." >&2
+            exit 1
+          fi
+          expected_tag="v${RESOLVED_VERSION}"
+          if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
+            echo "Release tag mismatch: expected '$expected_tag', got '$RELEASE_TAG'." >&2
+            exit 1
+          fi
+          echo "Release tag verified: $RELEASE_TAG"
+
       - name: Sync ripgrep core Cargo version
         shell: bash
         run: |
