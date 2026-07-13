@@ -42,10 +42,19 @@ max_requests = 1000
 # Environment variable overrides for API keys
 # ANTHROPIC_API_KEY = "sk-ant-..."
 
+[media]
+max_pending_attachments = 8
+max_pending_attachment_bytes = 20971520
+
 [display]
 code_theme = "dark"           # "dark" or "light"
 max_tool_result_lines = 5
 max_arg_length = 100
+max_output_lines = 1000
+max_output_blocks = 1000
+max_output_bytes = 4194304
+max_stream_render_bytes = 524288
+max_prompt_history = 500
 show_token_usage = true
 show_elapsed_time = true
 

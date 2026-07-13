@@ -1,177 +1,67 @@
-"""Logging configuration for yaacli TUI.
+"""Bounded logging configuration for the yaacli CLI and TUI.
 
-TUI logging redirects all log output to a queue-based handler that can be
-consumed by TUI components for display. This prevents log output from
-interfering with TUI rendering.
-
-Key components:
-- LogEvent: Event type for log messages (extends AgentEvent)
-- QueueHandler: Logging handler that emits LogEvents to a queue
-- configure_tui_logging(): Setup function to redirect all loggers to TUI
-
-Logging modes:
-- Non-verbose (-v not set): Silent mode, no log output
-- Verbose (-v set): Log to file (yaacli.log in current directory)
-
-Usage:
-    from yaacli.logging import configure_tui_logging, LogEvent
-
-    # At TUI startup
-    log_queue = asyncio.Queue()
-    configure_tui_logging(log_queue, verbose=True)  # Enable file logging
-
-    # Log messages appear as LogEvents in the queue for TUI display
-    # With verbose=True, also written to yaacli.log
+The TUI must never write logging output to stderr because that corrupts the
+prompt_toolkit display. Non-verbose logging is therefore silent. Verbose
+logging is written through one rotating ``yaacli.log`` handler so long-running
+sessions cannot grow logs without bound.
 """
 
 from __future__ import annotations
 
 import logging
 import warnings
-from asyncio import Queue
-from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-from ya_agent_sdk.events import AgentEvent
-
-if TYPE_CHECKING:
-    pass
 
 # Logger names to configure
 TUI_LOGGER_NAME = "yaacli"
 SDK_LOGGER_NAME = "ya_agent_sdk"
 PY_WARNINGS_LOGGER_NAME = "py.warnings"
 
-# Log file name
+# Verbose log retention defaults: up to 20 MiB across the active file and
+# three backups. They are module constants so the retention policy is clear.
 LOG_FILE_NAME = "yaacli.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+
+_LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 
 # Cache for initialization state
 _initialized = False
-_log_queue: Queue | None = None
-_verbose_mode: bool = False
-
-# -----------------------------------------------------------------------------
-# Log Event
-# -----------------------------------------------------------------------------
+_verbose_mode = False
+_configured_root_handlers: list[logging.Handler] = []
 
 
-@dataclass
-class LogEvent(AgentEvent):
-    """Log message event for TUI display.
-
-    Emitted by QueueHandler when a log record is produced.
-
-    Attributes:
-        level: Log level name (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        logger_name: Name of the logger that produced the message.
-        message: Formatted log message.
-        func_name: Function name where log was called.
-        line_no: Line number where log was called.
-    """
-
-    level: str = "INFO"
-    logger_name: str = ""
-    message: str = ""
-    func_name: str = ""
-    line_no: int = 0
-
-
-# -----------------------------------------------------------------------------
-# Queue Handler
-# -----------------------------------------------------------------------------
-
-
-class QueueHandler(logging.Handler):
-    """Logging handler that emits LogEvents to a queue.
-
-    This handler formats log records and puts them into an asyncio Queue
-    as LogEvent instances. TUI components can consume these events for
-    display in a log panel.
-    """
-
-    def __init__(self, queue: Queue, level: int = logging.DEBUG) -> None:
-        """Initialize the queue handler.
-
-        Args:
-            queue: Asyncio queue to emit events to.
-            level: Minimum log level to handle.
-        """
-        super().__init__(level)
-        self._queue = queue
-
-    def emit(self, record: logging.LogRecord) -> None:
-        """Emit a log record as a LogEvent.
-
-        Args:
-            record: The log record to emit.
-        """
-        try:
-            # Format the message
-            msg = self.format(record)
-
-            # Create event
-            event = LogEvent(
-                event_id=f"log-{record.created:.0f}-{record.lineno}",
-                level=record.levelname,
-                logger_name=record.name,
-                message=msg,
-                func_name=record.funcName,
-                line_no=record.lineno,
-            )
-
-            # Put into queue (non-blocking)
-            self._queue.put_nowait(event)
-        except Exception:
-            # Don't raise exceptions from logging
-            self.handleError(record)
-
-
-# -----------------------------------------------------------------------------
-# Configuration Functions
-# -----------------------------------------------------------------------------
-
-
-def _configure_logger(
-    name: str,
-    queue: Queue,
-    level: int = logging.DEBUG,
-    add_file_handler: bool = False,
-) -> None:
-    """Configure a logger to use the queue handler.
-
-    Args:
-        name: Logger name.
-        queue: Queue to emit events to.
-        level: Minimum log level.
-        add_file_handler: If True, also add file handler for verbose mode.
-    """
-    logger = logging.getLogger(name)
-
-    # Clear existing handlers (especially stderr handlers)
+def _clear_handlers(logger: logging.Logger) -> None:
+    """Remove and close every handler directly attached to ``logger``."""
+    handlers = logger.handlers[:]
     logger.handlers.clear()
+    for handler in handlers:
+        handler.close()
 
-    # Add queue handler
-    queue_handler = QueueHandler(queue, level)
-    formatter = logging.Formatter("%(message)s")
-    queue_handler.setFormatter(formatter)
-    logger.addHandler(queue_handler)
 
-    # Add file handler for verbose mode
-    if add_file_handler:
-        log_file = Path.cwd() / LOG_FILE_NAME
-        file_handler = logging.FileHandler(log_file)
-        file_formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
+def _make_rotating_file_handler() -> RotatingFileHandler:
+    """Create the single bounded verbose log handler with standard formatting."""
+    handler = RotatingFileHandler(
+        Path.cwd() / LOG_FILE_NAME,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    return handler
 
-    # Set level and prevent propagation
+
+def _configure_logger(name: str, level: int) -> None:
+    """Route a yaacli logger through the root's stderr-safe handler."""
+    logger = logging.getLogger(name)
+    _clear_handlers(logger)
     logger.setLevel(level)
-    logger.propagate = False
+    logger.propagate = True
 
 
-def _configure_warning_logger(verbose: bool = False) -> None:
-    """Route Python warnings away from stderr during CLI/TUI execution."""
+def _configure_warning_logger() -> None:
+    """Route Python warnings through the root handler instead of stderr."""
     logging.captureWarnings(True)
     warnings.filterwarnings(
         "ignore",
@@ -180,170 +70,98 @@ def _configure_warning_logger(verbose: bool = False) -> None:
     )
 
     logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
-    logger.handlers.clear()
-
-    if verbose:
-        log_file = Path.cwd() / LOG_FILE_NAME
-        handler: logging.Handler = logging.FileHandler(log_file)
-        formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-        handler.setFormatter(formatter)
-    else:
-        handler = logging.NullHandler()
-
-    logger.addHandler(handler)
+    _clear_handlers(logger)
     logger.setLevel(logging.WARNING)
-    logger.propagate = False
+    logger.propagate = True
 
 
 def _redirect_root_logger(verbose: bool = False) -> None:
-    """Redirect root logger away from stderr.
+    """Install the only handler used for yaacli CLI/TUI logging.
 
-    The root logger may have a StreamHandler to stderr (set up by basicConfig
-    in __init__.py). Third-party libraries (httpx, anthropic, pydantic_ai, etc.)
-    propagate through the root logger. When prompt_toolkit is in full_screen mode,
-    any stderr output corrupts the TUI display, causing error flashes that require
-    pressing Enter to redraw.
-
-    This function replaces the root logger's stderr handler with either:
-    - A NullHandler (non-verbose): silently discard third-party logs
-    - A FileHandler (verbose): redirect third-party logs to yaacli.log
-
-    Args:
-        verbose: If True, redirect to file instead of discarding.
+    A single rotating handler avoids the unsafe situation where several file
+    handlers independently rotate the same file. Third-party logs still reach
+    this handler, but the root level excludes their DEBUG and INFO noise.
     """
+    global _configured_root_handlers
+
     root = logging.getLogger()
-    root.handlers.clear()
-
-    if verbose:
-        log_file = Path.cwd() / LOG_FILE_NAME
-        file_handler = logging.FileHandler(log_file)
-        file_formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-        file_handler.setFormatter(file_formatter)
-        root.addHandler(file_handler)
-    else:
-        root.addHandler(logging.NullHandler())
-
-    # Keep root at WARNING to avoid flooding with DEBUG/INFO from third-party libs
+    _clear_handlers(root)
+    handler: logging.Handler = _make_rotating_file_handler() if verbose else logging.NullHandler()
+    root.addHandler(handler)
+    _configured_root_handlers = [handler]
     root.setLevel(logging.WARNING)
 
 
 def configure_tui_logging(
-    queue: Queue,
     level: int = logging.INFO,
     verbose: bool = False,
 ) -> None:
-    """Configure logging for TUI mode.
+    """Configure bounded, stderr-safe logging for TUI mode.
 
-    Redirects both yaacli and ya_agent_sdk loggers to emit
-    LogEvents to the provided queue. This prevents log output from
-    appearing on stderr and interfering with TUI display.
+    Non-verbose mode discards logs through a root ``NullHandler``. Verbose mode
+    writes DEBUG-and-above yaacli and SDK logs to ``yaacli.log`` using one
+    :class:`RotatingFileHandler` (5 MiB per file, three backups by default).
+    The old unconsumed asyncio log queue is deliberately not retained.
 
     Args:
-        queue: Asyncio queue to receive LogEvents.
-        level: Minimum log level to capture (default: INFO).
-        verbose: If True, also log to file (yaacli.log).
-
-    Example:
-        log_queue = asyncio.Queue()
-        configure_tui_logging(log_queue, verbose=True)
-
-        # Later, consume events
-        while True:
-            event = await log_queue.get()
-            display_log(event)
+        level: Minimum yaacli/SDK level when verbose logging is disabled.
+        verbose: Write DEBUG-and-above yaacli/SDK logs to the rotating file.
     """
-    global _initialized, _log_queue
+    global _initialized
 
     if _initialized:
         return
 
-    _log_queue = queue
-
-    # Use DEBUG level for verbose mode to capture all logs
     effective_level = logging.DEBUG if verbose else level
-
-    # Configure both loggers
-    _configure_logger(TUI_LOGGER_NAME, queue, effective_level, add_file_handler=verbose)
-    _configure_logger(SDK_LOGGER_NAME, queue, effective_level, add_file_handler=verbose)
-
-    # Redirect root logger to prevent third-party libraries (httpx, anthropic,
-    # pydantic_ai, etc.) from writing to stderr and corrupting the TUI display.
-    # These libraries propagate through the root logger, which has a default
-    # StreamHandler to stderr set up by basicConfig in __init__.py.
     _redirect_root_logger(verbose=verbose)
-    _configure_warning_logger(verbose=verbose)
-
+    _configure_logger(TUI_LOGGER_NAME, effective_level)
+    _configure_logger(SDK_LOGGER_NAME, effective_level)
+    _configure_warning_logger()
     _initialized = True
 
 
 def reset_logging() -> None:
-    """Reset logging configuration.
+    """Reset yaacli logging configuration and close its file handler.
 
-    Useful for tests or when reconfiguring.
+    Useful for tests or when reconfiguring from TUI to another logging setup.
     """
-    global _initialized, _log_queue, _verbose_mode
+    global _initialized, _verbose_mode, _configured_root_handlers
 
     logging.captureWarnings(False)
 
-    for name in [
-        TUI_LOGGER_NAME,
-        SDK_LOGGER_NAME,
-        PY_WARNINGS_LOGGER_NAME,
-    ]:
-        logger = logging.getLogger(name)
-        logger.handlers.clear()
+    for name in [TUI_LOGGER_NAME, SDK_LOGGER_NAME, PY_WARNINGS_LOGGER_NAME]:
+        _clear_handlers(logging.getLogger(name))
+
+    root = logging.getLogger()
+    for handler in _configured_root_handlers:
+        if handler in root.handlers:
+            root.removeHandler(handler)
+        handler.close()
+    _configured_root_handlers = []
 
     _initialized = False
-    _log_queue = None
     _verbose_mode = False
 
 
 def configure_logging(verbose: bool = False) -> None:
-    """Configure logging for CLI startup.
-
-    This is used before TUI is initialized, for early startup messages.
-    Once TUI starts, call configure_tui_logging() to switch to queue mode.
+    """Configure bounded startup logging before the TUI is initialized.
 
     Args:
-        verbose: If True, log to file (DEBUG level); otherwise silent.
+        verbose: If True, write DEBUG-and-above yaacli/SDK logs to the rotating
+            file; otherwise discard logging output.
     """
     global _verbose_mode
     _verbose_mode = verbose
 
+    _redirect_root_logger(verbose=verbose)
     level = logging.DEBUG if verbose else logging.WARNING
-
-    _configure_warning_logger(verbose=verbose)
-
-    # Configure both loggers
-    for name in [TUI_LOGGER_NAME, SDK_LOGGER_NAME]:
-        logger = logging.getLogger(name)
-        logger.handlers.clear()
-
-        if verbose:
-            # File handler for verbose mode
-            log_file = Path.cwd() / LOG_FILE_NAME
-            handler: logging.Handler = logging.FileHandler(log_file)
-            formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-            handler.setFormatter(formatter)
-        else:
-            # Silent mode - no output
-            handler = logging.NullHandler()
-
-        logger.addHandler(handler)
-        logger.setLevel(level)
-        logger.propagate = False
+    _configure_logger(TUI_LOGGER_NAME, level)
+    _configure_logger(SDK_LOGGER_NAME, level)
+    _configure_warning_logger()
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Get a logger for the given module name.
-
-    Args:
-        name: Module name (typically __name__).
-
-    Returns:
-        Logger instance.
-    """
-    # Ensure logger is under TUI namespace
+    """Get a logger below the yaacli namespace."""
     if not name.startswith(TUI_LOGGER_NAME):
         name = f"{TUI_LOGGER_NAME}.{name}"
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,7 +32,12 @@ from ya_agent_sdk.context import TaskManager
 
 # Import the components we're testing
 from yaacli.app import TUIApp, TUIMode, TUIState
-from yaacli.app.tui import PendingAttachment, _is_benign_contextvar_cleanup_error
+from yaacli.app.tui import (
+    PendingAttachment,
+    _BoundedOutputTail,
+    _format_direct_shell_preview,
+    _is_benign_contextvar_cleanup_error,
+)
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, GeneralConfig, ModelProfileConfig, YaacliConfig
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
@@ -765,6 +772,51 @@ async def test_tui_app_shell_commands_are_added_to_prompt_history():
     await command_task
 
     assert app._prompt_history == ["!git status"]
+
+
+def test_direct_shell_tail_is_bounded_and_reports_truncation() -> None:
+    """Direct shell output keeps only its tail and makes discarded bytes visible."""
+    tail = _BoundedOutputTail(max_bytes=8)
+    tail.append(b"discard-me")
+    tail.append(b"-tail")
+
+    assert tail.retained_bytes == 8
+    assert tail.total_bytes == len(b"discard-me-tail")
+    assert tail.truncated is True
+    assert tail.text() == b"discard-me-tail"[-8:].decode()
+
+    preview = _format_direct_shell_preview(tail, stream_name="stdout", max_lines=100)
+    assert "stdout truncated" in preview
+    assert "last 8 of 15 bytes" in preview
+
+
+@pytest.mark.asyncio
+async def test_tui_app_direct_shell_drains_large_stdout_and_stderr_with_bounded_tails(monkeypatch) -> None:
+    """Large direct-command streams finish, preserve tails, and report truncation."""
+    monkeypatch.setattr("yaacli.app.tui._DIRECT_SHELL_OUTPUT_TAIL_BYTES", 256)
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    script = (
+        "import sys; "
+        "sys.stdout.buffer.write(b'OUT-START' + b'x' * 131072 + b'OUT-END\\n'); "
+        "sys.stdout.flush(); "
+        "sys.stderr.buffer.write(b'ERR-START' + b'y' * 131072 + b'ERR-END\\n'); "
+        "sys.stderr.flush(); "
+        "sys.exit(7)"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+    await asyncio.wait_for(app._execute_shell_command(command), timeout=10)
+
+    output = "\n".join(app._output_lines)
+    stdout_preview = next(block for block in app._output_lines if "stdout truncated" in block)
+    stderr_preview = next(block for block in app._output_lines if "stderr truncated" in block)
+    assert "stdout truncated; retained the last 256" in stdout_preview
+    assert "stderr truncated; retained the last 256" in stderr_preview
+    assert "OUT-END" in stdout_preview
+    assert "ERR-END" in stderr_preview
+    assert "OUT-START" not in stdout_preview
+    assert "ERR-START" not in stderr_preview
+    assert "Exit code: 7" in output
 
 
 def test_tui_app_input_keybindings_are_eager():

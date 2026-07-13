@@ -35,6 +35,11 @@ auto_mode = true
 # Maximum requests per session
 max_requests = 200
 
+[media]
+# Clipboard attachment limits for one prompt
+max_pending_attachments = 8
+max_pending_attachment_bytes = 20971520
+
 [display]
 # Code highlighting theme ("dark" or "light")
 code_theme = "dark"
@@ -42,6 +47,14 @@ code_theme = "dark"
 max_tool_result_lines = 5
 # Maximum length for tool argument display
 max_arg_length = 100
+# Rendered transcript retention budgets
+max_output_lines = 1000
+max_output_blocks = 1000
+max_output_bytes = 4194304
+# Raw streamed bytes retained/rendered before transcript projection
+max_stream_render_bytes = 524288
+# Submitted prompt history retention
+max_prompt_history = 500
 # Show token usage in status bar
 show_token_usage = true
 # Show elapsed time

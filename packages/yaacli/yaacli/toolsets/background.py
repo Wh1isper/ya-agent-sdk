@@ -39,6 +39,21 @@ from yaacli.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _task_result_notification(monitor: BackgroundMonitor, agent_id: str, fallback: str) -> str:
+    preview = monitor.get_task_result_preview(agent_id)
+    if preview is None:
+        return fallback
+    content = preview.content if isinstance(preview.content, str) else preview.error
+    if not isinstance(content, str):
+        return fallback
+    if preview.content_truncated or preview.error_truncated:
+        return (
+            f"{content}\nFull result is stored outside memory. "
+            f"Call wait_subagent(agent_id={agent_id!r}) to retrieve it."
+        )
+    return content
+
+
 def _get_background_monitor(ctx: RunContext[AgentContext]) -> BackgroundMonitor | None:
     """Get BackgroundMonitor from resources."""
     if ctx.deps.resources is None:
@@ -135,7 +150,7 @@ class SpawnDelegateTool(BaseTool):
                     prompt=prompt,
                     agent_id=agent_id,
                 )
-                monitor.record_task_result(
+                await monitor.record_task_result_async(
                     BackgroundTaskResult(
                         agent_id=agent_id,
                         subagent_name=subagent_name,
@@ -146,7 +161,7 @@ class SpawnDelegateTool(BaseTool):
                 monitor.enqueue_usage_snapshot(deps.build_usage_snapshot())
                 message = BusMessage(
                     id=monitor.get_task_result_message_id(agent_id),
-                    content=result,
+                    content=_task_result_notification(monitor, agent_id, result),
                     source=agent_id,
                     target=deps.agent_id,
                 )
@@ -164,7 +179,7 @@ class SpawnDelegateTool(BaseTool):
                         monitor.enqueue_message(message)
                 logger.info("Spawned delegate '%s' (%s) completed", subagent_name, agent_id)
             except asyncio.CancelledError:
-                monitor.record_task_result(
+                await monitor.record_task_result_async(
                     BackgroundTaskResult(
                         agent_id=agent_id,
                         subagent_name=subagent_name,
@@ -176,7 +191,7 @@ class SpawnDelegateTool(BaseTool):
             except Exception as e:
                 logger.warning("Spawned delegate '%s' (%s) failed: %s", subagent_name, agent_id, e)
                 error_message = f"Spawned delegate '{subagent_name}' (id: {agent_id}) failed: {e}"
-                monitor.record_task_result(
+                await monitor.record_task_result_async(
                     BackgroundTaskResult(
                         agent_id=agent_id,
                         subagent_name=subagent_name,
@@ -186,7 +201,7 @@ class SpawnDelegateTool(BaseTool):
                 )
                 message = BusMessage(
                     id=monitor.get_task_result_message_id(agent_id),
-                    content=error_message,
+                    content=_task_result_notification(monitor, agent_id, error_message),
                     source=agent_id,
                     target=deps.agent_id,
                 )
@@ -407,6 +422,12 @@ class WaitSubagentTool(BaseTool):
             payload["result"] = result.content
         if result.error is not None:
             payload["error"] = result.error
+        if result.content_truncated:
+            payload["result_truncated"] = True
+            payload["result_size_chars"] = result.content_size_chars
+        if result.error_truncated:
+            payload["error_truncated"] = True
+            payload["error_size_chars"] = result.error_size_chars
         return payload
 
     @classmethod

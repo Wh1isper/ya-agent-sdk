@@ -1,18 +1,19 @@
-"""Tests for logging module."""
+"""Tests for bounded yaacli logging configuration."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import warnings
+from logging.handlers import RotatingFileHandler
 
+import yaacli.logging as yaacli_logging
 from yaacli.logging import (
+    LOG_BACKUP_COUNT,
     LOG_FILE_NAME,
+    LOG_MAX_BYTES,
     PY_WARNINGS_LOGGER_NAME,
     SDK_LOGGER_NAME,
     TUI_LOGGER_NAME,
-    LogEvent,
-    QueueHandler,
     configure_logging,
     configure_tui_logging,
     get_logger,
@@ -20,158 +21,84 @@ from yaacli.logging import (
 )
 
 
-class TestLogEvent:
-    """Tests for LogEvent."""
-
-    def test_create_event(self):
-        """Test creating a log event."""
-        event = LogEvent(
-            event_id="log-123",
-            level="INFO",
-            logger_name="test",
-            message="Test message",
-            func_name="test_func",
-            line_no=42,
-        )
-        assert event.level == "INFO"
-        assert event.message == "Test message"
-        assert event.line_no == 42
-
-    def test_inherits_from_agent_event(self):
-        """Test that LogEvent inherits from AgentEvent."""
-        from ya_agent_sdk.events import AgentEvent
-
-        event = LogEvent(event_id="test")
-        assert isinstance(event, AgentEvent)
-
-
-class TestQueueHandler:
-    """Tests for QueueHandler."""
-
-    def test_emit_to_queue(self):
-        """Test that handler emits to queue."""
-        queue: asyncio.Queue = asyncio.Queue()
-        handler = QueueHandler(queue)
-        handler.setFormatter(logging.Formatter("%(message)s"))
-
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="test.py",
-            lineno=10,
-            msg="Test message",
-            args=(),
-            exc_info=None,
-        )
-
-        handler.emit(record)
-
-        assert not queue.empty()
-        event = queue.get_nowait()
-        assert isinstance(event, LogEvent)
-        assert event.level == "INFO"
-        assert event.message == "Test message"
-
-    def test_respects_level(self):
-        """Test that handler respects log level."""
-        queue: asyncio.Queue = asyncio.Queue()
-        handler = QueueHandler(queue, level=logging.WARNING)
-
-        # Verify handler level is correctly set
-        assert handler.level == logging.WARNING
-
-
 class TestConfigureTuiLogging:
-    """Tests for configure_tui_logging."""
+    """Tests for stderr-safe bounded TUI logging."""
 
-    def teardown_method(self):
-        """Reset logging after each test."""
+    def teardown_method(self) -> None:
         reset_logging()
 
-    def test_configures_tui_logger(self):
-        """Test TUI logger is configured."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
+    def test_non_verbose_tui_logging_is_silent_without_a_queue(self) -> None:
+        """TUI logging must not retain events in an unconsumed asyncio queue."""
+        configure_tui_logging()
 
-        logger = logging.getLogger(TUI_LOGGER_NAME)
-        assert len(logger.handlers) == 1
-        assert isinstance(logger.handlers[0], QueueHandler)
+        root = logging.getLogger()
+        assert len(root.handlers) == 1
+        assert isinstance(root.handlers[0], logging.NullHandler)
+        for name in [TUI_LOGGER_NAME, SDK_LOGGER_NAME]:
+            logger = logging.getLogger(name)
+            assert logger.handlers == []
+            assert logger.propagate is True
 
-    def test_configures_sdk_logger(self):
-        """Test SDK logger is configured."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
-
-        logger = logging.getLogger(SDK_LOGGER_NAME)
-        assert len(logger.handlers) == 1
-        assert isinstance(logger.handlers[0], QueueHandler)
-
-    def test_verbose_adds_file_handler(self, tmp_path, monkeypatch):
-        """Test verbose mode adds file handler."""
+    def test_verbose_adds_one_rotating_file_handler(self, tmp_path, monkeypatch) -> None:
+        """Verbose TUI logs use one bounded rotating handler, not per-logger files."""
         monkeypatch.chdir(tmp_path)
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue, verbose=True)
+        configure_tui_logging(verbose=True)
 
         logger = logging.getLogger(TUI_LOGGER_NAME)
-        # Should have both QueueHandler and FileHandler
-        assert len(logger.handlers) == 2
-        handler_types = [type(h).__name__ for h in logger.handlers]
-        assert "QueueHandler" in handler_types
-        assert "FileHandler" in handler_types
+        assert logger.handlers == []
+        handler = logging.getLogger().handlers[0]
+        assert isinstance(handler, RotatingFileHandler)
+        assert handler.maxBytes == LOG_MAX_BYTES
+        assert handler.backupCount == LOG_BACKUP_COUNT
 
-        # Log file should be created
-        log_file = tmp_path / LOG_FILE_NAME
         logger.info("Test verbose log")
-        assert log_file.exists()
+        handler.flush()
+        assert "Test verbose log" in (tmp_path / LOG_FILE_NAME).read_text()
 
-    def test_logs_go_to_queue(self):
-        """Test that log messages appear in queue."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
-
-        logger = get_logger("test")
-        logger.info("Test message")
-
-        assert not queue.empty()
-        event = queue.get_nowait()
-        assert isinstance(event, LogEvent)
-        assert "Test message" in event.message
-
-    def test_sdk_logs_go_to_queue(self):
-        """Test that SDK log messages appear in queue."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
-
-        sdk_logger = logging.getLogger(SDK_LOGGER_NAME)
-        sdk_logger.info("SDK message")
-
-        assert not queue.empty()
-        event = queue.get_nowait()
-        assert "SDK message" in event.message
-
-    def test_idempotent(self):
-        """Test that configure can be called multiple times."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
-        configure_tui_logging(queue)  # Should not error
+    def test_verbose_rotation_bounds_log_files(self, tmp_path, monkeypatch) -> None:
+        """The configured rotation policy creates bounded backups on overflow."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(yaacli_logging, "LOG_MAX_BYTES", 160)
+        monkeypatch.setattr(yaacli_logging, "LOG_BACKUP_COUNT", 2)
+        configure_tui_logging(verbose=True)
 
         logger = logging.getLogger(TUI_LOGGER_NAME)
-        assert len(logger.handlers) == 1
+        for index in range(8):
+            logger.debug("%s %s", index, "x" * 80)
+        for handler in logging.getLogger().handlers:
+            handler.flush()
 
-    def test_warnings_are_routed_away_from_stderr(self):
-        """Test Python warnings are captured by logging in TUI mode."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
+        log_files = sorted(tmp_path.glob(f"{LOG_FILE_NAME}*"))
+        assert [path.name for path in log_files] == ["yaacli.log", "yaacli.log.1", "yaacli.log.2"]
+        assert all(path.stat().st_size <= 160 for path in log_files)
+
+    def test_warnings_are_routed_away_from_stderr(self) -> None:
+        """Python warnings remain silent in default TUI mode."""
+        configure_tui_logging()
 
         logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
-        assert len(logger.handlers) == 1
-        assert isinstance(logger.handlers[0], logging.NullHandler)
-        assert logger.propagate is False
+        assert logger.handlers == []
+        assert logger.propagate is True
+        assert isinstance(logging.getLogger().handlers[0], logging.NullHandler)
 
-    def test_swig_shutdown_warning_is_filtered(self):
-        """Test known SWIG shutdown warning is filtered in TUI mode."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
+    def test_verbose_warnings_use_rotating_file(self, tmp_path, monkeypatch) -> None:
+        """Warnings share the bounded verbose logging policy."""
+        monkeypatch.chdir(tmp_path)
+        configure_tui_logging(verbose=True)
+
+        logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
+        assert logger.handlers == []
+        assert logger.propagate is True
+        assert isinstance(logging.getLogger().handlers[0], RotatingFileHandler)
+
+        logger.warning("warning routed")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        assert "warning routed" in (tmp_path / LOG_FILE_NAME).read_text()
+
+    def test_swig_shutdown_warning_is_filtered(self) -> None:
+        """Known SWIG shutdown noise stays filtered in TUI mode."""
+        configure_tui_logging()
 
         with warnings.catch_warnings(record=True) as records:
             warnings.warn(
@@ -182,102 +109,77 @@ class TestConfigureTuiLogging:
 
         assert records == []
 
-    def test_verbose_warnings_go_to_file(self, tmp_path, monkeypatch):
-        """Test verbose TUI mode writes Python warnings to the log file."""
-        monkeypatch.chdir(tmp_path)
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue, verbose=True)
+    def test_idempotent(self) -> None:
+        """Repeated setup does not duplicate root handlers."""
+        configure_tui_logging()
+        configure_tui_logging()
 
-        logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
-        assert len(logger.handlers) == 1
-        assert isinstance(logger.handlers[0], logging.FileHandler)
-
-        logger.warning("warning routed")
-        for handler in logger.handlers:
-            handler.flush()
-
-        log_file = tmp_path / LOG_FILE_NAME
-        assert "warning routed" in log_file.read_text()
+        assert len(logging.getLogger().handlers) == 1
 
 
 class TestGetLogger:
-    """Tests for get_logger."""
+    """Tests for yaacli logger names."""
 
-    def teardown_method(self):
-        """Reset logging after each test."""
+    def teardown_method(self) -> None:
         reset_logging()
 
-    def test_prefixes_name(self):
-        """Test that logger name is prefixed."""
-        logger = get_logger("mymodule")
-        assert logger.name == f"{TUI_LOGGER_NAME}.mymodule"
+    def test_prefixes_name(self) -> None:
+        assert get_logger("mymodule").name == f"{TUI_LOGGER_NAME}.mymodule"
 
-    def test_already_prefixed(self):
-        """Test that already prefixed names are unchanged."""
-        logger = get_logger(f"{TUI_LOGGER_NAME}.other")
-        assert logger.name == f"{TUI_LOGGER_NAME}.other"
+    def test_already_prefixed(self) -> None:
+        assert get_logger(f"{TUI_LOGGER_NAME}.other").name == f"{TUI_LOGGER_NAME}.other"
 
 
 class TestResetLogging:
-    """Tests for reset_logging."""
+    """Tests for handler cleanup."""
 
-    def test_clears_handlers(self):
-        """Test that reset clears handlers."""
-        queue: asyncio.Queue = asyncio.Queue()
-        configure_tui_logging(queue)
-
-        tui_logger = logging.getLogger(TUI_LOGGER_NAME)
-        sdk_logger = logging.getLogger(SDK_LOGGER_NAME)
-        assert len(tui_logger.handlers) == 1
-        assert len(sdk_logger.handlers) == 1
-
-        warnings_logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
-        assert len(warnings_logger.handlers) == 1
+    def test_closes_verbose_handler(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        configure_tui_logging(verbose=True)
+        handler = logging.getLogger().handlers[0]
+        logging.getLogger(TUI_LOGGER_NAME).info("open the file")
 
         reset_logging()
 
-        assert len(tui_logger.handlers) == 0
-        assert len(sdk_logger.handlers) == 0
-        assert len(warnings_logger.handlers) == 0
+        assert logging.getLogger(TUI_LOGGER_NAME).handlers == []
+        assert logging.getLogger(SDK_LOGGER_NAME).handlers == []
+        assert logging.getLogger(PY_WARNINGS_LOGGER_NAME).handlers == []
+        assert handler not in logging.getLogger().handlers
+        assert isinstance(handler, RotatingFileHandler)
+        assert handler.stream is None
 
 
 class TestConfigureLogging:
-    """Tests for configure_logging (CLI startup logging)."""
+    """Tests for CLI startup logging."""
 
-    def teardown_method(self):
-        """Reset logging after each test."""
+    def teardown_method(self) -> None:
         reset_logging()
 
-    def test_silent_mode(self):
-        """Test non-verbose mode uses NullHandler."""
+    def test_silent_mode(self) -> None:
         configure_logging(verbose=False)
-
         logger = logging.getLogger(TUI_LOGGER_NAME)
-        assert len(logger.handlers) == 1
-        assert isinstance(logger.handlers[0], logging.NullHandler)
+        assert logger.handlers == []
+        assert logger.propagate is True
+        assert isinstance(logging.getLogger().handlers[0], logging.NullHandler)
 
-    def test_verbose_mode_creates_file(self, tmp_path, monkeypatch):
-        """Test verbose mode creates log file."""
+    def test_verbose_mode_creates_rotating_file(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
         configure_logging(verbose=True)
 
         logger = logging.getLogger(TUI_LOGGER_NAME)
-        assert len(logger.handlers) == 1
-        assert isinstance(logger.handlers[0], logging.FileHandler)
+        assert logger.handlers == []
+        assert logger.propagate is True
+        assert isinstance(logging.getLogger().handlers[0], RotatingFileHandler)
 
-        # Log something and verify file is created
         logger.debug("Test log message")
-        log_file = tmp_path / LOG_FILE_NAME
-        assert log_file.exists()
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        assert "Test log message" in (tmp_path / LOG_FILE_NAME).read_text()
 
-        content = log_file.read_text()
-        assert "Test log message" in content
-
-    def test_startup_warnings_are_routed_away_from_stderr(self):
-        """Test Python warnings are captured by startup logging."""
+    def test_startup_warnings_are_routed_away_from_stderr(self) -> None:
         configure_logging(verbose=False)
 
         logger = logging.getLogger(PY_WARNINGS_LOGGER_NAME)
-        assert len(logger.handlers) == 1
-        assert isinstance(logger.handlers[0], logging.NullHandler)
-        assert logger.propagate is False
+        assert logger.handlers == []
+        assert logger.propagate is True
+        assert isinstance(logging.getLogger().handlers[0], logging.NullHandler)

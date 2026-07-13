@@ -132,8 +132,20 @@ class DisplayConfig(BaseModel):
     max_arg_length: int = 100
     """Maximum length for tool argument display."""
 
-    max_output_lines: int = 1000
-    """Maximum lines to keep in output buffer. Lower values improve performance."""
+    max_output_lines: PositiveInt = 1000
+    """Maximum rendered lines retained in the transcript."""
+
+    max_output_blocks: PositiveInt = 1000
+    """Maximum rendered blocks retained in the transcript."""
+
+    max_output_bytes: PositiveInt = 4 * 1024 * 1024
+    """Maximum UTF-8 bytes retained in the rendered transcript."""
+
+    max_stream_render_bytes: PositiveInt = 512 * 1024
+    """Maximum raw streamed UTF-8 bytes retained and rendered by the UI."""
+
+    max_prompt_history: PositiveInt = 500
+    """Maximum submitted prompts retained for input history navigation."""
 
     show_token_usage: bool = True
     """Show token usage in status bar."""
@@ -269,6 +281,12 @@ class MediaConfig(BaseModel):
 
     s3: S3Config = Field(default_factory=S3Config)
     """S3 configuration for media upload."""
+
+    max_pending_attachments: PositiveInt = 8
+    """Maximum clipboard attachments queued for one prompt."""
+
+    max_pending_attachment_bytes: PositiveInt = 20 * 1024 * 1024
+    """Maximum total bytes of clipboard attachments queued for one prompt."""
 
 
 class SessionConfig(BaseModel):

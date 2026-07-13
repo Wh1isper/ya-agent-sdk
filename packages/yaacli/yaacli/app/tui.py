@@ -108,7 +108,7 @@ from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.utils import get_latest_request_usage
 
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
-from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig, is_subagent_event, validate_display_events
+from ya_agent_stream_protocol.agui import AguiReplayConfig, is_subagent_event, validate_display_events
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
@@ -117,6 +117,7 @@ from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, Backgro
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display import EventRenderer, RichRenderer, ToolMessage
+from yaacli.display_replay import BoundedDisplayReplay
 from yaacli.environment import TUIEnvironment
 from yaacli.events import ContextUpdateEvent, GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.hooks import emit_context_update
@@ -131,6 +132,7 @@ from yaacli.model_profiles import (
     save_selected_model_profile_id,
 )
 from yaacli.perf import perf_log_report, perf_report, perf_timer
+from yaacli.rendering.transcript import BlockId, BoundedTextAccumulator, TranscriptLimits, TranscriptStore
 from yaacli.runtime import create_tui_runtime
 from yaacli.session import TUIContext
 from yaacli.sessions import get_head_artifact_paths, save_session_turn, trim_sessions
@@ -152,8 +154,98 @@ logger = get_logger(__name__)
 _SHUTDOWN_AGENT_TASK_TIMEOUT = 8.0
 _SHUTDOWN_MANAGED_TASKS_TIMEOUT = 5.0
 _DIRECT_SHELL_TERMINATE_TIMEOUT = 2.0
+_DIRECT_SHELL_TIMEOUT = 300.0
+_DIRECT_SHELL_READ_CHUNK_BYTES = 16 * 1024
+_DIRECT_SHELL_OUTPUT_TAIL_BYTES = 64 * 1024
+_DIRECT_SHELL_STDOUT_PREVIEW_LINES = 100
+_DIRECT_SHELL_STDERR_PREVIEW_LINES = 50
 _DEFAULT_MAX_TURNS_PER_SESSION = 20
 _DEFAULT_MAX_SESSIONS = 100
+_DEFAULT_MAX_PENDING_ATTACHMENTS = 8
+_DEFAULT_MAX_PENDING_ATTACHMENT_BYTES = 20 * 1024 * 1024
+_MAX_RETAINED_TOOL_RESULT_CHARS = 64 * 1024
+_MAX_DISPLAY_REPLAY_LOAD_BYTES = 32 * 1024 * 1024
+_TOOL_RESULT_TRUNCATION_SUFFIX = "\n... [tool result truncated for display]"
+
+
+@dataclass
+class _BoundedOutputTail:
+    """Keep only a fixed-size tail while accounting for all drained bytes."""
+
+    max_bytes: int
+    _buffer: bytearray = field(default_factory=bytearray)
+    total_bytes: int = 0
+
+    @property
+    def truncated(self) -> bool:
+        """Whether bytes were discarded before the retained tail."""
+        return self.total_bytes > len(self._buffer)
+
+    @property
+    def retained_bytes(self) -> int:
+        """Return the number of bytes currently retained."""
+        return len(self._buffer)
+
+    def append(self, chunk: bytes) -> None:
+        """Append a chunk, discarding the oldest bytes past ``max_bytes``."""
+        self.total_bytes += len(chunk)
+        if self.max_bytes <= 0:
+            self._buffer.clear()
+            return
+
+        if len(chunk) >= self.max_bytes:
+            self._buffer[:] = chunk[-self.max_bytes :]
+            return
+
+        excess = len(self._buffer) + len(chunk) - self.max_bytes
+        if excess > 0:
+            del self._buffer[:excess]
+        self._buffer.extend(chunk)
+
+    def text(self) -> str:
+        """Decode the bounded tail without retaining the original stream."""
+        return self._buffer.decode("utf-8", errors="replace")
+
+
+async def _drain_direct_shell_stream(
+    stream: asyncio.StreamReader | None,
+    tail: _BoundedOutputTail,
+) -> None:
+    """Continuously drain one subprocess pipe into a bounded tail buffer."""
+    if stream is None:
+        return
+
+    while chunk := await stream.read(_DIRECT_SHELL_READ_CHUNK_BYTES):
+        tail.append(chunk)
+
+
+def _format_direct_shell_preview(
+    tail: _BoundedOutputTail,
+    *,
+    stream_name: str,
+    max_lines: int,
+) -> str:
+    """Return a bounded, tail-oriented preview with explicit truncation notes."""
+    text = tail.text().strip()
+    if not text:
+        if tail.truncated:
+            return (
+                f"... ({stream_name} truncated; retained the last "
+                f"{tail.retained_bytes:,} of {tail.total_bytes:,} bytes)"
+            )
+        return ""
+
+    lines = text.splitlines()
+    notes: list[str] = []
+    if tail.truncated:
+        notes.append(
+            f"... ({stream_name} truncated; retained the last {tail.retained_bytes:,} of {tail.total_bytes:,} bytes)"
+        )
+    if len(lines) > max_lines:
+        notes.append(f"... ({stream_name} preview limited to the last {max_lines} lines)")
+        lines = lines[-max_lines:]
+
+    return "\n".join([*notes, *lines])
 
 
 # =============================================================================
@@ -182,6 +274,14 @@ def _agui_event_timestamp_seconds(event: dict[str, Any]) -> float | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+def _bounded_tool_result(value: str) -> str:
+    """Bound display-only tool state; full results remain in model history."""
+    if len(value) <= _MAX_RETAINED_TOOL_RESULT_CHARS:
+        return value
+    keep = _MAX_RETAINED_TOOL_RESULT_CHARS - len(_TOOL_RESULT_TRUNCATION_SUFFIX)
+    return value[: max(0, keep)] + _TOOL_RESULT_TRUNCATION_SUFFIX
 
 
 def _safe_exception_str(e: BaseException) -> str:
@@ -305,8 +405,13 @@ class TUIApp:
 
     # UI components
     _app: Application[None] | None = field(default=None, init=False, repr=False)
+    _transcript: TranscriptStore = field(default_factory=TranscriptStore, init=False, repr=False)
+    # Compatibility views backed by _transcript. Do not mutate directly.
     _output_lines: list[str] = field(default_factory=list, init=False)
-    _max_output_lines: int = field(default=500, init=False)  # Overridden from config.display
+    _max_output_lines: int = field(default=500, init=False)
+    _max_output_blocks: int = field(default=1000, init=False)
+    _max_output_bytes: int = field(default=4 * 1024 * 1024, init=False)
+    _max_stream_render_bytes: int = field(default=512 * 1024, init=False)
 
     # Virtual viewport rendering (only parse ANSI for visible lines)
     _scroll_offset: int = field(default=0, init=False)  # Display line offset from top
@@ -317,8 +422,8 @@ class TUIApp:
     _output_ansi_cache: ANSI | None = field(default=None, init=False)  # Cached visible ANSI
     _renderer: RichRenderer = field(default_factory=RichRenderer, init=False)
     _event_renderer: EventRenderer = field(default_factory=EventRenderer, init=False)
-    _display_replay: AguiReplayBuffer = field(
-        default_factory=lambda: AguiReplayBuffer(config=YAACLI_AGUI_REPLAY_CONFIG), init=False
+    _display_replay: BoundedDisplayReplay = field(
+        default_factory=lambda: BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG), init=False
     )
     _display_adapter: AguiEventAdapter | None = field(default=None, init=False)
 
@@ -330,6 +435,7 @@ class TUIApp:
     _managed_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
     _last_run: AgentRun[TUIContext, str | DeferredToolRequests] | None = field(default=None, init=False)
     _message_history: list[Any] | None = field(default=None, init=False)  # Conversation history
+    _session_save_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     # Tool tracking
     _tool_messages: dict[str, ToolMessage] = field(default_factory=dict, init=False)
@@ -354,6 +460,7 @@ class TUIApp:
 
     # Prompt history for up/down navigation
     _prompt_history: list[str] = field(default_factory=list, init=False)
+    _max_prompt_history: int = field(default=500, init=False)
     _history_index: int = field(default=-1, init=False)
     _current_input_backup: str = field(default="", init=False)
     _pending_attachments: list[PendingAttachment] = field(default_factory=list, init=False)
@@ -364,11 +471,15 @@ class TUIApp:
 
     # Streaming text tracking for markdown rendering
     _streaming_text: str = field(default="", init=False)
+    _streaming_text_buffer: BoundedTextAccumulator | None = field(default=None, init=False, repr=False)
     _streaming_line_index: int | None = field(default=None, init=False)
+    _streaming_block_id: BlockId | None = field(default=None, init=False)
 
     # Streaming thinking tracking for extended thinking display
     _streaming_thinking: str = field(default="", init=False)
+    _streaming_thinking_buffer: BoundedTextAccumulator | None = field(default=None, init=False, repr=False)
     _streaming_thinking_line_index: int | None = field(default=None, init=False)
+    _streaming_thinking_block_id: BlockId | None = field(default=None, init=False)
 
     # Real-time context usage tracking
     _current_context_tokens: int = field(default=0, init=False)
@@ -389,7 +500,8 @@ class TUIApp:
 
     # UI refresh throttling
     _last_invalidate_time: float = field(default=0.0, init=False)
-    _invalidate_interval: float = field(default=0.016, init=False)  # ~60fps max
+    _invalidate_interval: float = field(default=0.05, init=False)  # 20fps max
+    _pending_invalidate_handle: asyncio.TimerHandle | None = field(default=None, init=False, repr=False)
 
     # Streaming render throttle (separate from UI invalidation)
     _last_stream_render_time: float = field(default=0.0, init=False)
@@ -408,6 +520,28 @@ class TUIApp:
 
     # Deferred screen recovery scheduling
     _screen_recovery_scheduled: bool = field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        """Initialize bounded stores from config while tolerating test doubles."""
+        display = getattr(self.config, "display", None)
+        self._max_output_lines = _positive_int_config(
+            getattr(display, "max_output_lines", None), self._max_output_lines
+        )
+        self._max_output_blocks = _positive_int_config(
+            getattr(display, "max_output_blocks", None), self._max_output_blocks
+        )
+        self._max_output_bytes = _positive_int_config(
+            getattr(display, "max_output_bytes", None), self._max_output_bytes
+        )
+        self._max_stream_render_bytes = _positive_int_config(
+            getattr(display, "max_stream_render_bytes", None), self._max_stream_render_bytes
+        )
+        self._max_prompt_history = _positive_int_config(
+            getattr(display, "max_prompt_history", None), self._max_prompt_history
+        )
+        self._transcript.configure(self._transcript_limits())
+        self._output_lines = self._transcript.blocks
+        self._block_line_counts = self._transcript.line_counts
 
     @property
     def mode(self) -> TUIMode:
@@ -582,8 +716,7 @@ class TUIApp:
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
 
-        # Configure TUI logging (queue for internal use, file for verbose mode)
-        log_queue: asyncio.Queue[object] = asyncio.Queue()
+        # Configure stderr-safe logging; verbose mode uses a bounded rotating file.
 
         # Load MCP config
         mcp_config = self.config_manager.load_mcp_config()
@@ -618,11 +751,17 @@ class TUIApp:
         if self._runtime.ctx.model_cfg.context_window:
             self._context_window_size = self._runtime.ctx.model_cfg.context_window
 
-        # Apply display config
+        # Apply display retention config.
         self._max_output_lines = self.config.display.max_output_lines
+        self._max_output_blocks = self.config.display.max_output_blocks
+        self._max_output_bytes = self.config.display.max_output_bytes
+        self._max_stream_render_bytes = self.config.display.max_stream_render_bytes
+        self._max_prompt_history = self.config.display.max_prompt_history
+        self._transcript.configure(self._transcript_limits())
+        self._sync_transcript_state()
 
         logger.info("TUIApp initialized")
-        configure_tui_logging(log_queue, verbose=self.verbose)
+        configure_tui_logging(verbose=self.verbose)
 
         # Set core_toolset on BackgroundMonitor so it can find the delegate tool
         bg_monitor = self._get_background_monitor()
@@ -652,6 +791,9 @@ class TUIApp:
         bg_monitor = self._get_background_monitor()
         if bg_monitor:
             bg_monitor.set_completion_callback(None)
+        if self._pending_invalidate_handle is not None:
+            self._pending_invalidate_handle.cancel()
+            self._pending_invalidate_handle = None
 
         # Cancel any running agent task and tracked fire-and-forget tasks
         await self._cancel_agent_task()
@@ -701,74 +843,82 @@ class TUIApp:
     # =========================================================================
 
     def _throttled_invalidate(self) -> None:
-        """Invalidate UI with throttling to prevent excessive redraws."""
+        """Coalesce redraws while preserving the final trailing update."""
         if not self._app:
             return
-        now = time.time()
-        if now - self._last_invalidate_time >= self._invalidate_interval:
+        now = time.monotonic()
+        elapsed = now - self._last_invalidate_time
+        if elapsed >= self._invalidate_interval:
+            if self._pending_invalidate_handle is not None:
+                self._pending_invalidate_handle.cancel()
+                self._pending_invalidate_handle = None
             self._last_invalidate_time = now
             self._app.invalidate()
+            return
+        if self._pending_invalidate_handle is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._app.invalidate()
+            return
+        self._pending_invalidate_handle = loop.call_later(
+            self._invalidate_interval - elapsed,
+            self._run_trailing_invalidate,
+        )
+
+    def _run_trailing_invalidate(self) -> None:
+        self._pending_invalidate_handle = None
+        if self._app is not None:
+            self._last_invalidate_time = time.monotonic()
+            self._app.invalidate()
+
+    def _transcript_limits(self) -> TranscriptLimits:
+        return TranscriptLimits(
+            max_lines=self._max_output_lines,
+            max_blocks=self._max_output_blocks,
+            max_bytes=self._max_output_bytes,
+        )
+
+    def _sync_transcript_state(self) -> None:
+        """Synchronize compatibility counters and live block indices."""
+        self._total_line_count = self._transcript.total_lines
+        self._streaming_line_index = self._transcript.index_of(self._streaming_block_id)
+        self._streaming_thinking_line_index = self._transcript.index_of(self._streaming_thinking_block_id)
 
     def _invalidate_output_cache(self) -> None:
-        """Mark output cache as invalid (must be called after modifying _output_lines).
-
-        O(1) operation - just bumps the generation counter.
-        Line counts are maintained incrementally by _append_block and _update_block.
-        """
+        """Mark the viewport cache as invalid."""
         self._output_generation += 1
 
-    def _append_block(self, content: str) -> None:
-        """Append an output block with incremental bookkeeping.
-
-        Handles line count tracking and generation bump.
-        All code that appends to _output_lines should use this method.
-        """
-        line_count = content.count("\n") + 1
-        self._output_lines.append(content)
-        self._block_line_counts.append(line_count)
-        self._total_line_count += line_count
+    def _append_block(self, content: str) -> BlockId:
+        """Append through the single bounded transcript entry point."""
+        self._transcript.configure(self._transcript_limits())
+        block_id = self._transcript.append(content)
+        self._sync_transcript_state()
         self._output_generation += 1
+        return block_id
 
     def _update_block(self, idx: int, new_content: str) -> None:
-        """Update an output block in-place with incremental line count tracking.
+        """Compatibility update by retained block index."""
+        self._transcript.configure(self._transcript_limits())
+        if self._transcript.replace_at(idx, new_content):
+            self._sync_transcript_state()
+            self._output_generation += 1
 
-        This is O(1) for line count update (just delta between old and new).
-        Used by streaming text/thinking updates.
-        """
-        if idx >= len(self._output_lines):
-            return
-        old_count = self._block_line_counts[idx]
-        new_count = new_content.count("\n") + 1
-        self._output_lines[idx] = new_content
-        self._block_line_counts[idx] = new_count
-        self._total_line_count += new_count - old_count
-        self._output_generation += 1
+    def _update_block_by_id(self, block_id: BlockId | None, new_content: str) -> bool:
+        """Replace a live block by stable ID, surviving older-block eviction."""
+        if block_id is None:
+            return False
+        self._transcript.configure(self._transcript_limits())
+        updated = self._transcript.replace(block_id, new_content)
+        self._sync_transcript_state()
+        if updated:
+            self._output_generation += 1
+        return updated
 
     def _append_output(self, text: str) -> None:
-        """Append text to output buffer with auto-scroll when running."""
+        """Append text to the bounded transcript and auto-scroll when running."""
         self._append_block(text)
-
-        # Trim old lines to prevent memory issues
-        if len(self._output_lines) > self._max_output_lines:
-            trim_count = len(self._output_lines) - self._max_output_lines
-            # Subtract line counts of removed blocks
-            for i in range(trim_count):
-                self._total_line_count -= self._block_line_counts[i]
-            self._output_lines = self._output_lines[trim_count:]
-            self._block_line_counts = self._block_line_counts[trim_count:]
-            # Adjust streaming indices to account for removed blocks
-            if self._streaming_line_index is not None:
-                self._streaming_line_index -= trim_count
-                if self._streaming_line_index < 0:
-                    # Streaming block was trimmed away - reset
-                    self._streaming_text = ""
-                    self._streaming_line_index = None
-            if self._streaming_thinking_line_index is not None:
-                self._streaming_thinking_line_index -= trim_count
-                if self._streaming_thinking_line_index < 0:
-                    # Thinking block was trimmed away - reset
-                    self._streaming_thinking = ""
-                    self._streaming_thinking_line_index = None
 
         # Auto-scroll to bottom when agent is running
         if self._state == TUIState.RUNNING:
@@ -798,12 +948,13 @@ class TUIApp:
 
     def _reset_output_blocks(self) -> None:
         """Clear rendered output blocks and viewport bookkeeping."""
-        self._output_lines.clear()
-        self._block_line_counts.clear()
+        self._transcript.clear()
         self._output_ansi_cache = None
         self._viewport_cache_key = None
         self._output_generation = 0
         self._total_line_count = 0
+        self._streaming_block_id = None
+        self._streaming_thinking_block_id = None
         self._scroll_offset = 0
 
     def _handle_display_events(self, events: Sequence[dict[str, Any]]) -> None:
@@ -823,7 +974,9 @@ class TUIApp:
                             args=event.get("delta") or "",
                         )
                         if tool_name:
-                            self._subagent_states[agent_id]["tool_names"].append(tool_name)
+                            state = self._subagent_states[agent_id]
+                            state["tool_names"] = [*state["tool_names"][-2:], tool_name]
+                            state["tool_count"] = int(state.get("tool_count", 0)) + 1
                             self._update_subagent_progress_line(agent_id)
                 continue
             if event_type == "TEXT_MESSAGE_START":
@@ -926,7 +1079,7 @@ class TUIApp:
                     tool_call_id=tool_call_id,
                     name=str(event.get("toolCallName") or event.get("tool_call_name") or "tool"),
                 )
-                tool_msg.content = str(event.get("content") or "")
+                tool_msg.content = _bounded_tool_result(str(event.get("content") or ""))
                 self._event_renderer.tracker.complete_call(
                     tool_call_id,
                     tool_msg.content,
@@ -964,15 +1117,16 @@ class TUIApp:
 
         if self._state == TUIState.RUNNING:
             self._scroll_to_bottom()
-        if self._app:
-            self._app.invalidate()
+        self._throttled_invalidate()
 
     def _restore_output_from_display_events(self, events: Sequence[dict[str, Any]]) -> None:
         """Rebuild visible output from compacted display-layer events."""
         self._reset_output_blocks()
         self._streaming_text = ""
+        self._streaming_text_buffer = None
         self._streaming_line_index = None
         self._streaming_thinking = ""
+        self._streaming_thinking_buffer = None
         self._streaming_thinking_line_index = None
         self._handle_display_events(events)
         self._finalize_streaming_text()
@@ -1023,41 +1177,8 @@ class TUIApp:
             return self._output_ansi_cache
 
     def _get_visible_text(self, start_line: int, end_line: int) -> str:
-        """Extract only the text visible in the given line range.
-
-        Scans output blocks using pre-computed line counts to find
-        the overlapping blocks, then slices them to the exact visible range.
-        O(total_blocks) scan + O(visible_blocks) string operations.
-        The scan is cheap (integer additions on at most _max_output_lines blocks).
-        """
-        if not self._output_lines:
-            return ""
-
-        cum = 0
-        parts: list[str] = []
-
-        for i in range(len(self._output_lines)):
-            block_count = self._block_line_counts[i]
-            block_end = cum + block_count
-
-            if block_end <= start_line:
-                cum = block_end
-                continue
-            if cum >= end_line:
-                break
-
-            # This block overlaps with visible range
-            block_lines = self._output_lines[i].split("\n")
-            local_start = max(0, start_line - cum)
-            local_end = min(block_count, end_line - cum)
-
-            if local_start > 0 or local_end < block_count:
-                block_lines = block_lines[local_start:local_end]
-
-            parts.append("\n".join(block_lines))
-            cum = block_end
-
-        return "\n".join(parts)
+        """Extract a visible line range from the indexed transcript."""
+        return self._transcript.visible_text(start_line, end_line)
 
     def _get_max_scroll(self) -> int:
         """Calculate maximum scroll position. O(1) using cached line count."""
@@ -1074,117 +1195,112 @@ class TUIApp:
         # TODO: Make configurable via config
         return "monokai"
 
+    def _new_stream_accumulator(self) -> BoundedTextAccumulator:
+        return BoundedTextAccumulator(
+            max_bytes=min(self._max_stream_render_bytes, self._max_output_bytes),
+            max_lines=self._max_output_lines,
+        )
+
     def _start_streaming_text(self, initial_content: str = "") -> None:
-        """Start tracking a new streaming text block."""
-        self._streaming_text = initial_content
+        """Start a bounded streaming text block."""
+        self._streaming_text_buffer = self._new_stream_accumulator()
+        self._streaming_text_buffer.append(initial_content)
+        self._streaming_text = self._streaming_text_buffer.text()
+        self._streaming_block_id = None
         self._streaming_line_index = len(self._output_lines)
-        self._last_stream_render_time = 0.0  # Reset throttle for new block
+        self._last_stream_render_time = 0.0
         if initial_content:
-            # Add placeholder that will be updated.
-            # Empty text blocks should not create a visible blank line.
-            self._append_block(initial_content)
+            self._streaming_block_id = self._append_block(initial_content)
+            self._sync_transcript_state()
 
     def _update_streaming_text(self, delta: str) -> None:
-        """Update the current streaming text block with delta.
-
-        Throttles markdown re-rendering to ~12fps to avoid expensive Rich
-        markdown parsing on every single token delta.
-        """
-        self._streaming_text += delta
-
-        # Throttle: skip expensive markdown re-render if too soon
-        now = time.time()
+        """Append a fragment and periodically render a lightweight preview."""
+        if self._streaming_text_buffer is None:
+            self._streaming_text_buffer = self._new_stream_accumulator()
+        self._streaming_text_buffer.append(delta)
+        now = time.monotonic()
         if now - self._last_stream_render_time < self._stream_render_interval:
-            return  # Delta buffered in _streaming_text, will render on next interval or finalize
+            return
         self._last_stream_render_time = now
-
-        # Re-render markdown for the complete text so far
-        if self._streaming_line_index is not None:
-            with perf_timer("stream_render_markdown"):
-                rendered = self._renderer.render_markdown(
-                    self._streaming_text,
-                    code_theme=self._get_code_theme(),
-                    width=self._get_terminal_width(),
-                ).rstrip("\n")
-            if self._streaming_line_index < len(self._output_lines):
-                self._update_block(self._streaming_line_index, rendered)
-            elif rendered:
-                self._append_block(rendered)
-            if self._state == TUIState.RUNNING:
-                self._scroll_to_bottom()
-            self._throttled_invalidate()
+        self._streaming_text = self._streaming_text_buffer.text()
+        with perf_timer("stream_render_preview"):
+            rendered = self._renderer.render_text(self._streaming_text).rstrip("\n")
+        if not self._update_block_by_id(self._streaming_block_id, rendered) and rendered:
+            self._streaming_block_id = self._append_block(rendered)
+            self._sync_transcript_state()
+        if self._state == TUIState.RUNNING:
+            self._scroll_to_bottom()
+        self._throttled_invalidate()
 
     def _finalize_streaming_text(self) -> None:
-        """Finalize the current streaming text block."""
-        if self._streaming_text and self._streaming_line_index is not None:
-            # Final render with complete text and dynamic width
+        """Render complete Markdown once when the streamed part ends."""
+        complete_text = self._streaming_text_buffer.text() if self._streaming_text_buffer is not None else ""
+        if complete_text:
             rendered = self._renderer.render_markdown(
-                self._streaming_text,
+                complete_text,
                 code_theme=self._get_code_theme(),
                 width=self._get_terminal_width(),
             ).rstrip("\n")
-            if self._streaming_line_index < len(self._output_lines):
-                self._update_block(self._streaming_line_index, rendered)
-            elif rendered:
+            if not self._update_block_by_id(self._streaming_block_id, rendered) and rendered:
                 self._append_block(rendered)
         self._streaming_text = ""
+        self._streaming_text_buffer = None
+        self._streaming_block_id = None
         self._streaming_line_index = None
 
     def _start_streaming_thinking(self, initial_content: str = "") -> None:
-        """Start tracking a new streaming thinking block."""
-        self._streaming_thinking = initial_content
+        """Start a bounded reasoning block."""
+        self._streaming_thinking_buffer = self._new_stream_accumulator()
+        self._streaming_thinking_buffer.append(initial_content)
+        self._streaming_thinking = self._streaming_thinking_buffer.text()
+        self._streaming_thinking_block_id = None
         self._streaming_thinking_line_index = len(self._output_lines)
-        self._last_stream_render_time = 0.0  # Reset throttle for new block
+        self._last_stream_render_time = 0.0
         if initial_content:
-            # Add placeholder that will be updated.
-            # Empty thinking starts should not create a visible blank line.
             rendered = self._event_renderer.render_thinking(
                 initial_content,
                 width=self._get_terminal_width(),
             ).rstrip("\n")
-            self._append_block(rendered)
+            self._streaming_thinking_block_id = self._append_block(rendered)
+            self._sync_transcript_state()
             self._throttled_invalidate()
 
     def _update_streaming_thinking(self, delta: str) -> None:
-        """Update current streaming thinking with delta.
-
-        Throttled similarly to streaming text to avoid excessive re-rendering.
-        """
-        self._streaming_thinking += delta
-
-        # Throttle: skip expensive re-render if too soon
-        now = time.time()
+        """Append reasoning and periodically refresh its lightweight view."""
+        if self._streaming_thinking_buffer is None:
+            self._streaming_thinking_buffer = self._new_stream_accumulator()
+        self._streaming_thinking_buffer.append(delta)
+        now = time.monotonic()
         if now - self._last_stream_render_time < self._stream_render_interval:
-            return  # Delta buffered, will render on next interval or finalize
+            return
         self._last_stream_render_time = now
-
-        # Re-render thinking for the complete text so far
-        if self._streaming_thinking_line_index is not None:
-            rendered = self._event_renderer.render_thinking(
-                self._streaming_thinking,
-                width=self._get_terminal_width(),
-            ).rstrip("\n")
-            if self._streaming_thinking_line_index < len(self._output_lines):
-                self._update_block(self._streaming_thinking_line_index, rendered)
-            elif rendered:
-                self._append_block(rendered)
-            if self._state == TUIState.RUNNING:
-                self._scroll_to_bottom()
-            self._throttled_invalidate()
+        self._streaming_thinking = self._streaming_thinking_buffer.text()
+        rendered = self._event_renderer.render_thinking(
+            self._streaming_thinking,
+            width=self._get_terminal_width(),
+        ).rstrip("\n")
+        if not self._update_block_by_id(self._streaming_thinking_block_id, rendered) and rendered:
+            self._streaming_thinking_block_id = self._append_block(rendered)
+            self._sync_transcript_state()
+        if self._state == TUIState.RUNNING:
+            self._scroll_to_bottom()
+        self._throttled_invalidate()
 
     def _finalize_streaming_thinking(self) -> None:
-        """Finalize the current streaming thinking block."""
-        if self._streaming_thinking and self._streaming_thinking_line_index is not None:
-            # Final render
+        """Finalize the complete reasoning block."""
+        complete_thinking = (
+            self._streaming_thinking_buffer.text() if self._streaming_thinking_buffer is not None else ""
+        )
+        if complete_thinking:
             rendered = self._event_renderer.render_thinking(
-                self._streaming_thinking,
+                complete_thinking,
                 width=self._get_terminal_width(),
             ).rstrip("\n")
-            if self._streaming_thinking_line_index < len(self._output_lines):
-                self._update_block(self._streaming_thinking_line_index, rendered)
-            elif rendered:
+            if not self._update_block_by_id(self._streaming_thinking_block_id, rendered) and rendered:
                 self._append_block(rendered)
         self._streaming_thinking = ""
+        self._streaming_thinking_buffer = None
+        self._streaming_thinking_block_id = None
         self._streaming_thinking_line_index = None
 
     def _format_size_bytes(self, size_bytes: int) -> str:
@@ -2108,11 +2224,11 @@ class TUIApp:
                 self._persist_stream_recoverable_state(stream)
                 if isinstance(exc, AgentInterrupted | asyncio.CancelledError):
                     raise
-                self._save_session_snapshot(include_usage_ledger=True, save_reason="error")
+                await self._save_session_snapshot_async(include_usage_ledger=True, save_reason="error")
                 raise
 
             self._persist_stream_recoverable_state(stream)
-            self._auto_save_history()
+            await self._auto_save_history()
             return stream.run.result if stream.run else None
 
     def _persist_stream_recoverable_state(
@@ -2333,14 +2449,14 @@ class TUIApp:
         text.append("Running...", style="dim")
         rendered = self._renderer.render(text, width=self._get_terminal_width())
 
-        # Track state with line index for later update
-        line_index = len(self._output_lines)
+        block_id = self._append_block(rendered.rstrip())
         self._subagent_states[agent_id] = {
-            "line_index": line_index,
+            "block_id": block_id,
+            "line_index": self._transcript.index_of(block_id),
             "tool_names": [],
+            "tool_count": 0,
             "agent_name": agent_name,
         }
-        self._append_block(rendered.rstrip())
         self._throttled_invalidate()
 
     def _handle_subagent_complete(self, event: SubagentCompleteEvent) -> None:
@@ -2393,8 +2509,12 @@ class TUIApp:
 
         rendered = self._renderer.render(text, width=self._get_terminal_width())
 
-        # Update the line in place
-        if line_index < len(self._output_lines):
+        # Update by stable ID, with index fallback for legacy/test state.
+        block_id = state.get("block_id")
+        stable_update_failed = not isinstance(block_id, int) or not self._update_block_by_id(
+            BlockId(block_id), rendered.rstrip()
+        )
+        if stable_update_failed and isinstance(line_index, int) and line_index < len(self._output_lines):
             self._update_block(line_index, rendered.rstrip())
 
         # Clean up state
@@ -2409,6 +2529,7 @@ class TUIApp:
         state = self._subagent_states[agent_id]
         line_index = state["line_index"]
         tool_names = state["tool_names"]
+        tool_count = state.get("tool_count", len(tool_names))
 
         # Build progress line
         text = Text()
@@ -2419,16 +2540,20 @@ class TUIApp:
             # Show last few tools
             recent_tools = tool_names[-3:]  # Last 3 tools
             tools_str = ", ".join(recent_tools)
-            if len(tool_names) > 3:
+            if tool_count > 3:
                 tools_str = f"...{tools_str}"
             text.append(tools_str, style="dim yellow")
-            text.append(f" ({len(tool_names)} tools)", style="dim")
+            text.append(f" ({tool_count} tools)", style="dim")
 
         rendered = self._renderer.render(text, width=self._get_terminal_width())
 
-        # Update the line in place
-        if line_index < len(self._output_lines):
+        # Update by stable ID, with index fallback for legacy/test state.
+        block_id = state.get("block_id")
+        updated = isinstance(block_id, int) and self._update_block_by_id(BlockId(block_id), rendered.rstrip())
+        if not updated and isinstance(line_index, int) and line_index < len(self._output_lines):
             self._update_block(line_index, rendered.rstrip())
+            updated = True
+        if updated:
             self._throttled_invalidate()
 
     @staticmethod
@@ -2473,7 +2598,9 @@ class TUIApp:
                         name=tool_name,
                         args=message_event.part.args,
                     )
-                    self._subagent_states[agent_id]["tool_names"].append(tool_name)
+                    state = self._subagent_states[agent_id]
+                    state["tool_names"] = [*state["tool_names"][-2:], tool_name]
+                    state["tool_count"] = int(state.get("tool_count", 0)) + 1
                     self._update_subagent_progress_line(agent_id)
             # Ignore all other subagent events (text streaming, tool results, etc.)
             return
@@ -2493,22 +2620,8 @@ class TUIApp:
             | FunctionToolResultEvent
             | OutputToolResultEvent,
         ):
-            if isinstance(message_event, FunctionToolCallEvent | OutputToolCallEvent):
-                tool_call_id = message_event.part.tool_call_id
-                tool_name = message_event.part.tool_name
-                self._tool_messages[tool_call_id] = ToolMessage(
-                    tool_call_id=tool_call_id,
-                    name=tool_name,
-                    args=message_event.part.args,
-                )
-                self._event_renderer.tracker.start_call(tool_call_id, tool_name, message_event.part.args)
-            elif isinstance(message_event, FunctionToolResultEvent | OutputToolResultEvent):
-                tool_call_id = message_event.tool_call_id
-                if tool_call_id in self._tool_messages:
-                    result_content = self._extract_tool_result(message_event)
-                    self._tool_messages[tool_call_id].content = result_content
-                    self._event_renderer.tracker.complete_call(tool_call_id, result_content)
-                    self._printed_tool_calls.add(tool_call_id)
+            # AGUI is the sole owner of display and tool-render state. The raw
+            # SDK path continues below only when no display adapter is active.
             return
 
         # Main agent events - normal processing
@@ -2573,7 +2686,7 @@ class TUIApp:
             tool_call_id = message_event.tool_call_id
             if tool_call_id in self._tool_messages:
                 tool_msg = self._tool_messages[tool_call_id]
-                result_content = self._extract_tool_result(message_event)
+                result_content = _bounded_tool_result(self._extract_tool_result(message_event))
                 tool_msg.content = result_content
                 self._event_renderer.tracker.complete_call(tool_call_id, result_content)
 
@@ -2689,8 +2802,7 @@ class TUIApp:
                 rendered = self._event_renderer.render_steering_injected(previews)
                 self._append_output(rendered.rstrip())
 
-        if self._app:
-            self._app.invalidate()
+        self._throttled_invalidate()
 
     async def _paste_clipboard_image(self, input_area: TextArea | None = None) -> None:
         """Attach an image from the system clipboard when available."""
@@ -2703,6 +2815,22 @@ class TUIApp:
         image = clipboard_result.image
         if image is not None:
             size_bytes = len(image.data)
+            media = getattr(self.config, "media", None)
+            max_attachments = _positive_int_config(
+                getattr(media, "max_pending_attachments", None), _DEFAULT_MAX_PENDING_ATTACHMENTS
+            )
+            max_attachment_bytes = _positive_int_config(
+                getattr(media, "max_pending_attachment_bytes", None), _DEFAULT_MAX_PENDING_ATTACHMENT_BYTES
+            )
+            queued_bytes = sum(item.size_bytes for item in self._pending_attachments)
+            if len(self._pending_attachments) >= max_attachments:
+                self._append_system_output(f"Attachment limit reached ({max_attachments} per prompt).")
+                return
+            if size_bytes > max_attachment_bytes or queued_bytes + size_bytes > max_attachment_bytes:
+                self._append_system_output(
+                    f"Attachment byte limit exceeded ({self._format_size_bytes(max_attachment_bytes)} per prompt)."
+                )
+                return
             placeholder = self._format_attachment_placeholder(
                 len(self._pending_attachments) + 1,
                 image.media_type,
@@ -2745,6 +2873,8 @@ class TUIApp:
         self._current_input_backup = ""
         if not self._prompt_history or self._prompt_history[-1] != text:
             self._prompt_history.append(text)
+            if len(self._prompt_history) > self._max_prompt_history:
+                del self._prompt_history[: len(self._prompt_history) - self._max_prompt_history]
 
     def _submit_input(self, text: str, input_area: TextArea) -> None:
         """Submit the current input buffer content."""
@@ -3176,30 +3306,41 @@ class TUIApp:
                     self._agent_task.add_done_callback(self._on_agent_task_done)
 
     async def _terminate_direct_shell_process(self, process: asyncio.subprocess.Process | None) -> None:
-        """Terminate a direct !command subprocess during timeout or shutdown."""
-        if process is None or process.returncode is not None:
+        """Terminate a direct !command subprocess group during timeout or shutdown."""
+        if process is None:
             return
 
         if os.name == "posix" and process.pid is not None:
+            # start_new_session=True makes the shell PID the process-group ID.
+            # Use that stable ID rather than getpgid(pid), because the shell can
+            # exit before a background child holding a pipe open does.
+            process_group_id = process.pid
             with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                process.terminate()
+                os.killpg(process_group_id, signal.SIGTERM)
 
+            if process.returncode is None:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(process.wait(), timeout=_DIRECT_SHELL_TERMINATE_TIMEOUT)
+
+            # A timed-out command must not leave a child alive merely because
+            # its shell exited first. This is harmless when the group is gone.
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.killpg(process_group_id, signal.SIGKILL)
+            return
+
+        if process.returncode is not None:
+            return
+
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(process.wait(), timeout=_DIRECT_SHELL_TERMINATE_TIMEOUT)
 
         if process.returncode is not None:
             return
 
-        if os.name == "posix" and process.pid is not None:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(process.wait(), timeout=_DIRECT_SHELL_TERMINATE_TIMEOUT)
 
@@ -3217,6 +3358,7 @@ class TUIApp:
 
         start_time = time.time()
         process: asyncio.subprocess.Process | None = None
+        drain_tasks: list[asyncio.Task[None]] = []
 
         try:
             if os.name == "posix":
@@ -3237,29 +3379,36 @@ class TUIApp:
                     env=os.environ.copy(),
                 )
 
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            # Drain both pipes concurrently. Unlike communicate(), this never retains
+            # the complete command output in memory and therefore stays bounded even
+            # when a command produces many gigabytes on stdout or stderr.
+            stdout_tail = _BoundedOutputTail(_DIRECT_SHELL_OUTPUT_TAIL_BYTES)
+            stderr_tail = _BoundedOutputTail(_DIRECT_SHELL_OUTPUT_TAIL_BYTES)
+            stdout_drain = asyncio.create_task(_drain_direct_shell_stream(process.stdout, stdout_tail))
+            stderr_drain = asyncio.create_task(_drain_direct_shell_stream(process.stderr, stderr_tail))
+            drain_tasks = [stdout_drain, stderr_drain]
+            await asyncio.wait_for(
+                asyncio.gather(process.wait(), *drain_tasks),
+                timeout=_DIRECT_SHELL_TIMEOUT,
+            )
             elapsed = time.time() - start_time
 
-            # Display stdout (limit to 100 lines)
-            if stdout:
-                stdout_text = stdout.decode("utf-8", errors="replace").strip()
-                if stdout_text:
-                    lines = stdout_text.split("\n")
-                    if len(lines) > 100:
-                        lines = lines[:100]
-                        lines.append(f"... ({len(stdout_text.split(chr(10))) - 100} more lines)")
-                    self._append_output("\n".join(lines))
+            stdout_preview = _format_direct_shell_preview(
+                stdout_tail,
+                stream_name="stdout",
+                max_lines=_DIRECT_SHELL_STDOUT_PREVIEW_LINES,
+            )
+            if stdout_preview:
+                self._append_output(stdout_preview)
 
-            # Display stderr in red (limit to 50 lines)
-            if stderr:
-                stderr_text = stderr.decode("utf-8", errors="replace").strip()
-                if stderr_text:
-                    lines = stderr_text.split("\n")
-                    if len(lines) > 50:
-                        lines = lines[:50]
-                        lines.append("... (truncated)")
-                    err_output = Text("\n".join(lines), style="red")
-                    self._append_output(self._renderer.render(err_output).rstrip())
+            stderr_preview = _format_direct_shell_preview(
+                stderr_tail,
+                stream_name="stderr",
+                max_lines=_DIRECT_SHELL_STDERR_PREVIEW_LINES,
+            )
+            if stderr_preview:
+                err_output = Text(stderr_preview, style="red")
+                self._append_output(self._renderer.render(err_output).rstrip())
 
             # Show exit code if non-zero
             if process.returncode != 0:
@@ -3270,13 +3419,19 @@ class TUIApp:
 
         except TimeoutError:
             await self._terminate_direct_shell_process(process)
-            self._append_system_output("Command timed out (300s)")
+            self._append_system_output(f"Command timed out ({_DIRECT_SHELL_TIMEOUT:.0f}s)")
         except asyncio.CancelledError:
             await self._terminate_direct_shell_process(process)
             raise
         except Exception as e:
+            await self._terminate_direct_shell_process(process)
             self._append_system_output(f"Error: {type(e).__name__}: {e}")
         finally:
+            for task in drain_tasks:
+                if not task.done():
+                    task.cancel()
+            if drain_tasks:
+                await asyncio.gather(*drain_tasks, return_exceptions=True)
             if self._app:
                 self._app.invalidate()
 
@@ -3363,9 +3518,16 @@ class TUIApp:
         self._reset_output_blocks()
         # Reset streaming state
         self._streaming_text = ""
+        self._streaming_text_buffer = None
         self._streaming_line_index = None
+        self._streaming_block_id = None
         self._streaming_thinking = ""
+        self._streaming_thinking_buffer = None
         self._streaming_thinking_line_index = None
+        self._streaming_thinking_block_id = None
+        self._prompt_history.clear()
+        self._history_index = -1
+        self._current_input_backup = ""
         self._printed_tool_calls.clear()
         self._tool_messages.clear()
         self._subagent_states.clear()
@@ -3586,9 +3748,14 @@ class TUIApp:
             self._message_history = history
 
             if display_file.exists():
-                display_events = validate_display_events(json.loads(display_file.read_text()))
-                self._display_replay.extend_snapshot(display_events)
-                self._restore_output_from_display_events(display_events)
+                if display_file.stat().st_size > _MAX_DISPLAY_REPLAY_LOAD_BYTES:
+                    self._append_system_output(
+                        "Display replay is too large to restore safely; conversation history was still loaded."
+                    )
+                else:
+                    display_events = validate_display_events(json.loads(display_file.read_text()))
+                    self._display_replay.extend_snapshot(display_events)
+                    self._restore_output_from_display_events(self._display_replay.snapshot())
 
             # Load context state if exists
             if state_file.exists():
@@ -3677,9 +3844,64 @@ class TUIApp:
         logger.debug("Saved session snapshot to %s (reason=%s)", turn_dir, save_reason)
         return True
 
-    def _auto_save_history(self) -> None:
-        """Auto-save session to session-specific directory after a successful run."""
-        self._save_session_snapshot(include_usage_ledger=False, save_reason="success")
+    async def _save_session_snapshot_async(
+        self,
+        *,
+        include_usage_ledger: bool,
+        save_reason: str,
+    ) -> bool:
+        """Prepare a consistent snapshot, then serialize/write it off-loop."""
+        async with self._session_save_lock:
+            display_messages = self._display_replay.snapshot()
+            message_history = list(self._message_history or [])
+            if not message_history and not display_messages:
+                return False
+
+            # Read mutable runtime structures on the event-loop thread. The
+            # prepared Pydantic state and shallow message list are stable while
+            # this turn awaits the worker write.
+            state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
+            max_turns = _positive_int_config(
+                getattr(getattr(self.config, "session", None), "max_turns_per_session", None),
+                _DEFAULT_MAX_TURNS_PER_SESSION,
+            )
+            max_sessions = _positive_int_config(
+                getattr(getattr(self.config, "session", None), "max_sessions", None), _DEFAULT_MAX_SESSIONS
+            )
+            max_session_age_days = _optional_positive_int_config(
+                getattr(getattr(self.config, "session", None), "max_session_age_days", None)
+            )
+
+            def persist() -> Path:
+                return save_session_turn(
+                    config_manager=self.config_manager,
+                    session_id=self._session_id,
+                    working_dir=self.working_dir,
+                    message_history_json=ModelMessagesTypeAdapter.dump_json(message_history, indent=2),
+                    context_state_json=state.model_dump_json(indent=2),
+                    display_messages=display_messages,
+                    output_text=None,
+                    save_reason=save_reason,
+                    max_turns=max_turns,
+                    max_sessions=max_sessions,
+                    max_session_age_days=max_session_age_days,
+                )
+
+            worker = asyncio.create_task(asyncio.to_thread(persist))
+            try:
+                turn_dir = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # A worker thread cannot be cancelled. Keep the save lock until
+                # it finishes so a newer writer cannot race the same session.
+                with contextlib.suppress(Exception):
+                    await worker
+                raise
+            logger.debug("Saved session snapshot to %s (reason=%s)", turn_dir, save_reason)
+            return True
+
+    async def _auto_save_history(self) -> None:
+        """Auto-save a successful turn without blocking rendering/input."""
+        await self._save_session_snapshot_async(include_usage_ledger=False, save_reason="success")
 
     @property
     def session_id(self) -> str:
@@ -3959,6 +4181,7 @@ class TUIApp:
             style=self._setup_style(),
             full_screen=True,
             mouse_support=True,
+            min_redraw_interval=self._invalidate_interval,
         )
 
         # Override prompt_toolkit's exception handler to prevent "Press ENTER to

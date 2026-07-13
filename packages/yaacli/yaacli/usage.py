@@ -20,6 +20,7 @@ Example:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -87,6 +88,11 @@ class ModelTokenPrice:
         return TokenCostEstimate(input_cost=input_cost, output_cost=output_cost)
 
 
+# Keep a small recent contribution index solely to support a late final
+# snapshot replacing an already committed realtime snapshot. Historical
+# snapshots themselves are never retained.
+_MAX_RECENT_COMMITTED_RUNS = 128
+
 _GROK_4_5_PRICE = ModelTokenPrice(
     input_mtok=Decimal("2.00"),
     cached_input_mtok=Decimal("0.50"),
@@ -151,8 +157,20 @@ class SessionUsage:
     model_usages: dict[str, RunUsage] = field(default_factory=dict)
     _manual_agent_usages: dict[str, RunUsage] = field(default_factory=dict)
     _manual_model_usages: dict[str, RunUsage] = field(default_factory=dict)
+    _committed_agent_usages: dict[str, RunUsage] = field(default_factory=dict)
+    _committed_model_usages: dict[str, RunUsage] = field(default_factory=dict)
+    # Only in-flight snapshots are retained. commit_run_snapshot() folds them
+    # into aggregate counters and removes them immediately.
     _run_snapshots: dict[str, UsageSnapshot] = field(default_factory=dict)
     _uncommitted_run_ids: set[str] = field(default_factory=set)
+    _recent_committed_contributions: OrderedDict[str, tuple[dict[str, RunUsage], dict[str, RunUsage]]] = field(
+        default_factory=OrderedDict
+    )
+    # A late replacement temporarily removes the prior contribution. Retain it
+    # only until that replacement is committed or explicitly cleared.
+    _superseded_committed_contributions: dict[str, tuple[dict[str, RunUsage], dict[str, RunUsage]]] = field(
+        default_factory=dict
+    )
 
     def add(self, agent: str, model_id: str, usage: RunUsage) -> None:
         """Add usage for a specific agent and model.
@@ -176,23 +194,75 @@ class SessionUsage:
         self._rebuild_totals()
 
     def _rebuild_totals(self) -> None:
-        """Rebuild public totals from manual fallback usage and per-run snapshots."""
-        self.agent_usages = {
-            agent: RunUsage() + coerce_run_usage(usage) for agent, usage in self._manual_agent_usages.items()
-        }
-        self.model_usages = {
-            model_id: RunUsage() + coerce_run_usage(usage) for model_id, usage in self._manual_model_usages.items()
-        }
+        """Rebuild from aggregates plus only the currently in-flight snapshots.
 
+        Committed runs are already folded into the aggregate dictionaries, so
+        this cost cannot grow with the number of completed runs.
+        """
+        self.agent_usages = self._copy_usage_map(self._manual_agent_usages)
+        self.model_usages = self._copy_usage_map(self._manual_model_usages)
+        self._merge_usage_map(self.agent_usages, self._committed_agent_usages)
+        self._merge_usage_map(self.model_usages, self._committed_model_usages)
         for snapshot in self._run_snapshots.values():
-            for agent, entry in snapshot.agent_usages.items():
-                if agent not in self.agent_usages:
-                    self.agent_usages[agent] = RunUsage()
-                self.agent_usages[agent].incr(coerce_run_usage(entry.usage))
-            for model_id, usage in snapshot.model_usages.items():
-                if model_id not in self.model_usages:
-                    self.model_usages[model_id] = RunUsage()
-                self.model_usages[model_id].incr(coerce_run_usage(usage))
+            self._merge_usage_map(
+                self.agent_usages,
+                {agent: coerce_run_usage(entry.usage) for agent, entry in snapshot.agent_usages.items()},
+            )
+            self._merge_usage_map(self.model_usages, snapshot.model_usages)
+
+    @staticmethod
+    def _copy_usage_map(usages: dict[str, RunUsage]) -> dict[str, RunUsage]:
+        return {key: RunUsage() + coerce_run_usage(usage) for key, usage in usages.items()}
+
+    @staticmethod
+    def _merge_usage_map(target: dict[str, RunUsage], source: dict[str, RunUsage]) -> None:
+        for key, usage in source.items():
+            target.setdefault(key, RunUsage()).incr(coerce_run_usage(usage))
+
+    def _normalized_snapshot_contribution(
+        self, snapshot: UsageSnapshot
+    ) -> tuple[dict[str, RunUsage], dict[str, RunUsage]]:
+        return (
+            {agent: RunUsage() + coerce_run_usage(entry.usage) for agent, entry in snapshot.agent_usages.items()},
+            {model_id: RunUsage() + coerce_run_usage(usage) for model_id, usage in snapshot.model_usages.items()},
+        )
+
+    def _remove_committed_contribution(self, run_id: str) -> None:
+        contribution = self._recent_committed_contributions.pop(run_id, None)
+        if contribution is None:
+            return
+        agents, models = contribution
+        self._subtract_usage_map(self._committed_agent_usages, agents)
+        self._subtract_usage_map(self._committed_model_usages, models)
+        self._superseded_committed_contributions[run_id] = contribution
+
+    @staticmethod
+    def _subtract_usage_map(target: dict[str, RunUsage], removed: dict[str, RunUsage]) -> None:
+        fields = (
+            "requests",
+            "tool_calls",
+            "input_tokens",
+            "cache_write_tokens",
+            "cache_read_tokens",
+            "input_audio_tokens",
+            "cache_audio_read_tokens",
+            "output_tokens",
+            "output_audio_tokens",
+        )
+        for key, usage in removed.items():
+            total = target.get(key)
+            if total is None:
+                continue
+            for field_name in fields:
+                setattr(total, field_name, getattr(total, field_name) - getattr(usage, field_name))
+            for detail, amount in usage.details.items():
+                remaining = total.details.get(detail, 0) - amount
+                if remaining:
+                    total.details[detail] = remaining
+                else:
+                    total.details.pop(detail, None)
+            if not any(getattr(total, field_name) for field_name in fields) and not total.details:
+                target.pop(key, None)
 
     def set_run_snapshot(self, snapshot: UsageSnapshot) -> None:
         """Replace usage for one run with a realtime SDK snapshot."""
@@ -202,6 +272,9 @@ class SessionUsage:
             entry.usage = coerce_run_usage(entry.usage)
         snapshot.model_usages = {model_id: coerce_run_usage(usage) for model_id, usage in snapshot.model_usages.items()}
         snapshot.total_usage = coerce_run_usage(snapshot.total_usage)
+        # A final async update for a recently committed run replaces its compact
+        # contribution instead of being counted as a second run.
+        self._remove_committed_contribution(snapshot.run_id)
         self._run_snapshots[snapshot.run_id] = snapshot
         self._uncommitted_run_ids.add(snapshot.run_id)
         self._rebuild_totals()
@@ -212,16 +285,34 @@ class SessionUsage:
         return bool(self._uncommitted_run_ids)
 
     def commit_run_snapshot(self, run_id: str | None = None) -> None:
-        """Mark realtime snapshot usage as committed session usage."""
-        if run_id is None:
-            self._uncommitted_run_ids.clear()
-        else:
-            self._uncommitted_run_ids.discard(run_id)
+        """Fold completed realtime snapshots into aggregates and discard them."""
+        run_ids = list(self._uncommitted_run_ids) if run_id is None else [run_id]
+        for committed_run_id in run_ids:
+            snapshot = self._run_snapshots.pop(committed_run_id, None)
+            self._uncommitted_run_ids.discard(committed_run_id)
+            if snapshot is None:
+                continue
+            self._superseded_committed_contributions.pop(committed_run_id, None)
+            agents, models = self._normalized_snapshot_contribution(snapshot)
+            self._merge_usage_map(self._committed_agent_usages, agents)
+            self._merge_usage_map(self._committed_model_usages, models)
+            self._recent_committed_contributions[committed_run_id] = (agents, models)
+            self._recent_committed_contributions.move_to_end(committed_run_id)
+            while len(self._recent_committed_contributions) > _MAX_RECENT_COMMITTED_RUNS:
+                self._recent_committed_contributions.popitem(last=False)
+        self._rebuild_totals()
 
     def clear_run_snapshot(self) -> None:
         """Remove uncommitted realtime run snapshots from session totals."""
         for run_id in list(self._uncommitted_run_ids):
             self._run_snapshots.pop(run_id, None)
+            superseded = self._superseded_committed_contributions.pop(run_id, None)
+            if superseded is not None:
+                agents, models = superseded
+                self._merge_usage_map(self._committed_agent_usages, agents)
+                self._merge_usage_map(self._committed_model_usages, models)
+                self._recent_committed_contributions[run_id] = superseded
+                self._recent_committed_contributions.move_to_end(run_id)
         self._uncommitted_run_ids.clear()
         self._rebuild_totals()
 
@@ -231,8 +322,12 @@ class SessionUsage:
         self.model_usages.clear()
         self._manual_agent_usages.clear()
         self._manual_model_usages.clear()
+        self._committed_agent_usages.clear()
+        self._committed_model_usages.clear()
         self._run_snapshots.clear()
         self._uncommitted_run_ids.clear()
+        self._recent_committed_contributions.clear()
+        self._superseded_committed_contributions.clear()
 
     @property
     def total_input_tokens(self) -> int:

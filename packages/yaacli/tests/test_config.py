@@ -36,8 +36,15 @@ def test_default_config() -> None:
     assert config.model_profiles == {}
     assert config.general.agent_stream_resume_prompt.startswith("The previous streaming model request failed")
 
-    # Display
+    # Display and local retention
     assert config.display.code_theme == "dark"
+    assert config.display.max_output_lines == 1000
+    assert config.display.max_output_blocks == 1000
+    assert config.display.max_output_bytes == 4 * 1024 * 1024
+    assert config.display.max_stream_render_bytes == 512 * 1024
+    assert config.display.max_prompt_history == 500
+    assert config.media.max_pending_attachments == 8
+    assert config.media.max_pending_attachment_bytes == 20 * 1024 * 1024
 
     # Tools and security
     assert config.tools.need_approval == []

@@ -12,10 +12,11 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, RetryPr
 from ya_agent_sdk.agents.main import AgentInterrupted, stream_agent
 from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, ResumableState
 from ya_agent_sdk.utils import get_latest_request_usage
-from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig, validate_display_events
+from ya_agent_stream_protocol.agui import AguiReplayConfig, validate_display_events
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from yaacli.config import ConfigManager, YaacliConfig
+from yaacli.display_replay import BoundedDisplayReplay
 from yaacli.hooks import emit_context_update
 from yaacli.logging import get_logger
 from yaacli.model_profiles import get_model_profile
@@ -64,7 +65,7 @@ class HeadlessRunResult:
 
 class HeadlessEventSink:
     def __init__(self) -> None:
-        self.replay = AguiReplayBuffer(config=YAACLI_AGUI_REPLAY_CONFIG)
+        self.replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
 
     def emit(self, event: dict[str, Any]) -> None:
         self.replay.append(event)
