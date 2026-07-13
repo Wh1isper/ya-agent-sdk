@@ -12,11 +12,11 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, RetryPr
 from ya_agent_sdk.agents.main import AgentInterrupted, stream_agent
 from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, ResumableState
 from ya_agent_sdk.utils import get_latest_request_usage
-from ya_agent_stream_protocol.agui import AguiReplayConfig, validate_display_events
+from ya_agent_stream_protocol.agui import AguiReplayConfig
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from yaacli.config import ConfigManager, YaacliConfig
-from yaacli.display_replay import BoundedDisplayReplay
+from yaacli.display_replay import MAX_DISPLAY_REPLAY_LOAD_BYTES, BoundedDisplayReplay, load_display_replay
 from yaacli.hooks import emit_context_update
 from yaacli.logging import get_logger
 from yaacli.model_profiles import get_model_profile
@@ -140,11 +140,12 @@ def _load_session_artifacts(
         if state_file is not None and state_file.exists()
         else None
     )
-    display_messages = (
-        validate_display_events(json.loads(display_file.read_text()))
+    loaded_display_messages = (
+        load_display_replay(display_file, max_bytes=MAX_DISPLAY_REPLAY_LOAD_BYTES)
         if display_file is not None and display_file.exists()
         else []
     )
+    display_messages = loaded_display_messages or []
     return paths.session_id, message_history, state, display_messages
 
 

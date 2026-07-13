@@ -242,7 +242,7 @@ def test_session_usage_replaces_uncommitted_run_snapshot() -> None:
     assert session.total_requests == 3
 
 
-def test_session_usage_commits_snapshots_into_bounded_aggregates() -> None:
+def test_session_usage_finalization_releases_replacement_metadata() -> None:
     from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
 
     usage = SessionUsage()
@@ -263,10 +263,44 @@ def test_session_usage_commits_snapshots_into_bounded_aggregates() -> None:
         usage.commit_run_snapshot("run-" + str(index))
 
     assert usage._run_snapshots == {}
-    assert len(usage._recent_committed_contributions) == 128
+    assert len(usage._committed_run_contributions) == 140
     assert usage.total_input_tokens == 140
     assert usage.total_output_tokens == 280
     assert usage.total_requests == 140
+
+    usage.finalize_run_snapshots()
+
+    assert usage._committed_run_contributions == {}
+    assert usage.total_input_tokens == 140
+    assert usage.total_output_tokens == 280
+    assert usage.total_requests == 140
+
+
+def test_session_usage_late_snapshot_replaces_contribution_after_more_than_128_commits() -> None:
+    from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
+
+    def snapshot(run_id: str, tokens: int) -> UsageSnapshot:
+        run_usage = RunUsage(input_tokens=tokens)
+        return UsageSnapshot(
+            run_id=run_id,
+            total_usage=run_usage,
+            agent_usages={"main": UsageAgentTotal(agent_name="main", model_id="model-a", usage=run_usage)},
+            model_usages={"model-a": run_usage},
+        )
+
+    usage = SessionUsage()
+    usage.set_run_snapshot(snapshot("target", 10))
+    usage.commit_run_snapshot("target")
+    for index in range(129):
+        run_id = f"other-{index}"
+        usage.set_run_snapshot(snapshot(run_id, 1))
+        usage.commit_run_snapshot(run_id)
+        usage.finalize_run_snapshots(run_id)
+
+    usage.set_run_snapshot(snapshot("target", 25))
+    usage.commit_run_snapshot("target")
+
+    assert usage.total_input_tokens == 25 + 129
 
 
 def test_session_usage_late_snapshot_replaces_recent_committed_contribution() -> None:

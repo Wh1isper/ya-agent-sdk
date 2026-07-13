@@ -88,11 +88,6 @@ class ModelTokenPrice:
         return TokenCostEstimate(input_cost=input_cost, output_cost=output_cost)
 
 
-# Keep a small recent contribution index solely to support a late final
-# snapshot replacing an already committed realtime snapshot. Historical
-# snapshots themselves are never retained.
-_MAX_RECENT_COMMITTED_RUNS = 128
-
 _GROK_4_5_PRICE = ModelTokenPrice(
     input_mtok=Decimal("2.00"),
     cached_input_mtok=Decimal("0.50"),
@@ -163,7 +158,10 @@ class SessionUsage:
     # into aggregate counters and removes them immediately.
     _run_snapshots: dict[str, UsageSnapshot] = field(default_factory=dict)
     _uncommitted_run_ids: set[str] = field(default_factory=set)
-    _recent_committed_contributions: OrderedDict[str, tuple[dict[str, RunUsage], dict[str, RunUsage]]] = field(
+    # Committed contributions remain replaceable while background tasks can
+    # still publish cumulative snapshots. finalize_run_snapshots() is the
+    # explicit lifecycle boundary that releases this metadata.
+    _committed_run_contributions: OrderedDict[str, tuple[dict[str, RunUsage], dict[str, RunUsage]]] = field(
         default_factory=OrderedDict
     )
     # A late replacement temporarily removes the prior contribution. Retain it
@@ -228,7 +226,7 @@ class SessionUsage:
         )
 
     def _remove_committed_contribution(self, run_id: str) -> None:
-        contribution = self._recent_committed_contributions.pop(run_id, None)
+        contribution = self._committed_run_contributions.pop(run_id, None)
         if contribution is None:
             return
         agents, models = contribution
@@ -272,7 +270,7 @@ class SessionUsage:
             entry.usage = coerce_run_usage(entry.usage)
         snapshot.model_usages = {model_id: coerce_run_usage(usage) for model_id, usage in snapshot.model_usages.items()}
         snapshot.total_usage = coerce_run_usage(snapshot.total_usage)
-        # A final async update for a recently committed run replaces its compact
+        # A final async update for an open committed run replaces its compact
         # contribution instead of being counted as a second run.
         self._remove_committed_contribution(snapshot.run_id)
         self._run_snapshots[snapshot.run_id] = snapshot
@@ -284,9 +282,10 @@ class SessionUsage:
         """Whether current session totals include an uncommitted run snapshot."""
         return bool(self._uncommitted_run_ids)
 
-    def commit_run_snapshot(self, run_id: str | None = None) -> None:
-        """Fold completed realtime snapshots into aggregates and discard them."""
+    def commit_run_snapshot(self, run_id: str | None = None) -> list[str]:
+        """Fold realtime snapshots into aggregates and return committed run IDs."""
         run_ids = list(self._uncommitted_run_ids) if run_id is None else [run_id]
+        committed_run_ids: list[str] = []
         for committed_run_id in run_ids:
             snapshot = self._run_snapshots.pop(committed_run_id, None)
             self._uncommitted_run_ids.discard(committed_run_id)
@@ -296,11 +295,18 @@ class SessionUsage:
             agents, models = self._normalized_snapshot_contribution(snapshot)
             self._merge_usage_map(self._committed_agent_usages, agents)
             self._merge_usage_map(self._committed_model_usages, models)
-            self._recent_committed_contributions[committed_run_id] = (agents, models)
-            self._recent_committed_contributions.move_to_end(committed_run_id)
-            while len(self._recent_committed_contributions) > _MAX_RECENT_COMMITTED_RUNS:
-                self._recent_committed_contributions.popitem(last=False)
+            self._committed_run_contributions[committed_run_id] = (agents, models)
+            self._committed_run_contributions.move_to_end(committed_run_id)
+            committed_run_ids.append(committed_run_id)
         self._rebuild_totals()
+        return committed_run_ids
+
+    def finalize_run_snapshots(self, run_id: str | None = None) -> None:
+        """Release replacement metadata once no late snapshots can arrive."""
+        if run_id is None:
+            self._committed_run_contributions.clear()
+            return
+        self._committed_run_contributions.pop(run_id, None)
 
     def clear_run_snapshot(self) -> None:
         """Remove uncommitted realtime run snapshots from session totals."""
@@ -311,8 +317,8 @@ class SessionUsage:
                 agents, models = superseded
                 self._merge_usage_map(self._committed_agent_usages, agents)
                 self._merge_usage_map(self._committed_model_usages, models)
-                self._recent_committed_contributions[run_id] = superseded
-                self._recent_committed_contributions.move_to_end(run_id)
+                self._committed_run_contributions[run_id] = superseded
+                self._committed_run_contributions.move_to_end(run_id)
         self._uncommitted_run_ids.clear()
         self._rebuild_totals()
 
@@ -326,7 +332,7 @@ class SessionUsage:
         self._committed_model_usages.clear()
         self._run_snapshots.clear()
         self._uncommitted_run_ids.clear()
-        self._recent_committed_contributions.clear()
+        self._committed_run_contributions.clear()
         self._superseded_committed_contributions.clear()
 
     @property

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig
+from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig, validate_display_events
 from ya_agent_stream_protocol.json_types import JsonObject, JsonValue
 
 _DEFAULT_MAX_RUNS = 20
@@ -15,6 +17,7 @@ _DEFAULT_MAX_EVENTS = 2_000
 _DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 _DEFAULT_MAX_CHUNK_CHARS = 64 * 1024
 _DEFAULT_MAX_EVENT_PAYLOAD_CHARS = 16 * 1024
+MAX_DISPLAY_REPLAY_LOAD_BYTES = 32 * 1024 * 1024
 _COMPACTION_TARGET_RATIO = 0.75
 _MAX_IDENTITY_CHARS = 1024
 _TRUNCATION_SUFFIX = "\n... [YAACLI replay projection truncated]"
@@ -62,6 +65,17 @@ class DisplayReplayLimits:
 class _ProjectionBudget:
     remaining: int
     truncated: bool = False
+
+
+def load_display_replay(path: Path, *, max_bytes: int = MAX_DISPLAY_REPLAY_LOAD_BYTES) -> list[dict[str, Any]] | None:
+    """Load validated display events through one descriptor and a bounded read."""
+    with path.open("rb") as display_file:
+        if os.fstat(display_file.fileno()).st_size > max_bytes:
+            return None
+        payload = display_file.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        return None
+    return validate_display_events(json.loads(payload.decode("utf-8")))
 
 
 class BoundedDisplayReplay:

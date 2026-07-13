@@ -69,6 +69,76 @@ async def test_monitor_task_auto_removed_on_completion() -> None:
 
 
 @pytest.mark.asyncio
+async def test_monitor_retires_previous_usage_run_after_its_last_task() -> None:
+    monitor = BackgroundMonitor()
+    release_first = asyncio.Event()
+    release_second = asyncio.Event()
+
+    async def wait_for_release(release: asyncio.Event) -> None:
+        await release.wait()
+
+    first = asyncio.create_task(wait_for_release(release_first))
+    second = asyncio.create_task(wait_for_release(release_second))
+    monitor.register_task("worker-1", first, usage_run_id="run-1")
+    monitor.register_task("worker-2", second, usage_run_id="run-1")
+
+    release_first.set()
+    await first
+    await asyncio.sleep(0)
+    assert monitor.has_tasks_for_usage_run("run-1") is True
+    assert monitor.can_publish_late_usage_snapshot("run-1") is True
+
+    monitor.observe_usage_run("run-2")
+    assert monitor.can_publish_late_usage_snapshot("run-1") is True
+    monitor._pending_usage_snapshots.append(MagicMock(run_id="run-1"))
+
+    release_second.set()
+    await second
+    await asyncio.sleep(0)
+    assert monitor.has_tasks_for_usage_run("run-1") is False
+    assert monitor.can_publish_late_usage_snapshot("run-1") is True
+    assert monitor.drain_retired_usage_run_ids() == set()
+
+    monitor.drain_usage_snapshots()
+    assert monitor.drain_retired_usage_run_ids() == {"run-1"}
+    assert monitor.can_publish_late_usage_snapshot("run-1") is False
+
+
+@pytest.mark.asyncio
+async def test_monitor_resumed_task_gets_fresh_delivery_state_and_message_id() -> None:
+    monitor = BackgroundMonitor()
+    agent_id = "worker-bg-resume"
+
+    async def quick() -> None:
+        return None
+
+    first = asyncio.create_task(quick())
+    monitor.register_task(agent_id, first, is_resume=False)
+    first_message_id = monitor.get_task_result_message_id(agent_id)
+    await first
+    await asyncio.sleep(0)
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id=agent_id,
+            subagent_name="worker",
+            status="completed",
+            content="first",
+        )
+    )
+    monitor.mark_task_result_delivered(agent_id)
+    assert monitor.should_deliver_task_result_message(agent_id) is False
+
+    second = asyncio.create_task(quick())
+    monitor.register_task(agent_id, second, is_resume=True)
+    second_message_id = monitor.get_task_result_message_id(agent_id)
+
+    assert second_message_id != first_message_id
+    assert monitor.should_deliver_task_result_message(agent_id) is True
+    assert monitor.get_task_result(agent_id) is None
+    await second
+
+
+@pytest.mark.asyncio
 async def test_monitor_completion_callback() -> None:
     """notify_completion should invoke the registered callback."""
     monitor = BackgroundMonitor()
@@ -1011,8 +1081,8 @@ async def test_tool_call_launches_background_task() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_call_queues_result_for_redelivery() -> None:
-    """Background delegate results should be delivered immediately when main is subscribed."""
-    monitor = BackgroundMonitor()
+    """Direct bus delivery acknowledges results so completed retention is bounded."""
+    monitor = BackgroundMonitor(max_completed_tasks=0)
 
     mock_delegate = AsyncMock(spec=BaseTool)
     mock_delegate.call = AsyncMock(return_value="Subagent result")
@@ -1047,6 +1117,13 @@ async def test_tool_call_queues_result_for_redelivery() -> None:
     assert messages[0].source.startswith("explorer-bg-")
     assert messages[0].target == "main"
     assert messages[0].content == "Subagent result"
+    agent_id = messages[0].source
+    assert agent_id in monitor.task_results
+
+    monitor.acknowledge_enqueued_task_results(bus, "main")
+
+    assert monitor.task_results == {}
+    assert monitor.task_infos == {}
 
     # No fallback is queued while the main agent is still subscribed; the
     # active run consumes the directly delivered message instead.
@@ -1463,6 +1540,39 @@ async def test_steer_shows_active_tasks_hint() -> None:
 # =============================================================================
 # SpawnDelegateTool Resume Tests
 # =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_spawn_delegate_rejects_concurrent_resume_for_same_agent_id() -> None:
+    monitor = BackgroundMonitor()
+    mock_delegate = AsyncMock(spec=BaseTool)
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = mock_delegate
+    monitor.set_core_toolset(mock_toolset)
+
+    async def running() -> None:
+        await asyncio.sleep(60)
+
+    active_task = asyncio.create_task(running())
+    monitor.register_task("searcher-bg-a1b2", active_task)
+    mock_deps = MagicMock()
+    mock_deps.resources.get.return_value = monitor
+    mock_deps.subagent_history = {"searcher-bg-a1b2": []}
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = mock_deps
+
+    result = await SpawnDelegateTool().call(
+        run_ctx,
+        subagent_name="searcher",
+        prompt="overlap",
+        agent_id="searcher-bg-a1b2",
+    )
+
+    assert result == "Error: background agent 'searcher-bg-a1b2' is already running"
+    mock_delegate.call.assert_not_called()
+    active_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await active_task
 
 
 @pytest.mark.asyncio
@@ -2071,6 +2181,101 @@ async def test_background_monitor_bounds_prompt_and_result_and_keeps_undelivered
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def test_fallback_task_result_delivery_acknowledges_and_prunes_completed_entry() -> None:
+    monitor = BackgroundMonitor(max_completed_tasks=0)
+    agent_id = "worker-bg-fallback"
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id=agent_id,
+            subagent_name="worker",
+            status="completed",
+            content="done",
+        )
+    )
+    monitor.enqueue_message(
+        BusMessage(
+            id=monitor.get_task_result_message_id(agent_id),
+            content="done",
+            source=agent_id,
+            target="main",
+        )
+    )
+    bus = MessageBus()
+
+    assert monitor.deliver_pending_messages(bus, "main") == 1
+    assert bus.has_pending("main") is True
+    assert agent_id in monitor.task_results
+    assert monitor.is_task_result_delivered(agent_id) is False
+
+    monitor.acknowledge_enqueued_task_results(bus, "main")
+    assert agent_id in monitor.task_results
+
+    bus.consume("main")
+    monitor.acknowledge_enqueued_task_results(bus, "main")
+
+    assert monitor.task_results == {}
+
+
+def test_failed_fallback_delivery_keeps_undelivered_result_reachable() -> None:
+    monitor = BackgroundMonitor(max_completed_tasks=0)
+    agent_id = "worker-bg-retry"
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id=agent_id,
+            subagent_name="worker",
+            status="completed",
+            content="done",
+        )
+    )
+    monitor.enqueue_message(
+        BusMessage(
+            id=monitor.get_task_result_message_id(agent_id),
+            content="done",
+            source=agent_id,
+            target="main",
+        )
+    )
+    bus = MagicMock(spec=MessageBus)
+    bus.send.side_effect = RuntimeError("send failed")
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        monitor.deliver_pending_messages(bus, "main")
+
+    assert agent_id in monitor.task_results
+    assert monitor.is_task_result_delivered(agent_id) is False
+    assert monitor.has_pending_messages is True
+
+
+def test_delivered_result_artifact_remains_until_bounded_entry_eviction() -> None:
+    monitor = BackgroundMonitor(max_completed_tasks=1, max_task_result_chars=10)
+    full_content = "large result " * 100
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id="worker-bg-first",
+            subagent_name="worker",
+            status="completed",
+            content=full_content,
+        )
+    )
+
+    monitor.mark_task_result_delivered("worker-bg-first")
+
+    first_result = monitor.get_task_result("worker-bg-first")
+    assert first_result is not None
+    assert first_result.content == full_content
+
+    monitor.record_task_result(
+        BackgroundTaskResult(
+            agent_id="worker-bg-second",
+            subagent_name="worker",
+            status="completed",
+            content="second",
+        )
+    )
+
+    assert monitor.get_task_result("worker-bg-first") is None
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,40 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, T
 from ya_agent_sdk.context.agent import StreamEvent
 from ya_agent_sdk.events import ModelRequestStartEvent
 from yaacli.config import ConfigManager
-from yaacli.headless import run_headless_prompt
+from yaacli.headless import _load_session_artifacts, run_headless_prompt
+
+
+def test_headless_session_restore_skips_oversized_display_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_file = tmp_path / "message_history.json"
+    history_file.write_bytes(b"[]")
+    display_file = tmp_path / "display_messages.json"
+    display_file.write_text("[]")
+    paths = SimpleNamespace(
+        session_id="session-1",
+        message_history_file=history_file,
+        context_state_file=None,
+        display_messages_file=display_file,
+    )
+    monkeypatch.setattr("yaacli.headless.get_head_artifact_paths", MagicMock(return_value=paths))
+    monkeypatch.setattr("yaacli.headless.MAX_DISPLAY_REPLAY_LOAD_BYTES", 1)
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path == display_file:
+            raise AssertionError("oversized display replay must not be read")
+        return original_read_text(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    session_id, history, state, display_messages = _load_session_artifacts(MagicMock(), "session")
+
+    assert session_id == "session-1"
+    assert history == []
+    assert state is None
+    assert display_messages == []
 
 
 class FakeRuntime:

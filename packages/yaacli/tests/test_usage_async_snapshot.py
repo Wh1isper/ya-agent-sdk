@@ -91,4 +91,5 @@ def test_tui_delivers_queued_background_usage_snapshot() -> None:
     assert app._deliver_background_messages() is True
     assert app._session_usage.total_input_tokens == 30
     assert app._session_usage.agent_usages["executor-bg-123"].output_tokens == 7
+    assert app._session_usage._committed_run_contributions == {}
     assert bus.has_pending("main") is True

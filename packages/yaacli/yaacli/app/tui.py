@@ -108,7 +108,7 @@ from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.utils import get_latest_request_usage
 
 # Import state management from app.state (re-export TUIMode, TUIState for backward compatibility)
-from ya_agent_stream_protocol.agui import AguiReplayConfig, is_subagent_event, validate_display_events
+from ya_agent_stream_protocol.agui import AguiReplayConfig, is_subagent_event
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
@@ -117,7 +117,7 @@ from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, Backgro
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display import EventRenderer, RichRenderer, ToolMessage
-from yaacli.display_replay import BoundedDisplayReplay
+from yaacli.display_replay import MAX_DISPLAY_REPLAY_LOAD_BYTES, BoundedDisplayReplay, load_display_replay
 from yaacli.environment import TUIEnvironment
 from yaacli.events import ContextUpdateEvent, GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.hooks import emit_context_update
@@ -164,8 +164,10 @@ _DEFAULT_MAX_SESSIONS = 100
 _DEFAULT_MAX_PENDING_ATTACHMENTS = 8
 _DEFAULT_MAX_PENDING_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _MAX_RETAINED_TOOL_RESULT_CHARS = 64 * 1024
-_MAX_DISPLAY_REPLAY_LOAD_BYTES = 32 * 1024 * 1024
+_MAX_RETAINED_TOOL_ARG_CHARS = 64 * 1024
+_MAX_DISPLAY_REPLAY_LOAD_BYTES = MAX_DISPLAY_REPLAY_LOAD_BYTES
 _TOOL_RESULT_TRUNCATION_SUFFIX = "\n... [tool result truncated for display]"
+_TOOL_ARG_TRUNCATION_SUFFIX = "\n... [tool arguments truncated for display]"
 
 
 @dataclass
@@ -282,6 +284,48 @@ def _bounded_tool_result(value: str) -> str:
         return value
     keep = _MAX_RETAINED_TOOL_RESULT_CHARS - len(_TOOL_RESULT_TRUNCATION_SUFFIX)
     return value[: max(0, keep)] + _TOOL_RESULT_TRUNCATION_SUFFIX
+
+
+def _bounded_tool_args(value: str | dict[str, Any] | None) -> str | dict[str, Any] | None:
+    """Bound display-only tool arguments without mutating the source event."""
+    if value is None:
+        return None
+    serialized = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    if len(serialized) <= _MAX_RETAINED_TOOL_ARG_CHARS:
+        return value
+    keep = _MAX_RETAINED_TOOL_ARG_CHARS - len(_TOOL_ARG_TRUNCATION_SUFFIX)
+    return serialized[: max(0, keep)] + _TOOL_ARG_TRUNCATION_SUFFIX
+
+
+_RESUMABLE_CONTEXT_FIELDS = (
+    "subagent_history",
+    "usage_snapshot_entries",
+    "user_prompts",
+    "previous_assistant_response_reference",
+    "steering_messages",
+    "handoff_message",
+    "shell_env",
+    "deferred_tool_metadata",
+    "agent_registry",
+    "need_user_approve_tools",
+    "need_user_approve_mcps",
+    "auto_load_files",
+    "task_manager",
+    "note_manager",
+    "tool_search_loaded_tools",
+    "tool_search_loaded_namespaces",
+)
+
+
+def _restore_resumable_state_transactionally(state: ResumableState, ctx: AgentContext) -> None:
+    """Restore resumable fields exactly or put every touched field back."""
+    previous_values = {field_name: getattr(ctx, field_name) for field_name in _RESUMABLE_CONTEXT_FIELDS}
+    try:
+        state.restore(ctx)
+    except Exception:
+        for field_name, value in previous_values.items():
+            setattr(ctx, field_name, value)
+        raise
 
 
 def _safe_exception_str(e: BaseException) -> str:
@@ -971,7 +1015,7 @@ class TUIApp:
                         self._tool_messages[tool_call_id] = ToolMessage(
                             tool_call_id=tool_call_id,
                             name=tool_name,
-                            args=event.get("delta") or "",
+                            args=_bounded_tool_args(str(event.get("delta") or "")),
                         )
                         if tool_name:
                             state = self._subagent_states[agent_id]
@@ -1048,15 +1092,16 @@ class TUIApp:
                 tool_name = event.get("toolCallName") or event.get("tool_call_name") or "tool"
                 tool_call_id = str(event.get("toolCallId") or event.get("tool_call_id") or "")
                 if tool_call_id and tool_call_id not in self._tool_messages:
+                    display_args = _bounded_tool_args(str(event.get("delta") or ""))
                     self._tool_messages[tool_call_id] = ToolMessage(
                         tool_call_id=tool_call_id,
                         name=str(tool_name),
-                        args=event.get("delta") or "",
+                        args=display_args,
                     )
                     self._event_renderer.tracker.start_call(
                         tool_call_id,
                         str(tool_name),
-                        event.get("delta") or "",
+                        display_args,
                         start_time=_agui_event_timestamp_seconds(event),
                     )
                     self._append_block(
@@ -1065,7 +1110,7 @@ class TUIApp:
                 elif tool_call_id and tool_call_id in self._tool_messages:
                     existing_tool_msg = self._tool_messages[tool_call_id]
                     if not existing_tool_msg.args:
-                        existing_tool_msg.args = event.get("delta") or ""
+                        existing_tool_msg.args = _bounded_tool_args(str(event.get("delta") or ""))
                     if tool_call_id in self._event_renderer.tracker.tool_calls:
                         self._event_renderer.tracker.tool_calls[tool_call_id].args = existing_tool_msg.args
                 continue
@@ -1955,9 +2000,15 @@ class TUIApp:
         ctx = self.runtime.ctx
         delivered = 0
         if monitor is not None:
-            for snapshot in monitor.drain_usage_snapshots():
+            drained_snapshots = monitor.drain_usage_snapshots()
+            for snapshot in drained_snapshots:
                 self._session_usage.set_run_snapshot(snapshot)
                 self._session_usage.commit_run_snapshot(snapshot.run_id)
+            for run_id in monitor.drain_retired_usage_run_ids():
+                self._session_usage.finalize_run_snapshots(run_id)
+            for snapshot in drained_snapshots:
+                if not monitor.can_publish_late_usage_snapshot(snapshot.run_id):
+                    self._session_usage.finalize_run_snapshots(snapshot.run_id)
             delivered = monitor.deliver_pending_messages(ctx.message_bus, ctx.agent_id)
         return delivered > 0 or ctx.message_bus.has_pending(ctx.agent_id)
 
@@ -2228,6 +2279,9 @@ class TUIApp:
                 raise
 
             self._persist_stream_recoverable_state(stream)
+            monitor = self._get_background_monitor()
+            if monitor is not None:
+                monitor.acknowledge_enqueued_task_results(self.runtime.ctx.message_bus, self.runtime.ctx.agent_id)
             await self._auto_save_history()
             return stream.run.result if stream.run else None
 
@@ -2249,7 +2303,16 @@ class TUIApp:
             if not self._session_usage.has_run_snapshot:
                 model_id = cast(Model, self.runtime.agent.model).model_name
                 self._session_usage.add("main", model_id, usage)
-            self._session_usage.commit_run_snapshot()
+            committed_run_ids = self._session_usage.commit_run_snapshot()
+            monitor = self._get_background_monitor()
+            for run_id in committed_run_ids:
+                if monitor is not None:
+                    monitor.observe_usage_run(run_id)
+                if monitor is None or not monitor.can_publish_late_usage_snapshot(run_id):
+                    self._session_usage.finalize_run_snapshots(run_id)
+            if monitor is not None:
+                for run_id in monitor.drain_retired_usage_run_ids():
+                    self._session_usage.finalize_run_snapshots(run_id)
         except Exception:
             logger.debug("Failed to persist recoverable stream state", exc_info=True)
             return False
@@ -2673,12 +2736,13 @@ class TUIApp:
 
             tool_call_id = message_event.part.tool_call_id
             tool_name = message_event.part.tool_name
+            display_args = _bounded_tool_args(message_event.part.args)
             self._tool_messages[tool_call_id] = ToolMessage(
                 tool_call_id=tool_call_id,
                 name=tool_name,
-                args=message_event.part.args,
+                args=display_args,
             )
-            self._event_renderer.tracker.start_call(tool_call_id, tool_name, message_event.part.args)
+            self._event_renderer.tracker.start_call(tool_call_id, tool_name, display_args)
             rendered = self._event_renderer.render_tool_call_start(tool_name, tool_call_id)
             self._append_output(rendered.rstrip())
 
@@ -3741,33 +3805,52 @@ class TUIApp:
             return
 
         try:
-            self._reset_pending_attachments()
-            # Load message history
-            history_data = history_file.read_bytes()
-            history = ModelMessagesTypeAdapter.validate_json(history_data)
-            self._message_history = history
-
+            # Parse artifacts into temporary values before replacing the active session.
+            history = ModelMessagesTypeAdapter.validate_json(history_file.read_bytes())
+            state = ResumableState.model_validate_json(state_file.read_text()) if state_file.exists() else None
+            display_events: list[dict[str, Any]] = []
+            display_warning: str | None = None
             if display_file.exists():
-                if display_file.stat().st_size > _MAX_DISPLAY_REPLAY_LOAD_BYTES:
-                    self._append_system_output(
-                        "Display replay is too large to restore safely; conversation history was still loaded."
+                try:
+                    loaded_display_events = load_display_replay(
+                        display_file,
+                        max_bytes=_MAX_DISPLAY_REPLAY_LOAD_BYTES,
                     )
-                else:
-                    display_events = validate_display_events(json.loads(display_file.read_text()))
-                    self._display_replay.extend_snapshot(display_events)
-                    self._restore_output_from_display_events(self._display_replay.snapshot())
+                    if loaded_display_events is None:
+                        display_warning = (
+                            "Display replay is too large to restore safely; conversation history was still loaded."
+                        )
+                    else:
+                        display_events = loaded_display_events
+                except Exception as e:
+                    logger.warning("Failed to restore display replay from %s: %s", display_file, e)
+                    display_warning = (
+                        "Display replay is invalid and was skipped; conversation history was still loaded."
+                    )
 
-            # Load context state if exists
-            if state_file.exists():
-                state_data = state_file.read_text()
-                state = ResumableState.model_validate_json(state_data)
-                state.restore(self.runtime.ctx)
+            replacement_replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
+            replacement_replay.extend_snapshot(display_events)
+            if state is not None:
+                _restore_resumable_state_transactionally(state, self.runtime.ctx)
 
-                # Re-populate session usage from restored usage ledger entries.
+            self._reset_pending_attachments()
+            self._message_history = history
+            self._display_replay = replacement_replay
+            self._tool_messages.clear()
+            self._printed_tool_calls.clear()
+            self._subagent_states.clear()
+            self._event_renderer.clear()
+            self._restore_output_from_display_events(self._display_replay.snapshot())
+            if display_warning is not None:
+                self._append_system_output(display_warning)
+
+            # Re-populate session usage from restored usage ledger entries.
+            if state is not None:
                 if self.runtime.ctx.usage_snapshot_entries:
                     snapshot = self.runtime.ctx.build_usage_snapshot()
                     self._session_usage.set_run_snapshot(snapshot)
                     self._session_usage.commit_run_snapshot()
+                    self._session_usage.finalize_run_snapshots()
                     # Clear after populating to avoid double counting on next run.
                     self.runtime.ctx.usage_snapshot_entries.clear()
 

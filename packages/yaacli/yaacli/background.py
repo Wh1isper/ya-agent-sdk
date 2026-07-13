@@ -93,6 +93,7 @@ class BackgroundTaskInfo:
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     is_resume: bool = False
     prompt_truncated: bool = False
+    usage_run_id: str | None = None
 
 
 @dataclass
@@ -163,7 +164,13 @@ class BackgroundMonitor(BaseResource):
         self._artifact_dir: Path | None = None
         self._completed_task_order: OrderedDict[str, None] = OrderedDict()
         self._delivered_task_results: set[str] = set()
+        self._enqueued_task_results: set[str] = set()
         self._waiting_task_results: set[str] = set()
+        self._usage_run_task_ids: dict[str, set[str]] = {}
+        self._late_usage_run_ids: set[str] = set()
+        self._current_usage_run_id: str | None = None
+        self._retired_usage_run_ids: set[str] = set()
+        self._task_message_tokens: dict[str, str] = {}
         self._core_toolset: Toolset[Any] | None = None
         self._completion_callback: Callable[[str], None] | None = None
 
@@ -293,6 +300,13 @@ class BackgroundMonitor(BaseResource):
                 )
                 continue
             bus.send(message)
+            is_task_result_notification = (
+                pending.shell_process_id is None
+                and message.id == self.get_task_result_message_id(message.source)
+                and message.source in self._task_results
+            )
+            if is_task_result_notification:
+                self.mark_task_result_enqueued(message.source)
             # Count only notifications that remain unread for this subscriber.
             # The same message may have already been delivered directly to the
             # active run's bus and consumed by inject_bus_messages. In that case
@@ -403,6 +417,11 @@ class BackgroundMonitor(BaseResource):
     def has_active_tasks(self) -> bool:
         """Check if there are any active (non-completed) background tasks."""
         return any(not t.done() for t in self._tasks.values())
+
+    def is_task_active(self, agent_id: str) -> bool:
+        """Return whether one background agent execution is still running."""
+        task = self._tasks.get(agent_id)
+        return task is not None and not task.done()
 
     @property
     def active_tasks(self) -> dict[str, asyncio.Task[Any]]:
@@ -554,6 +573,7 @@ class BackgroundMonitor(BaseResource):
             self._task_results.pop(evictable, None)
             self._delete_task_artifacts(evictable)
             self._task_info.pop(evictable, None)
+            self._task_message_tokens.pop(evictable, None)
             self._delivered_task_results.discard(evictable)
 
     def begin_task_result_wait(self, agent_id: str) -> None:
@@ -565,22 +585,36 @@ class BackgroundMonitor(BaseResource):
         self._waiting_task_results.discard(agent_id)
 
     def get_task_result_message_id(self, agent_id: str) -> str:
-        """Return the stable bus message id for a background task result."""
-        return f"background-task-result:{agent_id}"
+        """Return a per-execution bus message id for a background task result."""
+        token = self._task_message_tokens.get(agent_id)
+        suffix = f":{token}" if token is not None else ""
+        return f"background-task-result:{agent_id}{suffix}"
+
+    def mark_task_result_enqueued(self, agent_id: str) -> None:
+        """Record that a result notification was placed on the active bus."""
+        self._enqueued_task_results.add(agent_id)
+
+    def acknowledge_enqueued_task_results(self, bus: MessageBus, target: str) -> None:
+        """Acknowledge only notifications no longer unread after an agent turn."""
+        unread_message_ids = {message.id for message in bus.peek(target)}
+        for agent_id in list(self._enqueued_task_results):
+            if self.get_task_result_message_id(agent_id) not in unread_message_ids:
+                self.mark_task_result_delivered(agent_id)
 
     def mark_task_result_delivered(
         self, agent_id: str, bus: MessageBus | None = None, target: str | None = None
     ) -> None:
-        """Mark a task result as already delivered through wait_subagent.
+        """Acknowledge successful result delivery and apply bounded retention.
 
-        This also drops queued fallback notifications and marks the stable
-        active-run bus message as consumed for the target subscriber when
-        possible, preventing duplicate result delivery after wait_subagent.
+        This also drops queued fallback notifications and, for wait_subagent,
+        marks the stable active-run bus message as consumed to prevent duplicate
+        result delivery. Full artifacts remain available until the task entry is
+        actually evicted by the completed-task retention policy.
         """
-        self._delivered_task_results.add(agent_id)
-        self._delete_task_artifacts(agent_id)
-        self._prune_completed_tasks()
         message_id = self.get_task_result_message_id(agent_id)
+        self._enqueued_task_results.discard(agent_id)
+        self._delivered_task_results.add(agent_id)
+        self._prune_completed_tasks()
         self._pending_messages = [
             pending
             for pending in self._pending_messages
@@ -590,7 +624,7 @@ class BackgroundMonitor(BaseResource):
             bus.mark_consumed(target, {message_id})
 
     def is_task_result_delivered(self, agent_id: str) -> bool:
-        """Return whether a task result has already been delivered through wait_subagent."""
+        """Return whether a task result notification was successfully delivered."""
         return agent_id in self._delivered_task_results
 
     def should_deliver_task_result_message(self, agent_id: str) -> bool:
@@ -682,6 +716,7 @@ class BackgroundMonitor(BaseResource):
         subagent_name: str = "",
         prompt: str = "",
         is_resume: bool = False,
+        usage_run_id: str | None = None,
     ) -> None:
         """Register a background task for tracking.
 
@@ -694,7 +729,32 @@ class BackgroundMonitor(BaseResource):
             subagent_name: Name of the subagent (e.g., "searcher").
             prompt: The prompt sent to the subagent.
             is_resume: Whether this is resuming a previous conversation.
+            usage_run_id: Parent usage run that can receive a late cumulative snapshot.
         """
+        previous_task = self._tasks.get(agent_id)
+        if previous_task is not None:
+            if not previous_task.done():
+                raise ValueError(f"Background agent {agent_id!r} is already running")
+            previous_info = self._task_info.get(agent_id)
+            self._on_task_done(
+                agent_id,
+                previous_info.usage_run_id if previous_info is not None else None,
+                previous_task,
+            )
+
+        previous_message_id = self.get_task_result_message_id(agent_id)
+        self._pending_messages = [
+            pending
+            for pending in self._pending_messages
+            if pending.shell_process_id is not None or pending.message.id != previous_message_id
+        ]
+        self._delivered_task_results.discard(agent_id)
+        self._enqueued_task_results.discard(agent_id)
+        self._waiting_task_results.discard(agent_id)
+        self._completed_task_order.pop(agent_id, None)
+        self._task_results.pop(agent_id, None)
+        self._delete_task_artifacts(agent_id)
+        self._task_message_tokens[agent_id] = uuid.uuid4().hex
         self._tasks[agent_id] = task
         prompt_preview, prompt_truncated = _bounded_task_text(prompt, self._max_task_prompt_chars)
         self._task_info[agent_id] = BackgroundTaskInfo(
@@ -703,9 +763,64 @@ class BackgroundMonitor(BaseResource):
             prompt=prompt_preview or "",
             is_resume=is_resume,
             prompt_truncated=prompt_truncated,
+            usage_run_id=usage_run_id,
         )
-        task.add_done_callback(lambda _t: self._tasks.pop(agent_id, None))
+        if usage_run_id is not None:
+            self.observe_usage_run(usage_run_id)
+            self._usage_run_task_ids.setdefault(usage_run_id, set()).add(agent_id)
+            self._late_usage_run_ids.add(usage_run_id)
+        task.add_done_callback(lambda completed: self._on_task_done(agent_id, usage_run_id, completed))
         logger.debug("Registered background task: %s (%s)", agent_id, subagent_name)
+
+    def _on_task_done(
+        self,
+        agent_id: str,
+        usage_run_id: str | None,
+        completed_task: asyncio.Task[Any],
+    ) -> None:
+        if self._tasks.get(agent_id) is not completed_task:
+            return
+        self._tasks.pop(agent_id, None)
+        if usage_run_id is None:
+            return
+        task_ids = self._usage_run_task_ids.get(usage_run_id)
+        if task_ids is None:
+            return
+        task_ids.discard(agent_id)
+        if not task_ids:
+            self._usage_run_task_ids.pop(usage_run_id, None)
+            if usage_run_id != self._current_usage_run_id:
+                self._retired_usage_run_ids.add(usage_run_id)
+
+    def observe_usage_run(self, run_id: str) -> None:
+        """Advance the active context usage run and retire inactive predecessors."""
+        if run_id == self._current_usage_run_id:
+            return
+        previous_run_id = self._current_usage_run_id
+        self._current_usage_run_id = run_id
+        self._retired_usage_run_ids.discard(run_id)
+        if previous_run_id is not None and not self.has_tasks_for_usage_run(previous_run_id):
+            self._retired_usage_run_ids.add(previous_run_id)
+
+    def drain_retired_usage_run_ids(self) -> set[str]:
+        """Return retired runs only after their final snapshots are drained."""
+        pending_run_ids = {snapshot.run_id for snapshot in self._pending_usage_snapshots}
+        run_ids = {
+            run_id
+            for run_id in self._retired_usage_run_ids
+            if not self.has_tasks_for_usage_run(run_id) and run_id not in pending_run_ids
+        }
+        self._retired_usage_run_ids.difference_update(run_ids)
+        self._late_usage_run_ids.difference_update(run_ids)
+        return run_ids
+
+    def has_tasks_for_usage_run(self, run_id: str) -> bool:
+        """Return whether a usage run still has a background producer."""
+        return bool(self._usage_run_task_ids.get(run_id))
+
+    def can_publish_late_usage_snapshot(self, run_id: str) -> bool:
+        """Return whether this context run may spawn another cumulative update."""
+        return run_id in self._late_usage_run_ids
 
     def get_context_instruction(self) -> str | None:
         """Return context instruction about active background tasks.
@@ -993,7 +1108,13 @@ class BackgroundMonitor(BaseResource):
             self._artifact_dir = None
         self._completed_task_order.clear()
         self._delivered_task_results.clear()
+        self._enqueued_task_results.clear()
         self._waiting_task_results.clear()
+        self._usage_run_task_ids.clear()
+        self._late_usage_run_ids.clear()
+        self._current_usage_run_id = None
+        self._retired_usage_run_ids.clear()
+        self._task_message_tokens.clear()
         self._core_toolset = None
         self._completion_callback = None
         self._shell = None

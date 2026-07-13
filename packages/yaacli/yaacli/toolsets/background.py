@@ -134,12 +134,15 @@ class SpawnDelegateTool(BaseTool):
             return "Error: delegate backend tool not available"
 
         deps = ctx.deps
+        usage_run_id = deps.run_id
 
         # Use provided agent_id for resume, or generate a new one
         is_resume = agent_id is not None and agent_id in deps.subagent_history
         if not agent_id:
             short_id = generate_unique_id(deps.subagent_history)
             agent_id = f"{subagent_name}-bg-{short_id}"
+        if monitor.is_task_active(agent_id):
+            return f"Error: background agent {agent_id!r} is already running"
 
         async def _run_background() -> None:
             """Background coroutine that runs the subagent and posts result to bus."""
@@ -175,6 +178,7 @@ class SpawnDelegateTool(BaseTool):
                 if monitor.should_deliver_task_result_message(agent_id):
                     if deps.message_bus.is_subscribed(deps.agent_id):
                         deps.send_message(message)
+                        monitor.mark_task_result_enqueued(agent_id)
                     else:
                         monitor.enqueue_message(message)
                 logger.info("Spawned delegate '%s' (%s) completed", subagent_name, agent_id)
@@ -208,6 +212,7 @@ class SpawnDelegateTool(BaseTool):
                 if monitor.should_deliver_task_result_message(agent_id):
                     if deps.message_bus.is_subscribed(deps.agent_id):
                         deps.send_message(message)
+                        monitor.mark_task_result_enqueued(agent_id)
                     else:
                         monitor.enqueue_message(message)
             finally:
@@ -215,7 +220,14 @@ class SpawnDelegateTool(BaseTool):
                 monitor.notify_completion(agent_id)
 
         task = asyncio.create_task(_run_background())
-        monitor.register_task(agent_id, task, subagent_name=subagent_name, prompt=prompt, is_resume=is_resume)
+        monitor.register_task(
+            agent_id,
+            task,
+            subagent_name=subagent_name,
+            prompt=prompt,
+            is_resume=is_resume,
+            usage_run_id=usage_run_id,
+        )
 
         action = "Resumed" if is_resume else "Spawned"
         return (

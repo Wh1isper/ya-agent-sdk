@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
+import pytest
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import StreamEvent
 from ya_agent_sdk.events import SubagentStartEvent
@@ -43,6 +44,30 @@ def test_tui_display_tool_call_chunks_render_calling_once() -> None:
     calling_blocks = [line for line in app._output_lines if "Calling:" in line and "shell" in line]
     assert len(calling_blocks) == 1
     assert app._append_block.call_count == 1
+
+
+def test_tui_display_tool_call_arguments_are_bounded_without_mutating_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    monkeypatch.setattr("yaacli.app.tui._MAX_RETAINED_TOOL_ARG_CHARS", 64)
+    event = {
+        "type": "TOOL_CALL_CHUNK",
+        "toolCallId": "tool-large",
+        "toolCallName": "shell",
+        "delta": "x" * 1_000,
+    }
+    original = dict(event)
+
+    app._handle_display_events([event])
+
+    tool_args = app._tool_messages["tool-large"].args
+    tracker_args = app._event_renderer.tracker.tool_calls["tool-large"].args
+    assert isinstance(tool_args, str)
+    assert len(tool_args) <= 64
+    assert "tool arguments truncated for display" in tool_args
+    assert tracker_args == tool_args
+    assert event == original
 
 
 def test_tui_display_tool_result_renders_once() -> None:
