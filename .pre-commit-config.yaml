@@ -30,7 +30,7 @@ repos:
         additional_dependencies: [prettier@3.8.3]
         files: ^apps/ya-claw-web/.*\.(ts|tsx|css|html|md|json)$
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: "v0.15.20"
+    rev: "v0.15.21"
     hooks:
       - id: ruff
         args: [--exit-non-zero-on-fix]
