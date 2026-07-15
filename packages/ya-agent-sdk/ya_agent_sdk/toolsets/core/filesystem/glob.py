@@ -14,7 +14,11 @@ from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._gitignore import GitignoreFilterResult
-from ya_agent_sdk.toolsets.core.filesystem._search import collect_glob_candidates
+from ya_agent_sdk.toolsets.core.filesystem._search import (
+    SKILL_DOCUMENT_REMINDER,
+    collect_glob_candidates,
+    contains_skill_document,
+)
 
 logger = get_logger(__name__)
 
@@ -67,13 +71,19 @@ class GlobTool(BaseTool):
         include_ignored: Annotated[
             bool,
             Field(
-                description="Include files ignored by .gitignore and nested ignore files (default: false)",
+                description="Include files ignored by the FileOperator root .gitignore (default: false)",
                 default=False,
             ),
         ] = False,
         include_hidden: Annotated[
             bool,
-            Field(description="Include hidden dot paths such as .git, .venv, and .env (default: false)", default=False),
+            Field(
+                description=(
+                    "Include hidden dot paths such as .git, .venv, and .env; "
+                    "the search root's .agents child is exempt from hidden-path filtering (default: false)"
+                ),
+                default=False,
+            ),
         ] = False,
         max_results: Annotated[
             int,
@@ -94,12 +104,14 @@ class GlobTool(BaseTool):
             include_hidden=include_hidden,
         )
         files = [candidate.path for candidate in candidates]
+        skill_documents = [candidate.path for candidate in candidates if candidate.is_file]
 
         if include_ignored:
             result = _apply_max_results(files, max_results)
         else:
             result = _build_filtered_result(files, filter_result, max_results)
 
+        result = _add_skill_document_reminder(result, skill_documents)
         return await _guard_output_size(result, file_operator)
 
 
@@ -154,6 +166,29 @@ def _apply_max_results(files: list[str], max_results: int) -> list[str] | dict[s
     }
 
 
+def _add_skill_document_reminder(
+    result: list[str] | dict[str, Any],
+    skill_documents: list[str],
+) -> list[str] | dict[str, Any]:
+    """Attach guidance when returned paths expose Skill entrypoint files."""
+    files = result if isinstance(result, list) else result.get("files", [])
+    returned_skill_documents = set(files).intersection(skill_documents)
+    if not contains_skill_document(returned_skill_documents):
+        return result
+    if isinstance(result, list):
+        return {"files": result, "system-reminder": SKILL_DOCUMENT_REMINDER}
+    result["system-reminder"] = SKILL_DOCUMENT_REMINDER
+    return result
+
+
+def _add_preview_value(preview: dict[str, Any], key: str, value: Any) -> dict[str, Any]:
+    """Add preview metadata only when it preserves the output hard limit."""
+    candidate = {**preview, key: value}
+    if len(json.dumps(candidate, ensure_ascii=False)) <= OUTPUT_TRUNCATE_LIMIT:
+        return candidate
+    return preview
+
+
 async def _guard_output_size(
     result: list[str] | dict[str, Any],
     file_operator: FileOperator,
@@ -167,9 +202,11 @@ async def _guard_output_size(
     if isinstance(result, list):
         all_files = result
         total = len(result)
+        system_reminder = None
     else:
         all_files = result.get("files", [])
         total = result.get("total_matches", len(all_files))
+        system_reminder = result.get("system-reminder")
 
     # Write full result to temp file (with fallback on failure)
     output_path: str | None = None
@@ -185,15 +222,15 @@ async def _guard_output_size(
         "truncated": True,
         "total_matches": total,
         "showing": 0,
-        "note": "",
     }
+    if isinstance(system_reminder, str):
+        preview = _add_preview_value(preview, "system-reminder", system_reminder)
     if output_path is not None:
-        preview["output_file_path"] = output_path
-        preview["note"] = f"Output too large ({len(serialized)} chars). Full results saved to `output_file_path`."
+        preview = _add_preview_value(preview, "output_file_path", output_path)
+        note = f"Output too large ({len(serialized)} chars). Full results saved to `output_file_path`."
     else:
-        preview["note"] = (
-            f"Output too large ({len(serialized)} chars). Failed to save temp file; showing truncated preview."
-        )
+        note = f"Output too large ({len(serialized)} chars). Failed to save temp file; showing truncated preview."
+    preview = _add_preview_value(preview, "note", note)
 
     for f in all_files:
         candidate_files = preview["files"] + [f]

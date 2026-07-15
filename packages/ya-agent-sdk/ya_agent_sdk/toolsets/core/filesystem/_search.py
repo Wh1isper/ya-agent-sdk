@@ -12,11 +12,25 @@ import anyio
 import pathspec
 from ya_agent_environment import FileOperator
 
+from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
 from ya_agent_sdk.toolsets.core.filesystem._gitignore import GitignoreFilterResult, filter_gitignored
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Iterable
+
+    from ya_agent_environment.types import FileEntry
+
+
+logger = get_logger(__name__)
+
+SEARCH_VISIBLE_DOT_DIR_NAMES: frozenset[str] = frozenset({".agents"})
+SKILL_DOCUMENT_NAME = "SKILL.md"
+SKILL_DOCUMENT_REMINDER = (
+    "Skill documents were found in the search results. Before applying a skill, read each relevant SKILL.md "
+    "in full with `view`; paths and grep snippets are not sufficient to assess applicability, and discovery "
+    "alone does not activate a skill."
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +40,8 @@ class SearchCandidate:
     path: str
     size: int | None = None
     mtime: float | None = None
+    is_file: bool = False
+    is_dir: bool = False
 
 
 def normalize_logical_path(path: str) -> str:
@@ -37,8 +53,21 @@ def normalize_logical_path(path: str) -> str:
 
 
 def is_hidden_logical_path(path: str) -> bool:
-    """Return True when any path segment is hidden."""
-    return any(part.startswith(".") and part not in {".", ".."} for part in normalize_logical_path(path).split("/"))
+    """Return True when a path contains a non-exempt hidden segment."""
+    return any(
+        part.startswith(".") and part not in {".", ".."} and part not in SEARCH_VISIBLE_DOT_DIR_NAMES
+        for part in normalize_logical_path(path).split("/")
+    )
+
+
+def is_skill_document(path: str) -> bool:
+    """Return True when a logical path points to a Skill entrypoint."""
+    return normalize_logical_path(path).rsplit("/", 1)[-1] == SKILL_DOCUMENT_NAME
+
+
+def contains_skill_document(paths: Iterable[str]) -> bool:
+    """Return True when any logical path points to a Skill entrypoint."""
+    return any(is_skill_document(path) for path in paths)
 
 
 def match_glob(path: str, pattern: str) -> bool:
@@ -96,6 +125,45 @@ def walk_max_depth_for_glob(pattern: str) -> int | None:
     return anchored_pattern.count("/")
 
 
+def _dot_dir_search_root(root: str, dot_dir_name: str) -> str:
+    """Build a child search root while preserving absolute and relative root forms."""
+    if root in {"", "."}:
+        return dot_dir_name
+    return f"{root.rstrip('/')}/{dot_dir_name}"
+
+
+async def _walk_search_entries(
+    file_operator: FileOperator,
+    *,
+    root: str,
+    include_hidden: bool,
+    max_depth: int | None,
+) -> AsyncIterator[FileEntry]:
+    """Walk normal paths plus root metadata directories without exposing other hidden paths."""
+    async for entry in file_operator.walk_files(root, include_hidden=include_hidden, max_depth=max_depth):
+        yield entry
+
+    if include_hidden:
+        return
+
+    for dot_dir_name in SEARCH_VISIBLE_DOT_DIR_NAMES:
+        dot_root = _dot_dir_search_root(root, dot_dir_name)
+        try:
+            if not await file_operator.is_dir(dot_root):
+                continue
+        except Exception:
+            logger.debug("Failed to inspect exempt dot directory: %s", dot_root, exc_info=True)
+            continue
+
+        dot_max_depth = None if max_depth is None else max(0, max_depth - 1)
+        async for entry in file_operator.walk_files(
+            dot_root,
+            include_hidden=False,
+            max_depth=dot_max_depth,
+        ):
+            yield entry
+
+
 async def collect_walk_entries(
     file_operator: FileOperator,
     *,
@@ -105,11 +173,26 @@ async def collect_walk_entries(
 ) -> list[SearchCandidate]:
     """Collect file and directory candidates through FileOperator.walk_files."""
     candidates: list[SearchCandidate] = []
-    async for entry in file_operator.walk_files(root, include_hidden=include_hidden, max_depth=max_depth):
+    seen_paths: set[str] = set()
+    async for entry in _walk_search_entries(
+        file_operator,
+        root=root,
+        include_hidden=include_hidden,
+        max_depth=max_depth,
+    ):
         path = normalize_logical_path(entry["path"])
-        if not include_hidden and is_hidden_logical_path(path):
+        if path in seen_paths or (not include_hidden and is_hidden_logical_path(path)):
             continue
-        candidates.append(SearchCandidate(path=path, size=entry.get("size"), mtime=entry.get("mtime")))
+        seen_paths.add(path)
+        candidates.append(
+            SearchCandidate(
+                path=path,
+                size=entry.get("size"),
+                mtime=entry.get("mtime"),
+                is_file=bool(entry.get("is_file", False)),
+                is_dir=bool(entry.get("is_dir", False)),
+            )
+        )
     return candidates
 
 
@@ -122,13 +205,28 @@ async def collect_walk_files(
 ) -> list[SearchCandidate]:
     """Collect regular file candidates through FileOperator.walk_files."""
     candidates: list[SearchCandidate] = []
-    async for entry in file_operator.walk_files(root, include_hidden=include_hidden, max_depth=max_depth):
+    seen_paths: set[str] = set()
+    async for entry in _walk_search_entries(
+        file_operator,
+        root=root,
+        include_hidden=include_hidden,
+        max_depth=max_depth,
+    ):
         if not entry.get("is_file", False):
             continue
         path = normalize_logical_path(entry["path"])
-        if not include_hidden and is_hidden_logical_path(path):
+        if path in seen_paths or (not include_hidden and is_hidden_logical_path(path)):
             continue
-        candidates.append(SearchCandidate(path=path, size=entry.get("size"), mtime=entry.get("mtime")))
+        seen_paths.add(path)
+        candidates.append(
+            SearchCandidate(
+                path=path,
+                size=entry.get("size"),
+                mtime=entry.get("mtime"),
+                is_file=bool(entry.get("is_file", False)),
+                is_dir=bool(entry.get("is_dir", False)),
+            )
+        )
     return candidates
 
 
@@ -282,7 +380,14 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
                 rel = resolved_root.relative_to(default_path).as_posix()
                 if (include_hidden or not is_hidden_logical_path(rel)) and not gitignore_spec.match_file(rel):
                     stat = resolved_root.lstat()
-                    candidates.append(SearchCandidate(path=rel, size=stat.st_size, mtime=stat.st_mtime))
+                    candidates.append(
+                        SearchCandidate(
+                            path=rel,
+                            size=stat.st_size,
+                            mtime=stat.st_mtime,
+                            is_file=True,
+                        )
+                    )
                 elif gitignore_spec.match_file(rel):
                     pruned_ignored.append(rel)
             except (OSError, ValueError):
@@ -296,7 +401,12 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
             if max_depth is not None and depth >= max_depth:
                 dirnames[:] = []
             if not include_hidden:
-                dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if not name.startswith(".")
+                    or (current_path == resolved_root and name in SEARCH_VISIBLE_DOT_DIR_NAMES)
+                ]
                 filenames = [name for name in filenames if not name.startswith(".")]
 
             kept_dirnames: list[str] = []
@@ -320,7 +430,15 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
                         rel = path.relative_to(default_path).as_posix()
                     except (OSError, ValueError):
                         continue
-                    candidates.append(SearchCandidate(path=rel, size=stat.st_size, mtime=stat.st_mtime))
+                    if include_hidden or name not in SEARCH_VISIBLE_DOT_DIR_NAMES:
+                        candidates.append(
+                            SearchCandidate(
+                                path=rel,
+                                size=stat.st_size,
+                                mtime=stat.st_mtime,
+                                is_dir=True,
+                            )
+                        )
 
             for name in sorted(filenames):
                 path = current_path / name
@@ -329,7 +447,14 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
                     rel = path.relative_to(default_path).as_posix()
                 except (OSError, ValueError):
                     continue
-                candidates.append(SearchCandidate(path=rel, size=stat.st_size, mtime=stat.st_mtime))
+                candidates.append(
+                    SearchCandidate(
+                        path=rel,
+                        size=stat.st_size,
+                        mtime=stat.st_mtime,
+                        is_file=True,
+                    )
+                )
 
         return candidates, pruned_ignored
 
@@ -417,15 +542,19 @@ async def collect_glob_candidates(
 
 
 __all__ = [
+    "SEARCH_VISIBLE_DOT_DIR_NAMES",
+    "SKILL_DOCUMENT_REMINDER",
     "SearchCandidate",
     "collect_glob_candidates",
     "collect_walk_entries",
     "collect_walk_entries_gitignore_filtered",
     "collect_walk_files",
     "collect_walk_files_gitignore_filtered",
+    "contains_skill_document",
     "filter_candidates_by_glob",
     "filter_candidates_ignored",
     "is_hidden_logical_path",
+    "is_skill_document",
     "match_glob",
     "normalize_logical_path",
     "sort_candidates_by_mtime",

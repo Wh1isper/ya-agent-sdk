@@ -164,7 +164,7 @@ async def test_ls_writes_oversized_output_to_tmp_file(monkeypatch: pytest.Monkey
         async def list_dir_with_types(self, path: str) -> list[tuple[str, bool]]:
             assert path == "."
             suffix = "x" * 80
-            return [(f"file-{index}-{suffix}.txt", False) for index in range(12)]
+            return [("SKILL.md", False), *[(f"file-{index}-{suffix}.txt", False) for index in range(11)]]
 
         async def stat(self, path: str) -> dict[str, object]:
             return {"size": 1, "mtime": 10.0, "is_file": True, "is_dir": False}
@@ -183,6 +183,7 @@ async def test_ls_writes_oversized_output_to_tmp_file(monkeypatch: pytest.Monkey
     assert result["success"] is True
     assert result["truncated"] is True
     assert "output_file_path" in result
+    assert "system-reminder" in result
     assert len(json.dumps(result, ensure_ascii=False)) <= ls_module.OUTPUT_TRUNCATE_LIMIT
     assert file_operator.saved_content is not None
     saved = json.loads(file_operator.saved_content)
@@ -262,6 +263,48 @@ async def test_ls_list_directory(tmp_path: Path) -> None:
         assert "subdir" in names
 
 
+async def test_ls_adds_reminder_when_listing_skill_document(tmp_path: Path) -> None:
+    """Should require a full read when a shallow listing exposes SKILL.md."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = ListTool()
+
+        skill_dir = tmp_path / ".agents" / "skills" / "example"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Example")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, path=".agents/skills/example")
+
+        assert result["success"] is True
+        assert result["entries"][0]["path"] == ".agents/skills/example/SKILL.md"
+        assert "system-reminder" in result
+        assert "read each relevant SKILL.md in full" in result["system-reminder"]
+
+
+async def test_ls_skill_directory_does_not_trigger_reminder(tmp_path: Path) -> None:
+    """Should not ask view to read a directory named SKILL.md."""
+    (tmp_path / "SKILL.md").mkdir()
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await ListTool().call(mock_run_ctx, path=".")
+
+    assert result["entries"][0]["type"] == "directory"
+    assert "system-reminder" not in result
+
+
 async def test_ls_file_info(tmp_path: Path) -> None:
     """Should include file info (size, modified) for files."""
     async with AsyncExitStack() as stack:
@@ -318,6 +361,23 @@ async def test_ls_directory_not_found(tmp_path: Path) -> None:
         result = await tool.call(mock_run_ctx, path="nonexistent")
         assert result["success"] is False
         assert result["error"] == snapshot("Directory not found: nonexistent")
+
+
+async def test_ls_error_respects_hard_output_limit() -> None:
+    """Should bound errors that include an oversized user-provided path."""
+
+    class MissingFileOperator:
+        async def exists(self, path: str) -> bool:
+            return False
+
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = SimpleNamespace(file_operator=MissingFileOperator())
+
+    result = await ListTool().call(mock_run_ctx, path="x" * 25_000)
+
+    assert result["success"] is False
+    assert len(json.dumps(result, ensure_ascii=False)) <= ls_module.OUTPUT_TRUNCATE_LIMIT
+    assert result["error"].endswith("... (truncated)")
 
 
 async def test_ls_path_is_file(tmp_path: Path) -> None:
