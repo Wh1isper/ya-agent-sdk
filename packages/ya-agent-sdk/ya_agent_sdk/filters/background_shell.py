@@ -36,11 +36,12 @@ def _xml_escape(s: str, *, quote: bool = False) -> str:
     return _html_escape(s, quote=quote)
 
 
-def _format_stream(tag: str, content: str) -> str:
+def _format_stream(tag: str, content: str, *, source_capped: bool) -> str:
     """Format a stdout/stderr stream element, truncating if needed."""
     if len(content) > _INJECT_TRUNCATE_LIMIT:
         escaped = _xml_escape(content[:_INJECT_TRUNCATE_LIMIT])
-        return f'  <{tag} truncated="true">\n{escaped}\n...(truncated, full output at `{tag}_file_path`)\n  </{tag}>'
+        saved_label = "stored output" if source_capped else "full output"
+        return f'  <{tag} truncated="true">\n{escaped}\n...(truncated, {saved_label} at `{tag}_file_path`)\n  </{tag}>'
     return f"  <{tag}>{_xml_escape(content)}</{tag}>"
 
 
@@ -52,11 +53,14 @@ def _format_completed_result(result: CompletedProcess) -> str:
     ]
 
     if result.stdout:
-        parts.append(_format_stream("stdout", result.stdout))
+        parts.append(_format_stream("stdout", result.stdout, source_capped=result.truncated))
     if result.stderr:
-        parts.append(_format_stream("stderr", result.stderr))
+        parts.append(_format_stream("stderr", result.stderr, source_capped=result.truncated))
     if result.truncated:
-        parts.append("  <note>Output was capped at storage time due to size.</note>")
+        parts.append(
+            "  <note>Output was capped for automatic injection; shell_wait can retrieve the retained terminal "
+            "output while available.</note>"
+        )
 
     parts.append("</background-result>")
     return "\n".join(parts)
@@ -66,14 +70,15 @@ async def _write_truncated_files(
     result: CompletedProcess,
     file_op: FileOperator,
 ) -> list[str]:
-    """Write full output to tmp files for truncated streams. Returns path info lines."""
+    """Write available output to tmp files for truncated streams. Returns path info lines."""
     path_lines: list[str] = []
+    label = "Stored" if result.truncated else "Full"
     if len(result.stdout) > _INJECT_TRUNCATE_LIMIT:
         path = await file_op.write_tmp_file(f"bg-stdout-{result.process_id}.log", result.stdout)
-        path_lines.append(f"  Full stdout: {path}")
+        path_lines.append(f"  {label} stdout: {path}")
     if len(result.stderr) > _INJECT_TRUNCATE_LIMIT:
         path = await file_op.write_tmp_file(f"bg-stderr-{result.process_id}.log", result.stderr)
-        path_lines.append(f"  Full stderr: {path}")
+        path_lines.append(f"  {label} stderr: {path}")
     return path_lines
 
 
@@ -86,7 +91,7 @@ async def inject_background_results(
     This filter:
     1. Consumes completed background process results (one-time)
     2. Formats each result with truncation for large output
-    3. Writes full output to tmp files when truncated
+    3. Writes the available output to tmp files when the prompt preview is truncated
     4. Appends a background status summary
     5. Injects everything as a UserPromptPart in the last ModelRequest
 

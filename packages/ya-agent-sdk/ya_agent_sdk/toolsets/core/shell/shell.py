@@ -583,7 +583,7 @@ class ShellStatusTool(BaseTool):
         ctx: RunContext[AgentContext],
     ) -> str:
         shell = cast(Shell, ctx.deps.shell)
-        summary = shell.background_status_summary()
+        summary = shell.background_status_summary_with_retained_results()
         if summary is None:
             return "No background processes."
         return summary

@@ -194,7 +194,35 @@ async def test_truncated_output_with_file_op() -> None:
     await inject_background_results(ctx, messages)
     injected = messages[-1].parts[1]
     assert "truncated" in injected.content.lower()
+    assert "full output" in injected.content.lower()
+    assert "Full stdout:" in injected.content
     file_op.write_tmp_file.assert_called_once()
+
+
+async def test_source_capped_output_is_not_labeled_as_full() -> None:
+    """Environment-capped injection output should direct the agent to shell_wait for retained output."""
+    completed = CompletedProcess(
+        process_id="capped1",
+        command="large output",
+        cwd=None,
+        exit_code=0,
+        stdout="x" * 30000,
+        stderr="",
+        truncated=True,
+    )
+    shell = MockShell(completed=[completed], summary=None)
+    file_op = AsyncMock()
+    file_op.write_tmp_file = AsyncMock(return_value="/tmp/bg-stdout-capped1.log")  # noqa: S108
+    ctx = _make_ctx(shell=shell, file_operator=file_op)
+    messages = _make_messages_with_user_prompt()
+
+    await inject_background_results(ctx, messages)
+    injected = messages[-1].parts[1]
+    assert "stored output" in injected.content.lower()
+    assert "Stored stdout:" in injected.content
+    assert "shell_wait can retrieve the retained terminal output" in injected.content
+    assert "full output" not in injected.content.lower()
+    assert "Full stdout:" not in injected.content
 
 
 async def test_no_model_request_returns_unchanged() -> None:

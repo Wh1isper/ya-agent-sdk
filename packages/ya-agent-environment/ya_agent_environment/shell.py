@@ -8,7 +8,7 @@ via OutputBuffer.
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -29,6 +29,10 @@ _MAX_LINE_LENGTH = 4096
 _MAX_COMPLETED_OUTPUT_BYTES = 1 * 1024 * 1024  # 1 MB per stream
 # Max queued CompletedProcess results returned by consume_completed_results().
 _MAX_COMPLETED_RESULTS = 50
+# Max completed results retained for an explicit wait after filter injection.
+_MAX_RETAINED_COMPLETED_RESULTS = 50
+# Aggregate UTF-8 bytes retained across completed stdout/stderr streams.
+_MAX_RETAINED_COMPLETED_OUTPUT_BYTES = 16 * 1024 * 1024  # 16 MB per Shell
 
 
 def _truncate_to_bytes(text: str, max_bytes: int) -> tuple[str, bool]:
@@ -49,6 +53,12 @@ def _truncate_line(line: str, max_length: int = _MAX_LINE_LENGTH) -> str:
     if len(line) <= max_length:
         return line
     return line[:max_length]
+
+
+def _combine_status_summaries(*summaries: str | None) -> str | None:
+    """Join non-empty status summaries."""
+    present = [summary for summary in summaries if summary]
+    return "\n".join(present) if present else None
 
 
 class ReadableStream(Protocol):
@@ -170,9 +180,10 @@ class BackgroundProcess:
 class CompletedProcess:
     """Result of a completed background shell process.
 
-    Built on-the-fly from OutputBuffer by consume_completed_results()
-    for one-time consumption by the filter layer.  Output is capped at
-    _MAX_COMPLETED_OUTPUT_BYTES to bound memory usage.
+    Built from OutputBuffer for filter delivery and explicit wait retention.
+    Filter-facing instances are capped at _MAX_COMPLETED_OUTPUT_BYTES per
+    stream, while a separate full-buffer instance is retained under aggregate
+    count and byte budgets until explicitly read.
     """
 
     process_id: str
@@ -183,6 +194,11 @@ class CompletedProcess:
     stderr: str
     truncated: bool
     completed_at: datetime = field(default_factory=datetime.now)
+
+
+def _completed_result_output_bytes(result: CompletedProcess) -> int:
+    """Return retained stdout/stderr size in UTF-8 bytes."""
+    return len(result.stdout.encode("utf-8")) + len(result.stderr.encode("utf-8"))
 
 
 class ReadyState(StrEnum):
@@ -242,6 +258,8 @@ class Shell(ABC):
         self._background_processes: dict[str, BackgroundProcess] = {}
         self._background_tasks: dict[str, asyncio.Task[int]] = {}
         self._output_buffers: dict[str, OutputBuffer] = {}
+        self._retained_completed_results: OrderedDict[str, CompletedProcess] = OrderedDict()
+        self._retained_completed_output_bytes = 0
         self._stdin_streams: dict[str, WritableStream] = {}
         self._signal_handlers: dict[str, Callable[[int], Awaitable[None]]] = {}
 
@@ -437,7 +455,28 @@ class Shell(ABC):
         buf = OutputBuffer()
         self._background_processes[process_id] = meta
         self._output_buffers[process_id] = buf
+        self._pop_retained_completed_result(process_id)
         return process_id, buf
+
+    def _pop_retained_completed_result(self, process_id: str) -> CompletedProcess | None:
+        """Remove a retained result and update its aggregate byte accounting."""
+        result = self._retained_completed_results.pop(process_id, None)
+        if result is not None:
+            self._retained_completed_output_bytes -= _completed_result_output_bytes(result)
+        return result
+
+    def _retain_completed_result(self, result: CompletedProcess) -> None:
+        """Retain a terminal result within count and aggregate byte limits."""
+        self._pop_retained_completed_result(result.process_id)
+        self._retained_completed_results[result.process_id] = result
+        self._retained_completed_output_bytes += _completed_result_output_bytes(result)
+
+        while (
+            len(self._retained_completed_results) > _MAX_RETAINED_COMPLETED_RESULTS
+            or self._retained_completed_output_bytes > _MAX_RETAINED_COMPLETED_OUTPUT_BYTES
+        ):
+            oldest_process_id = next(iter(self._retained_completed_results))
+            self._pop_retained_completed_result(oldest_process_id)
 
     def _finalize_background_task(self, process_id: str, task: asyncio.Task[int]) -> None:
         """Record completion state for a finished background task.
@@ -527,7 +566,10 @@ class Shell(ABC):
         """
         buf = self._output_buffers.get(process_id)
         if buf is None:
-            raise KeyError(f"No output buffer for process: {process_id}")
+            retained = self._pop_retained_completed_result(process_id)
+            if retained is None:
+                raise KeyError(f"No output buffer for process: {process_id}")
+            return retained.stdout, retained.stderr, False, retained.exit_code
 
         stdout = "\n".join(buf.stdout) if buf.stdout else ""
         stderr = "\n".join(buf.stderr) if buf.stderr else ""
@@ -578,7 +620,10 @@ class Shell(ABC):
         """
         buf = self._output_buffers.get(process_id)
         if buf is None:
-            raise KeyError(f"No background process with id: {process_id}")
+            retained = self._pop_retained_completed_result(process_id)
+            if retained is None:
+                raise KeyError(f"No background process with id: {process_id}")
+            return retained.stdout, retained.stderr, False, retained.exit_code
 
         # Wait for completion if requested and not yet done
         if not buf.completed and timeout > 0:
@@ -651,6 +696,8 @@ class Shell(ABC):
         self._background_tasks.clear()
         self._background_processes.clear()
         self._output_buffers.clear()
+        self._retained_completed_results.clear()
+        self._retained_completed_output_bytes = 0
         self._stdin_streams.clear()
         self._signal_handlers.clear()
 
@@ -732,11 +779,13 @@ class Shell(ABC):
     # ------------------------------------------------------------------
 
     def consume_completed_results(self) -> list[CompletedProcess]:
-        """Consume all completed-but-unconsumed background results.
+        """Deliver newly completed background results to the filter once.
 
-        Scans output buffers for completed processes, drains their output,
-        constructs CompletedProcess objects, and removes the buffers.
-        Each result is returned exactly once (one-time consumption).
+        Scans output buffers for completed processes and constructs separate
+        CompletedProcess instances for filter delivery and explicit wait.
+        Each capped filter result is returned exactly once. The original
+        buffered stdout/stderr remains in a count- and byte-bounded terminal
+        cache until wait_process() or drain_output() explicitly reads it.
 
         Called by the background shell filter to inject results into
         the conversation.
@@ -763,18 +812,31 @@ class Shell(ABC):
 
             stdout = "\n".join(buf.stdout) if buf.stdout else ""
             stderr = "\n".join(buf.stderr) if buf.stderr else ""
+            command = meta.command if meta else "unknown"
+            cwd = meta.cwd if meta else None
+            exit_code = buf.exit_code if buf.exit_code is not None else -1
 
-            stdout, stdout_trunc = _truncate_to_bytes(stdout, _MAX_COMPLETED_OUTPUT_BYTES)
-            stderr, stderr_trunc = _truncate_to_bytes(stderr, _MAX_COMPLETED_OUTPUT_BYTES)
+            retained_result = CompletedProcess(
+                process_id=pid,
+                command=command,
+                cwd=cwd,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                truncated=False,
+            )
+            self._retain_completed_result(retained_result)
 
+            injected_stdout, stdout_trunc = _truncate_to_bytes(stdout, _MAX_COMPLETED_OUTPUT_BYTES)
+            injected_stderr, stderr_trunc = _truncate_to_bytes(stderr, _MAX_COMPLETED_OUTPUT_BYTES)
             results.append(
                 CompletedProcess(
                     process_id=pid,
-                    command=meta.command if meta else "unknown",
-                    cwd=meta.cwd if meta else None,
-                    exit_code=buf.exit_code if buf.exit_code is not None else -1,
-                    stdout=stdout,
-                    stderr=stderr,
+                    command=command,
+                    cwd=cwd,
+                    exit_code=exit_code,
+                    stdout=injected_stdout,
+                    stderr=injected_stderr,
                     truncated=stdout_trunc or stderr_trunc,
                 )
             )
@@ -802,20 +864,17 @@ class Shell(ABC):
 
     @property
     def has_background_activity(self) -> bool:
-        """Check if there are any active or completed-but-unconsumed background processes."""
+        """Check for running processes or completed results awaiting filter delivery."""
         self._refresh_completed_tasks()
         return bool(self._background_tasks) or any(buf.completed for buf in self._output_buffers.values())
 
+    @property
+    def has_retained_completed_results(self) -> bool:
+        """Check for injected completed results still available to explicit wait."""
+        return bool(self._retained_completed_results)
+
     def background_status_summary(self) -> str | None:
-        """Return a brief XML summary of background process status.
-
-        Includes active (running) processes and completed-but-unconsumed
-        results.  Returns None if there is no background activity.
-
-        This method is used by:
-        - inject_background_results filter (alongside full results)
-        - AgentContext.get_context_instructions (user prompt briefing)
-        """
+        """Return active and newly completed background process status."""
         self._refresh_completed_tasks()
         active = {pid: p for pid, p in self._background_processes.items() if pid in self._background_tasks}
         completed_bufs = {pid: buf for pid, buf in self._output_buffers.items() if buf.completed}
@@ -843,6 +902,28 @@ class Shell(ABC):
                     f'  <process id="{_xml_escape(pid)}" status="{_xml_escape(status)}" command="{_xml_escape(cmd)}" />'
                 )
 
+        parts.append("</background-processes>")
+        return "\n".join(parts)
+
+    def background_status_summary_with_retained_results(self) -> str | None:
+        """Return virtual shell status plus injected results available to wait_process()."""
+        return _combine_status_summaries(
+            self.background_status_summary(),
+            self._retained_completed_status_summary(),
+        )
+
+    def _retained_completed_status_summary(self) -> str | None:
+        """Return status for retained results owned by this Shell instance."""
+        if not self._retained_completed_results:
+            return None
+
+        parts = ["<background-processes>"]
+        for result in self._retained_completed_results.values():
+            status = "completed" if result.exit_code == 0 else f"failed (exit={result.exit_code})"
+            parts.append(
+                f'  <process id="{_xml_escape(result.process_id)}" status="{_xml_escape(status)}" '
+                f'command="{_xml_escape(result.command)}" result="available" />'
+            )
         parts.append("</background-processes>")
         return "\n".join(parts)
 
@@ -1066,6 +1147,13 @@ class DeferredShell(Shell):
             self._resolved_shell.has_background_activity if self._resolved_shell is not None else False
         )
 
+    @property
+    def has_retained_completed_results(self) -> bool:
+        """Return whether proxy or resolved shell has retained completed results."""
+        return super().has_retained_completed_results or (
+            self._resolved_shell.has_retained_completed_results if self._resolved_shell is not None else False
+        )
+
     def background_status_summary(self) -> str | None:
         """Return background status for proxy and resolved shell."""
         own = super().background_status_summary()
@@ -1073,6 +1161,14 @@ class DeferredShell(Shell):
         if own and delegated:
             return f"{own}\n{delegated}"
         return own or delegated
+
+    def background_status_summary_with_retained_results(self) -> str | None:
+        """Return virtual status plus retained results for proxy and resolved shell."""
+        return _combine_status_summaries(
+            self.background_status_summary(),
+            self._retained_completed_status_summary(),
+            (self._resolved_shell._retained_completed_status_summary() if self._resolved_shell is not None else None),
+        )
 
     async def close(self) -> None:
         """Close proxy and resolved shell resources."""
