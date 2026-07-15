@@ -402,6 +402,11 @@ class LocalFileOperator(FileOperator):
         default_path = self._local_default_path()
         if default_path is None:
             return
+        unresolved_root = Path(root)
+        if not unresolved_root.is_absolute():
+            unresolved_root = default_path / unresolved_root
+        if not follow_symlinks and unresolved_root.is_symlink():
+            return
         resolved_root = self._resolve_path(root)
         if not await anyio.Path(resolved_root).exists():
             return
@@ -900,6 +905,11 @@ class VirtualLocalFileOperator(FileOperator):
         root_virtual = as_virtual_path(root)
         if not root_virtual.is_absolute():
             root_virtual = normalize_virtual_path(as_virtual_path(self._default_path) / root_virtual)
+        mount = self._find_mount(root_virtual)
+        mount_relative_root = root_virtual.relative_to(mount.virtual_path)
+        unresolved_host_root = mount.host_path.resolve() / Path(mount_relative_root.as_posix())
+        if not follow_symlinks and unresolved_host_root.is_symlink():
+            return
         host_root = self._to_host(str(root_virtual))
         default_virtual = as_virtual_path(self._default_path)
         if not await anyio.Path(host_root).exists():

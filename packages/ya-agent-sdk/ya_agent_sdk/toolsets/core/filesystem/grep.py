@@ -22,9 +22,11 @@ from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem import _ripgrep_core
 from ya_agent_sdk.toolsets.core.filesystem._line_search import search_file_streaming
 from ya_agent_sdk.toolsets.core.filesystem._search import (
+    SKILL_DOCUMENT_REMINDER,
     SearchCandidate,
     collect_walk_files,
     collect_walk_files_gitignore_filtered,
+    contains_skill_document,
     filter_candidates_by_glob,
     filter_candidates_ignored,
     sort_candidates_by_mtime,
@@ -35,9 +37,7 @@ from ya_agent_sdk.toolsets.core.filesystem._utils import is_binary_file
 logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-# Threshold to trigger soft truncation (drop context, limit line length)
-_TRUNCATION_THRESHOLD = 30000
-# Hard output size limit (aligned with glob) -- write to temp file if exceeded
+# Hard output size limit (aligned with glob) -- soft-truncate before spilling to a temp file.
 _OUTPUT_HARD_LIMIT = 20000
 # Max matching_line length in truncated output
 _TRUNCATED_LINE_MAX = 300
@@ -59,6 +59,17 @@ def _add_gitignore_info(results: dict[str, Any], gitignore_summary: list[str]) -
         if results["<note>"]:
             results["<note>"] += " "
         results["<note>"] += note
+
+
+def _add_skill_document_reminder(results: dict[str, Any]) -> None:
+    """Attach guidance when a match comes from a Skill entrypoint."""
+    matched_paths = (
+        value["file_path"]
+        for key, value in results.items()
+        if not key.startswith("<") and isinstance(value, dict) and isinstance(value.get("file_path"), str)
+    )
+    if contains_skill_document(matched_paths):
+        results["<system-reminder>"] = SKILL_DOCUMENT_REMINDER
 
 
 def _effective_per_file_match_limit(max_matches_per_file: int, *, remaining_results: int) -> int:
@@ -171,7 +182,7 @@ async def _guard_output_size(
     2. Hard guard: write to temp file and return a bounded preview.
     """
     serialized = json.dumps(results, default=str, ensure_ascii=False)
-    if len(serialized) <= _TRUNCATION_THRESHOLD:
+    if len(serialized) <= _OUTPUT_HARD_LIMIT:
         return results
 
     # Phase 1: soft truncation
@@ -188,14 +199,22 @@ async def _guard_output_size(
     match_keys = [k for k in truncated if not k.startswith("<")]
     metadata = {k: v for k, v in truncated.items() if k.startswith("<")}
 
-    # Build preview incrementally to guarantee it stays within the hard limit
-    preview: dict[str, Any] = {
-        "<system>": output_too_large_message(size=len(serialized), output_path=output_path, noun="results"),
-    }
-    preview["total_matches"] = len(match_keys)
-    preview["showing"] = 0
+    # Build preview incrementally to guarantee it stays within the hard limit.
+    preview: dict[str, Any] = {"total_matches": len(match_keys), "showing": 0}
+    skill_reminder = metadata.pop("<system-reminder>", None)
+    if isinstance(skill_reminder, str):
+        preview, _ = _fit_string_metadata(preview, "<system-reminder>", skill_reminder)
     if output_path is not None:
-        preview["output_file_path"] = output_path
+        candidate = {**preview, "output_file_path": output_path}
+        if _fits_hard_limit(candidate):
+            preview = candidate
+    bounded_output_path = preview.get("output_file_path")
+    system_message = output_too_large_message(
+        size=len(serialized),
+        output_path=bounded_output_path if isinstance(bounded_output_path, str) else None,
+        noun="results",
+    )
+    preview, _ = _fit_string_metadata(preview, "<system>", system_message)
     preview = _add_preview_metadata(preview, metadata)
 
     for key in match_keys:
@@ -354,13 +373,19 @@ class GrepTool(BaseTool):
         include_ignored: Annotated[
             bool,
             Field(
-                description="Include files ignored by .gitignore and nested ignore files (default: false)",
+                description="Include files ignored by the FileOperator root .gitignore (default: false)",
                 default=False,
             ),
         ] = False,
         include_hidden: Annotated[
             bool,
-            Field(description="Include hidden dot paths such as .git, .venv, and .env (default: false)", default=False),
+            Field(
+                description=(
+                    "Include hidden dot paths such as .git, .venv, and .env; "
+                    "the search root's .agents child is exempt from hidden-path filtering (default: false)"
+                ),
+                default=False,
+            ),
         ] = False,
     ) -> dict[str, Any] | str:
         """Search file contents using regular expressions."""
@@ -369,7 +394,11 @@ class GrepTool(BaseTool):
         try:
             compiled_pattern = re.compile(pattern, re.UNICODE)
         except re.error as e:
-            return f"Error: Invalid regex pattern: {e}"
+            return truncate_text(
+                f"Error: Invalid regex pattern: {e}",
+                _OUTPUT_HARD_LIMIT,
+                suffix="... (truncated)",
+            )
 
         native_regex: _ripgrep_core.NativeRegex | None = None
         if _ripgrep_core.is_available():
@@ -430,6 +459,7 @@ class GrepTool(BaseTool):
         )
 
         logger.info(f"Total matches found: {total_matches}")
+        _add_skill_document_reminder(results)
         if skipped_large_files:
             results["<skipped_large_files>"] = skipped_large_files
             results.setdefault("<note>", "")

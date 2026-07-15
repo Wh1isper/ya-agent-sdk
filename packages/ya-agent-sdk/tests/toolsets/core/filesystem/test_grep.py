@@ -1,9 +1,12 @@
 """Tests for ya_agent_sdk.toolsets.core.filesystem.grep module."""
 
+import json
 from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+import ya_agent_sdk.toolsets.core.filesystem.grep as grep_module
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.context.agent import ToolConfig
@@ -59,6 +62,23 @@ async def test_grep_invalid_regex(tmp_path: Path) -> None:
 
         result = await tool.call(mock_run_ctx, pattern="[invalid")
         assert "Error: Invalid regex" in result
+
+
+async def test_grep_invalid_regex_error_respects_hard_limit(tmp_path: Path) -> None:
+    """Should bound invalid-regex errors even when the regex engine echoes the pattern."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await GrepTool().call(mock_run_ctx, pattern=f"(?P<{'x' * 25_000}!>a)")
+
+    assert isinstance(result, str)
+    assert len(result) <= _OUTPUT_HARD_LIMIT
+    assert result.endswith("... (truncated)")
 
 
 async def test_grep_with_include_filter(tmp_path: Path) -> None:
@@ -339,7 +359,7 @@ async def test_grep_soft_truncation(tmp_path: Path) -> None:
         # Create file with many matches that will produce large output
         # Each match with context will be substantial
         lines = [f"match_{i}_" + "x" * 500 for i in range(200)]
-        (tmp_path / "large.txt").write_text("\n".join(lines))
+        (tmp_path / "SKILL.md").write_text("\n".join(lines))
 
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
@@ -353,6 +373,8 @@ async def test_grep_soft_truncation(tmp_path: Path) -> None:
         )
         assert isinstance(result, dict)
         assert "<system>" in result
+        assert "<system-reminder>" in result
+        assert len(json.dumps(result, default=str, ensure_ascii=False)) <= _OUTPUT_HARD_LIMIT
         # Context should be dropped
         for key, val in result.items():
             if not key.startswith("<") and isinstance(val, dict):
@@ -429,8 +451,6 @@ async def test_grep_hard_limit_writes_temp_file(tmp_path: Path) -> None:
         assert result["showing"] < result["total_matches"], "Preview should show fewer matches than total"
 
         # Preview must be within the hard limit
-        import json
-
         serialized = json.dumps(result, default=str, ensure_ascii=False)
         assert len(serialized) <= _OUTPUT_HARD_LIMIT
 
@@ -439,6 +459,30 @@ async def test_grep_hard_limit_writes_temp_file(tmp_path: Path) -> None:
         assert file_op is not None
         content = await file_op.read_file(result["output_file_path"])
         assert len(content) > 0
+
+
+async def test_grep_hard_preview_rejects_oversized_temp_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Should not let a backend-provided temp path break the output hard limit."""
+
+    async def oversized_temp_path(*args, **kwargs) -> str:
+        return "x" * 25_000
+
+    monkeypatch.setattr(grep_module, "write_tmp_output", oversized_temp_path)
+    results = {
+        f"file.py:{index}": {
+            "file_path": "file.py",
+            "line_number": index,
+            "matching_line": "match " + "x" * 300,
+            "context": "x" * 1000,
+            "context_start_line": index,
+        }
+        for index in range(100)
+    }
+
+    bounded = await grep_module._guard_output_size(results, MagicMock())
+
+    assert len(json.dumps(bounded, default=str, ensure_ascii=False)) <= _OUTPUT_HARD_LIMIT
+    assert "output_file_path" not in bounded
 
 
 async def test_grep_unreadable_file_handling(tmp_path: Path) -> None:
@@ -555,6 +599,54 @@ async def test_grep_hidden_files_require_include_hidden(tmp_path: Path) -> None:
         assert isinstance(hidden_result, dict)
         hidden_paths = {v["file_path"] for v in hidden_result.values() if isinstance(v, dict)}
         assert hidden_paths == {".env", "visible.txt"}
+
+
+async def test_grep_searches_agents_by_default_and_adds_skill_reminder(tmp_path: Path) -> None:
+    """Should search workspace Skills without enabling all hidden paths."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GrepTool()
+
+        skill_file = tmp_path / ".agents" / "skills" / "example" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("needle in skill")
+        hidden_file = tmp_path / ".hidden" / "secret.txt"
+        hidden_file.parent.mkdir()
+        hidden_file.write_text("needle in hidden file")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, pattern="needle", max_files=-1)
+
+        assert isinstance(result, dict)
+        matched_paths = {value["file_path"] for value in result.values() if isinstance(value, dict)}
+        assert matched_paths == {".agents/skills/example/SKILL.md"}
+        assert "<system-reminder>" in result
+        assert "read each relevant SKILL.md in full" in result["<system-reminder>"]
+
+
+async def test_grep_skill_reminder_requires_a_match_in_skill_document(tmp_path: Path) -> None:
+    """Should not trigger merely because a non-Skill file mentions SKILL.md."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GrepTool()
+
+        (tmp_path / "README.md").write_text("Open SKILL.md when relevant")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, pattern="SKILL\\.md")
+
+        assert isinstance(result, dict)
+        assert "<system-reminder>" not in result
 
 
 async def test_grep_root_limits_traversal(tmp_path: Path) -> None:

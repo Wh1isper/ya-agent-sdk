@@ -14,7 +14,9 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core._output import fit_text_fields_to_limit
 from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.filesystem._search import SKILL_DOCUMENT_REMINDER, contains_skill_document
 from ya_agent_sdk.toolsets.core.filesystem._types import FileInfoWithStats
 
 logger = get_logger(__name__)
@@ -124,6 +126,14 @@ def _build_success_response(
     return response
 
 
+def _add_preview_value(preview: dict[str, Any], key: str, value: Any) -> dict[str, Any]:
+    """Add preview metadata only when it preserves the output hard limit."""
+    candidate = {**preview, key: value}
+    if len(json.dumps(candidate, ensure_ascii=False)) <= OUTPUT_TRUNCATE_LIMIT:
+        return candidate
+    return preview
+
+
 async def _guard_output_size(
     result: dict[str, Any],
     file_operator: FileOperator,
@@ -131,6 +141,13 @@ async def _guard_output_size(
     serialized = json.dumps(result, ensure_ascii=False)
     if len(serialized) <= OUTPUT_TRUNCATE_LIMIT:
         return result
+    if result.get("success") is False:
+        return fit_text_fields_to_limit(
+            result,
+            text_fields=("error",),
+            limit=OUTPUT_TRUNCATE_LIMIT,
+            suffix="... (truncated)",
+        )
 
     output_path: str | None = None
     try:
@@ -150,17 +167,21 @@ async def _guard_output_size(
         note = f"{existing_note} {note}"
 
     preview: dict[str, Any] = {
-        "path": result["path"],
+        "path": "",
         "entries": [],
         "count": 0,
         "success": True,
         "truncated": True,
         "total_entries": total_entries,
         "showing": 0,
-        "note": note,
     }
+    system_reminder = result.get("system-reminder")
+    if isinstance(system_reminder, str):
+        preview = _add_preview_value(preview, "system-reminder", system_reminder)
     if output_path is not None:
-        preview["output_file_path"] = output_path
+        preview = _add_preview_value(preview, "output_file_path", output_path)
+    preview = _add_preview_value(preview, "path", result["path"])
+    preview = _add_preview_value(preview, "note", note)
 
     for entry in entries:
         candidate_entries = preview["entries"] + [entry]
@@ -225,10 +246,16 @@ class ListTool(BaseTool):
         file_operator = cast(FileOperator, ctx.deps.file_operator)
 
         if not await file_operator.exists(path):
-            return {"success": False, "error": f"Directory not found: {path}"}
+            return await _guard_output_size(
+                {"success": False, "error": f"Directory not found: {path}"},
+                file_operator,
+            )
 
         if not await file_operator.is_dir(path):
-            return {"success": False, "error": f"Path is not a directory: {path}"}
+            return await _guard_output_size(
+                {"success": False, "error": f"Path is not a directory: {path}"},
+                file_operator,
+            )
 
         try:
             if ignore or max_results >= 0:
@@ -247,9 +274,15 @@ class ListTool(BaseTool):
                 entries = await _build_entries_from_typed_items(file_operator, path, items)
 
         except Exception as e:
-            return {"success": False, "error": f"Failed to list directory: {e!s}"}
+            return await _guard_output_size(
+                {"success": False, "error": f"Failed to list directory: {e!s}"},
+                file_operator,
+            )
 
         response = _build_success_response(path, entries, total_entries)
+        skill_documents = (entry["path"] for entry in entries if entry["type"] == "file")
+        if contains_skill_document(skill_documents):
+            response["system-reminder"] = SKILL_DOCUMENT_REMINDER
         return await _guard_output_size(response, file_operator)
 
 

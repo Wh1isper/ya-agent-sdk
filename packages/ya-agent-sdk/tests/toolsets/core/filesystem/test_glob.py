@@ -238,6 +238,148 @@ async def test_glob_hidden_files_require_include_hidden(tmp_path: Path) -> None:
         assert ".config/settings.toml" in hidden_result
 
 
+async def test_glob_includes_agents_by_default_and_adds_skill_reminder(tmp_path: Path) -> None:
+    """Should expose workspace Skills without enabling all hidden paths."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GlobTool()
+
+        (tmp_path / ".gitignore").write_text("build/\n")
+        skill_file = tmp_path / ".agents" / "skills" / "example" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# Example")
+        hidden_file = tmp_path / ".hidden" / "secret.txt"
+        hidden_file.parent.mkdir()
+        hidden_file.write_text("secret")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, pattern="**/*")
+
+        assert isinstance(result, dict)
+        assert ".agents/skills/example/SKILL.md" in result["files"]
+        assert ".hidden/secret.txt" not in result["files"]
+        assert "system-reminder" in result
+        assert "read each relevant SKILL.md in full" in result["system-reminder"]
+
+        anchored_result = await tool.call(mock_run_ctx, pattern="/.agents/skills/*/SKILL.md")
+        assert isinstance(anchored_result, dict)
+        assert anchored_result["files"] == [".agents/skills/example/SKILL.md"]
+
+
+async def test_glob_agents_exemption_is_scoped_to_search_root(tmp_path: Path) -> None:
+    """Should expose only the selected root's direct .agents child across walk paths."""
+    project = tmp_path / "project"
+    skill_file = project / ".agents" / "skills" / "example" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Example")
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GlobTool()
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        assert await tool.call(mock_run_ctx, pattern="SKILL.md") == []
+
+        project_result = await tool.call(mock_run_ctx, pattern="SKILL.md", root="project")
+        assert isinstance(project_result, dict)
+        assert project_result["files"] == ["project/.agents/skills/example/SKILL.md"]
+
+        absolute_result = await tool.call(mock_run_ctx, pattern="SKILL.md", root=str(project))
+        assert isinstance(absolute_result, dict)
+        assert absolute_result["files"] == ["project/.agents/skills/example/SKILL.md"]
+
+        alias_result = await tool.call(mock_run_ctx, pattern="SKILL.md", root="project/.agents/..")
+        assert isinstance(alias_result, dict)
+        assert alias_result["files"] == ["project/.agents/skills/example/SKILL.md"]
+
+        (tmp_path / ".gitignore").write_text("build/\n")
+        assert await tool.call(mock_run_ctx, pattern="SKILL.md") == []
+        fast_path_result = await tool.call(mock_run_ctx, pattern="SKILL.md", root="project")
+        assert isinstance(fast_path_result, dict)
+        assert fast_path_result["files"] == project_result["files"]
+        fast_absolute_result = await tool.call(mock_run_ctx, pattern="SKILL.md", root=str(project))
+        assert isinstance(fast_absolute_result, dict)
+        assert fast_absolute_result["files"] == project_result["files"]
+        fast_alias_result = await tool.call(mock_run_ctx, pattern="SKILL.md", root="project/.agents/..")
+        assert isinstance(fast_alias_result, dict)
+        assert fast_alias_result["files"] == project_result["files"]
+
+
+async def test_glob_does_not_follow_agents_directory_symlink(tmp_path: Path) -> None:
+    """Should keep the .agents exemption inside the selected search root."""
+    project = tmp_path / "project"
+    store = tmp_path / "store"
+    project.mkdir()
+    store.mkdir()
+    (store / "SKILL.md").write_text("# External")
+    (project / ".agents").symlink_to(store, target_is_directory=True)
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+        tool = GlobTool()
+
+        assert await tool.call(mock_run_ctx, pattern="SKILL.md", root="project") == []
+        (tmp_path / ".gitignore").write_text("build/\n")
+        assert await tool.call(mock_run_ctx, pattern="SKILL.md", root="project") == []
+
+
+async def test_glob_skill_directory_does_not_trigger_reminder(tmp_path: Path) -> None:
+    """Should only treat SKILL.md file entries as Skill documents."""
+    (tmp_path / "SKILL.md").mkdir()
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await GlobTool().call(mock_run_ctx, pattern="SKILL.md")
+
+    assert result == ["SKILL.md"]
+
+
+async def test_glob_agents_exemption_does_not_bypass_gitignore(tmp_path: Path) -> None:
+    """Should still require include_ignored when .gitignore excludes .agents."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GlobTool()
+
+        (tmp_path / ".gitignore").write_text(".agents/\n")
+        skill_file = tmp_path / ".agents" / "skills" / "example" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# Example")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        default_result = await tool.call(mock_run_ctx, pattern="SKILL.md")
+        assert default_result == []
+
+        ignored_result = await tool.call(mock_run_ctx, pattern="SKILL.md", include_ignored=True)
+        assert isinstance(ignored_result, dict)
+        assert ignored_result["files"] == [".agents/skills/example/SKILL.md"]
+        assert "system-reminder" in ignored_result
+
+
 async def test_glob_root_limits_traversal(tmp_path: Path) -> None:
     """Should traverse from the requested logical root."""
     async with AsyncExitStack() as stack:
@@ -437,6 +579,34 @@ async def test_glob_hard_output_limit_writes_temp_file(tmp_path: Path, monkeypat
         content = Path(output_path).read_text()
         full_result = json.loads(content)
         assert len(full_result) == 20
+
+
+async def test_glob_hard_output_limit_preserves_skill_reminder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Should retain Skill guidance in both a bounded preview and saved output."""
+    monkeypatch.setattr(glob_module, "OUTPUT_TRUNCATE_LIMIT", 1000)
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tool = GlobTool()
+
+        (tmp_path / "SKILL.md").write_text("# Example")
+        for i in range(20):
+            (tmp_path / f"very_long_filename_for_skill_reminder_{i:04d}.txt").write_text("content")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await tool.call(mock_run_ctx, pattern="*", max_results=-1)
+
+        assert isinstance(result, dict)
+        assert "system-reminder" in result
+        assert len(json.dumps(result, ensure_ascii=False)) <= 1000
+        full_result = json.loads(Path(result["output_file_path"]).read_text())
+        assert "system-reminder" in full_result
+        assert "SKILL.md" in full_result["files"]
 
 
 async def test_glob_hard_output_limit_not_triggered(tmp_path: Path) -> None:
