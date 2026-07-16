@@ -106,18 +106,30 @@ def prompt_toolkit_style_rules(theme: ResolvedTheme) -> dict[str, str]:
     """Return prompt_toolkit style rules for a resolved theme."""
     if theme.variant == "light":
         return {
-            "status-bar": "bg:ansiblue fg:ansiwhite",
-            "status-bar.mode-act": "bg:ansigreen fg:ansiblack bold",
-            "status-bar.mode-plan": "bg:ansiblue fg:ansiwhite bold",
-            "steering-pane": "bg:ansiwhite fg:ansiblue",
+            "status-bar": "bg:#dbeafe fg:#1e3a5f",
+            "status-bar.mode-act": "bg:#86efac fg:#14532d bold",
+            "status-bar.mode-plan": "bg:#93c5fd fg:#1e3a8a bold",
+            "status-bar.warning": "fg:#9a3412 bold",
+            "task-pane": "bg:#f8fafc fg:#334155",
+            "task-pane.summary": "bg:#e2e8f0 fg:#1e293b bold",
+            "task-pane.status-active": "fg:#0369a1 bold",
+            "task-pane.status-pending": "fg:#854d0e",
+            "task-pane.status-completed": "fg:#15803d",
+            "task-pane.status-blocked": "fg:#b91c1c",
             "model-selector": "bg:ansiwhite fg:ansiblack",
             "input-area": "",
         }
     return {
-        "status-bar": "bg:ansiblue fg:ansiwhite",
-        "status-bar.mode-act": "bg:ansigreen fg:ansiblack bold",
-        "status-bar.mode-plan": "bg:ansiblue fg:ansiwhite bold",
-        "steering-pane": "bg:ansibrightblack fg:ansicyan",
+        "status-bar": "bg:#1e3a5f fg:#e2e8f0",
+        "status-bar.mode-act": "bg:#166534 fg:#dcfce7 bold",
+        "status-bar.mode-plan": "bg:#1d4ed8 fg:#dbeafe bold",
+        "status-bar.warning": "fg:#fbbf24 bold",
+        "task-pane": "bg:#111827 fg:#cbd5e1",
+        "task-pane.summary": "bg:#1f2937 fg:#f1f5f9 bold",
+        "task-pane.status-active": "fg:#38bdf8 bold",
+        "task-pane.status-pending": "fg:#facc15",
+        "task-pane.status-completed": "fg:#4ade80",
+        "task-pane.status-blocked": "fg:#f87171",
         "model-selector": "bg:ansibrightblack fg:ansiwhite",
         "input-area": "",
     }

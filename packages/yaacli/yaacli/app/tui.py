@@ -87,7 +87,9 @@ from ya_agent_sdk.context import (
     NoteManager,
     ResumableState,
     StreamEvent,
+    Task,
     TaskManager,
+    TaskStatus,
 )
 from ya_agent_sdk.events import (
     CompactCompleteEvent,
@@ -500,9 +502,9 @@ class TUIApp:
     # Subagent state tracking: agent_id -> {"line_index": int, "tool_names": list[str]}
     _subagent_states: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
 
-    # Steering pane
-    _steering_items: list[tuple[str, str, str]] = field(default_factory=list, init=False)
-    _max_steering_lines: int = field(default=5, init=False)
+    # Persistent task pane
+    _max_visible_tasks: int = field(default=8, init=False)
+    _max_visible_completed_tasks: int = field(default=3, init=False)
 
     # Input mode: "send" (Enter sends) or "edit" (Enter inserts newline)
     _input_mode: str = field(default="send", init=False)
@@ -1537,49 +1539,86 @@ class TUIApp:
         self._append_output(self._renderer.render(hint, width=width).rstrip("\n"))
 
     # =========================================================================
-    # Steering Pane
+    # Task Pane
     # =========================================================================
 
-    def _get_steering_text(self) -> ANSI:
-        """Get formatted steering messages for the steering pane."""
-        if not self._steering_items:
-            return ANSI(" [Steering messages will appear here during agent execution]")
+    def _get_tasks(self) -> list[Task]:
+        """Return the current task snapshot for the persistent task pane."""
+        if self._runtime is None:
+            return []
+        return self._runtime.ctx.task_manager.list_all()
 
-        lines = []
-        for _, text, status in reversed(self._steering_items[-self._max_steering_lines :]):
-            if status == "acked":
-                lines.append(f"[v] {text}")
+    def _visible_tasks(self, tasks: list[Task]) -> list[Task]:
+        """Prioritize unfinished work and retain only recent completions."""
+        active = [task for task in tasks if task.status == TaskStatus.IN_PROGRESS]
+        pending = [task for task in tasks if task.status == TaskStatus.PENDING]
+        unfinished = [*active, *pending]
+        visible = unfinished[: self._max_visible_tasks]
+        remaining = self._max_visible_tasks - len(visible)
+        if remaining <= 0:
+            return visible
+
+        completed = [task for task in tasks if task.status == TaskStatus.COMPLETED]
+        completed_limit = min(remaining, self._max_visible_completed_tasks)
+        if completed_limit:
+            visible.extend(completed[-completed_limit:])
+        return visible
+
+    def _get_task_text(self) -> list[tuple[str, str]]:
+        """Render the persistent task list and aggregate task status."""
+        tasks = self._get_tasks()
+        if not tasks:
+            return [("class:task-pane.summary", " Tasks: none")]
+
+        completed = sum(task.status == TaskStatus.COMPLETED for task in tasks)
+        active = sum(task.status == TaskStatus.IN_PROGRESS for task in tasks)
+        pending = len(tasks) - completed - active
+        visible_tasks = self._visible_tasks(tasks)
+        hidden = len(tasks) - len(visible_tasks)
+
+        summary = f" Tasks: {completed}/{len(tasks)} done | {active} active | {pending} pending"
+        if hidden:
+            summary += f" | {hidden} hidden"
+
+        fragments: list[tuple[str, str]] = [("class:task-pane.summary", summary)]
+        incomplete_ids = {task.id for task in tasks if task.status != TaskStatus.COMPLETED}
+        for task in visible_tasks:
+            fragments.append(("class:task-pane", "\n "))
+            active_blockers = [task_id for task_id in task.blocked_by if task_id in incomplete_ids]
+            if task.status == TaskStatus.COMPLETED:
+                label = "done"
+                text = task.subject
+                style = "class:task-pane.status-completed"
+            elif task.status == TaskStatus.IN_PROGRESS:
+                label = "active"
+                text = task.active_form or task.subject
+                style = "class:task-pane.status-active"
+            elif active_blockers:
+                label = "blocked"
+                text = f"{task.subject} (by #{', #'.join(active_blockers)})"
+                style = "class:task-pane.status-blocked"
             else:
-                lines.append(f">>> {text}")
+                label = "pending"
+                text = task.subject
+                style = "class:task-pane.status-pending"
+            fragments.append((style, f"[{label}] #{task.id} {text}"))
 
-        return ANSI("\n".join(lines))
+        return fragments
 
-    def _get_steering_height(self) -> int:
-        """Get dynamic height for steering pane."""
-        if not self._steering_items:
-            return 1
-        return min(len(self._steering_items), self._max_steering_lines)
+    def _get_task_height(self) -> int:
+        """Return the bounded task pane size for the visible snapshot."""
+        return 1 + len(self._visible_tasks(self._get_tasks()))
+
+    # =========================================================================
+    # Steering
+    # =========================================================================
 
     def _add_steering_message(self, message: str) -> None:
-        """Add a steering message to UI and send to message bus.
-
-        This method:
-        1. Adds the message to UI list with 'pending' status
-        2. Sends formatted message to message bus via ctx.send_message
-
-        The UI status will be updated to 'acked' when MessageReceivedEvent
-        is received (event-driven UI update).
-        """
-        # Add to UI list with pending status (use content as key for matching)
-        self._steering_items.append((message, message, "pending"))
-        if self._app:
-            self._app.invalidate()
-
-        # Send to message bus with TUI-specific formatting
+        """Send additional user guidance while the agent is running."""
         self._send_steering_message(message)
 
     def _send_steering_message(self, message: str) -> None:
-        """Send steering message to the message bus with TUI formatting."""
+        """Send steering guidance to the message bus with TUI formatting."""
         try:
             self.runtime.ctx.send_message(
                 BusMessage(
@@ -1592,21 +1631,6 @@ class TUIApp:
             logger.debug("Steering message sent: %s", message[:50])
         except Exception:
             logger.exception("Failed to send steering message")
-
-    def _ack_steering_by_content(self, content_preview: str) -> None:
-        """Mark steering messages as acknowledged by matching content.
-
-        Called when MessageReceivedEvent is received. Matches messages
-        by content preview.
-        """
-        for i, (key, text, status) in enumerate(self._steering_items):
-            # Match if the preview contains part of the original message
-            if status == "pending" and text.strip() in content_preview:
-                self._steering_items[i] = (key, text, "acked")
-                break  # Only ack one message per event
-
-        if self._app:
-            self._app.invalidate()
 
     def _create_oauth_refresh_supervisor(self) -> OAuthRefreshSupervisor | None:
         if not self.config.oauth_refresh.enabled:
@@ -2242,7 +2266,6 @@ class TUIApp:
             # It would swallow background subagent results that arrived after
             # the last LLM request. The inject_bus_messages filter already
             # tracks consumed IDs for idempotency, so messages won't duplicate.
-            self._steering_items.clear()
             # Clear user steering messages that were not consumed this turn.
             # These are messages injected via bus from user during execution.
             # If not cleared, they would leak into unrelated future tasks.
@@ -2868,8 +2891,9 @@ class TUIApp:
 
         # Handle task/memory state events
         elif isinstance(message_event, TaskEvent):
-            rendered = self._event_renderer.render_task_event(message_event)
-            self._append_output(rendered.rstrip())
+            # The task pane reads the current TaskManager snapshot directly.
+            # Do not append task snapshots to the transcript.
+            pass
 
         elif isinstance(message_event, NoteEvent):
             rendered = self._event_renderer.render_note_event(message_event)
@@ -2922,12 +2946,7 @@ class TUIApp:
             self._agent_phase = "tools"
 
         elif isinstance(message_event, MessageReceivedEvent):
-            # Update UI status to acked for matched steering messages
-            for msg_info in message_event.messages:
-                if msg_info.source == "user":
-                    self._ack_steering_by_content(msg_info.content_text)
-
-            # Render user messages
+            # Render user messages after they have been injected into the run.
             user_messages = [m for m in message_event.messages if m.source == "user"]
             if user_messages:
                 previews = [m.content_text for m in user_messages]
@@ -3673,7 +3692,6 @@ class TUIApp:
         self._printed_tool_calls.clear()
         self._tool_messages.clear()
         self._subagent_states.clear()
-        self._steering_items.clear()
         self._display_replay.clear()
         self._event_renderer.clear()
         self._reset_pending_attachments()
@@ -4308,13 +4326,13 @@ class TUIApp:
             wrap_lines=False,
         )
 
-        # Steering pane
-        steering_control = FormattedTextControl(self._get_steering_text)
-        steering_window = Window(
-            content=steering_control,
-            height=self._get_steering_height,
-            style="class:steering-pane",
-            wrap_lines=True,
+        # Persistent task pane
+        task_control = FormattedTextControl(self._get_task_text)
+        task_window = Window(
+            content=task_control,
+            height=self._get_task_height,
+            style="class:task-pane",
+            wrap_lines=False,
         )
 
         # In-TUI model selector
@@ -4383,11 +4401,11 @@ class TUIApp:
         input_area.window.content = scrollable_control
         input_area.control = scrollable_control
 
-        # Layout: Output | Steering | Model Selector | Status | Input
+        # Layout: Output | Tasks | Model Selector | Status | Input
         layout = Layout(
             HSplit([
                 output_window,
-                steering_window,
+                task_window,
                 model_selector_window,
                 status_bar,
                 input_area,
