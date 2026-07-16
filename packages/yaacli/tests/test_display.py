@@ -299,6 +299,55 @@ def test_renderer_render_markdown():
     assert "bold" in result
 
 
+def test_renderer_fenced_code_is_distinct_without_polluting_copied_text() -> None:
+    expected_backgrounds = {
+        "ansi_dark": "\x1b[40m",
+        "ansi_light": "\x1b[47m",
+    }
+    samples = (
+        (80, "a = 1\nlong_answer = 42"),
+        (80, "message = '你好'\nemoji = '界'"),
+        (20, "first = 1\n\nlast = 2"),
+    )
+
+    for width, code in samples:
+        renderer = RichRenderer(width=width)
+        for code_theme, background_sequence in expected_backgrounds.items():
+            result = renderer.render_markdown(f"```python\n{code}\n```", code_theme=code_theme)
+            parsed_text = "".join(text for _, text, *_ in ANSI(result).__pt_formatted_text__())
+            assert background_sequence in result
+            assert parsed_text.rstrip("\n") == code
+            assert not {"╭", "╰", "│"}.intersection(parsed_text)
+
+
+def test_renderer_narrow_markdown_does_not_truncate_nested_content() -> None:
+    samples = (
+        (
+            "- one two three four five six seven eight nine ten",
+            "one two three four five six seven eight nine ten",
+        ),
+        (
+            "> one two three four five six seven eight nine ten",
+            "one two three four five six seven eight nine ten",
+        ),
+        (
+            "- item\n\n  ```python\n  this_is_a_very_long_identifier = 1234567890\n  ```",
+            "this_is_a_very_long_identifier = 1234567890",
+        ),
+        (
+            "- item\n\n  ```python\n  这是一个非常长的中文代码行 = '复制测试复制测试'\n  ```",
+            "这是一个非常长的中文代码行 = '复制测试复制测试'",
+        ),
+    )
+    renderer = RichRenderer(width=20)
+
+    for markdown, expected_content in samples:
+        result = renderer.render_markdown(markdown, code_theme="ansi_dark")
+        parsed_text = "".join(text for _, text, *_ in ANSI(result).__pt_formatted_text__())
+        content_without_layout = parsed_text.replace("•", "").replace("▌", "")
+        assert "".join(expected_content.split()) in "".join(content_without_layout.split())
+
+
 def test_renderer_markdown_link_is_compatible_with_prompt_toolkit_ansi():
     """Markdown links must not leak unsupported OSC 8 control sequences into the TUI."""
     renderer = RichRenderer(width=80)

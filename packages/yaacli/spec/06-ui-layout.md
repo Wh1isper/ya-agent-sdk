@@ -199,7 +199,7 @@ def render_code_block(self, code: str, language: str = "") -> str:
     syntax = Syntax(
         code,
         language or "text",
-        theme=self._code_theme,
+        theme=self._get_code_theme(),
         line_numbers=True,
         word_wrap=True,
     )
@@ -361,32 +361,13 @@ TUI_STYLES = {
 
 ### Dark/Light Theme Support
 
-```python
-class ThemeManager:
-    """Manages TUI color themes."""
+`display.code_theme` accepts `auto`, `dark`, or `light`. At TUI startup, `auto` resolves the terminal background in this order:
 
-    THEMES = {
-        "dark": {
-            "background": "#1e1e1e",
-            "foreground": "#d4d4d4",
-            "accent": "#569cd6",
-            # ...
-        },
-        "light": {
-            "background": "#ffffff",
-            "foreground": "#1e1e1e",
-            "accent": "#0066cc",
-            # ...
-        },
-    }
+1. For a recognized local terminal, query its default background with a short, non-blocking OSC 11 request. Active queries are skipped over SSH.
+2. Read the `COLORFGBG` background index.
+3. Fall back to the dark theme.
 
-    def __init__(self, theme_name: str = "dark") -> None:
-        self._theme = self.THEMES.get(theme_name, self.THEMES["dark"])
-
-    def get_style(self, name: str) -> str:
-        """Get style string for named element."""
-        # ...
-```
+The resulting `ResolvedTheme` supplies both the concrete Rich ANSI syntax theme and the prompt_toolkit style rules. Resolution happens before any startup output is rendered. Explicit `dark` and `light` values bypass terminal I/O.
 
 ## Responsive Layout
 

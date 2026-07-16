@@ -41,8 +41,8 @@ max_pending_attachments = 8
 max_pending_attachment_bytes = 20971520
 
 [display]
-# Code highlighting theme ("dark" or "light")
-code_theme = "dark"
+# Terminal color theme ("auto", "dark", or "light")
+code_theme = "auto"
 # Maximum lines to show for tool results
 max_tool_result_lines = 5
 # Maximum length for tool argument display
@@ -143,7 +143,7 @@ class GeneralConfig(BaseModel):
     max_requests: int = 200
 
 class DisplayConfig(BaseModel):
-    code_theme: Literal["dark", "light"] = "dark"
+    code_theme: Literal["auto", "dark", "light"] = "auto"
     max_tool_result_lines: int = 5
     max_arg_length: int = 100
     show_token_usage: bool = True
@@ -394,7 +394,7 @@ auto_mode = true
 max_requests = 200
 
 [display]
-code_theme = "dark"
+code_theme = "auto"
 show_token_usage = true
 
 [steering]

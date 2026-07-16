@@ -235,7 +235,7 @@ def _display_approval_panel(
         if len(args_json.split("\n")) > 20:
             lines = args_json.split("\n")[:20]
             args_json = "\n".join(lines) + "\n... (truncated)"
-        content_parts.append(Syntax(args_json, "json", theme=self._code_theme))
+        content_parts.append(Syntax(args_json, "json", theme=self._get_code_theme()))
 
     panel = Panel(
         Group(*content_parts),

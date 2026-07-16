@@ -12,6 +12,7 @@ from yaacli.config import (
     DEFAULT_COMMANDS,
     CommandDefinition,
     ConfigManager,
+    DisplayConfig,
     GeneralConfig,
     ToolsConfig,
     YaacliConfig,
@@ -37,7 +38,7 @@ def test_default_config() -> None:
     assert config.general.agent_stream_resume_prompt.startswith("The previous streaming model request failed")
 
     # Display and local retention
-    assert config.display.code_theme == "dark"
+    assert config.display.code_theme == "auto"
     assert config.display.max_output_lines == 1000
     assert config.display.max_output_blocks == 1000
     assert config.display.max_output_bytes == 4 * 1024 * 1024
@@ -49,6 +50,12 @@ def test_default_config() -> None:
     # Tools and security
     assert config.tools.need_approval == []
     assert config.security.shell_review.enabled is False
+
+
+def test_display_config_accepts_auto_and_rejects_unknown_themes() -> None:
+    assert DisplayConfig(code_theme="auto").code_theme == "auto"
+    with pytest.raises(ValidationError):
+        DisplayConfig(code_theme="system")  # type: ignore[arg-type]
 
 
 def test_general_config_with_preset() -> None:
@@ -390,7 +397,7 @@ model = "anthropic:claude-sonnet-4-5"
     # max_requests defaults (not from global)
     assert config.general.max_requests == 1000
     # display defaults (not from global)
-    assert config.display.code_theme == "dark"
+    assert config.display.code_theme == "auto"
 
 
 def test_tools_toml_ignores_non_tools(

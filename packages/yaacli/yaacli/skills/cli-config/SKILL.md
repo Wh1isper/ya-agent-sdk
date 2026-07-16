@@ -47,7 +47,7 @@ max_pending_attachments = 8
 max_pending_attachment_bytes = 20971520
 
 [display]
-code_theme = "dark"           # "dark" or "light"
+code_theme = "auto"           # "auto", "dark", or "light"
 max_tool_result_lines = 5
 max_arg_length = 100
 max_output_lines = 1000
