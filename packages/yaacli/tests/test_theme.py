@@ -110,12 +110,17 @@ def test_resolved_syntax_themes_render_with_rich() -> None:
         assert "answer" in output
 
 
-def test_prompt_toolkit_rules_change_light_surface_colors() -> None:
+def test_prompt_toolkit_rules_adapt_status_and_task_surfaces() -> None:
     dark = resolve_theme("dark")
     light = resolve_theme("light")
 
     dark_rules = prompt_toolkit_style_rules(dark)
     light_rules = prompt_toolkit_style_rules(light)
 
+    assert dark_rules["status-bar"] != light_rules["status-bar"]
+    assert dark_rules["task-pane"] != light_rules["task-pane"]
+    assert dark_rules["task-pane.summary"] != light_rules["task-pane.summary"]
     assert dark_rules["model-selector"] == "bg:ansibrightblack fg:ansiwhite"
     assert light_rules["model-selector"] == "bg:ansiwhite fg:ansiblack"
+    assert "steering-pane" not in dark_rules
+    assert "steering-pane" not in light_rules

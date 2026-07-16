@@ -30,8 +30,9 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 from pydantic_ai.usage import RunUsage
 from ya_agent_environment.shell import BackgroundProcess
 from ya_agent_sdk.agents.main import AgentInterrupted
-from ya_agent_sdk.context import BusMessage, ResumableState
+from ya_agent_sdk.context import BusMessage, ResumableState, StreamEvent, TaskManager, TaskStatus
 from ya_agent_sdk.context.agent import AgentInfo
+from ya_agent_sdk.events import TaskEvent
 
 # Import the components we're testing
 from yaacli.app import TUIApp, TUIMode, TUIState
@@ -638,44 +639,88 @@ def test_tui_app_hitl_reset_with_event():
 
 
 # =============================================================================
+# Persistent Task Pane Tests
+# =============================================================================
+
+
+def test_tui_app_task_pane_shows_task_list_and_statuses() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    task_manager = TaskManager()
+    completed = task_manager.create("Finished work", "Already done")
+    active = task_manager.create("Implement UI", "Update the task pane", active_form="Implementing UI")
+    blocked = task_manager.create("Verify UI", "Run the tests")
+    task_manager.create("Write docs", "Update documentation")
+    task_manager.update(completed.id, status=TaskStatus.COMPLETED)
+    task_manager.update(active.id, status=TaskStatus.IN_PROGRESS)
+    task_manager.update(blocked.id, add_blocked_by=[active.id])
+
+    runtime = MagicMock()
+    runtime.ctx.task_manager = task_manager
+    app._runtime = runtime
+
+    fragments = app._get_task_text()
+    rendered = "".join(text for _, text in fragments)
+
+    assert "Tasks: 1/4 done | 1 active | 2 pending" in rendered
+    assert "[active] #2 Implementing UI" in rendered
+    assert "[blocked] #3 Verify UI (by #2)" in rendered
+    assert "[pending] #4 Write docs" in rendered
+    assert "[done] #1 Finished work" in rendered
+    assert app._get_task_height() == 5
+
+
+def test_tui_app_task_pane_limits_completed_history() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    task_manager = TaskManager()
+    for index in range(12):
+        task = task_manager.create(f"Completed {index + 1}", "Done")
+        task_manager.update(task.id, status=TaskStatus.COMPLETED)
+
+    runtime = MagicMock()
+    runtime.ctx.task_manager = task_manager
+    app._runtime = runtime
+
+    rendered = "".join(text for _, text in app._get_task_text())
+
+    assert "9 hidden" in rendered
+    assert "[done] #10 Completed 10" in rendered
+    assert "[done] #11 Completed 11" in rendered
+    assert "[done] #12 Completed 12" in rendered
+    assert "Completed 9" not in rendered
+    assert app._get_task_height() == 4
+
+
+def test_tui_app_task_event_updates_pane_without_appending_panel() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+
+    app._handle_stream_event(
+        StreamEvent(
+            agent_id="main",
+            agent_name="main",
+            event=TaskEvent(event_id="task-1"),
+        )
+    )
+
+    assert app._output_lines == []
+
+
+# =============================================================================
 # Steering Message Tests
 # =============================================================================
 
 
-def test_tui_app_steering_add():
-    """Test adding steering messages."""
-    config = MockConfig()
-    config_manager = MockConfigManager()
-
-    app = TUIApp(config=config, config_manager=config_manager)
-    app._app = MagicMock()
-    app._state = TUIState.RUNNING  # Only add when running
+def test_tui_app_steering_sends_without_dedicated_pane() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    runtime = MagicMock()
+    app._runtime = runtime
 
     app._add_steering_message("Do this instead")
 
-    assert len(app._steering_items) == 1
-    _, text, status = app._steering_items[0]
-    assert text == "Do this instead"
-    assert status == "pending"
-
-
-def test_tui_app_steering_ack():
-    """Test acknowledging steering messages."""
-    config = MockConfig()
-    config_manager = MockConfigManager()
-
-    app = TUIApp(config=config, config_manager=config_manager)
-    app._app = MagicMock()
-    app._state = TUIState.RUNNING
-
-    # Add a message
-    app._add_steering_message("Do this")
-
-    # Acknowledge it - content_preview must contain the original text
-    app._ack_steering_by_content("Please Do this instead")
-
-    _, _, status = app._steering_items[0]
-    assert status == "acked"
+    runtime.ctx.send_message.assert_called_once()
+    message = runtime.ctx.send_message.call_args.args[0]
+    assert isinstance(message, BusMessage)
+    assert message.content == "Do this instead"
+    assert not hasattr(app, "_steering_items")
 
 
 # =============================================================================

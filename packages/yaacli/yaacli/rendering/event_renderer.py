@@ -14,8 +14,6 @@ from ya_agent_sdk.events import (
     FileChangeAction,
     FileChangeEvent,
     NoteEvent,
-    TaskEvent,
-    TaskInfo,
 )
 
 from yaacli.rendering.renderer import RichRenderer
@@ -233,62 +231,6 @@ class EventRenderer:
             panel_content.append(f'"{preview}"\n', style="dim italic")
         panel = Panel(panel_content, border_style="yellow", title="[yellow]Steering[/yellow]", title_align="left")
         return self._renderer.render(panel)
-
-    # =========================================================================
-    # Task Event Rendering
-    # =========================================================================
-
-    def render_task_event(self, event: TaskEvent) -> str:
-        """Render task event as a task board panel with full snapshot."""
-        if not event.tasks:
-            content = Text("No tasks", style="dim")
-            panel = Panel(content, border_style="cyan", title="[cyan]Tasks[/cyan]", title_align="left")
-            return self._renderer.render(panel)
-
-        parts: list[RenderableType] = []
-        for task in event.tasks:
-            parts.append(self._format_task_line(task, event.tasks))
-
-        # Summary line
-        total = len(event.tasks)
-        completed = sum(1 for t in event.tasks if t.status == "completed")
-        in_progress = sum(1 for t in event.tasks if t.status == "in_progress")
-
-        parts.append(Text(""))
-        progress = Text()
-        progress.append("Progress: ")
-        progress.append(f"{completed}/{total}", style="bold green" if completed == total else "bold")
-        if in_progress > 0:
-            progress.append(f" ({in_progress} in progress)", style="cyan")
-        parts.append(progress)
-
-        panel = Panel(Group(*parts), border_style="cyan", title="[cyan]Tasks[/cyan]", title_align="left")
-        return self._renderer.render(panel)
-
-    @staticmethod
-    def _format_task_line(task: TaskInfo, all_tasks: list[TaskInfo]) -> Text:
-        """Format a single task line for the task board."""
-        text = Text()
-
-        if task.status == "completed":
-            line = f"#{task.id} [completed] {task.subject}"
-            text.append(line, style="strike dim green")
-        elif task.status == "in_progress":
-            label = task.active_form or task.subject
-            line = f"#{task.id} [in_progress: {label}] {task.subject}"
-            text.append(line, style="bold cyan")
-        else:
-            line = f"#{task.id} [pending] {task.subject}"
-            # Check for active blockers
-            completed_ids = {t.id for t in all_tasks if t.status == "completed"}
-            active_blockers = [bid for bid in task.blocked_by if bid not in completed_ids]
-            if active_blockers:
-                text.append(line, style="dim")
-                text.append(f" [blocked by #{', #'.join(active_blockers)}]", style="dim red")
-            else:
-                text.append(line)
-
-        return text
 
     # =========================================================================
     # Memory Event Rendering
