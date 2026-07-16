@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from yaacli.app import TUIApp
+from yaacli.app import TUIApp, TUIState
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, YaacliConfig
 
@@ -45,6 +45,44 @@ def test_all_append_paths_share_real_line_and_byte_limits() -> None:
     assert len(app._output_lines) <= 10
     assert app._transcript.total_bytes <= 512
     assert app._total_line_count == sum(app._block_line_counts)
+
+
+def test_scroll_up_pauses_auto_follow_until_scrolled_back_to_bottom(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = make_app()
+    monkeypatch.setattr(app, "_get_viewport_height", lambda: 10)
+    app._state = TUIState.RUNNING
+
+    app._append_output("\n".join(f"initial-{index}" for index in range(30)))
+    assert app._follow_latest is True
+    assert app._scroll_offset == app._get_max_scroll() + 4
+
+    app._scroll_output(-10)
+    paused_offset = app._scroll_offset
+    assert app._follow_latest is False
+
+    app._append_output("\n".join(f"new-{index}" for index in range(10)))
+    assert app._scroll_offset == paused_offset
+
+    app._scroll_output(10_000)
+    assert app._follow_latest is True
+    assert app._scroll_offset == app._get_max_scroll() + 4
+
+    app._append_output("one more line")
+    assert app._scroll_offset == app._get_max_scroll() + 4
+
+
+def test_scroll_to_bottom_explicitly_reenables_auto_follow(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = make_app()
+    monkeypatch.setattr(app, "_get_viewport_height", lambda: 10)
+    app._append_block("\n".join(f"line-{index}" for index in range(30)))
+
+    app._scroll_output(-10)
+    assert app._follow_latest is False
+
+    app._scroll_to_bottom()
+
+    assert app._follow_latest is True
+    assert app._scroll_offset == app._get_max_scroll() + 4
 
 
 def test_streaming_markdown_is_rendered_before_finalization_and_throttled() -> None:

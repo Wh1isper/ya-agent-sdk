@@ -468,6 +468,7 @@ class TUIApp:
 
     # Virtual viewport rendering (only parse ANSI for visible lines)
     _scroll_offset: int = field(default=0, init=False)  # Display line offset from top
+    _follow_latest: bool = field(default=True, init=False)  # Auto-scroll while the viewport is at the bottom
     _block_line_counts: list[int] = field(default_factory=list, init=False)  # Line count per output block
     _total_line_count: int = field(default=0, init=False)  # Sum of all block line counts
     _output_generation: int = field(default=0, init=False)  # Bumped on any content change
@@ -981,8 +982,8 @@ class TUIApp:
         """Append text to the bounded transcript and auto-scroll when running."""
         self._append_block(text)
 
-        # Auto-scroll to bottom when agent is running
-        if self._state == TUIState.RUNNING:
+        # Auto-scroll to bottom when the agent is running and the user is following new output.
+        if self._state == TUIState.RUNNING and self._follow_latest:
             self._scroll_to_bottom()
         # Invalidate app to refresh display (throttled during streaming)
         self._throttled_invalidate()
@@ -1017,6 +1018,7 @@ class TUIApp:
         self._streaming_block_id = None
         self._streaming_thinking_block_id = None
         self._scroll_offset = 0
+        self._follow_latest = True
 
     def _handle_display_events(self, events: Sequence[dict[str, Any]]) -> None:
         """Render display-layer events into the TUI output buffer."""
@@ -1177,7 +1179,7 @@ class TUIApp:
                     user_text.append(display_text)
                     self._append_block(self._renderer.render(user_text, width=width).rstrip("\n"))
 
-        if self._state == TUIState.RUNNING:
+        if self._state == TUIState.RUNNING and self._follow_latest:
             self._scroll_to_bottom()
         self._throttled_invalidate()
 
@@ -1206,16 +1208,27 @@ class TUIApp:
         return 40
 
     def _scroll_to_bottom(self) -> None:
-        """Scroll output to bottom.
-
-        Uses cached line count for performance - O(1) operation.
-        """
+        """Scroll output to bottom and follow subsequent output."""
         visible_height = self._get_viewport_height()
         bottom_padding = 4
         if self._total_line_count > visible_height:
             self._scroll_offset = self._total_line_count - visible_height + bottom_padding
         else:
             self._scroll_offset = 0
+        self._follow_latest = True
+
+    def _scroll_output(self, delta: int) -> None:
+        """Scroll by *delta* lines and update whether new output should be followed."""
+        if delta > 0 and self._follow_latest:
+            self._scroll_to_bottom()
+            return
+
+        max_scroll = self._get_max_scroll()
+        self._scroll_offset = min(max(0, self._scroll_offset + delta), max_scroll)
+        if delta < 0:
+            self._follow_latest = False
+        elif delta > 0 and self._scroll_offset >= max_scroll:
+            self._scroll_to_bottom()
 
     def _get_output_text(self) -> ANSI:
         """Get formatted output for display using virtual viewport.
@@ -1313,7 +1326,7 @@ class TUIApp:
         if not self._update_block_by_id(self._streaming_block_id, rendered) and rendered:
             self._streaming_block_id = self._append_block(rendered)
             self._sync_transcript_state()
-        if self._state == TUIState.RUNNING:
+        if self._state == TUIState.RUNNING and self._follow_latest:
             self._scroll_to_bottom()
         self._throttled_invalidate()
 
@@ -1367,7 +1380,7 @@ class TUIApp:
         if not self._update_block_by_id(self._streaming_thinking_block_id, rendered) and rendered:
             self._streaming_thinking_block_id = self._append_block(rendered)
             self._sync_transcript_state()
-        if self._state == TUIState.RUNNING:
+        if self._state == TUIState.RUNNING and self._follow_latest:
             self._scroll_to_bottom()
         self._throttled_invalidate()
 
@@ -3194,15 +3207,14 @@ class TUIApp:
 
         # Scroll functions
         def _scroll_up(event: KeyPressEvent) -> None:
-            """Scroll output up."""
-            self._scroll_offset = max(0, self._scroll_offset - 10)
+            """Scroll output up and stop following new output."""
+            self._scroll_output(-10)
             if self._app:
                 self._app.invalidate()
 
         def _scroll_down(event: KeyPressEvent) -> None:
-            """Scroll output down."""
-            max_scroll = self._get_max_scroll()
-            self._scroll_offset = min(self._scroll_offset + 10, max_scroll)
+            """Scroll output down, following new output again at the bottom."""
+            self._scroll_output(10)
             if self._app:
                 self._app.invalidate()
 
@@ -4278,13 +4290,12 @@ class TUIApp:
             def mouse_handler(self, mouse_event: MouseEvent) -> object:
                 """Handle mouse scroll events."""
                 if mouse_event.event_type == MouseEventType.SCROLL_UP:
-                    tui_ref._scroll_offset = max(0, tui_ref._scroll_offset - 3)
+                    tui_ref._scroll_output(-3)
                     if tui_ref._app:
                         tui_ref._app.invalidate()
                     return None
                 elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-                    max_scroll = tui_ref._get_max_scroll()
-                    tui_ref._scroll_offset = min(tui_ref._scroll_offset + 3, max_scroll)
+                    tui_ref._scroll_output(3)
                     if tui_ref._app:
                         tui_ref._app.invalidate()
                     return None
