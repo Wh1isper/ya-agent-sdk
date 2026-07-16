@@ -83,6 +83,8 @@ from ya_agent_sdk.context import (
     USER_RULES_TAG,
     AgentContext,
     BusMessage,
+    MessageBus,
+    NoteManager,
     ResumableState,
     StreamEvent,
     TaskManager,
@@ -561,6 +563,8 @@ class TUIApp:
 
     # Background task completion tracking
     _pending_bus_check_needed: bool = field(default=False, init=False)
+    _session_clear_in_progress: bool = field(default=False, init=False)
+    _background_completion_during_clear: bool = field(default=False, init=False)
 
     # Deferred screen recovery scheduling
     _screen_recovery_scheduled: bool = field(default=False, init=False)
@@ -1956,6 +1960,17 @@ class TUIApp:
         Args:
             agent_id: The ID of the completed background agent.
         """
+        monitor = self._get_background_monitor()
+        if monitor is not None and monitor.is_current_task_discarded():
+            self._drain_background_usage(monitor)
+            logger.debug("Discarded late background completion after session clear: %s", agent_id)
+            return
+
+        if self._session_clear_in_progress:
+            self._background_completion_during_clear = True
+            logger.debug("Deferring background completion during session clear: %s", agent_id)
+            return
+
         # Show UI notification immediately, even while the main agent is still
         # running, so users can see that the background subagent returned.
         self._append_system_output(f"Background task completed: {agent_id}")
@@ -1998,21 +2013,25 @@ class TUIApp:
                 self._app.invalidate()
             return
 
+    def _drain_background_usage(self, monitor: BackgroundMonitor) -> None:
+        """Commit queued background usage without delivering conversation messages."""
+        drained_snapshots = monitor.drain_usage_snapshots()
+        for snapshot in drained_snapshots:
+            self._session_usage.set_run_snapshot(snapshot)
+            self._session_usage.commit_run_snapshot(snapshot.run_id)
+        for run_id in monitor.drain_retired_usage_run_ids():
+            self._session_usage.finalize_run_snapshots(run_id)
+        for snapshot in drained_snapshots:
+            if not monitor.can_publish_late_usage_snapshot(snapshot.run_id):
+                self._session_usage.finalize_run_snapshots(snapshot.run_id)
+
     def _deliver_background_messages(self) -> bool:
         """Redeliver queued background notifications into the current main-agent bus."""
         monitor = self._get_background_monitor()
         ctx = self.runtime.ctx
         delivered = 0
         if monitor is not None:
-            drained_snapshots = monitor.drain_usage_snapshots()
-            for snapshot in drained_snapshots:
-                self._session_usage.set_run_snapshot(snapshot)
-                self._session_usage.commit_run_snapshot(snapshot.run_id)
-            for run_id in monitor.drain_retired_usage_run_ids():
-                self._session_usage.finalize_run_snapshots(run_id)
-            for snapshot in drained_snapshots:
-                if not monitor.can_publish_late_usage_snapshot(snapshot.run_id):
-                    self._session_usage.finalize_run_snapshots(snapshot.run_id)
+            self._drain_background_usage(monitor)
             delivered = monitor.deliver_pending_messages(ctx.message_bus, ctx.agent_id)
         return delivered > 0 or ctx.message_bus.has_pending(ctx.agent_id)
 
@@ -2946,6 +2965,10 @@ class TUIApp:
 
     def _submit_input(self, text: str, input_area: TextArea) -> None:
         """Submit the current input buffer content."""
+        if self._session_clear_in_progress:
+            self._append_system_output("Session clear is still in progress. Please retry after it finishes.")
+            return
+
         if self._state == TUIState.RUNNING:
             if text:
                 self._add_prompt_history(text)
@@ -3283,7 +3306,7 @@ class TUIApp:
                 self._show_help()
             case "/clear":
                 self._append_user_input(command)
-                self._clear_session()
+                await self._clear_session()
             case "/cost":
                 self._append_user_input(command)
                 self._show_cost()
@@ -3518,7 +3541,7 @@ class TUIApp:
         sys_table.add_column("Command", style="green")
         sys_table.add_column("Description")
         sys_table.add_row("/help", "Show this help")
-        sys_table.add_row("/clear", "Clear output and history")
+        sys_table.add_row("/clear", "Clear conversation and agent state")
         sys_table.add_row("/cost", "Show cost summary")
         sys_table.add_row("/model", "Select model profile")
         sys_table.add_row("/tasks", "Show background tasks and processes")
@@ -3570,21 +3593,35 @@ class TUIApp:
 
         self._append_output("\n".join(lines))
 
-    def _clear_session(self) -> None:
-        """Clear output and message history.
+    def _reset_context_session_state(self, ctx: TUIContext) -> None:
+        """Reset conversation-scoped AgentContext state while preserving runtime policy."""
+        ctx.provider_session_id = None
+        ctx.provider_thread_id = None
+        ctx.deferred_tool_metadata = {}
+        ctx.handoff_message = None
+        ctx.force_inject_instructions = False
+        ctx.shell_env = {}
+        ctx.usage_snapshot_entries = {}
+        ctx.shell_review_records.clear()
+        ctx.user_prompts = None
+        ctx.previous_assistant_response_reference = None
+        ctx.steering_messages = []
+        ctx.tool_id_wrapper.clear()
+        ctx.agent_stream_queues = {}
+        ctx.subagent_history = {}
+        ctx.agent_registry = {}
+        ctx.auto_load_files = []
+        ctx.task_manager = TaskManager()
+        ctx.note_manager = NoteManager()
+        ctx.tool_search_loaded_tools = []
+        ctx.tool_search_loaded_namespaces = []
+        ctx.tool_tags = set()
+        ctx.message_bus = MessageBus()
+        ctx.reset_goal()
 
-        Resets:
-        - Output lines and streaming state
-        - Conversation history
-        - Agent task list
-        - Status bar context percentage
-        - Scroll position
-
-        Preserves:
-        - Session usage (token/cost tracking)
-        """
+    def _reset_tui_session_state(self) -> None:
+        """Reset conversation-scoped display and interaction state."""
         self._reset_output_blocks()
-        # Reset streaming state
         self._streaming_text = ""
         self._streaming_text_buffer = None
         self._streaming_line_index = None
@@ -3601,16 +3638,76 @@ class TUIApp:
         self._subagent_states.clear()
         self._steering_items.clear()
         self._display_replay.clear()
+        self._event_renderer.clear()
         self._reset_pending_attachments()
-        if self._runtime is not None:
-            self._runtime.ctx.task_manager = TaskManager()
-        # Clear conversation history
+        self._pending_bus_check_needed = False
+        self._reset_hitl_state()
+        self._goal_usage_start_breakdown = None
+        self._goal_usage_report_pending = False
+        self._agent_phase = "idle"
+        self._display_adapter = None
         self._message_history = None
         self._last_run = None
-        # Reset status bar context (but keep usage)
         self._current_context_tokens = 0
-        # Show help after clear
-        self._show_help()
+
+    def _resume_deferred_background_completion(self) -> None:
+        """Deliver shell notifications retained across the conversation reset."""
+        monitor = self._get_background_monitor()
+        has_retained_messages = monitor is not None and monitor.has_pending_messages
+        if not self._background_completion_during_clear and not has_retained_messages:
+            return
+        self._background_completion_during_clear = False
+        if self._state != TUIState.IDLE or not self._deliver_background_messages():
+            return
+
+        self._append_system_output("Processing pending messages from background tasks...")
+        self._state = TUIState.RUNNING
+        self._agent_task = asyncio.create_task(self._run_agent(""))
+        self._agent_task.add_done_callback(self._on_agent_task_done)
+
+    async def _clear_session(self) -> None:
+        """Start a clean conversation while preserving runtime configuration and usage."""
+        if self._session_clear_in_progress:
+            return
+        self._session_clear_in_progress = True
+        monitor = self._get_background_monitor()
+        try:
+            if monitor is not None:
+                # Establish the isolation boundary before any operation that
+                # can fail or yield to an old background task.
+                monitor.begin_subagent_reset()
+                try:
+                    self._drain_background_usage(monitor)
+                except Exception:
+                    logger.exception("Failed to preserve background usage before session clear")
+                try:
+                    await monitor.reset_subagent_state()
+                except Exception:
+                    logger.exception("Failed to fully reset background subagent state")
+                try:
+                    self._drain_background_usage(monitor)
+                except Exception:
+                    logger.exception("Failed to preserve final background usage during session clear")
+        finally:
+            try:
+                # Conversation isolation must complete even if usage accounting
+                # or subagent cancellation fails.
+                if monitor is not None:
+                    monitor.finish_subagent_reset()
+                self._reset_tui_session_state()
+                if self._runtime is not None:
+                    ctx = self._runtime.ctx
+                    if isinstance(ctx, TUIContext):
+                        fresh_ctx = ctx.prepare_new_run()
+                        self._reset_context_session_state(fresh_ctx)
+                        self._runtime.ctx = fresh_ctx
+                        if monitor is not None:
+                            monitor.set_message_bus(fresh_ctx.message_bus, fresh_ctx.agent_id)
+                self._show_help()
+            finally:
+                self._session_clear_in_progress = False
+
+        self._resume_deferred_background_completion()
 
     def _show_cost(self) -> None:
         """Show token usage summary for the current session."""

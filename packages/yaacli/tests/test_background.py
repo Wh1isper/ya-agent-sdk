@@ -9,10 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai import RunContext
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.context.agent import AgentInfo
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.usage import UsageSnapshot
 from yaacli.app.tui import TUIApp, TUIState
 from yaacli.background import (
     BACKGROUND_MONITOR_KEY,
@@ -66,6 +68,134 @@ async def test_monitor_task_auto_removed_on_completion() -> None:
     await asyncio.sleep(0)
 
     assert "test-agent" not in monitor.active_tasks
+
+
+@pytest.mark.asyncio
+async def test_monitor_reset_subagent_state_cancels_tasks_and_discards_results() -> None:
+    """A session reset should not deliver cancellation results from old subagents."""
+    monitor = BackgroundMonitor()
+    completion_callback = MagicMock()
+    monitor.set_completion_callback(completion_callback)
+
+    async def run_until_cancelled() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await monitor.record_task_result_async(
+                BackgroundTaskResult(
+                    agent_id="test-agent",
+                    subagent_name="executor",
+                    status="cancelled",
+                    error="cancelled",
+                )
+            )
+            raise
+        finally:
+            monitor.notify_completion("test-agent")
+
+    task = asyncio.create_task(run_until_cancelled())
+    monitor.register_task("test-agent", task, subagent_name="executor", prompt="old task")
+    await asyncio.sleep(0)
+
+    await monitor.reset_subagent_state()
+
+    assert task.cancelled()
+    assert monitor.active_tasks == {}
+    assert monitor.task_infos == {}
+    assert monitor.task_results == {}
+    assert monitor.known_task_ids() == []
+    assert monitor.has_pending_messages is False
+    completion_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_monitor_reset_subagent_state_discards_late_results_after_timeout() -> None:
+    """A task that ignores cancellation must remain isolated after reset returns."""
+    monitor = BackgroundMonitor()
+    release = asyncio.Event()
+    completion_callback = MagicMock()
+    delivery_decisions: list[bool] = []
+    monitor.set_completion_callback(completion_callback)
+
+    async def ignore_cancellation() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await release.wait()
+        monitor.record_task_result(
+            BackgroundTaskResult(
+                agent_id="stale-agent",
+                subagent_name="executor",
+                status="completed",
+                content="stale result",
+            )
+        )
+        delivery_decisions.append(monitor.should_deliver_task_result_message("stale-agent"))
+        monitor.notify_completion("stale-agent")
+
+    task = asyncio.create_task(ignore_cancellation())
+    monitor.register_task("stale-agent", task, subagent_name="executor", prompt="old task")
+    await asyncio.sleep(0)
+
+    with patch("yaacli.background._SHUTDOWN_BACKGROUND_TASKS_TIMEOUT", 0.01):
+        await monitor.reset_subagent_state()
+
+    assert task.done() is False
+    assert monitor.task_results == {}
+    release.set()
+    await task
+    await asyncio.sleep(0)
+
+    assert monitor.task_results == {}
+    assert delivery_decisions == [False]
+    completion_callback.assert_called_once_with("stale-agent")
+    assert task not in monitor._discarded_tasks
+
+
+@pytest.mark.asyncio
+async def test_monitor_rejects_tasks_registered_during_subagent_reset() -> None:
+    """A new delegate cannot cross the reset boundary while old tasks are cancelling."""
+    monitor = BackgroundMonitor()
+    release = asyncio.Event()
+
+    async def slow_cancel() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await release.wait()
+
+    old_task = asyncio.create_task(slow_cancel())
+    monitor.register_task("old-agent", old_task)
+    await asyncio.sleep(0)
+    reset_task = asyncio.create_task(monitor.reset_subagent_state())
+    await asyncio.sleep(0)
+
+    new_task = asyncio.create_task(asyncio.sleep(3600))
+    with pytest.raises(RuntimeError, match="being reset"):
+        monitor.register_task("new-agent", new_task)
+    await asyncio.sleep(0)
+
+    assert new_task.cancelled()
+    release.set()
+    await reset_task
+    assert monitor.active_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_monitor_reset_subagent_state_preserves_shell_monitoring() -> None:
+    """Clearing conversation state must not terminate or forget background shell work."""
+    monitor = BackgroundMonitor()
+    monitor.register_monitored_process("proc-1")
+    monitor.enqueue_shell_message(
+        BusMessage(content="shell output ready", source="shell-monitor", target="main"),
+        process_id="proc-1",
+        kind="output",
+    )
+
+    await monitor.reset_subagent_state()
+
+    assert "proc-1" in monitor._monitored_processes
+    assert monitor.has_pending_messages is True
 
 
 @pytest.mark.asyncio
@@ -1077,6 +1207,40 @@ async def test_tool_call_launches_background_task() -> None:
     # Message is delivered immediately for the active run guard.
     assert mock_deps.send_message.call_count == 1
     assert monitor.has_pending_messages is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delegate_publishes_final_usage_during_session_reset() -> None:
+    """Reset must retain usage reported by a delegate that is being cancelled."""
+    monitor = BackgroundMonitor()
+    mock_delegate = AsyncMock(spec=BaseTool)
+
+    async def block_delegate(*args: object, **kwargs: object) -> str:
+        await asyncio.sleep(3600)
+        return "unreachable"
+
+    mock_delegate.call = AsyncMock(side_effect=block_delegate)
+    mock_toolset = MagicMock()
+    mock_toolset._get_tool_instance.return_value = mock_delegate
+    monitor.set_core_toolset(mock_toolset)
+
+    snapshot = UsageSnapshot(run_id="old-run", total_usage=RunUsage(input_tokens=11, output_tokens=2))
+    mock_deps = MagicMock()
+    mock_deps.resources = MagicMock()
+    mock_deps.resources.get.return_value = monitor
+    mock_deps.subagent_history = {}
+    mock_deps.agent_id = "main"
+    mock_deps.run_id = "old-run"
+    mock_deps.build_usage_snapshot.return_value = snapshot
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = mock_deps
+
+    await SpawnDelegateTool().call(run_ctx, subagent_name="explorer", prompt="long task")
+    await asyncio.sleep(0)
+    await monitor.reset_subagent_state()
+
+    assert monitor.drain_usage_snapshots() == [snapshot]
+    assert monitor.task_results == {}
 
 
 @pytest.mark.asyncio
