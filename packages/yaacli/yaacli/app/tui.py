@@ -138,6 +138,13 @@ from yaacli.rendering.transcript import BlockId, BoundedTextAccumulator, Transcr
 from yaacli.runtime import create_tui_runtime
 from yaacli.session import TUIContext
 from yaacli.sessions import get_head_artifact_paths, save_session_turn, trim_sessions
+from yaacli.theme import (
+    ResolvedTheme,
+    ThemePreference,
+    fallback_theme,
+    prompt_toolkit_style_rules,
+    resolve_theme,
+)
 from yaacli.usage import SessionUsage, TokenUsageBreakdown
 
 YAACLI_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="yaacli", stream_metadata_prefix="yaacli")
@@ -468,6 +475,8 @@ class TUIApp:
     _output_ansi_cache: ANSI | None = field(default=None, init=False)  # Cached visible ANSI
     _renderer: RichRenderer = field(default_factory=RichRenderer, init=False)
     _event_renderer: EventRenderer = field(default_factory=EventRenderer, init=False)
+    _theme: ResolvedTheme = field(default_factory=lambda: fallback_theme("auto"), init=False)
+    _theme_terminal_resolved: bool = field(default=False, init=False)
     _display_replay: BoundedDisplayReplay = field(
         default_factory=lambda: BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG), init=False
     )
@@ -587,6 +596,7 @@ class TUIApp:
         self._max_prompt_history = _positive_int_config(
             getattr(display, "max_prompt_history", None), self._max_prompt_history
         )
+        self._configure_theme(query_terminal=False)
         self._transcript.configure(self._transcript_limits())
         self._output_lines = self._transcript.blocks
         self._block_line_counts = self._transcript.line_counts
@@ -761,6 +771,9 @@ class TUIApp:
 
     async def __aenter__(self) -> TUIApp:
         """Initialize resources."""
+        self._configure_theme(query_terminal=True)
+        logger.debug("Resolved terminal theme: %s (%s)", self._theme.variant, self._theme.source)
+
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
 
@@ -1240,9 +1253,28 @@ class TUIApp:
         return 120
 
     def _get_code_theme(self) -> str:
-        """Get the code theme for markdown/syntax highlighting."""
-        # TODO: Make configurable via config
-        return "monokai"
+        """Get the syntax-highlighting theme for the resolved terminal theme."""
+        return self._theme.syntax_theme
+
+    def _configured_theme_preference(self) -> ThemePreference:
+        """Read the theme preference while tolerating lightweight test configs."""
+        display = getattr(self.config, "display", None)
+        preference = getattr(display, "code_theme", "auto")
+        if isinstance(preference, str) and preference in {"auto", "dark", "light"}:
+            return cast(ThemePreference, preference)
+        return "auto"
+
+    def _configure_theme(self, *, query_terminal: bool) -> None:
+        """Resolve the color theme and apply it to Rich event rendering."""
+        preference = self._configured_theme_preference()
+        self._theme = resolve_theme(preference) if query_terminal else fallback_theme(preference)
+        display = getattr(self.config, "display", None)
+        self._event_renderer.configure_rendering(
+            code_theme=self._theme.syntax_theme,
+            max_tool_result_lines=_positive_int_config(getattr(display, "max_tool_result_lines", None), 2),
+            max_arg_length=_positive_int_config(getattr(display, "max_arg_length", None), 50),
+        )
+        self._theme_terminal_resolved = query_terminal
 
     def _new_stream_accumulator(self) -> BoundedTextAccumulator:
         return BoundedTextAccumulator(
@@ -2502,7 +2534,7 @@ class TUIApp:
             content_parts.append(Text(""))
             content_parts.append(Text("Arguments:", style="bold cyan"))
             formatted_args = self._format_args_for_display(tool_call.args)
-            code_theme = self.config.display.code_theme or "monokai"
+            code_theme = self._get_code_theme()
             # Determine if it looks like JSON for syntax highlighting
             is_json_like = formatted_args.strip().startswith(("{", "["))
             syntax = Syntax(formatted_args, "json" if is_json_like else "text", theme=code_theme)
@@ -3267,15 +3299,8 @@ class TUIApp:
         return kb
 
     def _setup_style(self) -> Style:
-        """Set up UI styles."""
-        return Style.from_dict({
-            "status-bar": "bg:ansiblue fg:white",
-            "status-bar.mode-act": "bg:ansigreen fg:black bold",
-            "status-bar.mode-plan": "bg:ansiblue fg:white bold",
-            "steering-pane": "bg:ansibrightblack fg:ansicyan",
-            "model-selector": "bg:ansibrightblack fg:ansiwhite",
-            "input-area": "",
-        })
+        """Set up UI styles for the resolved terminal theme."""
+        return Style.from_dict(prompt_toolkit_style_rules(self._theme))
 
     # =========================================================================
     # Command Handling
@@ -4227,6 +4252,10 @@ class TUIApp:
 
     async def run(self) -> None:
         """Run the TUI application."""
+        if not self._theme_terminal_resolved:
+            self._configure_theme(query_terminal=True)
+            logger.debug("Resolved terminal theme: %s (%s)", self._theme.variant, self._theme.source)
+
         # Welcome message
         title = Text("YAACLI CLI", style="bold magenta")
         self._append_output(self._renderer.render(title).rstrip())

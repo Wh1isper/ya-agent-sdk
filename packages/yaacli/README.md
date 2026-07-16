@@ -68,6 +68,15 @@ Provider API keys can live in that `.env` file or in `~/.yaacli/config.toml` und
 SDK and tool variables such as `YA_AGENT_*` and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) as the reference list for SDK and tool variables.
 
+The TUI detects the terminal's light or dark background at startup. For recognized local terminals such as VS Code's integrated terminal, it performs a short OSC 11 query; active queries are skipped over SSH to avoid delayed terminal responses. Detection then falls back to `COLORFGBG`, followed by the dark theme. Override detection in `~/.yaacli/config.toml` when needed:
+
+```toml
+[display]
+code_theme = "auto" # auto, dark, or light
+```
+
+The equivalent environment override is `YAACLI_CODE_THEME=auto`.
+
 Codex OAuth credentials can be created once and reused from YAACLI:
 
 ```bash

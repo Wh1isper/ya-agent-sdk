@@ -32,6 +32,8 @@ from pydantic import BaseModel, Field, PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig, load_mcp_config_file
 
+from yaacli.theme import ThemePreference
+
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 __all__ = [
@@ -123,8 +125,8 @@ class ModelProfileConfig(BaseModel):
 class DisplayConfig(BaseModel):
     """Display and rendering configuration."""
 
-    code_theme: Literal["dark", "light"] = "dark"
-    """Code highlighting theme."""
+    code_theme: ThemePreference = "auto"
+    """Terminal color theme preference; auto detects the terminal background."""
 
     max_tool_result_lines: int = 5
     """Maximum lines to show for tool results."""
@@ -385,7 +387,7 @@ class EnvSettings(BaseSettings):
     )
 
     # Display
-    code_theme: Literal["dark", "light"] | None = None
+    code_theme: ThemePreference | None = None
     show_token_usage: bool | None = None
     show_elapsed_time: bool | None = None
 

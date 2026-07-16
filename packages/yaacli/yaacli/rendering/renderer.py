@@ -6,11 +6,45 @@ Provides RichRenderer for converting Rich renderables to ANSI strings.
 from __future__ import annotations
 
 from io import StringIO
+from typing import ClassVar
 
-from rich.console import Console, RenderableType
-from rich.markdown import Markdown
+from rich.console import Console, ConsoleOptions, RenderableType, RenderResult
+from rich.markdown import CodeBlock, Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
+
+
+class TerminalCodeBlock(CodeBlock):
+    """Render fenced code with a copy-safe, terminal-aware background."""
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        code = str(self.text).rstrip()
+        background_color = "white" if self.theme == "ansi_light" else "black"
+        syntax = Syntax(
+            code,
+            self.lexer_name,
+            theme=self.theme,
+            word_wrap=True,
+            background_color=background_color,
+            padding=0,
+        )
+        # Rendering highlighted Text directly avoids Syntax's shared line width.
+        # Resetting justification prevents Rich from padding non-transparent
+        # background styles to the full console width.
+        highlighted = syntax.highlight(code)
+        highlighted.justify = "default"
+        yield highlighted
+
+
+class TerminalMarkdown(Markdown):
+    """Markdown renderer with distinguishable fenced code blocks."""
+
+    elements: ClassVar = {
+        **Markdown.elements,
+        "fence": TerminalCodeBlock,
+        "code_block": TerminalCodeBlock,
+    }
 
 
 class RichRenderer:
@@ -46,7 +80,7 @@ class RichRenderer:
         # prompt_toolkit's ANSI parser does not support Rich's OSC 8 hyperlinks.
         # Render link destinations as ordinary text instead of leaking OSC control
         # sequences and their metadata into the TUI output.
-        return self.render(Markdown(text, code_theme=code_theme, hyperlinks=False), width=width)
+        return self.render(TerminalMarkdown(text, code_theme=code_theme, hyperlinks=False), width=width)
 
     def render_text(self, text: str, style: str | None = None) -> str:
         """Render styled text to ANSI string."""

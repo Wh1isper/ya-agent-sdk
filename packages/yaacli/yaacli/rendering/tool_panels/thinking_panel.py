@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 
 from rich.console import RenderableType
-from rich.markdown import Markdown
 from rich.panel import Panel
+
+from yaacli.rendering.renderer import TerminalMarkdown
 
 
 def create_thinking_panel(args: str | dict[str, object] | None, code_theme: str = "monokai") -> Panel:
@@ -34,7 +35,7 @@ def create_thinking_panel(args: str | dict[str, object] | None, code_theme: str 
                 pass
 
         if thought:
-            panel_content = Markdown(thought, code_theme=code_theme)
+            panel_content = TerminalMarkdown(thought, code_theme=code_theme, hyperlinks=False)
         else:
             panel_content = "No thinking content available"
     except Exception:

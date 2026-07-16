@@ -119,8 +119,9 @@ max_pending_attachments = 8
 max_pending_attachment_bytes = 20971520
 
 [display]
-# Code highlighting theme ("dark" or "light")
-code_theme = "dark"
+# Terminal color theme ("auto", "dark", or "light").
+# "auto" queries the terminal background and falls back to dark.
+code_theme = "auto"
 # Maximum lines to show for tool results
 max_tool_result_lines = 5
 # Maximum length for tool argument display

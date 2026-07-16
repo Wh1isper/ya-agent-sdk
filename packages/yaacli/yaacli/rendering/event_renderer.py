@@ -48,6 +48,18 @@ class EventRenderer:
         self._current_text: str = ""
         self._current_thinking: str = ""
 
+    def configure_rendering(
+        self,
+        *,
+        code_theme: str,
+        max_tool_result_lines: int,
+        max_arg_length: int,
+    ) -> None:
+        """Update rendering options without discarding in-flight event state."""
+        self._code_theme = code_theme
+        self._max_tool_result_lines = max_tool_result_lines
+        self._max_arg_length = max_arg_length
+
     @property
     def tracker(self) -> ToolCallTracker:
         """Get the tool call tracker."""

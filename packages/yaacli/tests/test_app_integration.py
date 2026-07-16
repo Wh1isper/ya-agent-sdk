@@ -43,9 +43,10 @@ from yaacli.app.tui import (
 )
 from yaacli.background import BackgroundMonitor, BackgroundTaskResult
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
-from yaacli.config import CommandDefinition, GeneralConfig, ModelProfileConfig, YaacliConfig
+from yaacli.config import CommandDefinition, DisplayConfig, GeneralConfig, ModelProfileConfig, YaacliConfig
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
 from yaacli.session import TUIContext
+from yaacli.theme import prompt_toolkit_style_rules
 
 
 @dataclass
@@ -156,6 +157,26 @@ def test_tui_app_initial_state():
     assert app.mode == TUIMode.ACT
     assert app.state == TUIState.IDLE
     assert app._agent_phase == "idle"
+
+
+def test_tui_app_applies_explicit_light_theme_to_all_renderers() -> None:
+    config = YaacliConfig(display=DisplayConfig(code_theme="light"))
+    app = TUIApp(config=config, config_manager=MockConfigManager())
+
+    renderer = app._event_renderer
+    renderer.tracker.start_call("existing", "view")
+    renderer.start_thinking("in flight")
+    app._configure_theme(query_terminal=False)
+
+    assert app._event_renderer is renderer
+    assert "existing" in renderer.tracker.tool_calls
+    assert renderer.get_current_thinking() == "in flight"
+    assert app._theme.variant == "light"
+    assert app._get_code_theme() == "ansi_light"
+    assert app._event_renderer._code_theme == "ansi_light"
+    assert app._event_renderer._max_tool_result_lines == 5
+    assert app._event_renderer._max_arg_length == 100
+    assert "bg:ansiwhite" in prompt_toolkit_style_rules(app._theme)["model-selector"]
 
 
 def test_tui_app_mode_switching():
