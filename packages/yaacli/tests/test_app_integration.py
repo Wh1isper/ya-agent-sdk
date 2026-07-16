@@ -27,9 +27,11 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import BinaryContent
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.usage import RunUsage
 from ya_agent_environment.shell import BackgroundProcess
 from ya_agent_sdk.agents.main import AgentInterrupted
-from ya_agent_sdk.context import ResumableState, TaskManager
+from ya_agent_sdk.context import BusMessage, ResumableState
+from ya_agent_sdk.context.agent import AgentInfo
 
 # Import the components we're testing
 from yaacli.app import TUIApp, TUIMode, TUIState
@@ -39,9 +41,11 @@ from yaacli.app.tui import (
     _format_direct_shell_preview,
     _is_benign_contextvar_cleanup_error,
 )
+from yaacli.background import BackgroundMonitor, BackgroundTaskResult
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, GeneralConfig, ModelProfileConfig, YaacliConfig
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
+from yaacli.session import TUIContext
 
 
 @dataclass
@@ -1346,32 +1350,204 @@ async def test_tui_app_submit_input_strips_attachment_placeholder() -> None:
     assert captured_runs == [("Please inspect", [attachment])]
 
 
-def test_tui_app_clear_session_clears_pending_attachments() -> None:
+def test_tui_app_rejects_input_while_session_clear_is_in_progress() -> None:
+    """A new turn must not race with asynchronous session cleanup."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    input_area = TextArea(text="new request")
+    app._session_clear_in_progress = True
+
+    app._submit_input("new request", input_area)
+
+    assert input_area.buffer.text == "new request"
+    assert app._agent_task is None
+    assert any("Session clear is still in progress" in line for line in app._output_lines)
+
+
+@pytest.mark.asyncio
+async def test_tui_app_clear_session_clears_pending_attachments() -> None:
     """Clearing the session should drop queued clipboard images."""
     config = MockConfig()
     config_manager = MockConfigManager()
     app = TUIApp(config=config, config_manager=config_manager)
     app._pending_attachments.append(PendingAttachment(data=b"img", media_type="image/png", size_bytes=3))
 
-    app._clear_session()
+    await app._clear_session()
 
     assert app._pending_attachments == []
 
 
-def test_tui_app_clear_session_clears_agent_tasks() -> None:
-    """Clearing the session should reset the AgentContext task manager."""
+@pytest.mark.asyncio
+async def test_tui_app_clear_session_resets_conversation_state() -> None:
+    """Clearing should remove all conversation state while retaining runtime policy."""
     config = MockConfig()
     config_manager = MockConfigManager()
     app = TUIApp(config=config, config_manager=config_manager)
-    task_manager = TaskManager()
-    task_manager.create("Inspect issue", "Investigate stale task list after clear")
+    ctx = TUIContext()
+    ctx.provider_session_id = "provider-session"
+    ctx.provider_thread_id = "provider-thread"
+    ctx.deferred_tool_metadata["call-1"] = {"tool": "shell"}
+    ctx.handoff_message = "old handoff"
+    ctx.force_inject_instructions = True
+    ctx.shell_env["OLD_SESSION"] = "1"
+    ctx.update_usage_snapshot_entry(
+        agent_id="main",
+        agent_name="main",
+        model_id="test-model",
+        usage=RunUsage(input_tokens=7, output_tokens=3),
+        source="test",
+    )
+    ctx.shell_review_records.append("old review")
+    ctx.user_prompts = "old prompt"
+    ctx.previous_assistant_response_reference = "old response"
+    ctx.steering_messages.append("old steering")
+    ctx.tool_id_wrapper.upsert_tool_call_id("old-tool-call")
+    ctx.agent_stream_queues["old-agent"].put_nowait(MagicMock())
+    ctx.subagent_history["explorer-1"] = []
+    ctx.agent_registry["explorer-1"] = AgentInfo(agent_id="explorer-1", agent_name="explorer", parent_agent_id="main")
+    ctx.auto_load_files.append("old.py")
+    ctx.task_manager.create("Inspect issue", "Investigate stale state after clear")
+    ctx.note_manager.set("old-note", "old value")
+    ctx.tool_search_loaded_tools.append("search")
+    ctx.tool_search_loaded_namespaces.append("web")
+    ctx.tool_tags.add("shell")
+    ctx.message_bus.subscribe("main")
+    ctx.message_bus.send(BusMessage(content="old message", source="explorer-1", target="main"))
+    ctx.goal_task = "old goal"
+    ctx.goal_iteration = 3
+    ctx.need_user_approve_tools = ["shell"]
+    ctx.need_user_approve_mcps = ["filesystem"]
+
     runtime = MagicMock()
-    runtime.ctx.task_manager = task_manager
+    runtime.ctx = ctx
+    runtime.env = None
     app._runtime = runtime
+    app._pending_bus_check_needed = True
+    app._goal_usage_start_breakdown = app._session_usage.token_breakdown
+    app._goal_usage_report_pending = True
+    usage_snapshot = ctx.build_usage_snapshot()
+    app._session_usage.set_run_snapshot(usage_snapshot)
+    app._session_usage.commit_run_snapshot(usage_snapshot.run_id)
+    app._session_usage.finalize_run_snapshots(usage_snapshot.run_id)
 
-    app._clear_session()
+    await app._clear_session()
 
-    assert runtime.ctx.task_manager.list_all() == []
+    cleared_ctx = runtime.ctx
+    assert cleared_ctx is not ctx
+    assert cleared_ctx.provider_session_id is None
+    assert cleared_ctx.provider_thread_id is None
+    assert cleared_ctx.deferred_tool_metadata == {}
+    assert cleared_ctx.handoff_message is None
+    assert cleared_ctx.force_inject_instructions is False
+    assert cleared_ctx.shell_env == {}
+    assert cleared_ctx.usage_snapshot_entries == {}
+    assert list(cleared_ctx.shell_review_records) == []
+    assert cleared_ctx.user_prompts is None
+    assert cleared_ctx.previous_assistant_response_reference is None
+    assert cleared_ctx.steering_messages == []
+    assert cleared_ctx.tool_id_wrapper._tool_call_maps == {}
+    assert cleared_ctx.agent_stream_queues == {}
+    assert cleared_ctx.subagent_history == {}
+    assert cleared_ctx.agent_registry == {}
+    assert cleared_ctx.auto_load_files == []
+    assert cleared_ctx.task_manager.list_all() == []
+    assert cleared_ctx.note_manager.list_all() == []
+    assert cleared_ctx.tool_search_loaded_tools == []
+    assert cleared_ctx.tool_search_loaded_namespaces == []
+    assert cleared_ctx.tool_tags == set()
+    assert len(cleared_ctx.message_bus) == 0
+    assert cleared_ctx.message_bus.subscriber_count == 0
+    assert cleared_ctx.goal_active is False
+    assert cleared_ctx.goal_iteration == 0
+    assert cleared_ctx.need_user_approve_tools == ["shell"]
+    assert cleared_ctx.need_user_approve_mcps == ["filesystem"]
+    assert app._pending_bus_check_needed is False
+    assert app._goal_usage_start_breakdown is None
+    assert app._goal_usage_report_pending is False
+    assert app._session_usage.total_input_tokens == 7
+    assert app._session_usage.total_output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_tui_app_clear_session_resumes_deferred_shell_notification() -> None:
+    """A shell completion during clear should wake the fresh conversation afterward."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    ctx = TUIContext()
+    runtime = MagicMock()
+    runtime.ctx = ctx
+    runtime.env = None
+    app._runtime = runtime
+    monitor = BackgroundMonitor()
+    monitor.enqueue_shell_message(
+        BusMessage(content="shell output ready", source="shell-monitor", target="main"),
+        process_id="proc-1",
+        kind="output",
+    )
+    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
+    prompts: list[str] = []
+
+    async def fake_run_agent(prompt: str) -> None:
+        prompts.append(prompt)
+
+    app._run_agent = fake_run_agent  # type: ignore[method-assign]
+
+    await app._clear_session()
+
+    assert app._agent_task is not None
+    await app._agent_task
+    assert prompts == [""]
+    assert runtime.ctx.message_bus.has_pending("main") is True
+
+
+@pytest.mark.asyncio
+async def test_tui_app_clear_session_still_clears_context_when_monitor_reset_fails() -> None:
+    """Background cleanup errors must not leave the old conversation active."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    ctx = TUIContext(subagent_history={"old-agent": []}, user_prompts="old prompt")
+    runtime = MagicMock()
+    runtime.ctx = ctx
+    runtime.env = None
+    app._runtime = runtime
+    app._message_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
+    monitor = BackgroundMonitor()
+    release = asyncio.Event()
+
+    async def publish_late_result() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await release.wait()
+        monitor.record_task_result(
+            BackgroundTaskResult(
+                agent_id="old-agent",
+                subagent_name="executor",
+                status="completed",
+                content="stale result",
+            )
+        )
+        if monitor.should_deliver_task_result_message("old-agent"):
+            monitor.enqueue_message(BusMessage(content="stale result", source="old-agent", target="main"))
+        monitor.notify_completion("old-agent")
+
+    stale_task = asyncio.create_task(publish_late_result())
+    monitor.register_task("old-agent", stale_task)
+    monitor.set_completion_callback(app._on_background_task_complete)
+    await asyncio.sleep(0)
+    monitor.reset_subagent_state = AsyncMock(side_effect=RuntimeError("reset failed"))  # type: ignore[method-assign]
+    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
+
+    await app._clear_session()
+    release.set()
+    await stale_task
+    await asyncio.sleep(0)
+
+    assert app._message_history is None
+    assert runtime.ctx is not ctx
+    assert runtime.ctx.subagent_history == {}
+    assert runtime.ctx.user_prompts is None
+    assert runtime.ctx.message_bus.has_pending("main") is False
+    assert monitor.task_results == {}
+    assert monitor.has_pending_messages is False
+    assert app._session_clear_in_progress is False
 
 
 def test_tui_app_load_history_clears_pending_attachments(tmp_path: Path) -> None:

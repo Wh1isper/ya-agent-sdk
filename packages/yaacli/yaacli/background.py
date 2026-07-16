@@ -171,6 +171,10 @@ class BackgroundMonitor(BaseResource):
         self._current_usage_run_id: str | None = None
         self._retired_usage_run_ids: set[str] = set()
         self._task_message_tokens: dict[str, str] = {}
+        self._discarded_tasks: set[asyncio.Task[Any]] = set()
+        self._reset_tasks: set[asyncio.Task[Any]] = set()
+        self._resetting_subagents = False
+        self._subagent_reset_lock = asyncio.Lock()
         self._core_toolset: Toolset[Any] | None = None
         self._completion_callback: Callable[[str], None] | None = None
 
@@ -215,6 +219,19 @@ class BackgroundMonitor(BaseResource):
         """
         self._completion_callback = callback
 
+    def set_message_bus(self, bus: MessageBus, agent_id: str) -> None:
+        """Retarget shell notifications after the conversation bus is replaced."""
+        self._bus = bus
+        self._agent_id = agent_id
+
+    def is_current_task_discarded(self) -> bool:
+        """Return whether the calling task belongs to a cleared conversation."""
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            return False
+        return task is not None and task in self._discarded_tasks
+
     def notify_completion(self, agent_id: str) -> None:
         """Notify that a background task has completed.
 
@@ -225,6 +242,8 @@ class BackgroundMonitor(BaseResource):
             agent_id: The ID of the completed background agent.
         """
         logger.debug("Background task completed: %s", agent_id)
+        if self._resetting_subagents and self.is_current_task_discarded():
+            return
         if self._completion_callback:
             try:
                 self._completion_callback(agent_id)
@@ -440,6 +459,8 @@ class BackgroundMonitor(BaseResource):
 
     def record_task_result(self, result: BackgroundTaskResult) -> None:
         """Synchronously cache a result; use the async variant in agent tasks."""
+        if self.is_current_task_discarded():
+            return
         content, content_truncated, error, error_truncated = self._bound_result(result)
         if content_truncated or error_truncated:
             self._ensure_artifact_dir()
@@ -459,6 +480,8 @@ class BackgroundMonitor(BaseResource):
 
     async def record_task_result_async(self, result: BackgroundTaskResult) -> None:
         """Spool oversized payloads off-loop, then atomically publish previews."""
+        if self.is_current_task_discarded():
+            return
         content, content_truncated, error, error_truncated = self._bound_result(result)
         if content_truncated or error_truncated:
             self._ensure_artifact_dir()
@@ -629,6 +652,8 @@ class BackgroundMonitor(BaseResource):
 
     def should_deliver_task_result_message(self, agent_id: str) -> bool:
         """Return whether completion should still be sent through the message bus."""
+        if self.is_current_task_discarded():
+            return False
         return agent_id not in self._delivered_task_results and agent_id not in self._waiting_task_results
 
     def get_task_result_preview(self, agent_id: str) -> BackgroundTaskResult | None:
@@ -731,6 +756,12 @@ class BackgroundMonitor(BaseResource):
             is_resume: Whether this is resuming a previous conversation.
             usage_run_id: Parent usage run that can receive a late cumulative snapshot.
         """
+        if self._resetting_subagents:
+            self._discarded_tasks.add(task)
+            task.add_done_callback(self._discarded_tasks.discard)
+            task.cancel()
+            raise RuntimeError("Cannot register a background subagent while session state is being reset")
+
         previous_task = self._tasks.get(agent_id)
         if previous_task is not None:
             if not previous_task.done():
@@ -778,6 +809,7 @@ class BackgroundMonitor(BaseResource):
         usage_run_id: str | None,
         completed_task: asyncio.Task[Any],
     ) -> None:
+        self._discarded_tasks.discard(completed_task)
         if self._tasks.get(agent_id) is not completed_task:
             return
         self._tasks.pop(agent_id, None)
@@ -851,6 +883,64 @@ class BackgroundMonitor(BaseResource):
                 asyncio.gather(*tasks, return_exceptions=True),
                 timeout=timeout,
             )
+
+    def begin_subagent_reset(self) -> None:
+        """Synchronously isolate and cancel all subagents from the old conversation."""
+        if self._resetting_subagents:
+            return
+        self._resetting_subagents = True
+        self._reset_tasks = set(self._tasks.values())
+        self._discarded_tasks.update(self._reset_tasks)
+        self._pending_messages = [pending for pending in self._pending_messages if pending.shell_process_id is not None]
+        for task in self._reset_tasks:
+            task.cancel()
+
+    def finish_subagent_reset(self) -> None:
+        """Synchronously discard tracked state after a reset attempt."""
+        if not self._resetting_subagents:
+            return
+        tasks = set(self._reset_tasks)
+        self._tasks.clear()
+        self._task_info.clear()
+        self._task_results.clear()
+        for agent_id in list(self._task_result_artifacts):
+            self._delete_task_artifacts(agent_id)
+        self._completed_task_order.clear()
+        self._delivered_task_results.clear()
+        self._enqueued_task_results.clear()
+        self._waiting_task_results.clear()
+        self._usage_run_task_ids.clear()
+        self._late_usage_run_ids.clear()
+        self._current_usage_run_id = None
+        self._retired_usage_run_ids.clear()
+        self._task_message_tokens.clear()
+        self._pending_messages = [pending for pending in self._pending_messages if pending.shell_process_id is not None]
+        self._discarded_tasks.difference_update(task for task in tasks if task.done())
+        self._reset_tasks.clear()
+        self._resetting_subagents = False
+
+    async def reset_subagent_state(self) -> None:
+        """Cancel background subagents and discard all subagent session state.
+
+        Shell process monitoring is intentionally preserved because background
+        processes belong to the environment rather than the conversation.
+        Tasks that exceed the bounded cancellation wait remain tombstoned, so
+        late results cannot re-enter the new conversation.
+        """
+        async with self._subagent_reset_lock:
+            self.begin_subagent_reset()
+            tasks = set(self._reset_tasks)
+            try:
+                if tasks:
+                    _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_BACKGROUND_TASKS_TIMEOUT)
+                    if pending:
+                        logger.warning(
+                            "%d background subagent task(s) did not cancel within %.1fs; late results will be discarded",
+                            len(pending),
+                            _SHUTDOWN_BACKGROUND_TASKS_TIMEOUT,
+                        )
+            finally:
+                self.finish_subagent_reset()
 
     # =========================================================================
     # Output monitoring for shell processes
@@ -1081,8 +1171,8 @@ class BackgroundMonitor(BaseResource):
             self._poll_task = None
             logger.debug("Shell monitor stopped")
 
-        # Cancel subagent tasks
-        tasks = list(self._tasks.values())
+        # Cancel active and tombstoned subagent tasks
+        tasks = list(set(self._tasks.values()) | self._discarded_tasks)
         for task in tasks:
             task.cancel()
         if tasks:
@@ -1115,6 +1205,9 @@ class BackgroundMonitor(BaseResource):
         self._current_usage_run_id = None
         self._retired_usage_run_ids.clear()
         self._task_message_tokens.clear()
+        self._discarded_tasks.clear()
+        self._reset_tasks.clear()
+        self._resetting_subagents = False
         self._core_toolset = None
         self._completion_callback = None
         self._shell = None

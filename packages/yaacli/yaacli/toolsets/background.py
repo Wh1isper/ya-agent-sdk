@@ -161,7 +161,6 @@ class SpawnDelegateTool(BaseTool):
                         content=result,
                     )
                 )
-                monitor.enqueue_usage_snapshot(deps.build_usage_snapshot())
                 message = BusMessage(
                     id=monitor.get_task_result_message_id(agent_id),
                     content=_task_result_notification(monitor, agent_id, result),
@@ -216,7 +215,13 @@ class SpawnDelegateTool(BaseTool):
                     else:
                         monitor.enqueue_message(message)
             finally:
-                # Notify completion so TUI can trigger a new agent turn if idle
+                # Preserve the final cumulative usage even when the task is
+                # cancelled or fails during a session clear.
+                try:
+                    monitor.enqueue_usage_snapshot(deps.build_usage_snapshot())
+                except Exception:
+                    logger.exception("Failed to retain final usage for background agent %s", agent_id)
+                # Notify completion so TUI can trigger a new agent turn if idle.
                 monitor.notify_completion(agent_id)
 
         task = asyncio.create_task(_run_background())

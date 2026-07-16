@@ -87,7 +87,8 @@ def test_streaming_ui_retains_only_bounded_raw_tail() -> None:
     assert any("output truncated" in block for block in app._output_lines)
 
 
-def test_prompt_history_is_bounded_and_clear_removes_it() -> None:
+@pytest.mark.asyncio
+async def test_prompt_history_is_bounded_and_clear_removes_it() -> None:
     app = make_app()
     app._max_prompt_history = 3
 
@@ -95,7 +96,7 @@ def test_prompt_history_is_bounded_and_clear_removes_it() -> None:
         app._add_prompt_history(f"prompt-{index}")
 
     assert app._prompt_history == ["prompt-7", "prompt-8", "prompt-9"]
-    app._clear_session()
+    await app._clear_session()
     assert app._prompt_history == []
 
 
