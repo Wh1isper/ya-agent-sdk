@@ -334,6 +334,7 @@ runtime = create_agent(
     model_cfg=ModelConfig(
         stream_resume_on_error=True,
         stream_resume_max_attempts=3,
+        stream_transport_resume_max_attempts=20,
         stream_resume_prompt="Continue from the recovered conversation history.",
     ),
 )
@@ -348,10 +349,16 @@ async with stream_agent(
     "Hello",
     resume_on_error=True,
     resume_max_attempts=5,
+    transport_resume_max_attempts=20,
 ) as streamer:
     async for event in streamer:
         pass
 ```
+
+Stream recovery keeps two independent attempt budgets:
+
+- `stream_resume_max_attempts` covers non-transport execution failures.
+- `stream_transport_resume_max_attempts` covers transient model HTTP/WebSocket failures, including HTTP response bodies that disconnect after streaming has started. Transport failures do not consume the execution budget.
 
 Retry recovery performs durable message-history cleanup before the next attempt:
 

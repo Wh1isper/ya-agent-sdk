@@ -5,12 +5,15 @@ Provides a registry-based command system for slash commands.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+import re
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from html import escape
 from typing import TYPE_CHECKING, Protocol
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from ya_agent_sdk.context import AvailableSkill
 
 if TYPE_CHECKING:
     pass
@@ -42,6 +45,67 @@ class Command:
     aliases: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SkillInvocation:
+    """Explicit skill prefixes parsed from one user prompt."""
+
+    names: tuple[str, ...]
+    prompt: str
+
+
+def parse_skill_invocation(
+    text: str,
+    available_skills: Mapping[str, AvailableSkill],
+    *,
+    command_names: Iterable[str] = (),
+) -> SkillInvocation | None:
+    """Parse consecutive ``/skill-name`` prefixes from the start of input.
+
+    Existing slash commands take precedence when the first token is both a
+    command and a skill. Unknown slash tokens are left in the remaining prompt.
+    """
+    commands = {name.removeprefix("/").lower() for name in command_names}
+    names: list[str] = []
+    cursor = 0
+
+    for match in re.finditer(r"\S+", text):
+        if match.start() < cursor:
+            continue
+        token = match.group(0)
+        if not token.startswith("/") or len(token) == 1:
+            break
+        name = token[1:]
+        if not names and name.lower() in commands:
+            return None
+        if name not in available_skills:
+            break
+        names.append(name)
+        cursor = match.end()
+
+    if not names:
+        return None
+    return SkillInvocation(names=tuple(names), prompt=text[cursor:].lstrip())
+
+
+def format_skill_invocation(
+    invocation: SkillInvocation,
+    available_skills: Mapping[str, AvailableSkill],
+) -> str:
+    """Build an explicit, catalog-grounded skill selection block."""
+    lines = [
+        "<explicit-skill-selection>",
+        "The user explicitly selected the following skills for this task. Inspect each SKILL.md, then activate it",
+        "and follow its applicable workflow. Treat this selection as a direct user request to use these skills.",
+    ]
+    for name in invocation.names:
+        skill = available_skills[name]
+        lines.append(f'  <skill name="{escape(skill.name, quote=True)}" path="{escape(skill.path, quote=True)}" />')
+    lines.append("</explicit-skill-selection>")
+    if invocation.prompt:
+        lines.extend(["", invocation.prompt])
+    return "\n".join(lines)
+
+
 class SlashCommandCompleter(Completer):
     """Complete slash commands and saved session IDs without taking over Tab."""
 
@@ -49,9 +113,11 @@ class SlashCommandCompleter(Completer):
         self,
         command_provider: Callable[[], Iterable[str]],
         session_provider: Callable[[], Iterable[str]],
+        skill_provider: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         self._command_provider = command_provider
         self._session_provider = session_provider
+        self._skill_provider = skill_provider or (lambda: ())
 
     def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterable[Completion]:
         text = document.text_before_cursor
@@ -68,11 +134,33 @@ class SlashCommandCompleter(Completer):
                     )
             return
 
-        if not text.startswith("/") or " " in text:
+        if not text.startswith("/"):
             return
-        for command in self._command_provider():
-            if command.startswith(text):
-                yield Completion(command, start_position=-len(text), display_meta="command")
+
+        commands = list(self._command_provider())
+        skills = list(self._skill_provider())
+        if " " not in text:
+            seen: set[str] = set()
+            for candidate, kind in [
+                *((command, "command") for command in commands),
+                *((skill, "skill") for skill in skills),
+            ]:
+                if candidate in seen or not candidate.startswith(text):
+                    continue
+                seen.add(candidate)
+                yield Completion(candidate, start_position=-len(text), display_meta=kind)
+            return
+
+        prefix, separator, fragment = text.rpartition(" ")
+        if not separator or not fragment.startswith("/"):
+            return
+        selected = prefix.split()
+        skill_set = set(skills)
+        if not selected or any(token not in skill_set for token in selected):
+            return
+        for skill in skills:
+            if skill not in selected and skill.startswith(fragment):
+                yield Completion(skill, start_position=-len(fragment), display_meta="skill")
 
 
 class CommandRegistry:

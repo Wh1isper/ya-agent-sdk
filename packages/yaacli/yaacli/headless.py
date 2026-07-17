@@ -13,10 +13,12 @@ from pydantic_ai import AgentRun, DeferredToolRequests, DeferredToolResults, Too
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, RetryPromptPart
 from ya_agent_sdk.agents.main import AgentInterrupted, stream_agent
 from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, ResumableState
+from ya_agent_sdk.toolsets.skills import SHARED_SKILLS_DIR_NAME, SkillToolset
 from ya_agent_sdk.utils import get_latest_request_usage
 from ya_agent_stream_protocol.agui import AguiReplayConfig, validate_display_events
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
+from yaacli.app.commands import format_skill_invocation, parse_skill_invocation
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display_replay import MAX_DISPLAY_REPLAY_LOAD_BYTES, BoundedDisplayReplay
 from yaacli.errors import safe_exception_str
@@ -247,6 +249,7 @@ async def _run_headless_prompt(
     else:
         effective_model_profile = get_startup_model_profile(config, config_manager.config_dir)
 
+    skill_toolset = SkillToolset(toolset_id="skills", extra_dir_names=[SHARED_SKILLS_DIR_NAME])
     runtime = create_tui_runtime(
         config=config,
         mcp_config=mcp_config,
@@ -255,6 +258,8 @@ async def _run_headless_prompt(
         model_profile=effective_model_profile,
         enable_async_subagents=False,
         enable_delegate_subagents=not worker,
+        enable_user_input=False,
+        skill_toolset=skill_toolset,
     )
     run_id = uuid.uuid4().hex[:12]
     adapter = AguiEventAdapter(session_id=resolved_session_id, run_id=run_id, config=YAACLI_AGUI_ADAPTER_CONFIG)
@@ -276,7 +281,14 @@ async def _run_headless_prompt(
             sink.replay.extend_snapshot(restored_display_messages)
             sink.emit(adapter.build_run_started_event())
 
-            user_prompt = _build_user_prompt(config_manager, working_dir, prompt)
+            await skill_toolset.refresh_context(runtime.ctx)
+            skill_invocation = parse_skill_invocation(prompt, runtime.ctx.available_skills)
+            effective_prompt = (
+                format_skill_invocation(skill_invocation, runtime.ctx.available_skills)
+                if skill_invocation is not None
+                else prompt
+            )
+            user_prompt = _build_user_prompt(config_manager, working_dir, effective_prompt)
             deferred_tool_results: DeferredToolResults | None = None
             cumulative_model_requests = 0
             max_model_requests = config.general.max_requests
@@ -297,6 +309,7 @@ async def _run_headless_prompt(
                     post_node_hook=emit_context_update,
                     resume_on_error=config.general.agent_stream_resume_on_error,
                     resume_max_attempts=config.general.agent_stream_resume_max_attempts,
+                    transport_resume_max_attempts=config.general.agent_stream_transport_resume_max_attempts,
                     resume_prompt=config.general.agent_stream_resume_prompt,
                 ) as streamer:
                     async for stream_event in streamer:

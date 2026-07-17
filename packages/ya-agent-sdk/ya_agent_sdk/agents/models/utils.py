@@ -6,6 +6,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import httpx
+import websockets
+from openai import APIStatusError
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import get_user_agent
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from tenacity import before_sleep_log, retry_if_exception, stop_after_attempt, wait_exponential
@@ -155,6 +158,52 @@ def is_retryable_model_request_exception(
     return isinstance(exc, httpx.RequestError | httpx.StreamError)
 
 
+def is_retryable_model_stream_exception(
+    exc: BaseException,
+    options: ModelRequestRetryOptions | None = None,
+) -> bool:
+    """Return whether a model stream failed because of a transient transport error.
+
+    Streaming response bodies are consumed after the HTTP transport has returned,
+    so mid-stream failures cannot be replayed by ``AsyncTenacityTransport``. Walk
+    provider exception chains to recognize those failures after an SDK wraps the
+    original HTTPX or WebSocket exception.
+    """
+
+    resolved = options or env_model_request_retry_options()
+    return _is_retryable_model_stream_exception_branch(exc, resolved, seen=frozenset())
+
+
+def _is_retryable_model_stream_exception_branch(
+    exc: BaseException,
+    options: ModelRequestRetryOptions,
+    *,
+    seen: frozenset[int],
+) -> bool:
+    """Classify one exception branch, requiring every grouped branch to be transient."""
+
+    identity = id(exc)
+    if identity in seen:
+        return False
+    branch_seen = seen | {identity}
+
+    if isinstance(exc, ModelHTTPError | APIStatusError):
+        return exc.status_code in options.status_codes
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in options.status_codes
+    if isinstance(exc, httpx.TransportError | websockets.WebSocketException | TimeoutError | OSError):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return bool(exc.exceptions) and all(
+            _is_retryable_model_stream_exception_branch(item, options, seen=branch_seen) for item in exc.exceptions
+        )
+    if exc.__cause__ is not None:
+        return _is_retryable_model_stream_exception_branch(exc.__cause__, options, seen=branch_seen)
+    if not exc.__suppress_context__ and exc.__context__ is not None:
+        return _is_retryable_model_stream_exception_branch(exc.__context__, options, seen=branch_seen)
+    return False
+
+
 def _env_bool(name: str, *, default: bool) -> bool:
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -213,5 +262,6 @@ __all__ = [
     "create_model_request_retry_transport",
     "env_model_request_retry_options",
     "is_retryable_model_request_exception",
+    "is_retryable_model_stream_exception",
     "validate_model_retry_response",
 ]

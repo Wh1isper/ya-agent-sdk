@@ -2,6 +2,9 @@
 # Location: .yaacli/tools.toml
 
 [tools]
+# Allow the interactive agent to ask structured clarifying questions.
+enable_user_input = true
+
 # Tools requiring user approval before execution
 # Example: need_approval = ["shell_exec", "write"]
 need_approval = []

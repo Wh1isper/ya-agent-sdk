@@ -44,6 +44,8 @@ from ya_agent_environment.shell import (
     OutputBuffer,
     ReadyState,
     Shell,
+    ShellBackgroundResetError,
+    ShellSessionAccessError,
     StdinAdapter,
 )
 from ya_agent_environment.types import FileEntry, FileStat, TruncatedResult
@@ -77,7 +79,9 @@ __all__ = [
     "ResourceRegistryState",
     "ResumableResource",
     "Shell",
+    "ShellBackgroundResetError",
     "ShellExecutionError",
+    "ShellSessionAccessError",
     "ShellTimeoutError",
     "StdinAdapter",
     "TmpFileOperator",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from pathlib import Path
 from typing import Literal
@@ -12,9 +13,11 @@ import pytest
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import RunContext
 from pydantic_ai.usage import RunUsage
+from ya_agent_environment import ShellBackgroundResetError, ShellSessionAccessError
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.context.agent import AgentInfo
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
+from ya_agent_sdk.environment.local import LocalShell
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.usage import UsageSnapshot
 from yaacli.app.state import TUIPhase
@@ -186,7 +189,7 @@ async def test_monitor_rejects_tasks_registered_during_subagent_reset() -> None:
 
 @pytest.mark.asyncio
 async def test_monitor_reset_subagent_state_preserves_shell_monitoring() -> None:
-    """Clearing conversation state must not terminate or forget background shell work."""
+    """The subagent-only reset must not terminate or forget shell work."""
     monitor = BackgroundMonitor()
     monitor.register_monitored_process("proc-1")
     monitor.enqueue_shell_message(
@@ -199,6 +202,108 @@ async def test_monitor_reset_subagent_state_preserves_shell_monitoring() -> None
 
     assert "proc-1" in monitor._monitored_processes
     assert monitor.has_pending_messages is True
+
+
+@pytest.mark.asyncio
+async def test_monitor_reset_session_state_discards_shell_work_and_notifications() -> None:
+    """A full session reset must isolate shell state while keeping the monitor reusable."""
+    monitor = BackgroundMonitor()
+    shell = MagicMock()
+    shell.reset_background_processes = AsyncMock()
+    monitor._shell = shell
+    monitor._known_active.add("proc-1")
+    monitor._completion_notified.add("proc-1")
+    monitor.register_monitored_process("proc-1")
+    monitor._notified_pending.add("proc-1")
+    monitor.enqueue_shell_message(
+        BusMessage(content="shell output ready", source="shell-monitor", target="main"),
+        process_id="proc-1",
+        kind="output",
+    )
+    completion_callback = MagicMock()
+    monitor.set_completion_callback(completion_callback)
+
+    monitor.begin_session_reset()
+    monitor._notify_shell_completion("proc-1")
+    await monitor.reset_session_state()
+
+    shell.reset_background_processes.assert_awaited_once_with()
+    completion_callback.assert_not_called()
+    assert monitor.has_pending_messages is False
+    assert monitor._known_active == set()
+    assert monitor._completion_notified == set()
+    assert monitor._monitored_processes == set()
+    assert monitor._notified_pending == set()
+    assert monitor._resetting_session is False
+
+    monitor.register_monitored_process("proc-2")
+    assert monitor._monitored_processes == {"proc-2"}
+
+
+@pytest.mark.asyncio
+async def test_monitor_reset_normalizes_custom_shell_cleanup_failure() -> None:
+    """Unknown backend reset errors must still block a session transition."""
+    monitor = BackgroundMonitor()
+    shell = MagicMock()
+    shell.reset_background_processes = AsyncMock(side_effect=RuntimeError("backend cleanup failed"))
+    monitor._shell = shell
+
+    with pytest.raises(ShellBackgroundResetError) as exc_info:
+        await monitor.reset_session_state()
+
+    assert set(exc_info.value.failures) == {"shell-backend"}
+    assert monitor._resetting_session is False
+
+
+@pytest.mark.asyncio
+async def test_monitor_session_task_captures_shell_generation_before_scheduling(tmp_path: Path) -> None:
+    """A queued task cannot adopt a generation advanced before its first loop turn."""
+    monitor = BackgroundMonitor()
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    monitor._shell = shell
+    task = monitor.create_session_task(lambda: shell.start("echo stale"), name="queued-old-session-agent")
+
+    shell.revoke_session_access()
+
+    with pytest.raises(ShellSessionAccessError, match="retired session"):
+        await task
+    assert shell.has_background_activity is False
+
+
+@pytest.mark.asyncio
+async def test_monitor_reset_revokes_old_subagent_and_child_shell_access(tmp_path: Path) -> None:
+    """Timed-out old tasks and inherited child tasks cannot create new shell work."""
+    monitor = BackgroundMonitor()
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    monitor._shell = shell
+    child_ready = asyncio.Event()
+    release_child = asyncio.Event()
+
+    async def stale_child() -> None:
+        child_ready.set()
+        await release_child.wait()
+        await shell.start("echo stale")
+
+    async def ignore_parent_cancellation() -> None:
+        child = asyncio.create_task(stale_child())
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(3600)
+        await child
+
+    task = monitor.create_session_task(ignore_parent_cancellation, name="old-session-agent")
+    monitor.register_task("old-agent", task)
+    await child_ready.wait()
+
+    with patch("yaacli.background._SHUTDOWN_BACKGROUND_TASKS_TIMEOUT", 0.01):
+        await monitor.reset_session_state()
+
+    assert task.done() is False
+    release_child.set()
+    with pytest.raises(ShellSessionAccessError, match="retired session"):
+        await task
+
+    assert shell.has_background_activity is False
+    assert monitor.active_tasks == {}
 
 
 @pytest.mark.asyncio

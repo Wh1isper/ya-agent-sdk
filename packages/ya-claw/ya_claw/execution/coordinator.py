@@ -815,6 +815,7 @@ class RunCoordinator:
                             deferred_tool_results=deferred_tool_results,
                             resume_on_error=self._settings.agent_stream_resume_on_error,
                             resume_max_attempts=self._settings.agent_stream_resume_max_attempts,
+                            transport_resume_max_attempts=self._settings.agent_stream_transport_resume_max_attempts,
                             resume_prompt=self._settings.agent_stream_resume_prompt,
                         ) as streamer:
                             steering_task = asyncio.create_task(

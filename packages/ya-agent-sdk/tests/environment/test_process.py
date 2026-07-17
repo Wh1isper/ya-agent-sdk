@@ -6,9 +6,16 @@ import os
 import shlex
 import signal
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from ya_agent_sdk.environment.process import kill_process_tree, process_group_kwargs
+import ya_agent_sdk.environment.process as process_module
+from ya_agent_sdk.environment.process import (
+    kill_process_tree,
+    process_group_kwargs,
+    send_process_tree_signal,
+    terminate_process_tree,
+)
 
 
 def _process_is_running(pid: int) -> bool:
@@ -50,6 +57,50 @@ async def _wait_for_pidfile(pidfile: Path, *, timeout: float = 2.0) -> int:
                 return pid
         await asyncio.sleep(0.05)
     raise AssertionError(f"child PID file was not populated with a running process ID: {pidfile}")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group signal test")
+def test_send_process_tree_signal_propagates_permission_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a missing process group may be treated as a successful public signal."""
+    process = MagicMock(spec=asyncio.subprocess.Process)
+    process.pid = 1234
+    monkeypatch.setattr(os, "killpg", MagicMock(side_effect=PermissionError("denied")))
+
+    with pytest.raises(PermissionError, match="denied"):
+        send_process_tree_signal(process, signal.SIGTERM, process_group_id=1234)
+
+
+def test_send_process_tree_signal_non_posix_propagates_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-POSIX public signals must not report permission failures as success."""
+    process = MagicMock(spec=asyncio.subprocess.Process)
+    process.pid = 1234
+    process.send_signal.side_effect = PermissionError("denied")
+    monkeypatch.setattr(process_module.os, "name", "nt")
+
+    with pytest.raises(PermissionError, match="denied"):
+        send_process_tree_signal(process, signal.SIGTERM)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group lifecycle test")
+async def test_terminate_process_tree_does_not_signal_reaped_numeric_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Graceful leader completion must not be followed by stale-PGID escalation."""
+    process = MagicMock(spec=asyncio.subprocess.Process)
+    process.pid = 1234
+    process.returncode = None
+
+    async def _wait() -> int:
+        process.returncode = 0
+        return 0
+
+    process.wait.side_effect = _wait
+    killpg = MagicMock()
+    monkeypatch.setattr(os, "killpg", killpg)
+
+    await terminate_process_tree(process, process_group_id=1234)
+
+    killpg.assert_called_once_with(1234, signal.SIGTERM)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX shell process tree test")

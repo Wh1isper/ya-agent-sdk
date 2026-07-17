@@ -7,7 +7,7 @@ Pydantic models in `yaacli.config`. Configuration is split by responsibility:
 
 - `config.toml` contains model, TUI, session, media, subagent, custom-command,
   process-environment, and security settings;
-- `tools.toml` contains tool and MCP approval policy;
+- `tools.toml` contains interactive tool availability and tool/MCP approval policy;
 - `mcp.json` contains MCP server definitions;
 - `.env` files provide supported `YAACLI_*` overrides and provider or SDK
   environment variables;
@@ -57,7 +57,10 @@ model_settings = "anthropic_adaptive_high"
 model_cfg = "claude_200k"
 max_requests = 1000
 agent_stream_resume_on_error = true
+# Non-transport execution recovery attempts.
 agent_stream_resume_max_attempts = 3
+# Independent transient model HTTP/WebSocket recovery attempts.
+agent_stream_transport_resume_max_attempts = 20
 agent_stream_resume_prompt = "Continue from recovered history without repeating completed work."
 max_goal_iterations = 10
 # system_prompt_file = "~/.yaacli/system_prompt.md"
@@ -196,9 +199,21 @@ permissions without copying model credentials or global UI settings:
 
 ```toml
 [tools]
+enable_user_input = true
 need_approval = ["shell_exec", "write"]
 need_approval_mcps = ["production-filesystem"]
 ```
+
+`enable_user_input` defaults to `true` and controls whether the interactive TUI
+registers the deferred `ask_user_question` tool. Setting it to `false` removes
+the tool. Headless mode leaves it disabled regardless because it cannot collect
+interactive answers.
+
+Project `tools.toml` replaces the global file as a whole rather than merging
+individual fields. Consequently, a project file that omits `enable_user_input`
+uses the schema default `true`, even when the global file sets it to `false`.
+Projects that must disable interactive clarification need to repeat
+`enable_user_input = false` in their own file.
 
 `need_approval` contains tool names. `need_approval_mcps` contains MCP server
 names whose tools require approval. An empty list means no additional static

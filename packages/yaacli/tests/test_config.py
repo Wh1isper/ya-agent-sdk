@@ -34,6 +34,7 @@ def test_default_config() -> None:
     assert config.general.model_settings is None
     assert config.general.agent_stream_resume_on_error is True
     assert config.general.agent_stream_resume_max_attempts == 3
+    assert config.general.agent_stream_transport_resume_max_attempts == 20
     assert config.model_profiles == {}
     assert config.general.agent_stream_resume_prompt.startswith("The previous streaming model request failed")
 
@@ -48,6 +49,7 @@ def test_default_config() -> None:
     assert config.media.max_pending_attachment_bytes == 20 * 1024 * 1024
 
     # Tools and security
+    assert config.tools.enable_user_input is True
     assert config.tools.need_approval == []
     assert config.security.shell_review.enabled is False
 
@@ -89,7 +91,11 @@ def test_general_config_accepts_former_loop_iteration_setting() -> None:
 
 def test_tools_config() -> None:
     """Test ToolsConfig (project-only config)."""
-    config = ToolsConfig(need_approval=["shell_sandbox", "file_write"])
+    config = ToolsConfig(
+        enable_user_input=False,
+        need_approval=["shell_sandbox", "file_write"],
+    )
+    assert config.enable_user_input is False
     assert config.need_approval == ["shell_sandbox", "file_write"]
 
 
@@ -351,6 +357,7 @@ code_theme = "dark"
 
     os.environ["YAACLI_CODE_THEME"] = "light"
     os.environ["YAACLI_AGENT_STREAM_RESUME_MAX_ATTEMPTS"] = "3"
+    os.environ["YAACLI_AGENT_STREAM_TRANSPORT_RESUME_MAX_ATTEMPTS"] = "17"
     os.environ["YAACLI_OAUTH_REFRESH_INTERVAL_SECONDS"] = "900"
     os.environ["YAACLI_OAUTH_REFRESH_ON_STARTUP"] = "false"
 
@@ -359,6 +366,7 @@ code_theme = "dark"
     assert config.display.code_theme == "light"
     assert config.general.model == "openai-chat:gpt-4o"
     assert config.general.agent_stream_resume_max_attempts == 3
+    assert config.general.agent_stream_transport_resume_max_attempts == 17
     assert config.oauth_refresh.interval_seconds == 900
     assert config.oauth_refresh.refresh_on_startup is False
 

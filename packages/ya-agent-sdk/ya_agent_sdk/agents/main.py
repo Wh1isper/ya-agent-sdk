@@ -53,6 +53,7 @@ from ya_agent_sdk.agents.compact import create_cache_friendly_compact_filter, cr
 from ya_agent_sdk.agents.guards import attach_message_bus_guard
 from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
 from ya_agent_sdk.agents.retry_recovery import recover_retry_message_history
 from ya_agent_sdk.context import (
     AgentContext,
@@ -1235,6 +1236,7 @@ async def stream_agent(  # noqa: C901
     raise_on_error: bool = True,
     resume_on_error: bool | None = None,
     resume_max_attempts: int | None = None,
+    transport_resume_max_attempts: int | None = None,
     resume_prompt: UserPromptT | None = None,
     resume_prompt_factory: ResumePromptFactory | None = None,
     # Lifecycle events
@@ -1284,8 +1286,13 @@ async def stream_agent(  # noqa: C901
             and can be checked after iteration via raise_if_exception().
         resume_on_error: If True, retry failed stream attempts inside the same stream.
             If None, uses ctx.model_cfg.stream_resume_on_error.
-        resume_max_attempts: Maximum total attempts when resume_on_error is enabled.
-            If None, uses ctx.model_cfg.stream_resume_max_attempts.
+        resume_max_attempts: Maximum total attempts for non-transport stream errors
+            when resume_on_error is enabled. If None, uses
+            ctx.model_cfg.stream_resume_max_attempts.
+        transport_resume_max_attempts: Independent maximum total attempts for
+            transient model transport failures. These attempts do not consume the
+            non-transport resume budget. If None, uses
+            ctx.model_cfg.stream_transport_resume_max_attempts.
         resume_prompt: Prompt sent after a recoverable stream failure. If unset,
             uses ctx.model_cfg.stream_resume_prompt, then the built-in default.
         resume_prompt_factory: Callable that builds a resume prompt from the exception,
@@ -1343,6 +1350,7 @@ async def stream_agent(  # noqa: C901
     main_done = asyncio.Event()
     poll_done = asyncio.Event()
     partial_text = PartialTextAccumulator()
+    attempt_failed_during_model_request = False
 
     logger.debug(
         "Starting stream_agent with user_prompt=%s",
@@ -1352,59 +1360,71 @@ async def stream_agent(  # noqa: C901
     # Build main agent info
     main_agent_info = AgentInfo(agent_id="main", agent_name=agent.name or "main")
 
+    def suppress_benign_stream_cleanup_error(exc: BaseException) -> bool:
+        if isinstance(exc, TypeError) and "cannot create weak reference to 'NoneType'" in str(exc):
+            logger.debug("Suppressed anyio CancelScope cleanup error from streaming: %s", exc)
+            return True
+        if isinstance(exc, ValueError) and "was created in a different Context" in str(exc):
+            logger.debug("Suppressed ContextVar cleanup error from pydantic-ai streaming: %s", exc)
+            return True
+        return False
+
+    async def process_node_event(
+        event: AgentStreamEvent,
+        node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT],
+        run: AgentRun[AgentDepsT, OutputT],
+    ) -> None:
+        """Run host-side event hooks and publish one model/tool event."""
+        event_ctx = EventHookContext(
+            agent_info=main_agent_info, event=event, node=node, run=run, output_queue=output_queue
+        )
+        await run_extension_method(extensions, "on_before_event", event_ctx, logger=logger)
+        if pre_event_hook:
+            await pre_event_hook(event_ctx)
+
+        wrapped_event = ctx.tool_id_wrapper.wrap_event(event)
+        partial_text.observe(wrapped_event)
+        await output_queue.put(
+            StreamEvent(
+                agent_id=main_agent_info.agent_id,
+                agent_name=main_agent_info.agent_name,
+                event=wrapped_event,
+            )
+        )
+
+        await run_extension_method(extensions, "on_after_event", event_ctx, logger=logger)
+        if post_event_hook:
+            await post_event_hook(event_ctx)
+
     async def process_node(
         node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT],
         run: AgentRun[AgentDepsT, OutputT],
     ) -> None:
         """Process a single node with hooks."""
+        nonlocal attempt_failed_during_model_request
+
         # PRE NODE HOOK
         logger.debug("Processing node: %s", type(node).__name__)
         node_ctx = NodeHookContext(agent_info=main_agent_info, node=node, run=run, output_queue=output_queue)
         await run_extension_method(extensions, "on_before_node", node_ctx, logger=logger)
         if pre_node_hook:
             await pre_node_hook(node_ctx)
+
+        event_processing_failed = False
         try:
             async with node.stream(run.ctx) as request_stream:
                 async for event in request_stream:
-                    # PRE EVENT HOOK
-                    event_ctx = EventHookContext(
-                        agent_info=main_agent_info, event=event, node=node, run=run, output_queue=output_queue
-                    )
-                    await run_extension_method(extensions, "on_before_event", event_ctx, logger=logger)
-                    if pre_event_hook:
-                        await pre_event_hook(event_ctx)
-
-                    wrapped_event = ctx.tool_id_wrapper.wrap_event(event)
-                    partial_text.observe(wrapped_event)
-                    await output_queue.put(
-                        StreamEvent(
-                            agent_id=main_agent_info.agent_id,
-                            agent_name=main_agent_info.agent_name,
-                            event=wrapped_event,
-                        )
-                    )
-
-                    # POST EVENT HOOK
-                    await run_extension_method(extensions, "on_after_event", event_ctx, logger=logger)
-                    if post_event_hook:
-                        await post_event_hook(event_ctx)
-        except TypeError as e:
-            # anyio CancelScope fails when asyncio.current_task() returns None during
-            # httpx stream cleanup after cancellation.  Benign -- stream already closing.
-            if "cannot create weak reference to 'NoneType'" in str(e):
-                logger.debug("Suppressed anyio CancelScope cleanup error from streaming: %s", e)
-            else:
-                raise
-        except ValueError as e:
-            # Suppress ContextVar cleanup errors from pydantic-ai's streaming internals.
-            # When pydantic-ai's _streaming_handler runs in a child task (wrap_task) with a copied
-            # context, set_current_run_context's __exit__ may call ContextVar.reset(token) in a
-            # Context object different from where the token was created.  This is harmless -- all
-            # stream events have already been emitted -- but the ValueError propagates through
-            # pydantic-ai's on_model_request_error (which re-raises by default).
-            if "was created in a different Context" in str(e):
-                logger.debug("Suppressed ContextVar cleanup error from pydantic-ai streaming: %s", e)
-            else:
+                    try:
+                        await process_node_event(event, node, run)
+                    except BaseException:
+                        event_processing_failed = True
+                        raise
+        except BaseException as exc:
+            # Suppress known benign anyio/ContextVar cleanup failures only when
+            # they came from stream cleanup. Host-side event processing errors
+            # always use the non-transport execution budget.
+            if event_processing_failed or not suppress_benign_stream_cleanup_error(exc):
+                attempt_failed_during_model_request = isinstance(node, ModelRequestNode) and not event_processing_failed
                 raise
 
         # POST NODE HOOK
@@ -1694,18 +1714,29 @@ async def stream_agent(  # noqa: C901
         effective_deferred_tool_results: DeferredToolResults | None,
         stream_start_time: float,
     ) -> None:
+        nonlocal attempt_failed_during_model_request
+
         effective_resume_on_error = ctx.model_cfg.stream_resume_on_error if resume_on_error is None else resume_on_error
         effective_resume_max_attempts = (
             ctx.model_cfg.stream_resume_max_attempts if resume_max_attempts is None else resume_max_attempts
         )
+        effective_transport_resume_max_attempts = (
+            ctx.model_cfg.stream_transport_resume_max_attempts
+            if transport_resume_max_attempts is None
+            else transport_resume_max_attempts
+        )
         max_attempts = max(1, effective_resume_max_attempts) if effective_resume_on_error else 1
+        transport_max_attempts = max(1, effective_transport_resume_max_attempts) if effective_resume_on_error else 1
         attempt_index = 0
+        non_transport_failures = 0
+        transport_failures = 0
         current_user_prompt = effective_user_prompt
         current_deferred_tool_results = effective_deferred_tool_results
         current_message_history: Sequence[ModelMessage] | None = message_history
 
         while True:
             try:
+                attempt_failed_during_model_request = False
                 attempt_message_history, attempt_user_prompt = split_resume_prompt_for_tool_call_history(
                     current_message_history,
                     current_user_prompt,
@@ -1720,7 +1751,20 @@ async def stream_agent(  # noqa: C901
                 )
                 return
             except Exception as e:
-                recoverable = attempt_index + 1 < max_attempts
+                is_transport_failure = attempt_failed_during_model_request and is_retryable_model_stream_exception(e)
+                if is_transport_failure:
+                    transport_failures += 1
+                    recoverable = transport_failures + 1 <= transport_max_attempts
+                    recovery_budget = "transport"
+                    failures_in_budget = transport_failures
+                    active_max_attempts = transport_max_attempts
+                else:
+                    non_transport_failures += 1
+                    recoverable = non_transport_failures + 1 <= max_attempts
+                    recovery_budget = "execution"
+                    failures_in_budget = non_transport_failures
+                    active_max_attempts = max_attempts
+
                 error_str = await emit_execution_failed_event(
                     e,
                     stream_start_time,
@@ -1762,10 +1806,13 @@ async def stream_agent(  # noqa: C901
                     )
                 )
                 logger.warning(
-                    "Resuming stream_agent after error attempt_index=%s next_attempt_index=%s max_attempts=%s error_type=%s error=%s",
+                    "Resuming stream_agent after error attempt_index=%s next_attempt_index=%s "
+                    "recovery_budget=%s failures_in_budget=%s max_attempts=%s error_type=%s error=%s",
                     attempt_index,
                     next_attempt_index,
-                    max_attempts,
+                    recovery_budget,
+                    failures_in_budget,
+                    active_max_attempts,
                     type(e).__name__,
                     error_str,
                 )

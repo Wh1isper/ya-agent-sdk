@@ -18,7 +18,7 @@ Yet Another Agent SDK for building AI agents with [Pydantic AI](https://ai.pydan
 - Hierarchical agents with subagent delegation
 - Tool search for large tool libraries
 - Skills system with hot reload and progressive loading
-- Human-in-the-loop approval workflows
+- Human-in-the-loop approval and optional structured clarification workflows
 - Event system and streaming support
 - Message bus for agent coordination and user steering
 
@@ -99,6 +99,24 @@ async with stream_agent(runtime, "Hello") as streamer:
         print(event)
 ```
 
+## Structured Clarifying Questions
+
+The optional `ask_user_question` tool uses Pydantic AI deferred-tool control flow to request one to four structured questions with suggested options, multi-select support, and free-text answers.
+
+```python
+from pydantic_ai import DeferredToolRequests
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.toolsets.core.interaction import tools as interaction_tools
+
+runtime = create_agent(
+    "anthropic:claude-sonnet-4",
+    tools=[*interaction_tools],
+    output_type=[str, DeferredToolRequests],
+)
+```
+
+The SDK deliberately does **not** include this tool in its default tool surface: hosts must opt in only when they can present `DeferredToolRequests`, collect answers, and resume with matching `DeferredToolResults.calls`. The tool is available only to the main agent because nested subagent runs do not own the host's user-interaction loop. See [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md) for the question schema and a complete continuation example.
+
 ## Local Shell Sandbox Policy
 
 `LocalShell` is the SDK's single local subprocess implementation. By default, `LocalShell` and `LocalEnvironment` preserve raw local subprocess behavior for SDK and YAACLI compatibility. Pass a resolved `ShellSandboxRuntimePolicy` to `LocalShell(sandbox_policy=...)` or `LocalEnvironment(shell_sandbox_policy=...)` to route commands through the selected local sandbox backend. `SandboxedLocalShell` is exported as a direct alias of `LocalShell` for naming convenience.
@@ -170,6 +188,7 @@ This package lives in the [`ya-mono`](https://github.com/wh1isper/ya-mono) works
 - [Streaming & Hooks](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/streaming.md)
 - [Events](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/events.md)
 - [Toolset Architecture](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/toolset.md)
+- [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md)
 - [Tool Search](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/tool-search.md)
 - [Subagent System](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/subagent.md)
 - [Skills System](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/skills.md)

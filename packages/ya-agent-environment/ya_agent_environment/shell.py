@@ -9,14 +9,19 @@ import asyncio
 import contextlib
 from abc import ABC, abstractmethod
 from collections import OrderedDict, deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from html import escape as _xml_escape
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, TypeVar, cast, final
 from uuid import uuid4
+
+from .exceptions import ShellTimeoutError
+
+_T = TypeVar("_T")
 
 # --- OutputBuffer limits ---
 # Max lines per stream (stdout/stderr) retained in the bounded deque.
@@ -131,8 +136,9 @@ class ExecutionHandle:
     the process lifecycle uniformly.
 
     For subprocess-based backends, stdout/stderr are the subprocess pipe
-    StreamReaders directly.  For non-streaming backends (Docker, RPC),
-    use asyncio.StreamReader as an adapter with feed_data/feed_eof.
+    StreamReaders directly and ``communicate`` may expose the native full-output
+    operation for foreground execution. For non-streaming backends (Docker,
+    RPC), use asyncio.StreamReader as an adapter with feed_data/feed_eof.
     """
 
     stdout: ReadableStream
@@ -142,6 +148,7 @@ class ExecutionHandle:
     stdin: WritableStream | None = None
     pid: int | None = None
     send_signal: Callable[[int], Awaitable[None]] | None = None
+    communicate: Callable[[], Awaitable[tuple[bytes, bytes]]] | None = None
 
 
 @dataclass
@@ -210,6 +217,19 @@ class ReadyState(StrEnum):
     FAILED = "failed"
 
 
+class ShellSessionAccessError(RuntimeError):
+    """Raised when work from a retired session tries to access a shared shell."""
+
+
+class ShellBackgroundResetError(RuntimeError):
+    """Raised when one or more owned shell executions could not be terminated."""
+
+    def __init__(self, failures: dict[str, BaseException]) -> None:
+        self.failures = dict(failures)
+        process_ids = ", ".join(sorted(failures))
+        super().__init__(f"Failed to terminate owned shell execution(s): {process_ids}")
+
+
 class Shell(ABC):
     """Abstract base class for shell command execution.
 
@@ -219,6 +239,14 @@ class Shell(ABC):
     wait_process) or consumed in bulk when completed (via
     consume_completed_results for filter injection).
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Reject runtime overrides that bypass the owned execute boundary."""
+        super().__init_subclass__(**kwargs)
+        if cls.execute is not Shell.execute:
+            raise TypeError(
+                f"{cls.__name__} must implement _create_process() and must not override final Shell.execute()"
+            )
 
     def __init__(
         self,
@@ -257,11 +285,25 @@ class Shell(ABC):
         # Background process tracking
         self._background_processes: dict[str, BackgroundProcess] = {}
         self._background_tasks: dict[str, asyncio.Task[int]] = {}
+        self._foreground_tasks: dict[str, asyncio.Task[tuple[int, str, str]]] = {}
+        self._execution_handles: dict[str, ExecutionHandle] = {}
+        self._background_cleanup_errors: dict[str, BaseException] = {}
         self._output_buffers: dict[str, OutputBuffer] = {}
         self._retained_completed_results: OrderedDict[str, CompletedProcess] = OrderedDict()
         self._retained_completed_output_bytes = 0
         self._stdin_streams: dict[str, WritableStream] = {}
         self._signal_handlers: dict[str, Callable[[int], Awaitable[None]]] = {}
+        self._background_lifecycle_lock = asyncio.Lock()
+
+        # Session-scoped work receives the current generation through a
+        # ContextVar. Child tasks inherit it automatically. Host tasks without
+        # a lease remain unrestricted so the reusable backend can serve the
+        # next session after the generation advances.
+        self._session_generation = 0
+        self._session_generation_var: ContextVar[int | None] = ContextVar(
+            f"shell_session_generation_{id(self)}",
+            default=None,
+        )
 
     @property
     def ready_state(self) -> ReadyState:
@@ -270,13 +312,41 @@ class Shell(ABC):
 
     async def ensure_ready(self) -> None:
         """Ensure the shell backend is ready for command execution."""
-        return None
+        self.assert_session_access()
+
+    def capture_session_access(self) -> int:
+        """Capture the generation for work that may start on a later loop turn."""
+        self.assert_session_access()
+        return self._session_generation
+
+    @contextlib.contextmanager
+    def session_access_scope(self, generation: int | None = None) -> Iterator[None]:
+        """Bind this task and its child tasks to a captured shell session."""
+        self.assert_session_access()
+        bound_generation = self._session_generation if generation is None else generation
+        if bound_generation != self._session_generation:
+            raise ShellSessionAccessError("Shell access belongs to a retired session")
+        token = self._session_generation_var.set(bound_generation)
+        try:
+            yield
+        finally:
+            self._session_generation_var.reset(token)
+
+    def revoke_session_access(self) -> None:
+        """Retire all previously bound session leases without closing the backend."""
+        self._session_generation += 1
+
+    def assert_session_access(self) -> None:
+        """Reject shell access inherited from a retired session task."""
+        generation = self._session_generation_var.get()
+        if generation is not None and generation != self._session_generation:
+            raise ShellSessionAccessError("Shell access belongs to a retired session")
 
     # ------------------------------------------------------------------
     # Abstract interface
     # ------------------------------------------------------------------
 
-    @abstractmethod
+    @final
     async def execute(
         self,
         command: str,
@@ -285,20 +355,126 @@ class Shell(ABC):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> tuple[int, str, str]:
-        """Execute a command and return (exit_code, stdout, stderr).
+        """Execute a foreground command through the shell-owned lifecycle.
 
-        Args:
-            command: Command string to execute via shell.
-            timeout: Timeout in seconds. None means no timeout -- the command
-                runs until it completes or is cancelled. The tool layer is
-                responsible for providing an explicit timeout (e.g. 180s default).
-            env: Environment variables.
-            cwd: Working directory (relative or absolute path).
-
-        Returns:
-            Tuple of (exit_code, stdout, stderr).
+        Process creation, execution, and cancellation remain visible to a
+        concurrent session reset. Subclasses implement ``_create_process`` and
+        must not override this ownership boundary.
         """
-        ...
+        self.assert_session_access()
+        operation_id = f"foreground-{self._generate_process_id()}"
+        effective_timeout = self._resolve_execute_timeout(timeout)
+        loop = asyncio.get_running_loop()
+        deadline = None if effective_timeout is None else loop.time() + effective_timeout
+
+        async def _create_registered_task() -> asyncio.Task[tuple[int, str, str]]:
+            async with self._background_lifecycle_lock:
+                self.assert_session_access()
+                handle = await self._create_execution_handle_owned(
+                    operation_id,
+                    command,
+                    env=env,
+                    cwd=cwd,
+                )
+                self._execution_handles[operation_id] = handle
+                task = asyncio.create_task(
+                    self._run_foreground_execution(operation_id, handle),
+                    name=f"foreground-shell-{operation_id}",
+                )
+                self._foreground_tasks[operation_id] = task
+                task.add_done_callback(lambda _done: self._foreground_tasks.pop(operation_id, None))
+                return task
+
+        if deadline is None:
+            task = await _create_registered_task()
+        else:
+            timeout_scope = asyncio.timeout_at(deadline)
+            try:
+                async with timeout_scope:
+                    task = await _create_registered_task()
+            except TimeoutError as exc:
+                if not timeout_scope.expired():
+                    raise
+                raise ShellTimeoutError(command, cast(float, effective_timeout)) from exc
+
+        try:
+            if deadline is None:
+                return await asyncio.shield(task)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                await self._cancel_foreground_execution(task)
+                raise ShellTimeoutError(command, cast(float, effective_timeout))
+            return await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+        except TimeoutError as exc:
+            await self._cancel_foreground_execution(task)
+            raise ShellTimeoutError(command, cast(float, effective_timeout)) from exc
+        except asyncio.CancelledError:
+            await self._cancel_foreground_execution(task)
+            raise
+
+    def _resolve_execute_timeout(self, timeout: float | None) -> float | None:
+        """Resolve a public execute timeout; subclasses may preserve backend defaults."""
+        return timeout
+
+    @staticmethod
+    async def _read_stream_fully(stream: ReadableStream) -> str:
+        """Read a foreground stream without applying background buffer limits."""
+        chunks: list[str] = []
+        while True:
+            data = await stream.readline()
+            if not data:
+                return "".join(chunks)
+            chunks.append(data.decode("utf-8", errors="replace"))
+
+    async def _run_foreground_execution(
+        self,
+        operation_id: str,
+        handle: ExecutionHandle,
+    ) -> tuple[int, str, str]:
+        """Drain and wait for one foreground handle under shell ownership."""
+        stdout_task: asyncio.Task[str] | None = None
+        stderr_task: asyncio.Task[str] | None = None
+        try:
+            if handle.communicate is not None:
+                stdout_bytes, stderr_bytes = await handle.communicate()
+                exit_code = await handle.wait()
+                stdout = stdout_bytes.decode("utf-8", errors="replace")
+                stderr = stderr_bytes.decode("utf-8", errors="replace")
+            else:
+                stdout_task = asyncio.create_task(
+                    self._read_stream_fully(handle.stdout),
+                    name=f"foreground-stdout-{operation_id}",
+                )
+                stderr_task = asyncio.create_task(
+                    self._read_stream_fully(handle.stderr),
+                    name=f"foreground-stderr-{operation_id}",
+                )
+                exit_code = await handle.wait()
+                stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+        except asyncio.CancelledError:
+            await self._kill_execution_handle(operation_id, handle)
+            raise
+        except BaseException:
+            await self._kill_execution_handle(operation_id, handle)
+            raise
+        else:
+            self._execution_handles.pop(operation_id, None)
+            self._background_cleanup_errors.pop(operation_id, None)
+            return exit_code, stdout, stderr
+        finally:
+            reader_tasks = [task for task in (stdout_task, stderr_task) if task is not None]
+            for reader_task in reader_tasks:
+                reader_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*reader_tasks)
+
+    async def _cancel_foreground_execution(self, task: asyncio.Task[tuple[int, str, str]]) -> None:
+        """Cancel an owned foreground task and wait for termination to finish."""
+        task.cancel()
+        # The execution task re-raises its expected cancellation only after its
+        # kill hook has completed successfully.
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._await_owned_future(task)
 
     @staticmethod
     async def _read_stream(
@@ -328,6 +504,21 @@ class Shell(ABC):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> str:
+        """Create and register a background process atomically with session reset."""
+        self.assert_session_access()
+        async with self._background_lifecycle_lock:
+            # The lease may have been revoked while this task waited behind a
+            # reset that was already in progress.
+            self.assert_session_access()
+            return await self._start_background_process(command, env=env, cwd=cwd)
+
+    async def _start_background_process(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> str:
         """Start a command in the background with streaming output.
 
         Calls _create_process() to obtain an ExecutionHandle, then sets up
@@ -346,14 +537,21 @@ class Shell(ABC):
         Returns:
             A process_id string for use with wait_process / kill_process.
         """
+        self.assert_session_access()
         process_id, buf = self._setup_background_process(command, cwd)
 
         try:
-            handle = await self._create_process(command, env=env, cwd=cwd)
-        except Exception:
-            # Clean up tracking on failure to create process
-            self._output_buffers.pop(process_id, None)
-            self._background_processes.pop(process_id, None)
+            handle = await self._create_execution_handle_owned(
+                process_id,
+                command,
+                env=env,
+                cwd=cwd,
+            )
+        except BaseException:
+            # A failed termination retains its handle and metadata for reset.
+            if process_id not in self._execution_handles:
+                self._output_buffers.pop(process_id, None)
+                self._background_processes.pop(process_id, None)
             raise
 
         async def _run() -> int:
@@ -368,19 +566,28 @@ class Shell(ABC):
             )
             try:
                 exit_code = await handle.wait()
+                # Wait for readers to drain remaining buffered output.
+                await asyncio.gather(stdout_task, stderr_task)
             except asyncio.CancelledError:
-                await handle.kill()
+                # Keep the handle when termination fails so reset/kill can retry.
+                await self._kill_execution_handle(process_id, handle)
+                raise
+            except BaseException:
+                # A failed wait/read path still owns a potentially live process.
+                await self._kill_execution_handle(process_id, handle)
                 raise
             else:
-                # Wait for readers to drain remaining buffered output
-                await asyncio.gather(stdout_task, stderr_task)
+                self._execution_handles.pop(process_id, None)
+                self._background_cleanup_errors.pop(process_id, None)
                 return exit_code
             finally:
-                # Ensure reader tasks are always cleaned up
+                # Ensure reader tasks are always cleaned up.
                 stdout_task.cancel()
                 stderr_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.gather(stdout_task, stderr_task)
+
+        self._execution_handles[process_id] = handle
 
         # Update metadata with PID if available
         if handle.pid is not None:
@@ -398,6 +605,27 @@ class Shell(ABC):
         self._register_background_task(process_id, task)
         return process_id
 
+    async def _create_execution_handle_owned(
+        self,
+        operation_id: str,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ExecutionHandle:
+        """Create a handle without allowing caller cancellation to lose it."""
+        creation_task = asyncio.create_task(
+            self._create_process(command, env=env, cwd=cwd),
+            name=f"shell-create-{operation_id}",
+        )
+        handle, cancelled_error = await self._await_owned_future(creation_task)
+        if cancelled_error is None:
+            return handle
+
+        self._execution_handles[operation_id] = handle
+        await self._kill_execution_handle(operation_id, handle)
+        raise cancelled_error
+
     @abstractmethod
     async def _create_process(
         self,
@@ -412,9 +640,10 @@ class Shell(ABC):
         connection.  The ABC's start() manages all lifecycle concerns
         (reader tasks, buffer tracking, cancellation cleanup).
 
-        For subprocess-based backends, stdout/stderr are the subprocess
-        pipe StreamReaders directly.  For non-streaming backends (Docker,
-        RPC), use asyncio.StreamReader as an adapter with feed_data/feed_eof.
+        For subprocess-based backends, stdout/stderr are the subprocess pipe
+        StreamReaders directly and communicate may expose native full-output
+        collection. For non-streaming backends (Docker, RPC), use
+        asyncio.StreamReader as an adapter with feed_data/feed_eof.
 
         Args:
             command: Command string to execute via shell.
@@ -457,6 +686,65 @@ class Shell(ABC):
         self._output_buffers[process_id] = buf
         self._pop_retained_completed_result(process_id)
         return process_id, buf
+
+    def _forget_background_process(self, process_id: str) -> None:
+        """Drop all lifecycle state after a process is known to be terminated."""
+        self._background_tasks.pop(process_id, None)
+        self._foreground_tasks.pop(process_id, None)
+        self._execution_handles.pop(process_id, None)
+        self._background_cleanup_errors.pop(process_id, None)
+        self._background_processes.pop(process_id, None)
+        self._output_buffers.pop(process_id, None)
+        self._stdin_streams.pop(process_id, None)
+        self._signal_handlers.pop(process_id, None)
+        self._pop_retained_completed_result(process_id)
+
+    async def _kill_execution_handle(self, process_id: str, handle: ExecutionHandle) -> None:
+        """Kill a process and retain ownership when its backend hook fails."""
+
+        async def _kill() -> None:
+            await handle.kill()
+
+        kill_task = asyncio.create_task(_kill(), name=f"shell-kill-{process_id}")
+        try:
+            _, cancelled_error = await self._await_owned_future(kill_task)
+        except BaseException as exc:
+            self._background_cleanup_errors[process_id] = exc
+            raise
+
+        self._execution_handles.pop(process_id, None)
+        self._background_cleanup_errors.pop(process_id, None)
+        if cancelled_error is not None:
+            raise cancelled_error
+
+    @staticmethod
+    async def _await_owned_future(
+        future: asyncio.Future[_T],
+    ) -> tuple[_T, asyncio.CancelledError | None]:
+        """Finish shell-owned work despite repeated caller cancellation."""
+        cancelled_error: asyncio.CancelledError | None = None
+        while True:
+            try:
+                return await asyncio.shield(future), cancelled_error
+            except asyncio.CancelledError as exc:
+                if cancelled_error is None:
+                    cancelled_error = exc
+                if future.done():
+                    return future.result(), cancelled_error
+
+    def _record_reset_task_failures(
+        self,
+        task_items: list[tuple[str, asyncio.Task[Any]]],
+        task_results: list[Any],
+    ) -> None:
+        """Retain errors only when a process handle still requires cleanup."""
+        for (process_id, _task), result in zip(task_items, task_results, strict=True):
+            if (
+                isinstance(result, BaseException)
+                and not isinstance(result, asyncio.CancelledError)
+                and process_id in self._execution_handles
+            ):
+                self._background_cleanup_errors.setdefault(process_id, result)
 
     def _pop_retained_completed_result(self, process_id: str) -> CompletedProcess | None:
         """Remove a retained result and update its aggregate byte accounting."""
@@ -506,6 +794,10 @@ class Shell(ABC):
         try:
             exit_code = task.result()
         except Exception:
+            if process_id in self._background_cleanup_errors:
+                # The execution task ended because its kill hook failed. Keep
+                # lifecycle status active until a retry confirms termination.
+                return
             buf.completed = True
             buf.exit_code = -1
             return
@@ -564,6 +856,7 @@ class Shell(ABC):
             KeyError: If process_id has no output buffer (never started,
                 already fully consumed, or already killed).
         """
+        self.assert_session_access()
         buf = self._output_buffers.get(process_id)
         if buf is None:
             retained = self._pop_retained_completed_result(process_id)
@@ -618,6 +911,7 @@ class Shell(ABC):
             KeyError: If process_id is not found (never started or
                 already consumed / killed).
         """
+        self.assert_session_access()
         buf = self._output_buffers.get(process_id)
         if buf is None:
             retained = self._pop_retained_completed_result(process_id)
@@ -651,18 +945,20 @@ class Shell(ABC):
         Raises:
             KeyError: If process_id is not found.
         """
+        self.assert_session_access()
         task = self._background_tasks.get(process_id)
+        handle = self._execution_handles.get(process_id)
         buf = self._output_buffers.get(process_id)
 
-        if task is None and buf is None:
+        if task is None and handle is None and buf is None:
             raise KeyError(f"No background process with id: {process_id}")
 
-        # Drain current buffer before cancel
+        # Drain current buffer before cancel.
         stdout = "\n".join(buf.stdout) if buf and buf.stdout else ""
         stderr = "\n".join(buf.stderr) if buf and buf.stderr else ""
+        terminated = False
 
         try:
-            # Close stdin before cancelling
             stdin = self._stdin_streams.pop(process_id, None)
             if stdin is not None:
                 with contextlib.suppress(Exception):
@@ -672,14 +968,98 @@ class Shell(ABC):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            elif handle is not None:
+                await self._kill_execution_handle(process_id, handle)
+            terminated = True
         finally:
-            # Always clean up tracking, even if cancel/close raises
-            self._background_tasks.pop(process_id, None)
-            self._background_processes.pop(process_id, None)
-            self._output_buffers.pop(process_id, None)
-            self._signal_handlers.pop(process_id, None)
+            if terminated:
+                self._forget_background_process(process_id)
 
         return stdout, stderr
+
+    async def reset_background_processes(self) -> None:
+        """Terminate all owned execution and forget background state while remaining reusable."""
+        self.assert_session_access()
+        cleanup = asyncio.create_task(
+            self._reset_background_processes_locked(),
+            name=f"shell-reset-{id(self)}",
+        )
+        _, cancelled_error = await self._await_owned_future(cleanup)
+        if cancelled_error is not None:
+            raise cancelled_error
+
+    async def _reset_background_processes_locked(self) -> None:
+        """Serialize process creation and the complete reset snapshot."""
+        async with self._background_lifecycle_lock:
+            await self._reset_background_processes_unlocked()
+
+    async def _reset_background_processes_unlocked(self) -> None:
+        """Reset tracked work while the execution lifecycle lock is held.
+
+        Failed process termination is reported and its execution handle remains
+        owned by the shell so a later reset can retry safely.
+        """
+        task_items: list[tuple[str, asyncio.Task[Any]]] = [
+            *self._background_tasks.items(),
+            *self._foreground_tasks.items(),
+        ]
+        task_process_ids = {process_id for process_id, _task in task_items}
+        retry_handle_items = [
+            (process_id, handle)
+            for process_id, handle in self._execution_handles.items()
+            if process_id not in task_process_ids
+        ]
+        tracked_process_ids = (
+            set(self._background_processes)
+            | set(self._background_tasks)
+            | set(self._foreground_tasks)
+            | set(self._execution_handles)
+            | set(self._output_buffers)
+            | set(self._background_cleanup_errors)
+        )
+        stdin_streams = list(self._stdin_streams.values())
+
+        # Every active execution receives cancellation before the first await.
+        for _process_id, task in task_items:
+            task.cancel()
+
+        async def _close_stream(stream: WritableStream) -> None:
+            with contextlib.suppress(Exception):
+                await stream.close()
+
+        retry_tasks = [
+            asyncio.create_task(
+                self._kill_execution_handle(process_id, handle),
+                name=f"bg-shell-reset-{process_id}",
+            )
+            for process_id, handle in retry_handle_items
+        ]
+        stream_tasks = [asyncio.create_task(_close_stream(stream)) for stream in stdin_streams]
+        cleanup = asyncio.gather(
+            *(task for _process_id, task in task_items),
+            *retry_tasks,
+            *stream_tasks,
+            return_exceptions=True,
+        )
+        results, cancelled_error = await self._await_owned_future(cleanup)
+        self._record_reset_task_failures(task_items, results[: len(task_items)])
+
+        failed_process_ids = tracked_process_ids & set(self._background_cleanup_errors)
+        for process_id in tracked_process_ids - failed_process_ids:
+            self._forget_background_process(process_id)
+
+        # Terminal caches and process I/O never cross a session boundary, even
+        # when a failed execution handle must remain for a retry.
+        self._retained_completed_results.clear()
+        self._retained_completed_output_bytes = 0
+        self._stdin_streams.clear()
+        self._signal_handlers.clear()
+
+        if failed_process_ids:
+            failures = {process_id: self._background_cleanup_errors[process_id] for process_id in failed_process_ids}
+            raise ShellBackgroundResetError(failures)
+        if cancelled_error is not None:
+            raise cancelled_error
 
     async def close(self) -> None:
         """Clean up resources owned by this Shell.
@@ -689,17 +1069,7 @@ class Shell(ABC):
         (e.g., persistent shell sessions, SSH connections).
         Always call super().close() when overriding.
         """
-        for pid in list(self._background_tasks):
-            with contextlib.suppress(Exception):
-                await self.kill_process(pid)
-        # Also clean up any completed-but-unconsumed buffers
-        self._background_tasks.clear()
-        self._background_processes.clear()
-        self._output_buffers.clear()
-        self._retained_completed_results.clear()
-        self._retained_completed_output_bytes = 0
-        self._stdin_streams.clear()
-        self._signal_handlers.clear()
+        await self.reset_background_processes()
 
     # ------------------------------------------------------------------
     # Stdin interaction
@@ -715,6 +1085,7 @@ class Shell(ABC):
         Raises:
             KeyError: If process_id not found or process has no stdin.
         """
+        self.assert_session_access()
         stream = self._stdin_streams.get(process_id)
         if stream is None:
             if process_id in self._output_buffers:
@@ -731,6 +1102,7 @@ class Shell(ABC):
         Args:
             process_id: The process ID returned by start().
         """
+        self.assert_session_access()
         stream = self._stdin_streams.pop(process_id, None)
         if stream is not None:
             with contextlib.suppress(Exception):
@@ -762,6 +1134,7 @@ class Shell(ABC):
             KeyError: If process_id is not found, has no signal handler,
                 or has already completed.
         """
+        self.assert_session_access()
         handler = self._signal_handlers.get(process_id)
         if handler is None:
             if process_id in self._output_buffers:
@@ -793,6 +1166,7 @@ class Shell(ABC):
         Returns:
             List of CompletedProcess, ordered by discovery.
         """
+        self.assert_session_access()
         self._refresh_completed_tasks()
         completed_pids = [pid for pid, buf in self._output_buffers.items() if buf.completed]
 
@@ -855,31 +1229,44 @@ class Shell(ABC):
         completed or killed).  Completed-but-unconsumed processes are
         excluded -- use consume_completed_results() for those.
         """
-        return {pid: p for pid, p in self._background_processes.items() if pid in self._background_tasks}
+        self.assert_session_access()
+        active_ids = set(self._background_tasks) | set(self._background_cleanup_errors)
+        return {pid: process for pid, process in self._background_processes.items() if pid in active_ids}
 
     @property
     def has_active_background_processes(self) -> bool:
-        """Check if there are any active background processes."""
-        return bool(self._background_tasks)
+        """Check if there are any active or termination-failed processes."""
+        self.assert_session_access()
+        return bool(self._background_tasks) or bool(self._background_cleanup_errors)
 
     @property
     def has_background_activity(self) -> bool:
-        """Check for running processes or completed results awaiting filter delivery."""
+        """Check for running, unread, or termination-failed background work."""
+        self.assert_session_access()
         self._refresh_completed_tasks()
-        return bool(self._background_tasks) or any(buf.completed for buf in self._output_buffers.values())
+        return (
+            bool(self._background_tasks)
+            or bool(self._background_cleanup_errors)
+            or any(buf.completed for buf in self._output_buffers.values())
+        )
 
     @property
     def has_retained_completed_results(self) -> bool:
         """Check for injected completed results still available to explicit wait."""
+        self.assert_session_access()
         return bool(self._retained_completed_results)
 
     def background_status_summary(self) -> str | None:
         """Return active and newly completed background process status."""
+        self.assert_session_access()
         self._refresh_completed_tasks()
+        cleanup_failed = set(self._background_cleanup_errors)
         active = {pid: p for pid, p in self._background_processes.items() if pid in self._background_tasks}
-        completed_bufs = {pid: buf for pid, buf in self._output_buffers.items() if buf.completed}
+        completed_bufs = {
+            pid: buf for pid, buf in self._output_buffers.items() if buf.completed and pid not in cleanup_failed
+        }
 
-        if not active and not completed_bufs:
+        if not active and not completed_bufs and not cleanup_failed:
             return None
 
         parts: list[str] = ["<background-processes>"]
@@ -901,6 +1288,13 @@ class Shell(ABC):
                 parts.append(
                     f'  <process id="{_xml_escape(pid)}" status="{_xml_escape(status)}" command="{_xml_escape(cmd)}" />'
                 )
+
+        for pid in cleanup_failed - set(completed_bufs):
+            meta = self._background_processes.get(pid)
+            cmd = meta.command if meta else "unknown"
+            parts.append(
+                f'  <process id="{_xml_escape(pid)}" status="termination-failed" command="{_xml_escape(cmd)}" />'
+            )
 
         parts.append("</background-processes>")
         return "\n".join(parts)
@@ -997,8 +1391,14 @@ class DeferredShell(Shell):
         """Resolve the concrete shell if needed."""
         await self.resolve_shell()
 
+    def _resolve_execute_timeout(self, timeout: float | None) -> float | None:
+        """Apply the deferred backend's configured default timeout."""
+        effective = self._default_timeout if timeout is None else timeout
+        return effective if effective > 0 else None
+
     async def resolve_shell(self) -> Shell:
         """Return the concrete shell, resolving it once with concurrency safety."""
+        self.assert_session_access()
         if self._resolved_shell is not None:
             return self._resolved_shell
 
@@ -1022,18 +1422,6 @@ class DeferredShell(Shell):
         """Create or return the concrete shell backend."""
         ...
 
-    async def execute(
-        self,
-        command: str,
-        *,
-        timeout: float | None = None,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> tuple[int, str, str]:
-        """Execute a command with the resolved shell."""
-        shell = await self.resolve_shell()
-        return await shell.execute(command, timeout=timeout, env=env, cwd=cwd)
-
     async def start(
         self,
         command: str,
@@ -1041,9 +1429,13 @@ class DeferredShell(Shell):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> str:
-        """Start a background command with the resolved shell."""
-        shell = await self.resolve_shell()
-        return await shell.start(command, env=env, cwd=cwd)
+        """Start a background command atomically with proxy and backend reset."""
+        self.assert_session_access()
+        async with self._background_lifecycle_lock:
+            self.assert_session_access()
+            shell = await self.resolve_shell()
+            self.assert_session_access()
+            return await shell.start(command, env=env, cwd=cwd)
 
     async def _create_process(
         self,
@@ -1169,6 +1561,22 @@ class DeferredShell(Shell):
             self._retained_completed_status_summary(),
             (self._resolved_shell._retained_completed_status_summary() if self._resolved_shell is not None else None),
         )
+
+    async def _reset_background_processes_locked(self) -> None:
+        """Reset proxy and backend in the same lock order used by start()."""
+        errors: list[BaseException] = []
+        async with self._background_lifecycle_lock:
+            try:
+                await super()._reset_background_processes_unlocked()
+            except BaseException as exc:
+                errors.append(exc)
+            if self._resolved_shell is not None:
+                try:
+                    await self._resolved_shell.reset_background_processes()
+                except BaseException as exc:
+                    errors.append(exc)
+        if errors:
+            raise errors[0]
 
     async def close(self) -> None:
         """Close proxy and resolved shell resources."""

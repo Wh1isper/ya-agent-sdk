@@ -224,7 +224,7 @@ class SpawnDelegateTool(BaseTool):
                 # Notify completion so TUI can trigger a new agent turn if idle.
                 monitor.notify_completion(agent_id)
 
-        task = asyncio.create_task(_run_background())
+        task = monitor.create_session_task(_run_background, name=f"subagent-{agent_id}")
         monitor.register_task(
             agent_id,
             task,

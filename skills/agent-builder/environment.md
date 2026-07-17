@@ -133,6 +133,8 @@ SandboxEnvironment(
 )
 ```
 
+A custom `Shell` implements `_create_process()` and returns an `ExecutionHandle`; it must not override the final `Shell.execute()` boundary. Runtime class creation rejects an `execute()` override with `TypeError`, so migrate legacy backends to `_create_process()` instead of bypassing ownership. The base class keeps foreground and background commands owned across cancellation and session reset, so each handle's `kill` callback must confirm termination or raise for retry.
+
 ## Environment Toolsets
 
 Environments can provide pydantic-ai toolsets via the `get_toolsets()` method:

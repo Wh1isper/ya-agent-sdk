@@ -17,12 +17,13 @@ HITL is both:
 [str, DeferredToolRequests]
 ```
 
-Current approval policy comes from:
+Current interaction policy comes from:
 
+- `tools.enable_user_input`, which defaults to `true` and controls registration of the optional `ask_user_question` tool;
 - `tools.need_approval` for tool names; and
 - `tools.need_approval_mcps` for MCP servers.
 
-These values are passed to `create_agent()` as `need_user_approve_tools` and `need_user_approve_mcps`.
+The approval values are passed to `create_agent()` as `need_user_approve_tools` and `need_user_approve_mcps`. The TUI passes `enable_user_input` to `create_tui_runtime()`, which adds the SDK interaction tool only for supported interactive hosts. The SDK and `create_tui_runtime()` defaults remain opt-in/disabled at their reusable runtime boundaries.
 
 Persisted state must not weaken this policy. `restore_resumable_state_safely()` restores conversation data and then reapplies the approval lists from the active runtime.
 
@@ -75,8 +76,9 @@ For approvals:
 
 For deferred calls:
 
-- a supplied result becomes a `RetryPromptPart`;
-- an explicit denial also becomes a `RetryPromptPart` whose content records the denial;
+- `ask_user_question` is recognized by tool name or deferred metadata kind, parsed into the validated structured schema, and returned as a JSON-compatible answer mapping under the original call ID;
+- any other supplied result becomes a `RetryPromptPart`;
+- an explicit denial for another deferred call also becomes a `RetryPromptPart` whose content records the denial; and
 - the original tool name and tool-call ID are retained.
 
 The resulting `DeferredToolResults` is sent through the same agent stream, which may return another deferred batch.
@@ -109,6 +111,8 @@ Deferred calls have a separate explicit contract:
 | Idle-only/custom/unknown slash or `!shell` | Reject or diagnose locally without supplying a result |
 | `/cancel` | Cancel without supplying a result |
 
+Structured clarification calls render each question separately. A single-select question accepts one option number or free text. A multi-select question accepts comma-separated option numbers or free text. Valid numeric selections are converted to option labels; other non-empty input is preserved as free text, while empty answers keep the question pending. The final call result includes the original questions and an `answers` mapping keyed by exact question text.
+
 `/cancel` and deferred-call `/deny` are checked before the generic control classifier. The `/` and `!` namespaces are then resolved before approval steering or deferred-call result parsing. Empty Enter never approves, and approval text outside the explicit allowlist never approves accidentally. The entire HITL parser additionally requires the authoritative phase to remain `AWAITING_APPROVAL`; once cancellation or saving begins, cleanup-phase routing wins even if the pending flag has not yet been reset.
 
 ## Steering During Approval
@@ -134,6 +138,8 @@ For each request, YAACLI renders:
 - bounded arguments;
 - shell-review risk and reason metadata when present; and
 - an input hint matching the current approval or deferred-call contract.
+
+For `ask_user_question`, YAACLI instead renders a dedicated panel for every question with its short header, question text, numbered labels, option descriptions, selection mode, and cancellation hint.
 
 `view` toggles the expanded representation without resolving the request. The status bar derives its approval label and progress from the explicit phase and request fields rather than dynamic attribute probing.
 
@@ -166,7 +172,7 @@ HITL UI state is intentionally process-local. YAACLI does **not** infer or recre
 
 ## Headless Mode
 
-Headless mode cannot collect interactive HITL input. It converts deferred approvals and calls into explicit denials, sends those `DeferredToolResults` back to the agent, and continues until final text or an error is produced.
+Headless mode cannot collect interactive HITL input and never registers `ask_user_question`, regardless of `tools.enable_user_input`. Other deferred approvals and calls are converted into explicit denials, sent back as `DeferredToolResults`, and continued until final text or an error is produced.
 
 The headless terminal-event contract is independent of the TUI panel flow:
 
@@ -184,8 +190,8 @@ Tests must cover:
 - non-decision text steering without resolving approval;
 - deferred-call result and `/deny` routing;
 - `/cancel` priority;
-- `ToolDenied` and `RetryPromptPart` construction;
+- `ToolDenied`, generic `RetryPromptPart`, and structured question-result construction;
 - timer continuity across approval and other phases;
 - runtime approval policy surviving state restore;
 - transactional session isolation; and
-- headless denial, persistence-failure, and cancellation terminal events.
+- headless exclusion of `ask_user_question`, plus denial, persistence-failure, and cancellation terminal events.

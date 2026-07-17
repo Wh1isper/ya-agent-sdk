@@ -40,9 +40,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage
+from ya_agent_environment import ShellBackgroundResetError
 from ya_agent_environment.shell import BackgroundProcess
 from ya_agent_sdk.agents.main import AgentInterrupted
-from ya_agent_sdk.context import BusMessage, ResumableState, StreamEvent, TaskManager, TaskStatus
+from ya_agent_sdk.context import AvailableSkill, BusMessage, ResumableState, StreamEvent, TaskManager, TaskStatus
 from ya_agent_sdk.context.agent import AgentInfo
 from ya_agent_sdk.events import TaskEvent
 
@@ -54,6 +55,7 @@ from yaacli.app.tui import (
     _BoundedOutputTail,
     _drain_direct_shell_stream,
     _format_direct_shell_truncation_note,
+    _format_elapsed_duration,
     _is_benign_contextvar_cleanup_error,
 )
 from yaacli.background import BackgroundMonitor, BackgroundTaskInfo, BackgroundTaskResult
@@ -1438,6 +1440,68 @@ def test_tui_app_focused_input_keybindings_win_in_application_registry():
 
 
 @pytest.mark.asyncio
+async def test_tui_app_submit_multiple_skill_prefixes_as_agent_prompt() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._runtime = MagicMock()
+    app._runtime.ctx.available_skills = {
+        "lark-cli": AvailableSkill(name="lark-cli", description="Lark", path="/skills/lark-cli"),
+        "agent-builder": AvailableSkill(
+            name="agent-builder",
+            description="Agents",
+            path="/skills/agent-builder",
+        ),
+    }
+    app._launch_agent = MagicMock()  # type: ignore[method-assign]
+    input_area = TextArea(multiline=True)
+
+    app._submit_input("/lark-cli /agent-builder Build an agent", input_area)
+    dispatch_task = app._foreground_command_task
+    assert dispatch_task is not None
+    await dispatch_task
+
+    app._launch_agent.assert_called_once()
+    prompt = app._launch_agent.call_args.args[0]
+    assert '<skill name="lark-cli" path="/skills/lark-cli" />' in prompt
+    assert '<skill name="agent-builder" path="/skills/agent-builder" />' in prompt
+    assert prompt.endswith("Build an agent")
+    assert any("/lark-cli /agent-builder Build an agent" in line for line in app._output_lines)
+
+
+@pytest.mark.asyncio
+async def test_tui_app_refreshes_skill_catalog_before_slash_classification() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    runtime = MagicMock()
+    runtime.ctx = TUIContext()
+    app._runtime = runtime
+    app._skill_toolset = MagicMock()
+
+    async def refresh_context(ctx: TUIContext) -> None:
+        ctx.available_skills = {
+            "hot-skill": AvailableSkill(
+                name="hot-skill",
+                description="Added after startup",
+                path="/skills/hot-skill",
+            )
+        }
+
+    app._skill_toolset.refresh_context = AsyncMock(side_effect=refresh_context)
+    app._launch_agent = MagicMock()  # type: ignore[method-assign]
+    input_area = TextArea(multiline=True)
+
+    app._submit_input("/hot-skill Use the new workflow", input_area)
+    dispatch_task = app._foreground_command_task
+    assert dispatch_task is not None
+    assert app.phase == TUIPhase.COMMAND_RUNNING
+    await dispatch_task
+
+    app._skill_toolset.refresh_context.assert_awaited_once_with(runtime.ctx)
+    app._launch_agent.assert_called_once()
+    prompt = app._launch_agent.call_args.args[0]
+    assert '<skill name="hot-skill" path="/skills/hot-skill" />' in prompt
+    assert prompt.endswith("Use the new workflow")
+
+
+@pytest.mark.asyncio
 async def test_tui_app_submit_custom_slash_command():
     """Submitting a custom slash command expands and runs its configured prompt."""
     config = MockConfig(
@@ -2312,8 +2376,8 @@ async def test_tui_app_clear_session_resets_conversation_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tui_app_clear_session_marks_deferred_shell_notification_ready() -> None:
-    """A shell completion during clear should be retained without stealing the compose area."""
+async def test_tui_app_clear_session_discards_deferred_shell_notification() -> None:
+    """A shell completion from the old session must not enter the fresh context."""
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     ctx = TUIContext()
     runtime = MagicMock()
@@ -2331,14 +2395,15 @@ async def test_tui_app_clear_session_marks_deferred_shell_notification_ready() -
     await app._clear_session()
 
     assert app._agent_task is None
-    assert app.phase == TUIPhase.BACKGROUND_RESULT_READY
-    assert app._background_results_ready is True
-    assert runtime.ctx.message_bus.has_pending("main") is True
+    assert app.phase == TUIPhase.IDLE
+    assert app._background_results_ready is False
+    assert runtime.ctx.message_bus.has_pending("main") is False
+    assert monitor.has_pending_messages is False
 
 
 @pytest.mark.asyncio
-async def test_tui_app_new_dispatch_restores_shell_env_and_background_ready() -> None:
-    """Real /new dispatch should retain runtime env and publish deferred shell readiness."""
+async def test_tui_app_new_dispatch_restores_shell_env_without_old_background_ready() -> None:
+    """Real /new dispatch should retain runtime policy but discard old shell readiness."""
     config = YaacliConfig(shell_env={"CONFIGURED_BASE": "enabled"})
     app = TUIApp(config=config, config_manager=MockConfigManager())
     old_ctx = TUIContext(shell_env={"OLD_SESSION": "stale"})
@@ -2346,6 +2411,9 @@ async def test_tui_app_new_dispatch_restores_shell_env_and_background_ready() ->
     app._runtime = runtime
     old_session_id = app.session_id
     monitor = BackgroundMonitor()
+    shell = MagicMock()
+    shell.reset_background_processes = AsyncMock()
+    monitor._shell = shell
     monitor.enqueue_shell_message(
         BusMessage(content="shell output ready", source="shell-monitor", target="main"),
         process_id="proc-new",
@@ -2362,10 +2430,11 @@ async def test_tui_app_new_dispatch_restores_shell_env_and_background_ready() ->
     assert app.session_id != old_session_id
     assert runtime.ctx is not old_ctx
     assert runtime.ctx.shell_env == {"CONFIGURED_BASE": "enabled"}
-    assert app.phase == TUIPhase.BACKGROUND_RESULT_READY
-    assert app._background_results_ready is True
-    assert runtime.ctx.message_bus.has_pending("main") is True
+    assert app.phase == TUIPhase.IDLE
+    assert app._background_results_ready is False
+    assert runtime.ctx.message_bus.has_pending("main") is False
     assert monitor.has_pending_messages is False
+    shell.reset_background_processes.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -2385,7 +2454,7 @@ async def test_tui_app_cancelled_new_rolls_identity_forward_before_next_save() -
         reset_started.set()
         await asyncio.Event().wait()
 
-    monitor.reset_subagent_state = slow_reset  # type: ignore[method-assign]
+    monitor.reset_session_state = slow_reset  # type: ignore[method-assign]
     app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
     input_area = TextArea(text="/new")
 
@@ -2412,6 +2481,31 @@ async def test_tui_app_cancelled_new_rolls_identity_forward_before_next_save() -
     with patch("yaacli.app.tui.save_session_turn", return_value=Path("turn")) as save_turn:
         assert app._save_session_snapshot(save_reason="test") is True
     assert save_turn.call_args.kwargs["session_id"] == new_session_id
+
+
+@pytest.mark.asyncio
+async def test_tui_app_new_rolls_back_when_shell_process_cleanup_fails() -> None:
+    """A live process with a failed kill hook must prevent a new-session commit."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    old_ctx = TUIContext(user_prompts="keep me")
+    runtime = MagicMock(ctx=old_ctx, env=None)
+    app._runtime = runtime
+    old_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
+    app._message_history = old_history
+    old_session_id = app.session_id
+    monitor = BackgroundMonitor()
+    reset_error = ShellBackgroundResetError({"proc-failed": RuntimeError("kill failed")})
+    monitor.reset_session_state = AsyncMock(side_effect=reset_error)  # type: ignore[method-assign]
+    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
+
+    await app._start_new_session()
+
+    assert app.session_id == old_session_id
+    assert runtime.ctx is old_ctx
+    assert app._message_history is old_history
+    assert app.phase == TUIPhase.IDLE
+    assert app._session_clear_in_progress is False
+    assert any("New session was not started" in line for line in app._output_lines)
 
 
 @pytest.mark.asyncio
@@ -2448,7 +2542,7 @@ async def test_tui_app_clear_session_still_clears_context_when_monitor_reset_fai
     monitor.register_task("old-agent", stale_task)
     monitor.set_completion_callback(app._on_background_task_complete)
     await asyncio.sleep(0)
-    monitor.reset_subagent_state = AsyncMock(side_effect=RuntimeError("reset failed"))  # type: ignore[method-assign]
+    monitor.reset_session_state = AsyncMock(side_effect=RuntimeError("reset failed"))  # type: ignore[method-assign]
     app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
 
     await app._clear_session()
@@ -2464,6 +2558,34 @@ async def test_tui_app_clear_session_still_clears_context_when_monitor_reset_fai
     assert monitor.task_results == {}
     assert monitor.has_pending_messages is False
     assert app._session_clear_in_progress is False
+
+
+@pytest.mark.asyncio
+async def test_tui_app_load_history_does_not_commit_when_shell_cleanup_fails(tmp_path: Path) -> None:
+    """A restore candidate remains uncommitted until old processes are terminated."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    old_ctx = TUIContext(user_prompts="active context")
+    runtime = MagicMock(ctx=old_ctx, env=None)
+    app._runtime = runtime
+    old_history = [ModelRequest(parts=[UserPromptPart(content="active history")])]
+    app._message_history = old_history
+    old_session_id = app.session_id
+    monitor = BackgroundMonitor()
+    reset_error = ShellBackgroundResetError({"proc-failed": RuntimeError("kill failed")})
+    monitor.reset_session_state = AsyncMock(side_effect=reset_error)  # type: ignore[method-assign]
+    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
+    load_dir = tmp_path / "candidate"
+    load_dir.mkdir()
+    (load_dir / "message_history.json").write_bytes(b"[]")
+
+    loaded = await app._load_history(str(load_dir), target_session_id="candidate123")
+
+    assert loaded is False
+    assert app.session_id == old_session_id
+    assert runtime.ctx is old_ctx
+    assert app._message_history is old_history
+    assert app._session_clear_in_progress is False
+    assert any("Session was not loaded" in line for line in app._output_lines)
 
 
 @pytest.mark.asyncio
@@ -2581,7 +2703,7 @@ async def test_tui_app_load_history_rolls_forward_when_background_reset_fails(tm
     runtime = MagicMock(ctx=old_ctx, env=object())
     app._runtime = runtime
     monitor = BackgroundMonitor()
-    monitor.reset_subagent_state = AsyncMock(side_effect=RuntimeError("reset failed"))  # type: ignore[method-assign]
+    monitor.reset_session_state = AsyncMock(side_effect=RuntimeError("reset failed"))  # type: ignore[method-assign]
     app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
 
     load_dir = tmp_path / "session-b"
@@ -2609,7 +2731,7 @@ async def test_tui_app_load_history_cancellation_commits_isolation_then_reraises
     runtime = MagicMock(ctx=old_ctx, env=object())
     app._runtime = runtime
     monitor = BackgroundMonitor()
-    monitor.reset_subagent_state = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
+    monitor.reset_session_state = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
     app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
 
     load_dir = tmp_path / "session-b"
@@ -2735,8 +2857,8 @@ async def test_tui_app_state_restore_failure_keeps_prior_session(
     assert app.runtime.ctx is active_ctx
     assert app.runtime.ctx.shell_env == {"EXISTING": "value"}
     assert app.runtime.ctx.steering_messages == ["old steering"]
-    monitor.begin_subagent_reset.assert_not_called()
-    monitor.reset_subagent_state.assert_not_called()
+    monitor.begin_session_reset.assert_not_called()
+    monitor.reset_session_state.assert_not_called()
 
 
 def test_tui_app_persist_stream_recoverable_state_updates_memory_only_on_interrupt():
@@ -3095,6 +3217,58 @@ async def test_tui_app_deferred_flow_resolves_approvals_and_calls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tui_app_deferred_flow_collects_structured_clarifying_answers() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    deferred = DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="ask_user_question",
+                args={
+                    "questions": [
+                        {
+                            "question": "Which format?",
+                            "header": "Format",
+                            "options": [
+                                {"label": "Summary", "description": "Brief"},
+                                {"label": "Detailed", "description": "Complete"},
+                            ],
+                            "multiSelect": False,
+                        },
+                        {
+                            "question": "Which sections?",
+                            "header": "Sections",
+                            "options": [
+                                {"label": "Intro", "description": "Opening"},
+                                {"label": "Conclusion", "description": "Ending"},
+                            ],
+                            "multiSelect": True,
+                        },
+                    ]
+                },
+                tool_call_id="question-1",
+            )
+        ]
+    )
+    responses = iter([(True, "2"), (True, "1, 2")])
+
+    async def fake_wait_for_input() -> tuple[bool, str | None]:
+        return next(responses)
+
+    app._wait_for_approval_input = fake_wait_for_input  # type: ignore[method-assign]
+    app._set_phase(TUIPhase.THINKING)
+
+    results = await app._request_user_action(deferred)
+
+    call_result = results.calls["question-1"]
+    assert isinstance(call_result, dict)
+    assert call_result["answers"] == {
+        "Which format?": "Detailed",
+        "Which sections?": ["Intro", "Conclusion"],
+    }
+    assert app.phase == TUIPhase.TOOL_CALLING
+
+
+@pytest.mark.asyncio
 async def test_tui_app_deferred_flow_records_explicit_denials() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     deferred = DeferredToolRequests(
@@ -3126,6 +3300,48 @@ def test_tui_app_rejects_invalid_phase_transition_without_mutating_coarse_state(
 
     assert app.phase == TUIPhase.IDLE
     assert app.state == TUIState.IDLE
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (0, "0s"),
+        (59.9, "59s"),
+        (60, "1m 00s"),
+        (185, "3m 05s"),
+        (3600, "1h 00m 00s"),
+        (7384, "2h 03m 04s"),
+    ],
+)
+def test_format_elapsed_duration_uses_compact_units(seconds: float, expected: str) -> None:
+    assert _format_elapsed_duration(seconds) == expected
+
+
+def test_tui_app_status_height_wraps_to_terminal_width() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._app = MagicMock()
+    app._app.output.get_size.return_value = MagicMock(rows=24, columns=12)
+    app._get_terminal_width = lambda: 12  # type: ignore[method-assign]
+    app._get_status_text = lambda: [("class:status-bar", "1234567890123456789012345")]  # type: ignore[method-assign]
+
+    assert app._get_status_height() == 3
+    assert app._get_viewport_height() == 17
+
+
+def test_tui_app_status_height_respects_explicit_newlines() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._get_terminal_width = lambda: 20  # type: ignore[method-assign]
+    app._get_status_text = lambda: [("class:status-bar", "first\nsecond")]
+
+    assert app._get_status_height() == 2
+
+
+def test_tui_app_status_height_wraps_wide_characters_at_cell_boundaries() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._get_terminal_width = lambda: 3  # type: ignore[method-assign]
+    app._get_status_text = lambda: [("class:status-bar", "中中中")]
+
+    assert app._get_status_height() == 3
 
 
 def test_tui_app_status_starts_with_phase_without_an_agent_mode_badge() -> None:

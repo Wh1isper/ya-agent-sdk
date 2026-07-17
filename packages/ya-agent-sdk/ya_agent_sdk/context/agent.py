@@ -341,6 +341,20 @@ def _create_stream_queue_factory() -> dict[str, asyncio.Queue[AgentStreamEvent]]
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class AvailableSkill:
+    """Effective skill metadata exposed to SDK hosts.
+
+    The full skill body remains on disk and is loaded on demand. This runtime
+    catalog lets applications provide explicit skill selection and completion
+    without duplicating SkillToolset's priority rules.
+    """
+
+    name: str
+    description: str
+    path: str
+
+
 @dataclass
 class AgentInfo:
     """Metadata for a registered agent.
@@ -814,7 +828,14 @@ class ModelConfig(BaseModel):
     """Whether stream_agent retries failed stream attempts by default."""
 
     stream_resume_max_attempts: int = Field(default=3, ge=1)
-    """Default maximum total attempts for stream_agent stream recovery."""
+    """Default maximum total attempts for non-transport stream recovery."""
+
+    stream_transport_resume_max_attempts: int = Field(default=20, ge=1)
+    """Default maximum total attempts for transient model transport recovery.
+
+    Transport attempts use an independent budget and do not consume
+    ``stream_resume_max_attempts``.
+    """
 
     stream_resume_prompt: str | None = None
     """Default resume prompt for stream_agent stream recovery.
@@ -1246,6 +1267,14 @@ class AgentContext(BaseModel):
 
     tool_search_loaded_namespaces: list[str] = Field(default_factory=list)
     """Namespace IDs loaded via tool_search during the session. Used for session restore."""
+
+    available_skills: dict[str, AvailableSkill] = Field(default_factory=dict, exclude=True)
+    """Current effective skill catalog populated by SkillToolset.
+
+    Keys are skill names after path-priority resolution. The catalog is runtime
+    metadata rather than resumable state because skills are rescanned from the
+    active environment when a runtime starts.
+    """
 
     injected_context_tags: tuple[str, ...] = (RUNTIME_CONTEXT_TAG, ENVIRONMENT_CONTEXT_TAG)
     """XML tag names for per-turn injected context blocks.

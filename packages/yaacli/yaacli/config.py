@@ -77,7 +77,10 @@ class GeneralConfig(BaseModel):
     """Resume failed streaming attempts from recovered message history."""
 
     agent_stream_resume_max_attempts: int = 3
-    """Maximum total streaming attempts when resume is enabled."""
+    """Maximum total streaming attempts for non-transport errors."""
+
+    agent_stream_transport_resume_max_attempts: int = 20
+    """Independent maximum total attempts for transient model transport errors."""
 
     agent_stream_resume_prompt: str = (
         "The previous streaming model request failed before the agent finished. "
@@ -174,7 +177,10 @@ class ShellReviewConfig(BaseModel):
 
 
 class ToolsConfig(BaseModel):
-    """Tool permission configuration."""
+    """Tool permission and availability configuration."""
+
+    enable_user_input: bool = True
+    """Enable the interactive ``ask_user_question`` tool in the TUI."""
 
     need_approval: list[str] = Field(default_factory=list)
     """Tools requiring user approval before execution."""
@@ -412,6 +418,7 @@ class EnvSettings(BaseSettings):
     # Agent stream recovery
     agent_stream_resume_on_error: bool | None = None
     agent_stream_resume_max_attempts: int | None = None
+    agent_stream_transport_resume_max_attempts: int | None = None
     agent_stream_resume_prompt: str | None = None
 
     # OAuth refresh
@@ -560,6 +567,8 @@ class ConfigManager:
             general["agent_stream_resume_on_error"] = env.agent_stream_resume_on_error
         if env.agent_stream_resume_max_attempts is not None:
             general["agent_stream_resume_max_attempts"] = env.agent_stream_resume_max_attempts
+        if env.agent_stream_transport_resume_max_attempts is not None:
+            general["agent_stream_transport_resume_max_attempts"] = env.agent_stream_transport_resume_max_attempts
         if env.agent_stream_resume_prompt is not None:
             general["agent_stream_resume_prompt"] = env.agent_stream_resume_prompt
         if general:
