@@ -1378,7 +1378,7 @@ class LocalShell(Shell):
             async with process_signal_lock:
                 if group_termination_confirmed:
                     return
-                if process_group_id is not None and process.returncode is not None:
+                if os.name == "posix" and process_group_id is not None and process.returncode is not None:
                     try:
                         os.killpg(process_group_id, 0)
                     except ProcessLookupError:
