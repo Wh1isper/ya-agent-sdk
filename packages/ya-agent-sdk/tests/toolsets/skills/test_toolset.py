@@ -113,7 +113,8 @@ async def test_skill_toolset_refresh_context_exposes_catalog_before_model_reques
 
     assert set(skills) == {"global-skill", "project-skill"}
     assert env_with_skills.available_skills["global-skill"].name == "global-skill"
-    assert env_with_skills.available_skills["global-skill"].path.endswith("config/skills/global-skill")
+    global_skill_path = Path(env_with_skills.available_skills["global-skill"].path)
+    assert global_skill_path.parts[-3:] == ("config", "skills", "global-skill")
 
 
 def test_skill_toolset_escapes_catalog_xml(tmp_path: Path) -> None:
