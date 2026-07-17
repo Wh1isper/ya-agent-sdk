@@ -4,27 +4,9 @@ from __future__ import annotations
 
 from yaacli.app import (
     VALID_TRANSITIONS,
-    TUIMode,
     TUIPhase,
     TUIStateMachine,
 )
-
-# =============================================================================
-# TUIMode Tests
-# =============================================================================
-
-
-def test_tui_mode_values():
-    """Test TUIMode enum values."""
-    assert TUIMode.ACT == "act"
-    assert TUIMode.PLAN == "plan"
-
-
-def test_tui_mode_is_string():
-    """Test TUIMode can be used as string."""
-    assert TUIMode.ACT.value.upper() == "ACT"
-    assert TUIMode.PLAN.value == "plan"
-
 
 # =============================================================================
 # TUIPhase Tests
@@ -32,16 +14,20 @@ def test_tui_mode_is_string():
 
 
 def test_tui_phase_values():
-    """Test TUIPhase enum has expected values."""
-    phases = [
+    """Test TUIPhase enum has every foreground and ready-state value."""
+    assert list(TUIPhase) == [
         TUIPhase.IDLE,
         TUIPhase.THINKING,
         TUIPhase.TOOL_CALLING,
         TUIPhase.AWAITING_APPROVAL,
         TUIPhase.STREAMING_OUTPUT,
+        TUIPhase.SHELL_RUNNING,
+        TUIPhase.COMMAND_RUNNING,
+        TUIPhase.SAVING,
+        TUIPhase.CANCELLING,
+        TUIPhase.BACKGROUND_RESULT_READY,
     ]
-    assert len(phases) == 5
-    assert all(isinstance(p, TUIPhase) for p in phases)
+    assert set(VALID_TRANSITIONS) == set(TUIPhase)
 
 
 # =============================================================================
@@ -86,6 +72,86 @@ def test_valid_transitions_from_streaming():
     assert TUIPhase.IDLE in valid
 
 
+def test_valid_transition_graph_covers_every_phase_exactly():
+    """Keep the enforced graph complete for every foreground and ready phase."""
+    assert {
+        TUIPhase.IDLE: {
+            TUIPhase.THINKING,
+            TUIPhase.SHELL_RUNNING,
+            TUIPhase.COMMAND_RUNNING,
+            TUIPhase.SAVING,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.THINKING: {
+            TUIPhase.TOOL_CALLING,
+            TUIPhase.STREAMING_OUTPUT,
+            TUIPhase.AWAITING_APPROVAL,
+            TUIPhase.CANCELLING,
+            TUIPhase.SAVING,
+            TUIPhase.IDLE,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.TOOL_CALLING: {
+            TUIPhase.AWAITING_APPROVAL,
+            TUIPhase.THINKING,
+            TUIPhase.STREAMING_OUTPUT,
+            TUIPhase.CANCELLING,
+            TUIPhase.SAVING,
+            TUIPhase.IDLE,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.AWAITING_APPROVAL: {
+            TUIPhase.TOOL_CALLING,
+            TUIPhase.CANCELLING,
+            TUIPhase.SAVING,
+            TUIPhase.IDLE,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.STREAMING_OUTPUT: {
+            TUIPhase.THINKING,
+            TUIPhase.TOOL_CALLING,
+            TUIPhase.AWAITING_APPROVAL,
+            TUIPhase.CANCELLING,
+            TUIPhase.SAVING,
+            TUIPhase.IDLE,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.SHELL_RUNNING: {
+            TUIPhase.CANCELLING,
+            TUIPhase.IDLE,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.COMMAND_RUNNING: {
+            TUIPhase.THINKING,
+            TUIPhase.SAVING,
+            TUIPhase.CANCELLING,
+            TUIPhase.IDLE,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.SAVING: {
+            TUIPhase.IDLE,
+            TUIPhase.THINKING,
+            TUIPhase.TOOL_CALLING,
+            TUIPhase.AWAITING_APPROVAL,
+            TUIPhase.STREAMING_OUTPUT,
+            TUIPhase.COMMAND_RUNNING,
+            TUIPhase.CANCELLING,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.CANCELLING: {
+            TUIPhase.SAVING,
+            TUIPhase.IDLE,
+            TUIPhase.BACKGROUND_RESULT_READY,
+        },
+        TUIPhase.BACKGROUND_RESULT_READY: {
+            TUIPhase.THINKING,
+            TUIPhase.SHELL_RUNNING,
+            TUIPhase.COMMAND_RUNNING,
+            TUIPhase.IDLE,
+        },
+    } == VALID_TRANSITIONS
+
+
 # =============================================================================
 # TUIStateMachine Tests
 # =============================================================================
@@ -95,17 +161,9 @@ def test_state_machine_init():
     """Test TUIStateMachine initialization."""
     sm = TUIStateMachine()
 
-    assert sm.mode == TUIMode.ACT
     assert sm.phase == TUIPhase.IDLE
     assert sm.is_idle
     assert not sm.is_running
-
-
-def test_state_machine_init_with_mode():
-    """Test initialization with custom mode."""
-    sm = TUIStateMachine(initial_mode=TUIMode.PLAN)
-
-    assert sm.mode == TUIMode.PLAN
 
 
 def test_state_machine_transition_valid():
@@ -120,15 +178,17 @@ def test_state_machine_transition_valid():
 
 
 def test_state_machine_transition_invalid():
-    """Test invalid state transition (still proceeds but returns False)."""
+    """An invalid transition must not corrupt authoritative phase state."""
     sm = TUIStateMachine()
+    transitions: list[tuple[TUIPhase, TUIPhase]] = []
+    sm.add_observer(lambda old, new: transitions.append((old, new)))
 
-    # IDLE -> TOOL_CALLING is not valid
+    # IDLE -> TOOL_CALLING is not valid.
     result = sm.transition(TUIPhase.TOOL_CALLING)
 
     assert result is False
-    # State still changes (robustness over strictness)
-    assert sm.phase == TUIPhase.TOOL_CALLING
+    assert sm.phase == TUIPhase.IDLE
+    assert transitions == []
 
 
 def test_state_machine_transition_same_state():
@@ -173,53 +233,6 @@ def test_state_machine_remove_observer():
     sm.remove_observer(observer)
     sm.transition(TUIPhase.IDLE)
     assert len(calls) == 1  # No new call
-
-
-def test_state_machine_switch_mode_when_idle():
-    """Test switching mode when idle."""
-    sm = TUIStateMachine()
-
-    result = sm.switch_mode(TUIMode.PLAN)
-
-    assert result is True
-    assert sm.mode == TUIMode.PLAN
-
-
-def test_state_machine_switch_mode_when_running():
-    """Test switching mode when running (should fail)."""
-    sm = TUIStateMachine()
-    sm.transition(TUIPhase.THINKING)
-
-    result = sm.switch_mode(TUIMode.PLAN)
-
-    assert result is False
-    assert sm.mode == TUIMode.ACT  # Unchanged
-
-
-def test_state_machine_switch_mode_same():
-    """Test switching to same mode."""
-    sm = TUIStateMachine()
-
-    result = sm.switch_mode(TUIMode.ACT)
-
-    assert result is True
-
-
-def test_state_machine_mode_observer():
-    """Test mode change observer."""
-    sm = TUIStateMachine()
-    changes = []
-
-    def observer(old: TUIMode, new: TUIMode):
-        changes.append((old, new))
-
-    sm.add_mode_observer(observer)
-    sm.switch_mode(TUIMode.PLAN)
-    sm.switch_mode(TUIMode.ACT)
-
-    assert len(changes) == 2
-    assert changes[0] == (TUIMode.ACT, TUIMode.PLAN)
-    assert changes[1] == (TUIMode.PLAN, TUIMode.ACT)
 
 
 def test_state_machine_reset():
@@ -332,6 +345,10 @@ def test_get_status_text():
     sm.transition(TUIPhase.THINKING)
     sm.start_streaming()
     assert sm.get_status_text() == "Generating..."
+
+    assert sm.transition(TUIPhase.IDLE)
+    assert sm.transition(TUIPhase.COMMAND_RUNNING)
+    assert sm.get_status_text() == "Running command..."
 
 
 # =============================================================================

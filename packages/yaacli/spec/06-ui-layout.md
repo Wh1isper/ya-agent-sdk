@@ -1,488 +1,203 @@
-# TUI Layout and User Experience Design
+# TUI Layout and Interaction
 
 ## Overview
 
-The TUI provides a split-screen interface optimized for agent interaction with real-time feedback. The layout adapts to different interaction modes and provides clear visual feedback for all agent activities.
+YAACLI uses one full-screen prompt_toolkit application. The output viewport is the primary surface; auxiliary UI is bounded, hidden when unused, or rendered as an overlay.
 
 ## Layout Structure
 
-### Main Layout
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ [YAACLI CLI] claude-4-sonnet │ ACT │ 12.5k/200k tokens │ 2m 34s │  <- Status Bar
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│ Agent output and responses appear here...                           │
-│                                                                     │  <- Output Pane
-│ [ToolCall] edit_file({"path": "src/main.py", ...})                  │     (Scrollable)
-│                                                                     │
-│ I've updated the main.py file to include proper error handling...   │
-│                                                                     │
-├─────────────────────────────────────────────────────────────────────┤
-│ ◉ search_agent [running] │ ✓ reasoning [done 2.1s]                  │  <- Agent Panel
-├─────────────────────────────────────────────────────────────────────┤
-│ > |                                                                 │  <- Input Area
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Component Breakdown
-
 ```mermaid
 graph TB
-    subgraph "TUI Application"
-        StatusBar[Status Bar]
-        OutputPane[Output Pane]
-        AgentPanel[Agent Activity Panel]
-        InputArea[Input Area]
-    end
+    Root[FloatContainer]
+    Body[HSplit]
+    Output[Virtualized output viewport]
+    Tasks[Conditional task pane]
+    Status[One-line status bar]
+    Input[Compose area]
+    Model[Model selector overlay]
+    Completion[Slash completion menu]
 
-    StatusBar --> ModelInfo[Model Name]
-    StatusBar --> ModeIndicator[Mode: ACT/PLAN/FIX]
-    StatusBar --> TokenUsage[Token Counter]
-    StatusBar --> Timer[Elapsed Time]
-
-    OutputPane --> TextStream[Streaming Text]
-    OutputPane --> ToolCalls[Tool Call Display]
-    OutputPane --> CodeBlocks[Code Blocks]
-    OutputPane --> Events[Event Notifications]
-
-    AgentPanel --> AgentTree[Agent Tree View]
-    AgentPanel --> CompactStatus[Compact/Summary Status]
-
-    InputArea --> PromptInput[User Input]
-    InputArea --> SteeringIndicator[Steering Mode Indicator]
+    Root --> Body
+    Root --> Model
+    Root --> Completion
+    Body --> Output
+    Body --> Tasks
+    Body --> Status
+    Body --> Input
 ```
+
+The body order is:
+
+1. flexible output window;
+2. conditional task pane;
+3. one-row status bar;
+4. bounded compose area.
+
+The output window has no fixed height and receives the remaining terminal rows. The model selector and completion menu are `Float` overlays, so opening them does not permanently shrink output.
+
+## Output Viewport
+
+The transcript is stored as bounded render blocks and exposed through a virtual viewport rather than a `ScrollablePane` containing every historical line.
+
+- The rendered output height is read from the real `Window.render_info` when available.
+- Before first render, the fallback subtracts task, status, and input rows from the terminal height.
+- `PageUp` and `PageDown` scroll the transcript.
+- Scrolling away from the bottom disables auto-follow.
+- Returning to the bottom or pressing `Ctrl+L` re-enables auto-follow.
+- Streaming text and thinking update stable block IDs instead of appending duplicate snapshots.
+- Tool previews are bounded; `/tool <call-id>` retrieves the complete retained result.
+
+## Task Pane
+
+The task pane reads the current SDK `TaskManager` snapshot directly.
+
+| State | Height and content |
+| --- | --- |
+| No tasks | Hidden by `ConditionalContainer`; height `0` |
+| Tasks, collapsed | One summary row |
+| Tasks, expanded | Summary plus a bounded visible task list |
+
+`F2` toggles the expanded state only when tasks exist. Completed history is bounded so old completed tasks cannot consume the viewport. `TaskEvent` updates do not append repeated task panels to the transcript.
+
+## Model Selector
+
+`/model` opens a floating model-profile selector.
+
+- It is unavailable while foreground work owns the TUI.
+- Up/Down moves selection while the overlay is open.
+- Enter applies the selected profile.
+- Escape closes the overlay.
+- The overlay uses terminal-aware height and never becomes a permanent layout row.
+
+## Slash Completion
+
+The compose buffer uses `SlashCommandCompleter`.
+
+- Command names complete from built-in and configured commands.
+- `/session <prefix>` completes confirmed session IDs.
+- A `CompletionsMenu` float makes suggestions visible.
+- While completion is active, navigation and acceptance keys are delegated to prompt_toolkit completion handling rather than prompt history or mode toggles.
+- Outside completion, Tab toggles send/edit mode.
 
 ## Status Bar
 
-### Design
+The status bar is priority ordered so useful information survives clipping. It can include:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ yaacli │ claude-4 │ ACT │ 12.5k/200k (6.3%) │ 2m 34s │ [S2] │
-└─────────────────────────────────────────────────────────────────────┘
-     │           │        │           │              │        │
-     │           │        │           │              │        └── Steering queue
-     │           │        │           │              └── Elapsed time
-     │           │        │           └── Token usage (current/max)
-     │           │        └── Current mode
-     │           └── Model name (abbreviated)
-     └── App name
-```
+- explicit execution phase;
+- active model profile;
+- task/background status;
+- context-window utilization;
+- elapsed foreground time.
 
-### Status Bar Components
+The timer starts at synchronous foreground claim and retains one `_run_started_at` across thinking, tools, streaming, approval, and saving. It is cleared only after the foreground owner exits or pre-start dispatch is cancelled.
 
-```python
-class StatusBarRenderer:
-    """Renders the status bar with current state."""
+The phase labels are:
 
-    def render(self, ctx: TUIContext) -> str:
-        parts = []
+- `Ready`;
+- `Thinking`;
+- `Tools`;
+- `Approval`;
+- `Streaming`;
+- `Shell`;
+- `Command`;
+- `Saving`;
+- `Cancelling`;
+- `Background ready`.
 
-        # App name
-        parts.append(self._style("yaacli", "app_name"))
+The status bar shows `steering N pending` when unread user steering is waiting in the authoritative main-agent message bus. It does not expose message content or maintain a second local queue, and it disappears when the model-request filter consumes the messages. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` explicitly advertise a wait state rather than claiming that Enter will send or steer.
 
-        # Model name (abbreviated)
-        model = self._abbreviate_model(ctx.model_name)
-        parts.append(self._style(model, "model"))
+`TUIStateMachine` enforces `VALID_TRANSITIONS`: an invalid transition returns `False`, leaves the authoritative phase unchanged, and is logged by the TUI boundary. The transition table includes all ten phase origins and the valid background-ready exit from every live agent phase.
 
-        # Mode
-        mode_style = {
-            TUIMode.ACT: "mode_act",
-            TUIMode.PLAN: "mode_plan",
-            TUIMode.FIX: "mode_fix",
-        }[ctx.mode]
-        parts.append(self._style(ctx.mode.value.upper(), mode_style))
+## Compose Area
 
-        # Token usage
-        if ctx.token_usage:
-            usage = ctx.token_usage
-            window = ctx.model_cfg.context_window or 0
-            ratio = (usage / window * 100) if window > 0 else 0
-            usage_str = f"{self._format_tokens(usage)}/{self._format_tokens(window)} ({ratio:.1f}%)"
-            parts.append(self._style(usage_str, self._usage_style(ratio)))
-
-        # Elapsed time
-        if ctx.elapsed_time:
-            parts.append(self._format_duration(ctx.elapsed_time))
-
-        # Steering queue
-        if ctx.steering_manager and ctx.steering_manager.has_pending():
-            count = len(ctx.steering_manager._buffer)
-            parts.append(self._style(f"[S{count}]", "steering_pending"))
-
-        return " | ".join(parts)
-
-    def _format_tokens(self, tokens: int) -> str:
-        if tokens >= 1000:
-            return f"{tokens/1000:.1f}k"
-        return str(tokens)
-```
-
-## Output Pane
-
-### Streaming Text Display
-
-```python
-class OutputRenderer:
-    """Renders agent output with formatting."""
-
-    def __init__(self, console: Console, width: int) -> None:
-        self._console = console
-        self._width = width
-        self._buffer: list[str] = []
-
-    async def handle_event(self, event: StreamEvent | TUIEvent) -> None:
-        """Process event and update display."""
-        match event:
-            case StreamEvent() if isinstance(event.event, PartDeltaEvent):
-                # Streaming text - append to current line
-                delta = event.event.delta
-                if isinstance(delta, TextPartDelta):
-                    self._append_text(delta.content_delta)
-
-            case StreamEvent() if isinstance(event.event, FunctionToolCallEvent):
-                # Tool call - format as block
-                self._render_tool_call(event.event)
-
-            case StreamEvent() if isinstance(event.event, FunctionToolResultEvent):
-                # Tool result - format as block
-                self._render_tool_result(event.event)
-
-            case StreamEvent() if isinstance(event.event, CompactStartEvent):
-                self._render_compact_start(event.event)
-
-            case StreamEvent() if isinstance(event.event, CompactCompleteEvent):
-                self._render_compact_complete(event.event)
-
-            case StreamEvent() if isinstance(event.event, HandoffStartEvent):
-                self._render_handoff_start(event.event)
-
-            case AgentStartedEvent():
-                self._render_agent_started(event)
-
-            case AgentCompletedEvent():
-                self._render_agent_completed(event)
-```
-
-### Tool Call Display
-
-```
-┌─ Tool Call ──────────────────────────────────────────────┐
-│ edit_file                                                │
-│ ──────────────────────────────────────────────────────── │
-│ path: src/main.py                                        │
-│ content: def main():                                     │
-│     print("Hello, World!")                               │
-│     ...                                                  │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Tool Result Display
-
-```
-┌─ Tool Result ────────────────────────────────────────────┐
-│ edit_file                                     (1.2s)     │
-│ ──────────────────────────────────────────────────────── │
-│ Successfully wrote 42 lines to src/main.py               │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Code Block Rendering
-
-```python
-def render_code_block(self, code: str, language: str = "") -> str:
-    """Render code with syntax highlighting."""
-    from rich.syntax import Syntax
-
-    syntax = Syntax(
-        code,
-        language or "text",
-        theme=self._get_code_theme(),
-        line_numbers=True,
-        word_wrap=True,
-    )
-
-    return self._to_ansi(syntax)
-```
-
-## Agent Activity Panel
-
-### Multi-Agent Display
-
-```
-┌─ Active Agents ──────────────────────────────────────────┐
-│ main [claude-4]                              ◉ Running   │
-│ ├─ search_agent [gemini-flash]               ◉ Running   │
-│ │   └─ Searching: "python best practices"                │
-│ ├─ reasoning [claude-4]                      ✓ Done 2.1s │
-│ └─ design_agent [flux]                       ◉ Running   │
-│     └─ Generating: logo concept                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Compact/Summary Status
-
-```
-┌─ Context Management ─────────────────────────────────────┐
-│ ↻ Compacting context...                                  │
-│   42 messages -> 8 messages (81% reduction)              │
-└──────────────────────────────────────────────────────────┘
-```
-
-```
-┌─ Summary Complete ───────────────────────────────────────┐
-│ → Summarizing progress (42 messages)...                  │
-│   Preserving: 5 key decisions, 12 file modifications     │
-│ ✓ Progress summarized, continuing with fresh context     │
-└──────────────────────────────────────────────────────────┘
-```
-
-## Input Area
-
-### State-Dependent Prompt
-
-| State    | Prompt        | Description                          |
-| -------- | ------------- | ------------------------------------ |
-| IDLE     | `You: `       | Ready for new input                  |
-| RUNNING  | `> `          | Steering mode (if prefix configured) |
-| RUNNING  | `[Steering] ` | Steering mode (if no prefix)         |
-| APPROVAL | `[Approve?] ` | Waiting for tool approval            |
+The compose area is three rows on small terminals and five rows otherwise. It supports multiline drafts, history, bracketed text paste, and explicit clipboard-image attachment.
 
 ### Input Modes
 
-```python
-class InputHandler:
-    """Handles user input with state-aware behavior."""
+- `send`: Enter submits.
+- `edit`: Enter inserts a newline.
+- `Ctrl+O`: inserts a newline in either mode.
+- Tab toggles modes only when no completion menu is active.
 
-    def __init__(self, ctx: TUIContext) -> None:
-        self._ctx = ctx
+### State-Dependent Submission
 
-    def get_prompt(self) -> str:
-        """Get appropriate prompt for current state."""
-        if self._ctx.state == TUIState.IDLE:
-            return "You: "
-        elif self._ctx.state == TUIState.RUNNING:
-            if self._ctx.steering_manager:
-                prefix = self._ctx._steering_config.prefix or ""
-                if prefix:
-                    return f"{prefix} "
-                return "[Steering] "
-            return ""  # Input disabled during run without steering
-        return "> "
+| Phase | Submission behavior |
+| --- | --- |
+| Idle | Starts a new prompt, slash command, or `!shell` command |
+| Active agent phase | Ordinary text is immediate steering; busy-safe slash commands execute locally |
+| Awaiting approval | Explicit decisions/results resolve HITL; ordinary non-decision text steers; control syntax remains local |
+| Command/Shell/Saving/Cancelling | Ordinary and idle-only control drafts are preserved; busy-safe commands retain local semantics |
+| Background result ready | Next prompt integrates results; `/integrate` starts an explicit integration turn |
 
-    def get_placeholder(self) -> str:
-        """Get placeholder text for input area."""
-        if self._ctx.state == TUIState.IDLE:
-            return "Enter your message..."
-        elif self._ctx.state == TUIState.RUNNING:
-            if self._ctx.steering_manager:
-                return "Type to steer the agent..."
-            return "Agent is working..."
-        return ""
-```
+The `/` and `!` namespaces are classified before prompt, steering, or HITL-result parsing. Unknown slash commands produce local suggestions. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before this classification while its binary remains queued; if the user deleted the chip, the binary is dropped before dispatch.
 
-## Keyboard Shortcuts
+## Direct Foreground Shell
 
-### Global Shortcuts
+Input beginning with `!` claims the foreground synchronously and runs a bounded local shell command only while idle. During any busy phase it remains local control syntax, is rejected without clearing the draft, and is never sent to the model or accepted as a deferred-call result.
 
-| Shortcut | Action                   | Available In |
-| -------- | ------------------------ | ------------ |
-| `Ctrl+C` | Cancel current operation | Always       |
-| `Ctrl+D` | Exit application         | IDLE         |
-| `Ctrl+L` | Clear output             | Always       |
-| `Ctrl+S` | Save session             | Always       |
-| `F1`     | Toggle help              | Always       |
-| `F2`     | Toggle agent panel       | Always       |
+- stdout and stderr are drained concurrently so one full pipe cannot deadlock the other;
+- each stream uses an incremental UTF-8 decoder, preserving code points split across subprocess reads;
+- live output is emitted on real line boundaries, with bounded fragments for a long line that never emits a newline;
+- the visible in-progress line is updated in place rather than duplicated for every pipe read;
+- retained diagnostic tails are independently bounded to 64 KiB for stdout and stderr;
+- truncation reports byte counts without replaying the retained tail a second time;
+- timeout and cancellation terminate the process group on POSIX and perform bounded terminate/kill cleanup elsewhere.
 
-### Mode Shortcuts
+This foreground `!command` path is separate from the background `shell_monitor` contract in `09-shell-monitor.md`.
 
-| Shortcut | Action              |
-| -------- | ------------------- |
-| `Ctrl+A` | Switch to ACT mode  |
-| `Ctrl+P` | Switch to PLAN mode |
-| `Ctrl+F` | Switch to FIX mode  |
+## Foreground Ownership
 
-### Navigation
+The UI uses one explicit foreground boundary covering agent, shell, save, command dispatch, approval, and cancellation cleanup.
 
-| Shortcut     | Action                 |
-| ------------ | ---------------------- |
-| `Page Up`    | Scroll output up       |
-| `Page Down`  | Scroll output down     |
-| `Home`       | Scroll to top          |
-| `End`        | Scroll to bottom       |
-| `Up Arrow`   | Previous input history |
-| `Down Arrow` | Next input history     |
+- Ownership is claimed before creating the asynchronous task.
+- A second prompt or shell cannot race the first submission.
+- Busy-safe commands (`/cancel`, `/integrate`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`) remain available without taking foreground ownership from the active task.
+- Repeated cancellation does not add another `Task.cancel()` request.
+- A `/cancel` command never cancels its own dispatch task.
+- Non-agent slash commands use `COMMAND_RUNNING`, so Ctrl+C cancellation and Ctrl+D exit gating share the authoritative foreground state.
+- Persistence already in `SAVING` is allowed to finish and Ctrl+C cannot fall through to idle exit handling.
 
-## Visual Styles
+## Keyboard Reference
 
-### Color Scheme
+| Key | Action |
+| --- | --- |
+| Enter / `Ctrl+J` | Submit or accept the current mode-specific action |
+| Up / Down | Completion navigation, model selection, multiline movement, or prompt history depending on state |
+| `Ctrl+P` / `Ctrl+N` | Previous / next prompt history outside completion |
+| Tab | Completion acceptance/navigation when active; otherwise toggle send/edit mode |
+| `Ctrl+O` | Insert newline |
+| `Ctrl+C` | Close selector, cancel foreground once, or arm idle double-press exit |
+| `Ctrl+D` | Exit only from an empty safe idle compose state |
+| `Ctrl+L` | Scroll output to the bottom |
+| `F2` | Expand/collapse tasks |
+| `Ctrl+V` | Attach a clipboard image |
+| `Ctrl+X` | Remove the latest queued attachment |
+| `Ctrl+U` | Clear compose input |
+| Page Up / Page Down | Scroll output |
+| Escape | Close the model overlay; otherwise toggle mouse scroll/select mode |
 
-```python
-TUI_STYLES = {
-    # Status bar
-    "app_name": "bold cyan",
-    "model": "blue",
-    "mode_act": "bold green",
-    "mode_plan": "bold yellow",
-    "mode_fix": "bold red",
-    "usage_low": "green",      # < 50%
-    "usage_medium": "yellow",  # 50-80%
-    "usage_high": "red",       # > 80%
-    "timer": "dim",
-    "steering_pending": "magenta",
+## Theme and Rendering
 
-    # Output
-    "text": "white",
-    "tool_call_header": "bold cyan",
-    "tool_call_name": "bold",
-    "tool_result_header": "bold green",
-    "tool_error": "bold red",
-    "code": "white on #1e1e1e",
+`display.code_theme` accepts `auto`, `dark`, or `light`.
 
-    # Agents
-    "agent_main": "bold white",
-    "agent_sub": "dim white",
-    "agent_running": "bold yellow",
-    "agent_done": "green",
-    "agent_failed": "red",
+For `auto`, YAACLI resolves terminal background in this order:
 
-    # Events
-    "compact_event": "cyan",
-    "handoff_event": "magenta",
-    "steering_event": "yellow",
+1. short OSC 11 query in recognized local terminals;
+2. `COLORFGBG`;
+3. dark fallback.
 
-    # Input
-    "prompt": "bold",
-    "placeholder": "dim",
-}
-```
+OSC queries are skipped over SSH. The resolved theme supplies both Rich syntax highlighting and prompt_toolkit style rules.
 
-### Dark/Light Theme Support
+## Verification
 
-`display.code_theme` accepts `auto`, `dark`, or `light`. At TUI startup, `auto` resolves the terminal background in this order:
+The integration suite exercises:
 
-1. For a recognized local terminal, query its default background with a short, non-blocking OSC 11 request. Active queries are skipped over SSH.
-2. Read the `COLORFGBG` background index.
-3. Fall back to the dark theme.
-
-The resulting `ResolvedTheme` supplies both the concrete Rich ANSI syntax theme and the prompt_toolkit style rules. Resolution happens before any startup output is rendered. Explicit `dark` and `light` values bypass terminal I/O.
-
-## Responsive Layout
-
-### Width Adaptation
-
-```python
-class LayoutManager:
-    """Manages layout based on terminal size."""
-
-    MIN_WIDTH = 80
-    COMPACT_WIDTH = 100
-    FULL_WIDTH = 120
-
-    def __init__(self) -> None:
-        self._width = 0
-        self._height = 0
-        self._update_size()
-
-    def _update_size(self) -> None:
-        import shutil
-        size = shutil.get_terminal_size()
-        self._width = max(size.columns, self.MIN_WIDTH)
-        self._height = size.lines
-
-    def get_layout_mode(self) -> str:
-        """Determine layout mode based on width."""
-        if self._width < self.COMPACT_WIDTH:
-            return "compact"
-        elif self._width < self.FULL_WIDTH:
-            return "normal"
-        else:
-            return "full"
-
-    def should_show_agent_panel(self) -> bool:
-        """Whether to show agent panel (hidden in compact mode)."""
-        return self.get_layout_mode() != "compact"
-```
-
-### Compact Mode
-
-When terminal width is limited:
-
-```
-┌─────────────────────────────────────────┐
-│ claude-4 │ ACT │ 12.5k/200k │ 2:34     │
-├─────────────────────────────────────────┤
-│                                         │
-│ Agent output here...                    │
-│                                         │
-├─────────────────────────────────────────┤
-│ You: |                                  │
-└─────────────────────────────────────────┘
-```
-
-## Help Screen
-
-```
-┌─ YAACLI CLI Help ─────────────────────────────────────┐
-│                                                          │
-│ KEYBOARD SHORTCUTS                                       │
-│                                                          │
-│ General:                                                 │
-│   Ctrl+C      Cancel current operation                   │
-│   Ctrl+D      Exit (when idle)                           │
-│   Ctrl+L      Clear output                               │
-│   F1          Toggle this help                           │
-│                                                          │
-│ Modes:                                                   │
-│   Ctrl+A      ACT mode (implement)                       │
-│   Ctrl+P      PLAN mode (analyze)                        │
-│   Ctrl+F      FIX mode (debug)                           │
-│                                                          │
-│ Navigation:                                              │
-│   Page Up/Down    Scroll output                          │
-│   Up/Down         Input history                          │
-│                                                          │
-│ COMMANDS                                                 │
-│                                                          │
-│   !ps             List processes                         │
-│   !kill <id>      Kill process                           │
-│   !clear          Clear session                          │
-│   !save           Save session                           │
-│                                                          │
-│                                    Press F1 to close     │
-└──────────────────────────────────────────────────────────┘
-```
-
-## Accessibility
-
-### Screen Reader Support
-
-```python
-class AccessibilityManager:
-    """Manages accessibility features."""
-
-    def __init__(self, enabled: bool = True) -> None:
-        self._enabled = enabled
-
-    def announce(self, text: str, priority: str = "normal") -> None:
-        """Announce text for screen readers."""
-        if not self._enabled:
-            return
-
-        # Use terminal bell for high priority
-        if priority == "high":
-            print("\a", end="", flush=True)
-
-        # Could integrate with accessibility APIs
-```
-
-### High Contrast Mode
-
-```toml
-[display]
-high_contrast = true
-```
-
-Enables high-contrast color scheme for better visibility.
+- real task visibility, one-row collapse, and F2 handler transitions;
+- viewport row budgeting;
+- model selector overlay behavior;
+- real completion menu/key routing;
+- bounded transcript and streaming updates;
+- timer continuity through actual lifecycle transitions;
+- shell/prompt/command race prevention;
+- cancellation and saving behavior;
+- small terminal fallback dimensions.

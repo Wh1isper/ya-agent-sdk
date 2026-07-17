@@ -5,12 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
 from yaacli.app import (
     BUILTIN_COMMANDS,
+    BUSY_CONTROL_COMMANDS,
     Command,
     CommandRegistry,
     create_default_registry,
 )
+from yaacli.app.commands import SlashCommandCompleter
 
 # =============================================================================
 # Mock Context
@@ -254,8 +258,50 @@ async def test_registry_execute_via_alias():
 
 def test_builtin_commands():
     """Test BUILTIN_COMMANDS contains expected commands."""
-    expected = {"help", "clear", "cost", "tasks", "dump", "load", "exit", "act", "plan", "loop"}
-    assert expected.issubset(BUILTIN_COMMANDS)
+    expected = {
+        "help",
+        "clear",
+        "new",
+        "cancel",
+        "integrate",
+        "cost",
+        "perf",
+        "model",
+        "agents",
+        "process",
+        "attachments",
+        "paste-image",
+        "remove-image",
+        "tool",
+        "dump",
+        "load",
+        "session",
+        "exit",
+        "goal",
+    }
+    assert expected == BUILTIN_COMMANDS
+    assert "act" not in BUILTIN_COMMANDS
+    assert "background" not in BUILTIN_COMMANDS
+    assert "plan" not in BUILTIN_COMMANDS
+    assert "tasks" not in BUILTIN_COMMANDS
+    assert "loop" not in BUILTIN_COMMANDS
+
+
+def test_busy_control_commands_cover_the_concurrent_control_surface() -> None:
+    assert {
+        "/agents",
+        "/attachments",
+        "/cancel",
+        "/cost",
+        "/help",
+        "/integrate",
+        "/paste-image",
+        "/perf",
+        "/process",
+        "/remove-image",
+        "/tool",
+    } == BUSY_CONTROL_COMMANDS
+    assert {name.removeprefix("/") for name in BUSY_CONTROL_COMMANDS} <= BUILTIN_COMMANDS
 
 
 def test_builtin_commands_is_frozen():
@@ -274,3 +320,27 @@ def test_create_default_registry():
     assert isinstance(registry, CommandRegistry)
     # Empty by default (handlers registered by TUIApp)
     assert len(registry.list_commands()) == 0
+
+
+def test_slash_command_completer_completes_commands() -> None:
+    completer = SlashCommandCompleter(
+        command_provider=lambda: ["/help", "/session"],
+        session_provider=lambda: ["session-123"],
+    )
+
+    completions = list(completer.get_completions(Document("/he"), CompleteEvent()))
+
+    assert [item.text for item in completions] == ["/help"]
+    assert completions[0].start_position == -3
+
+
+def test_slash_command_completer_completes_session_ids_contextually() -> None:
+    completer = SlashCommandCompleter(
+        command_provider=lambda: ["/help", "/session"],
+        session_provider=lambda: ["abc123", "abc999", "other"],
+    )
+
+    completions = list(completer.get_completions(Document("/session abc"), CompleteEvent()))
+
+    assert [item.text for item in completions] == ["abc123", "abc999"]
+    assert all(item.start_position == -3 for item in completions)

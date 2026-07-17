@@ -106,6 +106,12 @@ failure_retry_seconds = 60
 refresh_on_startup = true
 
 [session]
+# Optional saved-session directory override (defaults to ~/.yaacli/sessions).
+# session_dir = "~/.yaacli/sessions"
+# Save recoverable interactive TUI turns automatically.
+auto_save_history = true
+# Restore the newest session for the current workspace when the TUI starts.
+auto_restore = false
 # Retain the latest N turn snapshots per session.
 max_turns_per_session = 20
 # Retain the latest N sessions globally.
@@ -164,17 +170,15 @@ disabled = []
 # Custom Slash Commands
 # =============================================================================
 # Define custom commands that can be triggered with /name
-# Each command has: prompt, mode (optional), description (optional)
+# Each command has: prompt and an optional description
 
 [commands.commit]
 description = "Review and commit changes"
-mode = "act"
 prompt = """Please check current git changes and commit them with: `Co-Authored-By: YAACLI <261597362+yaacli-bot@users.noreply.github.com>`
 """
 
 [commands.review]
 description = "Comprehensive code review"
-mode = "act"
 prompt = """Please review the current changes and pull request.
 First, use bash commands to determine the review scope:
 
@@ -191,5 +195,4 @@ First, use bash commands to determine the review scope:
 # Example: Add your own custom commands
 # [commands.deploy]
 # description = "Deploy to production"
-# mode = "act"
 # prompt = "Please help me deploy to production..."

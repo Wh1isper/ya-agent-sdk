@@ -5,7 +5,7 @@ Configuration files are loaded with project-level priority (no merging):
 1. **config.toml** (model + TUI settings + security runtime settings):
    - Global: ~/.yaacli/config.toml
    - Project: .yaacli/config.toml (overrides global entirely)
-   - Contains: model, model_settings, display, steering, session, subagents, env, security.shell_review
+   - Contains: model, model_settings, display, session, subagents, env, security.shell_review
 
 2. **tools.toml** (tool permissions and project tool overrides):
    - Global: ~/.yaacli/tools.toml
@@ -223,9 +223,6 @@ class CommandDefinition(BaseModel):
     prompt: str
     """The prompt text to send to the agent."""
 
-    mode: Literal["act", "plan"] | None = None
-    """Optional mode to switch to before executing (act or plan)."""
-
     description: str = ""
     """Description shown in /help output."""
 
@@ -235,7 +232,6 @@ class CommandDefinition(BaseModel):
 DEFAULT_COMMANDS: dict[str, CommandDefinition] = {
     "init": CommandDefinition(
         prompt="Please initialize the project's AGENTS.md file.",
-        mode="act",
         description="Initialize AGENTS.md",
     ),
 }
@@ -292,7 +288,21 @@ class MediaConfig(BaseModel):
 
 
 class SessionConfig(BaseModel):
-    """Saved session retention configuration."""
+    """Saved session persistence and retention configuration."""
+
+    session_dir: str | None = None
+    """Optional directory for saved sessions. Defaults to ``~/.yaacli/sessions``."""
+
+    auto_save_history: bool = True
+    """Persist recoverable interactive TUI turns automatically.
+
+    This setting does not control headless durability: successful headless
+    runs always save, while failed or cancelled headless runs emit their
+    terminal event without saving a recovery snapshot.
+    """
+
+    auto_restore: bool = False
+    """Restore the newest session for the current workspace on TUI startup."""
 
     max_turns_per_session: PositiveInt = 20
     """Maximum saved turns retained inside each session."""
@@ -323,7 +333,7 @@ class YaacliConfig(BaseModel):
     media: MediaConfig = Field(default_factory=MediaConfig)
     """Media handling configuration (S3 upload, etc.)."""
     session: SessionConfig = Field(default_factory=SessionConfig)
-    """Saved session retention configuration."""
+    """Saved session persistence and retention configuration."""
     oauth_refresh: OAuthRefreshConfig = Field(default_factory=OAuthRefreshConfig)
     """OAuth proactive refresh configuration."""
     env: dict[str, str] = Field(default_factory=dict)
@@ -390,10 +400,6 @@ class EnvSettings(BaseSettings):
     code_theme: ThemePreference | None = None
     show_token_usage: bool | None = None
     show_elapsed_time: bool | None = None
-
-    # Steering
-    steering_enabled: bool | None = None
-    steering_prefix: str | None = None
 
     # Session
     session_dir: str | None = None
@@ -530,15 +536,6 @@ class ConfigManager:
             display["show_elapsed_time"] = env.show_elapsed_time
         if display:
             overrides["display"] = display
-
-        # Steering
-        steering: dict[str, Any] = {}
-        if env.steering_enabled is not None:
-            steering["enabled"] = env.steering_enabled
-        if env.steering_prefix is not None:
-            steering["prefix"] = env.steering_prefix
-        if steering:
-            overrides["steering"] = steering
 
         # Session
         session: dict[str, Any] = {}
@@ -683,6 +680,10 @@ class ConfigManager:
             Path to the sessions directory under global config.
             Format: ~/.yaacli/sessions/
         """
+        config = self._config
+        configured_dir = config.session.session_dir if config is not None else None
+        if configured_dir:
+            return Path(configured_dir).expanduser().resolve()
         return self._config_dir / "sessions"
 
 

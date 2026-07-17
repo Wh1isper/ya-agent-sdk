@@ -145,7 +145,7 @@ def create_default_panel(
     if result_text:
         if panel_content:
             panel_content += "\n\n"
-        panel_content += result_text[:max_arg_length]
+        panel_content += result_text
 
     if not panel_content:
         panel_content = "No details available"

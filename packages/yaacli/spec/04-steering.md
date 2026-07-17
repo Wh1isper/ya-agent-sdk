@@ -1,568 +1,134 @@
-# Steering Mechanism and TUIContext Design
+# Steering and TUI Context
 
 ## Overview
 
-Steering is a mechanism that allows users to inject guidance into an agent's execution flow without interrupting it. This is particularly useful for long-running tasks where the user wants to:
+YAACLI treats every ordinary input submitted while the main agent is active as immediate steering. There is no steering prefix, steering configuration section, dedicated steering queue, or deferred next-prompt queue.
 
-- Provide clarification or additional context
-- Redirect the agent's approach
-- Add constraints or preferences mid-execution
+Steering is useful for:
 
-Only the **main agent** receives steering messages; subagents execute autonomously.
+- correcting the current approach;
+- adding context or constraints;
+- redirecting a long-running tool workflow;
+- responding while the model is still thinking or streaming.
 
-## Core Concepts
+The built-in `steer_subagent` tool is a separate mechanism for targeting a background subagent. Compose-area input always targets the main agent.
 
-### Steering vs Direct Input
+## Input Contract
 
-| Aspect    | Direct Input          | Steering                    |
-| --------- | --------------------- | --------------------------- |
-| Timing    | Between agent turns   | During agent execution      |
-| Flow      | Starts new agent run  | Injected into current run   |
-| Target    | Any agent state       | Only while agent is running |
-| Mechanism | User prompt parameter | Message filter injection    |
+| Foreground state | Ordinary input | Special input |
+| --- | --- | --- |
+| `IDLE` / `BACKGROUND_RESULT_READY` | Starts a new main-agent turn | Slash commands and `!shell` use their own dispatch paths |
+| `THINKING` | Sent to the active run as steering | Busy-safe slash commands retain local command semantics; `!shell` and idle-only slash commands are rejected |
+| `TOOL_CALLING` | Sent to the active run as steering | Busy-safe commands remain available; control syntax is never steering |
+| `STREAMING_OUTPUT` | Sent to the active run as steering | Busy-safe commands remain available; control syntax is never steering |
+| `AWAITING_APPROVAL` | Non-decision ordinary text is steering and approval remains pending | Explicit decisions, deferred-call results, and busy-safe commands are handled before ordinary text |
+| `COMMAND_RUNNING` / `SHELL_RUNNING` / `SAVING` / `CANCELLING` | Rejected without clearing the draft | Busy-safe commands retain local semantics; `/cancel` follows lifecycle rules and an in-progress save cannot be cancelled |
 
-### Steering Flow
+Binary attachments cannot steer an active run. They remain attached for the next turn while any accompanying text is sent as steering.
+
+## Delivery Path
 
 ```mermaid
 sequenceDiagram
     participant User
     participant TUI
-    participant SteeringManager
-    participant SteeringFilter
+    participant Bus as AgentContext message bus
+    participant Filter as SDK inject_bus_messages
     participant Agent
 
-    User->>TUI: Type message (while agent running)
-    TUI->>TUI: Detect steering mode
-    TUI->>SteeringManager: enqueue(message)
-    SteeringManager-->>TUI: Message buffered
-
-    Note over Agent: Agent makes LLM call
-    Agent->>SteeringFilter: Process message history
-    SteeringFilter->>SteeringManager: draw_messages()
-    SteeringManager-->>SteeringFilter: Buffered messages
-    SteeringFilter->>SteeringFilter: Inject into last request
-    SteeringFilter-->>Agent: Modified history
-
-    Note over Agent: LLM sees steering in context
+    User->>TUI: Submit ordinary text during active run
+    TUI->>Bus: send_message(BusMessage target="main")
+    TUI-->>User: Guidance sent to the active run
+    Agent->>Filter: Prepare next model request
+    Filter->>Bus: Consume unread messages for main
+    Filter-->>Agent: Inject fixed steering template
 ```
 
-## Steering Manager
-
-### Architecture
-
-```mermaid
-classDiagram
-    class SteeringManager {
-        <<abstract>>
-        +enqueue(message: str)
-        +draw_messages() list[SteeringMessage]
-        +has_pending() bool
-        +clear()
-    }
-
-    class LocalSteeringManager {
-        -_buffer: deque[SteeringMessage]
-        -_max_size: int
-        +enqueue(message: str)
-        +draw_messages() list[SteeringMessage]
-    }
-
-    class SteeringMessage {
-        +message_id: str
-        +prompt: str
-        +timestamp: datetime
-    }
-
-    SteeringManager <|-- LocalSteeringManager
-    LocalSteeringManager --> SteeringMessage
-```
-
-### Implementation
-
-```python
-import asyncio
-import uuid
-from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Protocol
-
-@dataclass
-class SteeringMessage:
-    """A steering message to be injected into agent context."""
-    message_id: str
-    prompt: str
-    timestamp: datetime = field(default_factory=datetime.now)
-
-
-class SteeringManager(Protocol):
-    """Protocol for steering message management."""
-
-    async def enqueue(self, message: str) -> SteeringMessage:
-        """Add a steering message to the buffer."""
-        ...
-
-    async def draw_messages(self) -> list[SteeringMessage]:
-        """Draw and clear all pending steering messages."""
-        ...
-
-    def has_pending(self) -> bool:
-        """Check if there are pending steering messages."""
-        ...
-
-    def clear(self) -> None:
-        """Clear all pending steering messages."""
-        ...
-
-
-class LocalSteeringManager:
-    """Local in-memory steering manager for TUI."""
-
-    def __init__(self, max_size: int = 10) -> None:
-        self._buffer: deque[SteeringMessage] = deque(maxlen=max_size)
-        self._lock = asyncio.Lock()
-
-    async def enqueue(self, message: str) -> SteeringMessage:
-        """Add a steering message to the buffer."""
-        steering = SteeringMessage(
-            message_id=f"steer-{uuid.uuid4().hex[:8]}",
-            prompt=message,
-        )
-        async with self._lock:
-            self._buffer.append(steering)
-        return steering
-
-    async def draw_messages(self) -> list[SteeringMessage]:
-        """Draw and clear all pending steering messages.
-
-        Returns all buffered messages and clears the buffer.
-        This is called by the steering filter during message processing.
-        """
-        async with self._lock:
-            messages = list(self._buffer)
-            self._buffer.clear()
-        return messages
-
-    def has_pending(self) -> bool:
-        """Check if there are pending steering messages."""
-        return len(self._buffer) > 0
-
-    def clear(self) -> None:
-        """Clear all pending steering messages."""
-        self._buffer.clear()
-```
-
-## Steering Filter
-
-### Message Injection
-
-The steering filter is a pydantic-ai history processor that injects steering messages into the conversation:
-
-```python
-from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart, RunContext
-
-def render_steering_messages(messages: list[SteeringMessage]) -> list[UserPromptPart]:
-    """Render steering messages as user prompt parts."""
-    prompts = "\n".join([m.prompt for m in messages])
-    content = f"""<steering>
-{prompts}
-</steering>
-
-<system-reminder>
-The user has provided additional guidance during task execution.
-Review the <steering> content carefully, consider how it affects your current approach,
-and adjust your work accordingly while continuing toward the goal.
-</system-reminder>
-"""
-    return [UserPromptPart(content=content)]
-
-
-async def inject_steering_message(
-    ctx: RunContext[TUIContext],
-    message_history: list[ModelMessage],
-) -> list[ModelMessage]:
-    """Inject steering messages into message history.
-
-    This is a pydantic-ai history_processor that:
-    1. Checks if steering manager has pending messages
-    2. Draws messages from the buffer
-    3. Injects them into the last request in history
-    """
-    # Get steering manager from context
-    tui_ctx: TUIContext = ctx.deps
-    steering_manager = tui_ctx.steering_manager
-
-    if not steering_manager:
-        return message_history
-
-    # Only inject into requests (not responses)
-    if not message_history or not isinstance(message_history[-1], ModelRequest):
-        return message_history
-
-    # Draw pending messages
-    try:
-        steering_messages = await steering_manager.draw_messages()
-    except Exception as e:
-        # Log but don't fail the request
-        return message_history
-
-    if not steering_messages:
-        return message_history
-
-    # Store in context for reference
-    tui_ctx.last_steering_messages = steering_messages.copy()
-
-    # Inject into the last request
-    rendered = render_steering_messages(steering_messages)
-    message_history[-1].parts = [*message_history[-1].parts, *rendered]
-
-    # Emit event for TUI display
-    if tui_ctx.event_bus:
-        await tui_ctx.event_bus.emit(SteeringInjectedEvent(
-            message_count=len(steering_messages),
-            preview=steering_messages[0].prompt[:100] if steering_messages else "",
-        ))
-
-    return message_history
-```
-
-## TUIContext Design
-
-### Extended Context for TUI
-
-TUIContext extends `AgentContext` with TUI-specific capabilities:
-
-```mermaid
-classDiagram
-    class AgentContext {
-        +run_id: str
-        +env: Environment
-        +model_cfg: ModelConfig
-        +agent_stream_queues: dict
-        +subagent_history: dict
-        +create_subagent_context()
-        +export_state()
-    }
-
-    class TUIContext {
-        +state: TUIState
-        +mode: TUIMode
-        +steering_manager: SteeringManager
-        +event_bus: EventBus
-        +last_steering_messages: list
-        +get_history_capabilities()
-    }
-
-    class TUIState {
-        <<enum>>
-        IDLE
-        RUNNING
-    }
-
-    class TUIMode {
-        <<enum>>
-        ACT
-        PLAN
-        FIX
-    }
-
-    AgentContext <|-- TUIContext
-    TUIContext --> TUIState
-    TUIContext --> TUIMode
-    TUIContext --> SteeringManager
-    TUIContext --> EventBus
-```
-
-### Implementation
-
-```python
-from enum import Enum
-from typing import Any
-
-from pydantic_ai.capabilities import ProcessHistory
-from ya_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
-from ya_agent_environment import Environment
-
-class TUIState(str, Enum):
-    """TUI application state."""
-    IDLE = "idle"        # Waiting for user input
-    RUNNING = "running"  # Agent is executing
-
-class TUIMode(str, Enum):
-    """Agent execution mode."""
-    ACT = "act"    # Execute and implement
-    PLAN = "plan"  # Plan and analyze
-    FIX = "fix"    # Debug and fix
-
-
-class TUIContext(AgentContext):
-    """Extended context for TUI with steering and state management."""
-
-    state: TUIState = TUIState.IDLE
-    """Current TUI state."""
-
-    mode: TUIMode = TUIMode.ACT
-    """Current agent mode."""
-
-    steering_manager: SteeringManager | None = None
-    """Steering manager for injecting guidance during execution."""
-
-    event_bus: EventBus | None = None
-    """Event bus for TUI event distribution."""
-
-    last_steering_messages: list[SteeringMessage] = []
-    """Last steering messages that were injected."""
-
-    _steering_config: SteeringConfig | None = None
-
-    def __init__(
-        self,
-        env: Environment | None = None,
-        model_cfg: ModelConfig | None = None,
-        tool_config: ToolConfig | None = None,
-        event_bus: EventBus | None = None,
-        steering_config: SteeringConfig | None = None,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(
-            env=env,
-            model_cfg=model_cfg or ModelConfig(),
-            tool_config=tool_config or ToolConfig(),
-            **kwargs,
-        )
-        self.event_bus = event_bus
-        self._steering_config = steering_config
-
-        # Initialize steering if enabled
-        if steering_config and steering_config.enabled:
-            self.steering_manager = LocalSteeringManager(
-                max_size=steering_config.buffer_size,
-            )
-
-    def get_history_capabilities(self):
-        """Get history capabilities including steering injection."""
-        capabilities = super().get_history_capabilities()
-
-        # Add steering injection if enabled
-        if self.steering_manager:
-            capabilities.append(ProcessHistory(inject_steering_message))
-
-        return capabilities
-
-    def transition_to(self, new_state: TUIState) -> None:
-        """Transition to a new state with validation."""
-        old_state = self.state
-        self.state = new_state
-
-        # Emit state change event
-        if self.event_bus:
-            asyncio.create_task(self.event_bus.emit(
-                StateChangeEvent(
-                    old_state=old_state,
-                    new_state=new_state,
-                )
-            ))
-
-    def set_mode(self, mode: TUIMode) -> None:
-        """Set the agent execution mode."""
-        self.mode = mode
-
-    async def enqueue_steering(self, message: str) -> SteeringMessage | None:
-        """Enqueue a steering message if in RUNNING state.
-
-        Returns the queued message, or None if not in running state
-        or steering is disabled.
-        """
-        if self.state != TUIState.RUNNING:
-            return None
-        if not self.steering_manager:
-            return None
-
-        # Check prefix if configured
-        if self._steering_config and self._steering_config.prefix:
-            if not message.startswith(self._steering_config.prefix):
-                return None
-            # Remove prefix
-            message = message[len(self._steering_config.prefix):].strip()
-
-        return await self.steering_manager.enqueue(message)
-
-    def create_subagent_context(
-        self,
-        agent_name: str,
-        agent_id: str | None = None,
-        **override: Any,
-    ) -> "TUIContext":
-        """Create subagent context without steering.
-
-        Subagents do not receive steering - they execute autonomously.
-        """
-        # Create base subagent context
-        sub_ctx = super().create_subagent_context(
-            agent_name=agent_name,
-            agent_id=agent_id,
-            **override,
-        )
-
-        # Convert to TUIContext but disable steering
-        return TUIContext(
-            run_id=sub_ctx.run_id,
-            parent_run_id=sub_ctx.parent_run_id,
-            env=sub_ctx.env,
-            model_cfg=sub_ctx.model_cfg,
-            tool_config=sub_ctx.tool_config,
-            event_bus=self.event_bus,  # Share event bus
-            steering_manager=None,      # No steering for subagents
-            agent_stream_queues=self.agent_stream_queues,  # Share stream queues
-            agent_registry=self.agent_registry,  # Share registry
-        )
-```
-
-## TUI Input Routing
-
-### Input Classification
-
-```python
-class InputRouter:
-    """Routes TUI input to appropriate handlers."""
-
-    def __init__(
-        self,
-        ctx: TUIContext,
-        steering_prefix: str = ">",
-        process_prefix: str = "!",
-    ) -> None:
-        self._ctx = ctx
-        self._steering_prefix = steering_prefix
-        self._process_prefix = process_prefix
-
-    async def route(self, input_text: str) -> InputAction:
-        """Classify and route user input."""
-        input_text = input_text.strip()
-
-        if not input_text:
-            return InputAction.EMPTY
-
-        # Process commands (always available)
-        if input_text.startswith(self._process_prefix):
-            return InputAction.PROCESS_COMMAND
-
-        # State-dependent routing
-        if self._ctx.state == TUIState.RUNNING:
-            # In running state, input is steering
-            if self._steering_prefix:
-                if input_text.startswith(self._steering_prefix):
-                    return InputAction.STEERING
-                else:
-                    # Show hint that steering requires prefix
-                    return InputAction.INVALID_STEERING
-            else:
-                return InputAction.STEERING
-
-        else:  # IDLE state
-            # In idle state, input is new prompt
-            return InputAction.NEW_PROMPT
-
-
-class InputAction(Enum):
-    EMPTY = "empty"
-    NEW_PROMPT = "new_prompt"
-    STEERING = "steering"
-    INVALID_STEERING = "invalid_steering"
-    PROCESS_COMMAND = "process_command"
-```
-
-## Steering Display
-
-### Visual Feedback
-
-When steering is active, the TUI shows:
-
-```
-┌─ Steering Queue ─────────────────────────────────────────┐
-│ 2 messages pending                                       │
-│                                                          │
-│ > Focus on error handling first                          │
-│ > Use async/await pattern instead                        │
-│                                                          │
-│ Messages will be injected on next LLM call               │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Injection Confirmation
-
-When steering is injected:
-
-```
-┌─ Steering Injected ──────────────────────────────────────┐
-│ 2 messages added to context                              │
-│ Preview: "Focus on error handling first..."              │
-└──────────────────────────────────────────────────────────┘
-```
-
-## State Transitions
-
-```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-
-    IDLE --> RUNNING: User submits prompt
-    RUNNING --> IDLE: Agent completes
-    RUNNING --> RUNNING: Steering injected
-    RUNNING --> IDLE: User cancels (Ctrl+C)
-
-    IDLE --> IDLE: Mode change (ACT/PLAN/FIX)
-
-    note right of RUNNING
-        Steering messages are buffered
-        and injected on next LLM call
-    end note
-```
+The TUI creates a `BusMessage` with:
+
+- `source="user"`;
+- `target="main"`;
+- the fixed SDK-compatible steering template;
+- the submitted text as content.
+
+The SDK message-bus filter owns injection and idempotency. YAACLI does not maintain a second local buffer. The status bar derives `steering N pending` directly from unread main-subscriber messages with `source="user"`; it never renders their content. Once the filter consumes those messages for a model request, the count disappears automatically. When a foreground run ends, YAACLI clears the resumable steering list and selectively marks any remaining unread user messages consumed. Background messages remain unread, so user guidance cannot leak into a future run and background results are not swallowed.
+
+## Input Routing
+
+The routing order is intentional:
+
+1. Reject input while a session reset is active.
+2. Reconcile attachment chips, dropping binaries whose chip was deleted; remove any remaining generated chip text for classification without consuming its queued binary.
+3. Reserve `/...` and `!...` as local control namespaces before any steering or HITL-result parsing.
+4. Dispatch busy-safe slash commands; diagnose unknown slash commands locally; reject idle-only and custom slash commands without clearing the draft.
+5. During an active agent phase, route only ordinary text to the message bus immediately.
+6. During non-agent foreground work, preserve ordinary drafts and ask the user to wait.
+7. While idle, dispatch slash commands, direct shell commands, or a new prompt.
+
+The busy-safe command surface is `/cancel`, `/integrate`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`. There is no fallback that converts control syntax into steering or stores ordinary active-run input for a later turn.
+
+## HITL Interaction
+
+HITL decisions must be explicit:
+
+- empty Enter never approves;
+- `y`, `yes`, or `approve` approves an approval request;
+- `n`, `no`, or `reject <reason>` rejects it;
+- a deferred call accepts non-empty text as its result, while `/deny <reason>` denies it;
+- `/cancel` has priority over all approval and call parsing;
+- all busy-safe commands retain command semantics before approval or deferred-call result parsing;
+- unknown slash commands are diagnosed locally, while idle-only/custom slash and `!shell` input are rejected without resolving the request;
+- the HITL parser is active only while the authoritative phase is `AWAITING_APPROVAL`; `SAVING` and `CANCELLING` always use cleanup-phase routing;
+- for approval requests, non-decision ordinary text is steering and leaves the request pending.
+
+This preserves both safety and the global active-run steering contract.
+
+## Foreground Ownership
+
+Steering does not start another task. A single foreground owner covers:
+
+- agent execution;
+- deferred approval/call handling;
+- direct shell execution;
+- session persistence;
+- slash/custom command dispatch;
+- cancellation cleanup.
+
+Foreground ownership is claimed synchronously before a new task receives event-loop time. This prevents a second prompt or shell command from racing the first submission.
+
+## Lifecycle and Recovery
+
+- The elapsed timer starts when foreground dispatch is claimed, not when the model emits its first event.
+- The same start time is retained across thinking, tools, output streaming, approval, and saving.
+- Background completion only marks results ready. It does not take over the compose buffer.
+- The next prompt integrates ready background results. During an active run, `/integrate` delivers them to the current message bus for the next model request; while idle it starts an explicit integration turn.
+- `/agents` inspects running and recently completed background subagents; `/process` inspects active background shell processes. Neither command changes agent context.
+- Session restore preserves the current runtime approval policy and restores into a clean session context.
+- Every terminal path clears the resumable steering list and unread main-subscriber user messages before snapshot export, with final cleanup as a fallback; background bus messages remain pending.
 
 ## Configuration
 
-### Steering Configuration Options
+Steering has no YAACLI configuration section and no environment variables. In particular, the following legacy settings are unsupported and must not appear in examples:
 
-```toml
+```text
+YAACLI_STEERING_ENABLED
+YAACLI_STEERING_PREFIX
 [steering]
-# Enable steering capability
-enabled = true
-
-# Prefix required for steering messages (empty = no prefix required)
-# When set, only messages starting with this prefix are treated as steering
-prefix = ">"
-
-# Maximum number of buffered steering messages
-buffer_size = 10
+prefix
+buffer_size
 ```
 
-### Prefix Behavior
+This is a behavioral invariant rather than an optional mode.
 
-| `prefix`     | IDLE Input | RUNNING Input                              |
-| ------------ | ---------- | ------------------------------------------ |
-| `""` (empty) | New prompt | All input is steering                      |
-| `">"`        | New prompt | `>message` = steering, `message` = ignored |
-| `"@"`        | New prompt | `@message` = steering, `message` = ignored |
+## Verification
 
-## Subagent Isolation
+The test suite covers:
 
-### Why Subagents Don't Receive Steering
-
-1. **Autonomy**: Subagents are designed to complete specific tasks independently
-2. **Complexity**: Steering multiple concurrent subagents would be confusing
-3. **Scope**: Steering is for high-level guidance, not micro-management
-4. **Implementation**: Subagents may use different models/providers
-
-### Alternative for Subagent Control
-
-If users need to influence subagent behavior:
-
-1. Cancel the main agent
-2. Adjust the prompt with more specific instructions
-3. Re-run with the modified prompt
-
-Or configure subagent behavior through:
-
-- Subagent system prompts (via configuration)
-- Tool availability (via toolset configuration)
-- Model selection (via model overrides)
+- real active phases routing ordinary input to steering;
+- no `_queued_prompts` state;
+- strict HITL decisions and `/cancel` priority;
+- non-decision HITL text steering without resolving approval;
+- foreground race prevention;
+- timer continuity across real lifecycle phases;
+- steering delivery through `AgentContext.send_message()`;
+- cleanup and session-boundary isolation.

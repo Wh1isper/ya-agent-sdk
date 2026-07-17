@@ -1,556 +1,293 @@
-# Portable Configuration System Design
+# Configuration
 
 ## Overview
 
-The configuration system provides a layered approach to managing TUI settings, allowing users to customize behavior while maintaining sensible defaults. Configuration is stored at `~/.yaacli/` following XDG Base Directory specification.
+YAACLI configuration is implemented by `yaacli.config.ConfigManager` and the
+Pydantic models in `yaacli.config`. Configuration is split by responsibility:
 
-## Directory Structure
+- `config.toml` contains model, TUI, session, media, subagent, custom-command,
+  process-environment, and security settings;
+- `tools.toml` contains tool and MCP approval policy;
+- `mcp.json` contains MCP server definitions;
+- `.env` files provide supported `YAACLI_*` overrides and provider or SDK
+  environment variables;
+- `state.json` stores local UI selection state such as the last model profile.
 
-```
-~/.yaacli/
-├── config.toml              # Main configuration file
-├── subagents/               # User-defined subagent configurations
-│   ├── my-researcher.md     # Custom subagent definition
-│   └── code-reviewer.md     # Another custom subagent
-└── mcp-servers.toml         # MCP server configurations
-```
+The packaged templates under `yaacli/templates/` are the canonical examples.
+There is no configuration migration service or `yaacli config set/reset`
+command surface. When no model is configured, normal CLI startup runs the setup
+wizard and creates missing global assets without overwriting existing ones.
 
-## Configuration Schema
+## Locations and Precedence
 
-### config.toml
+| Artifact | Global location | Project location | Selection rule |
+| --- | --- | --- | --- |
+| Main configuration | `~/.yaacli/config.toml` | `.yaacli/config.toml` | Project file replaces the global file as a whole |
+| Tool policy | `~/.yaacli/tools.toml` | `.yaacli/tools.toml` | Project file replaces the global file as a whole |
+| MCP configuration | `~/.yaacli/mcp.json` | `.yaacli/mcp.json` | Project file replaces the global file as a whole |
+| Subagents | `~/.yaacli/subagents/*.md` | Project subagents are supplied through CLI/project conventions | Loaded by the runtime |
+| Skills | `~/.yaacli/skills/` | `.yaacli/skills/` | Project skills have higher routing priority |
+| Local state | `~/.yaacli/state.json` | None | Stores selected model-profile state |
+| Saved sessions | `~/.yaacli/sessions/` by default | Configurable | Controlled by `session.session_dir` |
+
+`ConfigManager.load()` applies these steps:
+
+1. load project `config.toml` when present, otherwise global `config.toml`;
+2. deep-merge the supported `YAACLI_*` environment overrides;
+3. load project `tools.toml` when present, otherwise global `tools.toml`, and
+   replace the `tools` section;
+4. validate the result as `YaacliConfig`.
+
+Global and project files at the same layer are not merged. Environment
+overrides intentionally cover only explicitly supported TUI/runtime fields and
+do not replace model configuration.
+
+## `config.toml`
+
+A compact current example is:
 
 ```toml
-# YAACLI CLI Configuration
-# Version: 1.0.0
+# Top-level shell isolation settings.
+shell_env = { EXAMPLE_RUNTIME_VALUE = "value" }
+include_os_env = true
 
 [general]
-# Default model for main agent
-model = "anthropic:claude-sonnet-4"
-# Model settings preset
-# `anthropic` resolves to adaptive thinking by default.
-# Use `anthropic_adaptive_xhigh` for Claude Opus 4.7 long-horizon coding and agentic workloads.
-model_settings = "anthropic"
-# Auto-continue mode (agent continues without confirmation)
-auto_mode = true
-# Maximum requests per session
-max_requests = 200
+model = "anthropic:claude-sonnet-4-5"
+model_settings = "anthropic_adaptive_high"
+model_cfg = "claude_200k"
+max_requests = 1000
+agent_stream_resume_on_error = true
+agent_stream_resume_max_attempts = 3
+agent_stream_resume_prompt = "Continue from recovered history without repeating completed work."
+max_goal_iterations = 10
+# system_prompt_file = "~/.yaacli/system_prompt.md"
 
-[media]
-# Clipboard attachment limits for one prompt
-max_pending_attachments = 8
-max_pending_attachment_bytes = 20971520
+[model_profiles.fast]
+label = "Fast"
+model = "openai-responses:gpt-5.6-luna"
+model_settings = "openai_responses_luna"
+model_cfg = "gpt5_270k"
 
 [display]
-# Terminal color theme ("auto", "dark", or "light")
 code_theme = "auto"
-# Maximum lines to show for tool results
 max_tool_result_lines = 5
-# Maximum length for tool argument display
 max_arg_length = 100
-# Rendered transcript retention budgets
 max_output_lines = 1000
 max_output_blocks = 1000
 max_output_bytes = 4194304
-# Raw streamed bytes retained/rendered before transcript projection
 max_stream_render_bytes = 524288
-# Submitted prompt history retention
 max_prompt_history = 500
-# Show token usage in status bar
 show_token_usage = true
-# Show elapsed time
 show_elapsed_time = true
 
-[tools]
-# Tools requiring user approval before execution
-need_approval = [
-    "shell_sandbox",
-    "file_write",
-]
-# Enable specific tool categories
-enable_bash = true
-enable_web_search = true
-enable_file_operations = true
+[session]
+auto_save_history = true
+auto_restore = false
+max_turns_per_session = 20
+max_sessions = 100
+# session_dir = "~/.yaacli/sessions"
+# max_session_age_days = 90
 
-[steering]
-# Enable steering mode (inject messages during execution)
+[media]
+max_pending_attachments = 8
+max_pending_attachment_bytes = 20971520
+
+[oauth_refresh]
 enabled = true
-# Steering message prefix (empty = any message is steering)
-prefix = ">"
-# Buffer size for pending steering messages
-buffer_size = 10
+interval_seconds = 1800
+failure_retry_seconds = 60
+refresh_on_startup = true
 
 [subagents]
-# Additional subagent directories to load
-additional_dirs = []
-# Disabled builtin subagents
-disabled_builtins = []
-# Override builtin subagent settings
-[subagents.overrides.search_agent]
-model = "google:gemini-2.0-flash"
+disabled = []
 
-[session]
-# Session persistence directory
-session_dir = ".yaacli"
-# Auto-save message history
-auto_save_history = true
-# Auto-restore previous session
-auto_restore = true
+[subagents.overrides.explorer]
+model = "openai-responses:gpt-5.6-luna"
+model_settings = "openai_responses_luna"
 
-[mcp]
-# Enable MCP server integration
-enabled = true
-# Allow all MCP tools (dangerous)
-allow_all_tools = false
-# Allowed MCP tool patterns
-allowed_tools = ["github_*", "filesystem_*"]
+[security.shell_review]
+enabled = false
+# model = "gateway@openai-responses:gpt-5.4-mini"
+# model_settings = "openai_responses_low"
+# on_needs_approval = "defer"
+# risk_threshold = "high"
+
+[env]
+# OPENAI_API_KEY = "sk-..."
+
+[commands.review]
+description = "Review the current changes"
+prompt = "Please perform a comprehensive review of the current changes."
 ```
 
-### mcp-servers.toml
+The exact complete template is
+`packages/yaacli/yaacli/templates/config.toml`. Custom commands always use the
+same agent execution semantics; the former command-level ACT/PLAN mode is deprecated
+and ignored.
+
+### General and model profiles
+
+`general.model` is required for normal runtime startup. `model_settings` and
+`model_cfg` accept either a preset name or an inline mapping. `/model` selects
+from `model_profiles`; the selected profile is persisted separately in
+`~/.yaacli/state.json` and does not rewrite `config.toml`.
+
+`general.max_loop_iterations` is accepted as a compatibility input only when
+`max_goal_iterations` is absent. The normalized runtime field is
+`max_goal_iterations`.
+
+### Display retention
+
+The display section independently bounds lines, blocks, UTF-8 bytes, raw stream
+render bytes, and prompt-history entries. `code_theme` accepts `auto`, `dark`,
+or `light`.
+
+### Session retention
+
+The session section controls automatic save/restore and durable retention:
+
+| Field | Default | Meaning |
+| --- | ---: | --- |
+| `session_dir` | `~/.yaacli/sessions` | Optional saved-session directory override |
+| `auto_save_history` | `true` | Save successful, cancelled, and failed recoverable turns from the interactive TUI |
+| `auto_restore` | `false` | Restore the newest matching workspace session on TUI startup |
+| `max_turns_per_session` | `20` | Maximum retained turn snapshots per session |
+| `max_sessions` | `100` | Maximum retained sessions globally |
+| `max_session_age_days` | unset | Optional age-based pruning threshold |
+
+Positive limits are validated by Pydantic. `auto_save_history` controls only
+interactive TUI persistence. Headless success is a durable protocol operation
+and always saves a turn; headless failure or cancellation emits its terminal
+event without saving a recovery snapshot. Session storage and restore contracts
+are defined in `05-session-persistence.md`.
+
+### Process and shell environments
+
+`[env]` values are loaded into the YAACLI process only when the variable is not
+already present in `os.environ`. They are intended for provider credentials and
+SDK settings.
+
+`[shell_env]` is passed to agent shell execution. `include_os_env = true`
+includes the parent process environment as the base layer; setting it to
+`false` limits shell execution to explicitly configured shell values and
+per-call overrides. These two sections are separate so deployments can avoid
+leaking provider credentials to subprocesses.
+
+### Shell review
+
+When `security.shell_review.enabled = true`, `model` must be a non-empty model
+string. Validation fails otherwise. Review policy is runtime security
+configuration and is separate from the static `tools.toml` approval list.
+
+### Custom slash commands
+
+Each `[commands.<name>]` entry requires `prompt` and may define `description`.
+The former `mode` field is deprecated and ignored. User definitions are merged
+with the built-in `init` command; a user definition with the same name overrides
+the built-in entry. Custom commands start an agent turn and are therefore
+idle-only; submitting one while foreground work is active preserves the draft
+and reports that the command is unavailable instead of converting its `/name`
+text into steering.
+
+## `tools.toml`
+
+Tool policy is isolated from the main configuration so a project can override
+permissions without copying model credentials or global UI settings:
 
 ```toml
-# MCP Server Configuration
-
-[servers.github]
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-github"]
-env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
-
-[servers.filesystem]
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed"]
-
-[servers.custom-api]
-transport = "streamable_http"
-url = "http://localhost:8080/mcp"
-headers = { Authorization = "Bearer ${API_TOKEN}" }
+[tools]
+need_approval = ["shell_exec", "write"]
+need_approval_mcps = ["production-filesystem"]
 ```
 
-## Configuration Models
+`need_approval` contains tool names. `need_approval_mcps` contains MCP server
+names whose tools require approval. An empty list means no additional static
+approval requirement from that field.
 
-```python
-from pathlib import Path
-from typing import Literal
-from pydantic import BaseModel, Field
+## `mcp.json`
 
-class GeneralConfig(BaseModel):
-    model: str = "anthropic:claude-sonnet-4"
-    # `anthropic` resolves to adaptive thinking by default.
-    # `anthropic_adaptive_xhigh` is available for Claude Opus 4.7.
-    model_settings: str | dict = "anthropic"
-    auto_mode: bool = True
-    max_requests: int = 200
+MCP servers use the SDK JSON schema:
 
-class DisplayConfig(BaseModel):
-    code_theme: Literal["auto", "dark", "light"] = "auto"
-    max_tool_result_lines: int = 5
-    max_arg_length: int = 100
-    show_token_usage: bool = True
-    show_elapsed_time: bool = True
-
-class ToolsConfig(BaseModel):
-    need_approval: list[str] = Field(default_factory=lambda: ["shell_sandbox"])
-    enable_bash: bool = True
-    enable_web_search: bool = True
-    enable_file_operations: bool = True
-
-class SteeringConfig(BaseModel):
-    enabled: bool = True
-    prefix: str = ">"
-    buffer_size: int = 10
-
-class SubagentOverride(BaseModel):
-    model: str | None = None
-    model_settings: str | dict | None = None
-    disabled: bool = False
-
-class SubagentsConfig(BaseModel):
-    additional_dirs: list[str] = Field(default_factory=list)
-    disabled_builtins: list[str] = Field(default_factory=list)
-    overrides: dict[str, SubagentOverride] = Field(default_factory=dict)
-
-class SessionConfig(BaseModel):
-    session_dir: str = ".yaacli"
-    auto_save_history: bool = True
-    auto_restore: bool = True
-
-class MCPConfig(BaseModel):
-    enabled: bool = True
-    allow_all_tools: bool = False
-    allowed_tools: list[str] = Field(default_factory=list)
-
-class YaacliConfig(BaseModel):
-    """Complete configuration model."""
-    general: GeneralConfig = Field(default_factory=GeneralConfig)
-    display: DisplayConfig = Field(default_factory=DisplayConfig)
-    tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    steering: SteeringConfig = Field(default_factory=SteeringConfig)
-    subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
-    session: SessionConfig = Field(default_factory=SessionConfig)
-    mcp: MCPConfig = Field(default_factory=MCPConfig)
-```
-
-## Configuration Manager
-
-### Architecture
-
-```mermaid
-classDiagram
-    class ConfigManager {
-        -_config: YaacliConfig
-        -_config_dir: Path
-        -_loaded_sources: list[str]
-        +load() YaacliConfig
-        +save()
-        +get_subagent_configs() list[SubagentConfig]
-        +get_mcp_servers() dict[str, MCPServerConfig]
-        +migrate_if_needed()
+```json
+{
+  "servers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": {}
     }
-
-    class ConfigSource {
-        <<interface>>
-        +load() dict
-        +exists() bool
-        +priority: int
-    }
-
-    class BuiltinConfigSource {
-        +load() dict
-        +priority: int = 0
-    }
-
-    class UserConfigSource {
-        +load() dict
-        +priority: int = 10
-    }
-
-    class ProjectConfigSource {
-        +load() dict
-        +priority: int = 20
-    }
-
-    class EnvConfigSource {
-        +load() dict
-        +priority: int = 30
-    }
-
-    ConfigManager --> ConfigSource
-    ConfigSource <|-- BuiltinConfigSource
-    ConfigSource <|-- UserConfigSource
-    ConfigSource <|-- ProjectConfigSource
-    ConfigSource <|-- EnvConfigSource
+  }
+}
 ```
 
-### Configuration Loading Flow
+`ConfigManager.load_mcp_config()` checks project `.yaacli/mcp.json` first and
+falls back to `~/.yaacli/mcp.json`. MCP files are not merged.
 
-```mermaid
-sequenceDiagram
-    participant App
-    participant ConfigManager
-    participant BuiltinSource
-    participant UserSource
-    participant ProjectSource
-    participant EnvSource
+## Environment Overrides
 
-    App->>ConfigManager: load()
-    ConfigManager->>BuiltinSource: load()
-    BuiltinSource-->>ConfigManager: builtin_config
+YAACLI loads `.env` from the package development location and then the current
+working directory without overriding variables already present in the process.
+`EnvSettings` uses the `YAACLI_` prefix and supports:
 
-    ConfigManager->>UserSource: load()
-    UserSource-->>ConfigManager: user_config
-
-    ConfigManager->>ProjectSource: load()
-    ProjectSource-->>ConfigManager: project_config
-
-    ConfigManager->>EnvSource: load()
-    EnvSource-->>ConfigManager: env_overrides
-
-    ConfigManager->>ConfigManager: deep_merge(configs)
-    ConfigManager->>ConfigManager: validate()
-    ConfigManager-->>App: YaacliConfig
+```text
+YAACLI_CODE_THEME
+YAACLI_SHOW_TOKEN_USAGE
+YAACLI_SHOW_ELAPSED_TIME
+YAACLI_SESSION_DIR
+YAACLI_AUTO_SAVE_HISTORY
+YAACLI_AUTO_RESTORE
+YAACLI_MAX_TURNS_PER_SESSION
+YAACLI_MAX_SESSIONS
+YAACLI_MAX_SESSION_AGE_DAYS
+YAACLI_AGENT_STREAM_RESUME_ON_ERROR
+YAACLI_AGENT_STREAM_RESUME_MAX_ATTEMPTS
+YAACLI_AGENT_STREAM_RESUME_PROMPT
+YAACLI_OAUTH_REFRESH_ENABLED
+YAACLI_OAUTH_REFRESH_INTERVAL_SECONDS
+YAACLI_OAUTH_REFRESH_FAILURE_RETRY_SECONDS
+YAACLI_OAUTH_REFRESH_ON_STARTUP
 ```
 
-### Implementation
+Provider, OAuth, search, and SDK variables can also be placed in `.env`; they
+are consumed by their owning packages rather than mapped into `YaacliConfig`.
+The repository examples are `packages/yaacli/.env.example` and
+`yaacli/templates/env.example`.
 
-```python
-import os
-import tomllib
-from pathlib import Path
-from typing import Any
+## Initialization and Operations
 
-class ConfigManager:
-    """Manages layered configuration loading and merging."""
+Normal `yaacli` startup performs the operational setup:
 
-    DEFAULT_CONFIG_DIR = Path.home() / ".yaacli"
-    PROJECT_CONFIG_DIR = ".yaacli"
+1. load `.env` files;
+2. ensure global built-in assets exist;
+3. load configuration;
+4. if `general.model` is empty, run the interactive setup wizard;
+5. create missing `config.toml`, `mcp.json`, subagent presets, and built-in
+   skills without overwriting existing files;
+6. reload configuration and apply `[env]` values.
 
-    def __init__(
-        self,
-        config_dir: Path | None = None,
-        project_dir: Path | None = None,
-    ) -> None:
-        self._config_dir = config_dir or self.DEFAULT_CONFIG_DIR
-        self._project_dir = project_dir or Path.cwd()
-        self._config: YaacliConfig | None = None
-        self._loaded_sources: list[str] = []
-
-    @property
-    def config(self) -> YaacliConfig:
-        if self._config is None:
-            self._config = self.load()
-        return self._config
-
-    def load(self) -> YaacliConfig:
-        """Load and merge configuration from all sources."""
-        merged: dict[str, Any] = {}
-
-        # Layer 1: Builtin defaults (from YaacliConfig defaults)
-        # Nothing to load - Pydantic handles defaults
-
-        # Layer 2: User config
-        user_config_file = self._config_dir / "config.toml"
-        if user_config_file.exists():
-            with open(user_config_file, "rb") as f:
-                user_config = tomllib.load(f)
-            merged = self._deep_merge(merged, user_config)
-            self._loaded_sources.append(str(user_config_file))
-
-        # Layer 3: Project config
-        project_config_file = self._project_dir / self.PROJECT_CONFIG_DIR / "config.toml"
-        if project_config_file.exists():
-            with open(project_config_file, "rb") as f:
-                project_config = tomllib.load(f)
-            merged = self._deep_merge(merged, project_config)
-            self._loaded_sources.append(str(project_config_file))
-
-        # Layer 4: Environment overrides
-        env_overrides = self._load_env_overrides()
-        merged = self._deep_merge(merged, env_overrides)
-
-        # Validate and return
-        self._config = YaacliConfig.model_validate(merged)
-        return self._config
-
-    def _deep_merge(self, base: dict, override: dict) -> dict:
-        """Deep merge two dictionaries, override takes precedence."""
-        result = base.copy()
-        for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self._deep_merge(result[key], value)
-            else:
-                result[key] = value
-        return result
-
-    def _load_env_overrides(self) -> dict[str, Any]:
-        """Load configuration from environment variables."""
-        overrides: dict[str, Any] = {}
-
-        # Map environment variables to config paths
-        env_mappings = {
-            "YAACLI_MODEL": ("general", "model"),
-            "YAACLI_AUTO_MODE": ("general", "auto_mode"),
-            "YAACLI_SESSION_DIR": ("session", "session_dir"),
-        }
-
-        for env_var, path in env_mappings.items():
-            value = os.environ.get(env_var)
-            if value is not None:
-                # Navigate to nested location
-                current = overrides
-                for key in path[:-1]:
-                    current = current.setdefault(key, {})
-                # Convert types as needed
-                if path[-1] in ("auto_mode",):
-                    value = value.lower() in ("true", "1", "yes")
-                current[path[-1]] = value
-
-        return overrides
-
-    def ensure_config_dir(self) -> None:
-        """Create config directory structure if it doesn't exist."""
-        self._config_dir.mkdir(parents=True, exist_ok=True)
-        (self._config_dir / "subagents").mkdir(exist_ok=True)
-
-    def save_default_config(self, force: bool = False) -> Path | None:
-        """Save default configuration to user config directory."""
-        config_file = self._config_dir / "config.toml"
-        if config_file.exists() and not force:
-            return None
-
-        self.ensure_config_dir()
-        default_config = self._generate_default_config_toml()
-        config_file.write_text(default_config)
-        return config_file
-
-    def _generate_default_config_toml(self) -> str:
-        """Generate default config.toml content with comments."""
-        return '''# YAACLI CLI Configuration
-# Generated by yaacli init
-
-[general]
-model = "anthropic:claude-sonnet-4"
-auto_mode = true
-max_requests = 200
-
-[display]
-code_theme = "auto"
-show_token_usage = true
-
-[steering]
-enabled = true
-prefix = ">"
-
-[session]
-auto_save_history = true
-auto_restore = true
-'''
-```
-
-## Subagent Configuration Loading
-
-### Loading User Subagents
-
-```python
-def get_subagent_configs(self) -> list[SubagentConfig]:
-    """Load all subagent configurations."""
-    configs: list[SubagentConfig] = []
-
-    # 1. Load builtin subagents (from ya_agent_sdk)
-    from ya_agent_sdk.subagents import get_builtin_subagent_configs
-    builtin_configs = get_builtin_subagent_configs()
-
-    for config in builtin_configs:
-        # Check if disabled
-        if config.name in self.config.subagents.disabled_builtins:
-            continue
-
-        # Apply overrides
-        if config.name in self.config.subagents.overrides:
-            override = self.config.subagents.overrides[config.name]
-            if override.disabled:
-                continue
-            if override.model:
-                config.model = override.model
-            if override.model_settings:
-                config.model_settings = override.model_settings
-
-        configs.append(config)
-
-    # 2. Load user subagents from config dir
-    user_subagents_dir = self._config_dir / "subagents"
-    if user_subagents_dir.exists():
-        from ya_agent_sdk.subagents import load_subagents_from_dir
-        user_configs = load_subagents_from_dir(user_subagents_dir)
-        configs.extend(user_configs)
-
-    # 3. Load from additional directories
-    for dir_path in self.config.subagents.additional_dirs:
-        path = Path(dir_path).expanduser()
-        if path.exists():
-            from ya_agent_sdk.subagents import load_subagents_from_dir
-            additional_configs = load_subagents_from_dir(path)
-            configs.extend(additional_configs)
-
-    return configs
-```
-
-## Configuration Migration
-
-### Version Migration
-
-```python
-class ConfigMigrator:
-    """Handles configuration schema migrations."""
-
-    CURRENT_VERSION = "1.0.0"
-
-    def __init__(self, config_dir: Path) -> None:
-        self._config_dir = config_dir
-        self._version_file = config_dir / ".version"
-
-    def get_current_version(self) -> str | None:
-        """Get the version of existing configuration."""
-        if not self._version_file.exists():
-            return None
-        return self._version_file.read_text().strip()
-
-    def needs_migration(self) -> bool:
-        """Check if configuration needs migration."""
-        current = self.get_current_version()
-        return current is not None and current != self.CURRENT_VERSION
-
-    def migrate(self) -> None:
-        """Run necessary migrations."""
-        current = self.get_current_version()
-
-        if current is None:
-            # Fresh install, no migration needed
-            self._write_version()
-            return
-
-        # Define migration path
-        migrations = [
-            ("0.9.0", "1.0.0", self._migrate_0_9_to_1_0),
-        ]
-
-        for from_ver, to_ver, migrator in migrations:
-            if self._version_compare(current, from_ver) <= 0:
-                migrator()
-                current = to_ver
-
-        self._write_version()
-
-    def _migrate_0_9_to_1_0(self) -> None:
-        """Example migration from 0.9.0 to 1.0.0."""
-        config_file = self._config_dir / "config.toml"
-        if not config_file.exists():
-            return
-
-        content = config_file.read_text()
-        # Example: rename old key to new key
-        content = content.replace("[old_section]", "[new_section]")
-        config_file.write_text(content)
-
-    def _write_version(self) -> None:
-        self._version_file.write_text(self.CURRENT_VERSION)
-
-    def _version_compare(self, v1: str, v2: str) -> int:
-        """Compare version strings. Returns -1, 0, or 1."""
-        parts1 = [int(x) for x in v1.split(".")]
-        parts2 = [int(x) for x in v2.split(".")]
-        for p1, p2 in zip(parts1, parts2):
-            if p1 < p2:
-                return -1
-            if p1 > p2:
-                return 1
-        return 0
-```
-
-## CLI Commands for Configuration
+Configuration is edited through the TOML/JSON files. The implemented top-level
+CLI exposes runtime options and saved-session commands:
 
 ```bash
-# Initialize configuration with defaults
-yaacli init
-
-# Show current configuration
-yaacli config show
-
-# Set a configuration value
-yaacli config set general.model "openai-chat:gpt-4o"
-
-# Get a configuration value
-yaacli config get general.model
-
-# Reset to defaults
-yaacli config reset
-
-# Validate configuration
-yaacli config validate
-
-# Copy builtin subagent to user config for customization
-yaacli subagent copy search_agent
-
-# List available subagents
-yaacli subagent list
+yaacli --help
+yaacli --session <session-id>
+yaacli --profile <profile-id>
+yaacli -p "prompt" --worker
+yaacli sessions list
+yaacli sessions show <session-id>
+yaacli sessions delete <session-id>
 ```
+
+`--profile` is a run-scoped override and does not update `state.json`. Selecting a profile through the interactive `/model` UI persists that choice for later launches.
+
+There are no `yaacli config show/set/reset/validate` commands in the current
+CLI.
+
+## Verification
+
+Configuration behavior is covered by `tests/test_config.py`,
+`tests/test_model_profiles.py`, `tests/test_cli.py`, `tests/test_cli_headless.py`,
+and `tests/test_sessions_cli.py`. The environment examples and packaged
+configuration templates must remain aligned whenever an override or setting is
+added.

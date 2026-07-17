@@ -44,6 +44,43 @@ Run as a module:
 python -m yaacli
 ```
 
+## Headless and Saved Sessions
+
+Run one prompt without the TUI:
+
+```bash
+yaacli -p "Fix the failing tests"
+yaacli -p "Continue" --session <session-id> --profile <profile-id>
+yaacli -p "Run an isolated worker task" --worker
+```
+
+Headless stdout is an NDJSON event stream. Human-readable diagnostics, fatal details, and resume hints are written to stderr so scripts can parse every stdout line as JSON. A successful headless run always saves its durable session turn, independent of `session.auto_save_history`; a failed or cancelled run emits its terminal event but does not save a recovery snapshot. `--worker` requires `--prompt` and disables synchronous delegate subagents for that run. `--profile` applies only to the current invocation; selecting a profile through `/model` persists it for future launches.
+
+Inspect or delete durable sessions without starting the TUI:
+
+```bash
+yaacli sessions list
+yaacli sessions show <session-id>
+yaacli sessions delete <session-id>
+```
+
+Session IDs may be supplied by unique prefix. The configured session directory and retention controls live under `[session]` in `config.toml`; see [`spec/05-session-persistence.md`](spec/05-session-persistence.md).
+
+## TUI Interaction
+
+The output viewport has priority over auxiliary UI. The task pane is hidden when empty, uses one summary row by default, and expands with `F2`. The model selector is an overlay and does not permanently consume output rows.
+
+- Enter submits while idle and sends guidance to the active run while an agent is running.
+- Ordinary text submitted during an active agent run is steering. The status bar shows how many steering messages are still waiting for a model request, without exposing their content. Slash commands and `!shell` always remain local control syntax: safe busy commands execute, idle-only commands are rejected without clearing the draft, unknown commands get local suggestions, and none of them are sent to the model or accepted as deferred-call results.
+- `/cancel` or `Ctrl+C` requests cancellation of cancellable foreground work. Once the TUI enters `SAVING`, persistence is allowed to finish and cannot be cancelled; Ctrl+C does not exit while the save is in progress.
+- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session.
+- Background results never take over the compose area. The next prompt integrates them automatically; `/integrate` delivers them to an active agent run for its next model request, or starts an explicit integration turn while idle.
+- `/agents` shows running and recently completed background subagents; `/process` shows active background shell processes.
+- `/attachments` and `/remove-image` inspect or edit images queued for the next turn.
+- `/tool <call-id>` shows the complete retained result for a tool call.
+- `/session <id>` restores a saved session. The CLI equivalent is `yaacli --session <id>`.
+- Use `/help` for the complete built-in and configured command list. Slash commands complete while typing.
+
 ## Built-in Skills
 
 YAACLI ships with `building-agents` from the repository canonical source `skills/agent-builder/`.
@@ -63,7 +100,7 @@ uv sync --all-packages
 cp packages/yaacli/.env.example packages/yaacli/.env
 ```
 
-YAACLI loads `.env` from `packages/yaacli/.env` and the current working directory.
+YAACLI loads `.env` from `packages/yaacli/.env` and the current working directory without replacing variables already present in the process. The package file is loaded first and therefore wins duplicate keys; the working-directory file supplies only keys that remain unset.
 Provider API keys can live in that `.env` file or in `~/.yaacli/config.toml` under `[env]`.
 SDK and tool variables such as `YA_AGENT_*` and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) as the reference list for SDK and tool variables.
@@ -142,7 +179,7 @@ make test-cli
 ## Clipboard Image Paste
 
 Plain terminal paste always inserts text into the input box.
-Use `Ctrl+V` or `/paste-image` to attach an image from the system clipboard.
+Use `Ctrl+V` or `/paste-image` to attach an image from the system clipboard. During an active agent run the image remains queued for the next turn and is never converted into steering text. Generated attachment chips are removed before `/` and `!` control syntax is classified, so a visible chip cannot hide a command. If the user deleted the chip, its binary is removed before any command dispatch.
 On macOS terminal apps over SSH, map `Command+Shift+V` to send `Ctrl+V` if you want a native-feeling shortcut.
 
 YAACLI reads clipboard images through Pillow first on macOS and Windows.

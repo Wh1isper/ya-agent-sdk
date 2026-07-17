@@ -1,311 +1,191 @@
-# Human-in-the-Loop (HITL) Design for yaacli
+# Human-in-the-Loop Tool Requests
 
-## Overview
+## Purpose
 
-This document describes how yaacli handles Human-in-the-Loop (HITL) for tool approval workflows. The key insight is that **HITL should be treated as an inner loop within agent execution, not as a separate TUI state**.
+YAACLI handles Pydantic AI `DeferredToolRequests` inside the foreground agent turn. A turn does not emit a successful terminal result until every approval and deferred call has been resolved and the model returns final text.
 
-## Architecture
+HITL is both:
+
+- an inner execution loop in `TUIApp._run_agent()`; and
+- an explicit interaction phase, `TUIPhase.AWAITING_APPROVAL`, used for input ownership, status, cancellation, and elapsed-time display.
+
+## Runtime Contract
+
+`create_tui_runtime()` configures the agent output type as:
+
+```python
+[str, DeferredToolRequests]
+```
+
+Current approval policy comes from:
+
+- `tools.need_approval` for tool names; and
+- `tools.need_approval_mcps` for MCP servers.
+
+These values are passed to `create_agent()` as `need_user_approve_tools` and `need_user_approve_mcps`.
+
+Persisted state must not weaken this policy. `restore_resumable_state_safely()` restores conversation data and then reapplies the approval lists from the active runtime.
+
+## Execution Flow
 
 ```mermaid
 sequenceDiagram
     participant User
     participant TUI as TUIApp
-    participant Agent as stream_agent()
+    participant Agent as stream_agent
 
-    User->>TUI: Send prompt
-    TUI->>Agent: stream_agent(prompt)
-    Agent-->>TUI: result.output = DeferredToolRequests
+    User->>TUI: Submit prompt
+    TUI->>Agent: Execute prompt
+    Agent-->>TUI: str or DeferredToolRequests
 
-    loop HITL Inner Loop
-        TUI->>User: Display approval panel
-        User->>TUI: Approve/Reject
-        TUI->>Agent: stream_agent(DeferredToolResults)
-        Agent-->>TUI: result.output (str or DeferredToolRequests)
+    loop While output is DeferredToolRequests
+        TUI->>TUI: Enter AWAITING_APPROVAL
+        TUI->>User: Render each approval or deferred call
+        User->>TUI: Explicit decision, result, steering, view, or cancel
+        TUI->>Agent: Execute DeferredToolResults
+        Agent-->>TUI: str or DeferredToolRequests
     end
 
-    TUI->>User: Display final result (str)
+    TUI->>TUI: Record final text and terminal event
 ```
 
-## Core Design: HITL as Inner Loop
+`TUIApp._run_agent()` rejects an empty `DeferredToolRequests` payload and rejects completion without final text. This prevents malformed deferred output from being reported as a successful run.
 
-Inspired by `dev/tui/cliapp.py`, HITL is handled as a **while loop**, not a state machine:
+## Foreground Ownership and Timing
 
-```python
-# Main execution loop (simplified)
-async def _run_agent_loop(self, user_input: str) -> None:
-    result = await self._stream_agent(user_input)
+HITL remains part of the same foreground turn:
 
-    # HITL inner loop: keep processing until we get final str output
-    while isinstance(result.output, DeferredToolRequests):
-        user_response = await self._request_user_action(result.output)
-        result = await self._stream_agent(user_response)
+- `_run_started_at` is established when the turn is synchronously claimed;
+- entering `AWAITING_APPROVAL` does not reset it;
+- ordinary prompts and shell commands cannot start a competing foreground owner;
+- `/cancel` and `Ctrl+C` cancel the active foreground task; and
+- the timer is cleared only when the foreground owner exits.
 
-    # Done - result.output is str
-```
+## Request Processing
 
-This approach:
-- **No additional TUI state needed** - HITL is just a `while` loop
-- **Unified interface** - `_stream_agent()` accepts `str | DeferredToolResults`
-- **Natural recursion** - Agent may return multiple `DeferredToolRequests` in sequence
-- **Simple mental model** - Approval blocks the loop, then resumes
+`TUIApp._request_user_action()` processes all entries in deterministic order:
 
-## Existing Configuration
+1. every item in `DeferredToolRequests.approvals`;
+2. every item in `DeferredToolRequests.calls`.
 
-### tools.toml
+For approvals:
 
-```toml
-[tools]
-# Tools requiring user approval before execution
-need_approval = ["shell", "write"]
-```
+- approve stores `True` under the original tool-call ID;
+- reject stores `ToolDenied(message=reason)` under that ID.
 
-Location priority:
-1. Project: `.yaacli/tools.toml` (overrides global)
-2. Global: `~/.yaacli/tools.toml`
+For deferred calls:
 
-### Runtime Configuration
+- a supplied result becomes a `RetryPromptPart`;
+- an explicit denial also becomes a `RetryPromptPart` whose content records the denial;
+- the original tool name and tool-call ID are retained.
 
-```python
-# yaacli/runtime.py
-output_type: OutputSpec[str|DeferredToolRequests] = [
-    TextOutput(steering_output_guard),
-    DeferredToolRequests,
-]
+The resulting `DeferredToolResults` is sent through the same agent stream, which may return another deferred batch.
 
-runtime = create_agent(
-    ...
-    output_type=output_type,
-    need_user_approve_tools=config.tools.need_approval or None,
-)
-```
+## Input Contract
 
-With this configuration:
-- Normal completion: `result.output` is `str`
-- Needs approval: `result.output` is `DeferredToolRequests`
+The real prompt_toolkit Enter handler applies the following contract before ordinary submission:
 
-## Implementation
+| Input while an approval is pending | Action |
+|---|---|
+| `y`, `yes`, `approve` | Approve the current request |
+| `n`, `no`, `reject` | Reject with the default reason |
+| `reject <reason>` | Reject with the supplied reason |
+| Empty Enter | Keep waiting and show the decision hint |
+| Other non-empty ordinary text | Send immediate steering and keep the approval pending |
+| `view`, `v` | Render the full deferred request |
+| Busy-safe slash command | Execute locally without deciding the request |
+| Idle-only/custom/unknown slash or `!shell` | Reject or diagnose locally without deciding the request |
+| `/cancel` | Cancel the foreground run without deciding the request |
 
-### 1. Unified Stream Method
+Deferred calls have a separate explicit contract:
 
-```python
-async def _stream_agent(
-    self,
-    prompt: str | DeferredToolResults,
-) -> AgentRunResult[str | DeferredToolRequests]:
-    """Execute agent with prompt or deferred results."""
-    async with stream_agent(
-        self.runtime,
-        user_prompt=prompt if isinstance(prompt, str) else "",
-        message_history=self._message_history,
-        deferred_tool_results=prompt if isinstance(prompt, DeferredToolResults) else None,
-    ) as stream:
-        async for event in stream:
-            self._handle_stream_event(event)
+| Input while a deferred call is pending | Action |
+|---|---|
+| Non-empty ordinary text | Supply the call result |
+| `/deny <reason>` | Deny the call explicitly |
+| Empty Enter | Keep waiting and show the result hint |
+| `view`, `v` | Render the full deferred request |
+| Busy-safe slash command | Execute locally without supplying a result |
+| Idle-only/custom/unknown slash or `!shell` | Reject or diagnose locally without supplying a result |
+| `/cancel` | Cancel without supplying a result |
 
-        stream.raise_if_exception()
-        if stream.run:
-            self._message_history = list(stream.run.all_messages())
-        return stream.run.result
-```
+`/cancel` and deferred-call `/deny` are checked before the generic control classifier. The `/` and `!` namespaces are then resolved before approval steering or deferred-call result parsing. Empty Enter never approves, and approval text outside the explicit allowlist never approves accidentally. The entire HITL parser additionally requires the authoritative phase to remain `AWAITING_APPROVAL`; once cancellation or saving begins, cleanup-phase routing wins even if the pending flag has not yet been reset.
 
-### 2. HITL Execution Loop
+## Steering During Approval
 
-```python
-async def _execute_with_hitl(self, user_input: str) -> None:
-    """Execute agent with HITL inner loop."""
-    self._state = TUIState.RUNNING
-    self._append_user_input(user_input)
+Non-decision approval text follows the normal active-run steering path:
 
-    try:
-        result = await self._stream_agent(user_input)
+1. clear the compose buffer;
+2. add the text to prompt history;
+3. send a `BusMessage` from `user` to `main` with `STEERING_TEMPLATE`;
+4. leave `_approval_event` unset; and
+5. remain in `TUIPhase.AWAITING_APPROVAL`.
 
-        # HITL inner loop
-        while result and isinstance(result.output, DeferredToolRequests):
-            user_response = await self._request_user_action(result.output)
-            result = await self._stream_agent(user_response)
+There is no local steering queue, steering prefix mode, or deferred next-prompt queue.
 
-        # Agent completed with str output
-        self._state = TUIState.IDLE
+Binary attachments cannot steer an active run. They remain queued for the next turn.
 
-    except asyncio.CancelledError:
-        self._append_output("[Cancelled]")
-        self._state = TUIState.IDLE
-    except Exception as e:
-        self._append_error_output(e)
-        self._state = TUIState.IDLE
-```
+## Presentation
 
-### 3. Request User Action
+For each request, YAACLI renders:
 
-```python
-async def _request_user_action(
-    self,
-    deferred: DeferredToolRequests,
-) -> DeferredToolResults:
-    """Collect approval decisions from user."""
-    results = DeferredToolResults()
+- request index and total count;
+- tool name;
+- bounded arguments;
+- shell-review risk and reason metadata when present; and
+- an input hint matching the current approval or deferred-call contract.
 
-    if not deferred.approvals:
-        return results
+`view` toggles the expanded representation without resolving the request. The status bar derives its approval label and progress from the explicit phase and request fields rather than dynamic attribute probing.
 
-    self._append_system_output(
-        f"[Tool approval required: {len(deferred.approvals)} tool(s)]"
-    )
+## Cancellation and Cleanup
 
-    for idx, tool_call in enumerate(deferred.approvals, 1):
-        # Display approval panel
-        self._display_approval_panel(tool_call, idx, len(deferred.approvals))
+Cancellation does not synthesize an approval or a deferred-call result.
 
-        # Wait for user decision (blocking)
-        decision = await self._wait_for_approval_input()
+When the turn exits, `_reset_hitl_state()` clears:
 
-        if decision.approved:
-            results.approvals[tool_call.tool_call_id] = True
-            self._append_system_output(f"Approved: {tool_call.tool_name}")
-        else:
-            results.approvals[tool_call.tool_call_id] = ToolDenied(
-                decision.reason or "User rejected"
-            )
-            self._append_system_output(
-                f"Rejected: {tool_call.tool_name} - {decision.reason}"
-            )
+- pending request lists;
+- current request and metadata;
+- approval result and reason;
+- expansion state; and
+- the in-process `asyncio.Event`.
 
-    return results
-```
+A cancelled run records `run_cancelled` and may persist a recoverable snapshot according to the TUI persistence policy. A completed run is not reclassified as cancelled if cancellation arrives during post-response persistence.
 
-### 4. Approval Input (TUI-specific)
+## Session Restore
 
-For prompt_toolkit TUI, use `asyncio.Event` to block during approval:
+Session restore is transactional:
 
-```python
-@dataclass
-class ApprovalDecision:
-    approved: bool
-    reason: str | None = None
+1. parse history, resumable state, and display replay into temporary values;
+2. derive a fresh candidate `TUIContext` from the current runtime;
+3. reset conversation-scoped state on that candidate;
+4. restore persisted state while preserving the active approval policy;
+5. tombstone and reset old background subagents; and
+6. commit context, history, replay, session identity, and message bus without an `await` boundary.
 
-async def _wait_for_approval_input(self) -> ApprovalDecision:
-    """Block until user provides approval decision."""
-    self._approval_event = asyncio.Event()
-    self._approval_result: ApprovalDecision | None = None
+HITL UI state is intentionally process-local. YAACLI does **not** infer or recreate a pending approval prompt from the last `ModelResponse` during restore. The approval `asyncio.Event`, current request cursor, and panel expansion state are reset. Restored model history remains available to the next normal turn, and the active runtime policy determines any future approval request.
 
-    # Wait for key handler to set the event
-    await self._approval_event.wait()
+## Headless Mode
 
-    return self._approval_result or ApprovalDecision(approved=False, reason="No input")
+Headless mode cannot collect interactive HITL input. It converts deferred approvals and calls into explicit denials, sends those `DeferredToolResults` back to the agent, and continues until final text or an error is produced.
 
-# In key bindings:
-@kb.add("enter")
-def handle_enter(event: KeyPressEvent) -> None:
-    text = input_area.buffer.text.strip()
-    input_area.buffer.reset()
+The headless terminal-event contract is independent of the TUI panel flow:
 
-    # Check if waiting for approval
-    if self._approval_event and not self._approval_event.is_set():
-        if text.lower() in ("", "y", "yes"):
-            self._approval_result = ApprovalDecision(approved=True)
-        else:
-            self._approval_result = ApprovalDecision(approved=False, reason=text)
-        self._approval_event.set()
-        return
+- successful output is persisted before `RUN_FINISHED` is emitted;
+- persistence failure emits `RUN_ERROR` and no `RUN_FINISHED`; and
+- cancellation emits `run_cancelled` and re-raises cancellation.
 
-    # Normal input handling...
-```
+## Verification Invariants
 
-### 5. Approval Panel Display
+Tests must cover:
 
-```python
-def _display_approval_panel(
-    self,
-    tool_call: ToolCallPart,
-    index: int,
-    total: int,
-) -> None:
-    """Display approval panel for a tool call."""
-    content_parts = [
-        Text(f"Tool {index} of {total}", style="bold cyan"),
-        Text(""),
-        Text(f"Tool: {tool_call.tool_name}", style="bold yellow"),
-        Text(f"ID: {tool_call.tool_call_id}", style="dim"),
-    ]
-
-    if tool_call.args:
-        content_parts.append(Text(""))
-        content_parts.append(Text("Arguments:", style="bold cyan"))
-        args_json = json.dumps(tool_call.args, indent=2, ensure_ascii=False)
-        if len(args_json.split("\n")) > 20:
-            lines = args_json.split("\n")[:20]
-            args_json = "\n".join(lines) + "\n... (truncated)"
-        content_parts.append(Syntax(args_json, "json", theme=self._get_code_theme()))
-
-    panel = Panel(
-        Group(*content_parts),
-        title="[yellow]Tool Approval Required[/yellow]",
-        subtitle="[dim]Enter/Y: Approve | Text: Reject | Ctrl+C: Cancel[/dim]",
-        border_style="yellow",
-    )
-
-    self._append_rich(panel)
-```
-
-## User Interaction
-
-| Input | Action |
-|-------|--------|
-| `Enter` or `y`/`yes` | Approve current tool call |
-| Any other text | Reject with text as reason |
-| `Ctrl+C` | Cancel all pending and return to IDLE |
-
-## Status Bar
-
-During HITL, show approval progress:
-
-```python
-def _get_status_bar(self) -> FormattedText:
-    # Check if waiting for approval input
-    if hasattr(self, "_approval_event") and self._approval_event and not self._approval_event.is_set():
-        return [
-            ("class:status-bar.mode", f" {self._mode.value.upper()} "),
-            ("class:status-bar", " | "),
-            ("class:status-bar.warning", "Awaiting Approval"),
-            ("class:status-bar", " | "),
-            ("class:status-bar", "Enter: Approve | Text: Reject"),
-        ]
-    # ... normal status bar ...
-```
-
-## Session Persistence
-
-On session restore, check for pending tool calls:
-
-```python
-def _check_pending_on_restore(self) -> DeferredToolRequests | None:
-    """Check if restored session has pending approvals."""
-    if not self._message_history:
-        return None
-
-    last_msg = self._message_history[-1]
-    if not isinstance(last_msg, ModelResponse):
-        return None
-
-    tool_calls = [p for p in last_msg.parts if isinstance(p, ToolCallPart)]
-    if not tool_calls:
-        return None
-
-    # Filter to tools needing approval
-    need_approval = set(self.ctx.need_user_approve_tools)
-    approvals = [tc for tc in tool_calls if tc.tool_name in need_approval]
-
-    if approvals:
-        return DeferredToolRequests(calls=tool_calls, approvals=approvals)
-    return None
-```
-
-## Comparison: CLI vs TUI
-
-| Aspect | CLI (cliapp.py) | TUI (prompt_toolkit) |
-|--------|-----------------|---------------------|
-| Input model | Blocking `prompt_async()` | Event-driven key bindings |
-| HITL loop | Simple `while` + `await prompt` | `while` + `asyncio.Event` |
-| Approval collection | Sequential blocking | Event-based blocking |
-
-The TUI requires `asyncio.Event` because prompt_toolkit uses event-driven input, but the conceptual model is the same: HITL is an inner loop that blocks until all approvals are collected.
+- the deferred inner loop and final-text requirement;
+- explicit approve and reject inputs through the real Enter handler;
+- empty Enter remaining pending;
+- non-decision text steering without resolving approval;
+- deferred-call result and `/deny` routing;
+- `/cancel` priority;
+- `ToolDenied` and `RetryPromptPart` construction;
+- timer continuity across approval and other phases;
+- runtime approval policy surviving state restore;
+- transactional session isolation; and
+- headless denial, persistence-failure, and cancellation terminal events.

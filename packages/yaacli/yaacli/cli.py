@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
@@ -23,6 +24,7 @@ from dotenv import load_dotenv
 
 from yaacli import __version__  # pyright: ignore[reportAttributeAccessIssue]
 from yaacli.config import ConfigManager, WorktreeMetadata, YaacliConfig
+from yaacli.errors import safe_exception_str
 from yaacli.logging import LOG_FILE_NAME, configure_logging, get_logger
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -375,12 +377,14 @@ def run_setup_wizard(config_manager: ConfigManager) -> bool:
 
 
 def load_package_env_files() -> None:
-    """Load .env files for repo development and local invocation.
+    """Load package and working-directory ``.env`` files without overriding the process.
 
-    Priority favors the current working directory over the package directory.
+    Existing process variables have highest priority. The package ``.env`` is
+    loaded first, so it wins duplicate keys; the working-directory file only
+    supplies keys that are still unset.
     """
     load_dotenv(_PACKAGE_ROOT / ".env", override=False)
-    load_dotenv(override=False)
+    load_dotenv(Path.cwd() / ".env", override=False)
 
 
 def load_env_from_config(config: YaacliConfig) -> None:
@@ -585,8 +589,13 @@ def _prepare_cli_runtime(verbose: bool) -> tuple[ConfigManager, YaacliConfig]:
 def _prepare_session_cli_runtime(verbose: bool) -> ConfigManager:
     configure_logging(verbose=verbose)
     logger.info("Starting yaacli sessions command v%s", __version__)
+    load_package_env_files()
     config_manager = ConfigManager()
     config_manager.ensure_config_dir()
+    config = config_manager.load()
+    load_env_from_config(config)
+    if config.env:
+        config_manager.reload()
     return config_manager
 
 
@@ -639,16 +648,16 @@ def cli(
     """YAACLI CLI - AI-powered coding assistant.
 
     Inside TUI, use slash commands:
-      /help     - Show available commands
-      /config   - Show/edit configuration
-      /mode     - Switch between act/plan modes
-      /loop     - Run task in autonomous loop
-      /tasks    - Show background tasks and processes
-      /session  - List/restore sessions
-      /dump     - Save session to folder
-      /load     - Load session from folder
-      /clear    - Clear conversation
-      /exit     - Exit application
+      /help        - Show the complete command list
+      /clear       - Clear only the visible transcript
+      /new         - Start a new conversation and session
+      /cancel      - Cancel foreground work
+      /integrate   - Integrate ready background results
+      /agents      - Show background subagents
+      /process     - Show background shell processes
+      /session     - List or restore sessions
+      /model       - Select a model profile
+      /exit        - Exit application
 
     Headless mode:
       yaacli -p "Fix the failing tests"
@@ -662,10 +671,15 @@ def cli(
         return
 
     effective_model_profile_id = model_profile_id_alias or model_profile_id
-    if worker and prompt is None:
+    headless_mode = prompt is not None
+    if worker and not headless_mode:
         raise click.UsageError("--worker requires --prompt/-p headless mode.")
 
-    config_manager, config = _prepare_cli_runtime(verbose)
+    if headless_mode:
+        with redirect_stdout(sys.stderr):
+            config_manager, config = _prepare_cli_runtime(verbose)
+    else:
+        config_manager, config = _prepare_cli_runtime(verbose)
 
     # Set up worktree if requested
     worktree_dir: Path | None = None
@@ -673,12 +687,12 @@ def cli(
     if worktree or worktree_branch is not None:
         worktree_dir, actual_branch, is_resume = _create_worktree(worktree_branch)
         if is_resume:
-            click.echo(click.style("Resuming worktree:", fg="cyan", bold=True))
+            click.echo(click.style("Resuming worktree:", fg="cyan", bold=True), err=headless_mode)
         else:
-            click.echo(click.style("Worktree created:", fg="cyan", bold=True))
-        click.echo(f"  Branch:    {actual_branch}")
-        click.echo(f"  Directory: {worktree_dir}")
-        click.echo()
+            click.echo(click.style("Worktree created:", fg="cyan", bold=True), err=headless_mode)
+        click.echo(f"  Branch:    {actual_branch}", err=headless_mode)
+        click.echo(f"  Directory: {worktree_dir}", err=headless_mode)
+        click.echo(err=headless_mode)
 
     working_dir = worktree_dir or Path.cwd()
 
@@ -705,62 +719,63 @@ def cli(
                     config_manager,
                     verbose,
                     working_dir=working_dir,
+                    session_id=session_id,
                     model_profile_id=effective_model_profile_id,
                 )
             )
     except KeyboardInterrupt:
-        click.echo("\nGoodbye!")
+        click.echo("\nGoodbye!", err=headless_mode)
         exit_code = 130
     except Exception as e:
         logger.exception("Fatal error")
-        click.echo()
-        click.echo(click.style("=" * 60, fg="red"))
-        click.echo(click.style("FATAL ERROR", fg="red", bold=True))
-        click.echo(click.style("=" * 60, fg="red"))
-        click.echo()
-        click.echo(f"Error type: {type(e).__name__}")
-        click.echo(f"Message: {e}")
-        click.echo()
+        click.echo(err=headless_mode)
+        click.echo(click.style("=" * 60, fg="red"), err=headless_mode)
+        click.echo(click.style("FATAL ERROR", fg="red", bold=True), err=headless_mode)
+        click.echo(click.style("=" * 60, fg="red"), err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo(f"Error type: {type(e).__name__}", err=headless_mode)
+        click.echo(f"Message: {safe_exception_str(e)}", err=headless_mode)
+        click.echo(err=headless_mode)
         # Show traceback in verbose mode or for unexpected errors
         if verbose:
             import traceback
 
-            click.echo(click.style("Traceback:", fg="yellow"))
-            click.echo(traceback.format_exc())
+            click.echo(click.style("Traceback:", fg="yellow"), err=headless_mode)
+            click.echo(traceback.format_exc(), err=headless_mode)
         else:
-            click.echo("Run with --verbose flag for full traceback.")
-        click.echo()
-        click.echo("Common issues:")
-        click.echo("  - API key not set or invalid")
-        click.echo("  - Network connectivity issues")
-        click.echo("  - Invalid model configuration")
-        click.echo()
-        click.echo(f"Check logs at: {LOG_FILE_NAME} (with --verbose flag)")
+            click.echo("Run with --verbose flag for full traceback.", err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo("Common issues:", err=headless_mode)
+        click.echo("  - API key not set or invalid", err=headless_mode)
+        click.echo("  - Network connectivity issues", err=headless_mode)
+        click.echo("  - Invalid model configuration", err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo(f"Check logs at: {LOG_FILE_NAME} (with --verbose flag)", err=headless_mode)
         exit_code = 1
 
     # Show resume hints on exit
     if completed_session_id or worktree_dir is not None:
-        click.echo()
+        click.echo(err=headless_mode)
 
     if completed_session_id:
-        click.echo(click.style(f"Session: {completed_session_id}", fg="cyan", bold=True), err=prompt is not None)
-        click.echo(err=prompt is not None)
-        click.echo("To resume this session:", err=prompt is not None)
-        if prompt is not None:
+        click.echo(click.style(f"Session: {completed_session_id}", fg="cyan", bold=True), err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo("To resume this session:", err=headless_mode)
+        if headless_mode:
             click.echo(f"  yaacli -p '<prompt>' -s {completed_session_id}", err=True)
         else:
             click.echo(f"  /session {completed_session_id}")
 
     if worktree_dir is not None:
-        click.echo()
-        click.echo(click.style("Worktree is still available:", fg="cyan", bold=True))
-        click.echo(f"  Directory: {worktree_dir}")
-        click.echo()
-        click.echo("To resume in this worktree:")
-        click.echo(f"  yaacli -w -b {actual_branch}")
-        click.echo()
-        click.echo("To remove when done:")
-        click.echo(f"  git worktree remove {worktree_dir}")
+        click.echo(err=headless_mode)
+        click.echo(click.style("Worktree is still available:", fg="cyan", bold=True), err=headless_mode)
+        click.echo(f"  Directory: {worktree_dir}", err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo("To resume in this worktree:", err=headless_mode)
+        click.echo(f"  yaacli -w -b {actual_branch}", err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo("To remove when done:", err=headless_mode)
+        click.echo(f"  git worktree remove {worktree_dir}", err=headless_mode)
 
     sys.exit(exit_code)
 
@@ -796,6 +811,7 @@ async def _run_tui(
     verbose: bool,
     *,
     working_dir: Path | None = None,
+    session_id: str | None = None,
     model_profile_id: str | None = None,
 ) -> str | None:
     """Run the TUI application.
@@ -817,9 +833,10 @@ async def _run_tui(
         config_manager=config_manager,
         verbose=verbose,
         working_dir=working_dir or Path.cwd(),
+        initial_session_id=session_id,
     ) as app:
         if model_profile is not None:
-            await app._switch_model_profile(model_profile)
+            await app._switch_model_profile(model_profile, persist=False)
         await app.run()
         return app.session_id if app.has_session_data else None
 

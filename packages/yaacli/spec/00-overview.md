@@ -7,10 +7,12 @@
 | [01-event-system.md](./01-event-system.md)   | Event system and multi-agent display architecture |
 | [02-configuration.md](./02-configuration.md) | Configuration via environment variables           |
 | [03-tui-environment.md](./03-tui-environment.md) | TUI Environment with process management       |
-| [04-steering.md](./04-steering.md)           | Steering mechanism and TUISession design          |
+| [04-steering.md](./04-steering.md)           | Immediate steering and TUIContext message-bus design |
+| [05-session-persistence.md](./05-session-persistence.md) | Session schema, restore, legacy, and headless terminal contracts |
 | [06-ui-layout.md](./06-ui-layout.md)         | TUI layout and user experience design             |
 | [07-logging.md](./07-logging.md)             | Logging configuration                             |
 | [08-hitl.md](./08-hitl.md)                   | Human-in-the-loop approval workflow               |
+| [09-shell-monitor.md](./09-shell-monitor.md) | Background shell process monitoring               |
 
 ## High-Level Architecture
 
@@ -24,8 +26,8 @@ graph TB
     end
 
     subgraph "Session Layer"
-        TUISession[TUISession]
-        SteeringManager[SteeringManager]
+        TUIContext[TUIContext]
+        MessageBus[AgentContext Message Bus]
     end
 
     subgraph "Agent Layer"
@@ -45,10 +47,10 @@ graph TB
     TUI --> Input
     TUI --> Output
     TUI --> StatusBar
-    Input --> TUISession
-    TUISession --> SteeringManager
-    TUISession --> PlanAgent
-    TUISession --> ActAgent
+    Input --> TUIContext
+    TUIContext --> MessageBus
+    TUIContext --> PlanAgent
+    TUIContext --> ActAgent
     PlanAgent --> SubAgents
     ActAgent --> SubAgents
     PlanAgent --> LocalEnv
