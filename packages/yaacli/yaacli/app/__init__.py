@@ -2,7 +2,6 @@
 
 This module provides the core TUI application components:
 - TUIApp: Main TUI application class
-- TUIMode: Operating mode (ACT/PLAN)
 - TUIState: Application state (IDLE/RUNNING)
 - TUIPhase: Execution phase (for state machine)
 - TUIStateMachine: State management
@@ -13,6 +12,7 @@ from __future__ import annotations
 
 from yaacli.app.commands import (
     BUILTIN_COMMANDS,
+    BUSY_CONTROL_COMMANDS,
     Command,
     CommandContext,
     CommandRegistry,
@@ -20,7 +20,6 @@ from yaacli.app.commands import (
 )
 from yaacli.app.state import (
     VALID_TRANSITIONS,
-    TUIMode,
     TUIPhase,
     TUIStateMachine,
 )
@@ -28,12 +27,12 @@ from yaacli.app.tui import TUIApp, TUIState
 
 __all__ = [
     "BUILTIN_COMMANDS",
+    "BUSY_CONTROL_COMMANDS",
     "VALID_TRANSITIONS",
     "Command",
     "CommandContext",
     "CommandRegistry",
     "TUIApp",
-    "TUIMode",
     "TUIPhase",
     "TUIState",
     "TUIStateMachine",

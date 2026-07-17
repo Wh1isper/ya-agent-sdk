@@ -562,8 +562,14 @@ def test_get_mcp_config_file(
 def test_default_commands() -> None:
     """Test that default commands include init."""
     assert "init" in DEFAULT_COMMANDS
-    assert DEFAULT_COMMANDS["init"].mode == "act"
+    assert "mode" not in CommandDefinition.model_fields
     assert DEFAULT_COMMANDS["init"].description == "Initialize AGENTS.md"
+
+
+def test_custom_command_ignores_deprecated_mode_field() -> None:
+    command = CommandDefinition.model_validate({"prompt": "Review changes", "mode": "plan"})
+
+    assert command.model_dump() == {"prompt": "Review changes", "description": ""}
 
 
 def test_get_commands_returns_defaults() -> None:
@@ -622,7 +628,6 @@ model = "anthropic:claude-sonnet-4-5"
 
 [commands.commit]
 description = "Commit changes"
-mode = "act"
 prompt = "Please commit"
 
 [commands.review]
@@ -637,7 +642,7 @@ prompt = "Please review"
     assert "init" in commands  # Default
     assert "commit" in commands  # From config
     assert "review" in commands  # From config
-    assert commands["commit"].mode == "act"
+    assert commands["commit"].prompt == "Please commit"
     assert commands["review"].prompt == "Please review"
 
 
@@ -690,3 +695,12 @@ def test_ensure_config_dir_gitignore_appends_missing(tmp_path: Path) -> None:
     assert "worktrees/" in content
     assert "state.json" in content
     assert "custom_ignore/" in content  # User entries preserved
+
+
+def test_packaged_env_example_matches_workspace_reference() -> None:
+    """Published and development env references must expose the same variables."""
+    package_root = Path(__file__).resolve().parents[1]
+    workspace_example = package_root / ".env.example"
+    packaged_example = package_root / "yaacli" / "templates" / "env.example"
+
+    assert packaged_example.read_text() == workspace_example.read_text()

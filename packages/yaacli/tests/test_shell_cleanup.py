@@ -11,7 +11,7 @@ from yaacli.config import CommandDefinition
 
 @dataclass
 class MockConfig:
-    general: object = field(default_factory=lambda: MagicMock(max_requests=10, mode="act"))
+    general: object = field(default_factory=lambda: MagicMock(max_requests=10))
     display: object = field(default_factory=lambda: MagicMock(max_lines=500, mouse=True))
     commands: dict[str, CommandDefinition] = field(default_factory=dict)
 

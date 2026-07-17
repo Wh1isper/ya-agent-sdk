@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from prompt_toolkit.widgets import TextArea
 from pydantic_ai import RunContext
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
@@ -15,6 +17,7 @@ from ya_agent_sdk.context.agent import AgentInfo
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.usage import UsageSnapshot
+from yaacli.app.state import TUIPhase
 from yaacli.app.tui import TUIApp, TUIState
 from yaacli.background import (
     BACKGROUND_MONITOR_KEY,
@@ -289,6 +292,24 @@ async def test_monitor_completion_callback() -> None:
     assert len(callback_calls) == 2  # No new calls
 
 
+def test_monitor_completion_callback_failure_does_not_block_later_notifications() -> None:
+    """A UI callback failure must not escape or disable later completion delivery."""
+    monitor = BackgroundMonitor()
+    callback_calls: list[str] = []
+
+    def callback(agent_id: str) -> None:
+        callback_calls.append(agent_id)
+        if agent_id == "first-agent":
+            raise RuntimeError("UI unavailable")
+
+    monitor.set_completion_callback(callback)
+
+    monitor.notify_completion("first-agent")
+    monitor.notify_completion("second-agent")
+
+    assert callback_calls == ["first-agent", "second-agent"]
+
+
 @pytest.mark.asyncio
 async def test_monitor_has_active_tasks() -> None:
     """has_active_tasks should reflect running tasks."""
@@ -464,6 +485,62 @@ async def test_shell_monitor_detects_completion() -> None:
     assert len(shell_msg) == 1
     assert "pid-1" in shell_msg[0].content
     assert "npm run dev" in shell_msg[0].content
+
+    await monitor.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_monitoring", [False, True], ids=["background-shell", "shell-monitor"])
+@pytest.mark.parametrize("has_output", [False, True], ids=["no-output", "with-output"])
+async def test_shell_monitor_detects_short_lived_process_exactly_once(
+    explicit_monitoring: bool,
+    has_output: bool,
+) -> None:
+    """A process that starts and finishes between polls still reports completion once."""
+    monitor = BackgroundMonitor()
+    callback_calls: list[str] = []
+    monitor.set_completion_callback(callback_calls.append)
+    shell = _make_mock_shell()
+    bus = MessageBus()
+    monitor.start_shell_monitor(shell, bus, "main", poll_interval=10.0)
+
+    # The monitor never observes this process in active_background_processes.
+    # Its terminal output buffer is the durable evidence that it ran.
+    completed_shell = _make_mock_shell_with_buffers(
+        buffers={"pid-short": (["done"] if has_output else [], [], True)},
+    )
+    process = MagicMock(command="quick-command", process_id="pid-short")
+    shell._background_processes = {"pid-short": process}
+    shell._output_buffers = completed_shell._output_buffers
+    if explicit_monitoring:
+        monitor.register_monitored_process("pid-short")
+
+    for _ in range(3):
+        monitor._check_shell()
+        monitor._check_monitored_output()
+
+    assert callback_calls == ["pid-short"]
+    assert "pid-short" not in monitor._monitored_processes
+    assert "pid-short" not in monitor._notified_pending
+    assert monitor.pending_shell_notification_kind("pid-short") == "completion"
+
+    assert monitor.deliver_pending_messages(bus, "main") == 1
+    messages = bus.consume("main")
+    assert len(messages) == 1
+    assert messages[0].content == "Background shell process completed: pid-short (quick-command)"
+
+    # Further polls do not duplicate completion readiness while the terminal
+    # result remains buffered.
+    monitor._check_shell()
+    monitor._check_monitored_output()
+    assert callback_calls == ["pid-short"]
+    assert monitor.has_pending_messages is False
+
+    # Once the terminal result is consumed, deduplication state is bounded too.
+    shell._output_buffers.pop("pid-short")
+    shell._background_processes.pop("pid-short")
+    monitor._check_shell()
+    assert "pid-short" not in monitor._completion_notified
 
     await monitor.close()
 
@@ -1356,8 +1433,8 @@ async def test_tool_call_no_delegate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tui_redelivers_background_message_after_running_turn_exits() -> None:
-    """TUI should redeliver queued background results after an active main-agent turn exits."""
+async def test_tui_marks_background_message_ready_after_running_turn_exits() -> None:
+    """TUI should retain results without automatically stealing the fresh compose area."""
     monitor = BackgroundMonitor()
     bus = MessageBus()
 
@@ -1381,6 +1458,8 @@ async def test_tui_redelivers_background_message_after_running_turn_exits() -> N
 
     app = TUIApp(config=config, config_manager=config_manager)
     app._runtime = runtime
+    compose = TextArea(text="keep this draft", multiline=True)
+    app._input_area = compose
     app._state = TUIState.RUNNING
     app._pending_bus_check_needed = False
     app._append_system_output = MagicMock()
@@ -1396,6 +1475,7 @@ async def test_tui_redelivers_background_message_after_running_turn_exits() -> N
     app._append_system_output.assert_called_once_with("Background task completed: executor-bg-123")
     assert app._pending_bus_check_needed is True
     assert bus.has_pending("main") is False
+    assert compose.buffer.text == "keep this draft"
 
     app._state = TUIState.IDLE
     app._check_pending_bus_messages()
@@ -1404,9 +1484,101 @@ async def test_tui_redelivers_background_message_after_running_turn_exits() -> N
     messages = bus.consume("main")
     assert len(messages) == 1
     assert messages[0].content == "Subagent result"
-    assert app._state == TUIState.RUNNING
-    assert app._agent_task is not None
-    await app._agent_task
+    assert app._state == TUIState.IDLE
+    assert app._background_results_ready is True
+    assert app._agent_task is None
+    assert compose.buffer.text == "keep this draft"
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("output", "Background shell output ready: pid-1"),
+        ("completion", "Background shell process completed: pid-1"),
+    ],
+)
+def test_tui_labels_shell_output_and_completion_readiness_distinctly(
+    kind: Literal["output", "completion"],
+    expected: str,
+) -> None:
+    """Unread output must never be presented as terminal process completion."""
+    monitor = BackgroundMonitor()
+    monitor.enqueue_shell_message(
+        BusMessage(content="shell readiness", source="shell-monitor", target="main"),
+        process_id="pid-1",
+        kind=kind,
+    )
+    env = MagicMock()
+    env.resources = MagicMock()
+    env.resources.get.return_value = monitor
+    runtime = MagicMock(env=env, ctx=MagicMock(agent_id="main", message_bus=MessageBus()))
+    config = MagicMock()
+    config.general.max_requests = 10
+    config.display.max_output_lines = 500
+    config.display.mouse_support = True
+
+    app = TUIApp(config=config, config_manager=MagicMock())
+    app._runtime = runtime
+    app._append_system_output = MagicMock()
+
+    app._on_background_task_complete("pid-1")
+
+    app._append_system_output.assert_called_once_with(expected)
+    assert app._agent_task is None
+    assert app._background_results_ready is True
+
+
+@pytest.mark.asyncio
+async def test_tui_drops_stale_shell_readiness_without_empty_background_turn() -> None:
+    """A consumed shell wakeup must not leave readiness or launch an empty turn."""
+    monitor = BackgroundMonitor()
+    shell = _make_mock_shell_with_buffers(
+        active_pids={"pid-1": "build"},
+        buffers={"pid-1": (["ready"], [])},
+    )
+    monitor._shell = shell
+    monitor.enqueue_shell_message(
+        BusMessage(content="shell output ready", source="shell-monitor", target="main"),
+        process_id="pid-1",
+        kind="output",
+    )
+    shell._output_buffers.pop("pid-1")
+
+    bus = MessageBus()
+    env = MagicMock()
+    env.resources = MagicMock()
+    env.resources.get.return_value = monitor
+    ctx = MagicMock(agent_id="main", message_bus=bus)
+    runtime = MagicMock(env=env, ctx=ctx)
+    config = MagicMock()
+    config.general.max_requests = 10
+    config.display.max_output_lines = 500
+    config.display.mouse_support = True
+
+    app = TUIApp(config=config, config_manager=MagicMock())
+    app._runtime = runtime
+    app._append_system_output = MagicMock()
+    app._launch_agent = MagicMock()
+    app._pending_bus_check_needed = True
+    app._background_results_ready = True
+    app._set_phase(TUIPhase.BACKGROUND_RESULT_READY)
+
+    app._check_pending_bus_messages()
+
+    assert app._background_results_ready is False
+    assert app.phase == TUIPhase.IDLE
+    assert bus.has_pending("main") is False
+    assert monitor.has_pending_messages is False
+
+    # Defend the explicit command even if readiness becomes stale after it was set.
+    app._background_results_ready = True
+    app._set_phase(TUIPhase.BACKGROUND_RESULT_READY)
+    app._integrate_background_results()
+
+    assert app._background_results_ready is False
+    assert app.phase == TUIPhase.IDLE
+    app._launch_agent.assert_not_called()
+    app._append_system_output.assert_called_once_with("No background results are ready.")
 
 
 # =============================================================================

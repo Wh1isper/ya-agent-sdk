@@ -1,27 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import uuid
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
-from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied, UsageLimits
+from pydantic_ai import AgentRun, DeferredToolRequests, DeferredToolResults, ToolDenied, UsageLimits
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, RetryPromptPart
 from ya_agent_sdk.agents.main import AgentInterrupted, stream_agent
 from ya_agent_sdk.context import PROJECT_GUIDANCE_TAG, USER_RULES_TAG, ResumableState
 from ya_agent_sdk.utils import get_latest_request_usage
-from ya_agent_stream_protocol.agui import AguiReplayConfig
+from ya_agent_stream_protocol.agui import AguiReplayConfig, validate_display_events
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from yaacli.config import ConfigManager, YaacliConfig
-from yaacli.display_replay import MAX_DISPLAY_REPLAY_LOAD_BYTES, BoundedDisplayReplay, load_display_replay
+from yaacli.display_replay import MAX_DISPLAY_REPLAY_LOAD_BYTES, BoundedDisplayReplay
+from yaacli.errors import safe_exception_str
 from yaacli.hooks import emit_context_update
 from yaacli.logging import get_logger
-from yaacli.model_profiles import get_model_profile
+from yaacli.model_profiles import ResolvedModelProfile, get_model_profile, get_startup_model_profile
 from yaacli.runtime import create_tui_runtime
-from yaacli.sessions import get_head_artifact_paths, save_session_turn
+from yaacli.sessions import read_head_artifacts, restore_resumable_state_safely, save_session_turn
 
 logger = get_logger(__name__)
 
@@ -56,6 +59,12 @@ def _deny_deferred_tool_requests(deferred_requests: DeferredToolRequests, *, rea
     return results
 
 
+def _completed_run_request_count(run: AgentRun[Any, Any]) -> int:
+    """Return a conservative model-request count for one completed stream run."""
+    requests = run.usage.requests
+    return requests if isinstance(requests, int) and requests > 0 else 1
+
+
 @dataclass(slots=True)
 class HeadlessRunResult:
     session_id: str
@@ -64,13 +73,14 @@ class HeadlessRunResult:
 
 
 class HeadlessEventSink:
-    def __init__(self) -> None:
+    def __init__(self, output_stream: TextIO | None = None) -> None:
         self.replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
+        self._output_stream = output_stream if output_stream is not None else sys.stdout
 
     def emit(self, event: dict[str, Any]) -> None:
         self.replay.append(event)
-        sys.stdout.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
+        self._output_stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._output_stream.flush()
 
     def emit_many(self, events: list[dict[str, Any]]) -> None:
         for event in events:
@@ -125,28 +135,28 @@ def _load_session_artifacts(
     if session_id is None:
         return uuid.uuid4().hex[:12], None, None, []
 
-    paths = get_head_artifact_paths(config_manager, session_id)
-    history_file = paths.message_history_file
-    state_file = paths.context_state_file
-    display_file = paths.display_messages_file
-
-    message_history = (
-        ModelMessagesTypeAdapter.validate_json(history_file.read_bytes())
-        if history_file is not None and history_file.exists()
-        else None
+    artifacts = read_head_artifacts(
+        config_manager,
+        session_id,
+        max_display_messages_bytes=MAX_DISPLAY_REPLAY_LOAD_BYTES,
     )
+    message_history = ModelMessagesTypeAdapter.validate_json(artifacts.message_history_json)
     state = (
-        ResumableState.model_validate_json(state_file.read_text())
-        if state_file is not None and state_file.exists()
+        ResumableState.model_validate_json(artifacts.context_state_json)
+        if artifacts.context_state_json is not None
         else None
     )
-    loaded_display_messages = (
-        load_display_replay(display_file, max_bytes=MAX_DISPLAY_REPLAY_LOAD_BYTES)
-        if display_file is not None and display_file.exists()
-        else []
-    )
-    display_messages = loaded_display_messages or []
-    return paths.session_id, message_history, state, display_messages
+    display_messages: list[dict[str, Any]] = []
+    if artifacts.display_messages_json is not None:
+        try:
+            display_messages = validate_display_events(json.loads(artifacts.display_messages_json))
+        except Exception as exc:
+            logger.warning(
+                "Session %s has invalid display replay; continuing from message history: %s",
+                artifacts.session_id,
+                safe_exception_str(exc),
+            )
+    return artifacts.session_id, message_history, state, display_messages
 
 
 def _save_session_artifacts(
@@ -159,11 +169,17 @@ def _save_session_artifacts(
     state: ResumableState,
     display_messages: list[dict[str, Any]],
     output_text: str | None,
+    model_profile_id: str | None,
+    model_label: str | None,
+    model: str | None,
 ) -> None:
     save_session_turn(
         config_manager=config_manager,
         session_id=session_id,
         working_dir=working_dir,
+        model_profile_id=model_profile_id,
+        model_label=model_label,
+        model=model,
         message_history_json=ModelMessagesTypeAdapter.dump_json(message_history, indent=2),
         context_state_json=state.model_dump_json(indent=2),
         display_messages=display_messages,
@@ -191,56 +207,93 @@ async def run_headless_prompt(
     model_profile_id: str | None = None,
     worker: bool = False,
 ) -> HeadlessRunResult:
-    """Run a single prompt and stream display events to stdout as NDJSON."""
+    """Run a single prompt, reserving stdout exclusively for NDJSON events."""
+    ndjson_stream = sys.stdout
+    with redirect_stdout(sys.stderr):
+        return await _run_headless_prompt(
+            config=config,
+            config_manager=config_manager,
+            prompt=prompt,
+            working_dir=working_dir,
+            session_id=session_id,
+            model_profile_id=model_profile_id,
+            worker=worker,
+            ndjson_stream=ndjson_stream,
+        )
+
+
+async def _run_headless_prompt(
+    *,
+    config: YaacliConfig,
+    config_manager: ConfigManager,
+    prompt: str,
+    working_dir: Path,
+    session_id: str | None,
+    model_profile_id: str | None,
+    worker: bool,
+    ndjson_stream: TextIO,
+) -> HeadlessRunResult:
     mcp_config = config_manager.load_mcp_config()
     resolved_session_id, message_history, restored_state, restored_display_messages = _load_session_artifacts(
         config_manager,
         session_id,
     )
 
-    model_profile = None
-    if model_profile_id:
-        model_profile = get_model_profile(config, model_profile_id)
-        if model_profile is None:
+    effective_model_profile: ResolvedModelProfile | None
+    if model_profile_id is not None:
+        effective_model_profile = get_model_profile(config, model_profile_id)
+        if effective_model_profile is None:
             raise ValueError(f"Unknown model profile: {model_profile_id}")
+    else:
+        effective_model_profile = get_startup_model_profile(config, config_manager.config_dir)
 
     runtime = create_tui_runtime(
         config=config,
         mcp_config=mcp_config,
         working_dir=working_dir,
         config_dir=config_manager.config_dir,
-        model_profile=model_profile,
+        model_profile=effective_model_profile,
         enable_async_subagents=False,
         enable_delegate_subagents=not worker,
     )
-    async with runtime:
-        runtime.ctx.injected_context_tags = (
-            *runtime.ctx.injected_context_tags,
-            PROJECT_GUIDANCE_TAG,
-            USER_RULES_TAG,
-        )
-        if restored_state is not None:
-            restored_state.restore(runtime.ctx)
-            if runtime.ctx.usage_snapshot_entries:
-                runtime.ctx.usage_snapshot_entries.clear()
+    run_id = uuid.uuid4().hex[:12]
+    adapter = AguiEventAdapter(session_id=resolved_session_id, run_id=run_id, config=YAACLI_AGUI_ADAPTER_CONFIG)
+    sink = HeadlessEventSink(ndjson_stream)
+    output_text: str | None = None
 
-        run_id = uuid.uuid4().hex[:12]
-        adapter = AguiEventAdapter(session_id=resolved_session_id, run_id=run_id, config=YAACLI_AGUI_ADAPTER_CONFIG)
-        sink = HeadlessEventSink()
-        sink.replay.extend_snapshot(restored_display_messages)
-        sink.emit(adapter.build_run_started_event())
+    try:
+        async with runtime:
+            runtime.ctx.injected_context_tags = (
+                *runtime.ctx.injected_context_tags,
+                PROJECT_GUIDANCE_TAG,
+                USER_RULES_TAG,
+            )
+            if restored_state is not None:
+                restore_resumable_state_safely(restored_state, runtime.ctx)
+                if runtime.ctx.usage_snapshot_entries:
+                    runtime.ctx.usage_snapshot_entries.clear()
 
-        output_text: str | None = None
-        try:
+            sink.replay.extend_snapshot(restored_display_messages)
+            sink.emit(adapter.build_run_started_event())
+
             user_prompt = _build_user_prompt(config_manager, working_dir, prompt)
             deferred_tool_results: DeferredToolResults | None = None
+            cumulative_model_requests = 0
+            max_model_requests = config.general.max_requests
             while True:
+                remaining_model_requests = max_model_requests - cumulative_model_requests
+                if remaining_model_requests <= 0:
+                    raise RuntimeError(
+                        "Headless deferred continuation exhausted the cumulative "
+                        f"model request limit of {max_model_requests}."
+                    )
+
                 async with stream_agent(
                     runtime,  # type: ignore[arg-type]
                     user_prompt=user_prompt,
                     message_history=message_history,
                     deferred_tool_results=deferred_tool_results,
-                    usage_limits=UsageLimits(request_limit=config.general.max_requests),
+                    usage_limits=UsageLimits(request_limit=remaining_model_requests),
                     post_node_hook=emit_context_update,
                     resume_on_error=config.general.agent_stream_resume_on_error,
                     resume_max_attempts=config.general.agent_stream_resume_max_attempts,
@@ -261,6 +314,9 @@ async def run_headless_prompt(
                         runtime.ctx.build_usage_snapshot()
 
                     if isinstance(output, DeferredToolRequests):
+                        if not output.approvals and not output.calls:
+                            raise RuntimeError("Agent returned an empty DeferredToolRequests payload.")
+
                         denial_reason = "Headless mode denies HITL requests by default."
                         sink.emit(
                             adapter.build_run_custom_event(
@@ -275,34 +331,53 @@ async def run_headless_prompt(
                             )
                         )
                         deferred_tool_results = _deny_deferred_tool_requests(output, reason=denial_reason)
+                        # Every stream starts with fresh pydantic-ai usage. Carry its model
+                        # requests forward so repeated HITL continuations share one budget.
+                        cumulative_model_requests += _completed_run_request_count(streamer.run)
                         user_prompt = None
                         continue
 
                     output_text = str(output) if output is not None else None
                     break
 
-            sink.emit(adapter.build_run_finished_event(result={"output_text": output_text}))
-        except (AgentInterrupted, KeyboardInterrupt):
-            sink.emit(adapter.build_run_custom_event("run_cancelled", {"reason": "interrupted"}))
-            raise
-        except Exception as exc:
-            sink.emit(adapter.build_run_error_event(message=str(exc) or repr(exc), code=type(exc).__name__))
-            raise
+            finished_event = adapter.build_run_finished_event(result={"output_text": output_text})
+            persisted_replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
+            persisted_replay.extend_snapshot(sink.replay.snapshot())
+            persisted_replay.append(finished_event)
+            resumable_state = runtime.ctx.export_state(include_usage_ledger=False)
 
-        if message_history:
-            _save_session_artifacts(
-                config=config,
-                config_manager=config_manager,
-                session_id=resolved_session_id,
-                working_dir=working_dir,
-                message_history=message_history,
-                state=runtime.ctx.export_state(include_usage_ledger=False),
-                display_messages=sink.replay.snapshot(),
-                output_text=output_text,
-            )
-
-        return HeadlessRunResult(
+        _save_session_artifacts(
+            config=config,
+            config_manager=config_manager,
             session_id=resolved_session_id,
+            working_dir=working_dir,
+            message_history=message_history,
+            state=resumable_state,
+            display_messages=persisted_replay.snapshot(),
             output_text=output_text,
-            display_messages=sink.replay.snapshot(),
+            model_profile_id=effective_model_profile.id if effective_model_profile is not None else None,
+            model_label=effective_model_profile.label if effective_model_profile is not None else None,
+            model=(
+                effective_model_profile.model
+                if effective_model_profile is not None
+                else config.general.model
+                if isinstance(config, YaacliConfig)
+                else None
+            ),
         )
+        sink.emit(finished_event)
+    except asyncio.CancelledError:
+        sink.emit(adapter.build_run_custom_event("run_cancelled", {"reason": "cancelled"}))
+        raise
+    except (AgentInterrupted, KeyboardInterrupt):
+        sink.emit(adapter.build_run_custom_event("run_cancelled", {"reason": "interrupted"}))
+        raise
+    except Exception as exc:
+        sink.emit(adapter.build_run_error_event(message=safe_exception_str(exc), code=type(exc).__name__))
+        raise
+
+    return HeadlessRunResult(
+        session_id=resolved_session_id,
+        output_text=output_text,
+        display_messages=sink.replay.snapshot(),
+    )

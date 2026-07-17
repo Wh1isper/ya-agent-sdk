@@ -5,9 +5,12 @@ Provides a registry-based command system for slash commands.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
+
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+from prompt_toolkit.document import Document
 
 if TYPE_CHECKING:
     pass
@@ -37,6 +40,39 @@ class Command:
     handler: Callable[[CommandContext, str], Awaitable[None] | None]
     description: str = ""
     aliases: list[str] = field(default_factory=list)
+
+
+class SlashCommandCompleter(Completer):
+    """Complete slash commands and saved session IDs without taking over Tab."""
+
+    def __init__(
+        self,
+        command_provider: Callable[[], Iterable[str]],
+        session_provider: Callable[[], Iterable[str]],
+    ) -> None:
+        self._command_provider = command_provider
+        self._session_provider = session_provider
+
+    def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterable[Completion]:
+        text = document.text_before_cursor
+        if text.startswith("/session "):
+            fragment = text.removeprefix("/session ")
+            if " " in fragment:
+                return
+            for session_id in self._session_provider():
+                if session_id.startswith(fragment):
+                    yield Completion(
+                        session_id,
+                        start_position=-len(fragment),
+                        display_meta="saved session",
+                    )
+            return
+
+        if not text.startswith("/") or " " in text:
+            return
+        for command in self._command_provider():
+            if command.startswith(text):
+                yield Completion(command, start_position=-len(text), display_meta="command")
 
 
 class CommandRegistry:
@@ -135,18 +171,45 @@ class CommandRegistry:
         return True
 
 
-# Built-in command names (reserved)
-BUILTIN_COMMANDS = frozenset({
-    "help",
-    "clear",
-    "cost",
-    "tasks",
-    "dump",
-    "load",
-    "exit",
-    "act",
-    "plan",
-    "loop",
+# Single source of truth for built-in command discovery and help.
+BUILTIN_COMMAND_HELP: dict[str, str] = {
+    "help": "Show available commands",
+    "clear": "Clear the visible transcript only",
+    "new": "Start a new conversation and session",
+    "cancel": "Cancel the foreground agent or shell command",
+    "integrate": "Integrate ready background results into the active or next agent turn",
+    "cost": "Show token usage and cost summary",
+    "perf": "Show performance stats when enabled",
+    "model": "Select a model profile",
+    "agents": "Show background subagents",
+    "process": "Show background shell processes",
+    "attachments": "List images queued for the next prompt",
+    "paste-image": "Attach an image from the clipboard",
+    "remove-image": "Remove a queued image by number, or all",
+    "tool": "Show the complete stored result for a tool call ID",
+    "session": "List sessions or restore a session ID",
+    "dump": "Export the current session to a folder",
+    "load": "Load a session export from a folder",
+    "goal": "Run toward a task until verified complete",
+    "exit": "Exit YAACLI",
+}
+BUILTIN_COMMANDS = frozenset(BUILTIN_COMMAND_HELP)
+
+# Commands that are safe and useful while another foreground activity owns the
+# TUI. Every other recognized command remains on the control plane but waits
+# for idle instead of being reinterpreted as agent steering.
+BUSY_CONTROL_COMMANDS = frozenset({
+    "/agents",
+    "/attachments",
+    "/cancel",
+    "/cost",
+    "/help",
+    "/integrate",
+    "/paste-image",
+    "/perf",
+    "/process",
+    "/remove-image",
+    "/tool",
 })
 
 

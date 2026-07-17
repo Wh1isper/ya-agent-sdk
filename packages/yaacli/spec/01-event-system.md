@@ -58,8 +58,8 @@ phase_display = {
 
 **Status Bar Display:**
 ```
-ACT | Thinking... | Context: 45% | Ctrl+C: Interrupt
-ACT | Running tools... | Context: 45% | Ctrl+C: Interrupt
+Thinking... | Context: 45% | Ctrl+C: Interrupt
+Running tools... | Context: 45% | Ctrl+C: Interrupt
 ```
 
 ## SDK Sideband Events

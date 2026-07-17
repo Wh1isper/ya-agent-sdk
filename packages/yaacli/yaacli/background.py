@@ -1,16 +1,16 @@
 """Background monitor for CLI.
 
 BackgroundMonitor is a BaseResource that manages both background subagent
-tasks and shell process completion monitoring. It tracks asyncio tasks,
-provides callback-based completion notification, holds a reference to the
-core toolset for accessing the delegate tool, and polls Shell for process
-completions to auto-wake the agent.
+tasks and shell process readiness monitoring. It tracks asyncio tasks,
+provides callback-based readiness notification, holds a reference to the
+core toolset for accessing the delegate tool, and polls Shell for unread
+output and process completion.
 
 Design:
-- Callback-based: No polling for subagents. TUI registers a callback that's invoked on completion.
-- Polling-based: Shell process completions detected by diffing active_background_processes.
+- Callback-based: No polling for subagents. TUI registers a callback that's invoked on readiness.
+- Polling-based: Shell output and completions are detected from buffer state and active-process diffs.
 - Event-driven: Background tool calls notify_completion() when done.
-- Race-free: TUI callback checks state atomically before scheduling agent turn.
+- Compose-safe: TUI callbacks mark results ready without automatically launching an agent turn.
 
 Example:
     # Register with environment
@@ -122,17 +122,18 @@ class PendingBackgroundMessage:
 
 
 class BackgroundMonitor(BaseResource):
-    """Manages background subagent tasks and shell process monitoring.
+    """Manage background subagent tasks and shell process monitoring.
 
     This resource has two responsibilities:
 
-    1. **Subagent task tracking** (existing): Tracks asyncio tasks spawned by
-       SpawnDelegateTool, provides callback-based completion notification, and
-       holds a reference to the core toolset for accessing the delegate tool.
+    1. **Subagent task tracking**: Track asyncio tasks spawned by
+       SpawnDelegateTool, provide callback-based completion notification, and
+       hold a reference to the core toolset for delegate access.
 
-    2. **Shell process monitoring** (new): Polls Shell.active_background_processes
-       to detect process completions. On completion, sends a bus message as
-       wake-up trigger and invokes the completion callback.
+    2. **Shell process monitoring**: Poll Shell output buffers and
+       active_background_processes to detect unread output and completions.
+       Readiness is queued for TUI-managed delivery and invokes the shared
+       callback without automatically launching an agent turn.
 
     Lifecycle:
     - Created and registered during TUIEnvironment._setup()
@@ -184,6 +185,7 @@ class BackgroundMonitor(BaseResource):
         self._agent_id: str | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._known_active: set[str] = set()
+        self._completion_notified: set[str] = set()
 
         # --- Output monitoring ---
         self._monitored_processes: set[str] = set()
@@ -287,9 +289,10 @@ class BackgroundMonitor(BaseResource):
     def deliver_pending_messages(self, bus: MessageBus, agent_id: str) -> int:
         """Deliver queued background notifications to the message bus.
 
-        The TUI calls this immediately before starting the wake-up turn. This
-        avoids losing messages when the main SDK context exits and clears bus state.
-        Shell wakeups are dropped if their process output was already drained.
+        The TUI calls this before the next user turn or an explicit
+        ``/integrate`` turn. This avoids losing messages when the main SDK
+        context exits and clears bus state. Shell wakeups are dropped if their
+        process output was already drained.
         """
         if not self._pending_messages:
             return 0
@@ -370,6 +373,16 @@ class BackgroundMonitor(BaseResource):
         snapshots = list(self._pending_usage_snapshots)
         self._pending_usage_snapshots.clear()
         return snapshots
+
+    def pending_shell_notification_kind(
+        self,
+        process_id: str,
+    ) -> Literal["output", "completion"] | None:
+        """Return the newest queued shell readiness kind for one process."""
+        for pending in reversed(self._pending_messages):
+            if pending.shell_process_id == process_id:
+                return pending.shell_kind
+        return None
 
     @property
     def has_pending_messages(self) -> bool:
@@ -1074,11 +1087,12 @@ class BackgroundMonitor(BaseResource):
             raise
 
     def _check_shell(self) -> None:
-        """Check shell for process completions and notify.
+        """Check shell for process completions and notify exactly once.
 
-        Compares current active_background_processes with known_active set.
-        - New processes (in current but not known): add to known set
-        - Completed processes (in known but not current): send notification
+        Active-set diffs cover processes observed by an earlier poll. Completed
+        output buffers additionally cover short-lived processes that start and
+        finish entirely between two polls and therefore never enter
+        ``_known_active``.
         """
         if self._shell is None:
             return
@@ -1089,21 +1103,36 @@ class BackgroundMonitor(BaseResource):
             logger.debug("Failed to read active_background_processes", exc_info=True)
             return
 
+        try:
+            output_buffers = dict(self._shell._output_buffers)
+        except (AttributeError, RuntimeError):
+            logger.debug("Failed to read shell output buffers", exc_info=True)
+            output_buffers = {}
+
         # Detect new processes
         new_pids = current_active - self._known_active
         for pid in new_pids:
             logger.debug("Shell monitor: new process detected: %s", pid)
 
-        # Detect completed processes
-        completed_pids = self._known_active - current_active
-        for pid in completed_pids:
+        completed_from_buffers = {
+            pid for pid, buf in output_buffers.items() if pid not in current_active and bool(buf.completed)
+        }
+        completed_pids = (self._known_active - current_active) | completed_from_buffers
+        for pid in completed_pids - self._completion_notified:
+            # Mark first so a callback failure or re-entrant check cannot emit a
+            # second readiness notification for the same terminal process.
+            self._completion_notified.add(pid)
             logger.info("Shell monitor: process completed: %s", pid)
-            # Stop output monitoring for completed processes
             self._monitored_processes.discard(pid)
             self._notified_pending.discard(pid)
             self._notify_shell_completion(pid)
 
-        # Update known set
+        # Terminal buffers are retained until shell_wait/filter consumption.
+        # Forget deduplication state once the shell forgets the process too, so
+        # monitor bookkeeping remains bounded over a long-lived session.
+        known_to_shell = current_active | set(output_buffers)
+        self._completion_notified.intersection_update(known_to_shell)
+
         self._known_active = current_active
 
     def _notify_shell_completion(self, process_id: str) -> None:
@@ -1214,6 +1243,7 @@ class BackgroundMonitor(BaseResource):
         self._bus = None
         self._agent_id = None
         self._known_active.clear()
+        self._completion_notified.clear()
         self._monitored_processes.clear()
         self._notified_pending.clear()
         self._pending_messages.clear()

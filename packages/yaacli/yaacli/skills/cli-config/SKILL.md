@@ -103,13 +103,14 @@ Define custom commands in `config.toml`:
 ```toml
 [commands.deploy]
 description = "Deploy to production"
-mode = "act"                  # Optional: "act" or "plan"
 prompt = """
 Please help me deploy to production...
 """
 ```
 
-Built-in commands: `/init`, `/commit`, `/review`
+The former custom-command `mode` field is deprecated and ignored; every custom
+command uses the same agent execution semantics. `/init` is provided by
+default, while commands such as `/commit` and `/review` come from configuration.
 
 ## Subagent Configuration
 
