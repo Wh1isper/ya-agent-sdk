@@ -161,6 +161,7 @@ class AskUserQuestionTool(BaseTool):
     """Ask the host application to collect structured clarifying answers."""
 
     name = "ask_user_question"
+    main_agent_only = True
     description = (
         "Ask the user one to four clarifying questions when their answers materially affect the result. "
         "Each question provides two to four options and may allow multiple selections. "
@@ -168,8 +169,8 @@ class AskUserQuestionTool(BaseTool):
     )
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
-        """Expose host-facing interaction only to the main agent."""
-        return ctx.deps.agent_id == "main"
+        """Expose host-facing interaction only to the root main-agent context."""
+        return ctx.deps.agent_id == "main" and ctx.deps.parent_run_id is None
 
     async def call(
         self,

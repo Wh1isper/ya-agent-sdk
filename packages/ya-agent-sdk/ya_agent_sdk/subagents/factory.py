@@ -106,7 +106,7 @@ def _create_tool(
     def check_tools_available(ctx: RunContext[AgentContext]) -> bool:
         if required_tools is None:
             return True
-        return all(parent_toolset.is_tool_available(name, ctx) for name in required_tools)
+        return all(parent_toolset.is_tool_available_to_subagent(name, ctx) for name in required_tools)
 
     return create_subagent_tool(
         name=config.name,

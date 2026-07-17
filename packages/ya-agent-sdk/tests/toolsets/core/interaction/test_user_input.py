@@ -155,10 +155,17 @@ def test_ask_user_question_tool_is_available_only_to_main_agent() -> None:
     run_ctx = MagicMock(spec=RunContext)
     tool = AskUserQuestionTool()
 
+    assert tool.main_agent_only is True
+
     run_ctx.deps = main_ctx
     assert tool.is_available(run_ctx) is True
 
     run_ctx.deps = subagent_ctx
+    assert tool.is_available(run_ctx) is False
+
+    spoofed_main_ctx = main_ctx.model_copy(update={"parent_run_id": "parent-run"})
+    run_ctx.deps = spoofed_main_ctx
+    assert spoofed_main_ctx.agent_id == "main"
     assert tool.is_available(run_ctx) is False
 
 

@@ -20,6 +20,7 @@ from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
 from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
+from ya_agent_sdk.subagents.agent import SubagentAgent
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import Toolset
 
@@ -100,11 +101,18 @@ def _build_toolsets(
             parent_subset = parent_toolset.subset(
                 inherited_tools, include_auto_inherit=True, inherit_hooks=inherit_hooks
             )
-        return [*config.toolsets, parent_subset]
-    else:
-        # Current behavior: None means all parent tools
-        parent_subset = parent_toolset.subset(inherited_tools, include_auto_inherit=True, inherit_hooks=inherit_hooks)
-        return [parent_subset]
+        own_toolsets = [
+            toolset.for_subagent() if isinstance(toolset, Toolset) else toolset for toolset in config.toolsets
+        ]
+        return [*own_toolsets, parent_subset.for_subagent()]
+
+    # Current behavior: None means all parent tools.
+    parent_subset = parent_toolset.subset(
+        inherited_tools,
+        include_auto_inherit=True,
+        inherit_hooks=inherit_hooks,
+    )
+    return [parent_subset.for_subagent()]
 
 
 def _resolve_capabilities(
@@ -181,7 +189,7 @@ def _build_subagent_agent(
     resolved_capabilities = _resolve_capabilities(config, pre_capabilities, capabilities, sdk_capabilities)
     toolsets = _build_toolsets(config, parent_toolset, inherit_hooks=inherit_hooks)
 
-    agent: Agent[AgentContext, str] = Agent(
+    agent: Agent[AgentContext, str] = SubagentAgent(
         model=infer_model(effective_model),
         system_prompt=config.system_prompt,
         toolsets=toolsets,

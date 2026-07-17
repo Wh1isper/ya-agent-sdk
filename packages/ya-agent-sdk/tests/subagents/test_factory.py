@@ -10,6 +10,7 @@ from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.subagents import SubagentConfig, create_subagent_tool_from_config
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
 from ya_agent_sdk.toolsets.core.subagent.factory import create_subagent_call_func
 
 
@@ -272,6 +273,56 @@ class TestOptionalTools:
 
         # Should be available because tools=None means inherit all (no required check)
         assert tool_instance.is_available(mock_run_ctx) is True
+
+
+def test_subagent_toolset_excludes_ask_user_question_when_inheriting_all() -> None:
+    from ya_agent_sdk.subagents.builder import _build_toolsets
+
+    parent_toolset = Toolset(tools=[GrepTool, AskUserQuestionTool])
+    config = SubagentConfig(
+        name="worker",
+        description="Worker",
+        system_prompt="You are a worker.",
+    )
+
+    subagent_toolsets = _build_toolsets(config, parent_toolset)
+
+    assert len(subagent_toolsets) == 1
+    assert subagent_toolsets[0].tool_names == ["grep"]
+    assert "ask_user_question" in parent_toolset.tool_names
+
+
+def test_subagent_own_toolset_excludes_ask_user_question() -> None:
+    from ya_agent_sdk.subagents.builder import _build_toolsets
+
+    own_toolset = Toolset(tools=[ViewTool, AskUserQuestionTool])
+    parent_toolset = Toolset(tools=[GrepTool])
+    config = SubagentConfig(
+        name="worker",
+        description="Worker",
+        system_prompt="You are a worker.",
+        toolsets=[own_toolset],
+    )
+
+    subagent_toolsets = _build_toolsets(config, parent_toolset)
+
+    assert subagent_toolsets[0].tool_names == ["view"]
+    assert "ask_user_question" in own_toolset.tool_names
+
+
+def test_subagent_requiring_ask_user_question_is_unavailable(mock_run_ctx) -> None:
+    parent_toolset = Toolset(tools=[GrepTool, AskUserQuestionTool])
+    config = SubagentConfig(
+        name="worker",
+        description="Worker",
+        system_prompt="You are a worker.",
+        tools=["ask_user_question"],
+    )
+
+    tool_cls = create_subagent_tool_from_config(config, parent_toolset, model="test")
+
+    assert parent_toolset.is_tool_available("ask_user_question", mock_run_ctx) is True
+    assert tool_cls().is_available(mock_run_ctx) is False
 
 
 class TestModelCfgResolution:

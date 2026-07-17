@@ -154,6 +154,18 @@ class BaseTool(ABC):
     Useful for management/utility tools like task_*, summarize, etc.
     """
 
+    main_agent_only: bool = False
+    """Whether this tool must be excluded from every subagent toolset.
+
+    Use this for host-facing tools whose control flow can only be completed by
+    the main-agent runner, such as structured user interaction. Subagent
+    builders enforce this on direct SDK Toolsets and again on capability
+    wrappers and dynamic Toolset factory results at the final execution
+    boundary. SDK Toolset listing and calling enforce the policy in subagent
+    contexts even when availability filtering is disabled; ``is_available()``
+    should still enforce the same boundary as defense in depth.
+    """
+
     is_context_manage_tool: bool = False
     """Whether this tool is a context management tool (e.g., summarize/handoff).
 

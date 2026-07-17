@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.filters.handoff import process_handoff_message
+from ya_agent_sdk.toolsets.core.base import Toolset
 from yaacli.background import DELEGATE_BACKEND_TOOL_NAME
 from yaacli.config import (
     GeneralConfig,
@@ -391,6 +392,14 @@ def test_create_tui_runtime_requires_explicit_user_input_support(tmp_path: Path)
     assert interactive_runtime.core_toolset is not None
     assert "ask_user_question" not in default_runtime.core_toolset._tool_classes
     assert "ask_user_question" in interactive_runtime.core_toolset._tool_classes
+    assert interactive_runtime.ctx.self_fork_agent is not None
+    self_fork_tool_names = [
+        name
+        for toolset in interactive_runtime.ctx.self_fork_agent._user_toolsets
+        if isinstance(toolset, Toolset)
+        for name in toolset.tool_names
+    ]
+    assert "ask_user_question" not in self_fork_tool_names
 
 
 def test_create_tui_runtime_can_disable_async_subagents(tmp_path: Path) -> None:

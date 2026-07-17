@@ -18,7 +18,7 @@ runtime = create_agent(
 )
 ```
 
-`AskUserQuestionTool.auto_inherit` remains `False`, and `is_available()` restricts the tool to the main agent. This prevents subagents that inherit the complete parent toolset from starting a nested user-interaction flow their runner cannot resume.
+`AskUserQuestionTool.main_agent_only` is `True`, so regular subagents and self forks remove it from direct SDK `Toolset` instances, capability wrappers, and sync or async dynamic Toolset factory results at both per-run and per-step resolution. SDK `Toolset` also rejects main-agent-only tools while listing or calling tools in a subagent context regardless of `skip_unavailable`, including through opaque search/proxy composites and stale caches. `is_available()` also requires a root context (`agent_id="main"` with no `parent_run_id`) as defense in depth, and subagent ID allocation reserves `main` for that root. A subagent that declares the tool as required is unavailable because its runner cannot resume a nested user-interaction flow.
 
 ## Question Schema
 

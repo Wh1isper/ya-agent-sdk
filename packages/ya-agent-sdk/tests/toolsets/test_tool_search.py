@@ -10,6 +10,7 @@ from pydantic import Field
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
 from ya_agent_sdk.toolsets.tool_search.strategies.bm25 import BM25SearchStrategy
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
@@ -386,6 +387,27 @@ async def test_keyword_search_namespace_entry():
 # ---------------------------------------------------------------------------
 # ToolSearchToolSet tests - namespace loading
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_main_agent_only_tool_stays_hidden_when_preloaded_in_subagent() -> None:
+    inner = Toolset(
+        tools=[GetWeatherTool, AskUserQuestionTool],
+        skip_unavailable=False,
+    )
+    toolset = ToolSearchToolSet(toolsets=[inner])
+    parent_ctx = AgentContext()
+    subagent_ctx = parent_ctx.create_subagent_context("helper")
+    subagent_ctx.tool_search_loaded_tools = ["get_weather", "ask_user_question"]
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = subagent_ctx
+
+    tools = await toolset.get_tools(run_ctx)
+
+    assert "tool_search" in tools
+    assert "get_weather" in tools
+    assert "ask_user_question" not in tools
+    assert "ask_user_question" not in toolset._toolset_tools_cache
 
 
 @pytest.mark.anyio

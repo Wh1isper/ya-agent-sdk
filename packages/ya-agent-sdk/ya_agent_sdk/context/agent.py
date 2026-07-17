@@ -1803,6 +1803,8 @@ class AgentContext(BaseModel):
         The caller must hold ``_subagent_state_lock`` while calling this method.
         """
         effective_agent_id = agent_id or _generate_run_id()
+        if effective_agent_id == "main":
+            raise ValueError("Subagent agent_id 'main' is reserved for the root agent")
         if effective_agent_id not in self.agent_registry:
             self.agent_registry[effective_agent_id] = AgentInfo(
                 agent_id=effective_agent_id,

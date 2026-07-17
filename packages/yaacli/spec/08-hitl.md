@@ -93,27 +93,27 @@ The real prompt_toolkit Enter handler applies the following contract before ordi
 | `n`, `no`, `reject` | Reject with the default reason |
 | `reject <reason>` | Reject with the supplied reason |
 | Empty Enter | Keep waiting and show the decision hint |
-| Other non-empty ordinary text | Send immediate steering and keep the approval pending |
+| Other non-empty ordinary text, including unrecognized slash-prefixed text | Send immediate steering and keep the approval pending |
 | `view`, `v` | Render the full deferred request |
 | Busy-safe slash command | Execute locally without deciding the request |
-| Idle-only/custom/unknown slash or `!shell` | Reject or diagnose locally without deciding the request |
+| Idle-only/custom registered slash command or `!shell` | Reject locally without deciding the request |
 | `/cancel` | Cancel the foreground run without deciding the request |
 
 Deferred calls have a separate explicit contract:
 
 | Input while a deferred call is pending | Action |
 |---|---|
-| Non-empty ordinary text | Supply the call result |
+| Non-empty ordinary text, including unrecognized slash-prefixed text | Supply the call result |
 | `/deny <reason>` | Deny the call explicitly |
 | Empty Enter | Keep waiting and show the result hint |
 | `view`, `v` | Render the full deferred request |
 | Busy-safe slash command | Execute locally without supplying a result |
-| Idle-only/custom/unknown slash or `!shell` | Reject or diagnose locally without supplying a result |
+| Idle-only/custom registered slash command or `!shell` | Reject locally without supplying a result |
 | `/cancel` | Cancel without supplying a result |
 
 Structured clarification calls render each question separately. A single-select question accepts one option number or free text. A multi-select question accepts comma-separated option numbers or free text. Valid numeric selections are converted to option labels; other non-empty input is preserved as free text, while empty answers keep the question pending. The final call result includes the original questions and an `answers` mapping keyed by exact question text.
 
-`/cancel` and deferred-call `/deny` are checked before the generic control classifier. The `/` and `!` namespaces are then resolved before approval steering or deferred-call result parsing. Empty Enter never approves, and approval text outside the explicit allowlist never approves accidentally. The entire HITL parser additionally requires the authoritative phase to remain `AWAITING_APPROVAL`; once cancellation or saving begins, cleanup-phase routing wins even if the pending flag has not yet been reset.
+`/cancel` and deferred-call `/deny` are checked before the generic control classifier. Registered slash commands and the `!` namespace are then resolved before approval steering or deferred-call result parsing; unrecognized slash-prefixed text remains ordinary input. Empty Enter never approves, and approval text outside the explicit allowlist never approves accidentally. The entire HITL parser additionally requires the authoritative phase to remain `AWAITING_APPROVAL`; once cancellation or saving begins, cleanup-phase routing wins even if the pending flag has not yet been reset.
 
 ## Steering During Approval
 

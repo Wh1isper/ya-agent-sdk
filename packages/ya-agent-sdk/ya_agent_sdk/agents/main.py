@@ -195,13 +195,13 @@ def _restore_task_cancellation(task: asyncio.Task[Any] | None, count: int) -> No
         task.cancel()
 
 
-def _filter_delegation_toolset(
+def _filter_subagent_toolset(
     toolset: AbstractToolset[Any],
-    delegation_tags: frozenset[str],
+    excluded_tags: frozenset[str],
 ) -> AbstractToolset[Any]:
-    """Return a toolset safe for self forks by removing delegation-tagged tools."""
+    """Return a toolset safe for self forks."""
     if isinstance(toolset, Toolset):
-        return toolset.exclude_tags(delegation_tags)
+        return toolset.for_subagent(excluded_tags=excluded_tags)
     return toolset
 
 
@@ -742,12 +742,14 @@ def create_agent(
 
     delegation_tags = frozenset({"delegation"})
     if core_toolset.has_tags(delegation_tags):
-        self_fork_toolsets = [_filter_delegation_toolset(toolset, delegation_tags) for toolset in all_toolsets]
+        from ya_agent_sdk.subagents.agent import SubagentAgent
+
+        self_fork_toolsets = [_filter_subagent_toolset(toolset, delegation_tags) for toolset in all_toolsets]
         self_fork_base_model = (
             infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else base_model
         )
         self_fork_agent: Agent[AgentContext, str] = add_toolset_instructions(
-            Agent(
+            SubagentAgent(
                 model=self_fork_base_model,
                 system_prompt=effective_system_prompt,
                 model_settings=model_settings,

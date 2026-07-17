@@ -687,6 +687,20 @@ async def test_create_subagent_call_func_wraps_stream_tool_call_ids(monkeypatch)
 # Tests for agent_id generation
 
 
+async def test_create_subagent_call_func_rejects_reserved_main_agent_id() -> None:
+    mock_agent = MagicMock(spec=Agent)
+    mock_agent.name = "worker"
+    call_func = create_subagent_call_func(mock_agent)
+    ctx = AgentContext()
+    run_ctx = _create_mock_run_context(ctx)
+    mock_self = MagicMock(spec=BaseTool)
+
+    with pytest.raises(ValueError, match="reserved for the root agent"):
+        await call_func(mock_self, run_ctx, prompt="test query", agent_id="main")
+
+    assert "main" not in ctx.agent_registry
+
+
 async def test_create_subagent_call_func_agent_id_with_name():
     """Test that agent_id includes agent name when agent has a name."""
     mock_agent = MagicMock(spec=Agent)
