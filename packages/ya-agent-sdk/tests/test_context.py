@@ -127,6 +127,15 @@ async def test_agent_context_create_subagent_context(env: LocalEnvironment) -> N
     assert child.end_at is not None
 
 
+def test_agent_context_rejects_reserved_main_subagent_id(env: LocalEnvironment) -> None:
+    parent = AgentContext(env=env)
+
+    with pytest.raises(ValueError, match="reserved for the root agent"):
+        parent.create_subagent_context("worker", agent_id="main")
+
+    assert "main" not in parent.agent_registry
+
+
 async def test_agent_context_create_subagent_context_with_override(env: LocalEnvironment) -> None:
     """Should allow field overrides in subagent context."""
     parent = AgentContext(env=env)

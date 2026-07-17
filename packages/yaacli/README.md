@@ -71,7 +71,7 @@ Session IDs may be supplied by unique prefix. The configured session directory a
 The output viewport has priority over auxiliary UI. The task pane is hidden when empty, uses one summary row by default, and expands with `F2`. The model selector is an overlay and does not permanently consume output rows.
 
 - Enter submits while idle and sends guidance to the active run while an agent is running.
-- Ordinary text submitted during an active agent run is steering. The status bar shows how many steering messages are still waiting for a model request, without exposing their content. Slash commands and `!shell` always remain local control syntax: safe busy commands execute, idle-only commands are rejected without clearing the draft, unknown commands get local suggestions, and none of them are sent to the model or accepted as deferred-call results.
+- Ordinary text submitted during an active agent run is steering. The status bar shows how many steering messages are still waiting for a model request, without exposing their content. Registered slash commands and `!shell` remain local control syntax: safe busy commands execute and idle-only commands are rejected without clearing the draft. Other slash-prefixed text, including absolute paths such as `/home/user/file`, remains ordinary user input.
 - `/cancel` or `Ctrl+C` requests cancellation of cancellable foreground work. Once the TUI enters `SAVING`, persistence is allowed to finish and cannot be cancelled; Ctrl+C does not exit while the save is in progress.
 - `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session, terminating and discarding background subagent and shell work owned by the previous session while keeping the runtime environment reusable.
 - Background results never take over the compose area. The next prompt integrates them automatically; `/integrate` delivers them to an active agent run for its next model request, or starts an explicit integration turn while idle.
@@ -92,7 +92,7 @@ The YA Claw deployment skill lives in `skills/ya-claw-deploy/` and is published 
 
 The repository sync script keeps bundled skill files under `packages/yaacli/yaacli/skills/` aligned.
 
-YAACLI refreshes and resolves `/skill-name` against the effective SDK skill catalog at submission time, including built-in, global, shared, and project skills after normal priority rules. The visible transcript and prompt history retain the original input; the model receives a catalog-grounded explicit-selection marker plus the remaining task. Unknown slash prefixes are not treated as skills.
+YAACLI refreshes and resolves `/skill-name` against the effective SDK skill catalog at submission time, including built-in, global, shared, and project skills after normal priority rules. The visible transcript and prompt history retain the original input; the model receives a catalog-grounded explicit-selection marker plus the remaining task. A slash prefix that matches neither a registered command nor an available skill is submitted as ordinary user input.
 
 ## Structured User Input
 
@@ -195,7 +195,7 @@ make test-cli
 ## Clipboard Image Paste
 
 Plain terminal paste always inserts text into the input box.
-Use `Ctrl+V` or `/paste-image` to attach an image from the system clipboard. During an active agent run the image remains queued for the next turn and is never converted into steering text. Generated attachment chips are removed before `/` and `!` control syntax is classified, so a visible chip cannot hide a command. If the user deleted the chip, its binary is removed before any command dispatch.
+Use `Ctrl+V` or `/paste-image` to attach an image from the system clipboard. During an active agent run the image remains queued for the next turn and is never converted into steering text. Generated attachment chips are removed before registered commands, explicit skills, `!` control syntax, or ordinary prompts are classified, so a visible chip cannot hide a command. If the user deleted the chip, its binary is removed before dispatch.
 On macOS terminal apps over SSH, map `Command+Shift+V` to send `Ctrl+V` if you want a native-feeling shortcut.
 
 YAACLI reads clipboard images through Pillow first on macOS and Windows.

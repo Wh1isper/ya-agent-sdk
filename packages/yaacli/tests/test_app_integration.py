@@ -862,9 +862,9 @@ def test_tui_app_hitl_real_enter_handles_deferred_call_results(
     assert input_area.buffer.text == ""
 
 
-def test_tui_app_hitl_unknown_slash_is_not_a_deferred_call_result() -> None:
+def test_tui_app_hitl_unrecognized_slash_text_can_be_a_deferred_call_result() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    input_area = TextArea(text="/denyx", multiline=True)
+    input_area = TextArea(text="/home/user/result.json", multiline=True)
     app._set_phase(TUIPhase.THINKING)
     app._set_phase(TUIPhase.AWAITING_APPROVAL)
     app._hitl_pending = True
@@ -876,9 +876,10 @@ def test_tui_app_hitl_unknown_slash_is_not_a_deferred_call_result() -> None:
 
     handle_enter(MagicMock())
 
-    app._schedule_command.assert_called_once_with("/denyx")
-    assert app._approval_result is None
-    assert app._approval_event.is_set() is False
+    app._schedule_command.assert_not_called()
+    assert app._approval_result is True
+    assert app._approval_reason == "/home/user/result.json"
+    assert app._approval_event.is_set() is True
     assert input_area.buffer.text == ""
 
 
@@ -1440,6 +1441,74 @@ def test_tui_app_focused_input_keybindings_win_in_application_registry():
 
 
 @pytest.mark.asyncio
+async def test_tui_app_submits_unrecognized_slash_prefix_as_an_ordinary_prompt() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._launch_agent = MagicMock()  # type: ignore[method-assign]
+    input_area = TextArea(multiline=True)
+    prompt = "/home/user/project/file.txt is the input"
+
+    app._submit_input(prompt, input_area)
+    dispatch_task = app._foreground_command_task
+    assert dispatch_task is not None
+    assert input_area.buffer.text == ""
+    await dispatch_task
+
+    app._launch_agent.assert_called_once_with(prompt, [])
+    assert app._prompt_history == [prompt]
+    assert any(prompt in line for line in app._output_lines)
+
+
+@pytest.mark.asyncio
+async def test_tui_app_slash_prompt_snapshots_attachments_before_skill_refresh() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    runtime = MagicMock()
+    runtime.ctx = TUIContext()
+    app._runtime = runtime
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def refresh_context(ctx: TUIContext) -> None:
+        refresh_started.set()
+        await release_refresh.wait()
+
+    app._skill_toolset = MagicMock()
+    app._skill_toolset.refresh_context = AsyncMock(side_effect=refresh_context)
+    app._launch_agent = MagicMock()  # type: ignore[method-assign]
+    placeholder = app._format_attachment_placeholder(1, "image/png", 3)
+    original = PendingAttachment(
+        data=b"old",
+        media_type="image/png",
+        size_bytes=3,
+        placeholder=placeholder,
+    )
+    app._pending_attachments = [original]
+    prompt = "/home/user/project/file.txt is the input"
+    input_area = TextArea(text=f"{placeholder} {prompt}", multiline=True)
+    app._input_area = input_area
+
+    app._submit_input(input_area.buffer.text, input_area)
+    dispatch_task = app._foreground_command_task
+    assert dispatch_task is not None
+    await asyncio.wait_for(refresh_started.wait(), timeout=1)
+
+    try:
+        assert app._pending_attachments == []
+        clipboard_result = ClipboardImageReadResult(image=ClipboardImage(data=b"new", media_type="image/png"))
+        with patch("yaacli.app.tui.read_clipboard_image", new=AsyncMock(return_value=clipboard_result)):
+            await app._paste_clipboard_image(input_area)
+
+        assert [item.data for item in app._pending_attachments] == [b"new"]
+        assert app._pending_attachments[0].placeholder in input_area.buffer.text
+    finally:
+        release_refresh.set()
+        await dispatch_task
+
+    app._launch_agent.assert_called_once_with(prompt, [original])
+    assert [item.data for item in app._pending_attachments] == [b"new"]
+    assert app._pending_attachments[0].placeholder in input_area.buffer.text
+
+
+@pytest.mark.asyncio
 async def test_tui_app_submit_multiple_skill_prefixes_as_agent_prompt() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     app._runtime = MagicMock()
@@ -1563,6 +1632,30 @@ async def test_tui_app_run_async_accepts_custom_slash_command_enter() -> None:
             await asyncio.wait_for(run_task, timeout=2)
 
     assert captured_prompts == ["Create a git commit for the current changes.\n\nUser instruction: polish tests"]
+
+
+@pytest.mark.asyncio
+async def test_tui_app_run_async_accepts_absolute_path_prompt_enter() -> None:
+    """A leading absolute path must remain typeable and submit as ordinary text."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    captured_prompts: list[str] = []
+    prompt = "/home/user/project/file.txt is the input"
+
+    async def fake_run_agent(text: str, attachments: object = None) -> None:
+        captured_prompts.append(text)
+        if app._app:
+            app._app.exit()
+
+    app._run_agent = fake_run_agent  # type: ignore[method-assign]
+
+    with create_pipe_input() as pipe_input:
+        with create_app_session(input=pipe_input, output=DummyOutput()):
+            run_task = asyncio.create_task(app.run())
+            await asyncio.sleep(0.1)
+            pipe_input.send_text(f"{prompt}\r")
+            await asyncio.wait_for(run_task, timeout=2)
+
+    assert captured_prompts == [prompt]
 
 
 # =============================================================================
@@ -3438,40 +3531,39 @@ def test_tui_app_idle_only_commands_are_rejected_while_busy_without_losing_draft
     assert any(f"is unavailable while foreground work is {phase_label}" in line for line in app._output_lines)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("phase_path", _BUSY_PHASE_PATHS)
-async def test_tui_app_busy_unknown_slash_is_diagnosed_locally(
+def test_tui_app_busy_unrecognized_slash_text_follows_ordinary_input_routing(
     phase_path: tuple[TUIPhase, ...],
 ) -> None:
+    text = "/home/user/project/file.txt"
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    input_area = TextArea(text="/integreate", multiline=True)
+    input_area = TextArea(text=text, multiline=True)
     for phase in phase_path:
         app._set_phase(phase)
     app._add_steering_message = MagicMock()  # type: ignore[method-assign]
 
-    app._submit_input("/integreate", input_area)
-    command_tasks = tuple(app._managed_tasks)
-    await asyncio.gather(*command_tasks)
+    app._submit_input(text, input_area)
 
-    app._add_steering_message.assert_not_called()
-    assert input_area.buffer.text == ""
-    assert any("Did you mean: /integrate" in line for line in app._output_lines)
+    if app._accepts_steering():
+        app._add_steering_message.assert_called_once_with(text)
+        assert input_area.buffer.text == ""
+    else:
+        app._add_steering_message.assert_not_called()
+        assert input_area.buffer.text == text
+        assert any("Please wait or use /cancel" in line for line in app._output_lines)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("removed_command", ["/act", "/background", "/plan", "/tasks"])
-async def test_tui_app_removed_commands_are_unknown_and_never_steer(removed_command: str) -> None:
+def test_tui_app_removed_commands_are_ordinary_steering(removed_command: str) -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     input_area = TextArea(text=removed_command, multiline=True)
     app._set_phase(TUIPhase.THINKING)
     app._add_steering_message = MagicMock()  # type: ignore[method-assign]
 
     app._submit_input(removed_command, input_area)
-    await asyncio.gather(*tuple(app._managed_tasks))
 
-    app._add_steering_message.assert_not_called()
+    app._add_steering_message.assert_called_once_with(removed_command)
     assert input_area.buffer.text == ""
-    assert any(f"Unknown command {removed_command}" in line for line in app._output_lines)
     assert removed_command not in app._command_words()
 
 

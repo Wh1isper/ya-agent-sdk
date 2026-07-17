@@ -17,10 +17,10 @@ The built-in `steer_subagent` tool is a separate mechanism for targeting a backg
 
 | Foreground state | Ordinary input | Special input |
 | --- | --- | --- |
-| `IDLE` / `BACKGROUND_RESULT_READY` | Starts a new main-agent turn | Slash commands and `!shell` use their own dispatch paths |
-| `THINKING` | Sent to the active run as steering | Busy-safe slash commands retain local command semantics; `!shell` and idle-only slash commands are rejected |
-| `TOOL_CALLING` | Sent to the active run as steering | Busy-safe commands remain available; control syntax is never steering |
-| `STREAMING_OUTPUT` | Sent to the active run as steering | Busy-safe commands remain available; control syntax is never steering |
+| `IDLE` / `BACKGROUND_RESULT_READY` | Starts a new main-agent turn | Registered slash commands, explicit skill invocations, and `!shell` use their own dispatch paths |
+| `THINKING` | Sent to the active run as steering, including unrecognized slash-prefixed text | Busy-safe slash commands retain local command semantics; `!shell` and idle-only registered commands are rejected |
+| `TOOL_CALLING` | Sent to the active run as steering, including unrecognized slash-prefixed text | Busy-safe commands remain available; registered control syntax is never steering |
+| `STREAMING_OUTPUT` | Sent to the active run as steering, including unrecognized slash-prefixed text | Busy-safe commands remain available; registered control syntax is never steering |
 | `AWAITING_APPROVAL` | Non-decision ordinary text is steering and approval remains pending | Explicit decisions, deferred-call results, and busy-safe commands are handled before ordinary text |
 | `COMMAND_RUNNING` / `SHELL_RUNNING` / `SAVING` / `CANCELLING` | Rejected without clearing the draft | Busy-safe commands retain local semantics; `/cancel` follows lifecycle rules and an in-progress save cannot be cancelled |
 
@@ -59,13 +59,13 @@ The routing order is intentional:
 
 1. Reject input while a session reset is active.
 2. Reconcile attachment chips, dropping binaries whose chip was deleted; remove any remaining generated chip text for classification without consuming its queued binary.
-3. Reserve `/...` and `!...` as local control namespaces before any steering or HITL-result parsing.
-4. Dispatch busy-safe slash commands; diagnose unknown slash commands locally; reject idle-only and custom slash commands without clearing the draft.
-5. During an active agent phase, route only ordinary text to the message bus immediately.
+3. Recognize registered `/command` tokens and the `!` namespace before any steering or HITL-result parsing.
+4. Dispatch busy-safe slash commands and reject idle-only or custom registered commands without clearing the draft.
+5. During an active agent phase, route ordinary text, including unrecognized slash-prefixed text, to the message bus immediately.
 6. During non-agent foreground work, preserve ordinary drafts and ask the user to wait.
-7. While idle, dispatch slash commands, direct shell commands, or a new prompt.
+7. While idle, dispatch registered slash commands, explicit skill invocations, direct shell commands, or a new prompt.
 
-The busy-safe command surface is `/cancel`, `/integrate`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`. There is no fallback that converts control syntax into steering or stores ordinary active-run input for a later turn.
+The busy-safe command surface is `/cancel`, `/integrate`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`. There is no fallback that converts registered control syntax into steering or stores ordinary active-run input for a later turn.
 
 ## HITL Interaction
 
@@ -77,7 +77,7 @@ HITL decisions must be explicit:
 - a deferred call accepts non-empty text as its result, while `/deny <reason>` denies it;
 - `/cancel` has priority over all approval and call parsing;
 - all busy-safe commands retain command semantics before approval or deferred-call result parsing;
-- unknown slash commands are diagnosed locally, while idle-only/custom slash and `!shell` input are rejected without resolving the request;
+- idle-only/custom registered slash commands and `!shell` input are rejected without resolving the request, while unrecognized slash-prefixed text remains an ordinary result or steering message;
 - the HITL parser is active only while the authoritative phase is `AWAITING_APPROVAL`; `SAVING` and `CANCELLING` always use cleanup-phase routing;
 - for approval requests, non-decision ordinary text is steering and leaves the request pending.
 

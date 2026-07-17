@@ -46,6 +46,7 @@ class MyCustomTool(BaseTool):
     # tags: frozenset[str] = frozenset()           # Capability tags
     # superseded_by_tags: frozenset[str] = frozenset()  # Auto-hide when tag active
     # auto_inherit: bool = False                    # Include in subagent toolsets
+    # main_agent_only: bool = False                 # Exclude from every SDK subagent toolset
     # is_context_manage_tool: bool = False          # Context management (e.g., summarize)
 
     # Optional overrides:
@@ -197,7 +198,7 @@ ctx.need_user_approve_tools = ["shell", "edit", "write"]
 
 When called, these tools raise `ApprovalRequired`. Implement `get_approval_metadata()` in your tool to provide context.
 
-The optional `ask_user_question` tool uses `CallDeferred` instead of approval control flow. It is not part of the SDK default tool surface because the host must collect structured answers and resume the run, and it is available only to the main agent. See [user-input.md](user-input.md) for registration and continuation details.
+The optional `ask_user_question` tool uses `CallDeferred` instead of approval control flow. It is not part of the SDK default tool surface because the host must collect structured answers and resume the run. It sets `main_agent_only=True`, so SDK subagent builders exclude it at construction time and sanitize capability wrappers plus dynamic Toolset factory results at the final subagent execution boundary. SDK `Toolset` listing and calling enforce the policy in subagent contexts regardless of `skip_unavailable`, opaque search/proxy composites, or stale caches, while the tool's availability check provides another runtime guard. See [user-input.md](user-input.md) for registration and continuation details.
 
 > HITL flow details: `ya_agent_sdk/toolsets/core/base.py`
 

@@ -206,6 +206,16 @@ class Toolset(BaseToolset[AgentDepsT]):
             self._tool_instances[name] = self._tool_classes[name]()
         return self._tool_instances[name]
 
+    @staticmethod
+    def _is_tool_allowed_in_context(
+        tool_instance: BaseTool,
+        ctx: RunContext[AgentDepsT],
+    ) -> bool:
+        """Enforce policies that cannot be disabled by toolset configuration."""
+        if not tool_instance.main_agent_only:
+            return True
+        return ctx.deps.agent_id == "main" and ctx.deps.parent_run_id is None
+
     def is_tool_available(
         self,
         tool_name: str,
@@ -223,7 +233,18 @@ class Toolset(BaseToolset[AgentDepsT]):
         if tool_name not in self._tool_classes:
             return False
         tool_instance = self._get_tool_instance(tool_name)
-        return tool_instance.is_available(ctx)
+        return self._is_tool_allowed_in_context(tool_instance, ctx) and tool_instance.is_available(ctx)
+
+    def is_tool_available_to_subagent(
+        self,
+        tool_name: str,
+        ctx: RunContext[AgentDepsT],
+    ) -> bool:
+        """Check whether a tool may be inherited and is currently available."""
+        tool_cls = self._tool_classes.get(tool_name)
+        if tool_cls is None or tool_cls.main_agent_only:
+            return False
+        return self._get_tool_instance(tool_name).is_available(ctx)
 
     def has_tags(self, tags: set[str] | frozenset[str]) -> bool:
         """Return whether any tool in this toolset has any of the given tags."""
@@ -237,6 +258,46 @@ class Toolset(BaseToolset[AgentDepsT]):
     ) -> Toolset[AgentDepsT]:
         """Create a Toolset excluding tools that have any of the given tags."""
         selected_names = {name for name, tool_cls in self._tool_classes.items() if not tool_cls.tags & tags}
+        selected_classes = [tool_cls for name, tool_cls in self._tool_classes.items() if name in selected_names]
+
+        pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None
+        post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None
+        global_hooks: GlobalHooks | None = None
+
+        if inherit_hooks:
+            pre_hooks = {k: v for k, v in self.pre_hooks.items() if k in selected_names}
+            post_hooks = {k: v for k, v in self.post_hooks.items() if k in selected_names}
+            global_hooks = self.global_hooks
+
+        return Toolset(
+            tools=selected_classes,
+            pre_hooks=pre_hooks,
+            post_hooks=post_hooks,
+            global_hooks=global_hooks,
+            max_retries=self.max_retries,
+            timeout=self.timeout,
+            toolset_id=self._id,
+            skip_unavailable=self._skip_unavailable,
+            description=self._description,
+        )
+
+    def for_subagent(
+        self,
+        *,
+        excluded_tags: set[str] | frozenset[str] = frozenset(),
+        inherit_hooks: bool = True,
+    ) -> Toolset[AgentDepsT]:
+        """Create a copy safe to attach to a subagent.
+
+        Main-agent-only tools are always removed. Callers may additionally
+        remove tagged capabilities such as delegation tools used to create the
+        subagent itself.
+        """
+        selected_names = {
+            name
+            for name, tool_cls in self._tool_classes.items()
+            if not tool_cls.main_agent_only and not tool_cls.tags & excluded_tags
+        }
         selected_classes = [tool_cls for name, tool_cls in self._tool_classes.items() if name in selected_names]
 
         pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None
@@ -507,6 +568,9 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         for name in self._tool_classes:
             tool_instance = self._get_tool_instance(name)
+            if not self._is_tool_allowed_in_context(tool_instance, ctx):
+                logger.debug(f"Skipping context-forbidden tool {name!r}")
+                continue
             # Check availability at get_tools time (when env is entered)
             if self._skip_unavailable and not tool_instance.is_available(ctx):
                 logger.debug(f"Skipping unavailable tool {name!r}")
@@ -617,6 +681,10 @@ class Toolset(BaseToolset[AgentDepsT]):
             msg = f"Expected HookableToolsetTool, got {type(tool)}"
             raise UserError(msg)
 
+        if tool.tool_instance is not None and not self._is_tool_allowed_in_context(tool.tool_instance, ctx):
+            msg = f"Tool {name!r} is not available in this agent context"
+            raise UserError(msg)
+
         if name in ctx.deps.need_user_approve_tools and not ctx.tool_call_approved:
             approval_metadata = tool.tool_instance.get_approval_metadata() if tool.tool_instance else None
             logger.debug(f"call_tool: {name!r} requires user approval")
@@ -693,6 +761,8 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         for name in self._tool_classes:
             tool_instance = self._get_tool_instance(name)
+            if not self._is_tool_allowed_in_context(tool_instance, ctx):
+                continue
             if self._skip_unavailable and not tool_instance.is_available(ctx):
                 continue
             available_names.append(name)

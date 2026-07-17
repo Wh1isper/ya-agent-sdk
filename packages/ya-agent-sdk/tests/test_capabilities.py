@@ -5,17 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic_ai import RunContext
-from pydantic_ai.capabilities import AbstractCapability, Hooks, ProcessHistory
+from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, Hooks, ProcessHistory
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.toolsets import AbstractToolset, CombinedToolset, FunctionToolset, WrapperToolset
+from pydantic_ai.toolsets._dynamic import DynamicToolset
 from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
+from ya_agent_sdk.toolsets.tool_search import ToolSearchToolSet
 
 
 @pytest.fixture
@@ -88,6 +93,162 @@ class ExtraDelegationTool(BaseTool):
         return "delegated"
 
 
+@dataclass
+class MainAgentOnlyToolCapability(AbstractCapability[Any]):
+    """Capability that contributes an SDK Toolset with a host-facing tool."""
+
+    def get_toolset(self) -> Toolset[Any]:
+        return Toolset(
+            tools=[ExtraOrdinaryTool, AskUserQuestionTool],
+            skip_unavailable=False,
+        )
+
+
+@dataclass
+class MainAgentOnlyWrapperCapability(AbstractCapability[Any]):
+    """Outermost capability that attempts to inject a host-facing tool."""
+
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(
+            position="outermost",
+            wraps=(AbstractCapability,),
+        )
+
+    def get_wrapper_toolset(self, toolset):
+        return CombinedToolset([
+            toolset,
+            Toolset(tools=[AskUserQuestionTool], skip_unavailable=False),
+        ])
+
+
+@dataclass
+class DynamicMainAgentOnlyCapability(AbstractCapability[Any]):
+    """Capability whose dynamic factory attempts to inject a host-facing tool."""
+
+    async_factory: bool
+    per_run_step: bool
+
+    def get_toolset(self):
+        def build_toolset() -> Toolset[Any]:
+            return Toolset(
+                tools=[ExtraOrdinaryTool, AskUserQuestionTool],
+                skip_unavailable=False,
+            )
+
+        if self.async_factory:
+
+            async def factory(ctx: RunContext[Any]) -> Toolset[Any]:
+                return build_toolset()
+
+        else:
+
+            def factory(ctx: RunContext[Any]) -> Toolset[Any]:
+                return build_toolset()
+
+        return DynamicToolset(factory, per_run_step=self.per_run_step)
+
+
+@dataclass
+class DynamicOpaqueToolSearchCapability(AbstractCapability[Any]):
+    """Dynamic factory that hides an SDK Toolset inside ToolSearchToolSet."""
+
+    def get_toolset(self):
+        def factory(ctx: RunContext[Any]) -> ToolSearchToolSet:
+            return ToolSearchToolSet([
+                Toolset(
+                    tools=[ExtraOrdinaryTool, AskUserQuestionTool],
+                    skip_unavailable=False,
+                )
+            ])
+
+        return factory
+
+
+@dataclass
+class OpaqueToolSearchWrapperCapability(AbstractCapability[Any]):
+    """Capability wrapper that hides an SDK Toolset inside ToolSearchToolSet."""
+
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(position="outermost", wraps=(AbstractCapability,))
+
+    def get_wrapper_toolset(self, toolset):
+        return CombinedToolset([
+            toolset,
+            ToolSearchToolSet([
+                Toolset(
+                    tools=[ExtraOrdinaryTool, AskUserQuestionTool],
+                    skip_unavailable=False,
+                )
+            ]),
+        ])
+
+
+@dataclass
+class StableDynamicToolsetCapability(AbstractCapability[Any]):
+    """Dynamic capability that returns the same lifecycle-aware toolset."""
+
+    toolset: WrapperToolset[Any]
+    async_factory: bool
+
+    def get_toolset(self):
+        if self.async_factory:
+
+            async def factory(ctx: RunContext[Any]) -> WrapperToolset[Any]:
+                return self.toolset
+
+        else:
+
+            def factory(ctx: RunContext[Any]) -> WrapperToolset[Any]:
+                return self.toolset
+
+        return DynamicToolset(factory, per_run_step=True, id="stable-dynamic")
+
+
+@dataclass
+class LifecycleTrackingToolset(WrapperToolset[Any]):
+    events: list[str]
+
+    async def __aenter__(self):
+        await self.wrapped.__aenter__()
+        self.events.append("enter")
+        return self
+
+    async def __aexit__(self, *args: Any) -> bool | None:
+        self.events.append("exit")
+        return await self.wrapped.__aexit__(*args)
+
+
+@dataclass
+class OutermostCapability(AbstractCapability[Any]):
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(position="outermost")
+
+
+@dataclass
+class InnermostCapability(AbstractCapability[Any]):
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(position="innermost")
+
+
+@dataclass
+class RequiredCapability(AbstractCapability[Any]):
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(wrapped_by=(WrappingCapability,))
+
+
+@dataclass
+class WrappingCapability(AbstractCapability[Any]):
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(wraps=(RequiredCapability,), requires=(RequiredCapability,))
+
+
+def _assembled_sdk_toolsets(agent: Any) -> list[Toolset[Any]]:
+    toolsets: list[Toolset[Any]] = []
+    root = agent._get_toolset(run_capability=agent.root_capability)
+    root.apply(lambda toolset: toolsets.append(toolset) if isinstance(toolset, Toolset) else None)
+    return toolsets
+
+
 async def test_self_fork_filters_delegation_tags_from_extra_toolsets(env):
     """Self fork should hide delegation tools from every SDK Toolset."""
     config = SubagentConfig(name="helper", description="Helper", system_prompt="You are helper.")
@@ -106,6 +267,240 @@ async def test_self_fork_filters_delegation_tags_from_extra_toolsets(env):
     tool_names = [name for toolset in runtime.ctx.self_fork_agent._user_toolsets for name in toolset.tool_names]
     assert "extra_ordinary_tool" in tool_names
     assert "extra_delegation_tool" not in tool_names
+
+
+async def test_self_fork_excludes_ask_user_question_from_core_toolset(env) -> None:
+    config = SubagentConfig(name="helper", description="Helper", system_prompt="You are helper.")
+
+    runtime = create_agent(
+        TestModel(),
+        env=env,
+        tools=[AskUserQuestionTool],
+        subagent_configs=[config],
+        unified_subagents=True,
+        defer_model_check=True,
+    )
+
+    assert runtime.core_toolset is not None
+    assert "ask_user_question" in runtime.core_toolset.tool_names
+    assert runtime.ctx.self_fork_agent is not None
+    self_fork_tool_names = [
+        name for toolset in runtime.ctx.self_fork_agent._user_toolsets for name in toolset.tool_names
+    ]
+    assert "ask_user_question" not in self_fork_tool_names
+
+
+async def test_subagent_capability_toolset_excludes_ask_user_question() -> None:
+    from ya_agent_sdk.subagents.builder import _build_subagent_agent
+
+    agent, _ = _build_subagent_agent(
+        SubagentConfig(name="helper", description="Helper", system_prompt="You are helper."),
+        Toolset(tools=[]),
+        model="test",
+        capabilities=[MainAgentOnlyToolCapability()],
+    )
+
+    capability_toolsets = _assembled_sdk_toolsets(agent)
+    tool_names = {tool_name for toolset in capability_toolsets for tool_name in toolset.tool_names}
+    assert "extra_ordinary_tool" in tool_names
+    assert "ask_user_question" not in tool_names
+    assert any(toolset._skip_unavailable is False for toolset in capability_toolsets)
+
+
+async def test_subagent_capability_wrapper_cannot_inject_ask_user_question() -> None:
+    from ya_agent_sdk.subagents.builder import _build_subagent_agent
+
+    model = TestModel()
+    agent, _ = _build_subagent_agent(
+        SubagentConfig(name="helper", description="Helper", system_prompt="You are helper."),
+        Toolset(tools=[]),
+        model=model,
+        capabilities=[MainAgentOnlyWrapperCapability()],
+    )
+
+    assembled_toolsets = _assembled_sdk_toolsets(agent)
+    assert "ask_user_question" not in {tool_name for toolset in assembled_toolsets for tool_name in toolset.tool_names}
+    assert any(toolset._skip_unavailable is False for toolset in assembled_toolsets)
+
+    await agent.run("Check the final tool surface", deps=AgentContext())
+    assert model.last_model_request_parameters is not None
+    assert "ask_user_question" not in {tool.name for tool in model.last_model_request_parameters.function_tools}
+
+
+@pytest.mark.parametrize("async_factory", [False, True])
+@pytest.mark.parametrize("per_run_step", [False, True])
+async def test_subagent_dynamic_capability_cannot_inject_ask_user_question(
+    async_factory: bool,
+    per_run_step: bool,
+) -> None:
+    from ya_agent_sdk.subagents.builder import _build_subagent_agent
+
+    model = TestModel(call_tools=[])
+    agent, _ = _build_subagent_agent(
+        SubagentConfig(name="helper", description="Helper", system_prompt="You are helper."),
+        Toolset(tools=[]),
+        model=model,
+        capabilities=[
+            DynamicMainAgentOnlyCapability(
+                async_factory=async_factory,
+                per_run_step=per_run_step,
+            )
+        ],
+    )
+
+    await agent.run("Check the dynamic tool surface", deps=AgentContext())
+
+    assert model.last_model_request_parameters is not None
+    tool_names = {tool.name for tool in model.last_model_request_parameters.function_tools}
+    assert "extra_ordinary_tool" in tool_names
+    assert "ask_user_question" not in tool_names
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        DynamicOpaqueToolSearchCapability(),
+        OpaqueToolSearchWrapperCapability(),
+    ],
+)
+async def test_subagent_opaque_composite_cannot_expose_ask_user_question(
+    capability: AbstractCapability[Any],
+) -> None:
+    from ya_agent_sdk.subagents.builder import _build_subagent_agent
+
+    model = TestModel(call_tools=[])
+    agent, _ = _build_subagent_agent(
+        SubagentConfig(name="helper", description="Helper", system_prompt="You are helper."),
+        Toolset(tools=[]),
+        model=model,
+        capabilities=[capability],
+    )
+    parent_ctx = AgentContext()
+    subagent_ctx = parent_ctx.create_subagent_context("helper")
+    subagent_ctx.tool_search_loaded_tools = ["extra_ordinary_tool", "ask_user_question"]
+
+    await agent.run("Check the opaque tool surface", deps=subagent_ctx)
+
+    assert model.last_model_request_parameters is not None
+    tool_names = {tool.name for tool in model.last_model_request_parameters.function_tools}
+    assert {"tool_search", "extra_ordinary_tool"} <= tool_names
+    assert "ask_user_question" not in tool_names
+
+
+async def test_dynamic_policy_retry_after_filter_failure_does_not_use_stale_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ya_agent_sdk.subagents import agent as subagent_agent_module
+
+    raw_toolset = Toolset(
+        tools=[ExtraOrdinaryTool, AskUserQuestionTool],
+        skip_unavailable=False,
+    )
+    dynamic = DynamicToolset(lambda ctx: raw_toolset, per_run_step=True)
+    sanitized_dynamic = subagent_agent_module._sanitize_dynamic_toolset(dynamic)
+    original_filter = subagent_agent_module._filter_subagent_toolset_tree
+    filter_calls = 0
+
+    def flaky_filter(toolset: AbstractToolset[AgentContext]) -> AbstractToolset[AgentContext]:
+        nonlocal filter_calls
+        filter_calls += 1
+        if filter_calls == 1:
+            raise RuntimeError("filter failed")
+        return original_filter(toolset)
+
+    monkeypatch.setattr(subagent_agent_module, "_filter_subagent_toolset_tree", flaky_filter)
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = AgentContext()
+
+    with pytest.raises(RuntimeError, match="filter failed"):
+        await sanitized_dynamic.toolset_func(run_ctx)
+    retried = await sanitized_dynamic.toolset_func(run_ctx)
+
+    assert filter_calls == 2
+    assert isinstance(retried, Toolset)
+    assert "extra_ordinary_tool" in retried.tool_names
+    assert "ask_user_question" not in retried.tool_names
+
+
+@pytest.mark.parametrize("async_factory", [False, True])
+async def test_subagent_dynamic_policy_preserves_stable_factory_lifecycle(
+    async_factory: bool,
+) -> None:
+    from ya_agent_sdk.subagents.builder import _build_subagent_agent
+
+    events: list[str] = []
+    stable_toolset = LifecycleTrackingToolset(
+        wrapped=Toolset(tools=[ExtraOrdinaryTool]),
+        events=events,
+    )
+    model = TestModel(call_tools=["extra_ordinary_tool"])
+    agent, _ = _build_subagent_agent(
+        SubagentConfig(name="helper", description="Helper", system_prompt="You are helper."),
+        Toolset(tools=[]),
+        model=model,
+        capabilities=[
+            StableDynamicToolsetCapability(
+                toolset=stable_toolset,
+                async_factory=async_factory,
+            )
+        ],
+    )
+    assembled_leaves: list[AbstractToolset[Any]] = []
+    agent._get_toolset(run_capability=agent.root_capability).apply(assembled_leaves.append)
+
+    await agent.run("Use the ordinary tool", deps=AgentContext())
+
+    assert any(isinstance(toolset, DynamicToolset) and toolset.id == "stable-dynamic" for toolset in assembled_leaves)
+    assert events == ["enter", "exit"]
+
+
+def test_subagent_capability_policy_preserves_ordering_constraints() -> None:
+    from ya_agent_sdk.subagents.builder import _build_subagent_agent
+
+    agent, _ = _build_subagent_agent(
+        SubagentConfig(name="helper", description="Helper", system_prompt="You are helper."),
+        Toolset(tools=[]),
+        model="test",
+        capabilities=[
+            InnermostCapability(),
+            RequiredCapability(),
+            WrappingCapability(),
+            OutermostCapability(),
+        ],
+    )
+    leaves: list[AbstractCapability[Any]] = []
+    agent.root_capability.apply(leaves.append)
+
+    outer_index = next(index for index, capability in enumerate(leaves) if isinstance(capability, OutermostCapability))
+    wrapper_index = next(index for index, capability in enumerate(leaves) if isinstance(capability, WrappingCapability))
+    required_index = next(
+        index for index, capability in enumerate(leaves) if isinstance(capability, RequiredCapability)
+    )
+    inner_index = next(index for index, capability in enumerate(leaves) if isinstance(capability, InnermostCapability))
+    assert outer_index < wrapper_index < required_index < inner_index
+
+
+async def test_self_fork_capability_toolset_excludes_ask_user_question(env) -> None:
+    config = SubagentConfig(name="helper", description="Helper", system_prompt="You are helper.")
+    runtime = create_agent(
+        TestModel(),
+        env=env,
+        capabilities=[MainAgentOnlyToolCapability()],
+        subagent_configs=[config],
+        unified_subagents=True,
+        defer_model_check=True,
+    )
+
+    main_tool_names = {
+        tool_name for toolset in _assembled_sdk_toolsets(runtime.agent) for tool_name in toolset.tool_names
+    }
+    assert {"extra_ordinary_tool", "ask_user_question"} <= main_tool_names
+    assert runtime.ctx.self_fork_agent is not None
+    self_fork_capability_toolsets = _assembled_sdk_toolsets(runtime.ctx.self_fork_agent)
+    self_fork_tool_names = {tool_name for toolset in self_fork_capability_toolsets for tool_name in toolset.tool_names}
+    assert "extra_ordinary_tool" in self_fork_tool_names
+    assert "ask_user_question" not in self_fork_tool_names
+    assert any(toolset._skip_unavailable is False for toolset in self_fork_capability_toolsets)
 
 
 async def test_capabilities_forwarded_to_agent(env):

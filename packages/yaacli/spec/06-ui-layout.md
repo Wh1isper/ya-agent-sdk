@@ -125,13 +125,13 @@ The compose area is three rows on small terminals and five rows otherwise. It su
 
 | Phase | Submission behavior |
 | --- | --- |
-| Idle | Starts a new prompt, slash command, or `!shell` command |
-| Active agent phase | Ordinary text is immediate steering; busy-safe slash commands execute locally |
+| Idle | Starts a new prompt, registered slash command, explicit skill invocation, or `!shell` command |
+| Active agent phase | Ordinary text, including unrecognized slash-prefixed text, is immediate steering; busy-safe slash commands execute locally |
 | Awaiting approval | Explicit decisions/results resolve HITL; ordinary non-decision text steers; control syntax remains local |
 | Command/Shell/Saving/Cancelling | Ordinary and idle-only control drafts are preserved; busy-safe commands retain local semantics |
 | Background result ready | Next prompt integrates results; `/integrate` starts an explicit integration turn |
 
-The `/` and `!` namespaces are classified before prompt, steering, or HITL-result parsing. While idle, one or more consecutive leading `/skill-name` tokens that match the effective skill catalog create an explicit skill-selection prompt; the remaining text is the task. For slash tokens that are not known commands, YAACLI synchronously reserves foreground ownership, refreshes `AgentContext.available_skills`, and only then classifies the submitted text, so runtime skill additions, removals, and overrides cannot race dispatch. Existing built-in and configured commands take precedence when the first token conflicts with a skill name. Unknown slash commands produce local suggestions. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before this classification while its binary remains queued; if the user deleted the chip, the binary is dropped before dispatch.
+Registered `/command` tokens and the `!` namespace are classified before prompt, steering, or HITL-result parsing. While idle, one or more consecutive leading `/skill-name` tokens that match the effective skill catalog create an explicit skill-selection prompt; the remaining text is the task. For slash tokens that are not known commands, YAACLI synchronously reserves foreground ownership and snapshots the submitted attachments, refreshes `AgentContext.available_skills`, and only then classifies the submitted text, so runtime skill additions, removals, and overrides cannot race dispatch. Attachments added during that refresh remain queued for the next prompt. Existing built-in and configured commands take precedence when the first token conflicts with a skill name. If no command or skill matches, the complete slash-prefixed text is ordinary user input, allowing prompts such as `/home/user/file is the input`. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before routing; if the user deleted the chip, the binary is dropped before dispatch.
 
 The model-facing skill-selection block contains only escaped, catalog-grounded names and paths plus the task; it does not inject skill bodies. The transcript and prompt history retain the original user text. The agent still inspects each selected `SKILL.md` and applies the SDK skill activation policy.
 

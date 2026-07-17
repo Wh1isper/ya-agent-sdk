@@ -115,7 +115,7 @@ runtime = create_agent(
 )
 ```
 
-The SDK deliberately does **not** include this tool in its default tool surface: hosts must opt in only when they can present `DeferredToolRequests`, collect answers, and resume with matching `DeferredToolResults.calls`. The tool is available only to the main agent because nested subagent runs do not own the host's user-interaction loop. See [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md) for the question schema and a complete continuation example.
+The SDK deliberately does **not** include this tool in its default tool surface: hosts must opt in only when they can present `DeferredToolRequests`, collect answers, and resume with matching `DeferredToolResults.calls`. The tool sets `main_agent_only=True`, so regular subagents and self forks remove it from direct SDK `Toolset` instances, capability wrappers, and sync or async dynamic Toolset factory results at both per-run and per-step resolution. SDK `Toolset` also enforces this policy while listing and calling tools in a subagent context, regardless of `skip_unavailable`, so opaque search/proxy composites and stale caches cannot bypass it. Its runtime availability check additionally requires a root main-agent context as defense in depth. Nested subagent runs do not own the host's user-interaction loop. See [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md) for the question schema and a complete continuation example.
 
 ## Local Shell Sandbox Policy
 

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability
 from ya_agent_sdk.subagents import (
     SubagentConfig,
     create_unified_subagent_tool,
@@ -14,6 +17,7 @@ from ya_agent_sdk.subagents import (
     load_unified_subagent_tool_from_dir,
 )
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
 
 # =============================================================================
 # Test fixtures and mock tools
@@ -72,6 +76,15 @@ class DynamicTool(BaseTool):
 
     async def call(self, ctx: RunContext) -> str:
         return "dynamic"
+
+
+@dataclass
+class MainAgentOnlyToolCapability(AbstractCapability[Any]):
+    def get_toolset(self) -> Toolset[Any]:
+        return Toolset(
+            tools=[GrepTool, AskUserQuestionTool],
+            skip_unavailable=False,
+        )
 
 
 # =============================================================================
@@ -195,6 +208,44 @@ def test_unified_tool_availability_dynamic(mock_run_ctx) -> None:
 
     # Restore
     DynamicTool._available = True
+
+
+def test_unified_tool_rejects_subagent_requiring_ask_user_question(mock_run_ctx) -> None:
+    configs = [
+        SubagentConfig(
+            name="interactive_worker",
+            description="Worker that incorrectly requires host interaction",
+            system_prompt="You are a worker.",
+            tools=["ask_user_question"],
+        )
+    ]
+    parent_toolset = Toolset(tools=[AskUserQuestionTool])
+
+    tool_cls = create_unified_subagent_tool(configs, parent_toolset, model="test")
+    tool = tool_cls()
+
+    assert parent_toolset.is_tool_available("ask_user_question", mock_run_ctx) is True
+    assert tool.is_available(mock_run_ctx) is False
+
+
+def test_unified_backend_capability_toolset_excludes_ask_user_question() -> None:
+    from ya_agent_sdk.toolsets.core.subagent.unified import _build_registry
+
+    registry = _build_registry(
+        [SubagentConfig(name="worker", description="Worker", system_prompt="You are a worker.")],
+        Toolset(tools=[]),
+        model="test",
+        capabilities=[MainAgentOnlyToolCapability()],
+    )
+    capability_toolsets: list[Toolset[Any]] = []
+    agent = registry["worker"].agent
+    root = agent._get_toolset(run_capability=agent.root_capability)
+    root.apply(lambda toolset: capability_toolsets.append(toolset) if isinstance(toolset, Toolset) else None)
+
+    tool_names = {tool_name for toolset in capability_toolsets for tool_name in toolset.tool_names}
+    assert "grep" in tool_names
+    assert "ask_user_question" not in tool_names
+    assert any(toolset._skip_unavailable is False for toolset in capability_toolsets)
 
 
 # =============================================================================

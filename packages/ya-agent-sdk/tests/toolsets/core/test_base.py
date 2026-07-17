@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext, UserError
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.tools import ToolApproved, ToolDenied
 from ya_agent_sdk.context import AgentContext
@@ -126,6 +126,17 @@ class DelegationTool(BaseTool):
 
     async def call(self, ctx: RunContext[AgentContext]) -> str:
         return "Delegated"
+
+
+class MainAgentOnlyTool(BaseTool):
+    """A host-facing tool that subagents must never receive."""
+
+    name = "main_agent_only_tool"
+    description = "A main-agent-only tool"
+    main_agent_only = True
+
+    async def call(self, ctx: RunContext[AgentContext]) -> str:
+        return "main only"
 
 
 # --- BaseTool tests ---
@@ -568,6 +579,67 @@ def test_toolset_exclude_tags(agent_context: AgentContext) -> None:
     assert "dummy_tool" in result.tool_names
     assert "delegation_tool" not in result.tool_names
     assert toolset.has_tags(frozenset({"delegation"}))
+
+
+def test_toolset_for_subagent_excludes_main_only_and_requested_tags() -> None:
+    toolset = Toolset(tools=[DummyTool, DelegationTool, MainAgentOnlyTool])
+
+    result = toolset.for_subagent(excluded_tags=frozenset({"delegation"}))
+
+    assert result.tool_names == ["dummy_tool"]
+    assert toolset.tool_names == ["dummy_tool", "delegation_tool", "main_agent_only_tool"]
+
+
+def test_main_agent_only_tool_is_not_available_to_subagents(agent_context: AgentContext) -> None:
+    toolset = Toolset(tools=[DummyTool, MainAgentOnlyTool])
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = agent_context
+
+    assert toolset.is_tool_available("main_agent_only_tool", run_ctx) is True
+    assert toolset.is_tool_available_to_subagent("main_agent_only_tool", run_ctx) is False
+    assert toolset.is_tool_available_to_subagent("dummy_tool", run_ctx) is True
+
+
+async def test_main_agent_only_policy_cannot_be_disabled_by_skip_unavailable(
+    agent_context: AgentContext,
+) -> None:
+    toolset = Toolset(
+        tools=[DummyTool, MainAgentOnlyTool],
+        skip_unavailable=False,
+    )
+    subagent_ctx = agent_context.create_subagent_context("helper")
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = subagent_ctx
+
+    tools = await toolset.get_tools(run_ctx)
+
+    assert "dummy_tool" in tools
+    assert "main_agent_only_tool" not in tools
+    assert await toolset.get_instructions(run_ctx) is not None
+    assert toolset.is_tool_available("main_agent_only_tool", run_ctx) is False
+
+
+async def test_main_agent_only_policy_rejects_stale_cached_tool_call(
+    agent_context: AgentContext,
+) -> None:
+    toolset = Toolset(
+        tools=[MainAgentOnlyTool],
+        skip_unavailable=False,
+    )
+    main_run_ctx = MagicMock(spec=RunContext)
+    main_run_ctx.deps = agent_context
+    stale_tool = (await toolset.get_tools(main_run_ctx))["main_agent_only_tool"]
+
+    subagent_run_ctx = MagicMock(spec=RunContext)
+    subagent_run_ctx.deps = agent_context.create_subagent_context("helper")
+
+    with pytest.raises(UserError, match="not available in this agent context"):
+        await toolset.call_tool(
+            "main_agent_only_tool",
+            {},
+            subagent_run_ctx,
+            stale_tool,
+        )
 
 
 def test_toolset_with_subagents_inherit_hooks(agent_context: AgentContext) -> None:

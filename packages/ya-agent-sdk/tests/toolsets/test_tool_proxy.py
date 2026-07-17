@@ -10,6 +10,7 @@ from pydantic import Field
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
+from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 
 from ._instruction_helpers import instruction_text as _instruction_text
@@ -149,6 +150,47 @@ def failing_toolset() -> Toolset:
 # ---------------------------------------------------------------------------
 # get_tools: always returns exactly 2 tools
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_stale_proxy_cache_cannot_call_main_agent_only_tool_from_subagent() -> None:
+    inner = Toolset(
+        tools=[AskUserQuestionTool],
+        skip_unavailable=False,
+    )
+    proxy = ToolProxyToolset(toolsets=[inner])
+    parent_ctx = AgentContext()
+    main_run_ctx = MagicMock(spec=RunContext)
+    main_run_ctx.deps = parent_ctx
+    proxy_tools = await proxy.get_tools(main_run_ctx)
+    assert "ask_user_question" in proxy._toolset_tools_cache
+
+    subagent_run_ctx = MagicMock(spec=RunContext)
+    subagent_run_ctx.deps = parent_ctx.create_subagent_context("helper")
+    result = await proxy.call_tool(
+        "call_tool",
+        {
+            "name": "ask_user_question",
+            "arguments": {
+                "questions": [
+                    {
+                        "question": "Continue?",
+                        "header": "Confirm",
+                        "options": [
+                            {"label": "Yes", "description": "Continue"},
+                            {"label": "No", "description": "Stop"},
+                        ],
+                        "multiSelect": False,
+                    }
+                ]
+            },
+        },
+        subagent_run_ctx,
+        proxy_tools["call_tool"],
+    )
+
+    assert isinstance(result, str)
+    assert "not available in this agent context" in result
 
 
 @pytest.mark.anyio

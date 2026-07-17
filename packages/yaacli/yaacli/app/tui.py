@@ -3424,16 +3424,16 @@ class TUIApp:
         return name in BUILTIN_COMMANDS or name in self.config.get_commands()
 
     def _route_busy_control_input(self, text: str, input_area: TextArea) -> bool:
-        """Route slash and shell syntax before ordinary active-run steering.
+        """Route recognized slash commands and shell syntax before ordinary input.
 
         Safe commands execute without taking ownership from the current
-        foreground task. Unknown slash commands are dispatched only to produce
-        local suggestions. Commands that require an idle foreground, including
-        custom prompt commands, are rejected without clearing the draft.
+        foreground task. Commands that require an idle foreground, including
+        custom prompt commands, are rejected without clearing the draft. An
+        unrecognized slash prefix remains ordinary user input.
         """
         command_name = text.split(maxsplit=1)[0].lower() if text.strip() else ""
-        if command_name.startswith("/"):
-            if command_name in BUSY_CONTROL_COMMANDS or not self._is_known_slash_command(command_name):
+        if self._is_known_slash_command(command_name):
+            if command_name in BUSY_CONTROL_COMMANDS:
                 self._detach_pending_attachment_placeholders()
                 input_area.buffer.reset()
                 self._add_prompt_history(text)
@@ -3484,16 +3484,16 @@ class TUIApp:
             task.add_done_callback(self._release_foreground_command)
         self._track_managed_task(task)
 
-    def _schedule_skill_or_command(self, text: str) -> None:
-        """Refresh skill discovery before classifying an unknown slash prefix."""
+    def _schedule_skill_or_prompt(self, text: str, attachments: list[PendingAttachment]) -> None:
+        """Refresh skill discovery before classifying slash-prefixed user input."""
         self._set_phase(TUIPhase.COMMAND_RUNNING)
-        task = asyncio.create_task(self._handle_skill_or_command(text))
+        task = asyncio.create_task(self._handle_skill_or_prompt(text, attachments))
         self._foreground_command_task = task
         task.add_done_callback(self._release_foreground_command)
         self._track_managed_task(task)
 
-    async def _handle_skill_or_command(self, text: str) -> None:
-        """Dispatch a catalog-grounded skill invocation or an unknown command."""
+    async def _handle_skill_or_prompt(self, text: str, attachments: list[PendingAttachment]) -> None:
+        """Dispatch a catalog-grounded skill invocation or an ordinary prompt."""
         try:
             if self._skill_toolset is not None and self._runtime is not None:
                 try:
@@ -3508,12 +3508,9 @@ class TUIApp:
                 command_names=self._command_words(),
             )
             if skill_invocation is None:
-                self._detach_pending_attachment_placeholders()
-                await self._handle_command_inner(text)
+                self._launch_agent(text, attachments)
                 return
 
-            attachments = self._consume_pending_attachments()
-            self._append_user_input(text, attachments)
             agent_prompt = format_skill_invocation(skill_invocation, available_skills)
             self._launch_agent(agent_prompt, attachments)
         except Exception as error:
@@ -3576,9 +3573,12 @@ class TUIApp:
                 self._schedule_command(semantic_text)
             else:
                 # Skill directories can change while the TUI is running. Claim
-                # foreground ownership now, then refresh before deciding whether
-                # this is an explicit skill selection or an unknown command.
-                self._schedule_skill_or_command(semantic_text)
+                # the current attachments and foreground ownership now, then
+                # refresh before deciding whether this is an explicit skill
+                # selection or an ordinary prompt.
+                attachments = self._consume_pending_attachments()
+                self._append_user_input(semantic_text, attachments)
+                self._schedule_skill_or_prompt(semantic_text, attachments)
             return
 
         if semantic_text.startswith("!"):

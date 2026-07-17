@@ -208,7 +208,8 @@ You are an expert debugger specializing in systematic root cause analysis.
 - **Required tools** (`tools`): ALL must be available in parent toolset for subagent to be enabled
 - **Optional tools** (`optional_tools`): Included if available, not required for availability
 - **Auto-inherit tools**: Tools with `auto_inherit=True` are automatically included in all subagents (e.g., `task_*`, `summarize`)
-- **No tools specified**: Subagent inherits all tools from parent and is always available
+- **Main-agent-only tools**: Tools with `main_agent_only=True` are removed from regular subagents and self forks, including SDK Toolsets contributed or wrapped by inherited capabilities and sync or async dynamic Toolset factory results resolved per run or per step, even under full inheritance or explicit selection; SDK Toolset listing and calling also enforce the boundary regardless of `skip_unavailable`, opaque composites, or stale proxy caches
+- **No tools specified**: Subagent inherits all parent tools except main-agent-only tools and is always available
 
 ### Auto-Inherit Tools
 

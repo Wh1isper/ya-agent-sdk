@@ -123,7 +123,7 @@ def _is_subagent_available(
     """Check if a subagent is available based on its required tools."""
     if entry.required_tools is None:
         return True
-    return all(parent_toolset.is_tool_available(name, ctx) for name in entry.required_tools)
+    return all(parent_toolset.is_tool_available_to_subagent(name, ctx) for name in entry.required_tools)
 
 
 def _is_self_fork_available(ctx: RunContext[AgentContext]) -> bool:
