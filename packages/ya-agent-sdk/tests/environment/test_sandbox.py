@@ -381,12 +381,32 @@ async def test_docker_shell_send_signal_targets_remote_group(
 
     handle = await shell._create_process("sleep 10")
     assert handle.send_signal is not None
-    await handle.send_signal(signal.SIGCONT)
+    await handle.send_signal(getattr(signal, "SIGCONT", 18))
 
     pidfile = create_process.await_args.args[-3]
     signal_container_exec.assert_awaited_once_with(pidfile, ("1234", "5678"), "SIGCONT")
     process.terminate.assert_not_called()
     process.kill.assert_not_called()
+
+
+async def test_docker_shell_send_signal_uses_linux_numbers_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows host signal aliases must not shadow remote Linux signal numbers."""
+    shell = DockerShell(container_id="test123")
+    process, create_process = _mock_docker_exec_process(monkeypatch)
+    process.returncode = None
+    monkeypatch.setattr(shell, "_wait_for_container_exec_registration", AsyncMock())
+    signal_container_exec = AsyncMock()
+    monkeypatch.setattr(shell, "_signal_container_exec", signal_container_exec)
+    monkeypatch.setattr(sandbox_module.os, "name", "nt")
+
+    handle = await shell._create_process("sleep 10")
+    assert handle.send_signal is not None
+    await handle.send_signal(1)
+
+    pidfile = create_process.await_args.args[-3]
+    signal_container_exec.assert_awaited_once_with(pidfile, ("1234", "5678"), "SIGHUP")
 
 
 async def test_docker_shell_send_sigkill_uses_verified_termination(
@@ -404,7 +424,7 @@ async def test_docker_shell_send_sigkill_uses_verified_termination(
 
     handle = await shell._create_process("sleep 10")
     assert handle.send_signal is not None
-    await handle.send_signal(signal.SIGKILL)
+    await handle.send_signal(getattr(signal, "SIGKILL", 9))
 
     pidfile = create_process.await_args.args[-3]
     terminate_container_exec.assert_awaited_once_with(pidfile, ("1234", "5678"))
@@ -421,7 +441,7 @@ async def test_docker_shell_rejects_unsupported_signal(monkeypatch: pytest.Monke
     handle = await shell._create_process("sleep 10")
     assert handle.send_signal is not None
     with pytest.raises(ValueError, match="Unsupported Docker exec signal"):
-        await handle.send_signal(signal.SIGALRM)
+        await handle.send_signal(getattr(signal, "SIGALRM", 14))
 
 
 async def test_docker_shell_unregistered_abort_does_not_trust_marker(

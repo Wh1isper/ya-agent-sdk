@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import signal
 import subprocess
 import tempfile
@@ -338,6 +339,17 @@ _DOCKER_SUPPORTED_SIGNALS = frozenset({
     "SIGUSR1",
     "SIGUSR2",
 })
+_DOCKER_LINUX_SIGNAL_NAMES_BY_NUMBER = {
+    1: "SIGHUP",
+    2: "SIGINT",
+    3: "SIGQUIT",
+    9: "SIGKILL",
+    10: "SIGUSR1",
+    12: "SIGUSR2",
+    15: "SIGTERM",
+    18: "SIGCONT",
+    19: "SIGSTOP",
+}
 
 
 class DockerShell(Shell):
@@ -763,10 +775,15 @@ class DockerShell(Shell):
             await self._stop_local_docker_exec(process)
 
         async def _send_signal(sig: int) -> None:
-            try:
-                signal_name = signal.Signals(sig).name
-            except ValueError as exc:
-                raise ValueError(f"Unsupported Docker exec signal number: {sig}") from exc
+            if os.name == "nt":
+                signal_name = _DOCKER_LINUX_SIGNAL_NAMES_BY_NUMBER.get(sig)
+                if signal_name is None:
+                    raise ValueError(f"Unsupported Docker exec signal number: {sig}")
+            else:
+                try:
+                    signal_name = signal.Signals(sig).name
+                except ValueError as exc:
+                    raise ValueError(f"Unsupported Docker exec signal number: {sig}") from exc
             if signal_name not in _DOCKER_SUPPORTED_SIGNALS:
                 raise ValueError(f"Unsupported Docker exec signal: {signal_name}")
             if signal_name == "SIGKILL":
