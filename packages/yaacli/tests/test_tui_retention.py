@@ -105,6 +105,107 @@ def test_streaming_markdown_is_rendered_before_finalization_and_throttled() -> N
     assert app._renderer.render_markdown.call_args.args[0] == "**bold** text"
 
 
+@pytest.mark.asyncio
+async def test_streaming_markdown_commits_coalesced_trailing_frame() -> None:
+    app = make_app()
+    app._stream_render_interval = 0.01
+    app._renderer.render_markdown = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda text, **_: f"rendered: {text}\n"
+    )
+
+    app._start_streaming_text("")
+    app._update_streaming_text("first")
+    app._update_streaming_text(" second")
+
+    assert app._output_lines == ["rendered: first"]
+    assert app._pending_stream_render_handle is not None
+
+    await asyncio.sleep(0.02)
+
+    assert app._output_lines == ["rendered: first second"]
+    assert app._pending_stream_render_handle is None
+    app._finalize_streaming_text()
+
+
+@pytest.mark.asyncio
+async def test_text_to_thinking_switch_flushes_text_and_commits_thinking_tail() -> None:
+    app = make_app()
+    app._stream_render_interval = 0.01
+    app._renderer.render_markdown = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda text, **_: f"text: {text}\n"
+    )
+    app._event_renderer.render_thinking = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda text, **_: f"thinking: {text}\n"
+    )
+
+    app._handle_display_events([
+        {"type": "TEXT_MESSAGE_START", "messageId": "text-1"},
+        {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": "first"},
+        {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": " tail"},
+        {"type": "REASONING_MESSAGE_START", "messageId": "thinking-1"},
+        {"type": "REASONING_MESSAGE_CHUNK", "messageId": "thinking-1", "delta": "next"},
+        {"type": "REASONING_MESSAGE_CHUNK", "messageId": "thinking-1", "delta": " thought"},
+    ])
+
+    assert app._output_lines == ["text: first tail", "thinking: next"]
+    assert app._pending_stream_render_handle is not None
+
+    await asyncio.sleep(0.02)
+
+    assert app._output_lines == ["text: first tail", "thinking: next thought"]
+    assert app._pending_stream_render_handle is None
+    app._finalize_streaming_thinking()
+
+
+@pytest.mark.asyncio
+async def test_display_reset_cancels_stale_stream_render() -> None:
+    app = make_app()
+    app._stream_render_interval = 0.01
+
+    app._start_streaming_text("")
+    app._update_streaming_text("first")
+    app._update_streaming_text(" stale")
+    assert app._pending_stream_render_handle is not None
+
+    app._restore_output_from_display_events([])
+    await asyncio.sleep(0.02)
+
+    assert app._output_lines == []
+    assert app._pending_stream_render_handle is None
+    assert app._streaming_text_buffer is None
+
+
+@pytest.mark.asyncio
+async def test_tool_boundary_flushes_text_and_cancels_trailing_frame() -> None:
+    app = make_app()
+    app._stream_render_interval = 60.0
+
+    app._handle_display_events([
+        {"type": "TEXT_MESSAGE_START", "messageId": "text-1"},
+        {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": "complete"},
+        {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": " sentence"},
+    ])
+
+    assert app._pending_stream_render_handle is not None
+    assert "sentence" not in app._output_lines[0]
+
+    app._handle_display_events([
+        {
+            "type": "TOOL_CALL_START",
+            "toolCallId": "tool-1",
+            "toolCallName": "view",
+        }
+    ])
+
+    assert "complete sentence" in app._output_lines[0]
+    assert "Calling:" in app._output_lines[1]
+    assert "view" in app._output_lines[1]
+    assert app._pending_stream_render_handle is None
+
+    await asyncio.sleep(0)
+    assert len(app._output_lines) == 2
+
+
 def test_streaming_ui_retains_only_bounded_raw_tail() -> None:
     app = make_app()
     app._max_stream_render_bytes = 4096
