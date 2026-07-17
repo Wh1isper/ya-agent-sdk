@@ -181,6 +181,7 @@ class ClawSettings(BaseSettings):
     default_profile: str = "default"
     agent_stream_resume_on_error: bool = True
     agent_stream_resume_max_attempts: int = 3
+    agent_stream_transport_resume_max_attempts: int = 20
     agent_stream_resume_prompt: str = (
         "The previous streaming model request failed before the agent finished. "
         "Continue the task from the available conversation history. Avoid repeating completed work."

@@ -7,6 +7,7 @@ Skills are markdown-based instruction files that provide specialized guidance fo
 - **Markdown Configuration**: Define skills using `SKILL.md` files with YAML frontmatter
 - **Progressive Loading**: Inject metadata first, inspect candidate `SKILL.md` files on demand, and activate only direct matches
 - **Change Detection**: Refresh frontmatter whenever toolset instructions are prepared
+- **Host Catalog**: Publish the priority-resolved metadata through `AgentContext.available_skills`
 - **Virtual/Remote Filesystem Support**: Uses `FileOperator` paths and async methods instead of host-only path access
 
 ```mermaid
@@ -47,6 +48,33 @@ async with create_agent(
     # Skills from all allowed_paths/skills/ directories are available
     result = await runtime.agent.run("Help me build an AI agent", deps=runtime.ctx)
 ```
+
+## Host-Facing Skill Catalog
+
+After each scan, `SkillToolset` publishes the effective, priority-resolved catalog to `AgentContext.available_skills`. Each `AvailableSkill` contains `name`, `description`, and the agent-facing `path` to the skill directory. The mapping is suitable for UI completion and explicit skill selection without reimplementing discovery or override rules.
+
+```python
+from ya_agent_sdk.context import AvailableSkill
+
+for name, skill in runtime.ctx.available_skills.items():
+    assert isinstance(skill, AvailableSkill)
+    print(name, skill.description, skill.path)
+```
+
+A normal model request refreshes the catalog through `SkillToolset.get_instructions()`. Hosts that need the catalog before the first request can keep the configured toolset instance and scan explicitly after entering the runtime:
+
+```python
+skill_toolset = SkillToolset()
+runtime = create_agent("anthropic:claude-sonnet-4", toolsets=[skill_toolset])
+
+async with runtime:
+    await skill_toolset.refresh_context(runtime.ctx)
+    skill_names = sorted(runtime.ctx.available_skills)
+```
+
+`refresh_context()` uses the active `FileOperator` and publishes the same effective catalog, but it does not invoke `pre_scan_hook` because no full Pydantic AI `RunContext` exists yet. A later model-request scan still invokes the hook normally. A host that classifies explicit skill syntax, such as `/skill-name`, should await `refresh_context()` immediately before classification so newly added, removed, or overridden skills cannot race the subsequent model request.
+
+The catalog is runtime-only and excluded from `ResumableState`. Restored runtimes rescan their active environment instead of persisting stale paths or metadata.
 
 ## Skill File Format
 
@@ -382,12 +410,30 @@ class SkillToolset(BaseToolset[AgentContext]):
     def id(self) -> str | None:
         """Return the toolset ID."""
 
+    async def refresh_context(
+        self,
+        ctx: AgentContext,
+    ) -> dict[str, SkillConfig]:
+        """Rescan and publish the effective host-facing catalog before a model request."""
+
     async def get_instructions(
         self,
         ctx: RunContext[AgentContext],
     ) -> list[InstructionPart] | None:
-        """Get dynamic skill instructions for the next model request."""
+        """Refresh the catalog and get dynamic instructions for the next model request."""
 ```
+
+### AvailableSkill
+
+```python
+@dataclass(frozen=True)
+class AvailableSkill:
+    name: str
+    description: str
+    path: str
+```
+
+The effective instances are stored in `AgentContext.available_skills: dict[str, AvailableSkill]` after path-priority resolution.
 
 ### SkillConfig
 

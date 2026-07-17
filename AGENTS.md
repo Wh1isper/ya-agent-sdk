@@ -49,7 +49,10 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - changes here should keep examples, skills, and package docs aligned
 - OAuth-backed model strings use `oauth@provider:model`; Codex currently uses `oauth@codex:gpt-5.5`, uses the `gpt5_350k` model config for its subscription context window, and receives session/thread headers from `AgentContext.get_model_extra_headers()`
 - Generic OpenAI Responses WebSocket transport lives in `ya-agent-sdk` under `ya_agent_sdk.agents.models.websocket`; aliases `openai-responses-ws:<model>` and `openai-responses-rs:<model>` are SDK core model strings and use `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` for `auto`/`websocket`/`http`
+- `stream_agent` separates transient model HTTP/WebSocket recovery from non-transport execution recovery; `stream_transport_resume_max_attempts` uses an independent budget so mid-stream disconnects such as incomplete chunked reads do not consume `stream_resume_max_attempts`
 - Skill routing is two-stage: inspect plausible candidates with high recall, then activate only direct scope matches; inspected candidates are non-binding, activated skills are mandatory within scope, and compaction carries forward only activated skills still relevant to unfinished work
+- `SkillToolset` publishes its priority-resolved runtime catalog through `AgentContext.available_skills`; hosts should call `refresh_context()` immediately before classifying explicit skill syntax, and the catalog is not persisted in `ResumableState`
+- Structured `ask_user_question` is an opt-in, main-agent-only SDK interaction tool based on `CallDeferred`; it is not part of the SDK default tool surface and requires a host that can return matching `DeferredToolResults.calls`
 
 ### `packages/ya-agent-stream-protocol`
 
@@ -75,6 +78,9 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 
 - TUI reference implementation built on top of `ya-agent-sdk`
 - runtime-facing CLI behavior belongs here
+- interactive YAACLI enables `ask_user_question` by default through `tools.enable_user_input`, which can be disabled in `tools.toml`; headless mode does not expose the tool
+- leading catalog-matched `/skill-name` tokens explicitly select one or more skills for an idle prompt; YAACLI refreshes the catalog before classification, and existing slash commands take precedence on first-token conflicts
+- `/new`, `/load`, and `/session` retain the reusable runtime environment and shell backend but terminate and discard all old-session background subagent work, foreground/background shell execution, buffers, retained results, and wakeups; shell-owned shielded process creation prevents caller cancellation from losing an eventual handle, inherited shell-generation leases block cancellation-resistant old tasks and child tasks, LocalShell readiness-gates its supported signals, keeps a stable POSIX group guardian alive until residual members are killed, and never signals a reaped leader's reusable numeric PGID, DockerShell binds PID/starttime identity and ACK to the exact exec stderr/stdin transport before user code starts and verifies in-container exec-group termination without trusting mutable markers or local CLI exit, custom Shell classes are runtime-forbidden from overriding final `execute()`, and a failed or unconfirmed process kill retains its execution handle and aborts the session commit until retry succeeds
 
 ### `packages/ya-claw`
 

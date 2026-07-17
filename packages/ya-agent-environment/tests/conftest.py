@@ -188,7 +188,7 @@ class MockShell(Shell):
     def __init__(self) -> None:
         super().__init__(default_cwd=Path("/tmp/mock"))
 
-    async def execute(
+    async def _simulate_execute(
         self,
         command: str,
         *,
@@ -212,7 +212,7 @@ class MockShell(Shell):
         stderr_stream = asyncio.StreamReader()
 
         async def _execute() -> int:
-            exit_code, stdout, stderr = await self.execute(command, timeout=None, env=env, cwd=cwd)
+            exit_code, stdout, stderr = await self._simulate_execute(command, timeout=None, env=env, cwd=cwd)
             if stdout:
                 stdout_stream.feed_data(stdout.encode("utf-8"))
             stdout_stream.feed_eof()

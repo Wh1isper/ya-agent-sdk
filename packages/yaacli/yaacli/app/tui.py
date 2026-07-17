@@ -24,6 +24,7 @@ import contextlib
 import difflib
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -40,7 +41,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit import Application
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, HSplit, Layout, Window
@@ -48,6 +49,7 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import TextArea
 from pydantic import BaseModel
 from pydantic_ai import (
@@ -83,6 +85,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRun
 from rich.table import Table
 from rich.text import Text
+from ya_agent_environment import ShellBackgroundResetError
 from ya_agent_sdk.agents.main import AgentRuntime, AgentStreamer, stream_agent
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import (
@@ -116,6 +119,16 @@ from ya_agent_sdk.events import (
     UsageSnapshotEvent,
 )
 from ya_agent_sdk.presets import resolve_model_settings
+from ya_agent_sdk.toolsets.core.interaction import (
+    ASK_USER_QUESTION_KIND,
+    AskUserQuestionTool,
+    UserQuestion,
+    UserQuestionAnswers,
+    format_user_question_answers,
+    parse_ask_user_question_args,
+    parse_user_question_answer,
+)
+from ya_agent_sdk.toolsets.skills import SHARED_SKILLS_DIR_NAME, SkillToolset
 from ya_agent_sdk.utils import get_latest_request_usage
 
 # Import state management from app.state.
@@ -123,7 +136,14 @@ from ya_agent_stream_protocol.agui import AguiReplayConfig, is_subagent_event, v
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
-from yaacli.app.commands import BUILTIN_COMMAND_HELP, BUILTIN_COMMANDS, BUSY_CONTROL_COMMANDS, SlashCommandCompleter
+from yaacli.app.commands import (
+    BUILTIN_COMMAND_HELP,
+    BUILTIN_COMMANDS,
+    BUSY_CONTROL_COMMANDS,
+    SlashCommandCompleter,
+    format_skill_invocation,
+    parse_skill_invocation,
+)
 from yaacli.app.state import TUIPhase, TUIStateMachine
 from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, BackgroundTaskInfo, BackgroundTaskResult
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
@@ -361,6 +381,18 @@ def _get_elapsed_seconds(started_at: datetime) -> float:
     return (datetime.now(UTC) - started_at.astimezone(UTC)).total_seconds()
 
 
+def _format_elapsed_duration(seconds: float) -> str:
+    """Format elapsed seconds as compact seconds, minutes, or hours."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {remaining_seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {remaining_seconds:02d}s"
+    return f"{remaining_seconds}s"
+
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -430,6 +462,7 @@ class TUIApp:
     _runtime: AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment] | None = field(
         default=None, init=False
     )
+    _skill_toolset: SkillToolset | None = field(default=None, init=False, repr=False)
     _oauth_refresh_supervisor: OAuthRefreshSupervisor | None = field(default=None, init=False, repr=False)
 
     # UI components
@@ -563,7 +596,6 @@ class TUIApp:
     _pending_bus_check_needed: bool = field(default=False, init=False)
     _background_results_ready: bool = field(default=False, init=False)
     _session_clear_in_progress: bool = field(default=False, init=False)
-    _background_completion_during_clear: bool = field(default=False, init=False)
 
     # Deferred screen recovery scheduling
     _screen_recovery_scheduled: bool = field(default=False, init=False)
@@ -809,15 +841,20 @@ class TUIApp:
 
         self._active_model_profile = get_startup_model_profile(self.config, self.config_manager.config_dir)
 
-        # Create runtime
+        # Create runtime and preload the same effective skill catalog used by
+        # model instructions so slash completion works before the first turn.
+        self._skill_toolset = SkillToolset(toolset_id="skills", extra_dir_names=[SHARED_SKILLS_DIR_NAME])
         self._runtime = create_tui_runtime(
             config=self.config,
             mcp_config=mcp_config,
             working_dir=self.working_dir,
             config_dir=self.config_manager.config_dir,
             model_profile=self._active_model_profile,
+            enable_user_input=self.config.tools.enable_user_input,
+            skill_toolset=self._skill_toolset,
         )
         await self._exit_stack.enter_async_context(self._runtime)
+        await self._skill_toolset.refresh_context(self._runtime.ctx)
 
         # Register application-level injected context tags for compact stripping
         self._runtime.ctx.injected_context_tags = (
@@ -1220,8 +1257,9 @@ class TUIApp:
         if self._app and self._app.output:
             terminal_size = self._app.output.get_size()
             task_rows = self._get_task_height() if self._get_tasks() else 0
+            status_rows = self._get_status_height()
             input_rows = 3 if terminal_size.rows < 28 else 5
-            return max(3, terminal_size.rows - task_rows - input_rows - 2)
+            return max(3, terminal_size.rows - task_rows - status_rows - input_rows - 1)
         return 40
 
     def _scroll_to_bottom(self) -> None:
@@ -1730,8 +1768,8 @@ class TUIApp:
     # Status Bar
     # =========================================================================
 
-    def _get_status_text(self) -> list[tuple[str, str]]:
-        """Render one priority-ordered status line that remains useful when clipped."""
+    def _get_status_text(self) -> StyleAndTextTuples:
+        """Render priority-ordered status content that wraps on narrow terminals."""
         if self._shutdown_status:
             return [("class:status-bar.warning", " SHUTDOWN "), ("class:status-bar", self._shutdown_status)]
 
@@ -1749,7 +1787,7 @@ class TUIApp:
             TUIPhase.CANCELLING: "Cancelling",
             TUIPhase.BACKGROUND_RESULT_READY: "Background ready",
         }
-        parts: list[tuple[str, str]] = [
+        parts: StyleAndTextTuples = [
             (
                 "class:status-bar.warning"
                 if self.phase in {TUIPhase.AWAITING_APPROVAL, TUIPhase.CANCELLING}
@@ -1775,7 +1813,12 @@ class TUIApp:
 
         if self.phase == TUIPhase.AWAITING_APPROVAL:
             progress = f"{self._current_approval_index + 1}/{len(self._pending_approvals)}"
-            action = "result | /deny | view" if self._approval_kind == "call" else "y | n | view"
+            if self._approval_kind == "call":
+                action = "result | /deny | view"
+            elif self._approval_kind == "question":
+                action = "number(s) | text"
+            else:
+                action = "y | n | view"
             parts.append(("class:status-bar", f" · {progress} · {action} · Ctrl+C cancel"))
         elif self.phase == TUIPhase.SHELL_RUNNING and self._direct_shell_command:
             command = self._direct_shell_command if not compact else self._direct_shell_command[:24]
@@ -1801,14 +1844,46 @@ class TUIApp:
                 parts.append(("class:status-bar", f" · ctx {context_pct}"))
         if self.config.display.show_elapsed_time and self._is_foreground_busy():
             started_at = self._run_started_at if self._run_started_at is not None else self._phase_started_at
-            parts.append(("class:status-bar", f" · {time.monotonic() - started_at:.0f}s"))
+            elapsed = _format_elapsed_duration(time.monotonic() - started_at)
+            parts.append(("class:status-bar", f" · {elapsed}"))
         return parts
+
+    def _get_status_height(self) -> int:
+        """Return cell-aware wrapped rows for the current status fragments."""
+        width = max(1, self._get_terminal_width())
+        rows = 1
+        column = 0
+        for fragment in self._get_status_text():
+            text = fragment[1]
+            for character in text:
+                if character == "\n":
+                    rows += 1
+                    column = 0
+                    continue
+                cell_width = max(0, get_cwidth(character))
+                if cell_width == 0:
+                    continue
+                if column > 0 and column + cell_width > width:
+                    rows += 1
+                    column = 0
+                if cell_width > width:
+                    # A wide glyph is indivisible; account for one occupied row
+                    # even when the reported terminal width is pathologically small.
+                    column = width
+                else:
+                    column += cell_width
+        return rows
 
     def _get_prompt(self) -> str:
         """Expose the current compose semantics directly in the prompt."""
         mouse_mode = "scroll" if self._mouse_enabled else "select"
         if self.phase == TUIPhase.AWAITING_APPROVAL:
-            action = "result" if self._approval_kind == "call" else "approve"
+            if self._approval_kind == "call":
+                action = "result"
+            elif self._approval_kind == "question":
+                action = "answer"
+            else:
+                action = "approve"
         elif self._accepts_steering():
             action = "steer"
         elif self.phase == TUIPhase.SHELL_RUNNING:
@@ -2075,8 +2150,7 @@ class TUIApp:
             return
 
         if self._session_clear_in_progress:
-            self._background_completion_during_clear = True
-            logger.debug("Deferring background completion during session clear: %s", agent_id)
+            logger.debug("Discarding background completion during session clear: %s", agent_id)
             return
 
         shell_kind = monitor.pending_shell_notification_kind(agent_id) if monitor is not None else None
@@ -2504,6 +2578,7 @@ class TUIApp:
             post_node_hook=emit_context_update,
             resume_on_error=self.config.general.agent_stream_resume_on_error,
             resume_max_attempts=self.config.general.agent_stream_resume_max_attempts,
+            transport_resume_max_attempts=self.config.general.agent_stream_transport_resume_max_attempts,
             resume_prompt=self.config.general.agent_stream_resume_prompt,
         ) as stream:
             try:
@@ -2602,11 +2677,25 @@ class TUIApp:
             current_index += 1
 
         for tool_call in deferred.calls:
-            self._approval_kind = "call"
             self._current_approval_index = current_index
             self._current_deferred_request = tool_call
             self._current_deferred_metadata = deferred.metadata.get(tool_call.tool_call_id)
             self._approval_expanded = False
+
+            metadata_kind = (
+                self._current_deferred_metadata.get("kind")
+                if isinstance(self._current_deferred_metadata, dict)
+                else None
+            )
+            if tool_call.tool_name == AskUserQuestionTool.name or metadata_kind == ASK_USER_QUESTION_KIND:
+                self._approval_kind = "question"
+                answers = await self._collect_user_question_answers(tool_call)
+                results.calls[tool_call.tool_call_id] = format_user_question_answers(answers)
+                self._append_output(f"  [Answered: {tool_call.tool_name}]")
+                current_index += 1
+                continue
+
+            self._approval_kind = "call"
             self._display_approval_panel(
                 tool_call,
                 current_index + 1,
@@ -2646,6 +2735,55 @@ class TUIApp:
         reason = self._approval_reason
         self._approval_event = None
         return approved, reason
+
+    async def _collect_user_question_answers(self, tool_call: ToolCallPart) -> UserQuestionAnswers:
+        """Render and collect all questions from one structured deferred call."""
+        request = parse_ask_user_question_args(tool_call.args)
+        answers: dict[str, str | list[str]] = {}
+        total = len(request.questions)
+
+        for index, question in enumerate(request.questions, start=1):
+            while True:
+                self._display_user_question(question, index=index, total=total)
+                provided, response = await self._wait_for_approval_input()
+                if not provided or not response:
+                    continue
+                try:
+                    answers[question.question] = parse_user_question_answer(question, response)
+                    break
+                except ValueError as error:
+                    self._append_system_output(str(error))
+
+        return UserQuestionAnswers(questions=request.questions, answers=answers)
+
+    def _display_user_question(self, question: UserQuestion, *, index: int, total: int) -> None:
+        """Display one structured clarifying question and its options."""
+        from rich.console import Group
+        from rich.panel import Panel
+
+        content: list[Any] = [
+            Text(f"{question.header}: {question.question}", style="bold cyan"),
+            Text(""),
+        ]
+        for option_index, option in enumerate(question.options, start=1):
+            line = Text()
+            line.append(f"{option_index}. ", style="bold yellow")
+            line.append(option.label, style="bold")
+            line.append(f" — {option.description}", style="dim")
+            content.append(line)
+
+        selection_hint = (
+            "numbers separated by commas, or free text" if question.multi_select else "a number, or free text"
+        )
+        panel = Panel(
+            Group(*content),
+            title=f"[yellow]Clarifying Question {index}/{total}[/yellow]",
+            subtitle=f"[dim]Enter {selection_hint} | Ctrl+C: Cancel[/dim]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+        rendered = self._renderer.render(panel, width=self._get_terminal_width())
+        self._append_output(rendered.rstrip())
 
     def _format_args_for_display(self, args: object, max_str_len: int = 500, max_lines: int = 30) -> str:
         """Format tool arguments for display with smart truncation.
@@ -3313,6 +3451,49 @@ class TUIApp:
             task.add_done_callback(self._release_foreground_command)
         self._track_managed_task(task)
 
+    def _schedule_skill_or_command(self, text: str) -> None:
+        """Refresh skill discovery before classifying an unknown slash prefix."""
+        self._set_phase(TUIPhase.COMMAND_RUNNING)
+        task = asyncio.create_task(self._handle_skill_or_command(text))
+        self._foreground_command_task = task
+        task.add_done_callback(self._release_foreground_command)
+        self._track_managed_task(task)
+
+    async def _handle_skill_or_command(self, text: str) -> None:
+        """Dispatch a catalog-grounded skill invocation or an unknown command."""
+        try:
+            if self._skill_toolset is not None and self._runtime is not None:
+                try:
+                    await self._skill_toolset.refresh_context(self._runtime.ctx)
+                except Exception:
+                    logger.exception("Failed to refresh skill catalog before slash dispatch")
+
+            available_skills = self._available_skills()
+            skill_invocation = parse_skill_invocation(
+                text,
+                available_skills,
+                command_names=self._command_words(),
+            )
+            if skill_invocation is None:
+                self._detach_pending_attachment_placeholders()
+                await self._handle_command_inner(text)
+                return
+
+            attachments = self._consume_pending_attachments()
+            self._append_user_input(text, attachments)
+            agent_prompt = format_skill_invocation(skill_invocation, available_skills)
+            self._launch_agent(agent_prompt, attachments)
+        except Exception as error:
+            logger.exception("Slash dispatch failed: %s", text)
+            self._append_error_output(error)
+        finally:
+            current_task = asyncio.current_task()
+            if current_task is not None:
+                self._release_foreground_command(current_task)
+            self._scroll_to_bottom()
+            if self._app:
+                self._app.invalidate()
+
     def _submit_input(self, text: str, input_area: TextArea) -> None:
         """Submit input according to the explicit interaction phase."""
         if self._session_clear_in_progress:
@@ -3355,9 +3536,16 @@ class TUIApp:
 
         if semantic_text.startswith("/"):
             self._add_prompt_history(semantic_text)
-            self._detach_pending_attachment_placeholders()
             input_area.buffer.reset()
-            self._schedule_command(semantic_text)
+            command_name = semantic_text.split(maxsplit=1)[0].lower()
+            if self._is_known_slash_command(command_name):
+                self._detach_pending_attachment_placeholders()
+                self._schedule_command(semantic_text)
+            else:
+                # Skill directories can change while the TUI is running. Claim
+                # foreground ownership now, then refresh before deciding whether
+                # this is an explicit skill selection or an unknown command.
+                self._schedule_skill_or_command(semantic_text)
             return
 
         if semantic_text.startswith("!"):
@@ -3532,6 +3720,15 @@ class TUIApp:
                     self._approval_event.set()
                     return
                 if self._route_busy_control_input(semantic_text, input_area):
+                    return
+                if self._approval_kind == "question":
+                    if not semantic_text:
+                        self._append_system_output("Enter an option number or a free-text answer.")
+                        return
+                    self._approval_result = True
+                    self._approval_reason = semantic_text
+                    input_area.buffer.reset()
+                    self._approval_event.set()
                     return
                 if lowered in {"view", "v"}:
                     input_area.buffer.reset()
@@ -3718,9 +3915,19 @@ class TUIApp:
                 return
             text_before_cursor = buffer.document.text_before_cursor
             session_fragment = text_before_cursor.removeprefix("/session ")
+            skill_prefix, skill_separator, skill_fragment = text_before_cursor.rpartition(" ")
+            selected_skill_tokens = skill_prefix.split()
+            skill_words = set(self._skill_words())
+            skill_completion_context = (
+                bool(skill_separator)
+                and skill_fragment.startswith("/")
+                and bool(selected_skill_tokens)
+                and all(token in skill_words for token in selected_skill_tokens)
+            )
             slash_completion_context = text_before_cursor.startswith("/") and (
                 " " not in text_before_cursor
                 or (text_before_cursor.startswith("/session ") and " " not in session_fragment)
+                or skill_completion_context
             )
             if slash_completion_context:
                 buffer.start_completion(select_first=True)
@@ -3769,6 +3976,18 @@ class TUIApp:
         custom = self.config.get_commands()
         return [f"/{name}" for name in sorted(BUILTIN_COMMANDS | custom.keys())]
 
+    def _available_skills(self) -> dict[str, Any]:
+        """Return the current SDK skill catalog when the runtime is ready."""
+        if self._runtime is None:
+            return {}
+        return self._runtime.ctx.available_skills
+
+    def _skill_words(self) -> list[str]:
+        """Return slash-safe names from the effective SDK skill catalog."""
+        return [
+            f"/{name}" for name in sorted(self._available_skills()) if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
+        ]
+
     def _session_completion_ids(self) -> list[str]:
         """Return current session IDs for contextual /session completion."""
         try:
@@ -3798,13 +4017,19 @@ class TUIApp:
         cancelled: asyncio.CancelledError | None = None
         try:
             await self._clear_session()
+        except ShellBackgroundResetError as exc:
+            # Process ownership is unresolved, so keep the durable identity and
+            # conversation context that were active before /new.
+            self._session_id = old_session_id
+            self._set_phase(TUIPhase.IDLE)
+            self._append_system_output(f"New session was not started: {_safe_exception_str(exc)}")
+            return
         except asyncio.CancelledError as exc:
             cancelled = exc
 
         self._display_adapter = None
         self._set_phase(TUIPhase.IDLE)
         self._append_system_output(f"New session {new_session_id} started (previous: {old_session_id}).")
-        self._resume_deferred_background_completion()
         if cancelled is not None:
             raise cancelled
 
@@ -4398,62 +4623,53 @@ class TUIApp:
         self._last_run = None
         self._current_context_tokens = 0
 
-    def _resume_deferred_background_completion(self) -> None:
-        """Deliver shell notifications retained across the conversation reset."""
-        monitor = self._get_background_monitor()
-        has_retained_messages = monitor is not None and monitor.has_pending_messages
-        if not self._background_completion_during_clear and not has_retained_messages:
-            return
-        self._background_completion_during_clear = False
-        if self._state != TUIState.IDLE or not self._deliver_background_messages():
-            return
-
-        self._background_results_ready = True
-        self._set_phase(TUIPhase.BACKGROUND_RESULT_READY)
-        self._append_system_output("Background results are ready. They will be integrated with your next prompt.")
-
     async def _clear_session(self) -> None:
         """Start a clean conversation while preserving runtime configuration and usage."""
         if self._session_clear_in_progress:
             return
         self._session_clear_in_progress = True
         monitor = self._get_background_monitor()
+        commit_fresh_context = True
         try:
             if monitor is not None:
                 # Establish the isolation boundary before any operation that
                 # can fail or yield to an old background task.
-                monitor.begin_subagent_reset()
+                monitor.begin_session_reset()
                 try:
                     self._drain_background_usage(monitor)
                 except Exception:
                     logger.exception("Failed to preserve background usage before session clear")
                 try:
-                    await monitor.reset_subagent_state()
+                    await monitor.reset_session_state()
+                except ShellBackgroundResetError:
+                    # A live process may still exist. Do not commit a new
+                    # conversation until its retained handle can be killed.
+                    commit_fresh_context = False
+                    raise
                 except Exception:
-                    logger.exception("Failed to fully reset background subagent state")
+                    logger.exception("Failed to fully reset background session state")
                 try:
                     self._drain_background_usage(monitor)
                 except Exception:
                     logger.exception("Failed to preserve final background usage during session clear")
         finally:
             try:
-                # Conversation isolation must complete even if usage accounting
-                # or subagent cancellation fails.
                 if monitor is not None:
-                    monitor.finish_subagent_reset()
-                self._reset_tui_session_state()
-                if self._runtime is not None:
-                    ctx = self._runtime.ctx
-                    if isinstance(ctx, TUIContext):
-                        fresh_ctx = ctx.prepare_new_run()
-                        self._reset_context_session_state(fresh_ctx)
-                        self._runtime.ctx = fresh_ctx
-                        if monitor is not None:
-                            monitor.set_message_bus(fresh_ctx.message_bus, fresh_ctx.agent_id)
+                    monitor.finish_session_reset()
+                if commit_fresh_context:
+                    # Non-shell cleanup errors roll forward after tombstoning;
+                    # shell termination failure is the only fatal boundary.
+                    self._reset_tui_session_state()
+                    if self._runtime is not None:
+                        ctx = self._runtime.ctx
+                        if isinstance(ctx, TUIContext):
+                            fresh_ctx = ctx.prepare_new_run()
+                            self._reset_context_session_state(fresh_ctx)
+                            self._runtime.ctx = fresh_ctx
+                            if monitor is not None:
+                                monitor.set_message_bus(fresh_ctx.message_bus, fresh_ctx.agent_id)
             finally:
                 self._session_clear_in_progress = False
-
-        self._resume_deferred_background_completion()
 
     def _show_cost(self) -> None:
         """Show token usage summary for the current session."""
@@ -4677,18 +4893,22 @@ class TUIApp:
 
         monitor = self._get_background_monitor()
         cancelled: asyncio.CancelledError | None = None
+        shell_cleanup_error: ShellBackgroundResetError | None = None
         self._session_clear_in_progress = True
         try:
             if monitor is not None:
-                # Tombstone old subagents before the first await. Once this
-                # boundary is crossed, the valid candidate always rolls forward.
-                monitor.begin_subagent_reset()
+                # Tombstone old subagents and revoke their inherited shell lease
+                # before the first await.
+                monitor.begin_session_reset()
                 try:
                     self._drain_background_usage(monitor)
                 except Exception:
                     logger.exception("Failed to preserve background usage before session switch")
                 try:
-                    await monitor.reset_subagent_state()
+                    await monitor.reset_session_state()
+                except ShellBackgroundResetError as exc:
+                    shell_cleanup_error = exc
+                    logger.exception("Shell process cleanup blocked session switch")
                 except asyncio.CancelledError as exc:
                     cancelled = exc
                     logger.debug("Session switch cancelled while resetting old subagents; committing isolated state")
@@ -4701,31 +4921,34 @@ class TUIApp:
         finally:
             try:
                 if monitor is not None:
-                    monitor.finish_subagent_reset()
+                    monitor.finish_session_reset()
 
-                # No await is permitted in this commit: observers see either
-                # the complete old session or the complete restored session.
-                committed_session_id = target_session_id or self._session_id
-                self._reset_tui_session_state()
-                self.runtime.ctx = candidate_ctx
-                if monitor is not None:
-                    monitor.set_message_bus(candidate_ctx.message_bus, candidate_ctx.agent_id)
-                self._message_history = history
-                self._display_replay = replacement_replay
-                self._session_id = committed_session_id
-                self._set_phase(TUIPhase.IDLE)
-                self._restore_output_from_display_events(replacement_replay.snapshot())
+                if shell_cleanup_error is None:
+                    # No await is permitted in this commit: observers see either
+                    # the complete old session or the complete restored session.
+                    committed_session_id = target_session_id or self._session_id
+                    self._reset_tui_session_state()
+                    self.runtime.ctx = candidate_ctx
+                    if monitor is not None:
+                        monitor.set_message_bus(candidate_ctx.message_bus, candidate_ctx.agent_id)
+                    self._message_history = history
+                    self._display_replay = replacement_replay
+                    self._session_id = committed_session_id
+                    self._set_phase(TUIPhase.IDLE)
+                    self._restore_output_from_display_events(replacement_replay.snapshot())
 
-                if restored_usage is not None:
-                    self._session_usage.set_run_snapshot(restored_usage)
-                    self._session_usage.commit_run_snapshot(restored_usage.run_id)
-                    self._session_usage.finalize_run_snapshots(restored_usage.run_id)
-                    # Avoid counting restored ledger entries again on the next run.
-                    candidate_ctx.usage_snapshot_entries.clear()
+                    if restored_usage is not None:
+                        self._session_usage.set_run_snapshot(restored_usage)
+                        self._session_usage.commit_run_snapshot(restored_usage.run_id)
+                        self._session_usage.finalize_run_snapshots(restored_usage.run_id)
+                        # Avoid counting restored ledger entries again on the next run.
+                        candidate_ctx.usage_snapshot_entries.clear()
             finally:
                 self._session_clear_in_progress = False
 
-        self._resume_deferred_background_completion()
+        if shell_cleanup_error is not None:
+            self._append_system_output(f"Session was not loaded: {_safe_exception_str(shell_cleanup_error)}")
+            return False
         if display_warning is not None:
             self._append_system_output(display_warning)
         self._append_system_output(f"Session loaded from {load_dir}")
@@ -5073,9 +5296,9 @@ class TUIApp:
         # Status bar
         status_bar = Window(
             content=FormattedTextControl(self._get_status_text),
-            height=1,
+            height=self._get_status_height,
             style="class:status-bar",
-            wrap_lines=False,
+            wrap_lines=True,
         )
 
         # Input area with mouse scroll support
@@ -5109,7 +5332,11 @@ class TUIApp:
             focusable=True,
             height=lambda: 3 if self._app and self._app.output.get_size().rows < 28 else 5,
             scrollbar=True,
-            completer=SlashCommandCompleter(self._command_words, self._session_completion_ids),
+            completer=SlashCommandCompleter(
+                self._command_words,
+                self._session_completion_ids,
+                self._skill_words,
+            ),
             complete_while_typing=True,
         )
 

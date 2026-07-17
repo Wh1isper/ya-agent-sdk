@@ -197,6 +197,8 @@ ctx.need_user_approve_tools = ["shell", "edit", "write"]
 
 When called, these tools raise `ApprovalRequired`. Implement `get_approval_metadata()` in your tool to provide context.
 
+The optional `ask_user_question` tool uses `CallDeferred` instead of approval control flow. It is not part of the SDK default tool surface because the host must collect structured answers and resume the run, and it is available only to the main agent. See [user-input.md](user-input.md) for registration and continuation details.
+
 > HITL flow details: `ya_agent_sdk/toolsets/core/base.py`
 
 ## Architecture
@@ -212,5 +214,6 @@ When called, these tools raise `ApprovalRequired`. Implement `get_approval_metad
 ## See Also
 
 - [context.md](context.md) - AgentContext configuration
+- [user-input.md](user-input.md) - structured deferred clarifying questions
 - [subagent.md](subagent.md) - Subagent system
 - [environment.md](environment.md) - Environment and resource management

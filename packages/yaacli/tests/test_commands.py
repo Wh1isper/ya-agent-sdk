@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
+from ya_agent_sdk.context import AvailableSkill
 from yaacli.app import (
     BUILTIN_COMMANDS,
     BUSY_CONTROL_COMMANDS,
@@ -14,7 +15,11 @@ from yaacli.app import (
     CommandRegistry,
     create_default_registry,
 )
-from yaacli.app.commands import SlashCommandCompleter
+from yaacli.app.commands import (
+    SlashCommandCompleter,
+    format_skill_invocation,
+    parse_skill_invocation,
+)
 
 # =============================================================================
 # Mock Context
@@ -344,3 +349,63 @@ def test_slash_command_completer_completes_session_ids_contextually() -> None:
 
     assert [item.text for item in completions] == ["abc123", "abc999"]
     assert all(item.start_position == -3 for item in completions)
+
+
+def test_parse_skill_invocation_supports_multiple_prefixes() -> None:
+    skills = {
+        "lark-cli": AvailableSkill(name="lark-cli", description="Lark", path="/skills/lark-cli"),
+        "agent-builder": AvailableSkill(
+            name="agent-builder",
+            description="Agents",
+            path="/skills/agent-builder",
+        ),
+    }
+
+    invocation = parse_skill_invocation(
+        "/lark-cli /agent-builder Build an agent",
+        skills,
+        command_names=["/help"],
+    )
+
+    assert invocation is not None
+    assert invocation.names == ("lark-cli", "agent-builder")
+    assert invocation.prompt == "Build an agent"
+    formatted = format_skill_invocation(invocation, skills)
+    assert '<skill name="lark-cli" path="/skills/lark-cli" />' in formatted
+    assert formatted.endswith("Build an agent")
+
+
+def test_parse_skill_invocation_preserves_command_precedence() -> None:
+    skills = {"help": AvailableSkill(name="help", description="Help", path="/skills/help")}
+
+    assert parse_skill_invocation("/help me", skills, command_names=["/help"]) is None
+
+
+def test_format_skill_invocation_escapes_catalog_values() -> None:
+    skills = {
+        'unsafe"name': AvailableSkill(
+            name='unsafe"name',
+            description="Unsafe",
+            path="/skills/a&b",
+        )
+    }
+    invocation = parse_skill_invocation('/unsafe"name task', skills)
+
+    assert invocation is not None
+    formatted = format_skill_invocation(invocation, skills)
+    assert 'name="unsafe&quot;name"' in formatted
+    assert 'path="/skills/a&amp;b"' in formatted
+
+
+def test_slash_command_completer_completes_multiple_skills() -> None:
+    completer = SlashCommandCompleter(
+        command_provider=lambda: ["/help"],
+        session_provider=lambda: [],
+        skill_provider=lambda: ["/agent-builder", "/lark-cli"],
+    )
+
+    first = list(completer.get_completions(Document("/la"), CompleteEvent()))
+    second = list(completer.get_completions(Document("/lark-cli /ag"), CompleteEvent()))
+
+    assert [(item.text, item.display_meta_text) for item in first] == [("/lark-cli", "skill")]
+    assert [(item.text, item.display_meta_text) for item in second] == [("/agent-builder", "skill")]

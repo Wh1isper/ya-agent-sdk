@@ -64,6 +64,7 @@ async def test_model_config_stream_resume_defaults() -> None:
     cfg = ModelConfig()
     assert cfg.stream_resume_on_error is False
     assert cfg.stream_resume_max_attempts == 3
+    assert cfg.stream_transport_resume_max_attempts == 20
     assert cfg.stream_resume_prompt is None
 
 
@@ -72,10 +73,12 @@ async def test_model_config_stream_resume_custom_values() -> None:
     cfg = ModelConfig(
         stream_resume_on_error=True,
         stream_resume_max_attempts=5,
+        stream_transport_resume_max_attempts=11,
         stream_resume_prompt="resume from checkpoint",
     )
     assert cfg.stream_resume_on_error is True
     assert cfg.stream_resume_max_attempts == 5
+    assert cfg.stream_transport_resume_max_attempts == 11
     assert cfg.stream_resume_prompt == "resume from checkpoint"
 
 

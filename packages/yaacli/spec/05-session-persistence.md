@@ -88,15 +88,18 @@ The runtime and environment are not rebuilt. The candidate preserves current mod
 
 ## Background Isolation Boundary
 
-After preparation succeeds, YAACLI establishes the old-conversation isolation boundary before the first `await`:
+After preparation succeeds, YAACLI establishes the old-session isolation boundary before the first `await`:
 
-1. `BackgroundMonitor.begin_subagent_reset()` tombstones and cancels old subagent tasks;
+1. `BackgroundMonitor.begin_session_reset()` revokes the inherited shell-session lease, tombstones and cancels old subagent tasks, drops old shell wakeups, and suppresses reset-time shell callbacks;
 2. background usage is drained;
-3. `reset_subagent_state()` performs bounded asynchronous cleanup;
-4. late old results remain discarded even if cleanup times out or fails; and
-5. shell-process monitoring is retained because it belongs to the environment, not the conversation.
+3. `reset_session_state()` asks the reusable shell backend to terminate every owned foreground and background execution and discard every background output buffer and retained terminal result, then performs the bounded subagent wait;
+4. old subagents and child tasks retain the revoked lease even if they ignore cancellation or outlive the bounded wait, so later shell access is rejected;
+5. late old subagent results remain discarded; and
+6. the monitor, environment, and shell backend remain available for new-session work, but old session work does not.
 
-Once the tombstone boundary has been crossed, cleanup failure rolls forward to the already validated candidate. Cancellation during reset also commits the isolated candidate and is then re-raised.
+Process creation itself is shell-owned and shielded from caller cancellation until it either fails or yields an `ExecutionHandle`; an eventual handle is then registered or terminated before cancellation propagates. Foreground `Shell.execute()` calls stay registered for their full lifetime, so reset can terminate commands already waiting in `communicate()` rather than merely cancelling the calling subagent.
+
+Non-shell cleanup failures roll forward after the tombstone boundary because old results are already isolated. Cancellation also commits the isolated candidate and is then re-raised, but only after process termination has completed successfully. If an execution handle's kill hook fails, `ShellBackgroundResetError` retains that handle for a later retry and blocks the state switch: `/load` and `/session` keep the active context and identity, while `/new` restores its previous durable session ID. A session transition must never silently commit while process ownership is unresolved.
 
 ## No-Await Commit
 
@@ -113,7 +116,7 @@ Observers therefore see either the complete old session or the complete restored
 
 `/load` preserves the current durable session ID. `/session` commits the resolved target session ID in the same block.
 
-`/new` publishes a fresh durable session ID before its first asynchronous cleanup boundary. If Ctrl+C cancels background cleanup after the old conversation is tombstoned, cleanup still commits the fresh context and the new ID remains authoritative; a later turn can never publish under the previous session ID. Once command ownership returns to idle, retained shell notifications are delivered to the fresh message bus and restore `BACKGROUND_RESULT_READY`.
+`/new` publishes a fresh durable session ID before its first asynchronous cleanup boundary. If Ctrl+C cancels background cleanup after the old conversation is tombstoned and process termination succeeds, cleanup still commits the fresh context and the new ID remains authoritative; a later turn can never publish under the previous session ID. A shell termination failure instead aborts the commit and restores the previous ID. Old shell notifications and terminal buffers are discarded rather than delivered to a fresh message bus.
 
 ## Runtime Policy
 
@@ -160,9 +163,11 @@ Tests must cover:
 - partial, malformed, missing-identity, and wrong-identity legacy rejection without file movement;
 - restore preparation failure preserving the old session;
 - candidate context and message-bus isolation;
-- background cleanup failure and cancellation roll-forward;
+- non-shell cleanup failure and cancellation roll-forward;
+- shell termination failure retaining a retry handle and blocking `/new`, `/load`, and `/session` commits;
 - `/new` cancellation preserving a fresh identity for the next save;
-- retained shell readiness after real `/new` command dispatch;
+- old subagents and inherited child tasks losing shell access after reset;
+- old shell readiness and terminal buffers being absent after real `/new` dispatch;
 - `/load` ID preservation and `/session` ID replacement;
 - configured shell environment baseline plus restored session overlays;
 - current approval policy preservation;

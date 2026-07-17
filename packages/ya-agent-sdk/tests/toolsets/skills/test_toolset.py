@@ -100,6 +100,20 @@ async def test_skill_toolset_get_instructions(mock_run_ctx_with_skills: MagicMoc
     assert "generic trigger keywords" in instruction_text
     assert "does not automatically activate related or referenced skills" in instruction_text
     assert "authoritative instructions" not in instruction_text
+    assert set(mock_run_ctx_with_skills.deps.available_skills) == {"global-skill", "project-skill"}
+    assert mock_run_ctx_with_skills.deps.available_skills["project-skill"].description == ("A project-specific skill.")
+
+
+async def test_skill_toolset_refresh_context_exposes_catalog_before_model_request(
+    env_with_skills: AgentContext,
+) -> None:
+    toolset = SkillToolset()
+
+    skills = await toolset.refresh_context(env_with_skills)
+
+    assert set(skills) == {"global-skill", "project-skill"}
+    assert env_with_skills.available_skills["global-skill"].name == "global-skill"
+    assert env_with_skills.available_skills["global-skill"].path.endswith("config/skills/global-skill")
 
 
 def test_skill_toolset_escapes_catalog_xml(tmp_path: Path) -> None:

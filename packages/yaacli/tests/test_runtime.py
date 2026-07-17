@@ -377,6 +377,22 @@ def test_create_tui_runtime_with_model_cfg_dict(tmp_path: Path) -> None:
     assert ModelCapability.vision in runtime.ctx.model_cfg.capabilities
 
 
+def test_create_tui_runtime_requires_explicit_user_input_support(tmp_path: Path) -> None:
+    config = YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4"))
+
+    default_runtime = create_tui_runtime(config=config, working_dir=tmp_path)
+    interactive_runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        enable_user_input=True,
+    )
+
+    assert default_runtime.core_toolset is not None
+    assert interactive_runtime.core_toolset is not None
+    assert "ask_user_question" not in default_runtime.core_toolset._tool_classes
+    assert "ask_user_question" in interactive_runtime.core_toolset._tool_classes
+
+
 def test_create_tui_runtime_can_disable_async_subagents(tmp_path: Path) -> None:
     config = YaacliConfig(
         general=GeneralConfig(model="openai-chat:gpt-4"),

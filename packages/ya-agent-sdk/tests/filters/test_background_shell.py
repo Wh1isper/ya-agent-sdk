@@ -35,9 +35,6 @@ class MockShell(Shell):
         self._mock_completed = completed or []
         self._mock_summary = summary
 
-    async def execute(self, command, *, timeout=None, env=None, cwd=None):
-        return (0, "", "")
-
     async def _create_process(self, command, *, env=None, cwd=None) -> ExecutionHandle:
         raise NotImplementedError("MockShell._create_process not used in filter tests")
 

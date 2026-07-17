@@ -13,6 +13,9 @@ from ya_agent_environment import (
     OutputBuffer,
     ReadyState,
     Shell,
+    ShellBackgroundResetError,
+    ShellSessionAccessError,
+    ShellTimeoutError,
 )
 from ya_agent_environment.shell import (
     _MAX_BUFFER_LINES,
@@ -30,7 +33,7 @@ class ConcreteShell(Shell):
     output into asyncio.StreamReaders as adapters.
     """
 
-    async def execute(
+    async def _simulate_execute(
         self,
         command: str,
         *,
@@ -74,7 +77,7 @@ class ConcreteShell(Shell):
         stderr_stream = asyncio.StreamReader()
 
         async def _execute() -> int:
-            exit_code, stdout, stderr = await self.execute(command, timeout=None, env=env, cwd=cwd)
+            exit_code, stdout, stderr = await self._simulate_execute(command, timeout=None, env=env, cwd=cwd)
             if stdout:
                 stdout_stream.feed_data(stdout.encode("utf-8"))
             stdout_stream.feed_eof()
@@ -141,11 +144,114 @@ async def _wait_for_completed_results(
         await asyncio.sleep(0.01)
 
 
+class RetryKillShell(Shell):
+    """Shell whose process kill hook fails once before succeeding."""
+
+    def __init__(self) -> None:
+        super().__init__(default_cwd=None)
+        self.kill_attempts = 0
+        self._process_exit = asyncio.Event()
+
+    async def _simulate_execute(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[int, str, str]:
+        return 0, command, ""
+
+    async def _create_process(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ExecutionHandle:
+        stdout = asyncio.StreamReader()
+        stderr = asyncio.StreamReader()
+
+        async def _wait() -> int:
+            await self._process_exit.wait()
+            return 0
+
+        async def _kill() -> None:
+            self.kill_attempts += 1
+            if self.kill_attempts == 1:
+                raise RuntimeError("transient kill failure")
+            self._process_exit.set()
+
+        return ExecutionHandle(stdout=stdout, stderr=stderr, wait=_wait, kill=_kill)
+
+
+class SlowCreateShell(Shell):
+    """Shell whose backend creation must not receive caller cancellation."""
+
+    def __init__(self, *, fail_first_kill: bool = False) -> None:
+        super().__init__(default_cwd=None)
+        self.create_started = asyncio.Event()
+        self.allow_create = asyncio.Event()
+        self.process_exit = asyncio.Event()
+        self.kill_attempts = 0
+        self.fail_first_kill = fail_first_kill
+        self.resource_allocated = False
+        self.creation_cancelled = False
+
+    async def _simulate_execute(
+        self,
+        command: str,
+        *,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[int, str, str]:
+        return 0, command, ""
+
+    async def _create_process(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ExecutionHandle:
+        # Model a backend that allocates a remote resource and then reaches an
+        # ordinary cancellation point before it can return the handle.
+        self.resource_allocated = True
+        self.create_started.set()
+        try:
+            await self.allow_create.wait()
+        except asyncio.CancelledError:
+            self.creation_cancelled = True
+            raise
+
+        stdout = asyncio.StreamReader()
+        stderr = asyncio.StreamReader()
+
+        async def _wait() -> int:
+            await self.process_exit.wait()
+            return 0
+
+        async def _kill() -> None:
+            self.kill_attempts += 1
+            if self.fail_first_kill and self.kill_attempts == 1:
+                raise RuntimeError("transient creation cleanup failure")
+            self.process_exit.set()
+
+        return ExecutionHandle(stdout=stdout, stderr=stderr, wait=_wait, kill=_kill)
+
+
 class DeferredShellFixture(DeferredShell):
     """Deferred shell for testing lazy resolution."""
 
-    def __init__(self, concrete: Shell | None = None, *, fail: bool = False) -> None:
-        super().__init__(default_cwd=None)
+    def __init__(
+        self,
+        concrete: Shell | None = None,
+        *,
+        fail: bool = False,
+        default_timeout: float = 30.0,
+    ) -> None:
+        super().__init__(default_cwd=None, default_timeout=default_timeout)
         self.concrete = concrete or ConcreteShell(default_cwd=None)
         self.fail = fail
         self.resolve_count = 0
@@ -164,6 +270,67 @@ class DeferredShellFixture(DeferredShell):
 # =============================================================================
 # Original Shell tests (unchanged behavior)
 # =============================================================================
+
+
+def test_shell_rejects_runtime_execute_override() -> None:
+    """Legacy/custom backends must not bypass the owned execute boundary."""
+
+    async def legacy_execute(
+        self: Shell,
+        command: str,
+        *,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[int, str, str]:
+        return 0, command, ""
+
+    async def create_process(
+        self: Shell,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ExecutionHandle:
+        raise NotImplementedError
+
+    with pytest.raises(TypeError, match=r"must not override final Shell\.execute"):
+        type(
+            "LegacyShell",
+            (Shell,),
+            {"execute": legacy_execute, "_create_process": create_process},
+        )
+
+
+def test_shell_rejects_execute_override_in_mixin_mro() -> None:
+    """A mixin before Shell in the MRO must not replace the owned boundary."""
+
+    class ExecuteMixin:
+        async def execute(
+            self,
+            command: str,
+            *,
+            timeout: float | None = None,
+            env: dict[str, str] | None = None,
+            cwd: str | None = None,
+        ) -> tuple[int, str, str]:
+            return 0, command, ""
+
+    async def create_process(
+        self: Shell,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ExecutionHandle:
+        raise NotImplementedError
+
+    with pytest.raises(TypeError, match=r"must not override final Shell\.execute"):
+        type(
+            "MixinShell",
+            (ExecuteMixin, Shell),
+            {"_create_process": create_process},
+        )
 
 
 async def test_shell_default_cwd_none() -> None:
@@ -369,6 +536,188 @@ async def test_kill_then_wait_raises() -> None:
     await shell.kill_process(pid)
     with pytest.raises(KeyError):
         await shell.wait_process(pid, timeout=1.0)
+
+
+async def test_reset_background_processes_discards_all_session_work_and_reuses_shell() -> None:
+    """A session reset should kill active work and discard every terminal result."""
+    shell = ConcreteShell(default_cwd=None)
+    active_pid = await shell.start("sleep 10")
+    retained_pid = await shell.start("echo retained")
+    await _wait_for_completed_results(shell, 1)
+    buffered_pid = await shell.start("echo buffered")
+    await _wait_for_completed_buffer(shell, buffered_pid)
+
+    assert active_pid in shell.active_background_processes
+    assert buffered_pid in shell._output_buffers
+    assert shell.has_retained_completed_results
+
+    await shell.reset_background_processes()
+
+    assert not shell.has_background_activity
+    assert shell.consume_completed_results() == []
+    for process_id in (active_pid, buffered_pid, retained_pid):
+        with pytest.raises(KeyError):
+            await shell.wait_process(process_id, timeout=0)
+
+    reusable_pid = await shell.start("echo reusable")
+    stdout, _stderr, is_running, exit_code = await shell.wait_process(reusable_pid, timeout=1)
+    assert "echo reusable" in stdout
+    assert is_running is False
+    assert exit_code == 0
+
+    await shell.reset_background_processes()
+    assert not shell.has_background_activity
+
+
+async def test_reset_background_processes_retains_failed_handle_for_retry() -> None:
+    """A failed kill must block reset and preserve enough state to retry."""
+    shell = RetryKillShell()
+    process_id = await shell.start("long-running")
+    await asyncio.sleep(0)
+
+    with pytest.raises(ShellBackgroundResetError) as exc_info:
+        await shell.reset_background_processes()
+
+    assert set(exc_info.value.failures) == {process_id}
+    assert shell.kill_attempts == 1
+    assert process_id in shell._execution_handles
+    assert process_id in shell._background_cleanup_errors
+    assert process_id in shell.active_background_processes
+    assert shell.has_background_activity is True
+    assert 'status="termination-failed"' in (shell.background_status_summary() or "")
+
+    await shell.reset_background_processes()
+
+    assert shell.kill_attempts == 2
+    assert shell.has_background_activity is False
+    assert shell._execution_handles == {}
+    assert shell._background_cleanup_errors == {}
+    assert shell._background_processes == {}
+    assert shell._output_buffers == {}
+
+
+async def test_reset_waits_for_inflight_start_before_propagating_cancellation() -> None:
+    """Caller cancellation must not hide a process allocated during creation."""
+    shell = SlowCreateShell()
+    generation = shell.capture_session_access()
+
+    async def stale_start() -> str:
+        with shell.session_access_scope(generation):
+            return await shell.start("late-process")
+
+    start_task = asyncio.create_task(stale_start())
+    await shell.create_started.wait()
+    shell.revoke_session_access()
+    reset_task = asyncio.create_task(shell.reset_background_processes())
+    await asyncio.sleep(0)
+
+    start_task.cancel()
+    await asyncio.sleep(0)
+    start_task.cancel()
+    shell.allow_create.set()
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+    await reset_task
+
+    assert shell.resource_allocated is True
+    assert shell.creation_cancelled is False
+    assert shell.kill_attempts == 1
+    assert shell._execution_handles == {}
+    assert shell.has_background_activity is False
+
+
+async def test_cancelled_creation_retains_handle_when_termination_fails() -> None:
+    """A post-creation kill failure must remain owned until a reset retry succeeds."""
+    shell = SlowCreateShell(fail_first_kill=True)
+    start_task = asyncio.create_task(shell.start("late-process"))
+    await shell.create_started.wait()
+
+    start_task.cancel()
+    shell.allow_create.set()
+    with pytest.raises(RuntimeError, match="creation cleanup failure"):
+        await start_task
+
+    assert shell.resource_allocated is True
+    assert shell.creation_cancelled is False
+    assert shell.kill_attempts == 1
+    assert len(shell._execution_handles) == 1
+
+    await shell.reset_background_processes()
+
+    assert shell.kill_attempts == 2
+    assert shell._execution_handles == {}
+    assert shell.has_background_activity is False
+
+
+async def test_foreground_timeout_budget_includes_process_creation() -> None:
+    """A timeout during creation must wait for and terminate the eventual handle."""
+    shell = SlowCreateShell()
+    execute_task = asyncio.create_task(shell.execute("late-process", timeout=0.01))
+    await shell.create_started.wait()
+    await asyncio.sleep(0.02)
+
+    # Creation is shell-owned: timeout requests cleanup but cannot discard a
+    # backend resource before its eventual handle becomes available.
+    assert not execute_task.done()
+    shell.allow_create.set()
+
+    with pytest.raises(ShellTimeoutError):
+        await execute_task
+    assert shell.resource_allocated is True
+    assert shell.creation_cancelled is False
+    assert shell.kill_attempts == 1
+    assert shell._execution_handles == {}
+    assert shell._foreground_tasks == {}
+
+
+async def test_foreground_execution_is_reset_owned_and_rejects_stale_reuse() -> None:
+    """Reset must terminate foreground work and stale tasks cannot execute again."""
+    shell = ConcreteShell(default_cwd=None)
+    generation = shell.capture_session_access()
+
+    async def stale_execute() -> tuple[int, str, str]:
+        with shell.session_access_scope(generation):
+            return await shell.execute("sleep 10")
+
+    execute_task = asyncio.create_task(stale_execute())
+    while not shell._foreground_tasks:
+        await asyncio.sleep(0)
+
+    shell.revoke_session_access()
+    await shell.reset_background_processes()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execute_task
+    assert shell._execution_handles == {}
+
+    with pytest.raises(ShellSessionAccessError, match="retired session"):
+        await stale_execute()
+
+
+async def test_foreground_kill_failure_blocks_reset_and_is_retryable() -> None:
+    """Foreground termination failure must be reported and retained for retry."""
+    shell = RetryKillShell()
+    execute_task = asyncio.create_task(shell.execute("long-running"))
+    while not shell._foreground_tasks:
+        await asyncio.sleep(0)
+
+    with pytest.raises(ShellBackgroundResetError) as exc_info:
+        await shell.reset_background_processes()
+
+    operation_ids = set(exc_info.value.failures)
+    assert len(operation_ids) == 1
+    operation_id = next(iter(operation_ids))
+    assert operation_id.startswith("foreground-")
+    assert operation_id in shell._execution_handles
+    assert shell.kill_attempts == 1
+    with pytest.raises(RuntimeError, match="transient kill failure"):
+        await execute_task
+
+    await shell.reset_background_processes()
+
+    assert shell.kill_attempts == 2
+    assert shell._execution_handles == {}
+    assert shell._background_cleanup_errors == {}
 
 
 async def test_close_kills_all() -> None:
@@ -877,7 +1226,7 @@ def test_output_buffer_bounded() -> None:
 class StdinShell(Shell):
     """Shell that supports stdin for testing write_stdin/close_stdin."""
 
-    async def execute(
+    async def _simulate_execute(
         self,
         command: str,
         *,
@@ -921,7 +1270,7 @@ class StdinShell(Shell):
         self._last_mock_stdin = mock_stdin
 
         async def _execute() -> int:
-            exit_code, stdout, stderr = await self.execute(command, timeout=None, env=env, cwd=cwd)
+            exit_code, stdout, stderr = await self._simulate_execute(command, timeout=None, env=env, cwd=cwd)
             if stdout:
                 stdout_stream.feed_data(stdout.encode("utf-8"))
             stdout_stream.feed_eof()
@@ -1046,7 +1395,7 @@ async def test_stdin_none_for_no_stdin_process() -> None:
 class ShellWithPid(Shell):
     """Shell that exposes pid in ExecutionHandle."""
 
-    async def execute(self, command, *, timeout=None, env=None, cwd=None):
+    async def _simulate_execute(self, command, *, timeout=None, env=None, cwd=None):
         return (0, f"output of {command}", "")
 
     async def _create_process(self, command, *, env=None, cwd=None):
@@ -1056,7 +1405,7 @@ class ShellWithPid(Shell):
         stderr_stream = asyncio.StreamReader()
 
         async def _execute():
-            exit_code, stdout, stderr = await self.execute(command, timeout=None, env=env, cwd=cwd)
+            exit_code, stdout, stderr = await self._simulate_execute(command, timeout=None, env=env, cwd=cwd)
             if stdout:
                 stdout_stream.feed_data(stdout.encode("utf-8"))
             stdout_stream.feed_eof()
@@ -1347,7 +1696,7 @@ async def test_drain_output_cleans_stdin_streams() -> None:
 class SignalShell(Shell):
     """Shell that supports send_signal for testing."""
 
-    async def execute(
+    async def _simulate_execute(
         self,
         command: str,
         *,
@@ -1374,7 +1723,7 @@ class SignalShell(Shell):
         self._received_signals: list[int] = []
 
         async def _execute() -> int:
-            exit_code, stdout, stderr = await self.execute(command, timeout=None, env=env, cwd=cwd)
+            exit_code, stdout, stderr = await self._simulate_execute(command, timeout=None, env=env, cwd=cwd)
             if stdout:
                 stdout_stream.feed_data(stdout.encode("utf-8"))
             stdout_stream.feed_eof()
@@ -1544,6 +1893,17 @@ async def test_deferred_shell_execute_resolves_once() -> None:
     assert shell.resolved_shell is shell.concrete
 
 
+async def test_deferred_shell_execute_applies_configured_default_timeout() -> None:
+    """The proxy must preserve the deferred backend's default timeout."""
+    shell = DeferredShellFixture(default_timeout=0.01)
+
+    with pytest.raises(ShellTimeoutError):
+        await shell.execute("sleep 10")
+
+    assert shell.resolve_count == 1
+    assert shell._execution_handles == {}
+
+
 async def test_deferred_shell_concurrent_execute_shares_resolution() -> None:
     """Concurrent commands share one resolution."""
     shell = DeferredShellFixture()
@@ -1566,6 +1926,29 @@ async def test_deferred_shell_start_delegates_to_resolved_shell() -> None:
 
     assert stdout == "output of echo hello"
     assert stderr == ""
+    assert running is False
+    assert exit_code == 0
+    assert shell.resolve_count == 1
+
+
+async def test_deferred_shell_resets_resolved_background_processes_without_reresolving() -> None:
+    """Deferred reset should clear resolved work while preserving backend readiness."""
+    shell = DeferredShellFixture()
+    process_id = await shell.start("sleep 10")
+    resolved = shell.resolved_shell
+    assert resolved is not None
+    assert process_id in resolved.active_background_processes
+
+    await shell.reset_background_processes()
+
+    assert shell.resolve_count == 1
+    assert shell.resolved_shell is resolved
+    assert not shell.has_background_activity
+    with pytest.raises(KeyError):
+        await shell.wait_process(process_id, timeout=0)
+
+    reusable_pid = await shell.start("echo reusable")
+    _stdout, _stderr, running, exit_code = await shell.wait_process(reusable_pid, timeout=1)
     assert running is False
     assert exit_code == 0
     assert shell.resolve_count == 1

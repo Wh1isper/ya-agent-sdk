@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import ya_agent_sdk.environment.local as local_module
 from inline_snapshot import snapshot
 from ya_agent_environment import FileOperationError, PathNotAllowedError, ShellTimeoutError
 from ya_agent_sdk.environment import (
@@ -397,6 +398,236 @@ async def test_shell_execute_timeout(tmp_path: Path) -> None:
     shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     with pytest.raises(ShellTimeoutError):
         await shell.execute("sleep 10", timeout=0.1)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process lifecycle test")
+async def test_shell_reset_terminates_inflight_foreground_process(tmp_path: Path) -> None:
+    """Reset must return only after an old foreground process can no longer mutate files."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    marker = tmp_path / "foreground-leak.txt"
+    generation = shell.capture_session_access()
+
+    async def stale_execute() -> tuple[int, str, str]:
+        with shell.session_access_scope(generation):
+            return await shell.execute(f"sleep 0.2; printf leaked > {shlex.quote(str(marker))}")
+
+    execute_task = asyncio.create_task(stale_execute())
+    while not shell._foreground_tasks:
+        await asyncio.sleep(0)
+
+    shell.revoke_session_access()
+    await shell.reset_background_processes()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execute_task
+    await asyncio.sleep(0.3)
+    assert marker.exists() is False
+    assert shell._execution_handles == {}
+    assert shell._foreground_tasks == {}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process lifecycle test")
+async def test_shell_natural_completion_kills_group_before_guardian_reap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Natural completion must signal the group while its stable leader is still owned."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    original_kill_process_tree = local_module.kill_process_tree
+    returncodes_at_signal: list[int | None] = []
+
+    async def _record_kill(
+        process: asyncio.subprocess.Process,
+        *,
+        process_group_id: int | None = None,
+    ) -> None:
+        returncodes_at_signal.append(process.returncode)
+        await original_kill_process_tree(process, process_group_id=process_group_id)
+
+    monkeypatch.setattr(local_module, "kill_process_tree", _record_kill)
+
+    exit_code, stdout, stderr = await shell.execute("exit 7")
+
+    assert (exit_code, stdout, stderr) == (7, "", "")
+    assert returncodes_at_signal == [None]
+    await shell.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process lifecycle test")
+async def test_shell_reset_kills_guarded_group_with_descendants(tmp_path: Path) -> None:
+    """Reset must kill the stable guardian and every same-group descendant."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    ready = tmp_path / "orphan-ready.txt"
+    marker = tmp_path / "orphan-leak.txt"
+    child_pid: int | None = None
+    script = (
+        "import os, signal, time\n"
+        "pid = os.fork()\n"
+        "if pid:\n"
+        f"    open({str(ready)!r}, 'w').write(str(pid))\n"
+        "    time.sleep(100)\n"
+        "    os._exit(0)\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+        "time.sleep(0.25)\n"
+        f"open({str(marker)!r}, 'w').write('leaked')\n"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    execute_task = asyncio.create_task(shell.execute(command))
+
+    try:
+        child_pid = await _wait_for_pidfile(ready)
+        await asyncio.sleep(0.02)
+        await shell.reset_background_processes()
+
+        with pytest.raises(asyncio.CancelledError):
+            await execute_task
+        await asyncio.sleep(0.3)
+        assert marker.exists() is False
+        assert await _wait_until_stopped(child_pid)
+    finally:
+        if child_pid is not None and _process_is_running(child_pid):
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(child_pid, signal.SIGKILL)
+        await shell.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process lifecycle test")
+async def test_shell_signal_keeps_guardian_alive_until_command_reports_status(tmp_path: Path) -> None:
+    """Catchable group signals must reach the command without releasing guardian identity."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    ready = tmp_path / "signal-ready.txt"
+    terminated = tmp_path / "signal-terminated.txt"
+    command = (
+        f"trap 'printf terminated > {shlex.quote(str(terminated))}; exit 0' TERM; "
+        f"printf ready > {shlex.quote(str(ready))}; "
+        "while :; do sleep 1; done"
+    )
+    process_id = await shell.start(command)
+
+    try:
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while not ready.exists():
+            if asyncio.get_running_loop().time() >= deadline:
+                pytest.fail("command did not install its signal handler")
+            await asyncio.sleep(0.01)
+
+        await shell.send_signal(process_id, signal.SIGTERM)
+        _stdout, _stderr, running, exit_code = await shell.wait_process(process_id, timeout=2.0)
+
+        assert not running
+        assert exit_code == 0
+        assert terminated.read_text() == "terminated"
+    finally:
+        await shell.close()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(signal, "SIGALRM"),
+    reason="POSIX guardian signal readiness test",
+)
+async def test_shell_immediate_signal_waits_for_guardian_readiness(tmp_path: Path) -> None:
+    """An immediate accepted signal cannot land before guardian handlers exist."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    process_id = await shell.start("sleep 100")
+
+    try:
+        await shell.send_signal(process_id, signal.SIGALRM)
+        _stdout, _stderr, running, _exit_code = await shell.wait_process(process_id, timeout=2.0)
+
+        assert not running
+        assert shell._execution_handles == {}
+    finally:
+        await shell.close()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(signal, "SIGALRM"),
+    reason="POSIX guardian signal readiness test",
+)
+async def test_shell_ignored_signal_preserves_guardian_for_reset(tmp_path: Path) -> None:
+    """A command may ignore an accepted signal without releasing guardian identity."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    ready = tmp_path / "alarm-ready.txt"
+    process_id = await shell.start(f"trap '' ALRM; printf ready > {shlex.quote(str(ready))}; while :; do sleep 1; done")
+
+    try:
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while not ready.exists():
+            if asyncio.get_running_loop().time() >= deadline:
+                pytest.fail("command did not install its SIGALRM disposition")
+            await asyncio.sleep(0.01)
+
+        await shell.send_signal(process_id, signal.SIGALRM)
+        await asyncio.sleep(0.05)
+        _stdout, _stderr, running, _exit_code = await shell.wait_process(process_id, timeout=0)
+        assert running
+
+        await shell.reset_background_processes()
+        assert shell._execution_handles == {}
+        assert shell._background_cleanup_errors == {}
+    finally:
+        await shell.close()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(signal, "SIGABRT"),
+    reason="POSIX guardian signal contract test",
+)
+async def test_shell_rejects_signal_that_could_terminate_guardian(tmp_path: Path) -> None:
+    """Signals outside the guardian survival contract must fail before delivery."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    process_id = await shell.start("sleep 100")
+
+    try:
+        with pytest.raises(ValueError, match="Unsupported LocalShell guardian signal"):
+            await shell.send_signal(process_id, signal.SIGABRT)
+        assert process_id in shell.active_background_processes
+    finally:
+        await shell.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process lifecycle test")
+async def test_shell_natural_foreground_completion_kills_detached_pipe_child(tmp_path: Path) -> None:
+    """A root shell exit must not release ownership of a same-group child with closed pipes."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    child_pid: int | None = None
+
+    try:
+        exit_code, stdout, stderr = await shell.execute("sleep 100 >/dev/null 2>&1 & echo $!")
+        child_pid = int(stdout.strip())
+
+        assert exit_code == 0
+        assert stderr == ""
+        assert await _wait_until_stopped(child_pid)
+        assert shell._execution_handles == {}
+    finally:
+        if child_pid is not None and _process_is_running(child_pid):
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(child_pid, signal.SIGKILL)
+        await shell.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell process lifecycle test")
+async def test_shell_natural_background_completion_kills_detached_pipe_child(tmp_path: Path) -> None:
+    """Background root completion must terminate residual members before publishing a result."""
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
+    child_pid: int | None = None
+
+    try:
+        process_id = await shell.start("sleep 100 >/dev/null 2>&1 & echo $!")
+        stdout, stderr, running, exit_code = await shell.wait_process(process_id, timeout=2.0)
+        child_pid = int(stdout.strip())
+
+        assert not running
+        assert exit_code == 0
+        assert stderr == ""
+        assert await _wait_until_stopped(child_pid)
+        assert shell._execution_handles == {}
+    finally:
+        if child_pid is not None and _process_is_running(child_pid):
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(child_pid, signal.SIGKILL)
+        await shell.close()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX shell process tree test")

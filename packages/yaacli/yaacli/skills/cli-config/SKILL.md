@@ -70,9 +70,14 @@ Project-level tool permissions in `.yaacli/tools.toml`:
 
 ```toml
 [tools]
+# Enable structured clarifying questions in the interactive TUI (default: true)
+enable_user_input = true
+
 # Tools requiring user approval before execution
 need_approval = ["shell", "write"]
 ```
+
+Set `enable_user_input = false` when the project should not expose the interactive `ask_user_question` tool. Headless mode never exposes it.
 
 Common patterns:
 - `[]` - No approval needed (trust all tools)

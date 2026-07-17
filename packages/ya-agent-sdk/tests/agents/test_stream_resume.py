@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
@@ -226,6 +227,90 @@ async def test_stream_agent_raises_after_resume_attempts_exhausted(tmp_path: Pat
     assert len(failed_events) == 2
     assert failed_events[0].recoverable is True
     assert failed_events[1].recoverable is False
+
+
+async def test_stream_transport_failures_use_an_independent_resume_budget(tmp_path: Path) -> None:
+    calls = 0
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
+        nonlocal calls
+        calls += 1
+        if calls in {1, 3}:
+            raise httpx.RemoteProtocolError("incomplete chunked read")
+        if calls in {2, 4}:
+            raise RuntimeError("execution recovery needed")
+        yield "recovered after independent failures"
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async with stream_agent(
+        runtime,
+        "start task",
+        resume_on_error=True,
+        resume_max_attempts=3,
+        transport_resume_max_attempts=3,
+    ) as streamer:
+        async for _event in streamer:
+            pass
+        streamer.raise_if_exception()
+
+    assert calls == 5
+    assert streamer.run is not None
+    assert streamer.run.result is not None
+    assert streamer.run.result.output == "recovered after independent failures"
+
+
+async def test_stream_transport_resume_budget_exhausts_independently(tmp_path: Path) -> None:
+    calls = 0
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
+        nonlocal calls
+        calls += 1
+        raise httpx.RemoteProtocolError("incomplete chunked read")
+        yield  # pragma: no cover
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    with pytest.raises(httpx.RemoteProtocolError, match="incomplete chunked read"):
+        async with stream_agent(
+            runtime,
+            "start task",
+            resume_on_error=True,
+            resume_max_attempts=10,
+            transport_resume_max_attempts=2,
+        ) as streamer:
+            async for _event in streamer:
+                pass
+
+    assert calls == 2
+
+
+async def test_stream_event_hook_transport_error_uses_execution_budget(tmp_path: Path) -> None:
+    calls = 0
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
+        nonlocal calls
+        calls += 1
+        yield "model event"
+
+    async def failing_event_hook(_event_ctx: Any) -> None:
+        raise httpx.RemoteProtocolError("telemetry endpoint disconnected")
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    with pytest.raises(httpx.RemoteProtocolError, match="telemetry endpoint disconnected"):
+        async with stream_agent(
+            runtime,
+            "start task",
+            resume_on_error=True,
+            resume_max_attempts=2,
+            transport_resume_max_attempts=10,
+            pre_event_hook=failing_event_hook,
+        ) as streamer:
+            async for _event in streamer:
+                pass
+
+    assert calls == 2
 
 
 async def test_stream_agent_closes_unreturned_tool_calls_before_resume(tmp_path: Path) -> None:

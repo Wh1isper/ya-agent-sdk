@@ -199,6 +199,7 @@ async def _start_background_shell_command(
 ) -> ShellResult:
     """Start a background shell command."""
     try:
+        shell.assert_session_access()
         process_id = await shell.start(command, env=environment, cwd=cwd)
         await ctx.emit_event(
             BackgroundShellStartEvent(
@@ -306,6 +307,9 @@ async def _execute_foreground_shell_command(
 ) -> ShellResult:
     """Execute a foreground shell command."""
     try:
+        # ``execute`` is backend-defined, so enforce the shared session lease
+        # at the SDK tool boundary immediately before command execution.
+        shell.assert_session_access()
         exit_code, stdout, stderr = await shell.execute(
             command,
             timeout=float(timeout_seconds),

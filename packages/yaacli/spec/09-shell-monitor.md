@@ -163,24 +163,92 @@ Pending user steering shares the bus but is not counted as a background result.
 An explicitly cancelled turn does not immediately redeliver a notification into
 the cancelled interaction; the next prompt or `/integrate` performs delivery.
 
-## Conversation Reset
+## Session Reset
 
-Conversation and environment lifetimes are intentionally different.
-`reset_subagent_state()` cancels and tombstones background subagent work from the
-old conversation, but it preserves:
+The shell backend belongs to the runtime environment, but foreground and
+background commands and their results belong to the session that started them.
+`/new`, `/load`, and
+`/session` therefore use the full `BackgroundMonitor` session boundary:
 
-- running shell processes;
-- registered shell process IDs;
-- shell notification deduplication state;
-- pending shell notifications.
+1. background task creation synchronously captures the current shell-session
+   generation; the lease is inherited by child tasks through `ContextVar`;
+2. `begin_session_reset()` advances that generation before cancellation,
+   tombstones and cancels old subagents, drops pending shell wakeups, suppresses
+   reset-time shell callbacks, and clears shell monitor deduplication state before
+   the first `await`;
+3. final `Shell.execute()` and `Shell.start()` boundaries serialize process
+   creation and registration with reset through a lifecycle lock; creation runs
+   in a shielded shell-owned task, so caller cancellation cannot discard a handle
+   after the backend has allocated a process;
+4. foreground execution remains registered while it runs, and cancellation does
+   not return until its kill hook has completed or reported a retryable failure;
+5. `reset_session_state()` calls `Shell.reset_background_processes()` before the
+   bounded subagent wait;
+6. the shell terminates foreground and background processes and discards completed output buffers,
+   retained terminal results, stdin streams, and signal handlers; and
+7. `finish_session_reset()` leaves the monitor and shell backend reusable for
+   work started by the new session.
 
-When `/new`, `/load`, or another session transition replaces the main-agent
-message bus, `set_message_bus()` retargets subsequent delivery to the new bus.
-The real `/new` command republishes retained readiness only after its
-`COMMAND_RUNNING` ownership returns to idle, so the notification is neither
-lost nor injected into the conversation being cleared. Late results from
-tombstoned subagents cannot enter the new conversation, while shell work owned
-by the environment remains reachable.
+This boundary prevents both notification leakage and silent filter injection:
+replacing only the message bus would be insufficient because background-result
+filters read completed buffers directly from the shared shell. Late results from
+tombstoned subagents cannot enter the new conversation. A subagent or inherited
+child task that ignores cancellation still carries the retired generation, so
+all standard shell process APIs and SDK foreground execution reject its access.
+Killed old-session processes cannot later publish completion lines into the new
+transcript.
+
+Process termination is a commit prerequisite. On POSIX, LocalShell starts a
+stable group/session guardian that launches the real command, installs handlers
+for the supported catchable signal set, reports readiness and command exit status
+over separate private inherited host pipes, and remains alive until the host has
+terminated the complete group. Public signals wait for readiness before delivery;
+unsupported signal numbers fail explicitly, and SIGKILL uses the full owned kill
+path. Natural completion therefore kills residual members, including children
+that closed inherited output pipes, before reaping the guardian and releasing its
+numeric PGID. A reaped leader's bare numeric PGID is never treated as a durable
+ownership identity.
+
+Each Docker exec also uses an in-container guardian as its stable process-group
+and session leader. The guardian publishes PID/start-time identity over that
+exact `docker exec` stderr transport, then waits for a nonce-bound acknowledgement
+over the same exec's stdin transport before user code can start. Public output and
+stdin remain gated until this handshake completes. The host cross-checks the
+transport identity against `/proc` and the `active` marker, but marker content and
+path existence are never the source of identity or release authority. A same-user
+sibling that substitutes a valid marker identity or creates files in `/tmp`
+cannot release the command or redirect cleanup. Later marker deletion,
+corruption, or a forged `done` value likewise cannot replace the locally retained
+transport identity. If registration has not produced identity, reset atomically
+forbids ACK, closes the exact stdin transport, and requires the blocked guardian
+to exit rather than trusting marker content.
+
+After release, the guardian remains alive until two scans find no non-zombie
+descendants in that PGID/SID and then transitions the marker to `done`.
+Registration runs inside the immediately returned handle, and natural completion
+requires a second Docker exec to verify that the trusted group has no live
+members. Kill and SIGKILL paths stop, kill, and verify the complete remote group;
+other supported signals are mapped by symbolic name and sent to the remote group
+rather than the local `docker` CLI. Local CLI exit alone is not accepted as proof.
+Each active
+`ExecutionHandle` is retained until its kill hook succeeds. A failed or
+unconfirmed hook raises
+`ShellBackgroundResetError`, preserves retryable ownership, and prevents the TUI
+from committing `/new`, `/load`, or `/session`. A later reset retries the retained
+handle; only successful termination clears lifecycle tracking. Non-shell cleanup
+errors may still roll forward after tombstoning because they cannot regain shell
+access or publish old results.
+
+`Shell.execute()` is also enforced at runtime. Defining a custom or legacy
+`Shell` subclass that overrides it raises `TypeError`; custom backends must expose
+owned process creation through `_create_process()` instead. Foreground timeout
+budgets begin before process creation; an expired timeout still waits for the
+shell-owned creation path to expose and terminate any eventual handle. Deferred
+shells apply their configured default timeout at the proxy ownership boundary.
+
+`reset_subagent_state()` remains a narrower API for callers that intentionally
+replace only subagent state; it preserves shell work and is not used for YAACLI
+session transitions.
 
 ## Constraints
 
@@ -194,6 +262,12 @@ by the environment remains reachable.
 - Calling `start_shell_monitor()` more than once is ignored.
 - Shell notifications target the configured runtime agent ID, normally `main`.
 - Background delegation tools remain main-agent-only.
+- Raw Local and shared-container Docker exec ownership is bounded by the isolated
+  PGID/SID and exact transport handshake. It is not a security boundary against a
+  command that deliberately creates a new session, reparents itself, escapes its
+  sandbox, can hijack another exec's file descriptors, or controls the Docker
+  daemon; workloads that require adversarial containment must use a backend with
+  cgroup, Job Object, or per-session container enforcement.
 
 ## Verification
 
@@ -209,6 +283,27 @@ by the environment remains reachable.
 - callback invocation and `shell_monitor` registration;
 - shell environment merging, tool availability, failure handling, and event
   emission;
-- conversation reset preserving shell state while discarding subagent state;
+- subagent-only reset preserving shell state;
+- full session reset terminating and discarding old shell work and wakeups;
+- cancellation during process creation retaining or terminating the eventual
+  handle instead of losing ownership;
+- reset-visible foreground execution, including a real local process that must
+  not mutate the workspace after reset returns;
+- stable LocalShell guardian readiness before immediate signal delivery,
+  ignored-signal survival, termination before leader reap, natural command
+  completion with detached-pipe children, cleanup-stage retry, and propagation
+  of non-`ESRCH` signal failures without stale numeric-PGID signaling;
+- Docker exact-transport identity registration and ACK, pre-ACK marker identity
+  substitution rejection, guardian retention after a command leader exits,
+  deletion/forgery-resistant cleanup, remote symbolic signal delivery,
+  natural-completion confirmation, and retained ownership when registration or
+  termination cannot be confirmed;
+- runtime rejection of direct and mixin-MRO custom `execute()` overrides and
+  deferred default timeout;
+- captured-generation rejection before a queued task's first loop turn;
+- revoked shell access for cancellation-resistant subagents and child tasks;
+- failed kill hooks retaining execution handles, blocking session commits, and
+  succeeding on retry;
+- reusable shell operation after a full reset;
 - TUI readiness without automatic agent launch and without compose-buffer
   mutation.

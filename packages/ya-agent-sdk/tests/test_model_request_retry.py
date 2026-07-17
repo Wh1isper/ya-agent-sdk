@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from openai import APIStatusError
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.retries import AsyncTenacityTransport
 from ya_agent_sdk.agents.models import infer_model
@@ -11,6 +12,7 @@ from ya_agent_sdk.agents.models.utils import (
     create_async_http_client,
     create_model_request_retry_transport,
     env_model_request_retry_options,
+    is_retryable_model_stream_exception,
     validate_model_retry_response,
 )
 
@@ -57,6 +59,48 @@ def test_validate_model_retry_response_only_raises_retryable_statuses() -> None:
     validate_model_retry_response(httpx.Response(500, request=request), options)
     with pytest.raises(httpx.HTTPStatusError):
         validate_model_retry_response(httpx.Response(429, request=request), options)
+
+
+def test_model_stream_retry_recognizes_wrapped_incomplete_chunked_read() -> None:
+    transport_error = httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+    provider_error = RuntimeError("model provider stream failed")
+    provider_error.__cause__ = transport_error
+
+    assert is_retryable_model_stream_exception(provider_error) is True
+
+
+def test_model_stream_retry_recognizes_official_provider_status_error() -> None:
+    request = httpx.Request("POST", "https://example.test/model")
+    response = httpx.Response(503, request=request)
+    error = APIStatusError("temporarily unavailable", response=response, body={})
+
+    assert is_retryable_model_stream_exception(error) is True
+
+
+def test_model_stream_retry_rejects_permanent_status_despite_transport_context() -> None:
+    request = httpx.Request("POST", "https://example.test/model")
+    error = httpx.HTTPStatusError(
+        "bad request",
+        request=request,
+        response=httpx.Response(400, request=request),
+    )
+    error.__context__ = OSError("earlier websocket failure")
+
+    assert is_retryable_model_stream_exception(error) is False
+
+
+def test_model_stream_retry_requires_every_exception_group_branch_to_be_transient() -> None:
+    mixed_error = ExceptionGroup(
+        "model stream and host failure",
+        [httpx.RemoteProtocolError("incomplete chunked read"), ValueError("invalid event")],
+    )
+    transport_error = ExceptionGroup(
+        "model transport failures",
+        [httpx.RemoteProtocolError("incomplete chunked read"), TimeoutError("timed out")],
+    )
+
+    assert is_retryable_model_stream_exception(mixed_error) is False
+    assert is_retryable_model_stream_exception(transport_error) is True
 
 
 def test_create_async_http_client_uses_retry_transport_by_default() -> None:

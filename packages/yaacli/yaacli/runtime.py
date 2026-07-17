@@ -42,6 +42,7 @@ from ya_agent_sdk.toolsets.core.context import tools as context_tools
 from ya_agent_sdk.toolsets.core.document import tools as document_tools
 from ya_agent_sdk.toolsets.core.enhance import tools as enhance_tools
 from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
+from ya_agent_sdk.toolsets.core.interaction import tools as interaction_tools
 from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
 from ya_agent_sdk.toolsets.core.subagent import tools as subagent_tools
 from ya_agent_sdk.toolsets.core.web import tools as web_tools
@@ -176,6 +177,8 @@ def create_tui_runtime(
     model_profile: ResolvedModelProfile | None = None,
     enable_async_subagents: bool = True,
     enable_delegate_subagents: bool = False,
+    enable_user_input: bool = False,
+    skill_toolset: SkillToolset | None = None,
 ) -> AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment]:
     """Create AgentRuntime configured for TUI.
 
@@ -195,6 +198,8 @@ def create_tui_runtime(
         model_profile: Optional resolved model profile override.
         enable_async_subagents: Include background subagent tools. When synchronous delegation is disabled, the async tool is exposed as delegate.
         enable_delegate_subagents: Include the synchronous unified delegate subagent tool. Defaults to False for TUI async-only delegation.
+        enable_user_input: Include the interactive ``ask_user_question`` tool. Disabled by default because hosts must explicitly support deferred user input.
+        skill_toolset: Optional configured skill toolset shared with the host for preloading completions.
 
     Returns:
         AgentRuntime configured for TUI usage. Use as async context manager.
@@ -210,9 +215,11 @@ def create_tui_runtime(
     # Order matters: ToolProxyToolset must be LAST so its two fixed proxy
     # tools (search_tools, call_tool) occupy stable positions at the end
     # of the model's tool list, maximizing prompt cache hit rates.
-    toolsets: list[AbstractToolset[Any]] = [
-        SkillToolset(toolset_id="skills", extra_dir_names=[SHARED_SKILLS_DIR_NAME]),
-    ]
+    effective_skill_toolset = skill_toolset or SkillToolset(
+        toolset_id="skills",
+        extra_dir_names=[SHARED_SKILLS_DIR_NAME],
+    )
+    toolsets: list[AbstractToolset[Any]] = [effective_skill_toolset]
 
     # Add MCP servers wrapped in ToolProxyToolset for on-demand invocation.
     # This is intentionally last: proxy tools occupy stable positions at
@@ -339,6 +346,7 @@ def create_tui_runtime(
         *document_tools,
         *enhance_tools,
         *filesystem_tools,
+        *(interaction_tools if enable_user_input else []),
         *shell_tools,
         *web_tools,
     ]

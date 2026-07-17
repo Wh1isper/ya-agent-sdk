@@ -67,6 +67,25 @@ async def test_shell_tool_execute_success(tmp_path: Path) -> None:
         assert "hello" in result["stdout"]
 
 
+async def test_shell_tool_rejects_foreground_execute_from_retired_session(tmp_path: Path) -> None:
+    """Backend-defined foreground execute must honor the shared session lease."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        shell = ctx.shell
+        assert shell is not None
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        with shell.session_access_scope():
+            shell.revoke_session_access()
+            result = await ShellTool().call(mock_run_ctx, "touch escaped.txt")
+
+        assert result["return_code"] == 1
+        assert "retired session" in result.get("error", "")
+        assert not (tmp_path / "escaped.txt").exists()
+
+
 @pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")
 async def test_shell_tool_supports_bash_syntax(tmp_path: Path) -> None:
     """Should execute local POSIX shell commands with Bash by default."""

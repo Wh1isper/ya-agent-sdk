@@ -7,8 +7,10 @@ using standard library functions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
+import signal
 import sys
 import tempfile
 from collections.abc import AsyncIterator, Sequence
@@ -29,7 +31,6 @@ from ya_agent_environment import (
     ResourceRegistryState,
     Shell,
     ShellExecutionError,
-    ShellTimeoutError,
     StdinAdapter,
     TmpFileOperator,
 )
@@ -38,7 +39,6 @@ from ya_agent_sdk.environment.process import (
     kill_process_tree,
     process_group_kwargs,
     send_process_tree_signal,
-    terminate_process_tree,
 )
 from ya_agent_sdk.environment.virtual_path import (
     VirtualPath,
@@ -73,6 +73,105 @@ def _resolve_shell_executable(shell_executable: str | None) -> str | None:
     if shell_executable is None:
         return _default_shell_executable()
     return shell_executable
+
+
+_LOCAL_GUARDIAN_CATCHABLE_SIGNAL_NAMES = (
+    "SIGHUP",
+    "SIGINT",
+    "SIGQUIT",
+    "SIGTERM",
+    "SIGUSR1",
+    "SIGUSR2",
+    "SIGALRM",
+    "SIGPIPE",
+    "SIGPOLL",
+    "SIGIO",
+    "SIGPROF",
+    "SIGVTALRM",
+    "SIGXCPU",
+    "SIGXFSZ",
+    "SIGWINCH",
+    "SIGURG",
+    "SIGTSTP",
+    "SIGTTIN",
+    "SIGTTOU",
+    "SIGCONT",
+)
+_LOCAL_GUARDIAN_CATCHABLE_SIGNALS = frozenset(
+    int(member)
+    for name in _LOCAL_GUARDIAN_CATCHABLE_SIGNAL_NAMES
+    if isinstance((member := getattr(signal, name, None)), signal.Signals)
+)
+_LOCAL_GUARDIAN_SUPPORTED_SIGNALS = _LOCAL_GUARDIAN_CATCHABLE_SIGNALS | frozenset(
+    int(member)
+    for name in ("SIGKILL", "SIGSTOP")
+    if isinstance((member := getattr(signal, name, None)), signal.Signals)
+)
+
+
+_LOCAL_PROCESS_GUARDIAN = """
+import os
+import signal
+import subprocess
+import sys
+import traceback
+
+ready_fd = int(sys.argv[1])
+status_fd = int(sys.argv[2])
+catchable_signals = tuple(int(value) for value in sys.argv[3].split(",") if value)
+try:
+    try:
+        child = subprocess.Popen(
+            sys.argv[4:],
+            stdin=sys.stdin,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            close_fds=True,
+        )
+    except BaseException:
+        traceback.print_exc()
+        command_status = 125
+    else:
+        def _keep_guardian_alive(_signum, _frame):
+            return None
+
+        for signum in catchable_signals:
+            signal.signal(signum, _keep_guardian_alive)
+        os.write(ready_fd, b"ready\\n")
+        os.close(ready_fd)
+        ready_fd = -1
+        command_status = child.wait()
+    os.write(status_fd, f"{command_status}\\n".encode("ascii"))
+finally:
+    if ready_fd >= 0:
+        os.close(ready_fd)
+    os.close(status_fd)
+while True:
+    signal.pause()
+""".strip()
+
+
+def _read_local_guardian_ready(read_fd: int) -> None:
+    """Require readiness after the guardian has installed every accepted handler."""
+    with os.fdopen(read_fd, "rb", closefd=True) as stream:
+        readiness = stream.readline(32)
+    if readiness != b"ready\n":
+        raise RuntimeError("Local process guardian exited before publishing signal readiness")
+
+
+def _read_local_guardian_status(read_fd: int) -> int:
+    """Read one command status while the stable process-group guardian remains alive."""
+    with os.fdopen(read_fd, "rb", closefd=True) as stream:
+        raw_status = stream.readline(32)
+    if not raw_status:
+        raise RuntimeError("Local process guardian exited before reporting command completion")
+    try:
+        status = int(raw_status)
+    except ValueError as exc:
+        raise RuntimeError("Local process guardian returned an invalid command status") from exc
+    if not -(2**31) <= status < 2**31:
+        raise RuntimeError("Local process guardian returned an invalid command status")
+    return status
 
 
 def _read_path_bytes(path: Path, *, offset: int = 0, length: int | None = None) -> bytes:
@@ -1142,112 +1241,14 @@ class LocalShell(Shell):
             note,
         )
 
-    async def execute(
-        self,
-        command: str,
-        *,
-        timeout: float | None = None,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> tuple[int, str, str]:
-        """Execute a command and return results.
-
-        Args:
-            command: Command string to execute via shell.
-            timeout: Timeout in seconds. None means no timeout -- the command
-                runs until it completes or is cancelled.
-            env: Environment variables.
-            cwd: Working directory (relative or absolute path).
-
-        Returns:
-            Tuple of (exit_code, stdout, stderr).
-        """
-        if not command:
-            raise ShellExecutionError("", stderr="Empty command")
-
-        resolved_cwd = self._resolve_cwd(cwd)
+    def _resolve_execute_timeout(self, timeout: float | None) -> float | None:
+        """Apply the sandbox default while preserving raw-shell no-timeout semantics."""
         sandbox_enabled = self._sandbox_policy is not None and self._sandbox_policy.enabled
-        policy = self._sandbox_policy if sandbox_enabled else None
-        effective_timeout = self._default_timeout if timeout is None and sandbox_enabled else timeout
-        cleanup = lambda: None
+        if timeout is None and sandbox_enabled:
+            return self._default_timeout
+        return timeout
 
-        try:
-            effective_env = self._build_effective_env(env)
-            if policy is not None:
-                if policy.backend == "raw_host" and not policy.raw_shell_allowed:
-                    raise ShellExecutionError(
-                        command, stderr="Raw host shell backend is disabled by shell sandbox policy"
-                    )
-                if policy.backend == "raw_host":
-                    process = await asyncio.create_subprocess_shell(
-                        command,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=resolved_cwd,
-                        env=effective_env,
-                        executable=self._shell_executable,
-                        **process_group_kwargs(),
-                    )
-                else:
-                    from ya_agent_sdk.environment.shell_sandbox.backend import build_sandbox_command
-
-                    args, cleanup = build_sandbox_command(
-                        command=command,
-                        cwd=resolved_cwd,
-                        policy=policy,
-                        shell_executable=self._shell_executable,
-                    )
-                    process = await asyncio.create_subprocess_exec(
-                        *args,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=resolved_cwd,
-                        env=effective_env,
-                        **process_group_kwargs(),
-                    )
-            else:
-                process = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=resolved_cwd,
-                    env=effective_env,
-                    executable=self._shell_executable,
-                    **process_group_kwargs(),
-                )
-
-            try:
-                if effective_timeout is not None:
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        process.communicate(),
-                        timeout=effective_timeout,
-                    )
-                else:
-                    stdout_bytes, stderr_bytes = await process.communicate()
-            except TimeoutError as e:
-                await terminate_process_tree(process)
-                raise ShellTimeoutError(command, effective_timeout or 0) from e
-
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
-            return (process.returncode or 0, stdout, stderr)
-
-        except FileNotFoundError as e:
-            raise ShellExecutionError(
-                command,
-                stderr="Shell sandbox backend is unavailable" if policy is not None else "Command not found",
-            ) from e
-        except PermissionError as e:
-            raise ShellExecutionError(
-                command,
-                stderr="Shell sandbox backend permission denied" if policy is not None else "Permission denied",
-            ) from e
-        except OSError as e:
-            raise ShellExecutionError(command, stderr=str(e)) from e
-        finally:
-            cleanup()
-
-    async def _create_process(
+    async def _create_process(  # noqa: C901
         self,
         command: str,
         *,
@@ -1266,44 +1267,77 @@ class LocalShell(Shell):
         resolved_cwd = self._resolve_cwd(cwd)
         effective_env = self._build_effective_env(env)
         cleanup = lambda: None
+        ready_read_fd: int | None = None
+        ready_write_fd: int | None = None
+        status_read_fd: int | None = None
+        status_write_fd: int | None = None
+        ready_task: asyncio.Task[None] | None = None
+        status_task: asyncio.Task[int] | None = None
 
         try:
             sandbox_enabled = self._sandbox_policy is not None and self._sandbox_policy.enabled
             policy = self._sandbox_policy if sandbox_enabled else None
+            process_args: list[str] | None = None
             if policy is not None:
                 if policy.backend == "raw_host" and not policy.raw_shell_allowed:
                     raise ShellExecutionError(
                         command, stderr="Raw host shell backend is disabled by shell sandbox policy"
                     )
-                if policy.backend == "raw_host":
-                    process = await asyncio.create_subprocess_shell(
-                        command,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=resolved_cwd,
-                        env=effective_env,
-                        executable=self._shell_executable,
-                        **process_group_kwargs(),
-                    )
-                else:
+                if policy.backend != "raw_host":
                     from ya_agent_sdk.environment.shell_sandbox.backend import build_sandbox_command
 
-                    args, cleanup = build_sandbox_command(
+                    process_args, cleanup = build_sandbox_command(
                         command=command,
                         cwd=resolved_cwd,
                         policy=policy,
                         shell_executable=self._shell_executable,
                     )
-                    process = await asyncio.create_subprocess_exec(
-                        *args,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=resolved_cwd,
-                        env=effective_env,
-                        **process_group_kwargs(),
-                    )
+
+            if os.name == "posix":
+                if process_args is None:
+                    process_args = [self._shell_executable or "/bin/sh", "-c", command]
+                ready_read_fd, ready_write_fd = os.pipe()
+                status_read_fd, status_write_fd = os.pipe()
+                catchable_signals = ",".join(str(signum) for signum in _LOCAL_GUARDIAN_CATCHABLE_SIGNALS)
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-c",
+                    _LOCAL_PROCESS_GUARDIAN,
+                    str(ready_write_fd),
+                    str(status_write_fd),
+                    catchable_signals,
+                    *process_args,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=resolved_cwd,
+                    env=effective_env,
+                    pass_fds=(ready_write_fd, status_write_fd),
+                    **process_group_kwargs(),
+                )
+                os.close(ready_write_fd)
+                ready_write_fd = None
+                os.close(status_write_fd)
+                status_write_fd = None
+                ready_task = asyncio.create_task(
+                    asyncio.to_thread(_read_local_guardian_ready, ready_read_fd),
+                    name=f"local-shell-guardian-ready-{process.pid or id(process)}",
+                )
+                ready_read_fd = None
+                status_task = asyncio.create_task(
+                    asyncio.to_thread(_read_local_guardian_status, status_read_fd),
+                    name=f"local-shell-guardian-status-{process.pid or id(process)}",
+                )
+                status_read_fd = None
+            elif process_args is not None:
+                process = await asyncio.create_subprocess_exec(
+                    *process_args,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=resolved_cwd,
+                    env=effective_env,
+                )
             else:
                 process = await asyncio.create_subprocess_shell(
                     command,
@@ -1313,42 +1347,111 @@ class LocalShell(Shell):
                     cwd=resolved_cwd,
                     env=effective_env,
                     executable=self._shell_executable,
-                    **process_group_kwargs(),
                 )
         except Exception as e:
+            for pipe_fd in (ready_read_fd, ready_write_fd, status_read_fd, status_write_fd):
+                if pipe_fd is not None:
+                    os.close(pipe_fd)
             cleanup()
             raise ShellExecutionError(command, stderr=str(e)) from e
 
-        if process.stdout is None or process.stderr is None:
+        stdout = process.stdout
+        if stdout is None:
+            stdout = asyncio.StreamReader()
+            stdout.feed_eof()
+        stderr = process.stderr
+        if stderr is None:
+            stderr = asyncio.StreamReader()
+            stderr.feed_eof()
+
+        # On POSIX the direct child is a stable group/session guardian. It
+        # reports the real command status over a private pipe, then remains
+        # alive until this handle terminates the group. The PGID therefore
+        # cannot be released and reused before cleanup.
+        process_group_id = process.pid if status_task is not None else None
+        group_termination_confirmed = False
+        cleanup_completed = False
+        process_signal_lock = asyncio.Lock()
+
+        async def _terminate_group() -> None:
+            nonlocal group_termination_confirmed
+            async with process_signal_lock:
+                if group_termination_confirmed:
+                    return
+                if process_group_id is not None and process.returncode is not None:
+                    try:
+                        os.killpg(process_group_id, 0)
+                    except ProcessLookupError:
+                        await process.wait()
+                        group_termination_confirmed = True
+                        return
+                    raise RuntimeError(
+                        "Local process guardian exited before its process group could be safely terminated"
+                    )
+                await kill_process_tree(process, process_group_id=process_group_id)
+                group_termination_confirmed = True
+
+        def _cleanup() -> None:
+            nonlocal cleanup_completed
+            if cleanup_completed:
+                return
             cleanup()
-            raise ShellExecutionError(command, stderr="Failed to capture subprocess streams")
+            cleanup_completed = True
 
         async def _wait() -> int:
-            try:
+            if status_task is None or ready_task is None:
                 await process.wait()
-                return process.returncode or 0
-            finally:
-                cleanup()
+                exit_code = process.returncode or 0
+            else:
+                try:
+                    await asyncio.shield(ready_task)
+                    exit_code = await asyncio.shield(status_task)
+                except BaseException:
+                    await _terminate_group()
+                    _cleanup()
+                    raise
+            # The guardian still owns the numeric PGID here. Terminate residual
+            # members before reaping it and releasing ownership.
+            await _terminate_group()
+            _cleanup()
+            return exit_code
 
         async def _kill() -> None:
-            try:
-                await kill_process_tree(process)
-            finally:
-                cleanup()
+            await _terminate_group()
+            if ready_task is not None:
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(ready_task)
+            if status_task is not None:
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(status_task)
+            _cleanup()
 
         async def _send_signal(sig: int) -> None:
-            send_process_tree_signal(process, sig)
+            if ready_task is not None:
+                if sig not in _LOCAL_GUARDIAN_SUPPORTED_SIGNALS:
+                    raise ValueError(f"Unsupported LocalShell guardian signal number: {sig}")
+                await asyncio.shield(ready_task)
+                if sig == signal.SIGKILL:
+                    await _kill()
+                    return
+            async with process_signal_lock:
+                if group_termination_confirmed:
+                    return
+                if process_group_id is not None and process.returncode is not None:
+                    return
+                send_process_tree_signal(process, sig, process_group_id=process_group_id)
 
         stdin = StdinAdapter(process.stdin) if process.stdin is not None else None
 
         return ExecutionHandle(
-            stdout=process.stdout,
-            stderr=process.stderr,
+            stdout=stdout,
+            stderr=stderr,
             wait=_wait,
             kill=_kill,
             stdin=stdin,
             pid=process.pid,
             send_signal=_send_signal,
+            communicate=process.communicate if status_task is None else None,
         )
 
 

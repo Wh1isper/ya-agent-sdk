@@ -12,7 +12,7 @@ graph TB
     Body[HSplit]
     Output[Virtualized output viewport]
     Tasks[Conditional task pane]
-    Status[One-line status bar]
+    Status[Wrapping status bar]
     Input[Compose area]
     Model[Model selector overlay]
     Completion[Slash completion menu]
@@ -30,7 +30,7 @@ The body order is:
 
 1. flexible output window;
 2. conditional task pane;
-3. one-row status bar;
+3. terminal-width-aware status bar;
 4. bounded compose area.
 
 The output window has no fixed height and receives the remaining terminal rows. The model selector and completion menu are `Float` overlays, so opening them does not permanently shrink output.
@@ -74,6 +74,8 @@ The task pane reads the current SDK `TaskManager` snapshot directly.
 The compose buffer uses `SlashCommandCompleter`.
 
 - Command names complete from built-in and configured commands.
+- Effective skill names from `AgentContext.available_skills` complete as `/skill-name`.
+- After one skill is selected, completion supports additional leading skill tokens while excluding duplicates.
 - `/session <prefix>` completes confirmed session IDs.
 - A `CompletionsMenu` float makes suggestions visible.
 - While completion is active, navigation and acceptance keys are delegated to prompt_toolkit completion handling rather than prompt history or mode toggles.
@@ -81,7 +83,7 @@ The compose buffer uses `SlashCommandCompleter`.
 
 ## Status Bar
 
-The status bar is priority ordered so useful information survives clipping. It can include:
+The status bar is priority ordered and wraps instead of clipping when its display width exceeds the terminal width. Its dynamic height is the ceiling of prompt_toolkit fragment width divided by terminal width. It can include:
 
 - explicit execution phase;
 - active model profile;
@@ -89,7 +91,7 @@ The status bar is priority ordered so useful information survives clipping. It c
 - context-window utilization;
 - elapsed foreground time.
 
-The timer starts at synchronous foreground claim and retains one `_run_started_at` across thinking, tools, streaming, approval, and saving. It is cleared only after the foreground owner exits or pre-start dispatch is cancelled.
+The timer starts at synchronous foreground claim and retains one `_run_started_at` across thinking, tools, streaming, approval, and saving. It is cleared only after the foreground owner exits or pre-start dispatch is cancelled. Durations render as seconds below one minute (`42s`), minutes plus zero-padded seconds below one hour (`3m 05s`), and hours plus zero-padded minutes and seconds thereafter (`1h 05m 09s`).
 
 The phase labels are:
 
@@ -129,7 +131,9 @@ The compose area is three rows on small terminals and five rows otherwise. It su
 | Command/Shell/Saving/Cancelling | Ordinary and idle-only control drafts are preserved; busy-safe commands retain local semantics |
 | Background result ready | Next prompt integrates results; `/integrate` starts an explicit integration turn |
 
-The `/` and `!` namespaces are classified before prompt, steering, or HITL-result parsing. Unknown slash commands produce local suggestions. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before this classification while its binary remains queued; if the user deleted the chip, the binary is dropped before dispatch.
+The `/` and `!` namespaces are classified before prompt, steering, or HITL-result parsing. While idle, one or more consecutive leading `/skill-name` tokens that match the effective skill catalog create an explicit skill-selection prompt; the remaining text is the task. For slash tokens that are not known commands, YAACLI synchronously reserves foreground ownership, refreshes `AgentContext.available_skills`, and only then classifies the submitted text, so runtime skill additions, removals, and overrides cannot race dispatch. Existing built-in and configured commands take precedence when the first token conflicts with a skill name. Unknown slash commands produce local suggestions. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before this classification while its binary remains queued; if the user deleted the chip, the binary is dropped before dispatch.
+
+The model-facing skill-selection block contains only escaped, catalog-grounded names and paths plus the task; it does not inject skill bodies. The transcript and prompt history retain the original user text. The agent still inspects each selected `SKILL.md` and applies the SDK skill activation policy.
 
 ## Direct Foreground Shell
 
@@ -195,9 +199,9 @@ The integration suite exercises:
 - real task visibility, one-row collapse, and F2 handler transitions;
 - viewport row budgeting;
 - model selector overlay behavior;
-- real completion menu/key routing;
+- real command, session, and multi-skill completion menu/key routing;
 - bounded transcript and streaming updates;
-- timer continuity through actual lifecycle transitions;
+- timer continuity, compact duration formatting, and status wrapping;
 - shell/prompt/command race prevention;
 - cancellation and saving behavior;
 - small terminal fallback dimensions.

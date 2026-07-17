@@ -73,13 +73,16 @@ The output viewport has priority over auxiliary UI. The task pane is hidden when
 - Enter submits while idle and sends guidance to the active run while an agent is running.
 - Ordinary text submitted during an active agent run is steering. The status bar shows how many steering messages are still waiting for a model request, without exposing their content. Slash commands and `!shell` always remain local control syntax: safe busy commands execute, idle-only commands are rejected without clearing the draft, unknown commands get local suggestions, and none of them are sent to the model or accepted as deferred-call results.
 - `/cancel` or `Ctrl+C` requests cancellation of cancellable foreground work. Once the TUI enters `SAVING`, persistence is allowed to finish and cannot be cancelled; Ctrl+C does not exit while the save is in progress.
-- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session.
+- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session, terminating and discarding background subagent and shell work owned by the previous session while keeping the runtime environment reusable.
 - Background results never take over the compose area. The next prompt integrates them automatically; `/integrate` delivers them to an active agent run for its next model request, or starts an explicit integration turn while idle.
 - `/agents` shows running and recently completed background subagents; `/process` shows active background shell processes.
 - `/attachments` and `/remove-image` inspect or edit images queued for the next turn.
 - `/tool <call-id>` shows the complete retained result for a tool call.
 - `/session <id>` restores a saved session. The CLI equivalent is `yaacli --session <id>`.
-- Use `/help` for the complete built-in and configured command list. Slash commands complete while typing.
+- Use `/help` for the complete built-in and configured command list. Slash commands and available skills complete while typing.
+- Prefix an idle prompt with one or more available skill names to request them explicitly: `/lark-cli /agent-builder Build an agent that replies in Lark`. Only the leading consecutive `/skill-name` tokens are selected. If the first token is also a built-in or configured command, command dispatch takes precedence.
+- The interactive TUI enables `ask_user_question` by default. When the agent needs clarification, YAACLI renders one to four structured questions and accepts an option number, comma-separated numbers for multi-select questions, or free text.
+- Long status text wraps to the available terminal width. Foreground elapsed time uses compact forms such as `42s`, `3m 05s`, and `1h 05m 09s`.
 
 ## Built-in Skills
 
@@ -88,6 +91,19 @@ YAACLI ships with `building-agents` from the repository canonical source `skills
 The YA Claw deployment skill lives in `skills/ya-claw-deploy/` and is published as `YA_CLAW_DEPLOY_SKILL.zip` during release.
 
 The repository sync script keeps bundled skill files under `packages/yaacli/yaacli/skills/` aligned.
+
+YAACLI refreshes and resolves `/skill-name` against the effective SDK skill catalog at submission time, including built-in, global, shared, and project skills after normal priority rules. The visible transcript and prompt history retain the original input; the model receives a catalog-grounded explicit-selection marker plus the remaining task. Unknown slash prefixes are not treated as skills.
+
+## Structured User Input
+
+The interactive TUI opts into the SDK's deferred `ask_user_question` tool. Disable it globally in `~/.yaacli/tools.toml` or for one project in `.yaacli/tools.toml`:
+
+```toml
+[tools]
+enable_user_input = false
+```
+
+The field defaults to `true`. Headless mode does not expose this tool because it cannot collect interactive answers. The SDK also leaves it disabled unless a host explicitly registers it and implements deferred continuation. Project `tools.toml` replaces the global tool policy as a whole; if a project file exists, set `enable_user_input = false` in that project file as well rather than relying on the global value.
 
 ## Development
 

@@ -36,7 +36,7 @@ import os
 import tempfile
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from itertools import islice
@@ -45,14 +45,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from pydantic_ai import RunContext
 from pydantic_ai.usage import RunUsage
-from ya_agent_environment import BaseResource
+from ya_agent_environment import BaseResource, Shell, ShellBackgroundResetError
 from ya_agent_sdk.context.bus import BusMessage, MessageBus
 from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
 
 from yaacli.logging import get_logger
 
 if TYPE_CHECKING:
-    from ya_agent_environment.shell import Shell
     from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 logger = get_logger(__name__)
@@ -175,6 +174,7 @@ class BackgroundMonitor(BaseResource):
         self._discarded_tasks: set[asyncio.Task[Any]] = set()
         self._reset_tasks: set[asyncio.Task[Any]] = set()
         self._resetting_subagents = False
+        self._resetting_session = False
         self._subagent_reset_lock = asyncio.Lock()
         self._core_toolset: Toolset[Any] | None = None
         self._completion_callback: Callable[[str], None] | None = None
@@ -233,6 +233,27 @@ class BackgroundMonitor(BaseResource):
         except RuntimeError:
             return False
         return task is not None and task in self._discarded_tasks
+
+    def create_session_task(
+        self,
+        coroutine_factory: Callable[[], Coroutine[Any, Any, Any]],
+        *,
+        name: str | None = None,
+    ) -> asyncio.Task[Any]:
+        """Create background work bound to the current reusable-shell session."""
+        if self._resetting_subagents:
+            raise RuntimeError("Cannot create a background subagent while session state is being reset")
+
+        shell = self._shell if isinstance(self._shell, Shell) else None
+        generation = shell.capture_session_access() if shell is not None else None
+
+        async def _run() -> Any:
+            if shell is not None:
+                with shell.session_access_scope(generation):
+                    return await coroutine_factory()
+            return await coroutine_factory()
+
+        return asyncio.create_task(_run(), name=name)
 
     def notify_completion(self, agent_id: str) -> None:
         """Notify that a background task has completed.
@@ -933,10 +954,11 @@ class BackgroundMonitor(BaseResource):
         self._resetting_subagents = False
 
     async def reset_subagent_state(self) -> None:
-        """Cancel background subagents and discard all subagent session state.
+        """Cancel background subagents while preserving environment shell work.
 
-        Shell process monitoring is intentionally preserved because background
-        processes belong to the environment rather than the conversation.
+        This narrower operation remains available to callers that only replace
+        subagent state. Session transitions must use ``reset_session_state()``
+        so shell processes and terminal buffers cannot cross the boundary.
         Tasks that exceed the bounded cancellation wait remain tombstoned, so
         late results cannot re-enter the new conversation.
         """
@@ -944,16 +966,81 @@ class BackgroundMonitor(BaseResource):
             self.begin_subagent_reset()
             tasks = set(self._reset_tasks)
             try:
-                if tasks:
-                    _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_BACKGROUND_TASKS_TIMEOUT)
-                    if pending:
-                        logger.warning(
-                            "%d background subagent task(s) did not cancel within %.1fs; late results will be discarded",
-                            len(pending),
-                            _SHUTDOWN_BACKGROUND_TASKS_TIMEOUT,
-                        )
+                await self._wait_for_reset_tasks(tasks)
             finally:
                 self.finish_subagent_reset()
+
+    async def _wait_for_reset_tasks(self, tasks: set[asyncio.Task[Any]]) -> None:
+        """Wait a bounded interval for already-cancelled subagent tasks."""
+        if not tasks:
+            return
+        _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_BACKGROUND_TASKS_TIMEOUT)
+        if pending:
+            logger.warning(
+                "%d background subagent task(s) did not cancel within %.1fs; late results will be discarded",
+                len(pending),
+                _SHUTDOWN_BACKGROUND_TASKS_TIMEOUT,
+            )
+
+    def _discard_shell_session_state(self) -> None:
+        """Forget shell wakeups and deduplication state from the old session."""
+        self._pending_messages = [pending for pending in self._pending_messages if pending.shell_process_id is None]
+        self._known_active.clear()
+        self._completion_notified.clear()
+        self._monitored_processes.clear()
+        self._notified_pending.clear()
+
+    def begin_session_reset(self) -> None:
+        """Synchronously isolate all subagent and shell work from the old session."""
+        if self._resetting_session:
+            return
+        self._resetting_session = True
+        # Revoke inherited shell access before cancellation. A task that ignores
+        # cancellation, including any child task it already spawned, keeps the
+        # retired lease and cannot create or manipulate new-session processes.
+        if isinstance(self._shell, Shell):
+            self._shell.revoke_session_access()
+        self.begin_subagent_reset()
+        self._discard_shell_session_state()
+
+    def finish_session_reset(self) -> None:
+        """Finish a session reset and re-enable monitoring for future work."""
+        if not self._resetting_session:
+            return
+        self.finish_subagent_reset()
+        self._discard_shell_session_state()
+        self._resetting_session = False
+
+    async def reset_session_state(self) -> None:
+        """Cancel and discard all background work owned by the old session.
+
+        The monitor and shell backend remain reusable. Active shell processes,
+        terminal output buffers, retained results, and wake-up notifications do
+        not cross the session boundary.
+        """
+        async with self._subagent_reset_lock:
+            self.begin_session_reset()
+            tasks = set(self._reset_tasks)
+            try:
+                # Shell cleanup completes before the bounded subagent wait. The
+                # shell API finishes process termination before propagating
+                # cancellation, so Ctrl+C cannot transfer old processes into
+                # the context that the TUI commits next.
+                if self._shell is not None:
+                    try:
+                        await self._shell.reset_background_processes()
+                    except asyncio.CancelledError:
+                        raise
+                    except ShellBackgroundResetError:
+                        raise
+                    except Exception as exc:
+                        # Custom backends may not yet use the typed reset error.
+                        # Any shell-reset failure leaves process ownership
+                        # uncertain and must block the session commit.
+                        raise ShellBackgroundResetError({"shell-backend": exc}) from exc
+                await self._wait_for_reset_tasks(tasks)
+            finally:
+                self.finish_session_reset()
 
     # =========================================================================
     # Output monitoring for shell processes
@@ -973,6 +1060,9 @@ class BackgroundMonitor(BaseResource):
         Args:
             process_id: The process ID returned by shell.start().
         """
+        if self._resetting_session:
+            logger.debug("Ignoring shell monitor registration during session reset: %s", process_id)
+            return
         self._monitored_processes.add(process_id)
         logger.debug("Registered process for output monitoring: %s", process_id)
 
@@ -1009,6 +1099,9 @@ class BackgroundMonitor(BaseResource):
 
     def _notify_monitored_output(self, process_id: str) -> None:
         """Send bus message and invoke callback for new output on a monitored process."""
+        if self._resetting_session:
+            logger.debug("Suppressing shell output notification during session reset: %s", process_id)
+            return
         if self._bus is not None and self._agent_id is not None:
             from ya_agent_sdk.context.bus import BusMessage
 
@@ -1141,6 +1234,9 @@ class BackgroundMonitor(BaseResource):
         The bus message serves as a wake-up trigger. Actual stdout/stderr/exit_code
         data is consumed by inject_background_results filter via shell tools.
         """
+        if self._resetting_session:
+            logger.debug("Suppressing shell completion notification during session reset: %s", process_id)
+            return
         # Send bus message as wake-up notification
         if self._bus is not None and self._agent_id is not None:
             from ya_agent_sdk.context.bus import BusMessage
@@ -1237,6 +1333,7 @@ class BackgroundMonitor(BaseResource):
         self._discarded_tasks.clear()
         self._reset_tasks.clear()
         self._resetting_subagents = False
+        self._resetting_session = False
         self._core_toolset = None
         self._completion_callback = None
         self._shell = None

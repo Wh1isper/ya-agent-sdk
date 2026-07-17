@@ -23,6 +23,7 @@ Start with these local references:
 - Sessions and restore flow: [`./context.md`](./context.md)
 - Streaming and event handling: [`./streaming.md`](./streaming.md), [`./events.md`](./events.md)
 - Tools, hooks, and toolsets: [`./toolset.md`](./toolset.md), [`./tool-search.md`](./tool-search.md)
+- Structured clarifying questions and deferred host flows: [`./user-input.md`](./user-input.md)
 - Subagents and delegation: [`./subagent.md`](./subagent.md)
 - Environments and resumable resources: [`./environment.md`](./environment.md), [`./resumable-resources.md`](./resumable-resources.md)
 
@@ -125,7 +126,7 @@ async with create_agent(
     ...
 ```
 
-Read [`./toolset.md`](./toolset.md) when approval rules interact with hooks, tool composition, or custom tool registration.
+Read [`./toolset.md`](./toolset.md) when approval rules interact with hooks, tool composition, or custom tool registration. Read [`./user-input.md`](./user-input.md) when the host should opt into structured clarifying questions and resume deferred calls.
 
 ### Add subagents
 
@@ -160,6 +161,7 @@ All paths below are local paths relative to this file.
 | Streaming and hooks  | [`./streaming.md`](./streaming.md)                     | You need streaming output, lifecycle hooks, or interactive runs    |
 | Events               | [`./events.md`](./events.md)                           | You need the event model or sideband event handling                |
 | Toolsets             | [`./toolset.md`](./toolset.md)                         | You need tools, toolsets, hooks, retries, or approval settings     |
+| Structured input     | [`./user-input.md`](./user-input.md)                   | You need opt-in clarifying questions or deferred host continuation |
 | Tool search          | [`./tool-search.md`](./tool-search.md)                 | You need discovery across a large or dynamic tool library          |
 | Subagents            | [`./subagent.md`](./subagent.md)                       | You need delegation, subagent configs, or unified subagent tools   |
 | Environment          | [`./environment.md`](./environment.md)                 | You need custom environments or sandbox-backed execution           |

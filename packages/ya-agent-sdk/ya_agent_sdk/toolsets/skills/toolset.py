@@ -29,7 +29,7 @@ from pydantic_ai.messages import InstructionPart
 from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.context import AgentContext, AvailableSkill
 from ya_agent_sdk.toolsets.base import BaseToolset
 from ya_agent_sdk.toolsets.skills.config import SkillConfig, parse_skill_markdown
 
@@ -371,6 +371,42 @@ class SkillToolset(BaseToolset[AgentContext]):
         )
         ctx.deps.tool_config.register_view_relaxed_text_patterns(self._relaxed_text_patterns_source, patterns)
 
+    @staticmethod
+    def _publish_available_skills(ctx: AgentContext, skills: dict[str, SkillConfig]) -> None:
+        """Publish the effective catalog without replacing its shared mapping."""
+        if not isinstance(ctx, AgentContext) or not hasattr(ctx, "available_skills"):
+            return
+        ctx.available_skills.clear()
+        ctx.available_skills.update({
+            name: AvailableSkill(
+                name=config.name,
+                description=config.description,
+                path=str(config.path),
+            )
+            for name, config in skills.items()
+        })
+
+    async def refresh_context(self, ctx: AgentContext) -> dict[str, SkillConfig]:
+        """Rescan skills and publish the effective catalog to ``AgentContext``.
+
+        This host-facing entry point is useful before the first model request,
+        for example when an interactive application needs skill completions.
+        It does not run ``pre_scan_hook`` because that hook requires Pydantic
+        AI's full ``RunContext``; normal model-request scans still run the hook.
+        """
+        file_operator = ctx.file_operator
+        if file_operator is None:
+            self._skills_cache = {}
+            self._publish_available_skills(ctx, {})
+            ctx.tool_config.unregister_view_relaxed_text_patterns(self._relaxed_text_patterns_source)
+            return {}
+
+        skills = await self._scan_skills(file_operator)
+        self._publish_available_skills(ctx, skills)
+        if not skills:
+            ctx.tool_config.unregister_view_relaxed_text_patterns(self._relaxed_text_patterns_source)
+        return skills
+
     def _format_skills_instruction(self, skills: dict[str, SkillConfig]) -> str | None:
         """Format skills metadata for system prompt injection.
 
@@ -418,14 +454,17 @@ class SkillToolset(BaseToolset[AgentContext]):
 
         file_operator = ctx.deps.file_operator
         if file_operator is None:
+            self._publish_available_skills(ctx.deps, {})
             tool_config = getattr(ctx.deps, "tool_config", None)
             if tool_config is not None:
                 tool_config.unregister_view_relaxed_text_patterns(self._relaxed_text_patterns_source)
             logger.debug("SkillToolset: No file_operator available, skipping skill scan")
             return None
 
-        # Scan for skills (with hot-reload detection)
+        # Scan for skills (with hot-reload detection) and expose the same
+        # priority-resolved catalog to application hosts.
         skills = await self._scan_skills(file_operator)
+        self._publish_available_skills(ctx.deps, skills)
 
         if not skills:
             ctx.deps.tool_config.unregister_view_relaxed_text_patterns(self._relaxed_text_patterns_source)
