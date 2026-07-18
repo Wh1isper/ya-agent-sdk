@@ -3449,6 +3449,33 @@ def test_tui_app_status_starts_with_phase_without_an_agent_mode_badge() -> None:
     assert all("mode-" not in style for style, _text in fragments)
 
 
+@pytest.mark.parametrize(
+    ("width", "show_token_usage", "shows_model", "shows_context"),
+    [
+        (99, True, False, True),
+        (99, False, False, False),
+        (100, True, True, True),
+        (100, False, True, False),
+    ],
+)
+def test_tui_app_status_respects_compact_and_token_usage_settings(
+    width: int,
+    show_token_usage: bool,
+    shows_model: bool,
+    shows_context: bool,
+) -> None:
+    config = YaacliConfig(display=DisplayConfig(show_token_usage=show_token_usage))
+    app = TUIApp(config=config, config_manager=MockConfigManager())
+    app._get_terminal_width = lambda: width  # type: ignore[method-assign]
+    app._current_context_tokens = 50_000
+    app._context_window_size = 200_000
+
+    status = "".join(text for _style, text in app._get_status_text())
+
+    assert (app._format_active_model_label() in status) is shows_model
+    assert ("ctx 25%" in status) is shows_context
+
+
 @pytest.mark.parametrize("phase", [TUIPhase.SAVING, TUIPhase.CANCELLING])
 def test_tui_app_cleanup_phases_advertise_wait_instead_of_send_or_steer(phase: TUIPhase) -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())

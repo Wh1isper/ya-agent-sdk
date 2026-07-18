@@ -1868,13 +1868,13 @@ class TUIApp:
 
         if not compact:
             parts.append(("class:status-bar", f" · {self._format_active_model_label()}"))
-            if self.config.display.show_token_usage:
-                context_pct = (
-                    f"{self._current_context_tokens / self._context_window_size * 100:.0f}%"
-                    if self._current_context_tokens > 0 and self._context_window_size > 0
-                    else "--"
-                )
-                parts.append(("class:status-bar", f" · ctx {context_pct}"))
+        if self.config.display.show_token_usage:
+            context_pct = (
+                f"{self._current_context_tokens / self._context_window_size * 100:.0f}%"
+                if self._current_context_tokens > 0 and self._context_window_size > 0
+                else "--"
+            )
+            parts.append(("class:status-bar", f" · ctx {context_pct}"))
         if self.config.display.show_elapsed_time and self._is_foreground_busy():
             started_at = self._run_started_at if self._run_started_at is not None else self._phase_started_at
             elapsed = _format_elapsed_duration(time.monotonic() - started_at)
