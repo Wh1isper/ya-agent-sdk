@@ -23,8 +23,9 @@ model = ""
 # Aliases: claude, anthropic, openai, xai, grok, gemini
 # model_cfg = "claude_200k"
 #
-# Optional static instructions for the default model profile. These are added to
-# the built-in system prompt (or general.system_prompt_file).
+# Optional static instructions for the default model profile. These are sent
+# through Pydantic AI's model instruction mechanism alongside the built-in prompt
+# (or general.system_prompt_file).
 # instructions = """
 # Prefer concise, evidence-based answers.
 # """

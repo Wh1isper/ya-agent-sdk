@@ -93,12 +93,12 @@ def test_fix_system_prompt_removes_all_system_prompts() -> None:
     assert isinstance(result[2].parts[0], UserPromptPart)
 
 
-def test_fix_system_prompt_preserves_dynamic_system_prompts() -> None:
-    """Dynamic prompts remain available for Pydantic AI to reevaluate on later turns."""
+def test_fix_system_prompt_removes_dynamic_system_prompts() -> None:
+    """Dynamic prompts from another agent must not leak through normalized history."""
     request = ModelRequest(
         parts=[
             SystemPromptPart(content="Old static prompt"),
-            SystemPromptPart(content="Profile prompt", dynamic_ref="profile_instructions"),
+            SystemPromptPart(content="Foreign dynamic prompt", dynamic_ref="other_agent_prompt"),
             UserPromptPart(content="Hello"),
         ]
     )
@@ -106,13 +106,10 @@ def test_fix_system_prompt_preserves_dynamic_system_prompts() -> None:
     result = fix_system_prompt([request], "New system prompt")
 
     assert isinstance(result[0], ModelRequest)
-    assert len(result[0].parts) == 3
+    assert len(result[0].parts) == 2
     assert isinstance(result[0].parts[0], SystemPromptPart)
     assert result[0].parts[0].content == "New system prompt"
-    assert isinstance(result[0].parts[1], SystemPromptPart)
-    assert result[0].parts[1].content == "Profile prompt"
-    assert result[0].parts[1].dynamic_ref == "profile_instructions"
-    assert isinstance(result[0].parts[2], UserPromptPart)
+    assert isinstance(result[0].parts[1], UserPromptPart)
 
 
 def test_fix_system_prompt_preserves_instructions() -> None:

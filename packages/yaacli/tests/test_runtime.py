@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.usage import RequestUsage
 from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.filters.handoff import process_handoff_message
 from ya_agent_sdk.toolsets.core.base import Toolset
@@ -127,19 +128,15 @@ async def test_create_tui_runtime_filetree_context_uses_workspace_only(tmp_path:
         assert runtime.env.tmp_dir.resolve() in allowed_paths
 
 
-async def test_model_profile_instructions_are_reevaluated_after_switch(tmp_path: Path) -> None:
-    """Profile instructions use dynamic prompts so an active-session switch takes effect."""
-    captured_system_prompts: list[list[str]] = []
+async def test_model_profile_instructions_refresh_after_switch(tmp_path: Path) -> None:
+    """Profile instructions are evaluated for each model request after a profile switch."""
+    captured_instructions: list[str | None] = []
+    captured_instruction_parts: list[list[tuple[str, bool]]] = []
 
-    def respond(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
-        prompts: list[str] = []
-        for message in messages:
-            if not isinstance(message, ModelRequest):
-                continue
-            for part in message.parts:
-                if isinstance(part, SystemPromptPart):
-                    prompts.append(part.content)
-        captured_system_prompts.append(prompts)
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured_instructions.append(info.instructions)
+        parts = info.model_request_parameters.instruction_parts or []
+        captured_instruction_parts.append([(part.content, part.dynamic) for part in parts])
         return ModelResponse(parts=[TextPart(content="ok")])
 
     config = YaacliConfig(
@@ -151,15 +148,122 @@ async def test_model_profile_instructions_are_reevaluated_after_switch(tmp_path:
     runtime = create_tui_runtime(config=config, working_dir=tmp_path, enable_async_subagents=False)
 
     async with runtime:
-        model = FunctionModel(respond)
-        with runtime.agent.override(model=model):
+        with runtime.agent.override(model=FunctionModel(respond)):
             first_result = await runtime.agent.run("First turn", deps=runtime.ctx)
             runtime.ctx.model_profile_instructions = "Use the fast profile instructions."
             await runtime.agent.run("Second turn", deps=runtime.ctx, message_history=first_result.all_messages())
 
-    assert "Use the default profile instructions." in captured_system_prompts[0]
-    assert "Use the fast profile instructions." in captured_system_prompts[1]
-    assert "Use the default profile instructions." not in captured_system_prompts[1]
+    assert "Use the default profile instructions." in captured_instructions[0]
+    assert "Use the fast profile instructions." in captured_instructions[1]
+    assert "Use the default profile instructions." not in captured_instructions[1]
+    assert ("Use the default profile instructions.", True) in captured_instruction_parts[0]
+    assert ("Use the fast profile instructions.", True) in captured_instruction_parts[1]
+    assert ("Use the default profile instructions.", True) not in captured_instruction_parts[1]
+
+
+async def test_model_profile_instructions_apply_to_legacy_history(tmp_path: Path) -> None:
+    """Profile instructions do not depend on a dynamic system-prompt marker in history."""
+    captured_instructions: list[str | None] = []
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured_instructions.append(info.instructions)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_tui_runtime(
+        config=YaacliConfig(
+            general=GeneralConfig(
+                model="openai-chat:gpt-4",
+                instructions="Use the configured profile instructions.",
+            )
+        ),
+        working_dir=tmp_path,
+        enable_async_subagents=False,
+    )
+    legacy_history = [
+        ModelRequest(
+            parts=[
+                SystemPromptPart(content="Legacy system prompt"),
+                UserPromptPart(content="Original request"),
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="Previous answer")]),
+    ]
+
+    async with runtime:
+        with runtime.agent.override(model=FunctionModel(respond)):
+            await runtime.agent.run("Continue", deps=runtime.ctx, message_history=legacy_history)
+
+    assert len(captured_instructions) == 1
+    assert "Use the configured profile instructions." in captured_instructions[0]
+
+
+async def test_model_profile_instructions_apply_after_handoff(tmp_path: Path) -> None:
+    """Handoff replacement does not remove profile instructions from the next model request."""
+    captured_instructions: list[str | None] = []
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured_instructions.append(info.instructions)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_tui_runtime(
+        config=YaacliConfig(
+            general=GeneralConfig(
+                model="openai-chat:gpt-4",
+                instructions="Use the configured profile instructions.",
+            )
+        ),
+        working_dir=tmp_path,
+        enable_async_subagents=False,
+    )
+
+    async with runtime:
+        runtime.ctx.handoff_message = "# Handoff Summary\n\nContinue from this summary."
+        with runtime.agent.override(model=FunctionModel(respond)):
+            await runtime.agent.run("Continue", deps=runtime.ctx)
+
+    assert len(captured_instructions) == 1
+    assert "Use the configured profile instructions." in captured_instructions[0]
+
+
+async def test_model_profile_instructions_apply_after_automatic_compaction(tmp_path: Path) -> None:
+    """Automatic context compaction does not remove profile instructions from later requests."""
+    captured_instructions: list[str | None] = []
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured_instructions.append(info.instructions)
+        return ModelResponse(parts=[TextPart(content="continue")])
+
+    async def stream_respond(_messages: list[ModelMessage], info: AgentInfo):
+        captured_instructions.append(info.instructions)
+        yield "compacted summary"
+
+    runtime = create_tui_runtime(
+        config=YaacliConfig(
+            general=GeneralConfig(
+                model="openai-chat:gpt-4",
+                model_cfg={"context_window": 10, "compact_threshold": 0.1},
+                instructions="Use the configured profile instructions.",
+            )
+        ),
+        working_dir=tmp_path,
+        enable_async_subagents=False,
+    )
+    history = [
+        ModelRequest(
+            parts=[SystemPromptPart(content="Legacy system prompt"), UserPromptPart(content="Original request")]
+        ),
+        ModelResponse(parts=[TextPart(content="Previous answer")], usage=RequestUsage(input_tokens=10)),
+    ]
+
+    async with runtime:
+        with runtime.agent.override(model=FunctionModel(respond, stream_function=stream_respond)):
+            await runtime.agent.run("Continue", deps=runtime.ctx, message_history=history)
+
+    assert len(captured_instructions) >= 2
+    assert all(
+        instruction is not None and "Use the configured profile instructions." in instruction
+        for instruction in captured_instructions
+    )
 
 
 def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None:

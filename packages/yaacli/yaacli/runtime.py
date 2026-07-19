@@ -411,9 +411,9 @@ def create_tui_runtime(
         lifecycle_extensions=[GoalContextHandoffExtension()],
     )
 
-    @runtime.agent.system_prompt(dynamic=True)
+    @runtime.agent.instructions
     def model_profile_instructions_prompt(run_context: RunContext[TUIContext]) -> str | None:
-        """Return the active profile's static instructions for each conversation turn."""
+        """Return the active profile's static instructions for each model request."""
         instructions = run_context.deps.model_profile_instructions
         return instructions if instructions and instructions.strip() else None
 
