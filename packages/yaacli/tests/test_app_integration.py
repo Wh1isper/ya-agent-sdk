@@ -63,7 +63,7 @@ from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, DisplayConfig, GeneralConfig, ModelProfileConfig, YaacliConfig
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
 from yaacli.session import TUIContext
-from yaacli.sessions import save_session_turn
+from yaacli.sessions import SessionInfo, save_session_turn
 from yaacli.theme import prompt_toolkit_style_rules
 
 
@@ -104,6 +104,33 @@ class MockConfigManager:
 
     def load_custom_commands(self) -> dict:
         return {}
+
+
+def _session_info(
+    session_id: str,
+    *,
+    working_dir: str = "/workspace",
+    input_text: str | None = "last input",
+    output_text: str | None = "last output",
+    updated_at: str = "2026-01-01T12:34:56+00:00",
+) -> SessionInfo:
+    return SessionInfo(
+        id=session_id,
+        path=Path("/sessions") / session_id,
+        updated_at=updated_at,
+        created_at="2026-01-01T00:00:00+00:00",
+        working_dir=working_dir,
+        model_profile_id=None,
+        model_label=None,
+        model=None,
+        input_text=input_text,
+        output_text=output_text,
+        message_count=2,
+        display_event_count=3,
+        metadata={},
+        head_turn_id="turn-1",
+        turn_count=1,
+    )
 
 
 def _make_contextvar_cleanup_error() -> ValueError:
@@ -314,6 +341,192 @@ def test_tui_app_background_inspection_commands_have_specific_empty_states() -> 
 
     assert "No background subagents." in agents_app._output_lines[-1]
     assert "No active background processes." in processes_app._output_lines[-1]
+
+
+@pytest.mark.asyncio
+async def test_tui_session_selector_renders_metadata_previews_and_current_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._session_id = "current-session"
+    entries = [
+        _session_info("older-session", working_dir="/workspace/older"),
+        _session_info(
+            "current-session",
+            working_dir="/workspace/current",
+            input_text="fix\nthis selector",
+            output_text="done\x1b[31m safely",
+        ),
+    ]
+    monkeypatch.setattr("yaacli.app.tui.list_sessions", lambda _: entries)
+
+    await app._show_session_selector()
+
+    assert app._session_selector_open is True
+    assert app._session_selector_index == 1
+    title = "".join(text for _, text in app._get_session_selector_title())
+    rendered = "".join(text for _, text in app._get_session_selector_text())
+    assert title == "Sessions · 2"
+    assert "Up/Down navigate" in rendered
+    assert "SESSION" in rendered
+    assert "UPDATED" in rendered
+    assert "WORKSPACE" in rendered
+    assert "> * current-session" in rendered
+    assert "DETAILS  current-session" in rendered
+    assert "Directory   /workspace/current" in rendered
+    assert "Last input  fix this selector" in rendered
+    assert "Last output done [31m safely" in rendered
+    assert "\x1b" not in rendered
+    assert app._get_session_selector_height() == rendered.count("\n") + 1
+    assert any(style == "class:session-selector.selection" for style, _ in app._get_session_selector_text())
+
+
+def test_tui_session_selector_adapts_columns_and_scroll_hints_to_terminal_width() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._session_selector_open = True
+    app._session_selector_entries = [
+        _session_info(f"session-{index:02d}", working_dir=f"/workspace/{index}") for index in range(12)
+    ]
+    app._session_selector_index = 6
+    app._get_terminal_width = MagicMock(return_value=40)  # type: ignore[method-assign]
+
+    lines = app._session_selector_lines()
+    rendered = "\n".join("".join(text for _, text in line) for line in lines)
+
+    assert app._get_session_selector_width() == 36
+    assert "UPDATED" in rendered
+    assert "WORKSPACE" not in rendered
+    assert "newer sessions" in rendered
+    assert "older sessions" in rendered
+    assert all(len("".join(text for _, text in line)) <= 32 for line in lines)
+
+    app._get_terminal_width = MagicMock(return_value=36)  # type: ignore[method-assign]
+    boundary_lines = app._session_selector_lines()
+    assert all(len("".join(text for _, text in line)) <= 28 for line in boundary_lines)
+
+    app._get_terminal_width = MagicMock(return_value=200)  # type: ignore[method-assign]
+    assert app._get_session_selector_width() == 110
+
+
+def test_tui_session_selector_fits_short_terminals_and_keeps_selection_visible() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._session_selector_open = True
+    app._session_selector_entries = [_session_info(f"session-{index:02d}") for index in range(12)]
+    app._session_selector_index = 6
+
+    for terminal_height in (20, 13, 8, 5):
+        app._get_terminal_height = MagicMock(return_value=terminal_height)  # type: ignore[method-assign]
+        lines = app._session_selector_lines()
+        selected_lines = [text for line in lines for style, text in line if style == "class:session-selector.selection"]
+
+        assert len(lines) <= terminal_height - 3
+        assert any("session-06" in text for text in selected_lines)
+
+    app._get_terminal_height = MagicMock(return_value=20)  # type: ignore[method-assign]
+    assert "DETAILS" in "".join(text for _, text in app._get_session_selector_text())
+    app._get_terminal_height = MagicMock(return_value=13)  # type: ignore[method-assign]
+    assert "DETAILS" not in "".join(text for _, text in app._get_session_selector_text())
+
+
+def test_tui_session_selector_keybindings_move_wrap_and_load() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._session_selector_open = True
+    app._session_selector_entries = [_session_info("session-a"), _session_info("session-b")]
+    app._session_selector_index = 0
+    app._schedule_command = MagicMock()  # type: ignore[method-assign]
+    input_area = TextArea(multiline=True)
+    key_bindings = app._setup_input_keybindings(input_area)
+    handle_up = next(binding.handler for binding in key_bindings.bindings if binding.keys == (Keys.Up,))
+    handle_down = next(binding.handler for binding in key_bindings.bindings if binding.keys == (Keys.Down,))
+    handle_enter = next(binding.handler for binding in key_bindings.bindings if binding.keys == (Keys.ControlM,))
+
+    handle_up(MagicMock())
+    assert app._session_selector_index == 1
+    handle_down(MagicMock())
+    assert app._session_selector_index == 0
+
+    app._session_selector_index = 1
+    handle_enter(MagicMock())
+
+    assert app._session_selector_open is False
+    assert app._session_selector_entries == []
+    app._schedule_command.assert_called_once_with("/session session-b")
+
+    app._session_selector_open = True
+    app._session_selector_entries = [_session_info("session-a")]
+    application_bindings = app._setup_keybindings(input_area)
+    handle_escape = next(binding.handler for binding in application_bindings.bindings if binding.keys == (Keys.Escape,))
+    handle_escape(MagicMock())
+    assert app._session_selector_open is False
+
+    app._session_selector_open = True
+    app._session_selector_entries = [_session_info("session-a")]
+    handle_ctrl_c = next(
+        binding.handler for binding in application_bindings.bindings if binding.keys == (Keys.ControlC,)
+    )
+    handle_ctrl_c(MagicMock())
+    assert app._session_selector_open is False
+
+
+@pytest.mark.asyncio
+async def test_tui_session_command_without_id_opens_selector() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._show_session_selector = AsyncMock()  # type: ignore[method-assign]
+
+    await app._handle_command_inner("/session")
+
+    app._show_session_selector.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_tui_scheduled_session_command_opens_selector_as_foreground_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    monkeypatch.setattr("yaacli.app.tui.list_sessions", lambda _: [_session_info("session-a")])
+
+    app._schedule_command("/session")
+    command_task = app._foreground_command_task
+    assert command_task is not None
+    await command_task
+
+    assert app._session_selector_open is True
+    assert app._session_selector_entries[0].id == "session-a"
+
+
+@pytest.mark.asyncio
+async def test_tui_session_selector_rejects_busy_non_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    list_mock = MagicMock(return_value=[_session_info("session-a")])
+    monkeypatch.setattr("yaacli.app.tui.list_sessions", list_mock)
+    app._set_phase(TUIPhase.THINKING)
+
+    await app._show_session_selector()
+
+    list_mock.assert_not_called()
+    assert app._session_selector_open is False
+    assert any("after foreground work finishes" in line for line in app._output_lines)
+
+
+@pytest.mark.asyncio
+async def test_tui_auto_restore_skips_unloadable_shallow_legacy_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = YaacliConfig()
+    config.session.auto_restore = True
+    app = TUIApp(config=config, config_manager=MockConfigManager(), working_dir=tmp_path)
+    candidates = [
+        _session_info("broken-newest", working_dir=str(tmp_path), updated_at="2026-01-02T00:00:00+00:00"),
+        _session_info("valid-older", working_dir=str(tmp_path), updated_at="2026-01-01T00:00:00+00:00"),
+    ]
+    monkeypatch.setattr("yaacli.app.tui.list_sessions", lambda _: candidates)
+    app._load_session = AsyncMock(side_effect=[False, True])  # type: ignore[method-assign]
+
+    restored = await app._restore_startup_session()
+
+    assert restored is True
+    assert [call.args[0] for call in app._load_session.await_args_list] == ["broken-newest", "valid-older"]
 
 
 @pytest.mark.asyncio
@@ -942,6 +1155,10 @@ async def test_tui_app_real_layout_mounts_hidden_task_pane_and_completion_menu(
     task_container = root.content.children[1]
     assert isinstance(task_container, ConditionalContainer)
     assert task_container.filter() is False
+    assert isinstance(root.floats[0].content, ConditionalContainer)
+    assert isinstance(root.floats[1].content, ConditionalContainer)
+    assert root.floats[0].content.filter() is False
+    assert root.floats[1].content.filter() is False
     assert any(isinstance(item.content, CompletionsMenu) for item in root.floats)
 
 
@@ -1530,6 +1747,7 @@ async def test_tui_app_submit_multiple_skill_prefixes_as_agent_prompt() -> None:
 
     app._launch_agent.assert_called_once()
     prompt = app._launch_agent.call_args.args[0]
+    assert app._launch_agent.call_args.kwargs["session_input"] == "/lark-cli /agent-builder Build an agent"
     assert '<skill name="lark-cli" path="/skills/lark-cli" />' in prompt
     assert '<skill name="agent-builder" path="/skills/agent-builder" />' in prompt
     assert prompt.endswith("Build an agent")
@@ -2852,12 +3070,17 @@ async def test_tui_app_saves_and_restores_display_messages(tmp_path: Path) -> No
     app._runtime = MagicMock()
     app._runtime.ctx.export_state.return_value.model_dump_json.return_value = "{}"
     app._message_history = []
+    app._last_session_input = "last user input"
+    app._last_session_output = "last assistant output"
     app._display_replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"})
 
     app._save_session_snapshot(save_reason="test")
 
     assert app.has_session_data is True
     save_dir = sessions_dir / app.session_id
+    metadata = json.loads((save_dir / "metadata.json").read_text())
+    assert metadata["input_text"] == "last user input"
+    assert metadata["output_text"] == "last assistant output"
     display_file = next((save_dir / "turns").iterdir()) / "display_messages.json"
     assert display_file.exists()
     assert json.loads(display_file.read_text()) == [{"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"}]

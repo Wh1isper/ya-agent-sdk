@@ -50,7 +50,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.widgets import Box, Frame, TextArea
 from pydantic import BaseModel
 from pydantic_ai import (
     AgentRunResult,
@@ -169,6 +169,7 @@ from yaacli.rendering.transcript import BlockId, BoundedTextAccumulator, Transcr
 from yaacli.runtime import create_tui_runtime
 from yaacli.session import TUIContext
 from yaacli.sessions import (
+    SessionInfo,
     get_head_artifact_paths,
     get_session_info,
     list_sessions,
@@ -214,6 +215,9 @@ _DEFAULT_MAX_PENDING_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _MAX_RETAINED_TOOL_RESULT_CHARS = 64 * 1024
 _MAX_RETAINED_TOOL_ARG_CHARS = 64 * 1024
 _MAX_DISPLAY_REPLAY_LOAD_BYTES = MAX_DISPLAY_REPLAY_LOAD_BYTES
+_SESSION_SELECTOR_MAX_VISIBLE = 8
+_SESSION_SELECTOR_MAX_WIDTH = 110
+_SESSION_SELECTOR_MIN_WIDTH = 24
 _TOOL_RESULT_TRUNCATION_SUFFIX = "\n... [tool result truncated for display]"
 _TOOL_ARG_TRUNCATION_SUFFIX = "\n... [tool arguments truncated for display]"
 
@@ -358,6 +362,72 @@ def _optional_positive_int_config(value: object) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
+def _single_line_session_preview(value: str | None) -> str | None:
+    """Normalize untrusted session metadata for one terminal line."""
+    if value is None:
+        return None
+    printable = "".join(character if character.isprintable() else " " for character in value)
+    normalized = " ".join(printable.split())
+    return normalized or None
+
+
+def _truncate_display_text(value: str, max_width: int) -> str:
+    """Truncate text to a terminal cell width without splitting wide glyphs."""
+    if max_width <= 0:
+        return ""
+    if sum(max(0, get_cwidth(character)) for character in value) <= max_width:
+        return value
+    suffix = "..."
+    if max_width <= len(suffix):
+        return suffix[:max_width]
+    available = max_width - len(suffix)
+    width = 0
+    retained: list[str] = []
+    for character in value:
+        character_width = max(0, get_cwidth(character))
+        if width + character_width > available:
+            break
+        retained.append(character)
+        width += character_width
+    return f"{''.join(retained).rstrip()}{suffix}"
+
+
+def _pad_display_text(value: str, width: int) -> str:
+    """Truncate and right-pad text to an exact terminal cell width."""
+    truncated = _truncate_display_text(value, width)
+    display_width = sum(max(0, get_cwidth(character)) for character in truncated)
+    return f"{truncated}{' ' * max(0, width - display_width)}"
+
+
+def _format_session_timestamp(value: str) -> str:
+    """Format an ISO session timestamp for the compact selector table."""
+    normalized = _single_line_session_preview(value) or "unknown"
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return _truncate_display_text(normalized.replace("T", " "), 12)
+    return parsed.strftime("%b %d %H:%M")
+
+
+def _session_detail_line(label: str, value: str | None, max_width: int) -> StyleAndTextTuples:
+    preview = _single_line_session_preview(value)
+    if max_width <= 12:
+        compact = preview or "Not available"
+        style = "class:session-selector.detail-value" if preview is not None else "class:session-selector.empty"
+        return [(style, _truncate_display_text(compact, max_width))]
+    label_text = f"{label:<12}"
+    value_width = max(1, max_width - len(label_text))
+    if preview is None:
+        return [
+            ("class:session-selector.detail-label", label_text),
+            ("class:session-selector.empty", _truncate_display_text("Not available", value_width)),
+        ]
+    return [
+        ("class:session-selector.detail-label", label_text),
+        ("class:session-selector.detail-value", _truncate_display_text(preview, value_width)),
+    ]
+
+
 def _completed_result_request_count(result: AgentRunResult[Any]) -> int:
     """Return a conservative model-request count for one completed stream."""
     requests = result.usage.requests
@@ -494,6 +564,11 @@ class TUIApp:
 
     # Session
     _session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12], init=False)
+    _last_session_input: str | None = field(default=None, init=False)
+    _last_session_output: str | None = field(default=None, init=False)
+    _session_selector_open: bool = field(default=False, init=False)
+    _session_selector_entries: list[SessionInfo] = field(default_factory=list, init=False)
+    _session_selector_index: int = field(default=0, init=False)
 
     # Agent execution
     _agent_task: asyncio.Task[None] | None = field(default=None, init=False)
@@ -1323,6 +1398,12 @@ class TUIApp:
             return self._app.output.get_size().columns
         return 120
 
+    def _get_terminal_height(self) -> int:
+        """Get current terminal height for responsive floating layouts."""
+        if self._app and self._app.output:
+            return self._app.output.get_size().rows
+        return 40
+
     def _get_code_theme(self) -> str:
         """Get the syntax-highlighting theme for the resolved terminal theme."""
         return self._theme.syntax_theme
@@ -1927,6 +2008,10 @@ class TUIApp:
             action = "send" if self._input_mode == "send" else "edit"
         return f"[{mouse_mode}:{action}] > "
 
+    def _selector_is_open(self) -> bool:
+        """Return whether an input-owning floating selector is open."""
+        return self._model_selector_open or self._session_selector_open
+
     async def _show_model_selector(self) -> None:
         """Open the in-TUI model profile selector."""
         current_task = asyncio.current_task()
@@ -1946,6 +2031,7 @@ class TUIApp:
 
         current_id = self._active_model_profile.id if self._active_model_profile else profiles[0].id
         current_index = next((idx for idx, profile in enumerate(profiles) if profile.id == current_id), 0)
+        self._close_session_selector()
         self._model_selector_profiles = profiles
         self._model_selector_index = current_index
         self._model_selector_open = True
@@ -2017,6 +2103,232 @@ class TUIApp:
         overflow_lines = int(total > max_visible and self._model_selector_index >= max_visible // 2)
         overflow_lines += int(total > max_visible and self._model_selector_index < total - max_visible // 2 - 1)
         return visible_items + 3 + overflow_lines
+
+    async def _show_session_selector(self) -> None:
+        """Open the metadata-only session selector without blocking the event loop."""
+        current_task = asyncio.current_task()
+        owns_command_dispatch = (
+            self.phase == TUIPhase.COMMAND_RUNNING
+            and current_task is not None
+            and self._foreground_command_task is current_task
+        )
+        if self._is_foreground_busy() and not owns_command_dispatch:
+            self._append_system_output("Session selection is available after foreground work finishes.")
+            return
+
+        try:
+            entries = await asyncio.to_thread(list_sessions, self.config_manager)
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to list sessions: %s", exc)
+            self._append_system_output(f"Unable to list sessions: {exc}")
+            return
+        if not entries:
+            self._append_system_output("No sessions found.")
+            return
+
+        self._close_model_selector()
+        self._session_selector_entries = entries
+        self._session_selector_index = next(
+            (index for index, entry in enumerate(entries) if entry.id == self._session_id),
+            0,
+        )
+        self._session_selector_open = True
+        if self._app:
+            self._app.invalidate()
+
+    def _close_session_selector(self) -> None:
+        """Close the in-TUI session selector."""
+        self._session_selector_open = False
+        self._session_selector_entries = []
+        self._session_selector_index = 0
+        if self._app:
+            self._app.invalidate()
+
+    def _move_session_selector(self, delta: int) -> None:
+        """Move the active selection in the session selector."""
+        if not self._session_selector_open or not self._session_selector_entries:
+            return
+        count = len(self._session_selector_entries)
+        self._session_selector_index = (self._session_selector_index + delta) % count
+        if self._app:
+            self._app.invalidate()
+
+    def _apply_session_selector_selection(self) -> None:
+        """Load the currently highlighted session through normal command dispatch."""
+        if not self._session_selector_open or not self._session_selector_entries:
+            return
+        index = max(0, min(self._session_selector_index, len(self._session_selector_entries) - 1))
+        session_id = self._session_selector_entries[index].id
+        self._close_session_selector()
+        self._schedule_command(f"/session {session_id}")
+
+    def _get_session_selector_width(self) -> int:
+        """Return a centered modal width that stays usable on narrow terminals."""
+        terminal_width = self._get_terminal_width()
+        if terminal_width <= _SESSION_SELECTOR_MIN_WIDTH:
+            return max(12, terminal_width)
+        return min(_SESSION_SELECTOR_MAX_WIDTH, max(_SESSION_SELECTOR_MIN_WIDTH, terminal_width - 4))
+
+    def _get_session_selector_title(self) -> StyleAndTextTuples:
+        """Return the framed selector title and current result count."""
+        return [
+            ("class:session-selector.title", "Sessions"),
+            ("class:session-selector.count", f" · {len(self._session_selector_entries)}"),
+        ]
+
+    def _session_selector_lines(self) -> list[StyleAndTextTuples]:
+        """Build the styled session table and selected-session details."""
+        if not self._session_selector_open or not self._session_selector_entries:
+            return []
+
+        total = len(self._session_selector_entries)
+        body_budget = max(1, self._get_terminal_height() - 3)
+        if body_budget >= 11:
+            show_details = True
+            show_scroll_hints = True
+            show_shortcuts = True
+            show_header = True
+            show_top_separator = True
+            max_visible = min(_SESSION_SELECTOR_MAX_VISIBLE, max(1, body_budget - 10))
+        elif body_budget >= 6:
+            show_details = False
+            show_scroll_hints = True
+            show_shortcuts = True
+            show_header = True
+            show_top_separator = True
+            max_visible = min(_SESSION_SELECTOR_MAX_VISIBLE, max(1, body_budget - 5))
+        else:
+            show_details = False
+            show_scroll_hints = False
+            show_shortcuts = body_budget >= 3
+            show_header = body_budget >= 2
+            show_top_separator = False
+            reserved_rows = int(show_shortcuts) + int(show_header)
+            max_visible = min(_SESSION_SELECTOR_MAX_VISIBLE, max(1, body_budget - reserved_rows))
+
+        start = max(
+            0,
+            min(
+                self._session_selector_index - max_visible // 2,
+                total - max_visible,
+            ),
+        )
+        end = min(total, start + max_visible)
+        line_width = max(8, self._get_session_selector_width() - 4)
+        show_updated = line_width >= 24
+        show_workspace = line_width >= 64
+        updated_width = 12
+        prefix_width = 4
+        if show_workspace:
+            session_width = min(24, max(12, line_width // 3))
+            workspace_width = max(1, line_width - prefix_width - session_width - updated_width - 2)
+        elif show_updated:
+            session_width = max(4, line_width - prefix_width - updated_width - 1)
+            workspace_width = 0
+        else:
+            session_width = max(4, line_width - prefix_width)
+            workspace_width = 0
+
+        header = f"{'':{prefix_width}}{'SESSION':<{session_width}}"
+        if show_updated:
+            header += f" {'UPDATED':<{updated_width}}"
+        if show_workspace:
+            header += f" {'WORKSPACE':<{workspace_width}}"
+
+        if line_width >= 54:
+            shortcut_line: StyleAndTextTuples = [
+                ("class:session-selector.key", "Up/Down"),
+                ("class:session-selector.hint", " navigate   "),
+                ("class:session-selector.key", "Enter"),
+                ("class:session-selector.hint", " load   "),
+                ("class:session-selector.key", "Esc"),
+                ("class:session-selector.hint", " close   "),
+                ("class:session-selector.current", "*"),
+                ("class:session-selector.hint", " current"),
+            ]
+        elif line_width >= 30:
+            shortcut_line = [
+                ("class:session-selector.key", "Up/Down"),
+                ("class:session-selector.hint", "  "),
+                ("class:session-selector.key", "Enter"),
+                ("class:session-selector.hint", "  "),
+                ("class:session-selector.key", "Esc"),
+                ("class:session-selector.hint", "  "),
+                ("class:session-selector.current", "*"),
+                ("class:session-selector.hint", " current"),
+            ]
+        else:
+            shortcut_line = [("class:session-selector.hint", _truncate_display_text("Up/Down  Enter  Esc", line_width))]
+
+        lines: list[StyleAndTextTuples] = []
+        if show_shortcuts:
+            lines.append(shortcut_line)
+        if show_top_separator:
+            lines.append([("class:session-selector.separator", "─" * line_width)])
+        if show_header:
+            lines.append([("class:session-selector.header", _pad_display_text(header, line_width))])
+        if show_scroll_hints and start > 0:
+            lines.append([
+                ("class:session-selector.scroll", _pad_display_text(f"  ↑ {start} newer sessions", line_width))
+            ])
+
+        for index in range(start, end):
+            entry = self._session_selector_entries[index]
+            cursor = ">" if index == self._session_selector_index else " "
+            current = "*" if entry.id == self._session_id else " "
+            session_id = _single_line_session_preview(entry.id) or "unknown"
+            row = f"{cursor} {current} {_pad_display_text(session_id, session_width)}"
+            if show_updated:
+                row += f" {_pad_display_text(_format_session_timestamp(entry.updated_at), updated_width)}"
+            if show_workspace:
+                directory = _single_line_session_preview(entry.working_dir) or "unknown"
+                row += f" {_pad_display_text(directory, workspace_width)}"
+            if index == self._session_selector_index:
+                style = "class:session-selector.selection"
+            elif entry.id == self._session_id:
+                style = "class:session-selector.current"
+            else:
+                style = "class:session-selector.row"
+            lines.append([(style, _pad_display_text(row, line_width))])
+
+        if show_scroll_hints and end < total:
+            lines.append([
+                (
+                    "class:session-selector.scroll",
+                    _pad_display_text(f"  ↓ {total - end} older sessions", line_width),
+                )
+            ])
+
+        if show_details:
+            selected_index = max(0, min(self._session_selector_index, total - 1))
+            selected = self._session_selector_entries[selected_index]
+            selected_id = _single_line_session_preview(selected.id) or "unknown"
+            detail_id = _truncate_display_text(selected_id, max(1, line_width - len("DETAILS  ")))
+            lines.extend([
+                [("class:session-selector.separator", "─" * line_width)],
+                [
+                    ("class:session-selector.section", "DETAILS"),
+                    ("class:session-selector.detail-id", f"  {detail_id}"),
+                ],
+                _session_detail_line("Directory", selected.working_dir, line_width),
+                _session_detail_line("Last input", selected.input_text, line_width),
+                _session_detail_line("Last output", selected.output_text, line_width),
+            ])
+        return lines
+
+    def _get_session_selector_text(self) -> StyleAndTextTuples:
+        """Render the session selector without interpreting preview text as ANSI."""
+        lines = self._session_selector_lines()
+        fragments: StyleAndTextTuples = []
+        for index, line in enumerate(lines):
+            fragments.extend(line)
+            if index < len(lines) - 1:
+                fragments.append(("", "\n"))
+        return fragments
+
+    def _get_session_selector_height(self) -> int:
+        """Return the exact session selector body height."""
+        return max(1, len(self._session_selector_lines()))
 
     async def _switch_model_profile(self, profile: ResolvedModelProfile, *, persist: bool = True) -> None:
         """Switch the current runtime to a model profile."""
@@ -2338,6 +2650,8 @@ class TUIApp:
         self,
         user_input: str,
         attachments: Sequence[PendingAttachment] | None = None,
+        *,
+        session_input: str | None = None,
     ) -> None:
         """Start an agent task after synchronously claiming foreground ownership."""
         if self._agent_task is not None and not self._agent_task.done():
@@ -2351,7 +2665,12 @@ class TUIApp:
         if self._run_started_at is None:
             self._run_started_at = time.monotonic()
         self._set_phase(TUIPhase.THINKING)
-        task = asyncio.create_task(self._run_agent(user_input, attachments))
+        run = (
+            self._run_agent(user_input, attachments)
+            if session_input is None
+            else self._run_agent(user_input, attachments, session_input=session_input)
+        )
+        task = asyncio.create_task(run)
         self._agent_task = task
         task.add_done_callback(self._on_agent_task_done)
 
@@ -2359,6 +2678,8 @@ class TUIApp:
         self,
         user_input: str,
         attachments: Sequence[PendingAttachment] | None = None,
+        *,
+        session_input: str | None = None,
     ) -> None:
         """Execute an agent turn, including all deferred approvals and calls."""
         if self._run_started_at is None:
@@ -2370,6 +2691,8 @@ class TUIApp:
         turn_attachments = list(attachments or [])
         self._pending_bus_check_needed = False
         self._last_snapshot_saved = None
+        self._last_session_input = session_input if session_input is not None else user_input
+        self._last_session_output = None
         auto_save_history = bool(getattr(getattr(self.config, "session", None), "auto_save_history", False))
         self._tool_messages.clear()
         self._printed_tool_calls.clear()
@@ -2416,6 +2739,7 @@ class TUIApp:
             if result is None or not isinstance(result.output, str):
                 raise RuntimeError("Agent completed without a final text result.")
             output = result.output
+            self._last_session_output = output
             self._handle_and_record_display_events([
                 self._display_adapter.build_run_finished_event(result={"output_text": output})
             ])
@@ -3512,7 +3836,7 @@ class TUIApp:
                 return
 
             agent_prompt = format_skill_invocation(skill_invocation, available_skills)
-            self._launch_agent(agent_prompt, attachments)
+            self._launch_agent(agent_prompt, attachments, session_input=text)
         except Exception as error:
             logger.exception("Slash dispatch failed: %s", text)
             self._append_error_output(error)
@@ -3638,6 +3962,9 @@ class TUIApp:
         kb = KeyBindings()
 
         def previous_history() -> None:
+            if self._session_selector_open:
+                self._move_session_selector(-1)
+                return
             if self._model_selector_open:
                 self._move_model_selector(-1)
                 return
@@ -3654,6 +3981,9 @@ class TUIApp:
                 input_area.buffer.cursor_position = len(input_area.buffer.text)
 
         def next_history() -> None:
+            if self._session_selector_open:
+                self._move_session_selector(1)
+                return
             if self._model_selector_open:
                 self._move_model_selector(1)
                 return
@@ -3672,7 +4002,7 @@ class TUIApp:
         @kb.add("up", eager=True)
         def handle_up(event: KeyPressEvent) -> None:
             """Navigate selector/completion, multiline text, or prompt history."""
-            if self._model_selector_open:
+            if self._selector_is_open():
                 previous_history()
                 return
             completion_state = input_area.buffer.complete_state
@@ -3697,7 +4027,7 @@ class TUIApp:
         def handle_down(event: KeyPressEvent) -> None:
             """Navigate selector/completion, multiline text, or prompt history."""
             document = input_area.buffer.document
-            if self._model_selector_open:
+            if self._selector_is_open():
                 next_history()
                 return
             completion_state = input_area.buffer.complete_state
@@ -3719,6 +4049,9 @@ class TUIApp:
             next_history()
 
         def submit_or_newline() -> None:
+            if self._session_selector_open:
+                self._apply_session_selector_selection()
+                return
             if self._model_selector_open:
                 if self._app:
                     self._app.create_background_task(self._apply_model_selector_selection())
@@ -3820,6 +4153,9 @@ class TUIApp:
             """Handle Ctrl+C - cancel running task or double-press to exit."""
             current_time = time.time()
 
+            if self._session_selector_open:
+                self._close_session_selector()
+                return
             if self._model_selector_open:
                 self._close_model_selector()
                 return
@@ -3905,7 +4241,10 @@ class TUIApp:
 
         @kb.add("escape")
         def handle_escape(event: KeyPressEvent) -> None:
-            """Close model selector or toggle mouse support mode."""
+            """Close an active selector or toggle mouse support mode."""
+            if self._session_selector_open:
+                self._close_session_selector()
+                return
             if self._model_selector_open:
                 self._close_model_selector()
                 return
@@ -3939,7 +4278,7 @@ class TUIApp:
         @kb.add("tab")
         def handle_tab(event: KeyPressEvent) -> None:
             """Navigate slash completion, otherwise toggle send/edit mode."""
-            if self._model_selector_open:
+            if self._selector_is_open():
                 return
             buffer = input_area.buffer
             completion_state = buffer.complete_state
@@ -4284,7 +4623,7 @@ class TUIApp:
             case "/session":
                 self._append_user_input(command)
                 if not args.strip():
-                    self._list_sessions()
+                    await self._show_session_selector()
                 else:
                     await self._load_session(args.strip())
             case "/load":
@@ -4654,6 +4993,11 @@ class TUIApp:
         self._display_adapter = None
         self._message_history = None
         self._last_run = None
+        self._last_session_input = None
+        self._last_session_output = None
+        self._session_selector_open = False
+        self._session_selector_entries = []
+        self._session_selector_index = 0
         self._current_context_tokens = 0
 
     async def _clear_session(self) -> None:
@@ -5036,7 +5380,8 @@ class TUIApp:
             message_history_json=ModelMessagesTypeAdapter.dump_json(self._message_history or [], indent=2),
             context_state_json=state.model_dump_json(indent=2),
             display_messages=self._display_replay.snapshot(),
-            output_text=None,
+            input_text=self._last_session_input,
+            output_text=self._last_session_output,
             save_reason=save_reason,
             max_turns=_positive_int_config(
                 getattr(getattr(self.config, "session", None), "max_turns_per_session", None),
@@ -5082,6 +5427,8 @@ class TUIApp:
             )
 
             profile = self._active_model_profile
+            input_text = self._last_session_input
+            output_text = self._last_session_output
 
             def persist() -> Path:
                 return save_session_turn(
@@ -5094,7 +5441,8 @@ class TUIApp:
                     message_history_json=ModelMessagesTypeAdapter.dump_json(message_history, indent=2),
                     context_state_json=state.model_dump_json(indent=2),
                     display_messages=display_messages,
-                    output_text=None,
+                    input_text=input_text,
+                    output_text=output_text,
                     save_reason=save_reason,
                     max_turns=max_turns,
                     max_sessions=max_sessions,
@@ -5212,6 +5560,8 @@ class TUIApp:
         if not await self._load_history(str(target), target_session_id=target.name):
             return False
 
+        self._last_session_input = info.input_text
+        self._last_session_output = info.output_text
         if info.working_dir is not None and Path(info.working_dir).resolve() != self.working_dir.resolve():
             self._append_system_output(
                 f"Workspace warning: session was saved in {info.working_dir}; current workspace is {self.working_dir}."
@@ -5234,17 +5584,15 @@ class TUIApp:
             return False
 
         workspace = self.working_dir.resolve()
-        candidate = next(
-            (
-                info
-                for info in list_sessions(self.config_manager)
-                if info.working_dir is not None and Path(info.working_dir).resolve() == workspace
-            ),
-            None,
-        )
-        if candidate is None:
-            return False
-        return await self._load_session(candidate.id)
+        candidates = [
+            info
+            for info in list_sessions(self.config_manager)
+            if info.working_dir is not None and Path(info.working_dir).resolve() == workspace
+        ]
+        for candidate in candidates:
+            if await self._load_session(candidate.id):
+                return True
+        return False
 
     def _append_system_output(self, text: str) -> None:
         """Append system message to output, wrapped to the current terminal width."""
@@ -5326,6 +5674,27 @@ class TUIApp:
             filter=Condition(lambda: self._model_selector_open),
         )
 
+        session_selector_control = FormattedTextControl(self._get_session_selector_text)
+        session_selector_body = Box(
+            Window(
+                content=session_selector_control,
+                height=self._get_session_selector_height,
+                style="class:session-selector",
+                wrap_lines=False,
+            ),
+            padding_left=1,
+            padding_right=1,
+            style="class:session-selector",
+        )
+        session_selector_window = ConditionalContainer(
+            Frame(
+                session_selector_body,
+                title=self._get_session_selector_title,
+                style="class:session-selector.frame",
+            ),
+            filter=Condition(lambda: self._session_selector_open),
+        )
+
         # Status bar
         status_bar = Window(
             content=FormattedTextControl(self._get_status_text),
@@ -5399,6 +5768,7 @@ class TUIApp:
             content=body,
             floats=[
                 Float(top=1, left=2, right=2, content=model_selector_window),
+                Float(top=1, width=self._get_session_selector_width, content=session_selector_window),
                 Float(
                     xcursor=True,
                     ycursor=True,

@@ -44,6 +44,8 @@ _RESUMABLE_CONTEXT_FIELDS = (
     "tool_search_loaded_namespaces",
 )
 _RUNTIME_APPROVAL_POLICY_FIELDS = ("need_user_approve_tools", "need_user_approve_mcps")
+_SESSION_PREVIEW_MAX_CHARS = 2000
+_SESSION_INDEX_METADATA_MAX_BYTES = 256 * 1024
 
 
 @dataclass(slots=True)
@@ -56,6 +58,7 @@ class SessionInfo:
     model_profile_id: str | None
     model_label: str | None
     model: str | None
+    input_text: str | None
     output_text: str | None
     message_count: int | None
     display_event_count: int | None
@@ -101,15 +104,25 @@ def restore_resumable_state_safely(state: ResumableState, ctx: AgentContext) -> 
 
 
 def list_sessions(config_manager: ConfigManager) -> list[SessionInfo]:
+    """Return a best-effort metadata index without waiting for artifact writers."""
     sessions_dir = config_manager.get_sessions_dir()
     if not sessions_dir.exists():
         return []
+    try:
+        candidates = list(sessions_dir.iterdir())
+    except OSError:
+        return []
+
     sessions = []
-    with local_file_lock(_global_lock_path(sessions_dir)):
-        for path in sessions_dir.iterdir():
-            if _is_session_dir(path):
-                upgrade_legacy_session(path)
-                sessions.append(_read_session_info(path))
+    for path in candidates:
+        try:
+            metadata = _read_listable_session_metadata(path)
+            if metadata is not None:
+                sessions.append(_read_session_info(path, metadata=metadata))
+        except (OSError, ValueError):
+            # Metadata is atomically replaced, but a concurrent retention or
+            # delete can remove a session between discovery and inspection.
+            continue
     sessions.sort(key=lambda item: item.updated_at, reverse=True)
     return sessions
 
@@ -197,6 +210,7 @@ def save_session_turn(
     display_messages: list[dict[str, Any]],
     output_text: str | None,
     save_reason: str,
+    input_text: str | None = None,
     model_profile_id: str | None = None,
     model_label: str | None = None,
     model: str | None = None,
@@ -206,6 +220,8 @@ def save_session_turn(
     max_session_age_days: int | None = None,
 ) -> Path:
     _validate_session_id(session_id)
+    input_preview = _bounded_session_preview(input_text)
+    output_preview = _bounded_session_preview(output_text)
     sessions_dir = config_manager.get_sessions_dir()
     sessions_dir.mkdir(parents=True, exist_ok=True)
     with local_file_lock(_global_lock_path(sessions_dir)):
@@ -242,7 +258,8 @@ def save_session_turn(
                     "model_profile_id": model_profile_id,
                     "model_label": model_label,
                     "model": model,
-                    "output_text": output_text,
+                    "input_text": input_preview,
+                    "output_text": output_preview,
                     "message_count": _read_message_count(turn_dir / "message_history.json"),
                     "display_event_count": len(display_messages),
                 }
@@ -262,7 +279,8 @@ def save_session_turn(
                     "model_profile_id": model_profile_id,
                     "model_label": model_label,
                     "model": model,
-                    "output_text": output_text,
+                    "input_text": input_preview,
+                    "output_text": output_preview,
                 })
                 _write_text_atomic(metadata_file, json.dumps(metadata, ensure_ascii=False, indent=2))
                 root_metadata_committed = True
@@ -416,8 +434,12 @@ def _is_regular_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
-def _has_legacy_artifacts(session_dir: Path) -> bool:
-    """Recognize only a complete, parseable legacy-session signature."""
+def _has_legacy_session_signature(
+    session_dir: Path,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Recognize a structurally safe legacy session without reading large artifacts."""
     if not _is_real_directory(session_dir):
         return False
 
@@ -440,13 +462,20 @@ def _has_legacy_artifacts(session_dir: Path) -> bool:
         if optional_file.is_symlink() or (optional_file.exists() and not optional_file.is_file()):
             return False
 
+    resolved_metadata = metadata if metadata is not None else _read_json_object(metadata_file)
+    metadata_session_id = resolved_metadata.get("session_id")
+    return "schema_version" not in resolved_metadata and metadata_session_id == session_dir.name
+
+
+def _has_legacy_artifacts(session_dir: Path) -> bool:
+    """Validate legacy artifacts only on explicit load or migration paths."""
+    if not _has_legacy_session_signature(session_dir):
+        return False
+
+    history_file = session_dir / "message_history.json"
+    context_file = session_dir / "context_state.json"
+    display_file = session_dir / "display_messages.json"
     try:
-        metadata_payload = json.loads(metadata_file.read_text(encoding="utf-8"))
-        if not isinstance(metadata_payload, dict) or "schema_version" in metadata_payload:
-            return False
-        metadata_session_id = metadata_payload.get("session_id")
-        if not isinstance(metadata_session_id, str) or metadata_session_id != session_dir.name:
-            return False
         ModelMessagesTypeAdapter.validate_json(history_file.read_bytes())
         if context_file.exists():
             ResumableState.model_validate_json(context_file.read_text(encoding="utf-8"))
@@ -457,20 +486,14 @@ def _has_legacy_artifacts(session_dir: Path) -> bool:
     return True
 
 
-def _is_session_dir(path: Path) -> bool:
-    """Return whether a directory is a confirmed schema-v2 or legacy session."""
-    if not _is_real_directory(path) or not _is_safe_path_segment(path.name):
-        return False
-    if _has_legacy_artifacts(path):
-        return True
-
+def _is_schema_v2_session_dir(path: Path, *, metadata: dict[str, Any] | None = None) -> bool:
     metadata_file = path / "metadata.json"
     if not _is_regular_file(metadata_file):
         return False
-    metadata = _read_json_object(metadata_file)
-    schema_version = metadata.get("schema_version")
-    session_id = metadata.get("session_id")
-    head_turn_id = metadata.get("head_turn_id")
+    resolved_metadata = metadata if metadata is not None else _read_json_object(metadata_file)
+    schema_version = resolved_metadata.get("schema_version")
+    session_id = resolved_metadata.get("session_id")
+    head_turn_id = resolved_metadata.get("head_turn_id")
     if isinstance(schema_version, bool) or schema_version != SESSION_SCHEMA_VERSION:
         return False
     if not isinstance(session_id, str) or session_id != path.name:
@@ -480,6 +503,25 @@ def _is_session_dir(path: Path) -> bool:
     turns_dir = path / TURN_STORE_DIRNAME
     head_turn_dir = turns_dir / head_turn_id
     return _is_real_directory(turns_dir) and _is_turn_dir(path, head_turn_dir)
+
+
+def _read_listable_session_metadata(path: Path) -> dict[str, Any] | None:
+    """Read one bounded root metadata snapshot for index recognition and display."""
+    if not _is_real_directory(path) or not _is_safe_path_segment(path.name):
+        return None
+    metadata = _read_json_object_bounded(path / "metadata.json", max_bytes=_SESSION_INDEX_METADATA_MAX_BYTES)
+    if metadata is None:
+        return None
+    if _has_legacy_session_signature(path, metadata=metadata) or _is_schema_v2_session_dir(path, metadata=metadata):
+        return metadata
+    return None
+
+
+def _is_session_dir(path: Path) -> bool:
+    """Return whether a directory is a validated schema-v2 or legacy session."""
+    if not _is_real_directory(path) or not _is_safe_path_segment(path.name):
+        return False
+    return _has_legacy_artifacts(path) or _is_schema_v2_session_dir(path)
 
 
 def _prepare_turn_directory(session_dir: Path, turn_id: str) -> Path:
@@ -559,6 +601,7 @@ def _upgrade_legacy_session_unlocked(session_dir: Path) -> None:
         "model_profile_id": metadata.get("model_profile_id"),
         "model_label": metadata.get("model_label"),
         "model": metadata.get("model"),
+        "input_text": metadata.get("input_text"),
         "output_text": metadata.get("output_text"),
         "message_count": _read_message_count(turn_dir / "message_history.json"),
         "display_event_count": _read_display_event_count(turn_dir / "display_messages.json"),
@@ -580,17 +623,25 @@ def _upgrade_legacy_session_unlocked(session_dir: Path) -> None:
             source.unlink()
 
 
-def _read_session_info(path: Path) -> SessionInfo:
-    metadata = _read_json_object(path / "metadata.json")
+def _read_session_info(path: Path, *, metadata: dict[str, Any] | None = None) -> SessionInfo:
+    root_metadata = metadata if metadata is not None else _read_json_object(path / "metadata.json")
+    metadata = _bounded_session_metadata(root_metadata)
     head_turn_id = metadata.get("head_turn_id") if isinstance(metadata.get("head_turn_id"), str) else None
-    head_turn_dir = _head_turn_dir(path)
+    head_turn_dir = _head_turn_dir(path, metadata=metadata)
+    head_turn_metadata_payload = (
+        _read_json_object_bounded(head_turn_dir / "metadata.json", max_bytes=_SESSION_INDEX_METADATA_MAX_BYTES)
+        if head_turn_dir is not None
+        else None
+    )
+    head_turn_metadata = _bounded_session_metadata(head_turn_metadata_payload or {})
     updated_at = str(metadata.get("updated_at") or _mtime_iso(path))
     created_at = metadata.get("created_at") if isinstance(metadata.get("created_at"), str) else None
     working_dir = metadata.get("working_dir") if isinstance(metadata.get("working_dir"), str) else None
     model_profile_id = metadata.get("model_profile_id") if isinstance(metadata.get("model_profile_id"), str) else None
     model_label = metadata.get("model_label") if isinstance(metadata.get("model_label"), str) else None
     model = metadata.get("model") if isinstance(metadata.get("model"), str) else None
-    output_text = metadata.get("output_text") if isinstance(metadata.get("output_text"), str) else None
+    input_text = _metadata_text(metadata, head_turn_metadata, "input_text")
+    output_text = _metadata_text(metadata, head_turn_metadata, "output_text")
     return SessionInfo(
         id=path.name,
         path=path,
@@ -600,13 +651,10 @@ def _read_session_info(path: Path) -> SessionInfo:
         model_profile_id=model_profile_id,
         model_label=model_label,
         model=model,
+        input_text=input_text,
         output_text=output_text,
-        message_count=_read_message_count(head_turn_dir / "message_history.json")
-        if head_turn_dir is not None
-        else None,
-        display_event_count=_read_display_event_count(head_turn_dir / "display_messages.json")
-        if head_turn_dir is not None
-        else None,
+        message_count=_optional_non_negative_int(head_turn_metadata.get("message_count")),
+        display_event_count=_optional_non_negative_int(head_turn_metadata.get("display_event_count")),
         metadata=metadata,
         head_turn_id=head_turn_id,
         turn_count=len(_turn_dirs(path)),
@@ -655,13 +703,17 @@ def _read_head_artifacts_unlocked(
     )
 
 
-def _head_turn_dir(session_dir: Path) -> Path | None:
-    metadata = _read_json_object(session_dir / "metadata.json")
-    head_turn_id = metadata.get("head_turn_id") if isinstance(metadata.get("head_turn_id"), str) else None
+def _head_turn_dir(session_dir: Path, *, metadata: dict[str, Any] | None = None) -> Path | None:
+    resolved_metadata = metadata if metadata is not None else _read_json_object(session_dir / "metadata.json")
+    head_turn_id = (
+        resolved_metadata.get("head_turn_id") if isinstance(resolved_metadata.get("head_turn_id"), str) else None
+    )
     if head_turn_id and _is_safe_path_segment(head_turn_id):
         head_turn_dir = session_dir / TURN_STORE_DIRNAME / head_turn_id
         if _is_turn_dir(session_dir, head_turn_dir):
             return head_turn_dir
+    if metadata is not None:
+        return None
     turn_dirs = _turn_dirs(session_dir)
     if not turn_dirs:
         return None
@@ -737,6 +789,49 @@ def _read_json_object(path: Path) -> dict[str, Any]:
         return dict(payload) if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _read_json_object_bounded(path: Path, *, max_bytes: int) -> dict[str, Any] | None:
+    try:
+        payload_bytes = _read_regular_file_bytes(path, max_bytes=max_bytes)
+        if payload_bytes is None:
+            return None
+        payload = json.loads(payload_bytes)
+        return dict(payload) if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _metadata_text(primary: dict[str, Any], fallback: dict[str, Any], key: str) -> str | None:
+    primary_value = primary.get(key)
+    if isinstance(primary_value, str):
+        return _bounded_session_preview(primary_value)
+    fallback_value = fallback.get(key)
+    return _bounded_session_preview(fallback_value) if isinstance(fallback_value, str) else None
+
+
+def _bounded_session_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    bounded = dict(metadata)
+    for key in ("input_text", "output_text"):
+        value = bounded.get(key)
+        if isinstance(value, str):
+            bounded[key] = _bounded_session_preview(value)
+    return bounded
+
+
+def _bounded_session_preview(value: str | None) -> str | None:
+    if value is None:
+        return None
+    preview = value.strip()
+    if not preview:
+        return None
+    if len(preview) <= _SESSION_PREVIEW_MAX_CHARS:
+        return preview
+    return f"{preview[: _SESSION_PREVIEW_MAX_CHARS - 3].rstrip()}..."
+
+
+def _optional_non_negative_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _read_message_count(path: Path) -> int | None:
