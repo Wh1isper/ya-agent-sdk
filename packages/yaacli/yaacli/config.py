@@ -71,6 +71,9 @@ class GeneralConfig(BaseModel):
     model_cfg: str | dict[str, Any] | None = None
     """Model config for context management: preset name (e.g., 'claude_200k', 'gpt5_1m', 'gemini_1m') or dict."""
 
+    instructions: str | None = None
+    """Optional static instructions applied when this default model profile is active."""
+
     max_requests: int = 1000
     """Maximum requests per session."""
 
@@ -124,6 +127,9 @@ class ModelProfileConfig(BaseModel):
 
     model_cfg: str | dict[str, Any] | None = None
     """Model config for context management: preset name or dict."""
+
+    instructions: str | None = None
+    """Optional static instructions applied when this model profile is active."""
 
 
 class DisplayConfig(BaseModel):

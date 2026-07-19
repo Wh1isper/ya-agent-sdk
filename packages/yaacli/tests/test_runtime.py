@@ -6,7 +6,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.filters.handoff import process_handoff_message
 from ya_agent_sdk.toolsets.core.base import Toolset
@@ -124,6 +125,41 @@ async def test_create_tui_runtime_filetree_context_uses_workspace_only(tmp_path:
         assert config_dir.resolve() in allowed_paths
         assert runtime.env.tmp_dir is not None
         assert runtime.env.tmp_dir.resolve() in allowed_paths
+
+
+async def test_model_profile_instructions_are_reevaluated_after_switch(tmp_path: Path) -> None:
+    """Profile instructions use dynamic prompts so an active-session switch takes effect."""
+    captured_system_prompts: list[list[str]] = []
+
+    def respond(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        prompts: list[str] = []
+        for message in messages:
+            if not isinstance(message, ModelRequest):
+                continue
+            for part in message.parts:
+                if isinstance(part, SystemPromptPart):
+                    prompts.append(part.content)
+        captured_system_prompts.append(prompts)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    config = YaacliConfig(
+        general=GeneralConfig(
+            model="openai-chat:gpt-4",
+            instructions="Use the default profile instructions.",
+        )
+    )
+    runtime = create_tui_runtime(config=config, working_dir=tmp_path, enable_async_subagents=False)
+
+    async with runtime:
+        model = FunctionModel(respond)
+        with runtime.agent.override(model=model):
+            first_result = await runtime.agent.run("First turn", deps=runtime.ctx)
+            runtime.ctx.model_profile_instructions = "Use the fast profile instructions."
+            await runtime.agent.run("Second turn", deps=runtime.ctx, message_history=first_result.all_messages())
+
+    assert "Use the default profile instructions." in captured_system_prompts[0]
+    assert "Use the fast profile instructions." in captured_system_prompts[1]
+    assert "Use the default profile instructions." not in captured_system_prompts[1]
 
 
 def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None:

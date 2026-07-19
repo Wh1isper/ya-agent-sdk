@@ -29,8 +29,10 @@ from ya_agent_sdk.context import AgentContext
 def fix_system_prompt(message_history: list[ModelMessage], system_prompt: str) -> list[ModelMessage]:
     """Fix system prompt in message history.
 
-    Removes all existing system prompts from the message history and injects
+    Removes existing static system prompts from the message history and injects
     the provided system prompt at the beginning of the first ModelRequest.
+    Dynamic system prompts are preserved so Pydantic AI can reevaluate them on
+    subsequent turns.
 
     Args:
         message_history: List of messages to process.
@@ -44,13 +46,15 @@ def fix_system_prompt(message_history: list[ModelMessage], system_prompt: str) -
 
     message_history_without_system: list[ModelMessage] = []
     for msg in message_history:
-        # Filter out system prompts
+        # Replace static system prompts but retain Pydantic AI dynamic prompts.
         if not isinstance(msg, ModelRequest):
             message_history_without_system.append(msg)
             continue
         message_history_without_system.append(
             ModelRequest(
-                parts=[part for part in msg.parts if not isinstance(part, SystemPromptPart)],
+                parts=[
+                    part for part in msg.parts if not isinstance(part, SystemPromptPart) or part.dynamic_ref is not None
+                ],
                 instructions=msg.instructions,
             )
         )
@@ -78,9 +82,10 @@ def create_system_prompt_filter(
     prompt may have changed.
 
     Note:
-        This filter only affects SystemPromptPart in message history. It does NOT
-        affect Agent.instructions, which is added separately by pydantic-ai after
-        history processors run.
+        This filter replaces static SystemPromptPart values while preserving
+        dynamic SystemPromptPart values so Pydantic AI can reevaluate them. It
+        does NOT affect Agent.instructions, which is added separately by
+        pydantic-ai after history processors run.
 
     Args:
         system_prompt: The system prompt to inject into the message history.

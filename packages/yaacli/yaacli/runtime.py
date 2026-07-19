@@ -28,7 +28,7 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic_ai import DeferredToolRequests, ModelSettings
+from pydantic_ai import DeferredToolRequests, ModelSettings, RunContext
 from pydantic_ai.output import OutputSpec
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
@@ -256,6 +256,9 @@ def create_tui_runtime(
         active_model_profile.model_settings if active_model_profile else config.general.model_settings
     )
     active_model_cfg = active_model_profile.model_cfg if active_model_profile else config.general.model_cfg
+    active_model_instructions = (
+        active_model_profile.instructions if active_model_profile else config.general.instructions
+    )
 
     # Ensure .gitignore exists in config dir to keep session data out of file tree context
     ConfigManager(config_dir=global_config_dir).ensure_config_dir()
@@ -376,12 +379,11 @@ def create_tui_runtime(
     max_goal = config.general.max_goal_iterations
     output_retries = max_goal + 5
 
-    # Pass config [shell_env] for shell command execution
-    extra_ctx_kwargs: dict[str, Any] | None = None
+    # Pass profile instructions and config [shell_env] to the runtime context.
+    extra_ctx_kwargs: dict[str, Any] = {"model_profile_instructions": active_model_instructions}
     if config.shell_env:
-        extra_ctx_kwargs = {"shell_env": dict(config.shell_env)}
+        extra_ctx_kwargs["shell_env"] = dict(config.shell_env)
     if config.security.shell_review.enabled:
-        extra_ctx_kwargs = dict(extra_ctx_kwargs or {})
         extra_ctx_kwargs["security"] = SecurityConfig(
             shell_review=ShellReviewConfig.model_validate(config.security.shell_review.model_dump())
         )
@@ -408,6 +410,12 @@ def create_tui_runtime(
         extra_context_kwargs=extra_ctx_kwargs,
         lifecycle_extensions=[GoalContextHandoffExtension()],
     )
+
+    @runtime.agent.system_prompt(dynamic=True)
+    def model_profile_instructions_prompt(run_context: RunContext[TUIContext]) -> str | None:
+        """Return the active profile's static instructions for each conversation turn."""
+        instructions = run_context.deps.model_profile_instructions
+        return instructions if instructions and instructions.strip() else None
 
     # Attach goal guard for /goal command support
     attach_goal_guard(runtime.agent)

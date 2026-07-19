@@ -33,6 +33,7 @@ def test_default_config() -> None:
     assert config.general.is_configured is False
     assert config.is_configured is False
     assert config.general.model_settings is None
+    assert config.general.instructions is None
     assert config.general.agent_stream_resume_on_error is True
     assert config.general.agent_stream_resume_max_attempts == 3
     assert config.general.agent_stream_transport_resume_max_attempts == 20
@@ -71,6 +72,13 @@ def test_general_config_with_preset() -> None:
 
     assert config.model == "openai-chat:gpt-4o"
     assert config.model_settings == "openai_high"
+
+
+def test_general_config_accepts_model_instructions() -> None:
+    """Test static instructions for the default model profile."""
+    config = GeneralConfig(instructions="Prefer concise answers.")
+
+    assert config.instructions == "Prefer concise answers."
 
 
 def test_general_config_with_dict_settings() -> None:
@@ -162,23 +170,27 @@ def test_load_global_model_profiles_config(
 model = "anthropic:claude-sonnet-4-5"
 model_settings = "anthropic_adaptive_high"
 model_cfg = "claude_200k"
+instructions = "Prefer careful analysis."
 
 [model_profiles.fast]
 label = "Fast"
 model = "openai-responses:gpt-5-mini"
 model_settings = "openai_responses_low"
 model_cfg = "gpt5_270k"
+instructions = "Optimize for speed."
 """)
 
     config = config_manager.load()
 
     assert config.general.model == "anthropic:claude-sonnet-4-5"
+    assert config.general.instructions == "Prefer careful analysis."
     assert "fast" in config.model_profiles
     fast = config.model_profiles["fast"]
     assert fast.label == "Fast"
     assert fast.model == "openai-responses:gpt-5-mini"
     assert fast.model_settings == "openai_responses_low"
     assert fast.model_cfg == "gpt5_270k"
+    assert fast.instructions == "Optimize for speed."
 
 
 def test_load_global_security_shell_review_config(

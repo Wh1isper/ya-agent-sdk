@@ -2359,6 +2359,7 @@ class TUIApp:
         self.runtime.agent.model = infer_model(profile.model, extra_headers=model_extra_headers)
         self.runtime.agent.model_settings = cast(ModelSettings, model_settings)
         self.runtime.ctx.model_cfg = model_cfg
+        self.runtime.ctx.model_profile_instructions = profile.instructions
         self._active_model_profile = profile
         if model_cfg.context_window:
             self._context_window_size = model_cfg.context_window

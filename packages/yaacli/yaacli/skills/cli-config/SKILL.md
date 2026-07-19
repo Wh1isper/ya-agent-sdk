@@ -35,6 +35,20 @@ model_settings = "anthropic"
 # Presets: claude_200k, claude_1m, gpt5_270k, gpt5_1m, gemini_1m
 model_cfg = "claude_200k"
 
+# Optional static instructions for the default model profile
+instructions = """
+Prefer concise, evidence-based answers.
+"""
+
+[model_profiles.fast]
+label = "Fast"
+model = "openai-responses:gpt-5-mini"
+model_settings = "openai_responses_low"
+model_cfg = "gpt5_270k"
+instructions = """
+Optimize for speed. Avoid broad exploration unless necessary.
+"""
+
 # Maximum requests per session
 max_requests = 1000
 
@@ -116,6 +130,8 @@ Please help me deploy to production...
 The former custom-command `mode` field is deprecated and ignored; every custom
 command uses the same agent execution semantics. `/init` is provided by
 default, while commands such as `/commit` and `/review` come from configuration.
+
+`instructions` adds a static system-prompt segment only while its profile is active. It applies to the main agent in TUI and headless runs; `/model` changes it for later requests in the current session.
 
 ## Subagent Configuration
 
