@@ -95,7 +95,6 @@ from ya_agent_sdk.context import (
     BusMessage,
     MessageBus,
     NoteManager,
-    ResumableState,
     StreamEvent,
     Task,
     TaskManager,
@@ -167,7 +166,7 @@ from yaacli.model_profiles import (
 from yaacli.perf import perf_log_report, perf_report, perf_timer
 from yaacli.rendering.transcript import BlockId, BoundedTextAccumulator, TranscriptLimits, TranscriptStore
 from yaacli.runtime import create_tui_runtime
-from yaacli.session import TUIContext
+from yaacli.session import TUIContext, TUIResumableState
 from yaacli.sessions import (
     SessionInfo,
     get_head_artifact_paths,
@@ -1956,6 +1955,7 @@ class TUIApp:
                 else "--"
             )
             parts.append(("class:status-bar", f" · ctx {context_pct}"))
+            parts.append(("class:status-bar", f" · cost {self._session_usage.format_status_cost()}"))
         if self.config.display.show_elapsed_time and self._is_foreground_busy():
             started_at = self._run_started_at if self._run_started_at is not None else self._phase_started_at
             elapsed = _format_elapsed_duration(time.monotonic() - started_at)
@@ -5001,7 +5001,7 @@ class TUIApp:
         self._current_context_tokens = 0
 
     async def _clear_session(self) -> None:
-        """Start a clean conversation while preserving runtime configuration and usage."""
+        """Start a clean conversation while preserving reusable runtime configuration."""
         if self._session_clear_in_progress:
             return
         self._session_clear_in_progress = True
@@ -5037,6 +5037,7 @@ class TUIApp:
                     # Non-shell cleanup errors roll forward after tombstoning;
                     # shell termination failure is the only fatal boundary.
                     self._reset_tui_session_state()
+                    self._session_usage.clear()
                     if self._runtime is not None:
                         ctx = self._runtime.ctx
                         if isinstance(ctx, TUIContext):
@@ -5158,7 +5159,7 @@ class TUIApp:
 
             # Save context state
             state_file = dump_dir / "context_state.json"
-            state = self.runtime.ctx.export_state()
+            state = self._export_session_state(include_usage_ledger=False)
             state_file.write_text(state.model_dump_json(indent=2))
 
             self._append_system_output(f"Session dumped to {dump_dir}")
@@ -5217,9 +5218,9 @@ class TUIApp:
                 history_payload if history_payload is not None else history_file.read_bytes()
             )
             if atomic_session_snapshot:
-                state = ResumableState.model_validate_json(state_payload) if state_payload is not None else None
+                state = TUIResumableState.model_validate_json(state_payload) if state_payload is not None else None
             else:
-                state = ResumableState.model_validate_json(state_file.read_text()) if state_file.exists() else None
+                state = TUIResumableState.model_validate_json(state_file.read_text()) if state_file.exists() else None
             display_events: list[dict[str, Any]] = []
             display_warning: str | None = None
             if atomic_session_snapshot:
@@ -5263,7 +5264,9 @@ class TUIApp:
             self._reset_context_session_state(candidate_ctx)
             if state is not None:
                 restore_resumable_state_safely(state, candidate_ctx)
-            restored_usage = candidate_ctx.build_usage_snapshot() if candidate_ctx.usage_snapshot_entries else None
+            restored_usage = state.session_usage_snapshot if state is not None else None
+            if restored_usage is None and candidate_ctx.usage_snapshot_entries:
+                restored_usage = candidate_ctx.build_usage_snapshot()
         except Exception as exc:
             self._append_system_output(f"Error loading session: {exc}")
             return False
@@ -5313,6 +5316,7 @@ class TUIApp:
                     self._session_id = committed_session_id
                     self._set_phase(TUIPhase.IDLE)
                     self._restore_output_from_display_events(replacement_replay.snapshot())
+                    self._session_usage.clear()
 
                     if restored_usage is not None:
                         self._session_usage.set_run_snapshot(restored_usage)
@@ -5340,6 +5344,27 @@ class TUIApp:
             raise cancelled
         return True
 
+    def _export_session_state(
+        self,
+        *,
+        include_usage_ledger: bool,
+        include_extra_usages: bool | None = None,
+    ) -> TUIResumableState:
+        """Export resumable context plus cumulative session usage."""
+        if include_extra_usages is None:
+            base_state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
+        else:
+            base_state = self.runtime.ctx.export_state(include_extra_usages=include_extra_usages)
+        usage_snapshot = (
+            None
+            if self._session_usage.is_empty()
+            else self._session_usage.export_snapshot(run_id=f"session:{self._session_id}")
+        )
+        return TUIResumableState(
+            **base_state.model_dump(),
+            session_usage_snapshot=usage_snapshot,
+        )
+
     def _save_session_snapshot(
         self,
         *,
@@ -5364,10 +5389,10 @@ class TUIApp:
         if not self._message_history and not self._display_replay.snapshot():
             return False
 
-        if include_extra_usages is None:
-            state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
-        else:
-            state = self.runtime.ctx.export_state(include_extra_usages=include_extra_usages)
+        state = self._export_session_state(
+            include_usage_ledger=include_usage_ledger,
+            include_extra_usages=include_extra_usages,
+        )
 
         profile = self._active_model_profile
         turn_dir = save_session_turn(
@@ -5414,7 +5439,7 @@ class TUIApp:
             # Read mutable runtime structures on the event-loop thread. The
             # prepared Pydantic state and shallow message list are stable while
             # this turn awaits the worker write.
-            state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
+            state = self._export_session_state(include_usage_ledger=include_usage_ledger)
             max_turns = _positive_int_config(
                 getattr(getattr(self.config, "session", None), "max_turns_per_session", None),
                 _DEFAULT_MAX_TURNS_PER_SESSION,

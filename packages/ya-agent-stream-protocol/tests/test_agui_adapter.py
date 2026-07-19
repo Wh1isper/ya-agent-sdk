@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic_ai import PartDeltaEvent, PartEndEvent, PartStartEvent, TextPartDelta, ThinkingPartDelta
 from pydantic_ai.messages import TextPart, ThinkingPart
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context.agent import StreamEvent
-from ya_agent_sdk.events import ModelRequestStartEvent
+from ya_agent_sdk.events import ModelRequestStartEvent, UsageSnapshotEvent
+from ya_agent_sdk.usage import CostEstimate, UsageSnapshot
 from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
@@ -65,6 +69,39 @@ def test_agui_event_adapter_maps_text_stream_events_and_compacts_replay() -> Non
     assert [event["type"] for event in compacted] == ["CUSTOM", "TEXT_MESSAGE_CHUNK", "RUN_FINISHED"]
     assert compacted[1]["delta"] == "hello world"
     assert compacted[2]["result"] == {"output_text": "hello world"}
+
+
+def test_agui_event_adapter_serializes_usage_cost_decimals_as_strings() -> None:
+    adapter = AguiEventAdapter(session_id="session-1", run_id="run-1", config=CLAW_ADAPTER_CONFIG)
+    snapshot = UsageSnapshot(
+        run_id="run-1",
+        total_usage=RunUsage(requests=1, input_tokens=10, output_tokens=2),
+        total_cost_estimate=CostEstimate(
+            input_amount=Decimal("0.001"),
+            output_amount=Decimal("0.002"),
+            total_amount=Decimal("0.003"),
+            priced_requests=1,
+        ),
+    )
+
+    [event] = adapter.adapt_stream_event(
+        StreamEvent(
+            agent_id="main",
+            agent_name="main",
+            event=UsageSnapshotEvent(event_id="usage-1", snapshot=snapshot),
+        )
+    )
+
+    assert event["type"] == "CUSTOM"
+    assert event["name"] == "ya_agent.usage_snapshot"
+    value = event["value"]
+    assert isinstance(value, dict)
+    payload = value["payload"]
+    assert isinstance(payload, dict)
+    estimate = payload["total_cost_estimate"]
+    assert isinstance(estimate, dict)
+    assert estimate["total_amount"] == "0.003"
+    assert estimate["priced_requests"] == 1
 
 
 def test_agui_event_adapter_run_started_excludes_input_parts() -> None:

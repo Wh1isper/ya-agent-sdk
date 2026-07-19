@@ -111,7 +111,16 @@ from ya_agent_environment import Environment, FileOperator, ResourceRegistry, Sh
 
 from ya_agent_sdk.agents.lifecycle import LifecycleExtension
 from ya_agent_sdk.events import AgentEvent, UsageSnapshotEvent
-from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot, UsageSnapshotEntry, coerce_run_usage
+from ya_agent_sdk.usage import (
+    CostEstimate,
+    PricedRunUsage,
+    UsageAgentTotal,
+    UsageSnapshot,
+    UsageSnapshotEntry,
+    coerce_run_usage,
+    combine_cost_estimates,
+    unavailable_cost_estimate,
+)
 from ya_agent_sdk.utils import get_latest_request_usage
 
 from .bus import BusMessage, MessageBus
@@ -1934,16 +1943,21 @@ class AgentContext(BaseModel):
         agent_name: str,
         model_id: str,
         usage: RunUsage,
+        cost_estimate: CostEstimate | None = None,
         usage_id: str | None = None,
         source: str = "model_request",
         ledger_key: str | None = None,
     ) -> UsageSnapshot:
         """Update one cumulative usage ledger entry and return the latest run snapshot."""
+        if cost_estimate is None and isinstance(usage, PricedRunUsage):
+            cost_estimate = usage.cost_estimate
+        normalized_usage = coerce_run_usage(usage)
         self.usage_snapshot_entries[ledger_key or agent_id] = UsageSnapshotEntry(
             agent_id=agent_id,
             agent_name=agent_name,
             model_id=model_id,
-            usage=coerce_run_usage(usage),
+            usage=normalized_usage,
+            cost_estimate=cost_estimate or unavailable_cost_estimate(normalized_usage.requests),
             usage_id=usage_id,
             source=source,
         )
@@ -1952,32 +1966,50 @@ class AgentContext(BaseModel):
     def build_usage_snapshot(self) -> UsageSnapshot:
         """Build a cumulative usage snapshot for this run."""
         total_usage = RunUsage()
+        total_cost_estimate: CostEstimate | None = None
         agent_usages: dict[str, UsageAgentTotal] = {}
         model_usages: dict[str, RunUsage] = {}
+        model_cost_estimates: dict[str, CostEstimate] = {}
         entries = sorted(self.usage_snapshot_entries.values(), key=lambda entry: entry.agent_id)
         for entry in entries:
             total_usage += entry.usage
+            entry_cost = entry.cost_estimate or unavailable_cost_estimate(entry.usage.requests)
+            total_cost_estimate = combine_cost_estimates(total_cost_estimate, entry_cost)
             current_agent_usage = agent_usages.get(entry.agent_id)
             if current_agent_usage is None:
                 agent_usages[entry.agent_id] = UsageAgentTotal(
                     agent_name=entry.agent_name,
                     model_id=entry.model_id,
                     usage=entry.usage,
+                    cost_estimate=entry_cost,
                     usage_id=entry.usage_id,
                     source=entry.source,
                 )
             else:
                 current_agent_usage.usage = current_agent_usage.usage + entry.usage
+                current_agent_usage.cost_estimate = combine_cost_estimates(
+                    current_agent_usage.cost_estimate,
+                    entry_cost,
+                )
                 if current_agent_usage.model_id != entry.model_id:
                     current_agent_usage.model_id = "multiple"
             current_model_usage = model_usages.get(entry.model_id, RunUsage())
             model_usages[entry.model_id] = current_model_usage + entry.usage
+            model_cost_estimates[entry.model_id] = (
+                combine_cost_estimates(
+                    model_cost_estimates.get(entry.model_id),
+                    entry_cost,
+                )
+                or CostEstimate()
+            )
         return UsageSnapshot(
             run_id=self.parent_run_id or self.run_id,
             total_usage=total_usage,
+            total_cost_estimate=total_cost_estimate,
             entries=list(entries),
             agent_usages=agent_usages,
             model_usages=model_usages,
+            model_cost_estimates=model_cost_estimates,
         )
 
     async def emit_usage_snapshot_event(self, *, source: str = "usage_snapshot") -> None:
@@ -2001,6 +2033,7 @@ class AgentContext(BaseModel):
         agent_name: str,
         model_id: str,
         usage: RunUsage,
+        cost_estimate: CostEstimate | None = None,
         source: str = "model_request",
         usage_id: str | None = None,
         ledger_key: str | None = None,
@@ -2015,6 +2048,7 @@ class AgentContext(BaseModel):
             agent_name=agent_name,
             model_id=model_id,
             usage=usage,
+            cost_estimate=cost_estimate,
             usage_id=usage_id,
             source=source,
             ledger_key=ledger_key,

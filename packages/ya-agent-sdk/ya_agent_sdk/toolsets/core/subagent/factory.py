@@ -25,11 +25,12 @@ from pydantic_ai.messages import (
     RetryPromptPart,
 )
 from pydantic_ai.models import Model
+from pydantic_ai.usage import RunUsage
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.usage import coerce_run_usage
+from ya_agent_sdk.usage import CostEstimate, coerce_run_usage, estimate_latest_model_message_cost
 
 # Type alias for instruction functions
 InstructionFunc = Callable[[RunContext[AgentContext]], str | None]
@@ -178,14 +179,28 @@ async def _run_subagent_iter(
                     async for event in request_stream:
                         await sub_ctx.emit_event(sub_ctx.tool_id_wrapper.wrap_event(event))
                 if Agent.is_model_request_node(node):
+                    run_usage = coerce_run_usage(run.usage)
+                    usage_ledger_key = f"usage:{sub_ctx.agent_id}:{usage_id or sub_ctx.agent_id}"
                     parent_ctx.update_usage_snapshot_entry(
-                        ledger_key=sub_ctx.agent_id,
+                        ledger_key=usage_ledger_key,
                         agent_id=sub_ctx.agent_id,
                         agent_name=agent_name,
                         model_id=model_id,
-                        usage=coerce_run_usage(run.usage),
+                        usage=run_usage,
+                        cost_estimate=CostEstimate(),
                         usage_id=usage_id,
                         source="subagent_model_request",
+                    )
+                    request_usage_id = f"{usage_id or sub_ctx.agent_id}:{model_request_index}"
+                    parent_ctx.update_usage_snapshot_entry(
+                        ledger_key=f"cost:{sub_ctx.agent_id}:{request_usage_id}",
+                        agent_id=sub_ctx.agent_id,
+                        agent_name=agent_name,
+                        model_id=model_id,
+                        usage=RunUsage(),
+                        cost_estimate=estimate_latest_model_message_cost(run.new_messages()),
+                        usage_id=request_usage_id,
+                        source="subagent_model_request_cost",
                     )
                     snapshot = parent_ctx.build_usage_snapshot()
                     await parent_ctx.emit_event(
@@ -401,11 +416,12 @@ async def _call_agent_as_subagent(
 
                 # Ensure final provider usage is reflected in the unified ledger.
                 deps.update_usage_snapshot_entry(
-                    ledger_key=agent_id,
+                    ledger_key=f"usage:{agent_id}:{usage_id}",
                     agent_id=agent_id,
                     agent_name=agent_name,
                     model_id=model_id,
                     usage=result_usage,
+                    cost_estimate=CostEstimate(),
                     usage_id=usage_id,
                     source="subagent",
                 )

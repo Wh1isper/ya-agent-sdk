@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -17,13 +17,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, AgentStreamer, stream_agent
-from ya_agent_sdk.context import BusMessage, ResumableState
+from ya_agent_sdk.context import BusMessage, ResumableState, StreamEvent
 from ya_agent_sdk.environment import SandboxEnvironment
-from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent
+from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
 from ya_agent_sdk.subagents import get_builtin_subagent_configs
 from ya_agent_sdk.subagents.config import SubagentConfig
 from ya_agent_sdk.toolsets.core.base import UserInteraction as SdkUserInteraction
+from ya_agent_sdk.usage import UsageSnapshot, combine_usage_snapshots
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from ya_claw.agency.lifecycle import AgencyLifecycle
@@ -39,6 +40,7 @@ from ya_claw.controller.models import (
     TriggerType,
     parse_input_parts,
 )
+from ya_claw.controller.store import extract_usage_snapshot_from_state, with_usage_snapshot_metadata
 from ya_claw.execution.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
 from ya_claw.execution.checkpoint import build_message_checkpoint, commit_run_artifacts, write_message_checkpoint
 from ya_claw.execution.input import InputMappingResult, map_input_parts
@@ -85,6 +87,7 @@ class AgencyMemorySource:
 class ExecutionBuffers:
     latest_state_payload: dict[str, Any] | None = None
     latest_message_payload: dict[str, Any] | None = None
+    latest_usage_snapshot: UsageSnapshot | None = None
     terminal_event: dict[str, Any] | None = None
     output_text: str | None = None
     claw_metadata: dict[str, Any] = field(default_factory=dict)
@@ -99,6 +102,27 @@ class _AgentRunMessages(Protocol):
 
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 _ACTIVE_ASYNC_TASK_STATUSES = frozenset({"queued", "running"})
+
+
+def _index_run_usage_snapshot(run_record: RunRecord, buffers: ExecutionBuffers) -> None:
+    usage_snapshot = buffers.latest_usage_snapshot
+    if usage_snapshot is None:
+        usage_snapshot = extract_usage_snapshot_from_state(buffers.latest_state_payload)
+    if usage_snapshot is not None:
+        run_record.run_metadata = with_usage_snapshot_metadata(run_record.run_metadata, usage_snapshot)
+
+
+def _with_cumulative_usage_snapshot(
+    stream_event: StreamEvent,
+    *,
+    segment_base: UsageSnapshot | None,
+    run_id: str,
+) -> tuple[StreamEvent, UsageSnapshot | None]:
+    event = stream_event.event
+    if not isinstance(event, UsageSnapshotEvent) or event.snapshot is None:
+        return stream_event, None
+    cumulative = combine_usage_snapshots(segment_base, event.snapshot, run_id=run_id)
+    return replace(stream_event, event=replace(event, snapshot=cumulative)), cumulative
 
 
 class ExecutionSupervisor:
@@ -444,6 +468,7 @@ class RunCoordinator:
             logger.info("Run interrupted by agent runtime run_id={}", run_id)
             async with self._session_factory() as db_session:
                 session_record, run_record = await _load_run_scope(db_session, run_id)
+                _index_run_usage_snapshot(run_record, buffers)
                 if buffers.latest_message_payload is not None:
                     checkpoint = build_message_checkpoint(
                         run_id=run_record.id,
@@ -457,6 +482,7 @@ class RunCoordinator:
             logger.exception("YA Claw run execution failed run_id={}", run_id)
             async with self._session_factory() as db_session:
                 session_record, run_record = await _load_run_scope(db_session, run_id)
+                _index_run_usage_snapshot(run_record, buffers)
                 if buffers.latest_message_payload is not None:
                     checkpoint = build_message_checkpoint(
                         run_id=run_record.id,
@@ -551,6 +577,7 @@ class RunCoordinator:
         async with self._session_factory() as db_session:
             session_record, run_record = await _load_run_scope(db_session, run_id)
             if run_record.status == "cancelled":
+                _index_run_usage_snapshot(run_record, buffers)
                 await db_session.commit()
                 return
 
@@ -570,6 +597,7 @@ class RunCoordinator:
             }
             complete_run(session_record, run_record)
             run_record.output_text = buffers.output_text
+            _index_run_usage_snapshot(run_record, buffers)
             agui_adapter = AguiEventAdapter(
                 session_id=session_record.id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG
             )
@@ -778,6 +806,7 @@ class RunCoordinator:
         message_history = self._extract_message_history(restore_point)
         agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG)
         deferred_tool_results: DeferredToolResults | None = None
+        cumulative_usage_snapshot: UsageSnapshot | None = None
         use_initial_prompt = True
         refresh_task: asyncio.Task[None] | None = None
 
@@ -803,6 +832,7 @@ class RunCoordinator:
                     while True:
                         current_user_prompt = next_user_prompt
                         next_user_prompt = None
+                        segment_base_usage_snapshot = cumulative_usage_snapshot
                         async with stream_agent(
                             runtime,
                             user_prompt=current_user_prompt,
@@ -828,19 +858,27 @@ class RunCoordinator:
                             )
                             try:
                                 async for stream_event in streamer:
-                                    for agui_event in agui_adapter.adapt_stream_event(stream_event):
+                                    effective_stream_event, updated_usage_snapshot = _with_cumulative_usage_snapshot(
+                                        stream_event,
+                                        segment_base=segment_base_usage_snapshot,
+                                        run_id=run_id,
+                                    )
+                                    if updated_usage_snapshot is not None:
+                                        cumulative_usage_snapshot = updated_usage_snapshot
+                                        buffers.latest_usage_snapshot = updated_usage_snapshot
+                                    for agui_event in agui_adapter.adapt_stream_event(effective_stream_event):
                                         await self._runtime_state.append_run_event(run_id, agui_event)
                                     if streamer.run is not None:
                                         output = streamer.run.result.output if streamer.run.result else None
                                         buffers.output_text = self._stringify_output(output)
                                         if isinstance(
-                                            stream_event.event,
-                                            (ModelRequestStartEvent, ModelRequestCompleteEvent),
+                                            effective_stream_event.event,
+                                            (ModelRequestStartEvent, ModelRequestCompleteEvent, UsageSnapshotEvent),
                                         ):
                                             checkpoint = build_message_checkpoint(
                                                 run_id=run_id,
                                                 session_id=session_id,
-                                                checkpoint_kind=type(stream_event.event).__name__,
+                                                checkpoint_kind=type(effective_stream_event.event).__name__,
                                                 message=self._runtime_state.get_replay_events(run_id),
                                             )
                                             write_message_checkpoint(self._run_store, checkpoint)
@@ -869,6 +907,7 @@ class RunCoordinator:
                                 profile=profile,
                                 trigger_type=trigger_type,
                                 message_payload=buffers.latest_message_payload,
+                                usage_snapshot=cumulative_usage_snapshot,
                             )
                             output = streamer.run.result.output if streamer.run.result else None
                             if isinstance(output, DeferredToolRequests):
@@ -1443,6 +1482,7 @@ class RunCoordinator:
         profile: ResolvedProfile,
         trigger_type: str,
         message_payload: dict[str, Any] | None,
+        usage_snapshot: UsageSnapshot | None,
     ) -> dict[str, Any]:
         exported_state = ctx.export_state().model_dump(mode="json")
         message_history = message_payload.get("message_history") if isinstance(message_payload, dict) else None
@@ -1452,6 +1492,7 @@ class RunCoordinator:
         return {
             "container_id": ctx.container_id,
             "context_state": exported_state,
+            "usage_snapshot": usage_snapshot.model_dump(mode="json") if usage_snapshot is not None else None,
             "message_history": message_history,
             "message_count": message_count,
             "resumable_state": exported_state,
@@ -1486,7 +1527,7 @@ class RunCoordinator:
                 ),
             },
             "trigger_type": trigger_type,
-            "version": 4,
+            "version": 5,
         }
 
     def _extract_replay_events(

@@ -17,6 +17,7 @@ from ya_agent_sdk.toolsets.core.subagent import (
     create_subagent_tool,
 )
 from ya_agent_sdk.toolsets.core.subagent.factory import _get_self_fork_history, generate_unique_id
+from ya_agent_sdk.usage import CostEstimate
 
 # Tests for create_subagent_tool with create_subagent_call_func
 
@@ -600,9 +601,13 @@ async def test_create_subagent_call_func_with_streaming_nodes():
 
     await _assert_streaming_subagent_events(queue, mock_event=mock_event)
     await _assert_parent_usage_events(ctx.agent_stream_queues[ctx.agent_id], subagent_id=subagent_id)
-    assert ctx.usage_snapshot_entries[subagent_id].agent_id == subagent_id
-    assert ctx.usage_snapshot_entries[subagent_id].model_id == "test-model"
-    assert ctx.usage_snapshot_entries[subagent_id].usage.requests == 2
+    usage_entry = next(
+        entry
+        for entry in ctx.usage_snapshot_entries.values()
+        if entry.agent_id == subagent_id and entry.source == "subagent"
+    )
+    assert usage_entry.model_id == "test-model"
+    assert usage_entry.usage.requests == 2
 
 
 async def test_create_subagent_call_func_wraps_stream_tool_call_ids(monkeypatch):
@@ -814,6 +819,14 @@ async def test_create_subagent_call_func_resume_with_agent_id():
         agent_name="analyze",
         parent_agent_id=ctx.run_id,
     )
+    ctx.update_usage_snapshot_entry(
+        ledger_key="usage:analyze-abcd:prior-call",
+        agent_id="analyze-abcd",
+        agent_name="analyze",
+        model_id="test-model",
+        usage=RunUsage(requests=2),
+        cost_estimate=CostEstimate(),
+    )
 
     run_ctx = _create_mock_run_context(ctx)
     mock_self = MagicMock(spec=BaseTool)
@@ -823,6 +836,9 @@ async def test_create_subagent_call_func_resume_with_agent_id():
 
     # Should use the provided agent_id, not generate a new one
     assert "<id>analyze-abcd</id>" in output
+    snapshot = ctx.build_usage_snapshot()
+    assert snapshot.total_usage.requests == 3
+    assert snapshot.agent_usages["analyze-abcd"].usage.requests == 3
 
 
 async def test_usage_recorded_without_tool_call_id():

@@ -19,7 +19,9 @@ import { EmptyState } from '../../../components/EmptyState'
 import { JsonView } from '../../../components/JsonView'
 import { StatusBadge } from '../../../components/StatusBadge'
 import type { AguiTimelineState, TimelineBlock } from '../agui/types'
+import { CostEstimateDisplay } from '../CostEstimateDisplay'
 import type { SessionHistoryState } from '../sessionHistory'
+import { USAGE_SNAPSHOT_EVENT_NAME } from '../usageCost'
 import { Card, InputPartView, CodeBlock } from './shared'
 import { MarkdownMessage } from './MarkdownMessage'
 import { accentFromRuntimeStatus } from './runtimeStatus'
@@ -397,6 +399,13 @@ export function TimelineCard({ block }: { block: TimelineBlock }) {
     )
   }
   if (block.kind === 'usage') {
+    if (block.name === USAGE_SNAPSHOT_EVENT_NAME) {
+      return (
+        <Card icon={Activity} title="Usage estimate" accent="violet" compact>
+          <CostEstimateDisplay snapshot={block.snapshot} />
+        </Card>
+      )
+    }
     return (
       <Card icon={Activity} title="Usage" accent="violet" compact>
         <JsonView value={block.payload} height="180px" />

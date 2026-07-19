@@ -64,6 +64,42 @@ describe('AGUI event reducer', () => {
     })
   })
 
+  it('replaces prior cost snapshots by transport run instead of summing them', () => {
+    const snapshot = (sdkRunId: string, totalAmount: string) =>
+      custom('ya_agent.usage_snapshot', {
+        run_id: sdkRunId,
+        total_usage: {},
+        total_cost_estimate: {
+          currency: 'USD',
+          input_amount: totalAmount,
+          output_amount: '0',
+          total_amount: totalAmount,
+          priced_requests: 1,
+          unpriced_requests: 0,
+          basis: 'api_list_price',
+          source: 'genai_prices',
+        },
+        entries: [],
+        agent_usages: {},
+        model_usages: {},
+        model_cost_estimates: {},
+      })
+    const timeline = buildTimeline([
+      snapshot('sdk-segment-1', '0.001'),
+      snapshot('sdk-segment-2', '0.003'),
+    ])
+
+    expect(timeline.blocks).toHaveLength(1)
+    expect(timeline.blocks[0]).toMatchObject({
+      kind: 'usage',
+      id: 'usage:run-a',
+      snapshot: {
+        run_id: 'sdk-segment-2',
+        total_cost_estimate: { total_amount: '0.003' },
+      },
+    })
+  })
+
   it('keeps runtime custom events as visible runtime cards by default', () => {
     const timeline = buildTimeline([
       custom('ya_claw.run_queued', { run_id: 'run-a', status: 'queued' }),

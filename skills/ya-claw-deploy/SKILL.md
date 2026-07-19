@@ -48,7 +48,7 @@ Every deployment needs:
 - persistent `YA_CLAW_DATA_DIR`
 - persistent `YA_CLAW_WORKSPACE_DIR`
 - selected workspace backend: `local` or `docker`
-- Docker access for the YA Claw service process when backend is `docker`
+- Docker CLI on `PATH` plus Docker Engine API access for the YA Claw service process when backend is `docker`; the official service image bundles the CLI, but custom images and host installs must provide it
 - `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` when the service runs in Docker and uses Docker shell execution
 - model/provider credentials available in the YA Claw service process
 - seeded or pre-created AgentProfile rows

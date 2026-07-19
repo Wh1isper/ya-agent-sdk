@@ -80,6 +80,7 @@ YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 For Docker shell shapes:
 
 ```bash
+docker compose exec ya-claw docker version
 docker ps --filter 'name=ya-claw-session'
 docker ps --filter 'name=ya-claw-run'
 docker logs ya-claw-session-<session-short>-g<generation>
@@ -232,15 +233,17 @@ Startup fails when `YA_CLAW_API_TOKEN` is empty. Generate a long token and resta
 
 Check service logs, profile model configuration, model provider credentials, and runtime supervisor startup messages.
 
-### Workspace Container Startup Fails
+### Workspace Container Startup or Shell Execution Fails
 
-Check Docker access from the service container or service user:
+Check that the service runtime has the Docker CLI and can reach Docker Engine:
 
 ```bash
+command -v docker
+docker version
 docker ps
 ```
 
-For compose, confirm `/var/run/docker.sock` is mounted. For systemd, confirm the service user has Docker access.
+The official service image bundles the CLI. Custom images and host installs must provide it. A bare `[Errno 2] No such file or directory` from every Docker shell command usually means the service runtime lacks the `docker` executable. For compose, also confirm `/var/run/docker.sock` is mounted; the socket alone does not provide the CLI. For systemd, confirm the service user has Docker access.
 
 For service Docker + Docker shell, confirm `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` points to a Docker daemon-visible host path and that the service has the same workspace content mounted at `YA_CLAW_WORKSPACE_DIR`.
 

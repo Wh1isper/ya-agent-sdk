@@ -1,5 +1,10 @@
 import type { AguiEvent, InputPart } from '../../../types'
 import { safeJsonStringify } from '../../../lib/utils'
+import {
+  parseUsageSnapshot,
+  usageSnapshotEventRunId,
+  USAGE_SNAPSHOT_EVENT_NAME,
+} from '../usageCost'
 import type {
   AguiTimelineState,
   ContextMeterBlock,
@@ -113,10 +118,29 @@ export function reduceAguiEvent(
   }
   if (eventType === 'CUSTOM') {
     const block = blockFromCustomEvent(event)
-    return options.includeRuntimeEvents === false &&
+    if (
+      options.includeRuntimeEvents === false &&
       block.kind === 'runtime_event'
-      ? nextState
-      : appendBlock(nextState, block)
+    ) {
+      return nextState
+    }
+    if (
+      block.kind === 'usage' &&
+      block.name === USAGE_SNAPSHOT_EVENT_NAME &&
+      block.runId
+    ) {
+      const existingIndex = nextState.blocks.findIndex(
+        (candidate) =>
+          candidate.kind === 'usage' &&
+          candidate.name === USAGE_SNAPSHOT_EVENT_NAME &&
+          candidate.runId === block.runId,
+      )
+      if (existingIndex >= 0) {
+        nextState.blocks[existingIndex] = block
+        return nextState
+      }
+    }
+    return appendBlock(nextState, block)
   }
   return nextState
 }
@@ -315,8 +339,24 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       contextWindowSize: numberField(payload, 'context_window_size'),
     } satisfies ContextMeterBlock
   }
+  if (name === USAGE_SNAPSHOT_EVENT_NAME) {
+    const snapshot = parseUsageSnapshot(payload)
+    const runId =
+      usageSnapshotEventRunId(event) ??
+      snapshot?.run_id ??
+      stringField(payload, 'run_id') ??
+      undefined
+    return {
+      kind: 'usage',
+      id: runId ? `usage:${runId}` : id,
+      name,
+      payload,
+      snapshot,
+      runId,
+    } satisfies UsageBlock
+  }
   if (name.includes('usage')) {
-    return { kind: 'usage', id, payload } satisfies UsageBlock
+    return { kind: 'usage', id, name, payload } satisfies UsageBlock
   }
   if (name === 'ya_agent.subagent_start_event') {
     return {

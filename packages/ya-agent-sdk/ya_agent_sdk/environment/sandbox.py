@@ -41,6 +41,11 @@ from ya_agent_environment import (
 from ya_agent_sdk.environment.local import VirtualLocalFileOperator, VirtualMount
 from ya_agent_sdk.environment.virtual_path import VirtualPath, normalize_virtual_path
 
+_DOCKER_CLI_EXECUTABLE = "docker"
+_DOCKER_CLI_MISSING_MESSAGE = (
+    "Docker CLI executable 'docker' was not found in the shell host runtime. "
+    "Install the Docker CLI and ensure it is on PATH; access to the Docker socket alone is not sufficient."
+)
 _DOCKER_EXEC_MARKER_MISSING = 10
 _DOCKER_EXEC_MARKER_ACTIVE = 11
 _DOCKER_EXEC_KILL_REGISTRATION_GRACE = 1.0
@@ -425,7 +430,7 @@ class DockerShell(Shell):
         else:
             workdir = self._container_workdir
 
-        args: list[str] = ["docker", "exec", "-i"]
+        args: list[str] = [_DOCKER_CLI_EXECUTABLE, "exec", "-i"]
         if self._exec_user is not None:
             args.extend(["--user", self._exec_user])
         exec_env = self._build_exec_env(env)
@@ -446,7 +451,7 @@ class DockerShell(Shell):
         *helper_args: str,
     ) -> list[str]:
         """Build a separate docker exec invocation for lifecycle helpers."""
-        args = ["docker", "exec"]
+        args = [_DOCKER_CLI_EXECUTABLE, "exec"]
         if self._exec_user is not None:
             args.extend(["--user", self._exec_user])
         args.extend([
@@ -492,6 +497,8 @@ class DockerShell(Shell):
 
         try:
             return await asyncio.to_thread(_run)
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"Failed to {action}: {_DOCKER_CLI_MISSING_MESSAGE}") from exc
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(f"Failed to {action}: {exc}") from exc
 
@@ -705,8 +712,10 @@ class DockerShell(Shell):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-        except Exception as e:
-            raise ShellExecutionError(command, stderr=str(e)) from e
+        except FileNotFoundError as exc:
+            raise ShellExecutionError(command, stderr=_DOCKER_CLI_MISSING_MESSAGE) from exc
+        except Exception as exc:
+            raise ShellExecutionError(command, stderr=str(exc)) from exc
 
         stdout = process.stdout
         if stdout is None:

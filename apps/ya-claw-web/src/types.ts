@@ -631,6 +631,46 @@ export type RunStatus =
   | 'cancelled'
 export type SessionStatus = 'idle' | RunStatus
 
+export type CostEstimate = {
+  currency: 'USD'
+  input_amount: string
+  output_amount: string
+  total_amount: string
+  priced_requests: number
+  unpriced_requests: number
+  basis: 'api_list_price'
+  source: 'genai_prices'
+}
+
+export type UsageSnapshotEntry = {
+  agent_id: string
+  agent_name: string
+  model_id: string
+  usage: Record<string, unknown>
+  cost_estimate?: CostEstimate | null
+  usage_id?: string | null
+  source: string
+}
+
+export type UsageAgentTotal = {
+  agent_name: string
+  model_id: string
+  usage: Record<string, unknown>
+  cost_estimate?: CostEstimate | null
+  usage_id?: string | null
+  source: string
+}
+
+export type UsageSnapshot = {
+  run_id: string
+  total_usage: Record<string, unknown>
+  total_cost_estimate?: CostEstimate | null
+  entries: UsageSnapshotEntry[]
+  agent_usages: Record<string, UsageAgentTotal>
+  model_usages: Record<string, Record<string, unknown>>
+  model_cost_estimates: Record<string, CostEstimate>
+}
+
 export type AguiEvent = Record<string, unknown> & {
   type?: string
   timestamp?: number
@@ -669,6 +709,7 @@ export type RunSummary = {
   started_at?: string | null
   finished_at?: string | null
   committed_at?: string | null
+  usage_snapshot?: UsageSnapshot | null
   message?: AguiEvent[] | null
 }
 

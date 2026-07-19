@@ -19,7 +19,7 @@ flowchart TB
 
 ## Images
 
-- `Dockerfile.ya-claw` builds the server image.
+- `Dockerfile.ya-claw` builds the server image and bundles the Docker CLI required by Docker shell execution. It does not run a Docker daemon.
 - `Dockerfile.ya-claw-workspace` builds the workspace image used by the Docker workspace provider.
 
 Build locally:
@@ -149,9 +149,10 @@ curl \
   http://127.0.0.1:9042/api/v1/claw/info
 ```
 
-After the first run that needs workspace execution:
+Verify that the service image can reach Docker Engine, then inspect the first workspace run:
 
 ```bash
+docker compose exec ya-claw docker version
 docker ps --filter 'name=ya-claw-session'
 docker inspect ya-claw-session-<session-short>-g<generation> --format '{{ json .Mounts }}'
 ```
