@@ -228,6 +228,43 @@ async def test_cancel_with_external_cancellation(tmp_path: Path) -> None:
             assert len(events) > 0
 
 
+async def test_cancelled_stream_cleanup_respects_deadline_when_task_ignores_cancellation(tmp_path: Path) -> None:
+    """A cancellation-resistant inner task must not keep the caller stuck forever."""
+    release_inner_task = asyncio.Event()
+    inner_task_started = asyncio.Event()
+
+    async def stream_function(_messages, _agent_info: AgentInfo):
+        inner_task_started.set()
+        yield "started"
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await release_inner_task.wait()
+            raise
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async def consume_stream() -> None:
+        async with runtime:
+            async with stream_agent(runtime, "Hello") as streamer:
+                async for _event in streamer:
+                    pass
+
+    run_task = asyncio.create_task(consume_stream())
+    try:
+        await asyncio.wait_for(inner_task_started.wait(), timeout=1)
+        with patch("ya_agent_sdk.agents.main._STREAM_CLEANUP_TIMEOUT_SECONDS", 0.01):
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(run_task), timeout=0.5)
+
+        assert run_task.done()
+    finally:
+        release_inner_task.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
+
+
 async def test_completed_stream_uses_final_run_history_without_partial_duplicate(tmp_path: Path) -> None:
     """Completed streams expose final run history exactly once."""
 

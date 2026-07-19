@@ -100,6 +100,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
+
 # =============================================================================
 # Exceptions
 # =============================================================================
@@ -1992,17 +1994,23 @@ async def stream_agent(  # noqa: C901
             # pydantic-ai's internal ContextVar cleanup (set_current_run_context's
             # finally block), causing "was created in a different Context" errors.
             # A single cancel() is sufficient; the deadline guards against hangs.
+            # `asyncio.wait()` deliberately leaves pending tasks untouched when
+            # the deadline expires, unlike wait_for()/gather() cancellation.
             gather_interrupt: BaseException | None = None
-            cleanup_deadline = time.perf_counter() + 5.0
+            cleanup_deadline = time.perf_counter() + _STREAM_CLEANUP_TIMEOUT_SECONDS
             while any(not t.done() for t in [main_task, poll_task]):
-                if time.perf_counter() > cleanup_deadline:
-                    logger.warning("Cleanup deadline exceeded (5s), abandoning remaining tasks")
+                remaining_seconds = cleanup_deadline - time.perf_counter()
+                if remaining_seconds <= 0:
+                    logger.warning(
+                        "Cleanup deadline exceeded (%.1fs), abandoning remaining tasks",
+                        _STREAM_CLEANUP_TIMEOUT_SECONDS,
+                    )
                     break
-                not_done = [t for t in [main_task, poll_task] if not t.done()]
+                not_done = [task for task in [main_task, poll_task] if not task.done()]
                 try:
-                    await asyncio.gather(*not_done, return_exceptions=True)
+                    await asyncio.wait(not_done, timeout=remaining_seconds)
                 except BaseException as gather_exc:
-                    logger.debug("gather interrupted during cleanup: %s", type(gather_exc).__name__)
+                    logger.debug("cleanup wait interrupted: %s", type(gather_exc).__name__)
                     gather_interrupt = gather_exc
                     if isinstance(gather_exc, asyncio.CancelledError):
                         # A fresh cancellation request arrived while we were cleaning up.
