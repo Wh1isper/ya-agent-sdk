@@ -552,6 +552,7 @@ async def test_tui_model_selector_applies_gateway_websocket_responses_profile(mo
                 model="gateway@openai-responses-ws:gpt-5",
                 model_settings="openai_responses_default",
                 model_cfg="gpt5_270k",
+                instructions="Use the websocket profile instructions.",
             )
         },
     )
@@ -578,7 +579,9 @@ async def test_tui_model_selector_applies_gateway_websocket_responses_profile(mo
         model="gateway@openai-responses-ws:gpt-5",
         model_settings="openai_responses_default",
         model_cfg="gpt5_270k",
+        instructions="Use the websocket profile instructions.",
     )
+    assert runtime.ctx.model_profile_instructions == "Use the websocket profile instructions."
     assert app._model_selector_open is False
     persisted_state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert persisted_state["model_profile"]["selected_profile_id"] == "ws"

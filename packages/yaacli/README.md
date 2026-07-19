@@ -171,12 +171,18 @@ Model profiles are configured in `~/.yaacli/config.toml` and selected with `/mod
 model = "anthropic:claude-sonnet-4-5"
 model_settings = "anthropic_adaptive_high"
 model_cfg = "claude_200k"
+instructions = """
+Prefer careful analysis and concise answers.
+"""
 
 [model_profiles.fast]
 label = "Fast"
 model = "openai-responses:gpt-5.6-luna"
 model_settings = "openai_responses_luna"
 model_cfg = "gpt5_270k"
+instructions = """
+Optimize for speed. Avoid broad exploration unless necessary.
+"""
 
 [model_profiles.pro]
 label = "GPT-5.6 Pro"
@@ -196,6 +202,8 @@ model = "oauth@codex:gpt-5.5"
 model_settings = "openai_responses_high"
 model_cfg = "gpt5_350k"
 ```
+
+`instructions` is an optional static system-prompt segment for the active main-agent profile. It is applied in addition to the built-in prompt (or `general.system_prompt_file`), project guidance, and user rules. Switching profiles with `/model` replaces the active profile instructions for later requests in the same session.
 
 `[general]` is the startup fallback profile. The last selected profile is remembered in `~/.yaacli/state.json` and restored on the next launch when that profile still exists.
 

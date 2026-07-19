@@ -21,6 +21,7 @@ def test_build_model_profiles_includes_default_and_configured_profiles() -> None
             model="anthropic:claude-sonnet-4-5",
             model_settings="anthropic_adaptive_high",
             model_cfg="claude_200k",
+            instructions="Use thorough reasoning.",
         ),
         model_profiles={
             "fast": ModelProfileConfig(
@@ -28,6 +29,7 @@ def test_build_model_profiles_includes_default_and_configured_profiles() -> None
                 model="openai-responses:gpt-5-mini",
                 model_settings="openai_responses_low",
                 model_cfg="gpt5_270k",
+                instructions="Prefer fast responses.",
             ),
         },
     )
@@ -37,8 +39,10 @@ def test_build_model_profiles_includes_default_and_configured_profiles() -> None
     assert [profile.id for profile in profiles] == [DEFAULT_MODEL_PROFILE_ID, "fast"]
     assert profiles[0].label == "Default"
     assert profiles[0].is_default is True
+    assert profiles[0].instructions == "Use thorough reasoning."
     assert profiles[1].label == "Fast"
     assert profiles[1].model == "openai-responses:gpt-5-mini"
+    assert profiles[1].instructions == "Prefer fast responses."
 
 
 def test_save_and_load_selected_model_profile_id(tmp_path: Path) -> None:

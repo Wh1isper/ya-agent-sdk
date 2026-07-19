@@ -35,6 +35,9 @@ class TUIContext(AgentContext):
         goal_last_context_handoff_source: Source of the most recent goal-time context restore.
     """
 
+    model_profile_instructions: str | None = None
+    """Static instructions for the currently active main-agent model profile."""
+
     goal_task: str | None = None
     goal_iteration: int = 0
     goal_max_iterations: int = 10

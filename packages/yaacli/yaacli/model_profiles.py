@@ -27,6 +27,7 @@ class ResolvedModelProfile(BaseModel):
     model: str
     model_settings: str | dict[str, Any] | None = None
     model_cfg: str | dict[str, Any] | None = None
+    instructions: str | None = None
     is_default: bool = False
 
 
@@ -96,6 +97,7 @@ def build_model_profiles(config: YaacliConfig) -> list[ResolvedModelProfile]:
                 model=config.general.model,
                 model_settings=config.general.model_settings,
                 model_cfg=config.general.model_cfg,
+                instructions=config.general.instructions,
                 is_default=True,
             )
         )
@@ -109,6 +111,7 @@ def build_model_profiles(config: YaacliConfig) -> list[ResolvedModelProfile]:
                 model=profile.model,
                 model_settings=profile.model_settings,
                 model_cfg=profile.model_cfg,
+                instructions=profile.instructions,
             )
         )
 
