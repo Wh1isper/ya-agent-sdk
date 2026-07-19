@@ -203,7 +203,7 @@ model_settings = "openai_responses_high"
 model_cfg = "gpt5_350k"
 ```
 
-`instructions` is an optional static system-prompt segment for the active main-agent profile. It is applied in addition to the built-in prompt (or `general.system_prompt_file`), project guidance, and user rules. Switching profiles with `/model` replaces the active profile instructions for later requests in the same session.
+`instructions` is an optional static model-instruction segment for the active main-agent profile. YAACLI evaluates it for every model request, alongside the built-in prompt (or `general.system_prompt_file`), project guidance, and user rules. Switching profiles with `/model` replaces the active profile instructions for later requests in the same session, including restored or compacted histories.
 
 `[general]` is the startup fallback profile. The last selected profile is remembered in `~/.yaacli/state.json` and restored on the next launch when that profile still exists.
 
