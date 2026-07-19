@@ -855,6 +855,7 @@ def _session_info_payload(entry: object) -> dict[str, object]:
             "updated_at",
             "created_at",
             "working_dir",
+            "input_text",
             "output_text",
             "message_count",
             "display_event_count",
@@ -913,6 +914,9 @@ def sessions_show(session_id: str, as_json: bool, verbose: bool) -> None:
     click.echo(f"Working dir: {entry.working_dir or '-'}")
     click.echo(f"Messages: {entry.message_count if entry.message_count is not None else '-'}")
     click.echo(f"Display events: {entry.display_event_count if entry.display_event_count is not None else '-'}")
+    if entry.input_text:
+        click.echo("Input:")
+        click.echo(entry.input_text)
     if entry.output_text:
         click.echo("Output:")
         click.echo(entry.output_text)

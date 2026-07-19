@@ -170,6 +170,7 @@ def _save_session_artifacts(
     message_history: list[ModelMessage],
     state: ResumableState,
     display_messages: list[dict[str, Any]],
+    input_text: str,
     output_text: str | None,
     model_profile_id: str | None,
     model_label: str | None,
@@ -185,6 +186,7 @@ def _save_session_artifacts(
         message_history_json=ModelMessagesTypeAdapter.dump_json(message_history, indent=2),
         context_state_json=state.model_dump_json(indent=2),
         display_messages=display_messages,
+        input_text=input_text,
         output_text=output_text,
         save_reason="headless_success",
         max_turns=_positive_int_config(
@@ -367,6 +369,7 @@ async def _run_headless_prompt(
             message_history=message_history,
             state=resumable_state,
             display_messages=persisted_replay.snapshot(),
+            input_text=prompt,
             output_text=output_text,
             model_profile_id=effective_model_profile.id if effective_model_profile is not None else None,
             model_label=effective_model_profile.label if effective_model_profile is not None else None,

@@ -273,6 +273,11 @@ async def test_headless_success_saves_when_interactive_auto_save_is_disabled(
     assert lines[-1]["type"] == "RUN_FINISHED"
     assert lines[-1]["result"] == {"output_text": "hello world"}
 
+    metadata = json.loads(
+        (config_manager.get_sessions_dir.return_value / result.session_id / "metadata.json").read_text()
+    )
+    assert metadata["input_text"] == "hello"
+    assert metadata["output_text"] == "hello world"
     display_file = (
         next((config_manager.get_sessions_dir.return_value / result.session_id / "turns").iterdir())
         / "display_messages.json"

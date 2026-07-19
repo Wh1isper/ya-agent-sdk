@@ -49,6 +49,37 @@ def test_save_session_turn_retains_latest_turns_and_head_artifacts(tmp_path: Pat
     assert json.loads(paths.display_messages_file.read_text())[0]["delta"] == "turn 2"
 
 
+def test_save_session_turn_persists_bounded_input_and_output_previews(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    manager = DummyConfigManager(sessions_dir)
+    turn_dir = save_session_turn(
+        config_manager=manager,  # type: ignore[arg-type]
+        session_id="session-preview",
+        working_dir=tmp_path,
+        message_history_json=b"[]",
+        context_state_json="{}",
+        display_messages=[],
+        input_text=f"  input line\n{'i' * 2500}  ",
+        output_text=f"  output line\n{'o' * 2500}  ",
+        save_reason="test",
+        max_sessions=10,
+    )
+
+    root_metadata = json.loads((turn_dir.parents[1] / "metadata.json").read_text())
+    turn_metadata = json.loads((turn_dir / "metadata.json").read_text())
+    for metadata in (root_metadata, turn_metadata):
+        assert metadata["input_text"].startswith("input line\n")
+        assert metadata["output_text"].startswith("output line\n")
+        assert metadata["input_text"].endswith("...")
+        assert metadata["output_text"].endswith("...")
+        assert len(metadata["input_text"]) <= 2000
+        assert len(metadata["output_text"]) <= 2000
+
+    info = list_sessions(manager)[0]  # type: ignore[arg-type]
+    assert info.input_text == root_metadata["input_text"]
+    assert info.output_text == root_metadata["output_text"]
+
+
 def test_failed_initial_save_does_not_poison_session_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed first write must leave no unrecognized artifacts behind."""
     sessions_dir = tmp_path / "sessions"
@@ -314,7 +345,7 @@ def test_turn_retention_accepts_turns_missing_optional_artifacts(tmp_path: Path)
     assert get_head_artifact_paths(manager, "session-1").turn_id == "turn-2"  # type: ignore[arg-type]
 
 
-def test_legacy_session_upgrades_and_removes_root_artifacts(tmp_path: Path) -> None:
+def test_legacy_session_listing_defers_upgrade_until_artifacts_are_loaded(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "sessions"
     session_dir = sessions_dir / "legacy123456"
     session_dir.mkdir(parents=True)
@@ -329,12 +360,20 @@ def test_legacy_session_upgrades_and_removes_root_artifacts(tmp_path: Path) -> N
     entries = list_sessions(manager)  # type: ignore[arg-type]
 
     assert entries[0].id == "legacy123456"
-    assert entries[0].turn_count == 1
-    assert entries[0].head_turn_id is not None
+    assert entries[0].turn_count == 0
+    assert entries[0].head_turn_id is None
+    assert (session_dir / "message_history.json").exists()
+    assert (session_dir / "context_state.json").exists()
+    assert (session_dir / "display_messages.json").exists()
+
+    paths = get_head_artifact_paths(manager, "legacy123456")  # type: ignore[arg-type]
+
+    assert paths.turn_id is not None
     assert not (session_dir / "message_history.json").exists()
     assert not (session_dir / "context_state.json").exists()
     assert not (session_dir / "display_messages.json").exists()
-    assert (session_dir / "turns" / entries[0].head_turn_id / "display_messages.json").exists()
+    assert paths.display_messages_file is not None
+    assert paths.display_messages_file.exists()
 
 
 def test_legacy_upgrade_replaces_destination_symlink_without_touching_target(tmp_path: Path) -> None:
@@ -356,18 +395,20 @@ def test_legacy_upgrade_replaces_destination_symlink_without_touching_target(tmp
     except OSError as exc:
         pytest.skip(f"File symlinks are unavailable: {exc}")
 
-    entries = list_sessions(DummyConfigManager(sessions_dir))  # type: ignore[arg-type]
+    manager = DummyConfigManager(sessions_dir)
+    entries = list_sessions(manager)  # type: ignore[arg-type]
 
     assert [entry.id for entry in entries] == [session_dir.name]
     assert outside.read_text() == '"do not overwrite"'
+    get_head_artifact_paths(manager, session_dir.name)  # type: ignore[arg-type]
     migrated_history = turn_dir / "message_history.json"
     assert migrated_history.is_file()
     assert not migrated_history.is_symlink()
     assert migrated_history.read_text() == "[]"
 
 
-def test_partial_or_malformed_legacy_artifacts_are_not_sessions(tmp_path: Path) -> None:
-    """Unrelated directories must never be upgraded from a single legacy-looking file."""
+def test_legacy_listing_uses_safe_signature_and_defers_malformed_artifact_validation(tmp_path: Path) -> None:
+    """Listing is metadata-only; explicit load still rejects malformed legacy artifacts."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
 
@@ -413,7 +454,11 @@ def test_partial_or_malformed_legacy_artifacts_are_not_sessions(tmp_path: Path) 
     (malformed_v2 / "message_history.json").write_text("[]")
 
     manager = DummyConfigManager(sessions_dir)
-    assert list_sessions(manager) == []  # type: ignore[arg-type]
+    listed_ids = sorted(entry.id for entry in list_sessions(manager))  # type: ignore[arg-type]
+    assert listed_ids == ["invalid-display", "invalid-message", "invalid-optional"]
+    for session_id in listed_ids:
+        with pytest.raises(FileNotFoundError):
+            get_head_artifact_paths(manager, session_id)  # type: ignore[arg-type]
     for directory in (
         context_only,
         message_only,
@@ -471,9 +516,10 @@ def test_minimal_parseable_legacy_session_upgrades(tmp_path: Path) -> None:
     entries = list_sessions(manager)  # type: ignore[arg-type]
 
     assert [entry.id for entry in entries] == [session_dir.name]
-    head_turn_id = entries[0].head_turn_id
-    assert head_turn_id is not None
-    turn_dir = session_dir / "turns" / head_turn_id
+    assert entries[0].head_turn_id is None
+    paths = get_head_artifact_paths(manager, session_dir.name)  # type: ignore[arg-type]
+    assert paths.turn_id is not None
+    turn_dir = session_dir / "turns" / paths.turn_id
     assert (turn_dir / "message_history.json").read_text() == "[]"
     assert (turn_dir / "context_state.json").read_text() == "{}"
     assert (turn_dir / "display_messages.json").read_text() == "[]"
