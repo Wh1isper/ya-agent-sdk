@@ -1352,6 +1352,13 @@ async def stream_agent(  # noqa: C901
     # normal attribute assignment on private attrs of model_copy() instances.
     object.__setattr__(ctx, "_stream_queue_enabled", True)
 
+    # A caller may already own the runtime lifecycle. In that case run_main
+    # must only enter the fresh per-run context it created above, rather than
+    # re-entering AgentRuntime from its child task. If cleanup reaches its
+    # deadline, the child can then finish its own context cleanup later without
+    # becoming the task that closes the caller-owned env and agent resources.
+    runtime_was_entered = runtime._enter_count > 0
+
     output_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
     main_done = asyncio.Event()
     poll_done = asyncio.Event()
@@ -1876,9 +1883,20 @@ async def stream_agent(  # noqa: C901
         stream_start_time = time.perf_counter()
 
         try:
-            async with runtime:
-                effective_user_prompt, effective_deferred_tool_results = await prepare_runtime_input()
-                await run_main_attempts(effective_user_prompt, effective_deferred_tool_results, stream_start_time)
+            if runtime_was_entered:
+                # The enclosing task owns the runtime's env and agent exit stack.
+                # Enter only this run's fresh context in the producer task, so its
+                # late cleanup remains task-affine without changing runtime entry
+                # ownership when the bounded shutdown wait expires.
+                async with AsyncExitStack() as stack:
+                    if not ctx._entered:
+                        await stack.enter_async_context(ctx)
+                    effective_user_prompt, effective_deferred_tool_results = await prepare_runtime_input()
+                    await run_main_attempts(effective_user_prompt, effective_deferred_tool_results, stream_start_time)
+            else:
+                async with runtime:
+                    effective_user_prompt, effective_deferred_tool_results = await prepare_runtime_input()
+                    await run_main_attempts(effective_user_prompt, effective_deferred_tool_results, stream_start_time)
 
         except BaseException as e:
             if isinstance(e, asyncio.CancelledError):
