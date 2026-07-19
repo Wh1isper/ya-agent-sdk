@@ -54,6 +54,23 @@ def _make_runtime(tmp_path: Path, model="test", **kwargs):
     return create_agent(model=model, env=env, **kwargs)
 
 
+class TaskBoundLocalEnvironment(LocalEnvironment):
+    """Local environment that records the task responsible for lifecycle cleanup."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        self.entered_by: asyncio.Task[object] | None = None
+        self.exited_by: asyncio.Task[object] | None = None
+
+    async def __aenter__(self):
+        self.entered_by = asyncio.current_task()
+        return await super().__aenter__()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.exited_by = asyncio.current_task()
+        await super().__aexit__(exc_type, exc_val, exc_tb)
+
+
 class ReviewedTool(BaseTool):
     """Tool used to exercise HITL approval deferral in stream recovery tests."""
 
@@ -226,6 +243,64 @@ async def test_cancel_with_external_cancellation(tmp_path: Path) -> None:
 
             assert streamer.exception is None
             assert len(events) > 0
+
+
+async def test_cancelled_stream_cleanup_respects_deadline_when_task_ignores_cancellation(tmp_path: Path) -> None:
+    """Deadline expiry preserves outer runtime ownership while inner cleanup finishes."""
+    release_inner_task = asyncio.Event()
+    inner_task_ready = asyncio.Event()
+    inner_task_cancelled = asyncio.Event()
+    env = TaskBoundLocalEnvironment(tmp_path)
+    main_task: asyncio.Task[object] | None = None
+
+    async def stream_function(_messages, _agent_info: AgentInfo):
+        yield "started"
+        try:
+            inner_task_ready.set()
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            inner_task_cancelled.set()
+            await release_inner_task.wait()
+            raise
+
+    runtime = create_agent(model=FunctionModel(stream_function=stream_function), env=env)
+
+    async def consume_stream() -> None:
+        nonlocal main_task
+        async with runtime:
+            async with stream_agent(runtime, "Hello") as streamer:
+                main_task = streamer._tasks[0]
+                async for _event in streamer:
+                    pass
+
+    run_task = asyncio.create_task(consume_stream())
+    try:
+        await asyncio.wait_for(inner_task_ready.wait(), timeout=1)
+        with patch("ya_agent_sdk.agents.main._STREAM_CLEANUP_TIMEOUT_SECONDS", 0.01):
+            run_task.cancel()
+            await asyncio.wait_for(inner_task_cancelled.wait(), timeout=0.5)
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(run_task), timeout=0.5)
+
+        assert run_task.done()
+        assert main_task is not None
+        assert not main_task.done()
+        assert env.entered_by is run_task
+        assert env.exited_by is run_task
+
+        release_inner_task.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await main_task
+
+        assert main_task.done()
+        assert env.exited_by is run_task
+    finally:
+        release_inner_task.set()
+        if main_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await main_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
 
 
 async def test_completed_stream_uses_final_run_history_without_partial_duplicate(tmp_path: Path) -> None:
