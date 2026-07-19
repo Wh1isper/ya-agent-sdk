@@ -44,6 +44,7 @@ __all__ = [
     "MCPConfig",
     "MCPServerConfig",
     "ModelProfileConfig",
+    "NotificationConfig",
     "SessionConfig",
     "SubagentOverride",
     "SubagentsConfig",
@@ -293,6 +294,13 @@ class MediaConfig(BaseModel):
     """Maximum total bytes of clipboard attachments queued for one prompt."""
 
 
+class NotificationConfig(BaseModel):
+    """Terminal notification settings for completed interactive turns."""
+
+    bell_on_turn_complete: bool = True
+    """Emit a terminal bell after a successful interactive agent turn."""
+
+
 class SessionConfig(BaseModel):
     """Saved session persistence and retention configuration."""
 
@@ -340,6 +348,8 @@ class YaacliConfig(BaseModel):
     """Media handling configuration (S3 upload, etc.)."""
     session: SessionConfig = Field(default_factory=SessionConfig)
     """Saved session persistence and retention configuration."""
+    notifications: NotificationConfig = Field(default_factory=NotificationConfig)
+    """Terminal notification settings for successful interactive turns."""
     oauth_refresh: OAuthRefreshConfig = Field(default_factory=OAuthRefreshConfig)
     """OAuth proactive refresh configuration."""
     env: dict[str, str] = Field(default_factory=dict)

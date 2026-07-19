@@ -220,6 +220,8 @@ def test_cli_tui_forwards_session_and_profile(monkeypatch) -> None:  # type: ign
     result = CliRunner().invoke(cli, ["--session", "session-0", "--profile", "fast"])
 
     assert result.exit_code == 0
+    assert "Session: session-1" in result.output
+    assert "yaacli --session session-1" in result.output
     from yaacli import cli as cli_module
 
     cli_module._run_tui.assert_called_once_with(
@@ -230,3 +232,18 @@ def test_cli_tui_forwards_session_and_profile(monkeypatch) -> None:  # type: ign
         session_id="session-0",
         model_profile_id="fast",
     )
+
+
+def test_cli_tui_resume_command_quotes_noncanonical_session_id(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = MagicMock()
+    config_manager = MagicMock()
+    session_id = "session; echo unexpected"
+    monkeypatch.setattr("yaacli.cli._prepare_cli_runtime", MagicMock(return_value=(config_manager, config)))
+    run_tui = MagicMock(return_value=session_id)
+    monkeypatch.setattr("yaacli.cli.asyncio.run", lambda coro: run_tui(coro))
+    monkeypatch.setattr("yaacli.cli._run_tui", MagicMock(return_value="tui-coro"))
+
+    result = CliRunner().invoke(cli)
+
+    assert result.exit_code == 0
+    assert "yaacli --session 'session; echo unexpected'" in result.output

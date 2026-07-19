@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -764,7 +765,7 @@ def cli(
         if headless_mode:
             click.echo(f"  yaacli -p '<prompt>' -s {completed_session_id}", err=True)
         else:
-            click.echo(f"  /session {completed_session_id}")
+            click.echo(f"  yaacli --session {shlex.quote(completed_session_id)}")
 
     if worktree_dir is not None:
         click.echo(err=headless_mode)

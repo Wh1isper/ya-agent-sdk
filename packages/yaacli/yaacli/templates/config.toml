@@ -119,6 +119,12 @@ max_sessions = 100
 # Optional age-based pruning in days.
 # max_session_age_days = 90
 
+[notifications]
+# Emit a terminal bell when a successful interactive agent turn completes.
+# This is transported through SSH; terminal behavior is controlled by the local client.
+# Set to false to disable it.
+bell_on_turn_complete = true
+
 [media]
 # Clipboard attachment limits for one prompt.
 max_pending_attachments = 8

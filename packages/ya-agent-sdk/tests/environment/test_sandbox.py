@@ -27,6 +27,56 @@ from ya_agent_sdk.environment.virtual_path import normalize_virtual_path  # noqa
 # --- DockerShell Tests ---
 
 
+def _read_proc_stat_fields(pid: str) -> list[str] | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].split()
+    except FileNotFoundError:
+        return None
+
+
+def _is_live_process_identity(pid: str, expected_starttime: str) -> bool:
+    stat_fields = _read_proc_stat_fields(pid)
+    return (
+        stat_fields is not None
+        and len(stat_fields) > 19
+        and stat_fields[0] != "Z"
+        and stat_fields[19] == expected_starttime
+    )
+
+
+async def _wait_for_token_file(path: Path, token_count: int, timeout_message: str) -> list[str]:
+    deadline = asyncio.get_running_loop().time() + 2.0
+    fields: list[str] = []
+    while len(fields) != token_count:
+        if path.exists():
+            fields = path.read_text().split()
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail(timeout_message)
+        if len(fields) != token_count:
+            await asyncio.sleep(0.01)
+    return fields
+
+
+async def _wait_for_process_identity_exit(pid: str, starttime: str, timeout_message: str) -> None:
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while _is_live_process_identity(pid, starttime):
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail(timeout_message)
+        await asyncio.sleep(0.01)
+
+
+def _shell_publish_process_identity(path: Path) -> str:
+    temporary_path = path.with_suffix(".tmp")
+    return "\n".join([
+        'stat_line=$(cat "/proc/$$/stat" 2>/dev/null) || exit 125',
+        "stat_fields=${stat_line##*) }",
+        "set -- $stat_fields",
+        "shift 19",
+        f'printf \'%s %s\\n\' "$$" "$1" > {shlex.quote(str(temporary_path))}',
+        f"mv -f {shlex.quote(str(temporary_path))} {shlex.quote(str(path))}",
+    ])
+
+
 def _mock_docker_exec_process(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -549,11 +599,25 @@ async def test_docker_exec_rejects_pre_ack_marker_identity_substitution(tmp_path
 
 @pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="Linux /proc lifecycle test")
 async def test_docker_exec_guardian_outlives_command_leader_and_kills_descendant(tmp_path: Path) -> None:
-    """The remote wrapper marker must survive a leader exit until the whole group is killed."""
+    """The remote wrapper must kill a confirmed live descendant after its leader exits."""
     pidfile = tmp_path / "exec.pid"
+    leader_identity_file = tmp_path / "leader.identity"
+    child_identity_file = tmp_path / "child.identity"
+    child_hold_fifo = tmp_path / "child.hold"
+    os.mkfifo(child_hold_fifo)
     handshake_nonce = "guardian-token"
-    leaked_marker = tmp_path / "leaked.txt"
-    command = f"(trap '' HUP TERM; sleep 0.4; printf leaked > {shlex.quote(str(leaked_marker))}) & exit 0"
+    child_command = "\n".join([
+        "trap '' HUP TERM",
+        _shell_publish_process_identity(child_identity_file),
+        f"IFS= read -r _ < {shlex.quote(str(child_hold_fifo))}",
+    ])
+    leader_command = "\n".join([
+        _shell_publish_process_identity(leader_identity_file),
+        f"/bin/sh -c {shlex.quote(child_command)} &",
+        f"while [ ! -f {shlex.quote(str(child_identity_file))} ]; do sleep 0.01; done",
+        "exit 0",
+    ])
+    command = leader_command
     process = await asyncio.create_subprocess_exec(
         "/bin/sh",
         "-c",
@@ -567,24 +631,51 @@ async def test_docker_exec_guardian_outlives_command_leader_and_kills_descendant
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
+    target: str | None = None
+    target_starttime: str | None = None
+    child_identity: tuple[str, str] | None = None
 
     try:
-        deadline = asyncio.get_running_loop().time() + 2.0
-        while not pidfile.exists():
-            if asyncio.get_running_loop().time() >= deadline:
-                pytest.fail("Docker exec guardian did not publish its marker")
-            await asyncio.sleep(0.01)
-
-        marker_state, target, starttime, marker_token = pidfile.read_text().split()
+        marker_state, target, target_starttime, marker_token = await _wait_for_token_file(
+            pidfile,
+            4,
+            "Docker exec guardian did not publish its marker",
+        )
         assert marker_state == "active"
         assert marker_token == handshake_nonce
         assert process.stderr is not None
         registration_frame = await process.stderr.readline()
-        assert registration_frame == f"ya-agent-exec {handshake_nonce} {target} {starttime}\n".encode()
+        assert registration_frame == f"ya-agent-exec {handshake_nonce} {target} {target_starttime}\n".encode()
         assert process.stdin is not None
         process.stdin.write(f"ya-agent-ack {handshake_nonce}\n".encode())
         await process.stdin.drain()
-        await asyncio.sleep(0.05)
+
+        leader_pid, leader_starttime = await _wait_for_token_file(
+            leader_identity_file,
+            2,
+            "Docker exec guardian did not publish a complete command leader identity",
+        )
+        assert leader_pid != target
+        child_pid, child_starttime = await _wait_for_token_file(
+            child_identity_file,
+            2,
+            "Docker exec guardian did not publish a complete descendant identity",
+        )
+        child_identity = (child_pid, child_starttime)
+        assert child_pid != target
+        child_stat = _read_proc_stat_fields(child_pid)
+        assert child_stat is not None
+        assert child_stat[0] != "Z"
+        assert child_stat[2] == target
+        assert child_stat[3] == target
+        assert child_stat[19] == child_starttime
+
+        await _wait_for_process_identity_exit(
+            leader_pid,
+            leader_starttime,
+            "Docker exec command leader did not exit after its descendant became ready",
+        )
+        assert _is_live_process_identity(target, target_starttime)
         assert process.returncode is None
 
         cleanup = await asyncio.create_subprocess_exec(
@@ -594,22 +685,30 @@ async def test_docker_exec_guardian_outlives_command_leader_and_kills_descendant
             "ya-agent-kill",
             str(pidfile),
             target,
-            starttime,
+            target_starttime,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         _stdout, cleanup_stderr = await cleanup.communicate()
         assert cleanup.returncode == 0, cleanup_stderr.decode("utf-8", errors="replace")
         await asyncio.wait_for(process.wait(), timeout=2.0)
-        await asyncio.sleep(0.45)
 
-        assert not leaked_marker.exists()
+        child_stat = _read_proc_stat_fields(child_pid)
+        if child_stat is not None:
+            assert child_stat[0] == "Z" or child_stat[19] != child_starttime
         assert not pidfile.exists()
     finally:
         if process.returncode is None and process.pid is not None:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
             await process.wait()
+        elif child_identity is not None and _is_live_process_identity(*child_identity):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(child_identity[0]), signal.SIGKILL)
+            await _wait_for_process_identity_exit(
+                *child_identity,
+                "Docker exec descendant did not exit during failed-test cleanup",
+            )
 
 
 @pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="Linux /proc lifecycle test")
