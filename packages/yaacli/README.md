@@ -130,6 +130,32 @@ code_theme = "auto" # auto, dark, or light
 
 The equivalent environment override is `YAACLI_CODE_THEME=auto`.
 
+## Completion Bell
+
+YAACLI emits a terminal bell by default after a successful interactive agent turn. Disable it if needed:
+
+```toml
+[notifications]
+bell_on_turn_complete = false
+```
+
+The bell is emitted by the terminal, so it passes through SSH and is handled by the local terminal client. In VS Code Remote, configure the local VS Code **User** settings (not Remote or workspace settings) to show the visual bell and always play its terminal-bell accessibility signal:
+
+```json
+{
+  "terminal.integrated.enableVisualBell": true,
+  "terminal.integrated.bellDuration": 1000,
+  "accessibility.signals.terminalBell": {
+    "sound": "on",
+    "announcement": "off"
+  }
+}
+```
+
+Use `"sound": "on"` for unconditional playback; `"auto"` lets VS Code decide whether to play the accessibility signal. `announcement` controls screen-reader output and can remain `"auto"` when needed. VS Code plays its own accessibility sound through the local audio output; this is not an operating-system desktop notification.
+
+To verify terminal support independently of YAACLI, run `printf '\a'` in the same integrated terminal. It should show VS Code's visual-bell indicator. Remote YAACLI processes cannot directly invoke the client machine's operating-system notification API.
+
 Codex OAuth credentials can be created once and reused from YAACLI:
 
 ```bash

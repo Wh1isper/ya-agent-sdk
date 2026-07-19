@@ -1024,6 +1024,20 @@ class TUIApp:
     # Output Management
     # =========================================================================
 
+    def _notify_turn_complete(self) -> None:
+        """Emit the configured terminal notification for a successful agent turn."""
+        if not self.config.notifications.bell_on_turn_complete or self._app is None:
+            return
+
+        try:
+            # Do not use Output.bell(): prompt_toolkit intentionally suppresses it
+            # when PROMPT_TOOLKIT_BELL is false. This user-facing notification must
+            # always send the terminal BEL when enabled in YAACLI's own config.
+            self._app.output.write_raw("\a")
+            self._app.output.flush()
+        except Exception:
+            logger.debug("Failed to emit completion bell", exc_info=True)
+
     def _throttled_invalidate(self) -> None:
         """Coalesce redraws while preserving the final trailing update."""
         if not self._app:
@@ -2744,6 +2758,7 @@ class TUIApp:
                 self._display_adapter.build_run_finished_event(result={"output_text": output})
             ])
             run_finished = True
+            self._notify_turn_complete()
             # Steering that did not reach the completed run must not be
             # serialized into a snapshot and replayed by a future turn.
             self._clear_unconsumed_user_steering()

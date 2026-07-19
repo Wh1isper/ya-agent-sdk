@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from prompt_toolkit import Application
@@ -62,7 +62,14 @@ from yaacli.app.tui import (
 )
 from yaacli.background import BackgroundMonitor, BackgroundTaskInfo, BackgroundTaskResult
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
-from yaacli.config import CommandDefinition, DisplayConfig, GeneralConfig, ModelProfileConfig, YaacliConfig
+from yaacli.config import (
+    CommandDefinition,
+    DisplayConfig,
+    GeneralConfig,
+    ModelProfileConfig,
+    NotificationConfig,
+    YaacliConfig,
+)
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
 from yaacli.session import TUIContext, TUIResumableState
 from yaacli.sessions import SessionInfo, save_session_turn
@@ -84,6 +91,7 @@ class MockConfig:
             mouse=True,
         )
     )
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
     commands: dict[str, CommandDefinition] = field(default_factory=dict)
 
     def get_commands(self) -> dict[str, CommandDefinition]:
@@ -2027,6 +2035,8 @@ async def test_tui_app_successful_run_save_failure_keeps_single_finished_termina
     config = MockConfig()
     config.session = MagicMock(auto_save_history=True)
     app = TUIApp(config=config, config_manager=MockConfigManager())
+    app._app = MagicMock()
+    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
     runtime = MagicMock()
     runtime.ctx = MagicMock(loop_active=False)
     runtime.ctx.steering_messages = ["unconsumed guidance"]
@@ -2050,7 +2060,44 @@ async def test_tui_app_successful_run_save_failure_keeps_single_finished_termina
     assert event_types.count("RUN_FINISHED") == 1
     assert "RUN_ERROR" not in event_types
     assert any("snapshot could not be saved" in line for line in app._output_lines)
+    assert app._app.output.write_raw.call_args_list == [call("\a")]
+    assert app._app.output.flush.call_count == 1
     assert app.phase == TUIPhase.IDLE
+
+
+@pytest.mark.asyncio
+async def test_tui_app_successful_run_emits_completion_bell() -> None:
+    """A successful foreground turn rings the configured terminal bell once."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._app = MagicMock()
+    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
+    runtime = MagicMock()
+    runtime.ctx = MagicMock(loop_active=False)
+    runtime.ctx.steering_messages = []
+    app._runtime = runtime
+    result = MagicMock()
+    result.output = "done"
+    app._execute_stream = AsyncMock(return_value=result)
+    app._check_pending_bus_messages = MagicMock()
+
+    await app._run_agent("hello")
+
+    app._app.output.write_raw.assert_called_once_with("\a")
+    app._app.output.flush.assert_called_once_with()
+
+
+def test_tui_app_completion_bell_can_be_disabled() -> None:
+    """The opt-out must not emit a terminal bell."""
+    app = TUIApp(
+        config=MockConfig(notifications=NotificationConfig(bell_on_turn_complete=False)),
+        config_manager=MockConfigManager(),
+    )
+    app._app = MagicMock()
+
+    app._notify_turn_complete()
+
+    app._app.output.write_raw.assert_not_called()
+    app._app.output.flush.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2059,6 +2106,8 @@ async def test_tui_app_failed_run_persists_run_error_before_snapshot() -> None:
     config = MockConfig()
     config.session = MagicMock(auto_save_history=True)
     app = TUIApp(config=config, config_manager=MockConfigManager())
+    app._app = MagicMock()
+    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
     runtime = MagicMock()
     runtime.ctx = MagicMock(loop_active=False)
     runtime.ctx.steering_messages = ["unconsumed guidance"]
@@ -2084,6 +2133,8 @@ async def test_tui_app_failed_run_persists_run_error_before_snapshot() -> None:
         include_usage_ledger=True,
         save_reason="error",
     )
+    app._app.output.write_raw.assert_not_called()
+    app._app.output.flush.assert_not_called()
     assert app.phase == TUIPhase.IDLE
 
 
@@ -2093,6 +2144,8 @@ async def test_tui_app_cancelled_run_saves_partial_snapshot_and_clears_steering(
     config = MockConfig()
     config.session = MagicMock(auto_save_history=True)
     app = TUIApp(config=config, config_manager=MockConfigManager())
+    app._app = MagicMock()
+    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
     ctx = TUIContext(steering_messages=["unconsumed guidance"])
     ctx.message_bus.subscribe(ctx.agent_id)
     ctx.message_bus.send(BusMessage(content="guidance", source="user", target=ctx.agent_id))
@@ -2134,6 +2187,8 @@ async def test_tui_app_cancelled_run_saves_partial_snapshot_and_clears_steering(
     assert pending_bus_sources_at_export == [["subagent-1"]]
     assert runtime.ctx.steering_messages == []
     assert any(line == "[Cancelled · partial state saved]" for line in app._output_lines)
+    app._app.output.write_raw.assert_not_called()
+    app._app.output.flush.assert_not_called()
     app._check_pending_bus_messages.assert_not_called()
     assert app.phase == TUIPhase.IDLE
 

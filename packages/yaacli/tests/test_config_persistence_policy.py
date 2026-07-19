@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 from yaacli import cli as cli_module
 from yaacli.cli import load_env_from_config, load_package_env_files
-from yaacli.config import ConfigManager, SessionConfig, YaacliConfig
+from yaacli.config import ConfigManager, NotificationConfig, SessionConfig, YaacliConfig
 
 
 def test_session_config_defaults() -> None:
@@ -21,6 +21,13 @@ def test_session_config_defaults() -> None:
     assert config.max_turns_per_session == 20
     assert config.max_sessions == 100
     assert config.max_session_age_days is None
+
+
+def test_packaged_config_template_exposes_completion_bell_policy() -> None:
+    template_path = Path(__file__).resolve().parents[1] / "yaacli" / "templates" / "config.toml"
+    notification_template = tomllib.loads(template_path.read_text(encoding="utf-8"))["notifications"]
+
+    assert notification_template["bell_on_turn_complete"] is NotificationConfig().bell_on_turn_complete
 
 
 def test_packaged_config_template_exposes_session_persistence_policy() -> None:
