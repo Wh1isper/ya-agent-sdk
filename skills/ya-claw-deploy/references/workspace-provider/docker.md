@@ -123,9 +123,9 @@ Retention policies:
 
 Run-scoped schedule, workflow, and heartbeat sandboxes always use terminal cleanup.
 
-## Docker Permission
+## Docker CLI and Engine Access
 
-The service process must access Docker Engine. Host deployments usually use group membership. Dockerized service deployments usually mount the Docker socket.
+Docker shell execution requires both a Docker CLI on the service process `PATH` and access to Docker Engine. The official `Dockerfile.ya-claw` service image bundles the CLI; custom service images and host deployments must install it. Host deployments usually use group membership for Engine access. Dockerized service deployments usually mount the Docker socket; mounting the socket alone does not provide the CLI.
 
 ```yaml
 volumes:
@@ -189,6 +189,7 @@ The official workspace image contains:
 List active containers:
 
 ```bash
+docker version
 docker ps --filter 'name=ya-claw-session'
 docker ps --filter 'name=ya-claw-run'
 ```

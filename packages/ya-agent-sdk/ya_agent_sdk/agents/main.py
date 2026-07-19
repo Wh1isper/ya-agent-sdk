@@ -45,6 +45,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.run import AgentRun
+from pydantic_ai.usage import RunUsage
 from typing_extensions import TypeVar
 from ya_agent_environment import Environment
 
@@ -86,6 +87,7 @@ from ya_agent_sdk.filters.environment_instructions import create_environment_ins
 from ya_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
 from ya_agent_sdk.toolsets.core.base import BaseTool, GlobalHooks, Toolset
+from ya_agent_sdk.usage import CostEstimate, coerce_run_usage, estimate_latest_model_message_cost
 from ya_agent_sdk.utils import AgentDepsT, EnvT, add_toolset_instructions
 
 from .capabilities import is_process_history_for
@@ -1455,6 +1457,8 @@ async def stream_agent(  # noqa: C901
         node: ModelRequestNode[AgentDepsT, OutputT],
         run: AgentRun[AgentDepsT, OutputT],
         node_start_time: float,
+        *,
+        attempt_index: int,
     ) -> None:
         """Handle model_request node with lifecycle events.
 
@@ -1472,12 +1476,29 @@ async def stream_agent(  # noqa: C901
         await process_node(node, run)
 
         base_model = cast(Model, agent.model)
+        run_usage = coerce_run_usage(run.usage)
+        usage_ledger_key = (
+            main_agent_info.agent_id if attempt_index == 0 else f"{main_agent_info.agent_id}:attempt:{attempt_index}"
+        )
         ctx.update_usage_snapshot_entry(
+            ledger_key=usage_ledger_key,
             agent_id=main_agent_info.agent_id,
             agent_name=main_agent_info.agent_name,
             model_id=base_model.model_name,
-            usage=run.usage,
+            usage=run_usage,
+            cost_estimate=CostEstimate(),
             source="main_model_request",
+        )
+        request_usage_id = f"{ctx.run_id}:main:{attempt_index}:{current_loop}"
+        ctx.update_usage_snapshot_entry(
+            ledger_key=f"cost:{request_usage_id}",
+            agent_id=main_agent_info.agent_id,
+            agent_name=main_agent_info.agent_name,
+            model_id=base_model.model_name,
+            usage=RunUsage(),
+            cost_estimate=estimate_latest_model_message_cost(run.new_messages()),
+            usage_id=request_usage_id,
+            source="main_model_request_cost",
         )
 
         await emit_lifecycle_event(
@@ -1522,7 +1543,7 @@ async def stream_agent(  # noqa: C901
                 )
             )
 
-    async def process_all_nodes(run: AgentRun[AgentDepsT, OutputT]) -> None:
+    async def process_all_nodes(run: AgentRun[AgentDepsT, OutputT], *, attempt_index: int) -> None:
         """Process all nodes in the agent run with lifecycle events."""
         async for node in run:
             node_start_time = time.perf_counter()
@@ -1531,7 +1552,7 @@ async def stream_agent(  # noqa: C901
                 # Skip user_prompt and end nodes - their info is in AgentExecution events
                 continue
             elif Agent.is_model_request_node(node):
-                await handle_model_request_node(node, run, node_start_time)
+                await handle_model_request_node(node, run, node_start_time, attempt_index=attempt_index)
             elif Agent.is_call_tools_node(node):
                 await handle_call_tools_node(node, run, node_start_time)
 
@@ -1572,7 +1593,7 @@ async def stream_agent(  # noqa: C901
             if on_agent_start:
                 await on_agent_start(start_ctx)
 
-            await process_all_nodes(run)
+            await process_all_nodes(run, attempt_index=attempt_index)
 
             complete_ctx = AgentCompleteContext(
                 runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run

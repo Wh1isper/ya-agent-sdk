@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from pydantic_ai.usage import RunUsage
+from ya_agent_sdk.usage import CostEstimate
 from yaacli.usage import SessionUsage
 
 
@@ -129,20 +130,26 @@ class TestSessionUsage:
         assert "1,000" in summary  # Comma formatting
         assert "Total:" in summary
 
-    def test_grok_4_5_cost_estimate(self) -> None:
-        """Test Grok 4.5 local cost estimate in summary."""
+    def test_uses_sdk_cost_estimate(self) -> None:
+        """SDK-provided estimates should replace local model price tables."""
         session = SessionUsage()
         session.add(
             "main",
             "xai:grok-4.5",
             RunUsage(input_tokens=1_000_000, cache_read_tokens=200_000, output_tokens=100_000, requests=1),
+            cost_estimate=CostEstimate(
+                input_amount=Decimal("1.70"),
+                output_amount=Decimal("0.60"),
+                total_amount=Decimal("2.30"),
+                priced_requests=1,
+            ),
         )
 
         summary = session.format_summary()
 
-        assert "Estimated Cost: $2.30" in summary
+        assert "Estimated Cost: $2.30 (1/1 requests priced)" in summary
         assert session.estimated_total_cost is not None
-        assert session.estimated_total_cost.total_cost == Decimal("2.30")
+        assert session.estimated_total_cost.total_amount == Decimal("2.30")
 
     def test_preserves_details(self) -> None:
         """Test that details field is accumulated."""

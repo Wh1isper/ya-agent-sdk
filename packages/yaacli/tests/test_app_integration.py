@@ -15,6 +15,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -46,6 +47,7 @@ from ya_agent_sdk.agents.main import AgentInterrupted
 from ya_agent_sdk.context import AvailableSkill, BusMessage, ResumableState, StreamEvent, TaskManager, TaskStatus
 from ya_agent_sdk.context.agent import AgentInfo
 from ya_agent_sdk.events import TaskEvent
+from ya_agent_sdk.usage import CostEstimate, UsageAgentTotal, UsageSnapshot
 
 # Import the components we're testing
 from yaacli.app import BUSY_CONTROL_COMMANDS, TUIApp, TUIState
@@ -62,7 +64,7 @@ from yaacli.background import BackgroundMonitor, BackgroundTaskInfo, BackgroundT
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, DisplayConfig, GeneralConfig, ModelProfileConfig, YaacliConfig
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
-from yaacli.session import TUIContext
+from yaacli.session import TUIContext, TUIResumableState
 from yaacli.sessions import SessionInfo, save_session_turn
 from yaacli.theme import prompt_toolkit_style_rules
 
@@ -2682,8 +2684,9 @@ async def test_tui_app_clear_session_resets_conversation_state() -> None:
     assert app._pending_bus_check_needed is False
     assert app._goal_usage_start_breakdown is None
     assert app._goal_usage_report_pending is False
-    assert app._session_usage.total_input_tokens == 7
-    assert app._session_usage.total_output_tokens == 3
+    assert app._session_usage.total_input_tokens == 0
+    assert app._session_usage.total_output_tokens == 0
+    assert app._session_usage.estimated_total_cost is None
 
 
 @pytest.mark.asyncio
@@ -2757,6 +2760,12 @@ async def test_tui_app_cancelled_new_rolls_identity_forward_before_next_save() -
     runtime = MagicMock(ctx=old_ctx, env=None)
     app._runtime = runtime
     app._message_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
+    app._session_usage.add(
+        "main",
+        "model-a",
+        RunUsage(requests=1),
+        cost_estimate=CostEstimate(total_amount=Decimal("0.25"), priced_requests=1),
+    )
     old_session_id = app.session_id
     monitor = BackgroundMonitor()
     reset_started = asyncio.Event()
@@ -2787,6 +2796,7 @@ async def test_tui_app_cancelled_new_rolls_identity_forward_before_next_save() -
     assert app.session_id == new_session_id
     assert app.phase == TUIPhase.IDLE
     assert app._session_clear_in_progress is False
+    assert app._session_usage.is_empty()
 
     app._message_history = [ModelRequest(parts=[UserPromptPart(content="new history")])]
     with patch("yaacli.app.tui.save_session_turn", return_value=Path("turn")) as save_turn:
@@ -2803,6 +2813,12 @@ async def test_tui_app_new_rolls_back_when_shell_process_cleanup_fails() -> None
     app._runtime = runtime
     old_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
     app._message_history = old_history
+    app._session_usage.add(
+        "main",
+        "model-a",
+        RunUsage(requests=1),
+        cost_estimate=CostEstimate(total_amount=Decimal("0.25"), priced_requests=1),
+    )
     old_session_id = app.session_id
     monitor = BackgroundMonitor()
     reset_error = ShellBackgroundResetError({"proc-failed": RuntimeError("kill failed")})
@@ -2816,6 +2832,8 @@ async def test_tui_app_new_rolls_back_when_shell_process_cleanup_fails() -> None
     assert app._message_history is old_history
     assert app.phase == TUIPhase.IDLE
     assert app._session_clear_in_progress is False
+    assert app._session_usage.estimated_total_cost is not None
+    assert app._session_usage.estimated_total_cost.total_amount == Decimal("0.25")
     assert any("New session was not started" in line for line in app._output_lines)
 
 
@@ -4360,3 +4378,85 @@ async def test_tui_app_immediate_agent_cancellation_clears_timer_and_phase() -> 
 
     assert app._run_started_at is None
     assert app.phase == TUIPhase.IDLE
+
+
+def test_tui_app_status_places_sdk_cost_immediately_after_context() -> None:
+    config = YaacliConfig(display=DisplayConfig(show_token_usage=True))
+    app = TUIApp(config=config, config_manager=MockConfigManager())
+    app._get_terminal_width = lambda: 120  # type: ignore[method-assign]
+    app._current_context_tokens = 50_000
+    app._context_window_size = 200_000
+    app._session_usage.add(
+        "main",
+        "model-a",
+        RunUsage(requests=1, input_tokens=10, output_tokens=2),
+        cost_estimate=CostEstimate(total_amount=Decimal("0.007"), priced_requests=1),
+    )
+
+    status = "".join(text for _style, text in app._get_status_text())
+
+    assert " · ctx 25% · cost ~$0.0070" in status
+
+
+@pytest.mark.asyncio
+async def test_tui_app_load_history_replaces_and_restores_session_cost_without_recounting(tmp_path: Path) -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._runtime = MagicMock(ctx=TUIContext(), env=None)
+    app._session_usage.add(
+        "old",
+        "old-model",
+        RunUsage(requests=1, input_tokens=1),
+        cost_estimate=CostEstimate(total_amount=Decimal("9"), priced_requests=1),
+    )
+    restored_run_usage = RunUsage(requests=1, input_tokens=10, output_tokens=2)
+    restored_snapshot = UsageSnapshot(
+        run_id="session:target",
+        total_usage=restored_run_usage,
+        total_cost_estimate=CostEstimate(total_amount=Decimal("0.007"), priced_requests=1),
+        agent_usages={
+            "main": UsageAgentTotal(
+                agent_name="main",
+                model_id="multiple",
+                usage=restored_run_usage,
+                cost_estimate=CostEstimate(total_amount=Decimal("0.007"), priced_requests=1),
+            )
+        },
+        model_usages={"model-a": restored_run_usage},
+        model_cost_estimates={"model-a": CostEstimate(total_amount=Decimal("0.007"), priced_requests=1)},
+    )
+    load_dir = tmp_path / "target-session"
+    load_dir.mkdir()
+    (load_dir / "message_history.json").write_bytes(b"[]")
+    (load_dir / "context_state.json").write_text(
+        TUIResumableState(session_usage_snapshot=restored_snapshot).model_dump_json()
+    )
+
+    loaded = await app._load_history(str(load_dir), target_session_id="target")
+
+    assert loaded is True
+    assert app._session_usage.estimated_total_cost is not None
+    assert app._session_usage.estimated_total_cost.total_amount == Decimal("0.007")
+    assert app._session_usage.total_requests == 1
+    assert app.runtime.ctx.usage_snapshot_entries == {}
+
+    next_run_usage = RunUsage(requests=1, input_tokens=5, output_tokens=1)
+    app._session_usage.set_run_snapshot(
+        UsageSnapshot(
+            run_id="next-run",
+            total_usage=next_run_usage,
+            agent_usages={
+                "main": UsageAgentTotal(
+                    agent_name="main",
+                    model_id="model-a",
+                    usage=next_run_usage,
+                    cost_estimate=CostEstimate(total_amount=Decimal("0.002"), priced_requests=1),
+                )
+            },
+            model_usages={"model-a": next_run_usage},
+            model_cost_estimates={"model-a": CostEstimate(total_amount=Decimal("0.002"), priced_requests=1)},
+        )
+    )
+
+    assert app._session_usage.estimated_total_cost is not None
+    assert app._session_usage.estimated_total_cost.total_amount == Decimal("0.009")
+    assert app._session_usage.total_requests == 2

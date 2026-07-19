@@ -29,6 +29,7 @@ from ya_claw.controller.models import (
     active_interactions_from_run_record,
     run_detail_from_record,
     run_summary_from_record,
+    sanitize_external_run_metadata,
     session_summary_from_record,
 )
 from ya_claw.controller.session_lifecycle import (
@@ -38,6 +39,9 @@ from ya_claw.controller.session_lifecycle import (
 )
 from ya_claw.controller.store import (
     ensure_run_dir,
+    extract_latest_usage_snapshot,
+    extract_usage_snapshot_from_metadata,
+    extract_usage_snapshot_from_state,
     read_run_message_blob_if_exists,
     read_run_state_blob_if_exists,
     run_blob_path,
@@ -130,7 +134,7 @@ class RunController:
             restore_from_run_id,
             request.reset_state,
         )
-        run_metadata = metadata_with_workspace(request.metadata, request.workspace)
+        run_metadata = sanitize_external_run_metadata(metadata_with_workspace(request.metadata, request.workspace))
         if request.reset_state:
             run_metadata["restore_state"] = False
 
@@ -204,13 +208,31 @@ class RunController:
 
         has_state = run_blob_path(settings, run_id, "state.json").is_file()
         has_message = run_blob_path(settings, run_id, "message.json").is_file()
-        state_payload = read_run_state_blob_if_exists(settings, run_id) if include_state and has_state else None
-        message_events = read_run_message_blob_if_exists(settings, run_id) if include_message and has_message else None
+        usage_snapshot = extract_usage_snapshot_from_metadata(run_record.run_metadata)
+        stored_state_payload = (
+            read_run_state_blob_if_exists(settings, run_id)
+            if has_state and (include_state or usage_snapshot is None)
+            else None
+        )
+        if usage_snapshot is None:
+            usage_snapshot = extract_usage_snapshot_from_state(stored_state_payload)
+        message_events = (
+            read_run_message_blob_if_exists(settings, run_id)
+            if has_message and (include_message or usage_snapshot is None)
+            else None
+        )
+        if usage_snapshot is None:
+            usage_snapshot = extract_latest_usage_snapshot(message_events)
 
         return RunGetResponse(
             session=await self._build_session_summary(db_session, session_record),
-            run=run_detail_from_record(run_record, has_state=has_state, has_message=has_message),
-            state=state_payload if include_state else None,
+            run=run_detail_from_record(
+                run_record,
+                has_state=has_state,
+                has_message=has_message,
+                usage_snapshot=usage_snapshot,
+            ),
+            state=stored_state_payload if include_state else None,
             message=message_events if include_message else None,
         )
 
@@ -222,10 +244,14 @@ class RunController:
         include_message: bool,
         include_input_parts: bool = False,
     ) -> RunSummary:
+        usage_snapshot = extract_usage_snapshot_from_metadata(run_record.run_metadata)
         message_payload = read_run_message_blob_if_exists(settings, run_record.id) if include_message else None
+        if usage_snapshot is None and message_payload is not None:
+            usage_snapshot = extract_latest_usage_snapshot(message_payload)
         return run_summary_from_record(
             run_record,
-            message=message_payload,
+            message=message_payload if include_message else None,
+            usage_snapshot=usage_snapshot,
             include_input_parts=include_input_parts,
         )
 
@@ -398,10 +424,14 @@ class RunController:
 
         state_payload = read_run_state_blob_if_exists(settings, run_id)
         message_payload = read_run_message_blob_if_exists(settings, run_id)
+        usage_snapshot = extract_usage_snapshot_from_state(state_payload)
+        if usage_snapshot is None:
+            usage_snapshot = extract_latest_usage_snapshot(message_payload)
         return run_detail_from_record(
             run_record,
             has_state=state_payload is not None,
             has_message=message_payload is not None,
+            usage_snapshot=usage_snapshot,
         )
 
     async def _emit_terminal_event(

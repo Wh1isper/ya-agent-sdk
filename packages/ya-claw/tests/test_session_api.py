@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 from inline_snapshot import snapshot
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
+from ya_agent_sdk.usage import UsageSnapshot
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
+from ya_claw.controller.store import with_usage_snapshot_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
@@ -91,6 +93,24 @@ def _mark_run_completed(session_id: str, run_id: str, *, output_text: str | None
             finally:
                 await engine.dispose()
         raise AssertionError("failed to mark run completed due to persistent database lock")
+
+    asyncio.run(_run())
+
+
+def _set_run_usage_snapshot_index(run_id: str, payload: dict[str, object]) -> None:
+    async def _run() -> None:
+        settings = get_settings()
+        engine = create_engine(settings.resolved_database_url)
+        session_factory = create_session_factory(engine)
+        try:
+            async with session_factory() as db_session:
+                run_record = await db_session.get(RunRecord, run_id)
+                assert isinstance(run_record, RunRecord)
+                usage_snapshot = UsageSnapshot.model_validate(payload)
+                run_record.run_metadata = with_usage_snapshot_metadata(run_record.run_metadata, usage_snapshot)
+                await db_session.commit()
+        finally:
+            await engine.dispose()
 
     asyncio.run(_run())
 
@@ -331,6 +351,7 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
         "status",
         "termination_reason",
         "trigger_type",
+        "usage_snapshot",
     ])
 
 
@@ -885,3 +906,110 @@ def test_run_trace_extracts_tool_call_and_response_with_trimming() -> None:
     assert payload["trace"][1]["role"] == "tool"
     assert len(payload["trace"][1]["content"]) == 256
     assert payload["trace"][1]["truncated"] is True
+
+
+def test_run_and_session_api_expose_latest_usage_cost_without_raw_message() -> None:
+    _create_schema()
+
+    with TestClient(create_app()) as client:
+        client.app.state.execution_supervisor = None
+        create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
+        assert create_session_response.status_code == 201
+        session_id = create_session_response.json()["session"]["id"]
+        create_run_response = client.post(
+            "/api/v1/runs",
+            headers=_auth_headers(),
+            json={"session_id": session_id, "input_parts": [{"type": "text", "text": "price this"}]},
+        )
+        assert create_run_response.status_code == 201
+        run_id = create_run_response.json()["id"]
+
+    _mark_run_completed(session_id, run_id, output_text="done")
+    usage_events = []
+    for amount in ("0.003", "0.007"):
+        usage_events.append({
+            "type": "CUSTOM",
+            "name": "ya_agent.usage_snapshot",
+            "value": {
+                "payload": {
+                    "run_id": run_id,
+                    "total_usage": {"requests": 1, "input_tokens": 10, "output_tokens": 2},
+                    "total_cost_estimate": {
+                        "input_amount": "0.001",
+                        "output_amount": "0.002",
+                        "total_amount": amount,
+                        "priced_requests": 1,
+                        "unpriced_requests": 0,
+                    },
+                }
+            },
+        })
+    usage_events.append({
+        "type": "CUSTOM",
+        "name": "ya_agent.usage_snapshot",
+        "value": {"payload": {"run_id": 123}},
+    })
+    settings = get_settings()
+    run_dir = settings.run_store_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "message.json").write_text(json.dumps(usage_events), encoding="utf-8")
+
+    with TestClient(create_app()) as client:
+        run_response = client.get(f"/api/v1/runs/{run_id}", headers=_auth_headers())
+        session_response = client.get(
+            f"/api/v1/sessions/{session_id}?include_message=false&include_head_payload=false",
+            headers=_auth_headers(),
+        )
+
+    assert run_response.status_code == 200
+    run_payload = run_response.json()
+    assert run_payload["message"] is None
+    assert run_payload["run"]["usage_snapshot"]["total_cost_estimate"]["total_amount"] == "0.007"
+
+    assert session_response.status_code == 200
+    session_payload = session_response.json()
+    assert session_payload["session"]["runs"][0]["message"] is None
+    assert session_payload["session"]["runs"][0]["usage_snapshot"] is None
+
+    usage_state = usage_events[1]["value"]["payload"]
+    assert isinstance(usage_state, dict)
+    (run_dir / "state.json").write_text(json.dumps({"usage_snapshot": usage_state}), encoding="utf-8")
+    (run_dir / "message.json").write_text("not valid json", encoding="utf-8")
+    _set_run_usage_snapshot_index(run_id, usage_state)
+
+    with TestClient(create_app()) as client:
+        state_run_response = client.get(f"/api/v1/runs/{run_id}", headers=_auth_headers())
+        state_session_response = client.get(
+            f"/api/v1/sessions/{session_id}?include_message=false&include_head_payload=false",
+            headers=_auth_headers(),
+        )
+
+    assert state_run_response.status_code == 200
+    assert state_run_response.json()["run"]["usage_snapshot"]["total_cost_estimate"]["total_amount"] == "0.007"
+    assert state_session_response.status_code == 200
+    assert (
+        state_session_response.json()["session"]["runs"][0]["usage_snapshot"]["total_cost_estimate"]["total_amount"]
+        == "0.007"
+    )
+    assert "_ya_claw_usage_snapshot" not in state_run_response.json()["run"]["metadata"]
+
+    (run_dir / "state.json").write_text(
+        json.dumps({"usage_snapshot": {"run_id": 123}}),
+        encoding="utf-8",
+    )
+    (run_dir / "message.json").write_text(json.dumps(usage_events), encoding="utf-8")
+
+    with TestClient(create_app()) as client:
+        fallback_run_response = client.get(f"/api/v1/runs/{run_id}", headers=_auth_headers())
+        fallback_session_response = client.get(
+            f"/api/v1/sessions/{session_id}?include_message=false&include_head_payload=false",
+            headers=_auth_headers(),
+        )
+
+    assert fallback_run_response.status_code == 200
+    assert fallback_run_response.json()["run"]["usage_snapshot"]["total_cost_estimate"]["total_amount"] == "0.007"
+    assert fallback_session_response.status_code == 200
+    assert (
+        fallback_session_response.json()["session"]["runs"][0]["usage_snapshot"]["total_cost_estimate"]["total_amount"]
+        == "0.007"
+    )

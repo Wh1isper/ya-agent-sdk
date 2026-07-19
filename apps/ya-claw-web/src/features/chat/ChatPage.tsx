@@ -41,11 +41,13 @@ import type {
   SessionWorkspaceState,
 } from '../../types'
 import type { AguiTimelineState, TimelineBlock } from './agui/types'
+import { CostEstimateDisplay } from './CostEstimateDisplay'
 import { isTerminalAguiEvent } from './eventUtils'
 import { remarkNormalizeRouteHeadings } from './markdownHeadings'
 import { useRunEventStream } from './useRunEventStream'
 import { isSubmissionTargetActive, useSessionDraft } from './sessionDraft'
 import { sessionTitle } from './sessionClassification'
+import { selectRunUsageSnapshot } from './usageCost'
 import {
   mergeSessionHistoryPages,
   type SessionHistoryState,
@@ -177,6 +179,15 @@ export function ChatPage() {
   const timeline = history.timeline
   const currentSession = activeSessionData?.session ?? null
   const activeRunForComposer = currentSession?.active_run_id ? activeRun : null
+  const activeUsageSnapshot = useMemo(
+    () =>
+      selectRunUsageSnapshot({
+        run: activeRun,
+        liveEvents: effectiveLiveEvents,
+        replayEvents: selectedRunReplayEvents,
+      }),
+    [activeRun, effectiveLiveEvents, selectedRunReplayEvents],
+  )
 
   useEffect(() => {
     if (isNewConversationPath) {
@@ -344,6 +355,9 @@ export function ChatPage() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {activeRun ? (
+              <CostEstimateDisplay snapshot={activeUsageSnapshot} compact />
+            ) : null}
             {currentSession ? (
               <StatusBadge status={currentSession.status} />
             ) : null}
@@ -595,6 +609,14 @@ function ConversationDetailPanel({
                     {run.error_message}
                   </p>
                 ) : null}
+                <CostEstimateDisplay
+                  snapshot={selectRunUsageSnapshot({
+                    run,
+                    replayEvents: run.message,
+                  })}
+                  compact
+                  className="mt-3"
+                />
               </article>
             ))}
           </div>

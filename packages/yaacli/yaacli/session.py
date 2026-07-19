@@ -11,7 +11,14 @@ guidance during agent execution:
 
 from __future__ import annotations
 
-from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.context import AgentContext, ResumableState
+from ya_agent_sdk.usage import UsageSnapshot
+
+
+class TUIResumableState(ResumableState):
+    """YAACLI session state with a compact cumulative usage snapshot."""
+
+    session_usage_snapshot: UsageSnapshot | None = None
 
 
 class TUIContext(AgentContext):

@@ -33,6 +33,7 @@ from ya_claw.controller.models import (
     memory_state_summary_from_record,
     run_detail_from_record,
     run_summary_from_record,
+    sanitize_external_run_metadata,
     session_summary_from_record,
     session_turn_from_record,
 )
@@ -690,7 +691,7 @@ class SessionController:
 
 def _merge_submit_metadata(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(existing or {})
-    for key, value in incoming.items():
+    for key, value in sanitize_external_run_metadata(incoming).items():
         if key == "agency" and isinstance(value, dict):
             current = metadata.get("agency")
             merged = dict(current) if isinstance(current, dict) else {}

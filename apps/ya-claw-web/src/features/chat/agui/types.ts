@@ -1,4 +1,4 @@
-import type { AguiEvent, InputPart } from '../../../types'
+import type { AguiEvent, InputPart, UsageSnapshot } from '../../../types'
 
 export type TimelineBlock =
   | UserInputBlock
@@ -92,7 +92,10 @@ export type ContextMeterBlock = {
 export type UsageBlock = {
   kind: 'usage'
   id: string
+  name: string
   payload: unknown
+  snapshot?: UsageSnapshot | null
+  runId?: string
 }
 
 export type SubagentBlock = {

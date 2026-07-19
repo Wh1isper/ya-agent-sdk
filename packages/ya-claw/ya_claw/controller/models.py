@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field
+from ya_agent_sdk.usage import UsageSnapshot
 
 from ya_claw.json_types import JsonObject, JsonValue
 from ya_claw.orm.tables import (
@@ -15,6 +16,8 @@ from ya_claw.orm.tables import (
 )
 from ya_claw.workspace.models import WorkspaceBindingSpec
 from ya_claw.workspace.runtime_models import SessionWorkspaceState, build_session_workspace_state
+
+RUN_USAGE_SNAPSHOT_METADATA_KEY = "_ya_claw_usage_snapshot"
 
 
 class RunStatus(StrEnum):
@@ -361,6 +364,7 @@ class RunSummary(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     committed_at: datetime | None = None
+    usage_snapshot: UsageSnapshot | None = None
     message: list[dict[str, Any]] | None = None
 
 
@@ -705,14 +709,21 @@ def parse_input_parts(raw_input_parts: list[dict[str, Any]] | None) -> list[Inpu
     return parsed_parts
 
 
+def sanitize_external_run_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    sanitized = dict(metadata or {})
+    sanitized.pop(RUN_USAGE_SNAPSHOT_METADATA_KEY, None)
+    return sanitized
+
+
 def public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    return dict(metadata)
+    return sanitize_external_run_metadata(metadata)
 
 
 def run_summary_from_record(
     record: RunRecord,
     *,
     message: list[dict[str, Any]] | None = None,
+    usage_snapshot: UsageSnapshot | None = None,
     include_input_parts: bool = False,
     include_output_text: bool = True,
 ) -> RunSummary:
@@ -735,13 +746,24 @@ def run_summary_from_record(
         started_at=record.started_at,
         finished_at=record.finished_at,
         committed_at=record.committed_at,
+        usage_snapshot=usage_snapshot,
         message=message,
     )
 
 
-def run_detail_from_record(record: RunRecord, *, has_state: bool = False, has_message: bool = False) -> RunDetail:
+def run_detail_from_record(
+    record: RunRecord,
+    *,
+    has_state: bool = False,
+    has_message: bool = False,
+    usage_snapshot: UsageSnapshot | None = None,
+) -> RunDetail:
     return RunDetail(
-        **run_summary_from_record(record, include_input_parts=True).model_dump(),
+        **run_summary_from_record(
+            record,
+            include_input_parts=True,
+            usage_snapshot=usage_snapshot,
+        ).model_dump(),
         metadata=public_metadata(dict(record.run_metadata)),
         has_state=has_state,
         has_message=has_message,

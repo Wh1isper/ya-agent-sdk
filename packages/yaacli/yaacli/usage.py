@@ -25,7 +25,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from pydantic_ai.usage import RunUsage
-from ya_agent_sdk.usage import UsageSnapshot, coerce_run_usage
+from ya_agent_sdk.usage import (
+    CostEstimate,
+    UsageAgentTotal,
+    UsageSnapshot,
+    coerce_run_usage,
+    combine_cost_estimates,
+    unavailable_cost_estimate,
+)
 
 
 @dataclass(frozen=True)
@@ -52,75 +59,6 @@ class TokenUsageBreakdown:
         )
 
 
-@dataclass(frozen=True)
-class TokenCostEstimate:
-    """Estimated USD cost for a model usage entry."""
-
-    input_cost: Decimal
-    output_cost: Decimal
-
-    @property
-    def total_cost(self) -> Decimal:
-        """Total estimated USD cost."""
-        return self.input_cost + self.output_cost
-
-
-@dataclass(frozen=True)
-class ModelTokenPrice:
-    """Simple per-million-token pricing used for local cost estimates."""
-
-    input_mtok: Decimal
-    cached_input_mtok: Decimal | None
-    output_mtok: Decimal
-
-    def estimate(self, usage: RunUsage) -> TokenCostEstimate:
-        """Estimate USD cost for a RunUsage value."""
-        input_tokens = usage.input_tokens or 0
-        cache_read_tokens = usage.cache_read_tokens or 0
-        cached_input_tokens = min(input_tokens, cache_read_tokens) if self.cached_input_mtok is not None else 0
-        uncached_input_tokens = max(0, input_tokens - cached_input_tokens)
-        output_tokens = usage.output_tokens or 0
-
-        input_cost = (Decimal(uncached_input_tokens) * self.input_mtok) / Decimal(1_000_000)
-        if self.cached_input_mtok is not None:
-            input_cost += (Decimal(cached_input_tokens) * self.cached_input_mtok) / Decimal(1_000_000)
-        output_cost = (Decimal(output_tokens) * self.output_mtok) / Decimal(1_000_000)
-        return TokenCostEstimate(input_cost=input_cost, output_cost=output_cost)
-
-
-_GROK_4_5_PRICE = ModelTokenPrice(
-    input_mtok=Decimal("2.00"),
-    cached_input_mtok=Decimal("0.50"),
-    output_mtok=Decimal("6.00"),
-)
-
-_GROK_4_5_MODEL_REFS = frozenset({
-    "grok-4.5",
-    "grok-4.5-latest",
-    "grok-build-latest",
-    "x-ai/grok-4.5",
-    "x-ai/grok-4.5-latest",
-})
-
-
-def _normalize_model_ref(model_id: str) -> str:
-    """Normalize YA/Pydantic model IDs to provider model references for pricing."""
-    normalized = model_id.strip().lower()
-    if "@" in normalized:
-        _gateway_or_oauth, normalized = normalized.split("@", 1)
-    if ":" in normalized:
-        _provider, normalized = normalized.rsplit(":", 1)
-    return normalized
-
-
-def estimate_model_usage_cost(model_id: str, usage: RunUsage) -> TokenCostEstimate | None:
-    """Estimate model usage cost when a local price table is available."""
-    model_ref = _normalize_model_ref(model_id)
-    if model_ref in _GROK_4_5_MODEL_REFS:
-        return _GROK_4_5_PRICE.estimate(usage)
-    return None
-
-
 def _format_usd(value: Decimal) -> str:
     """Format a USD Decimal compactly for CLI output."""
     if value == 0:
@@ -130,6 +68,14 @@ def _format_usd(value: Decimal) -> str:
     if value < Decimal("0.01"):
         return f"${value:.4f}"
     return f"${value:.2f}"
+
+
+@dataclass
+class _UsageContribution:
+    agent_usages: dict[str, RunUsage]
+    model_usages: dict[str, RunUsage]
+    agent_cost_estimates: dict[str, CostEstimate]
+    model_cost_estimates: dict[str, CostEstimate]
 
 
 @dataclass
@@ -150,10 +96,16 @@ class SessionUsage:
 
     agent_usages: dict[str, RunUsage] = field(default_factory=dict)
     model_usages: dict[str, RunUsage] = field(default_factory=dict)
+    agent_cost_estimates: dict[str, CostEstimate] = field(default_factory=dict)
+    model_cost_estimates: dict[str, CostEstimate] = field(default_factory=dict)
     _manual_agent_usages: dict[str, RunUsage] = field(default_factory=dict)
     _manual_model_usages: dict[str, RunUsage] = field(default_factory=dict)
+    _manual_agent_cost_estimates: dict[str, CostEstimate] = field(default_factory=dict)
+    _manual_model_cost_estimates: dict[str, CostEstimate] = field(default_factory=dict)
     _committed_agent_usages: dict[str, RunUsage] = field(default_factory=dict)
     _committed_model_usages: dict[str, RunUsage] = field(default_factory=dict)
+    _committed_agent_cost_estimates: dict[str, CostEstimate] = field(default_factory=dict)
+    _committed_model_cost_estimates: dict[str, CostEstimate] = field(default_factory=dict)
     # Only in-flight snapshots are retained. commit_run_snapshot() folds them
     # into aggregate counters and removes them immediately.
     _run_snapshots: dict[str, UsageSnapshot] = field(default_factory=dict)
@@ -161,16 +113,18 @@ class SessionUsage:
     # Committed contributions remain replaceable while background tasks can
     # still publish cumulative snapshots. finalize_run_snapshots() is the
     # explicit lifecycle boundary that releases this metadata.
-    _committed_run_contributions: OrderedDict[str, tuple[dict[str, RunUsage], dict[str, RunUsage]]] = field(
-        default_factory=OrderedDict
-    )
+    _committed_run_contributions: OrderedDict[str, _UsageContribution] = field(default_factory=OrderedDict)
     # A late replacement temporarily removes the prior contribution. Retain it
     # only until that replacement is committed or explicitly cleared.
-    _superseded_committed_contributions: dict[str, tuple[dict[str, RunUsage], dict[str, RunUsage]]] = field(
-        default_factory=dict
-    )
+    _superseded_committed_contributions: dict[str, _UsageContribution] = field(default_factory=dict)
 
-    def add(self, agent: str, model_id: str, usage: RunUsage) -> None:
+    def add(
+        self,
+        agent: str,
+        model_id: str,
+        usage: RunUsage,
+        cost_estimate: CostEstimate | None = None,
+    ) -> None:
         """Add usage for a specific agent and model.
 
         Args:
@@ -189,6 +143,10 @@ class SessionUsage:
         if model_id not in self._manual_model_usages:
             self._manual_model_usages[model_id] = RunUsage()
         self._manual_model_usages[model_id].incr(usage)
+
+        estimate = cost_estimate or unavailable_cost_estimate(usage.requests)
+        self._merge_cost_map(self._manual_agent_cost_estimates, {agent: estimate})
+        self._merge_cost_map(self._manual_model_cost_estimates, {model_id: estimate})
         self._rebuild_totals()
 
     def _rebuild_totals(self) -> None:
@@ -199,14 +157,20 @@ class SessionUsage:
         """
         self.agent_usages = self._copy_usage_map(self._manual_agent_usages)
         self.model_usages = self._copy_usage_map(self._manual_model_usages)
+        self.agent_cost_estimates = dict(self._manual_agent_cost_estimates)
+        self.model_cost_estimates = dict(self._manual_model_cost_estimates)
         self._merge_usage_map(self.agent_usages, self._committed_agent_usages)
         self._merge_usage_map(self.model_usages, self._committed_model_usages)
+        self._merge_cost_map(self.agent_cost_estimates, self._committed_agent_cost_estimates)
+        self._merge_cost_map(self.model_cost_estimates, self._committed_model_cost_estimates)
         for snapshot in self._run_snapshots.values():
             self._merge_usage_map(
                 self.agent_usages,
                 {agent: coerce_run_usage(entry.usage) for agent, entry in snapshot.agent_usages.items()},
             )
             self._merge_usage_map(self.model_usages, snapshot.model_usages)
+            self._merge_cost_map(self.agent_cost_estimates, self._snapshot_agent_costs(snapshot))
+            self._merge_cost_map(self.model_cost_estimates, self._snapshot_model_costs(snapshot))
 
     @staticmethod
     def _copy_usage_map(usages: dict[str, RunUsage]) -> dict[str, RunUsage]:
@@ -217,21 +181,45 @@ class SessionUsage:
         for key, usage in source.items():
             target.setdefault(key, RunUsage()).incr(coerce_run_usage(usage))
 
-    def _normalized_snapshot_contribution(
-        self, snapshot: UsageSnapshot
-    ) -> tuple[dict[str, RunUsage], dict[str, RunUsage]]:
-        return (
-            {agent: RunUsage() + coerce_run_usage(entry.usage) for agent, entry in snapshot.agent_usages.items()},
-            {model_id: RunUsage() + coerce_run_usage(usage) for model_id, usage in snapshot.model_usages.items()},
+    @staticmethod
+    def _merge_cost_map(target: dict[str, CostEstimate], source: dict[str, CostEstimate]) -> None:
+        for key, estimate in source.items():
+            target[key] = combine_cost_estimates(target.get(key), estimate) or CostEstimate()
+
+    @staticmethod
+    def _snapshot_agent_costs(snapshot: UsageSnapshot) -> dict[str, CostEstimate]:
+        return {
+            agent: entry.cost_estimate or unavailable_cost_estimate(entry.usage.requests)
+            for agent, entry in snapshot.agent_usages.items()
+        }
+
+    @staticmethod
+    def _snapshot_model_costs(snapshot: UsageSnapshot) -> dict[str, CostEstimate]:
+        return {
+            model_id: snapshot.model_cost_estimates.get(model_id) or unavailable_cost_estimate(usage.requests)
+            for model_id, usage in snapshot.model_usages.items()
+        }
+
+    def _normalized_snapshot_contribution(self, snapshot: UsageSnapshot) -> _UsageContribution:
+        return _UsageContribution(
+            agent_usages={
+                agent: RunUsage() + coerce_run_usage(entry.usage) for agent, entry in snapshot.agent_usages.items()
+            },
+            model_usages={
+                model_id: RunUsage() + coerce_run_usage(usage) for model_id, usage in snapshot.model_usages.items()
+            },
+            agent_cost_estimates=self._snapshot_agent_costs(snapshot),
+            model_cost_estimates=self._snapshot_model_costs(snapshot),
         )
 
     def _remove_committed_contribution(self, run_id: str) -> None:
         contribution = self._committed_run_contributions.pop(run_id, None)
         if contribution is None:
             return
-        agents, models = contribution
-        self._subtract_usage_map(self._committed_agent_usages, agents)
-        self._subtract_usage_map(self._committed_model_usages, models)
+        self._subtract_usage_map(self._committed_agent_usages, contribution.agent_usages)
+        self._subtract_usage_map(self._committed_model_usages, contribution.model_usages)
+        self._subtract_cost_map(self._committed_agent_cost_estimates, contribution.agent_cost_estimates)
+        self._subtract_cost_map(self._committed_model_cost_estimates, contribution.model_cost_estimates)
         self._superseded_committed_contributions[run_id] = contribution
 
     @staticmethod
@@ -260,6 +248,24 @@ class SessionUsage:
                 else:
                     total.details.pop(detail, None)
             if not any(getattr(total, field_name) for field_name in fields) and not total.details:
+                target.pop(key, None)
+
+    @staticmethod
+    def _subtract_cost_map(target: dict[str, CostEstimate], removed: dict[str, CostEstimate]) -> None:
+        for key, estimate in removed.items():
+            total = target.get(key)
+            if total is None:
+                continue
+            remaining = CostEstimate(
+                input_amount=max(Decimal(0), total.input_amount - estimate.input_amount),
+                output_amount=max(Decimal(0), total.output_amount - estimate.output_amount),
+                total_amount=max(Decimal(0), total.total_amount - estimate.total_amount),
+                priced_requests=max(0, total.priced_requests - estimate.priced_requests),
+                unpriced_requests=max(0, total.unpriced_requests - estimate.unpriced_requests),
+            )
+            if remaining.total_requests or remaining.total_amount:
+                target[key] = remaining
+            else:
                 target.pop(key, None)
 
     def set_run_snapshot(self, snapshot: UsageSnapshot) -> None:
@@ -292,10 +298,12 @@ class SessionUsage:
             if snapshot is None:
                 continue
             self._superseded_committed_contributions.pop(committed_run_id, None)
-            agents, models = self._normalized_snapshot_contribution(snapshot)
-            self._merge_usage_map(self._committed_agent_usages, agents)
-            self._merge_usage_map(self._committed_model_usages, models)
-            self._committed_run_contributions[committed_run_id] = (agents, models)
+            contribution = self._normalized_snapshot_contribution(snapshot)
+            self._merge_usage_map(self._committed_agent_usages, contribution.agent_usages)
+            self._merge_usage_map(self._committed_model_usages, contribution.model_usages)
+            self._merge_cost_map(self._committed_agent_cost_estimates, contribution.agent_cost_estimates)
+            self._merge_cost_map(self._committed_model_cost_estimates, contribution.model_cost_estimates)
+            self._committed_run_contributions[committed_run_id] = contribution
             self._committed_run_contributions.move_to_end(committed_run_id)
             committed_run_ids.append(committed_run_id)
         self._rebuild_totals()
@@ -314,9 +322,10 @@ class SessionUsage:
             self._run_snapshots.pop(run_id, None)
             superseded = self._superseded_committed_contributions.pop(run_id, None)
             if superseded is not None:
-                agents, models = superseded
-                self._merge_usage_map(self._committed_agent_usages, agents)
-                self._merge_usage_map(self._committed_model_usages, models)
+                self._merge_usage_map(self._committed_agent_usages, superseded.agent_usages)
+                self._merge_usage_map(self._committed_model_usages, superseded.model_usages)
+                self._merge_cost_map(self._committed_agent_cost_estimates, superseded.agent_cost_estimates)
+                self._merge_cost_map(self._committed_model_cost_estimates, superseded.model_cost_estimates)
                 self._committed_run_contributions[run_id] = superseded
                 self._committed_run_contributions.move_to_end(run_id)
         self._uncommitted_run_ids.clear()
@@ -326,10 +335,16 @@ class SessionUsage:
         """Clear all accumulated usage."""
         self.agent_usages.clear()
         self.model_usages.clear()
+        self.agent_cost_estimates.clear()
+        self.model_cost_estimates.clear()
         self._manual_agent_usages.clear()
         self._manual_model_usages.clear()
+        self._manual_agent_cost_estimates.clear()
+        self._manual_model_cost_estimates.clear()
         self._committed_agent_usages.clear()
         self._committed_model_usages.clear()
+        self._committed_agent_cost_estimates.clear()
+        self._committed_model_cost_estimates.clear()
         self._run_snapshots.clear()
         self._uncommitted_run_ids.clear()
         self._committed_run_contributions.clear()
@@ -376,27 +391,64 @@ class SessionUsage:
         return sum(u.requests or 0 for u in self.model_usages.values())
 
     @property
-    def estimated_total_cost(self) -> TokenCostEstimate | None:
-        """Estimated total cost across models with known local prices."""
-        input_cost = Decimal(0)
-        output_cost = Decimal(0)
-        has_estimate = False
-        for model_id, usage in self.model_usages.items():
-            estimate = estimate_model_usage_cost(model_id, usage)
-            if estimate is None:
-                continue
-            input_cost += estimate.input_cost
-            output_cost += estimate.output_cost
-            has_estimate = True
-        if not has_estimate:
-            return None
-        return TokenCostEstimate(input_cost=input_cost, output_cost=output_cost)
+    def estimated_total_cost(self) -> CostEstimate | None:
+        """Cumulative API list-price estimate supplied by SDK snapshots."""
+        return combine_cost_estimates(*self.model_cost_estimates.values())
+
+    def export_snapshot(self, *, run_id: str) -> UsageSnapshot:
+        """Build a compact aggregate snapshot suitable for session persistence."""
+        total_usage = RunUsage()
+        for usage in self.model_usages.values():
+            total_usage.incr(coerce_run_usage(usage))
+        return UsageSnapshot(
+            run_id=run_id,
+            total_usage=total_usage,
+            total_cost_estimate=self.estimated_total_cost,
+            agent_usages={
+                agent: UsageAgentTotal(
+                    agent_name=agent,
+                    model_id="multiple",
+                    usage=RunUsage() + coerce_run_usage(usage),
+                    cost_estimate=self.agent_cost_estimates.get(agent) or unavailable_cost_estimate(usage.requests),
+                    source="session_restore",
+                )
+                for agent, usage in self.agent_usages.items()
+            },
+            model_usages={
+                model_id: RunUsage() + coerce_run_usage(usage) for model_id, usage in self.model_usages.items()
+            },
+            model_cost_estimates=dict(self.model_cost_estimates),
+        )
 
     def is_empty(self) -> bool:
         """Check if no usage has been recorded."""
         return len(self.model_usages) == 0
 
-    def _format_usage_entry(self, name: str, usage: RunUsage, *, model_id: str | None = None) -> list[str]:
+    def format_status_cost(self) -> str:
+        """Format a compact status-bar API cost estimate."""
+        estimate = self.estimated_total_cost
+        if estimate is None or estimate.priced_requests == 0:
+            return "--"
+        suffix = " partial" if not estimate.is_complete else ""
+        return f"~{_format_usd(estimate.total_amount)}{suffix}"
+
+    @staticmethod
+    def _format_cost_lines(estimate: CostEstimate | None, *, indent: str) -> list[str]:
+        if estimate is None or estimate.total_requests == 0:
+            return []
+        coverage = f"{estimate.priced_requests}/{estimate.total_requests} requests priced"
+        if estimate.priced_requests == 0:
+            return [f"{indent}Estimated Cost: unavailable ({coverage})"]
+        label = "Estimated Cost" if estimate.is_complete else "Partial Estimated Cost"
+        return [f"{indent}{label}: {_format_usd(estimate.total_amount)} ({coverage})"]
+
+    def _format_usage_entry(
+        self,
+        name: str,
+        usage: RunUsage,
+        *,
+        cost_estimate: CostEstimate | None = None,
+    ) -> list[str]:
         """Format a single usage entry."""
         lines = [f"  {name}:"]
         lines.append(f"    Input:  {usage.input_tokens or 0:,} tokens")
@@ -407,8 +459,7 @@ class SessionUsage:
             lines.append(f"    Cache Write: {usage.cache_write_tokens:,} tokens")
         if usage.requests:
             lines.append(f"    Requests: {usage.requests}")
-        if model_id is not None and (cost := estimate_model_usage_cost(model_id, usage)) is not None:
-            lines.append(f"    Estimated Cost: {_format_usd(cost.total_cost)}")
+        lines.extend(self._format_cost_lines(cost_estimate, indent="    "))
         return lines
 
     def format_summary(self) -> str:
@@ -425,13 +476,25 @@ class SessionUsage:
         # By Model breakdown
         lines.append("By Model:")
         for model_id, usage in sorted(self.model_usages.items()):
-            lines.extend(self._format_usage_entry(model_id, usage, model_id=model_id))
+            lines.extend(
+                self._format_usage_entry(
+                    model_id,
+                    usage,
+                    cost_estimate=self.model_cost_estimates.get(model_id),
+                )
+            )
             lines.append("")
 
         # By Agent breakdown
         lines.append("By Agent:")
         for agent, usage in sorted(self.agent_usages.items()):
-            lines.extend(self._format_usage_entry(agent, usage))
+            lines.extend(
+                self._format_usage_entry(
+                    agent,
+                    usage,
+                    cost_estimate=self.agent_cost_estimates.get(agent),
+                )
+            )
             lines.append("")
 
         # Totals
@@ -444,7 +507,6 @@ class SessionUsage:
             lines.append(f"  Cache Write: {self.total_cache_write_tokens:,} tokens")
         lines.append(f"  Total:  {self.total_tokens:,} tokens")
         lines.append(f"  Requests: {self.total_requests}")
-        if (cost := self.estimated_total_cost) is not None:
-            lines.append(f"  Estimated Cost: {_format_usd(cost.total_cost)}")
+        lines.extend(self._format_cost_lines(self.estimated_total_cost, indent="  "))
 
         return "\n".join(lines)

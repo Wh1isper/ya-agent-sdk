@@ -25,6 +25,7 @@ import { isTerminalAguiEvent } from './eventUtils'
 import { filterActivitySessions, type ActivityFilters } from './activityFilters'
 import { validateActivityRunSelection } from './activityRunSelection'
 import { mergeSessionHistoryPages } from './sessionHistory'
+import { CostEstimateDisplay } from './CostEstimateDisplay'
 import { Composer } from './debug/Composer'
 import { LivePill } from './debug/LivePill'
 import {
@@ -37,6 +38,7 @@ import { ResizeHandle } from './debug/ResizeHandle'
 import { SessionList } from './debug/SessionList'
 import { TimelinePanel } from './debug/TimelinePanel'
 import { useRunEventStream } from './useRunEventStream'
+import { selectRunUsageSnapshot } from './usageCost'
 
 export function DebugPage() {
   const pathname = useRouterState({
@@ -257,6 +259,15 @@ export function DebugPage() {
     )
   }, [activeRun, effectiveLiveEvents])
   const timeline = validatedRunId ? selectedRunTimeline : history.timeline
+  const activeUsageSnapshot = useMemo(
+    () =>
+      selectRunUsageSnapshot({
+        run: activeRun,
+        liveEvents: effectiveLiveEvents,
+        replayEvents,
+      }),
+    [activeRun, effectiveLiveEvents, replayEvents],
+  )
   const runs = history.runs.length
     ? history.runs
     : (activeSessionData?.session.runs ?? [])
@@ -299,6 +310,9 @@ export function DebugPage() {
             status={streamStatus}
             eventCount={effectiveLiveEvents.length}
           />
+          {activeRun ? (
+            <CostEstimateDisplay snapshot={activeUsageSnapshot} compact />
+          ) : null}
           {selectedSessionId ? (
             <Link
               to={

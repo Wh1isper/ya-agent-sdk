@@ -102,6 +102,7 @@ This section is the maintainer index for implementation details that affect code
 
 - `LocalWorkspaceProvider` uses `LocalFileOperator` plus policy-driven `LocalShell` over the real workspace path. Claw passes resolved shell sandbox policy for local sandbox execution; raw host shell is controlled by explicit policy.
 - `DockerWorkspaceProvider` uses Docker mounts through `SandboxEnvironment`; file operations map the service-visible workspace path to `/workspace`, and Docker shell uses `/workspace`.
+- Docker shell execution requires a Docker CLI on the service runtime `PATH` plus Docker Engine API access. The official `Dockerfile.ya-claw` image bundles the CLI; custom images and host installs must provide it, and mounting `docker.sock` alone is insufficient.
 - `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` provides the Docker daemon-visible host mount path when the YA Claw service itself runs in Docker.
 - Docker workspace containers receive UID/GID envs (`YA_CLAW_WORKSPACE_UID`, `YA_CLAW_WORKSPACE_GID`, `YA_CLAW_HOST_UID`, `YA_CLAW_HOST_GID`) from the service process by default or from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID/GID`.
 - `Dockerfile.ya-claw` can drop service execution privileges through `YA_CLAW_RUN_UID` and `YA_CLAW_RUN_GID`.

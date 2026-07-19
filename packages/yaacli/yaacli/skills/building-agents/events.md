@@ -172,21 +172,30 @@ if isinstance(event, SubagentStartEvent):
 
 ### Usage Snapshot Events
 
-`UsageSnapshotEvent` is emitted whenever the unified per-run usage ledger changes. It is the realtime usage surface for clients and includes main-agent usage plus reported internal model usage such as subagents, compaction, and shell review.
+`UsageSnapshotEvent` is emitted whenever the unified per-run usage ledger changes. It is the realtime usage surface for clients and includes main-agent usage plus reported internal model usage such as subagents, compaction, media understanding, and shell review. Each event is a cumulative replacement for the previous snapshot with the same `run_id`; consumers must not sum snapshots.
 
-| Field                   | Description                             |
-| ----------------------- | --------------------------------------- |
-| `snapshot.run_id`       | Current run ID                          |
-| `snapshot.total_usage`  | Cumulative `RunUsage` across all agents |
-| `snapshot.agent_usages` | Usage grouped by agent ID               |
-| `snapshot.model_usages` | Usage grouped by model ID               |
-| `source`                | Component that triggered the snapshot   |
+| Field                             | Description                                                        |
+| --------------------------------- | ------------------------------------------------------------------ |
+| `snapshot.run_id`                 | Current run ID                                                     |
+| `snapshot.total_usage`            | Cumulative `RunUsage` across all agents                            |
+| `snapshot.total_cost_estimate`    | Cumulative USD API list-price estimate, when captured              |
+| `snapshot.agent_usages`           | Usage and cost estimate grouped by agent ID                        |
+| `snapshot.model_usages`           | Usage grouped by model ID                                          |
+| `snapshot.model_cost_estimates`   | API list-price estimates grouped by model ID                       |
+| `cost_estimate.priced_requests`   | Number of requests priced through Pydantic AI and `genai-prices`   |
+| `cost_estimate.unpriced_requests` | Number of requests with unavailable or incomplete pricing metadata |
+| `source`                          | Component that triggered the snapshot                              |
+
+Cost amounts use `Decimal`, the basis is `api_list_price`, and the estimate is not an actual provider bill. Unknown pricing remains explicit through `unpriced_requests`; it must not be interpreted as zero cost.
 
 ```python
 from ya_agent_sdk.events import UsageSnapshotEvent
 
 if isinstance(event, UsageSnapshotEvent) and event.snapshot:
     print(event.snapshot.total_usage)
+    estimate = event.snapshot.total_cost_estimate
+    if estimate and estimate.priced_requests:
+        print(f"Estimated API list price: ${estimate.total_amount}")
 ```
 
 ### Tool Search Events

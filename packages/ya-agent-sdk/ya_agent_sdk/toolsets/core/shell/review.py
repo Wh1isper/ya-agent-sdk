@@ -14,7 +14,7 @@ from pydantic_ai.output import ToolOutput
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ShellReviewAction, ShellReviewRiskLevel
-from ya_agent_sdk.usage import coerce_run_usage
+from ya_agent_sdk.usage import coerce_run_usage, estimate_model_message_cost
 
 logger = get_logger(__name__)
 
@@ -278,11 +278,16 @@ async def review_shell_command(
 
     model_id = cast(Model, agent.model).model_name
     usage_id = usage_uuid or uuid4().hex
+    result_usage = coerce_run_usage(result.usage)
     ctx.update_usage_snapshot_entry(
         agent_id="shell_review",
         agent_name="shell_review",
         model_id=model_id,
-        usage=coerce_run_usage(result.usage),
+        usage=result_usage,
+        cost_estimate=estimate_model_message_cost(
+            result.new_messages(),
+            request_count=result_usage.requests,
+        ),
         source="shell_review",
         usage_id=usage_id,
         ledger_key=usage_id,

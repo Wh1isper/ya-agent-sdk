@@ -9,7 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_claw.agency.lifecycle import AGENCY_SINGLETON_SOURCE_SESSION_ID, AgencyLifecycle
 from ya_claw.config import ClawSettings
-from ya_claw.controller.models import AgencyFireKind, RunStatus, SessionSubmitRequest, TextPart, TriggerType
+from ya_claw.controller.models import (
+    RUN_USAGE_SNAPSHOT_METADATA_KEY,
+    AgencyFireKind,
+    RunStatus,
+    SessionSubmitRequest,
+    TextPart,
+    TriggerType,
+)
 from ya_claw.controller.session import SessionController
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.orm.base import Base
@@ -674,15 +681,26 @@ async def test_session_submit_creates_merges_and_steers(
         "session-1",
         SessionSubmitRequest(input_parts=[_text("first")]),
     )
+    spoofed_usage = {
+        "run_id": "spoofed-run",
+        "total_usage": {"requests": 99, "input_tokens": 999, "output_tokens": 999},
+    }
     merged = await controller.submit_input(
         db_session,
         settings,
         runtime_state,
         "session-1",
-        SessionSubmitRequest(input_parts=[_text("second")], metadata={"agency": {"fire_ids": ["fire-2"]}}),
+        SessionSubmitRequest(
+            input_parts=[_text("second")],
+            metadata={
+                "agency": {"fire_ids": ["fire-2"]},
+                RUN_USAGE_SNAPSHOT_METADATA_KEY: spoofed_usage,
+            },
+        ),
     )
     run = await db_session.get(RunRecord, created.run_id)
     assert isinstance(run, RunRecord)
+    assert RUN_USAGE_SNAPSHOT_METADATA_KEY not in run.run_metadata
     run.status = "running"
     session.active_run_id = run.id
     await db_session.commit()
@@ -691,7 +709,10 @@ async def test_session_submit_creates_merges_and_steers(
         settings,
         runtime_state,
         "session-1",
-        SessionSubmitRequest(input_parts=[_text("third")]),
+        SessionSubmitRequest(
+            input_parts=[_text("third")],
+            metadata={RUN_USAGE_SNAPSHOT_METADATA_KEY: spoofed_usage},
+        ),
     )
 
     assert created.delivery == "submitted"
@@ -699,6 +720,7 @@ async def test_session_submit_creates_merges_and_steers(
     assert steered.delivery == "steered"
     assert merged.run_id == created.run_id
     await db_session.refresh(run)
+    assert RUN_USAGE_SNAPSHOT_METADATA_KEY not in run.run_metadata
     assert [part["text"] for part in run.input_parts] == ["first", "second", "third"]
     assert runtime_state.consume_steering_inputs(run.id)[0][0]["text"] == "third"
 

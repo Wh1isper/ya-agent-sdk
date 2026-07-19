@@ -71,6 +71,7 @@ from ya_agent_sdk.filters._builders import (
     build_previous_assistant_reference_parts,
     build_steering_parts,
 )
+from ya_agent_sdk.usage import coerce_run_usage, estimate_model_result_cost
 from ya_agent_sdk.utils import get_latest_request_usage
 
 # =============================================================================
@@ -607,11 +608,16 @@ def create_cache_friendly_compact_filter(
                 model = ctx.model
                 model_id = model.model_name if model is not None else "unknown"
                 usage_id = uuid4().hex
+                normalized_usage = coerce_run_usage(usage)
                 agent_ctx.update_usage_snapshot_entry(
                     agent_id=AGENT_NAME,
                     agent_name=AGENT_NAME,
                     model_id=model_id,
-                    usage=usage,
+                    usage=normalized_usage,
+                    cost_estimate=estimate_model_result_cost(
+                        result,
+                        request_count=normalized_usage.requests,
+                    ),
                     source="compact",
                     usage_id=usage_id,
                     ledger_key=usage_id,
@@ -793,11 +799,16 @@ def create_compact_filter(
 
                 model_id = cast(Model, agent.model).model_name
                 usage_id = uuid4().hex
+                normalized_usage = coerce_run_usage(result.usage)
                 agent_ctx.update_usage_snapshot_entry(
                     agent_id=AGENT_NAME,
                     agent_name=AGENT_NAME,
                     model_id=model_id,
-                    usage=result.usage,
+                    usage=normalized_usage,
+                    cost_estimate=estimate_model_result_cost(
+                        result,
+                        request_count=normalized_usage.requests,
+                    ),
                     source="compact",
                     usage_id=usage_id,
                     ledger_key=usage_id,

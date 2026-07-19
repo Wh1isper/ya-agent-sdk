@@ -2,23 +2,31 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_environment import Environment
+from ya_agent_sdk.context import StreamEvent
+from ya_agent_sdk.events import UsageSnapshotEvent
+from ya_agent_sdk.usage import CostEstimate, UsageSnapshot
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import SessionSubmitRequest, TextPart
 from ya_claw.controller.session import SessionController
+from ya_claw.controller.store import extract_usage_snapshot_from_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution import coordinator as coordinator_module
 from ya_claw.execution.coordinator import (
     ExecutionBuffers,
     ExecutionSupervisor,
     RunCoordinator,
+    _index_run_usage_snapshot,
     _run_restores_state,
     _runtime_source_metadata,
+    _with_cumulative_usage_snapshot,
 )
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.execution.state_machine import interrupt_run, mark_run_running
@@ -946,6 +954,51 @@ async def test_run_coordinator_terminal_gate_blocks_submit_until_completion(
     assert refreshed_run.status == "completed"
 
 
+async def test_cancelled_success_commit_indexes_completed_usage(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    session_record = SessionRecord(id="session-1", profile_name="general", session_metadata={})
+    run_record = RunRecord(
+        id="run-1",
+        session_id="session-1",
+        sequence_no=1,
+        status="cancelled",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[],
+        run_metadata={},
+    )
+    db_session.add_all([session_record, run_record])
+    await db_session.commit()
+
+    usage = RunUsage(requests=1, input_tokens=10, output_tokens=2)
+    snapshot = UsageSnapshot(
+        run_id="run-1",
+        total_usage=usage,
+        total_cost_estimate=CostEstimate(total_amount=Decimal("0.007"), priced_requests=1),
+    )
+    coordinator = StubRunCoordinator(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+    )
+
+    await coordinator._commit_successful_run(
+        run_id="run-1",
+        session_id="session-1",
+        dispatch_mode="async",
+        buffers=ExecutionBuffers(latest_usage_snapshot=snapshot),
+    )
+
+    await db_session.refresh(run_record)
+    assert run_record.status == "cancelled"
+    assert extract_usage_snapshot_from_metadata(run_record.run_metadata) == snapshot
+
+
 def test_run_restores_state_honors_restore_state_metadata() -> None:
     run_record = RunRecord(
         id="run-reset",
@@ -1069,3 +1122,77 @@ async def test_run_coordinator_preserves_interrupt_when_failure_races_with_stop(
     assert refreshed_run.termination_reason == "interrupt"
 
     assert runtime_state.get_run_handle("run-1") is None
+
+
+def test_run_usage_snapshot_is_indexed_in_internal_metadata() -> None:
+    usage = RunUsage(requests=1, input_tokens=10, output_tokens=2)
+    snapshot = UsageSnapshot(
+        run_id="run-1",
+        total_usage=usage,
+        total_cost_estimate=CostEstimate(total_amount=Decimal("0.007"), priced_requests=1),
+    )
+    run_record = RunRecord(
+        id="run-1",
+        session_id="session-1",
+        sequence_no=1,
+        status="completed",
+        trigger_type="api",
+        input_parts=[],
+        run_metadata={"source": "test"},
+    )
+
+    _index_run_usage_snapshot(run_record, ExecutionBuffers(latest_usage_snapshot=snapshot))
+
+    restored = extract_usage_snapshot_from_metadata(run_record.run_metadata)
+    assert restored == snapshot
+    assert run_record.run_metadata["source"] == "test"
+
+
+def test_cumulative_usage_snapshot_spans_deferred_execution_segments() -> None:
+    def stream_event(sdk_run_id: str, requests: int, amount: str) -> StreamEvent:
+        usage = RunUsage(requests=requests, input_tokens=requests * 10, output_tokens=requests * 2)
+        snapshot = UsageSnapshot(
+            run_id=sdk_run_id,
+            total_usage=usage,
+            total_cost_estimate=CostEstimate(
+                total_amount=Decimal(amount),
+                priced_requests=requests,
+            ),
+            model_usages={"model-a": usage},
+            model_cost_estimates={
+                "model-a": CostEstimate(
+                    total_amount=Decimal(amount),
+                    priced_requests=requests,
+                )
+            },
+        )
+        return StreamEvent(
+            agent_id="main",
+            agent_name="main",
+            event=UsageSnapshotEvent(event_id=f"usage-{sdk_run_id}", snapshot=snapshot),
+        )
+
+    first_event, first = _with_cumulative_usage_snapshot(
+        stream_event("sdk-segment-1", 1, "0.003"),
+        segment_base=None,
+        run_id="claw-run",
+    )
+    assert first is not None
+    assert isinstance(first_event.event, UsageSnapshotEvent)
+    assert first_event.event.snapshot is not None
+    assert first_event.event.snapshot.run_id == "claw-run"
+
+    second_event, second = _with_cumulative_usage_snapshot(
+        stream_event("sdk-segment-2", 2, "0.007"),
+        segment_base=first,
+        run_id="claw-run",
+    )
+
+    assert second is not None
+    assert isinstance(second_event.event, UsageSnapshotEvent)
+    assert second_event.event.snapshot is not None
+    assert second_event.event.snapshot.run_id == "claw-run"
+    assert second.total_usage.requests == 3
+    assert second.total_cost_estimate is not None
+    assert second.total_cost_estimate.total_amount == Decimal("0.010")
+    assert second.total_cost_estimate.priced_requests == 3

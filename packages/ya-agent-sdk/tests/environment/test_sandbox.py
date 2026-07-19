@@ -6,6 +6,7 @@ The entire module is skipped when docker package is unavailable.
 
 import asyncio
 import contextlib
+import errno
 import os
 import shlex
 import signal
@@ -82,6 +83,23 @@ async def test_docker_shell_execute_empty_command() -> None:
     shell = DockerShell(container_id="test123")
     with pytest.raises(ShellExecutionError):
         await shell.execute("")
+
+
+async def test_docker_shell_missing_cli_reports_actionable_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing host CLI should explain that mounting docker.sock is insufficient."""
+    shell = DockerShell(container_id="test123")
+
+    async def missing_cli(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", "docker")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", missing_cli)
+
+    with pytest.raises(ShellExecutionError) as exc_info:
+        await shell.execute("echo hello")
+
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+    assert "Docker CLI executable 'docker' was not found" in str(exc_info.value)
+    assert "access to the Docker socket alone is not sufficient" in str(exc_info.value)
 
 
 async def test_docker_shell_execute_success(monkeypatch: pytest.MonkeyPatch) -> None:
