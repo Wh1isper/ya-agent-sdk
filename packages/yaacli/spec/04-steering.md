@@ -100,8 +100,8 @@ Foreground ownership is claimed synchronously before a new task receives event-l
 
 - The elapsed timer starts when foreground dispatch is claimed, not when the model emits its first event.
 - The same start time is retained across thinking, tools, output streaming, approval, and saving.
-- Background completion only marks results ready. It does not take over the compose buffer.
-- The next prompt integrates ready background results. During an active run, `/integrate` delivers them to the current message bus for the next model request; while idle it starts an explicit integration turn.
+- Background completion never modifies or clears the compose buffer. When idle, a deliverable notification automatically starts a main-agent turn with a small system reminder; the notification reaches the model through the message bus.
+- During an active run, `/integrate` can deliver queued background results to the current message bus for the next model request. Otherwise, any unread deliverable notification automatically wakes the main agent after the foreground turn releases ownership.
 - `/agents` inspects running and recently completed background subagents; `/process` inspects active background shell processes. Neither command changes agent context.
 - Session restore preserves the current runtime approval policy and restores into a clean session context.
 - Every terminal path clears the resumable steering list and unread main-subscriber user messages before snapshot export, with final cleanup as a fallback; background bus messages remain pending.

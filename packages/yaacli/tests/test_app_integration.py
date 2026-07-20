@@ -1508,8 +1508,14 @@ async def test_tui_app_direct_shell_timeout_terminates_and_releases_foreground(m
     app._terminate_direct_shell_process = terminate  # type: ignore[method-assign]
     monkeypatch.setattr("yaacli.app.tui._DIRECT_SHELL_TIMEOUT", 0.01)
 
-    with patch("yaacli.app.tui.asyncio.create_subprocess_shell", new=AsyncMock(return_value=process)):
-        await app._execute_shell_command("sleep forever")
+    async def run_shell() -> None:
+        with patch("yaacli.app.tui.asyncio.create_subprocess_shell", new=AsyncMock(return_value=process)):
+            await app._execute_shell_command("sleep forever")
+
+    task = asyncio.create_task(run_shell())
+    task.add_done_callback(app._release_direct_shell_task)
+    await task
+    await asyncio.sleep(0)
 
     terminate.assert_awaited_once_with(process)
     assert app._direct_shell_task is None
@@ -3916,6 +3922,7 @@ async def test_tui_app_active_integrate_command_delivers_to_current_run() -> Non
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     input_area = TextArea(text="/integrate", multiline=True)
     app._set_phase(TUIPhase.THINKING)
+    app._pending_background_wakeup_kinds.add("shell")
     app._deliver_background_messages = MagicMock(return_value=True)  # type: ignore[method-assign]
     app._launch_agent = MagicMock()  # type: ignore[method-assign]
     app._add_steering_message = MagicMock()  # type: ignore[method-assign]
@@ -3929,6 +3936,7 @@ async def test_tui_app_active_integrate_command_delivers_to_current_run() -> Non
     app._add_steering_message.assert_not_called()
     assert app._background_results_ready is True
     assert app._pending_bus_check_needed is True
+    assert app._pending_background_wakeup_kinds == set()
     assert input_area.buffer.text == ""
     assert any("delivered to the active run" in line for line in app._output_lines)
 
@@ -3938,6 +3946,7 @@ async def test_tui_app_active_integrate_command_with_no_results_stays_local() ->
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     input_area = TextArea(text="/integrate", multiline=True)
     app._set_phase(TUIPhase.THINKING)
+    app._pending_background_wakeup_kinds.add("shell")
     app._deliver_background_messages = MagicMock(return_value=False)  # type: ignore[method-assign]
     app._launch_agent = MagicMock()  # type: ignore[method-assign]
     app._add_steering_message = MagicMock()  # type: ignore[method-assign]
@@ -3948,6 +3957,7 @@ async def test_tui_app_active_integrate_command_with_no_results_stays_local() ->
     app._launch_agent.assert_not_called()
     app._add_steering_message.assert_not_called()
     assert app._background_results_ready is False
+    assert app._pending_background_wakeup_kinds == set()
     assert any("No background results are ready" in line for line in app._output_lines)
 
 

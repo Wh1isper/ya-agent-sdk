@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 
 import anyio
 
+from ya_agent_environment.exceptions import PathNotAllowedError
 from ya_agent_environment.protocols import DEFAULT_CHUNK_SIZE, TmpFileOperator
 from ya_agent_environment.types import FileEntry, FileStat, TruncatedResult
 
@@ -33,12 +34,18 @@ class LocalTmpFileOperator:
 
     def is_managed_path(self, path: str, base_path: Path | PurePath) -> tuple[bool, str]:
         target = Path(path)
-        resolved = target if target.is_absolute() else Path(base_path / target).resolve()
+        lexical_path = target if target.is_absolute() else Path(base_path / target)
+        normalized_path = Path(os.path.abspath(lexical_path))
+        resolved = normalized_path.resolve()
         try:
-            rel_path = resolved.relative_to(self._tmp_dir)
-            return True, str(rel_path) if str(rel_path) != "." else "."
+            resolved_rel_path = resolved.relative_to(self._tmp_dir)
         except ValueError:
             return False, path
+        try:
+            rel_path = normalized_path.relative_to(self._tmp_dir)
+        except ValueError:
+            rel_path = resolved_rel_path
+        return True, str(rel_path) if str(rel_path) != "." else "."
 
     @property
     def tmp_dir(self) -> str | None:
@@ -46,7 +53,14 @@ class LocalTmpFileOperator:
 
     def _resolve(self, path: str) -> Path:
         target = Path(path)
-        return target if target.is_absolute() else self._tmp_dir / target
+        lexical_path = target if target.is_absolute() else self._tmp_dir / target
+        normalized_path = Path(os.path.abspath(lexical_path))
+        resolved = normalized_path.resolve()
+        try:
+            resolved.relative_to(self._tmp_dir)
+        except ValueError as exc:
+            raise PathNotAllowedError(path, [str(self._tmp_dir)]) from exc
+        return normalized_path
 
     async def read_file(
         self,
@@ -244,13 +258,19 @@ class LocalTmpFileOperator:
         Yields:
             Chunks of bytes from the file.
         """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
         resolved = self._resolve(path)
-        async with await anyio.open_file(resolved, "rb") as f:
+        file = await anyio.open_file(resolved, "rb")
+        try:
             while True:
-                chunk = await f.read(chunk_size)
+                chunk = await file.read(chunk_size)
                 if not chunk:
                     break
                 yield chunk
+        finally:
+            with anyio.CancelScope(shield=True):
+                await file.aclose()
 
     async def write_bytes_stream(
         self,
@@ -280,8 +300,8 @@ class LocalTmpFileOperator:
         if len(content) <= max_length:
             return content
 
-        # Save full content to tmp file
-        file_path = self._tmp_dir / filename
+        # Save full content to a managed tmp file
+        file_path = self._resolve(filename)
         await anyio.Path(file_path).write_text(content, encoding="utf-8")
 
         # Truncate content
@@ -936,6 +956,8 @@ class FileOperator(ABC):
         Yields:
             Chunks of bytes from the file.
         """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
         is_tmp, routed_path = self._is_tmp_path(path)
         if is_tmp:  # pragma: no cover
             return self._tmp_file_operator.read_bytes_stream(  # type: ignore[union-attr]

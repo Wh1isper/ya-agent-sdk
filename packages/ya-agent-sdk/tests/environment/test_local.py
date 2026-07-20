@@ -120,6 +120,57 @@ async def test_file_operator_read_bytes_with_offset_and_length(tmp_path: Path) -
     assert await op.read_bytes("test.bin", offset=1, length=3) == b"\x01\x02\x03"
 
 
+async def test_read_bytes_stream_from_tmp_returns_tmp_stream(tmp_path: Path) -> None:
+    """Reading a tmp path through FileOperator preserves the tmp streaming contract."""
+    main_dir = tmp_path / "main"
+    tmp_dir = tmp_path / "tmp"
+    main_dir.mkdir()
+    tmp_dir.mkdir()
+    op = LocalFileOperator(default_path=main_dir, tmp_dir=tmp_dir)
+
+    content = b"tmp stream content"
+    assert op._tmp_file_operator is not None
+    await op._tmp_file_operator.write_file("source.bin", content)
+
+    stream = await op.read_bytes_stream(str(tmp_dir / "source.bin"), chunk_size=4)
+    assert b"".join([chunk async for chunk in stream]) == content
+
+
+async def test_read_bytes_stream_from_workspace_symlink_to_tmp_returns_tmp_stream(tmp_path: Path) -> None:
+    """A workspace symlink to tmp should retain tmp stream routing."""
+    main_dir = tmp_path / "main"
+    tmp_dir = tmp_path / "tmp"
+    main_dir.mkdir()
+    tmp_dir.mkdir()
+    op = LocalFileOperator(default_path=main_dir, tmp_dir=tmp_dir)
+
+    content = b"tmp stream content"
+    assert op._tmp_file_operator is not None
+    await op._tmp_file_operator.write_file("source.bin", content)
+    (main_dir / "source-link.bin").symlink_to(tmp_dir / "source.bin")
+
+    stream = await op.read_bytes_stream("source-link.bin", chunk_size=4)
+    assert b"".join([chunk async for chunk in stream]) == content
+
+
+async def test_file_operator_read_bytes_stream_reads_workspace_in_chunks(tmp_path: Path) -> None:
+    """Reading a workspace path should not use the whole-file stream fallback."""
+    content = b"workspace stream content"
+    (tmp_path / "source.bin").write_bytes(content)
+    op = LocalFileOperator(default_path=tmp_path)
+
+    stream = await op.read_bytes_stream("source.bin", chunk_size=4)
+    chunks = [chunk async for chunk in stream]
+
+    assert b"".join(chunks) == content
+    assert all(len(chunk) <= 4 for chunk in chunks)
+    assert len(chunks) > 1
+
+    for chunk_size in (0, -1):
+        with pytest.raises(ValueError, match="chunk_size must be greater than zero"):
+            await op.read_bytes_stream("source.bin", chunk_size=chunk_size)
+
+
 async def test_file_operator_write_file_string(tmp_path: Path) -> None:
     """Should write string content."""
     op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])

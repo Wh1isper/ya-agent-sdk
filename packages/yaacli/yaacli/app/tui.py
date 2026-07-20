@@ -476,6 +476,10 @@ Review the <steering> content carefully, consider how it affects your current ap
 and adjust your work accordingly while continuing toward the goal.
 </system-reminder>"""
 
+BACKGROUND_WAKEUP_PROMPT = """<system-reminder>
+A background task is ready. Review the background notification and use the relevant tool if more detail is needed.
+</system-reminder>"""
+
 
 # TUIState kept for backward compatibility (used in tests and status bar)
 class TUIState(StrEnum):
@@ -670,6 +674,7 @@ class TUIApp:
     # Background task completion tracking
     _pending_bus_check_needed: bool = field(default=False, init=False)
     _background_results_ready: bool = field(default=False, init=False)
+    _pending_background_wakeup_kinds: set[str] = field(default_factory=set, init=False)
     _session_clear_in_progress: bool = field(default=False, init=False)
 
     # Deferred screen recovery scheduling
@@ -2496,9 +2501,10 @@ class TUIApp:
     def _on_background_task_complete(self, agent_id: str) -> None:
         """Handle subagent completion or shell output/completion readiness.
 
-        This is called synchronously from the asyncio event loop. Results are
-        retained for the active run, the next user turn, or an explicit
-        ``/integrate`` command.
+        This is called synchronously from the asyncio event loop. If the main
+        agent is idle, its queued background notification starts an empty turn
+        immediately; otherwise the turn that owns the foreground wakes it when
+        it finishes.
 
         Args:
             agent_id: Background agent ID or shell process ID.
@@ -2528,13 +2534,69 @@ class TUIApp:
         else:
             self._append_system_output(f"Background task completed: {agent_id}")
 
-        # Do not steal the compose buffer by auto-starting an empty agent turn.
-        # Results are integrated with the next prompt or explicitly via /integrate.
+        if shell_kind is not None:
+            self._pending_background_wakeup_kinds.add("shell")
+        elif monitor is not None and (agent_id in monitor.task_infos or agent_id in monitor.task_results):
+            self._pending_background_wakeup_kinds.add("subagent")
+        else:
+            self._pending_background_wakeup_kinds.add("other")
+
         self._pending_bus_check_needed = True
         self._background_results_ready = True
-        if not self._is_foreground_busy():
-            self._set_phase(TUIPhase.BACKGROUND_RESULT_READY)
-        logger.debug("Background task %s is ready for integration", agent_id)
+        if self._is_foreground_busy():
+            logger.debug("Background task %s will wake the main agent after foreground work", agent_id)
+            return
+
+        self._wake_main_agent_for_background_results()
+
+    def _build_background_wakeup_prompt(self) -> str:
+        """Build a compact reminder from monitor-verified wakeup provenance."""
+        kinds = self._pending_background_wakeup_kinds
+        if not kinds:
+            return BACKGROUND_WAKEUP_PROMPT
+
+        descriptions: list[str] = []
+        if "subagent" in kinds:
+            descriptions.append(
+                "- An asynchronous subagent result is available; use wait_subagent for its retained result if needed."
+            )
+        if "shell" in kinds:
+            descriptions.append(
+                "- The monitored shell has unread output or a completed process; use shell_wait if needed."
+            )
+        if "other" in kinds:
+            descriptions.append(
+                "- Another background notification is available; review the notification before taking action."
+            )
+
+        return "\n".join([
+            "<system-reminder>",
+            "Background work is ready. Review the notification(s):",
+            *descriptions,
+            "</system-reminder>",
+        ])
+
+    def _wake_main_agent_for_background_results(self) -> None:
+        """Start one main-agent turn when a deliverable background event is queued."""
+        if self._is_foreground_busy():
+            return
+        if not self._deliver_background_messages():
+            self._background_results_ready = False
+            self._pending_bus_check_needed = False
+            self._pending_background_wakeup_kinds.clear()
+            if self.phase == TUIPhase.BACKGROUND_RESULT_READY:
+                self._set_phase(TUIPhase.IDLE)
+            logger.debug("Background completion had no deliverable notification")
+            return
+
+        self._background_results_ready = True
+        logger.info("Background result available, waking main agent")
+        # The bus notification is delivered independently of this reminder, so
+        # future bus-buffer changes cannot turn the wake-up into a blank turn.
+        # _launch_agent does not consume the compose buffer, preserving a draft.
+        prompt = self._build_background_wakeup_prompt()
+        self._pending_background_wakeup_kinds.clear()
+        self._launch_agent(prompt)
 
     def _on_agent_task_done(self, task: asyncio.Task[None]) -> None:
         """Recover interaction state if the owning task exits outside normal cleanup."""
@@ -2560,6 +2622,9 @@ class TUIApp:
             self._agent_phase = "idle"
             self._reset_hitl_state()
             self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
+
+        if self._background_results_ready:
+            self._wake_main_agent_for_background_results()
 
     def _drain_background_usage(self, monitor: BackgroundMonitor) -> None:
         """Commit queued background usage without delivering conversation messages."""
@@ -2587,11 +2652,10 @@ class TUIApp:
         return delivered > 0 or pending_background
 
     def _check_pending_bus_messages(self) -> None:
-        """Mark pending bus messages ready for later user-driven integration.
+        """Wake the main agent for messages that arrived during a foreground turn.
 
         Called after agent execution completes to redeliver messages that
-        arrived while the main agent was still running. It does not launch an
-        agent turn.
+        arrived while the main agent was still running.
         """
         # Only proceed if flag was set (background task completed during run)
         if not self._pending_bus_check_needed:
@@ -2599,16 +2663,18 @@ class TUIApp:
         self._pending_bus_check_needed = False
         if not self._deliver_background_messages():
             self._background_results_ready = False
+            self._pending_background_wakeup_kinds.clear()
             if self.phase == TUIPhase.BACKGROUND_RESULT_READY:
                 self._set_phase(TUIPhase.IDLE)
             return
 
         self._background_results_ready = True
-        if not self._is_foreground_busy():
-            self._set_phase(TUIPhase.BACKGROUND_RESULT_READY)
-        self._append_system_output(
-            "Background results ready; they will be integrated with the next prompt. Use /integrate to process now."
-        )
+        # _run_agent() invokes this method from its finally block, before the
+        # owning task has transitioned to done. _launch_agent() correctly
+        # rejects a second foreground task at that point, so defer the wakeup
+        # to _on_agent_task_done(), after it releases the old task handle.
+        if self._agent_task is None or self._agent_task.done():
+            self._wake_main_agent_for_background_results()
 
     def _mark_goal_usage_report_pending(self) -> None:
         """Mark the active goal usage report to be printed after final usage persistence."""
@@ -2703,6 +2769,7 @@ class TUIApp:
         if self._background_results_ready:
             self._deliver_background_messages()
             self._background_results_ready = False
+            self._pending_background_wakeup_kinds.clear()
         turn_attachments = list(attachments or [])
         self._pending_bus_check_needed = False
         self._last_snapshot_saved = None
@@ -3805,6 +3872,19 @@ class TUIApp:
             self._run_started_at = None
             if self.phase in {TUIPhase.THINKING, TUIPhase.COMMAND_RUNNING, TUIPhase.CANCELLING}:
                 self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
+        if self._background_results_ready and not task.cancelled():
+            self._wake_main_agent_for_background_results()
+
+    def _release_direct_shell_task(self, task: asyncio.Future[None]) -> None:
+        """Release shell ownership and wake only after the shell task is done."""
+        if self._direct_shell_task is not task:
+            return
+        self._direct_shell_command = None
+        self._direct_shell_task = None
+        if self.phase in {TUIPhase.SHELL_RUNNING, TUIPhase.CANCELLING}:
+            self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
+        if self._background_results_ready and not task.cancelled():
+            self._wake_main_agent_for_background_results()
 
     def _schedule_command(self, command: str) -> None:
         """Schedule a slash command after synchronously reserving idle dispatch."""
@@ -3857,9 +3937,6 @@ class TUIApp:
             logger.exception("Slash dispatch failed: %s", text)
             self._append_error_output(error)
         finally:
-            current_task = asyncio.current_task()
-            if current_task is not None:
-                self._release_foreground_command(current_task)
             self._scroll_to_bottom()
             if self._app:
                 self._app.invalidate()
@@ -3935,6 +4012,7 @@ class TUIApp:
             self._set_phase(TUIPhase.SHELL_RUNNING)
             task = asyncio.create_task(self._execute_shell_command(command))
             self._direct_shell_task = task
+            task.add_done_callback(self._release_direct_shell_task)
             self._track_managed_task(task)
             return
 
@@ -4456,24 +4534,32 @@ class TUIApp:
             if not self._deliver_background_messages():
                 self._background_results_ready = False
                 self._pending_bus_check_needed = False
+                self._pending_background_wakeup_kinds.clear()
                 self._append_system_output("No background results are ready.")
                 return
-            # The SDK message-bus filter can consume these at the active run's
-            # next model request. Reconcile again at run end so unread results
-            # remain visible and available to a later prompt.
+            # Delivery to the active run is not a future wake-up. Its queued
+            # bus messages remain available for the next model request, while
+            # later completions establish fresh wakeup provenance.
             self._background_results_ready = True
             self._pending_bus_check_needed = True
+            self._pending_background_wakeup_kinds.clear()
             self._append_system_output(
                 "Background results delivered to the active run; they will be used by its next model request."
             )
             return
         if not self._deliver_background_messages():
             self._background_results_ready = False
+            self._pending_background_wakeup_kinds.clear()
             if self.phase == TUIPhase.BACKGROUND_RESULT_READY:
                 self._set_phase(TUIPhase.IDLE)
             self._append_system_output("No background results are ready.")
             return
-        self._background_results_ready = True
+        # The messages are already queued on the main-agent bus for the turn
+        # we are about to start. Do not let the command done callback schedule
+        # a second wake-up before that new owner begins running.
+        self._background_results_ready = False
+        self._pending_bus_check_needed = False
+        self._pending_background_wakeup_kinds.clear()
         self._append_system_output("Integrating background results...")
         self._launch_agent("")
 
@@ -4601,9 +4687,6 @@ class TUIApp:
             logger.exception("Command failed: %s", command)
             self._append_error_output(e)
         finally:
-            current_task = asyncio.current_task()
-            if current_task is not None:
-                self._release_foreground_command(current_task)
             self._scroll_to_bottom()
             if self._app:
                 self._app.invalidate()
@@ -4888,13 +4971,6 @@ class TUIApp:
                     task.cancel()
             if drain_tasks:
                 await asyncio.gather(*drain_tasks, return_exceptions=True)
-            if self._direct_shell_task is current_task:
-                self._direct_shell_command = None
-                self._direct_shell_task = None
-                if self.phase in {TUIPhase.SHELL_RUNNING, TUIPhase.CANCELLING}:
-                    self._set_phase(
-                        TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE
-                    )
             if self._app:
                 self._app.invalidate()
 
@@ -5001,6 +5077,7 @@ class TUIApp:
         self._reset_pending_attachments()
         self._pending_bus_check_needed = False
         self._background_results_ready = False
+        self._pending_background_wakeup_kinds.clear()
         self._reset_hitl_state()
         self._goal_usage_start_breakdown = None
         self._goal_usage_report_pending = False
