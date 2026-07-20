@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 from ya_agent_environment import (
+    DEFAULT_CHUNK_SIZE,
     Environment,
     ExecutionHandle,
     FileEntry,
@@ -333,6 +334,29 @@ class LocalFileOperator(FileOperator):
             return await anyio.to_thread.run_sync(  # type: ignore[reportAttributeAccessIssue]
                 lambda: _read_path_bytes(resolved, offset=offset, length=length)
             )
+        except FileNotFoundError as e:
+            raise FileOperationError("read", path, "file not found") from e
+        except PermissionError as e:
+            raise FileOperationError("read", path, "permission denied") from e
+        except OSError as e:
+            raise FileOperationError("read", path, str(e)) from e
+
+    async def _read_bytes_stream_impl(
+        self,
+        path: str,
+        *,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> AsyncIterator[bytes]:
+        """Read a local file as a bounded-memory byte stream."""
+        resolved = self._resolve_path(path)
+        try:
+            file = await anyio.open_file(resolved, "rb")
+            try:
+                while chunk := await file.read(chunk_size):
+                    yield chunk
+            finally:
+                with anyio.CancelScope(shield=True):
+                    await file.aclose()
         except FileNotFoundError as e:
             raise FileOperationError("read", path, "file not found") from e
         except PermissionError as e:
@@ -829,6 +853,29 @@ class VirtualLocalFileOperator(FileOperator):
             return await anyio.to_thread.run_sync(  # type: ignore[reportAttributeAccessIssue]
                 lambda: _read_path_bytes(host, offset=offset, length=length)
             )
+        except FileNotFoundError as e:
+            raise FileOperationError("read", path, "file not found") from e
+        except PermissionError as e:
+            raise FileOperationError("read", path, "permission denied") from e
+        except OSError as e:
+            raise FileOperationError("read", path, str(e)) from e
+
+    async def _read_bytes_stream_impl(
+        self,
+        path: str,
+        *,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> AsyncIterator[bytes]:
+        """Read a virtual-path file as a bounded-memory byte stream."""
+        host = self._to_host(path)
+        try:
+            file = await anyio.open_file(host, "rb")
+            try:
+                while chunk := await file.read(chunk_size):
+                    yield chunk
+            finally:
+                with anyio.CancelScope(shield=True):
+                    await file.aclose()
         except FileNotFoundError as e:
             raise FileOperationError("read", path, "file not found") from e
         except PermissionError as e:

@@ -3,11 +3,13 @@
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import pytest
 from ya_agent_environment import (
     DEFAULT_CHUNK_SIZE,
     FileOperator,
     FileStat,
     LocalTmpFileOperator,
+    PathNotAllowedError,
 )
 
 
@@ -204,6 +206,44 @@ async def test_local_tmp_file_operator_tmp_dir_property(tmp_path: Path) -> None:
     assert op.tmp_dir == str(tmp_path)
 
 
+async def test_local_tmp_file_operator_rejects_paths_outside_tmp_dir(tmp_path: Path) -> None:
+    """LocalTmpFileOperator should not allow absolute or traversal path escapes."""
+    tmp_dir = tmp_path / "tmp"
+    tmp_dir.mkdir()
+    op = LocalTmpFileOperator(tmp_dir)
+    outside = tmp_path / "outside.txt"
+
+    is_managed, _ = op.is_managed_path(str(tmp_dir / ".." / "outside.txt"), tmp_path)
+    assert is_managed is False
+
+    with pytest.raises(PathNotAllowedError):
+        await op.write_file("../outside.txt", "outside")
+    with pytest.raises(PathNotAllowedError):
+        await op.write_file(str(outside), "outside")
+    with pytest.raises(PathNotAllowedError):
+        await op.truncate_to_tmp("content", "../outside.txt", max_length=1)
+
+    assert not outside.exists()
+
+
+async def test_local_tmp_file_operator_preserves_symlink_operands(tmp_path: Path) -> None:
+    """LocalTmpFileOperator should delete and move a symlink, not its target."""
+    op = LocalTmpFileOperator(tmp_path)
+    target = tmp_path / "target.txt"
+    target.write_text("content")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+
+    await op.delete("link.txt")
+    assert target.exists()
+    assert not link.exists()
+
+    link.symlink_to(target)
+    await op.move("link.txt", "moved-link.txt")
+    assert target.exists()
+    assert (tmp_path / "moved-link.txt").is_symlink()
+
+
 async def test_local_tmp_operator_read_bytes_with_offset(tmp_path: Path) -> None:
     """LocalTmpFileOperator should support reading bytes with offset and length."""
     op = LocalTmpFileOperator(tmp_path)
@@ -300,6 +340,17 @@ async def test_local_tmp_operator_read_bytes_stream(tmp_path: Path) -> None:
 
     # Verify chunking happened (with 256 byte chunks, should have multiple chunks)
     assert len(chunks) > 1
+
+
+async def test_local_tmp_operator_read_bytes_stream_rejects_non_positive_chunk_size(tmp_path: Path) -> None:
+    """LocalTmpFileOperator should reject chunk sizes that cannot stream safely."""
+    op = LocalTmpFileOperator(tmp_path)
+    await op.write_file("source.bin", b"content")
+
+    for chunk_size in (0, -1):
+        stream = op.read_bytes_stream("source.bin", chunk_size=chunk_size)
+        with pytest.raises(ValueError, match="chunk_size must be greater than zero"):
+            _ = [chunk async for chunk in stream]
 
 
 async def test_local_tmp_operator_read_bytes_stream_small_file(tmp_path: Path) -> None:

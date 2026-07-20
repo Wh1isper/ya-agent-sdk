@@ -82,6 +82,22 @@ async def test_virtual_file_operator_read_write(tmp_path: Path) -> None:
     assert content == "hello world"
 
 
+async def test_virtual_file_operator_read_bytes_stream_reads_in_chunks(tmp_path: Path) -> None:
+    """Should stream bytes through virtual paths without loading the whole file."""
+    content = b"virtual stream content"
+    (tmp_path / "source.bin").write_bytes(content)
+    op = VirtualLocalFileOperator(
+        mounts=[VirtualMount(tmp_path, Path("/workspace"))],
+    )
+
+    stream = await op.read_bytes_stream("source.bin", chunk_size=4)
+    chunks = [chunk async for chunk in stream]
+
+    assert b"".join(chunks) == content
+    assert all(len(chunk) <= 4 for chunk in chunks)
+    assert len(chunks) > 1
+
+
 async def test_virtual_file_operator_absolute_virtual_paths(tmp_path: Path) -> None:
     """Should handle absolute virtual paths correctly."""
     op = VirtualLocalFileOperator(

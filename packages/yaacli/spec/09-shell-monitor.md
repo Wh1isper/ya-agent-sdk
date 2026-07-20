@@ -147,21 +147,21 @@ boundary:
 
 - append a concise status line;
 - set `_pending_bus_check_needed` and `_background_results_ready`;
-- transition an idle TUI to `BACKGROUND_RESULT_READY`;
-- retain notifications while a foreground run is active;
-- never launch an agent turn from the callback;
+- when foreground ownership is idle, redeliver a valid notification and start a main-agent turn with a small system reminder;
+- retain notifications while a foreground run is active, then wake the main agent after its task handle is released;
+- never launch a turn for a stale or already-consumed notification;
 - never modify or clear the compose buffer.
 
-Ready messages are integrated with the next submitted prompt. The user may run
-`/integrate` to request immediate integration explicitly. During an active
-agent phase the command delivers queued notifications to the current message
-bus, allowing the SDK filter to inject them at the next model request without
-starting a competing turn. End-of-run reconciliation keeps any unread result
-ready for a later prompt. During non-agent foreground cleanup the command leaves
-results queued and reports that they will be available after foreground work.
-Pending user steering shares the bus but is not counted as a background result.
-An explicitly cancelled turn does not immediately redeliver a notification into
-the cancelled interaction; the next prompt or `/integrate` performs delivery.
+A deliverable notification wakes the main agent automatically with a small
+system reminder and reaches it through the message bus. During an active agent phase, `/integrate` can deliver
+queued notifications to the current message bus for the next model request
+without starting a competing turn. End-of-run reconciliation retains unread
+messages until the old task has completed, then starts the wake-up turn. During
+non-agent foreground cleanup the command leaves results queued and reports that
+they will be available after foreground work. Pending user steering shares the
+bus but is not counted as a background result. An explicitly cancelled turn
+does not immediately redeliver a notification into the cancelled interaction;
+the next valid wakeup or `/integrate` performs delivery.
 
 ## Session Reset
 
