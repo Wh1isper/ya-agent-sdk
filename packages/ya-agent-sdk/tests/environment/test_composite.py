@@ -451,16 +451,16 @@ async def test_additional_local_mount_uses_normal_composite_routing(mount_dirs: 
             mounts=[
                 Mount(virtual_path=Path("/workspace"), backend=workspace_op),
                 Mount(virtual_path=Path("/mnt/pc"), backend=remote_op),
-                Mount(virtual_path=auxiliary, backend=auxiliary_op),
+                Mount(virtual_path=Path("/auxiliary"), backend=auxiliary_op),
             ],
             default_mount=Path("/workspace"),
         )
 
-        auxiliary_file = str(auxiliary / "test_output.txt")
+        auxiliary_file = "/auxiliary/test_output.txt"
         await composite.write_file(auxiliary_file, "auxiliary content")
 
         assert await composite.read_file(auxiliary_file) == "auxiliary content"
-        assert Path(auxiliary_file).read_text() == "auxiliary content"
+        assert (auxiliary / "test_output.txt").read_text() == "auxiliary content"
         assert not (workspace / "test_output.txt").exists()
         assert not (remote / "test_output.txt").exists()
 
