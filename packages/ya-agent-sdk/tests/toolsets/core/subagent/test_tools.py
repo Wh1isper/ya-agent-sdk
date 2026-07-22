@@ -13,6 +13,7 @@ from pydantic_ai.messages import (
 )
 from ya_agent_sdk.context import AgentContext, AgentInfo
 from ya_agent_sdk.toolsets.core.subagent.tools import (
+    _MAX_HINT_CHARS,
     SubagentInfoTool,
     _extract_first_user_prompt,
     _format_agent_info,
@@ -218,6 +219,28 @@ async def test_subagent_info_tool_includes_hint(ctx_with_subagents: AgentContext
     # Find reasoning subagent and check hint
     reason_info = next(s for s in result["subagents"] if s["agent_id"] == "reason-002")
     assert reason_info["hint"] == "Analyze this code"
+
+
+async def test_subagent_info_tool_bounds_long_hint(mock_ctx: AgentContext):
+    """Long prompts should not be copied unbounded into tool results."""
+    long_prompt = "x" * 65_000
+    mock_ctx.agent_registry = {
+        "main-123": AgentInfo(agent_id="main-123", agent_name="main", parent_agent_id=None),
+        "executor-001": AgentInfo(agent_id="executor-001", agent_name="executor", parent_agent_id="main-123"),
+    }
+    mock_ctx.subagent_history = {
+        "executor-001": [ModelRequest(parts=[UserPromptPart(content=long_prompt)])],
+    }
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = mock_ctx
+
+    result = await SubagentInfoTool().call(run_ctx)
+
+    executor_info = result["subagents"][0]
+    assert len(executor_info["hint"]) == _MAX_HINT_CHARS
+    assert executor_info["hint"].endswith("...")
+    assert executor_info["hint_truncated"] is True
+    assert executor_info["hint_size_chars"] == len(long_prompt)
 
 
 # Tests for tool metadata
