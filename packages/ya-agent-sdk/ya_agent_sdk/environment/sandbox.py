@@ -19,6 +19,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -1066,7 +1067,7 @@ class SandboxEnvironment(Environment):
         self._tmp_dir = mount.virtual_path / relative_tmp
         workspace_stat = host_root.stat()
         tmp_host_dir.chmod(workspace_stat.st_mode & 0o777)
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
+        if sys.platform != "win32" and os.geteuid() == 0:
             os.chown(tmp_host_dir, workspace_stat.st_uid, workspace_stat.st_gid)
 
     async def _ensure_container(self) -> None:
