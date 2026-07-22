@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,6 @@ from ya_claw.memory.lifecycle import (
 )
 from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.memory.summary_prompt import MEMORY_SUMMARY_SYSTEM_PROMPT
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import create_runtime_state
 from ya_claw.workspace import LocalWorkspaceProvider
@@ -888,10 +888,10 @@ class _Deps:
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path) -> AsyncEngine:
-    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'memory.sqlite3').resolve()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'memory.sqlite3').resolve()}"
+    initialize_sqlite_database(database_url)
+    engine = create_engine(database_url)
     try:
         yield engine
     finally:

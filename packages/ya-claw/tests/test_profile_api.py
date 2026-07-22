@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
-from ya_claw.db.engine import create_engine
-from ya_claw.orm.base import Base
 
 
 @pytest.fixture(autouse=True)
-def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
+def clear_claw_settings(
+    monkeypatch,
+    tmp_path: Path,
+    initialize_sqlite_database: Callable[[str], None],
+) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
         "YA_CLAW_DATABASE_URL",
@@ -32,6 +34,8 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YA_CLAW_AUTO_SEED_PROFILES", "false")
 
     get_settings.cache_clear()
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
     yield
     get_settings.cache_clear()
 
@@ -40,21 +44,7 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
-def _create_schema() -> None:
-    async def _run() -> None:
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
-
-
 def test_profile_crud_and_seed_api(tmp_path: Path) -> None:
-    _create_schema()
     seed_file = tmp_path / "profiles.yaml"
     seed_file.write_text(
         """

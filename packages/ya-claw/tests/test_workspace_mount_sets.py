@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,7 +20,6 @@ from ya_claw.controller.run import RunController
 from ya_claw.controller.session import SessionController
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.sandbox_ttl import DockerSandboxTtlDispatcher
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import create_runtime_state
 from ya_claw.workspace import (
@@ -33,10 +33,10 @@ from ya_claw.workspace.models import WorkspaceBindingSpec, derive_mount_id
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path) -> AsyncEngine:
-    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'workspace-mounts.sqlite3').resolve()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'workspace-mounts.sqlite3').resolve()}"
+    initialize_sqlite_database(database_url)
+    engine = create_engine(database_url)
     try:
         yield engine
     finally:

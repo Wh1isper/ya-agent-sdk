@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -7,15 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.instance import RuntimeInstanceManager
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RuntimeInstanceRecord
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path) -> AsyncEngine:
-    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'instance.sqlite3').resolve()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'instance.sqlite3').resolve()}"
+    initialize_sqlite_database(database_url)
+    engine = create_engine(database_url)
     try:
         yield engine
     finally:

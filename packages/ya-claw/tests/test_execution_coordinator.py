@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -31,7 +32,6 @@ from ya_claw.execution.coordinator import (
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.execution.state_machine import interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
 from ya_claw.workspace import WorkspaceBinding, WorkspaceProvider
@@ -337,10 +337,10 @@ class InterruptingFailureRunCoordinator(StubRunCoordinator):
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path) -> AsyncEngine:
-    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'coordinator.sqlite3').resolve()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'coordinator.sqlite3').resolve()}"
+    initialize_sqlite_database(database_url)
+    engine = create_engine(database_url)
     try:
         yield engine
     finally:

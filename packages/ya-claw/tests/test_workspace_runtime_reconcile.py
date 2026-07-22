@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -8,14 +9,13 @@ from ya_claw.config import ClawSettings
 from ya_claw.controller.session import SessionController
 from ya_claw.controller.workspace_runtime import WorkspaceRuntimeController, reconcile_session_sandbox_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import SessionRecord
 
 
-async def _create_session_factory(tmp_path: Path):
-    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'runtime-reconcile.sqlite3').resolve()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def _create_session_factory(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]):
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'runtime-reconcile.sqlite3').resolve()}"
+    initialize_sqlite_database(database_url)
+    engine = create_engine(database_url)
     return engine, create_session_factory(engine)
 
 
@@ -37,13 +37,14 @@ def _docker_settings(tmp_path: Path) -> ClawSettings:
 async def test_reconcile_marks_stopped_snapshot_running_when_container_is_running(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    initialize_sqlite_database: Callable[[str], None],
 ) -> None:
     async def fake_inspect(container_ref: str) -> dict[str, str | None]:
         assert container_ref == "container-running"
         return {"container_id": "container-running", "status": "running"}
 
     monkeypatch.setattr("ya_claw.controller.workspace_runtime._inspect_docker_container", fake_inspect)
-    engine, session_factory = await _create_session_factory(tmp_path)
+    engine, session_factory = await _create_session_factory(tmp_path, initialize_sqlite_database)
     try:
         async with session_factory() as db_session:
             session_record = SessionRecord(
@@ -86,13 +87,14 @@ async def test_reconcile_marks_stopped_snapshot_running_when_container_is_runnin
 async def test_session_list_reconciles_workspace_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    initialize_sqlite_database: Callable[[str], None],
 ) -> None:
     async def fake_inspect(container_ref: str) -> dict[str, str | None]:
         assert container_ref == "container-ready"
         return {"container_id": "container-ready", "status": "running"}
 
     monkeypatch.setattr("ya_claw.controller.workspace_runtime._inspect_docker_container", fake_inspect)
-    engine, session_factory = await _create_session_factory(tmp_path)
+    engine, session_factory = await _create_session_factory(tmp_path, initialize_sqlite_database)
     try:
         async with session_factory() as db_session:
             session_record = SessionRecord(
@@ -135,12 +137,13 @@ async def test_session_list_reconciles_workspace_state(
 async def test_session_sandbox_api_reconciles_before_returning_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    initialize_sqlite_database: Callable[[str], None],
 ) -> None:
     async def fake_inspect(container_ref: str) -> dict[str, str | None]:
         return {"container_id": "container-ready", "status": "running"}
 
     monkeypatch.setattr("ya_claw.controller.workspace_runtime._inspect_docker_container", fake_inspect)
-    engine, session_factory = await _create_session_factory(tmp_path)
+    engine, session_factory = await _create_session_factory(tmp_path, initialize_sqlite_database)
     try:
         async with session_factory() as db_session:
             session_record = SessionRecord(

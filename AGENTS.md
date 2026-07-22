@@ -95,6 +95,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - active session state, live events, async task coordination, schedules, and bridge coordination stay in process
 - SQLite is the default durable store
 - PostgreSQL is an optional durable store for deployments that prefer an external database
+- YA Claw SQLite tests use the session-scoped `initialize_sqlite_database` fixture to copy a schema-only template into each isolated test database; avoid per-test `Base.metadata.create_all` calls
 - local filesystem stores committed session continuity data
 - requires `YA_CLAW_API_TOKEN` before service startup
 - defaults: SQLite at `~/.ya-claw/ya_claw.sqlite3`, runtime data at `~/.ya-claw/data`, workspace root at `~/.ya-claw/workspace`, Docker workspace image `ghcr.io/wh1isper/ya-claw-workspace:latest`

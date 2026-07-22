@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,7 +16,6 @@ from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.dispatcher import RunDispatcher
 from ya_claw.execution.heartbeat import HeartbeatDispatcher
 from ya_claw.execution.schedule import ScheduleDispatcher
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import HeartbeatFireRecord, RunRecord, ScheduleFireRecord, ScheduleRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
@@ -65,10 +65,10 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path) -> AsyncEngine:
-    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'timers.sqlite3').resolve()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'timers.sqlite3').resolve()}"
+    initialize_sqlite_database(database_url)
+    engine = create_engine(database_url)
     try:
         yield engine
     finally:
@@ -100,21 +100,6 @@ def settings(tmp_path: Path) -> ClawSettings:
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
-
-
-def _create_schema() -> None:
-    import asyncio
-
-    async def _run() -> None:
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
 
 
 async def test_cron_next_fire_supports_steps_ranges_and_timezone() -> None:
@@ -647,8 +632,11 @@ async def test_schedule_dispatcher_scan_processes_pending_and_due_fires(
     assert record.fire_count == 1
 
 
-def test_timer_api_routes_expose_config_create_trigger_and_fire_history() -> None:
-    _create_schema()
+def test_timer_api_routes_expose_config_create_trigger_and_fire_history(
+    initialize_sqlite_database: Callable[[str], None],
+) -> None:
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
 
     with TestClient(create_app()) as client:
         client.app.state.execution_supervisor = None
