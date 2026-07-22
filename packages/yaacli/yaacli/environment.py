@@ -38,7 +38,6 @@ class TUIEnvironment(LocalEnvironment):
         default_path: Path | None = None,
         instructions_paths: list[Path] | None = None,
         shell_timeout: float = 30.0,
-        tmp_base_dir: Path | None = None,
         enable_tmp_dir: bool = True,
         resource_state: ResourceRegistryState | None = None,
         resource_factories: dict[str, ResourceFactory] | None = None,
@@ -49,7 +48,6 @@ class TUIEnvironment(LocalEnvironment):
             default_path=default_path,
             instructions_paths=instructions_paths,
             shell_timeout=shell_timeout,
-            tmp_base_dir=tmp_base_dir,
             enable_tmp_dir=enable_tmp_dir,
             resource_state=resource_state,
             resource_factories=resource_factories,
@@ -63,13 +61,11 @@ class TUIEnvironment(LocalEnvironment):
         self.resources.set(BACKGROUND_MONITOR_KEY, self._background_monitor)
 
     async def _teardown(self) -> None:
-        """Clean up environment resources.
-
-        Keep _background_monitor set until Environment.__aexit__ closes the
-        resource registry, so BackgroundMonitor.close() can stop its polling
-        task and cancel tracked background tasks.
-        """
-        await super()._teardown()
+        """Clean up environment-owned state after registered resources close."""
+        try:
+            await super()._teardown()
+        finally:
+            self._background_monitor = None
 
     @property
     def background_monitor(self) -> BackgroundMonitor:

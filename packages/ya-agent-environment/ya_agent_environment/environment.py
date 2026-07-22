@@ -7,7 +7,9 @@ that manage the lifecycle of shared resources.
 import asyncio
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
+from pathlib import PurePath
 from typing import Any, Self
+from xml.etree import ElementTree as ET
 
 from ya_agent_environment.exceptions import EnvironmentNotEnteredError
 from ya_agent_environment.file_operator import FileOperator
@@ -32,7 +34,7 @@ class Environment(ABC):
     - Calling _setup() in __aenter__
     - Binding resource registry to environment (so factories can access infrastructure)
     - Calling resources.restore_all() after _setup() for resumable resources
-    - Calling _teardown() then resources.close_all() in __aexit__
+    - Closing resources, shell, and file_operator before calling _teardown()
 
     Resource Factory Pattern:
         Factories receive the Environment instance, allowing access to infrastructure:
@@ -113,6 +115,7 @@ class Environment(ABC):
         )
         self._file_operator: FileOperator | None = None
         self._shell: Shell | None = None
+        self._tmp_dir: PurePath | None = None
         self._toolsets: list[Any] = []
         self._entered: bool = False
         self._enter_lock: asyncio.Lock = asyncio.Lock()
@@ -147,6 +150,36 @@ class Environment(ABC):
         if not self._entered:
             raise EnvironmentNotEnteredError("shell")
         return self._shell
+
+    @property
+    def tmp_dir(self) -> PurePath | None:
+        """Return the shared agent-facing temporary directory, if configured."""
+        if not self._entered:
+            raise EnvironmentNotEnteredError("tmp_dir")
+        return self._tmp_dir
+
+    def resolve_tmp_path(self, relative_path: str | PurePath) -> PurePath:
+        """Resolve a safe path below :attr:`tmp_dir`.
+
+        Absolute paths and parent traversal are rejected so callers cannot use
+        the temporary-path helper to escape the environment-owned directory.
+        """
+        if not self._entered:
+            raise EnvironmentNotEnteredError("tmp_dir")
+        if self._tmp_dir is None:
+            raise RuntimeError("Temporary storage is not configured")
+        path_type = type(self._tmp_dir)
+        path = path_type(relative_path)
+        if path.anchor or ".." in path.parts:
+            raise ValueError("Temporary paths must be relative and cannot contain '..'")
+        if path == path_type("."):
+            return self._tmp_dir
+        candidate = self._tmp_dir / path
+        try:
+            candidate.relative_to(self._tmp_dir)
+        except ValueError as exc:
+            raise ValueError("Temporary paths must remain within the temporary directory") from exc
+        return candidate
 
     @property
     def resources(self) -> ResourceRegistry:
@@ -261,8 +294,9 @@ class Environment(ABC):
         - Set self._file_operator = None
         - Set self._shell = None
 
-        Note: self._resources.close_all() is called automatically after _teardown().
-        This is called by __aexit__.
+        This hook runs after resources, shell, and file_operator are closed, so
+        backend/container and temporary-directory cleanup is always last.
+        This is called by __aexit__ and after partial setup failures.
         """
         ...
 
@@ -303,9 +337,10 @@ class Environment(ABC):
         """Enter context and setup resources.
 
         This method:
-        1. Calls _setup() to initialize file_operator, shell, etc.
+        1. Calls _setup() to initialize file_operator, shell, temporary storage, etc.
         2. Binds the resource registry to this environment
         3. Calls resources.restore_all() to restore pending resources
+        4. Fully cleans up partial setup if any step fails
 
         Raises:
             RuntimeError: If the environment has already been entered.
@@ -318,27 +353,59 @@ class Environment(ABC):
                     "Each Environment instance can only be entered once at a time."
                 )
             self._entered = True
-        await self._setup()
-
-        # Bind resource registry to this environment so factories can access infrastructure
-        self._resources.bind(self)
-
-        # Restore resources from pending state (if any)
-        await self._resources.restore_all()
-
+        try:
+            await self._setup()
+            self._resources.bind(self)
+            await self._resources.restore_all()
+        except BaseException:
+            try:
+                await self._cleanup_shielded()
+            finally:
+                async with self._enter_lock:
+                    self._entered = False
+            raise
         return self
+
+    async def _cleanup(self) -> None:
+        """Close dependants before environment-owned backend resources."""
+        try:
+            await self._resources.close_all()
+        finally:
+            try:
+                if self._shell is not None:
+                    await self._shell.close()
+            finally:
+                try:
+                    if self._file_operator is not None:
+                        await self._file_operator.close()
+                finally:
+                    await self._teardown()
+
+    async def _cleanup_shielded(self) -> None:
+        """Finish cleanup before propagating any caller cancellation."""
+        cleanup_task = asyncio.create_task(self._cleanup())
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(cleanup_task)
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+                if cleanup_task.done():
+                    break
+        if cleanup_task.cancelled():
+            raise cancellation or asyncio.CancelledError
+        cleanup_error = cleanup_task.exception()
+        if cleanup_error is not None:
+            raise cleanup_error
+        if cancellation is not None:
+            raise cancellation
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit context and cleanup resources."""
         try:
-            await self._teardown()
+            await self._cleanup_shielded()
         finally:
-            # Close file_operator and shell, then close all registered resources
-            if self._file_operator is not None:
-                await self._file_operator.close()
-            if self._shell is not None:
-                await self._shell.close()
-            await self._resources.close_all()
             async with self._enter_lock:
                 self._entered = False
 
@@ -369,6 +436,20 @@ class Environment(ABC):
             shell_instructions = await self._shell.get_context_instructions()
             if shell_instructions:
                 parts.append(shell_instructions)
+
+        if self._tmp_dir is not None:
+            tmp_root = ET.Element("temporary-storage")
+            tmp_dir = ET.SubElement(tmp_root, "tmp-directory")
+            tmp_dir.text = str(self._tmp_dir)
+            tmp_note = ET.SubElement(tmp_root, "tmp-directory-note")
+            tmp_note.text = (
+                "This is an agent-only temporary directory for intermediate files. "
+                "Never write deliverables or user-facing files here. "
+                "Files the user needs to access must be written to the project directory. "
+                "Never mention this path to the user."
+            )
+            ET.indent(tmp_root, space="  ")
+            parts.append(ET.tostring(tmp_root, encoding="unicode"))
 
         # Collect resource instructions
         resource_instructions = await self._resources.get_context_instructions()

@@ -1133,13 +1133,12 @@ async def test_sandbox_environment_multi_mount(tmp_path: Path) -> None:
         assert (host_b / "app.json").read_text() == "{}"
 
 
-async def test_sandbox_environment_tmp_dir_enabled(tmp_path: Path) -> None:
-    """Should create tmp directory when enabled."""
+async def test_sandbox_environment_tmp_uses_existing_shared_mount(tmp_path: Path) -> None:
+    """Existing containers see tmp through an existing mount, without a new bind."""
     env = SandboxEnvironment(
         mounts=[VirtualMount(tmp_path, Path("/workspace"))],
         container_id="test123",
         enable_tmp_dir=True,
-        tmp_base_dir=tmp_path,
     )
 
     mock_container = MagicMock()
@@ -1151,11 +1150,18 @@ async def test_sandbox_environment_tmp_dir_enabled(tmp_path: Path) -> None:
 
     async with env:
         assert env.tmp_dir is not None
-        assert env.tmp_dir.exists()
-        tmp_dir = env.tmp_dir
+        assert str(env.tmp_dir).startswith("/workspace/.ya-agent/tmp/")
+        tmp_host_dir = env._tmp_host_dir
+        assert tmp_host_dir is not None
+        assert tmp_host_dir.exists()
 
-    # Tmp dir should be cleaned up after exit
-    assert not tmp_dir.exists()
+        tmp_file = env.resolve_tmp_path("data.txt")
+        await env.file_operator.write_file(str(tmp_file), "shared")
+        assert (tmp_host_dir / "data.txt").read_text() == "shared"
+
+        mock_client.containers.run.assert_not_called()
+
+    assert not tmp_host_dir.exists()
 
 
 async def test_sandbox_environment_tmp_dir_disabled(tmp_path: Path) -> None:
@@ -1196,6 +1202,8 @@ async def test_sandbox_environment_get_context_instructions(tmp_path: Path) -> N
 
         assert instructions is not None
         assert "/workspace" in instructions
+        assert "<temporary-storage>" in instructions
+        assert f"<tmp-directory>{env.tmp_dir}</tmp-directory>" in instructions
         # Should NOT have mount-mapping (paths are symmetric now)
         assert "mount-mapping" not in instructions
         # Should NOT expose host path
@@ -1257,13 +1265,12 @@ async def test_sandbox_environment_with_custom_shell(tmp_path: Path) -> None:
         assert env._created_container is False
 
 
-async def test_sandbox_environment_create_container_mounts_tmp_dir(tmp_path: Path) -> None:
-    """Should mount tmp_dir into Docker container when creating a new one."""
+async def test_sandbox_environment_create_container_reuses_mount_for_tmp(tmp_path: Path) -> None:
+    """New containers do not need a separate temporary-directory bind."""
     env = SandboxEnvironment(
         mounts=[VirtualMount(tmp_path, Path("/workspace"))],
         image="python:3.11",
         enable_tmp_dir=True,
-        tmp_base_dir=tmp_path,
     )
 
     mock_container = MagicMock()
@@ -1275,14 +1282,10 @@ async def test_sandbox_environment_create_container_mounts_tmp_dir(tmp_path: Pat
     env._client = mock_client
 
     async with env:
-        # Verify containers.run was called with tmp_dir in volumes
         call_kwargs = mock_client.containers.run.call_args[1]
-        volumes = call_kwargs["volumes"]
-        # Should have 2 volumes: the mount + tmp_dir
-        assert len(volumes) == 2
-        # tmp_dir should be mounted at the same path inside container
+        assert call_kwargs["volumes"] == {str(tmp_path.resolve()): {"bind": "/workspace", "mode": "rw"}}
         assert env.tmp_dir is not None
-        assert str(env.tmp_dir) in volumes
+        assert str(env.tmp_dir).startswith("/workspace/.ya-agent/tmp/")
 
 
 async def test_sandbox_environment_auto_start_stopped_container(tmp_path: Path) -> None:
@@ -1403,3 +1406,132 @@ async def test_sandbox_environment_lazy_shell_creates_container_on_first_command
 
     mock_container.stop.assert_called_once()
     mock_container.remove.assert_called_once()
+
+
+async def test_sandbox_container_creation_tracks_handle_before_propagating_cancellation(tmp_path: Path) -> None:
+    """Cancellation cannot orphan a container created by the shielded backend task."""
+    env = SandboxEnvironment(
+        mounts=[VirtualMount(tmp_path, Path("/workspace"))],
+        image="python:3.11",
+    )
+    creation_started = asyncio.Event()
+    release_creation = asyncio.Event()
+
+    async def create_container() -> str:
+        creation_started.set()
+        await release_creation.wait()
+        return "created-container"
+
+    env._create_container = create_container  # type: ignore[method-assign]
+    owner_task = asyncio.create_task(env._create_owned_container())
+    await creation_started.wait()
+    owner_task.cancel()
+    await asyncio.sleep(0)
+    owner_task.cancel()
+    release_creation.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner_task
+
+    assert env.container_id == "created-container"
+    assert env._created_container is True
+
+
+async def test_sandbox_tmp_rejects_symlinked_control_directory(tmp_path: Path) -> None:
+    """A workspace symlink cannot redirect managed temporary storage outside its mount."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / ".ya-agent").symlink_to(outside, target_is_directory=True)
+    shell = MagicMock()
+    shell.close = AsyncMock()
+    env = SandboxEnvironment(
+        mounts=[VirtualMount(workspace, Path("/workspace"))],
+        shell=shell,
+    )
+
+    with pytest.raises(RuntimeError, match="escapes the shared mount"):
+        await env.__aenter__()
+
+    assert not (outside / "tmp").exists()
+    assert env.entered is False
+
+
+async def test_sandbox_tmp_post_create_failure_cleans_owned_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure after tmp mkdir still removes the partially initialized directory."""
+    workspace = tmp_path / "workspace"
+    shell = MagicMock()
+    shell.close = AsyncMock()
+    env = SandboxEnvironment(
+        mounts=[VirtualMount(workspace, Path("/workspace"))],
+        shell=shell,
+    )
+    original_chmod = Path.chmod
+
+    def fail_tmp_chmod(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        if path.parent.name == "tmp":
+            raise PermissionError("chmod denied")
+        original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", fail_tmp_chmod)
+
+    with pytest.raises(PermissionError, match="chmod denied"):
+        await env.__aenter__()
+
+    tmp_parent = workspace / ".ya-agent" / "tmp"
+    assert env.entered is False
+    assert env._tmp_host_dir is None
+    assert env._tmp_dir is None
+    assert list(tmp_parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("cleanup_error", [PermissionError, FileNotFoundError])
+async def test_sandbox_tmp_cleanup_failure_retains_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_error: type[OSError],
+) -> None:
+    """Failed tmp deletion propagates and preserves the path for a later retry."""
+    workspace = tmp_path / "workspace"
+    shell = MagicMock()
+    shell.close = AsyncMock()
+    env = SandboxEnvironment(
+        mounts=[VirtualMount(workspace, Path("/workspace"))],
+        shell=shell,
+    )
+    original_rmtree = sandbox_module.shutil.rmtree
+    owned_tmp: Path | None = None
+    virtual_tmp = None
+
+    with pytest.raises(cleanup_error, match="cleanup denied"):
+        async with env:
+            assert env._tmp_host_dir is not None
+            owned_tmp = env._tmp_host_dir
+            virtual_tmp = env.tmp_dir
+
+            def fail_rmtree(path: Path) -> None:
+                raise cleanup_error(f"cleanup denied: {path}")
+
+            monkeypatch.setattr(sandbox_module.shutil, "rmtree", fail_rmtree)
+
+    assert owned_tmp is not None
+    assert owned_tmp.exists()
+    assert env._tmp_host_dir == owned_tmp
+    assert env._tmp_dir == virtual_tmp
+    assert env._file_operator is None
+    assert env._shell is None
+
+    monkeypatch.setattr(sandbox_module.shutil, "rmtree", original_rmtree)
+    async with env:
+        assert not owned_tmp.exists()
+        assert env._tmp_host_dir is not None
+        retry_tmp = env._tmp_host_dir
+        assert retry_tmp != owned_tmp
+
+    assert not retry_tmp.exists()
+    assert env._tmp_host_dir is None
+    assert env._tmp_dir is None

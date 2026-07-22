@@ -4,14 +4,15 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import tempfile
+import shutil
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Protocol, cast
+from uuid import uuid4
 
 from loguru import logger
 from ya_agent_environment import (
@@ -21,7 +22,6 @@ from ya_agent_environment import (
     ResourceFactory,
     ResourceRegistryState,
     Shell,
-    TmpFileOperator,
 )
 from ya_agent_sdk.environment import (
     LocalShell,
@@ -105,18 +105,16 @@ class PolicyVirtualLocalFileOperator(VirtualLocalFileOperator):
         mounts: list[VirtualMount],
         default_virtual_path: Path | VirtualPath | None = None,
         read_only_virtual_paths: Sequence[Path | VirtualPath] | None = None,
+        instructions_paths: Sequence[Path | VirtualPath] | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
-        tmp_dir: Path | None = None,
-        tmp_file_operator: TmpFileOperator | None = None,
     ) -> None:
         super().__init__(
             mounts=mounts,
             default_virtual_path=default_virtual_path,
+            instructions_paths=instructions_paths,
             instructions_skip_dirs=instructions_skip_dirs,
             instructions_max_depth=instructions_max_depth,
-            tmp_dir=tmp_dir,
-            tmp_file_operator=tmp_file_operator,
         )
         self._read_only_virtual_paths = [normalize_agent_virtual_path(path) for path in read_only_virtual_paths or []]
 
@@ -126,30 +124,53 @@ class PolicyVirtualLocalFileOperator(VirtualLocalFileOperator):
             if virtual_path_contains(read_only_path, virtual):
                 raise FileOperationError("write", path, "path is mounted read-only")
 
-    async def _write_file_impl(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
+    async def write_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
         self._assert_writable(path)
-        await super()._write_file_impl(path, content, encoding=encoding)
+        await super().write_file(path, content, encoding=encoding)
 
-    async def _append_file_impl(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
+    async def append_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
         self._assert_writable(path)
-        await super()._append_file_impl(path, content, encoding=encoding)
+        await super().append_file(path, content, encoding=encoding)
 
-    async def _delete_impl(self, path: str) -> None:
+    async def delete(self, path: str) -> None:
         self._assert_writable(path)
-        await super()._delete_impl(path)
+        await super().delete(path)
 
-    async def _mkdir_impl(self, path: str, *, parents: bool = False) -> None:
+    async def mkdir(self, path: str, *, parents: bool = False) -> None:
         self._assert_writable(path)
-        await super()._mkdir_impl(path, parents=parents)
+        await super().mkdir(path, parents=parents)
 
-    async def _move_impl(self, src: str, dst: str) -> None:
+    async def move(self, src: str, dst: str) -> None:
         self._assert_writable(src)
         self._assert_writable(dst)
-        await super()._move_impl(src, dst)
+        await super().move(src, dst)
 
-    async def _copy_impl(self, src: str, dst: str) -> None:
+    async def copy(self, src: str, dst: str) -> None:
         self._assert_writable(dst)
-        await super()._copy_impl(src, dst)
+        await super().copy(src, dst)
+
+
+_LOCAL_WINDOWS_HOST_VIRTUAL_ROOT = normalize_agent_virtual_path("/.ya-agent/host")
+
+
+def _local_host_path_as_virtual(path: str | Path | PureWindowsPath) -> VirtualPath:
+    """Return a case-insensitive POSIX key for a native absolute host path."""
+    windows_path = PureWindowsPath(path)
+    if windows_path.is_absolute():
+        relative_parts = [part.casefold() for part in windows_path.parts[1:]]
+        drive = windows_path.drive
+        if drive.startswith("\\\\"):
+            authority = [part.casefold() for part in drive[2:].split("\\") if part]
+            return _LOCAL_WINDOWS_HOST_VIRTUAL_ROOT.joinpath("unc", *authority, *relative_parts)
+        return _LOCAL_WINDOWS_HOST_VIRTUAL_ROOT.joinpath("drive", drive.rstrip(":").upper(), *relative_parts)
+    return normalize_agent_virtual_path(path)
+
+
+class MappedLocalFileOperator(PolicyVirtualLocalFileOperator):
+    """Virtual operator that also accepts native Windows paths used by LocalShell."""
+
+    def _resolve_virtual(self, path: str) -> VirtualPath:
+        return super()._resolve_virtual(str(_local_host_path_as_virtual(path)))
 
 
 class MappedLocalEnvironment(Environment):
@@ -159,7 +180,6 @@ class MappedLocalEnvironment(Environment):
         mounts: list[VirtualMount],
         host_cwd: Path,
         shell_timeout: float = 30.0,
-        tmp_base_dir: Path | None = None,
         enable_tmp_dir: bool = True,
         read_only_virtual_paths: Sequence[Path | VirtualPath] | None = None,
         resource_state: ResourceRegistryState | None = None,
@@ -172,22 +192,28 @@ class MappedLocalEnvironment(Environment):
         self._mounts = mounts
         self._host_cwd = host_cwd
         self._shell_timeout = shell_timeout
-        self._tmp_base_dir = tmp_base_dir
         self._enable_tmp_dir = enable_tmp_dir
         self._include_os_env = include_os_env
         self._environment_overrides = dict(environment_overrides or {})
         self._shell_sandbox_policy = shell_sandbox_policy
         self._read_only_virtual_paths = [normalize_agent_virtual_path(path) for path in read_only_virtual_paths or []]
-        self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
+        self._tmp_host_dir: Path | None = None
 
     async def _setup(self) -> None:
+        await self._remove_tmp_host_dir()
+        default_virtual_path = _virtual_path_for_host_cwd(self._mounts, self._host_cwd)
         tmp_dir_path: Path | None = None
+        file_mounts = list(self._mounts)
+        for mount in self._mounts:
+            mount.host_path.resolve().mkdir(parents=True, exist_ok=True)
         if self._enable_tmp_dir:
-            self._tmp_dir_obj = tempfile.TemporaryDirectory(
-                prefix="ya_claw_workspace_",
-                dir=str(self._tmp_base_dir) if self._tmp_base_dir else None,
+            tmp_dir_path = self._setup_shared_tmp_dir()
+            file_mounts.append(
+                VirtualMount(
+                    host_path=tmp_dir_path,
+                    virtual_path=_local_host_path_as_virtual(tmp_dir_path),
+                )
             )
-            tmp_dir_path = Path(self._tmp_dir_obj.name)
 
         allowed_paths = [mount.host_path.resolve() for mount in self._mounts]
         logger.debug(
@@ -196,11 +222,11 @@ class MappedLocalEnvironment(Environment):
             allowed_paths,
             tmp_dir_path,
         )
-        self._file_operator = PolicyVirtualLocalFileOperator(
-            mounts=self._mounts,
-            default_virtual_path=_virtual_path_for_host_cwd(self._mounts, self._host_cwd),
+        self._file_operator = MappedLocalFileOperator(
+            mounts=file_mounts,
+            default_virtual_path=default_virtual_path,
             read_only_virtual_paths=self._read_only_virtual_paths,
-            tmp_dir=tmp_dir_path,
+            instructions_paths=[mount.virtual_path for mount in self._mounts],
         )
         if tmp_dir_path is not None:
             allowed_paths.append(tmp_dir_path.resolve())
@@ -213,10 +239,61 @@ class MappedLocalEnvironment(Environment):
             sandbox_policy=self._shell_sandbox_policy,
         )
 
+    def _setup_shared_tmp_dir(self) -> Path:
+        writable_mounts = [
+            mount
+            for mount in self._mounts
+            if not any(
+                virtual_path_contains(read_only_path, mount.virtual_path)
+                for read_only_path in self._read_only_virtual_paths
+            )
+        ]
+        if not writable_mounts:
+            raise RuntimeError("Temporary storage requires a writable shared mount")
+        host_root = writable_mounts[0].host_path.resolve()
+        control_dir = host_root / ".ya-agent"
+        tmp_parent = control_dir / "tmp"
+        for directory in (control_dir, tmp_parent):
+            if directory.exists() or directory.is_symlink():
+                try:
+                    directory.resolve().relative_to(host_root)
+                except ValueError as exc:
+                    raise RuntimeError("Temporary storage escapes the workspace") from exc
+            directory.mkdir(exist_ok=True)
+            try:
+                directory.resolve().relative_to(host_root)
+            except ValueError as exc:
+                raise RuntimeError("Temporary storage escapes the workspace") from exc
+        tmp_dir_path = tmp_parent / uuid4().hex
+        tmp_dir_path.mkdir()
+        self._tmp_host_dir = tmp_dir_path
+        self._tmp_dir = tmp_dir_path
+        return tmp_dir_path
+
     async def _teardown(self) -> None:
-        if self._tmp_dir_obj is not None:
-            self._tmp_dir_obj.cleanup()
-            self._tmp_dir_obj = None
+        try:
+            await self._remove_tmp_host_dir()
+        finally:
+            self._file_operator = None
+            self._shell = None
+
+    async def _remove_tmp_host_dir(self) -> None:
+        """Remove owned temporary storage, retaining ownership on failure."""
+        owned_tmp = self._tmp_host_dir
+        if owned_tmp is None:
+            self._tmp_dir = None
+            return
+        try:
+            await asyncio.to_thread(shutil.rmtree, owned_tmp)
+        except FileNotFoundError:
+            try:
+                owned_tmp.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise
+        self._tmp_host_dir = None
+        self._tmp_dir = None
 
 
 class DockerWorkspaceDeferredShell(DeferredShell):
@@ -307,16 +384,19 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
         return dict(self._sandbox_metadata)
 
     async def _setup(self) -> None:
-        tmp_dir_path: Path | None = None
         if self._enable_tmp_dir:
-            self._tmp_dir_obj = tempfile.TemporaryDirectory(
-                prefix="ya_agent_sandbox_",
-                dir=str(self._tmp_base_dir) if self._tmp_base_dir else None,
-            )
-            tmp_dir_path = Path(self._tmp_dir_obj.name)
-
-        for mount in self._mounts:
-            mount.host_path.resolve().mkdir(parents=True, exist_ok=True)
+            work_dir = normalize_agent_virtual_path(self._work_dir)
+            candidates = [
+                (index, mount)
+                for index, mount in enumerate(self._mounts)
+                if virtual_path_contains(mount.virtual_path, work_dir)
+            ]
+            if not candidates:
+                raise RuntimeError("Temporary storage requires a writable shared mount")
+            mount_index, _ = max(candidates, key=lambda item: len(item[1].virtual_path.parts))
+            if _resolve_docker_mount_mode(self._docker_mount_modes, mount_index) != "rw":
+                raise RuntimeError("Temporary storage requires a writable shared mount")
+        await super()._setup()
 
         logger.debug(
             "Setting up lazy Docker workspace environment ref={} image={} work_dir={} mounts={} docker_host_paths={} cache={}",
@@ -331,12 +411,9 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
             mounts=self._mounts,
             default_virtual_path=Path(self._work_dir),
             read_only_virtual_paths=self._read_only_virtual_paths,
-            tmp_dir=tmp_dir_path,
         )
 
-        if self._custom_shell is not None:
-            self._shell = self._custom_shell
-        else:
+        if self._custom_shell is None:
             self._shell = DockerWorkspaceDeferredShell(self)
 
         logger.info(
@@ -411,27 +488,30 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
                 await self._remove_container(discovered_container_id)
                 self._container_id = None
 
-        self._container_id = await self._create_container()
-        self._created_container = True
-        await self._wait_for_container_ready(self._container_id)
-        await self._write_cached_container_id(self._container_id)
+        container_id = await self._create_owned_container()
+        await self._wait_for_container_ready(container_id)
+        await self._write_cached_container_id(container_id)
 
     async def _teardown(self) -> None:
         removed_container = False
-        if self._cleanup_on_exit and self._container_id is not None:
-            await self._clear_cached_container_id(self._container_id)
-            await self._stop_container()
-            removed_container = True
-
-        await self._close_ready_shell_if_unowned()
-        self._ready_shell = None
-        if removed_container:
-            self._container_id = None
-            self._created_container = False
-
-        if self._tmp_dir_obj is not None:
-            self._tmp_dir_obj.cleanup()
-            self._tmp_dir_obj = None
+        try:
+            await self._close_ready_shell_if_unowned()
+        finally:
+            self._ready_shell = None
+            try:
+                if self._cleanup_on_exit and self._container_id is not None:
+                    await self._clear_cached_container_id(self._container_id)
+                    await self._stop_container()
+                    removed_container = True
+            finally:
+                if removed_container:
+                    self._container_id = None
+                    self._created_container = False
+                try:
+                    await self._remove_tmp_host_dir()
+                finally:
+                    self._file_operator = None
+                    self._shell = None
 
     async def _close_ready_shell_if_unowned(self) -> None:
         ready_shell = self._ready_shell
@@ -451,7 +531,6 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
         image = self._image
         work_dir = self._work_dir
         mounts = self._mounts
-        tmp_dir = self.tmp_dir
         container_ref = self._container_ref
         workspace_uid = self._workspace_uid
         workspace_gid = self._workspace_gid
@@ -466,8 +545,6 @@ class ReusableSandboxEnvironment(SandboxEnvironment):
                     }
                     for index, mount in enumerate(mounts)
                 }
-                if tmp_dir is not None:
-                    volumes[str(tmp_dir)] = {"bind": str(tmp_dir), "mode": "rw"}
                 environment = {**workspace_environment, "YA_CLAW_WORKSPACE_STARTUP_DIR": work_dir}
                 logger.info(
                     "Starting reusable Docker workspace container ref={} image={} work_dir={} volumes={}",
@@ -683,7 +760,6 @@ class LocalEnvironmentFactory(EnvironmentFactory):
         self,
         *,
         shell_timeout: float = 30.0,
-        tmp_base_dir: Path | None = None,
         workspace_environment: dict[str, str] | None = None,
         shell_sandbox_enabled: bool = True,
         shell_sandbox_backend: ShellSandboxBackend = "auto",
@@ -691,7 +767,6 @@ class LocalEnvironmentFactory(EnvironmentFactory):
         shell_sandbox_allow_raw_host: bool = False,
     ) -> None:
         self._shell_timeout = shell_timeout
-        self._tmp_base_dir = tmp_base_dir
         self._workspace_environment = dict(workspace_environment or {})
         self._shell_sandbox_defaults = WorkspaceShellSandboxDefaults(
             enabled=shell_sandbox_enabled,
@@ -719,7 +794,6 @@ class LocalEnvironmentFactory(EnvironmentFactory):
             mounts=_virtual_mounts_from_binding(binding),
             host_cwd=_host_cwd_from_binding(binding),
             shell_timeout=self._shell_timeout,
-            tmp_base_dir=self._tmp_base_dir,
             read_only_virtual_paths=_read_only_paths_from_binding(binding),
             environment_overrides={**self._workspace_environment, **binding.environment_overrides},
             shell_sandbox_policy=shell_sandbox_policy,
@@ -846,7 +920,6 @@ class DefaultEnvironmentFactory(EnvironmentFactory):
         workspace_uid: int | None = None,
         workspace_gid: int | None = None,
         shell_timeout: float = 30.0,
-        tmp_base_dir: Path | None = None,
         cleanup_on_exit: bool = False,
         workspace_environment: dict[str, str] | None = None,
         docker_container_cache_dir: Path | None = None,
@@ -862,7 +935,6 @@ class DefaultEnvironmentFactory(EnvironmentFactory):
     ) -> None:
         self._local_factory = LocalEnvironmentFactory(
             shell_timeout=shell_timeout,
-            tmp_base_dir=tmp_base_dir,
             workspace_environment=workspace_environment,
             shell_sandbox_enabled=shell_sandbox_enabled,
             shell_sandbox_backend=shell_sandbox_backend,

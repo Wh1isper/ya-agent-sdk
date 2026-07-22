@@ -41,6 +41,8 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - shared base abstractions for agent environments
 - implementation package import name is `ya_agent_environment`
 - Environment base definitions live in this package.
+- `Environment` owns agent-facing temporary storage through `tmp_dir` and `resolve_tmp_path()`; cleanup order is registered resources, shell, file operator, then environment backend/container/tmp teardown, including partial setup failure and cancellation.
+- `FileOperator` represents one logical backend and has no temporary routing or convenience API; concrete backends implement public methods directly, and `read_bytes_stream()` returns an `AsyncIterator` without awaiting the call.
 
 ### `packages/ya-agent-sdk`
 
@@ -78,6 +80,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 
 - TUI reference implementation built on top of `ya-agent-sdk`
 - runtime-facing CLI behavior belongs here
+- YAACLI managed temporary storage always uses the system temporary directory; the separate system-temp allowed path remains available for user-specified files.
 - interactive YAACLI enables `ask_user_question` by default through `tools.enable_user_input`, which can be disabled in `tools.toml`; headless mode does not expose the tool
 - `[general]` and `[model_profiles.*]` support static `instructions` for the active main-agent model profile; YAACLI registers them through a dynamic Pydantic AI `instructions` callback so `/model` switches apply to every later model request, including legacy or compacted histories
 - leading catalog-matched `/skill-name` tokens explicitly select one or more skills for an idle prompt; YAACLI snapshots submitted attachments before refreshing the catalog, existing slash commands take precedence on first-token conflicts, and slash-prefixed text matching neither a registered command nor a skill remains ordinary user input

@@ -2,7 +2,6 @@
 
 import fnmatch
 import json
-import uuid
 from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -14,7 +13,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.toolsets.core._output import fit_text_fields_to_limit
+from ya_agent_sdk.toolsets.core._output import fit_text_fields_to_limit, write_tmp_output
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._search import SKILL_DOCUMENT_REMINDER, contains_skill_document
 from ya_agent_sdk.toolsets.core.filesystem._types import FileInfoWithStats
@@ -136,7 +135,7 @@ def _add_preview_value(preview: dict[str, Any], key: str, value: Any) -> dict[st
 
 async def _guard_output_size(
     result: dict[str, Any],
-    file_operator: FileOperator,
+    context: AgentContext,
 ) -> dict[str, Any]:
     serialized = json.dumps(result, ensure_ascii=False)
     if len(serialized) <= OUTPUT_TRUNCATE_LIMIT:
@@ -149,12 +148,7 @@ async def _guard_output_size(
             suffix="... (truncated)",
         )
 
-    output_path: str | None = None
-    try:
-        output_file = f"ls-{uuid.uuid4().hex[:12]}.json"
-        output_path = await file_operator.write_tmp_file(output_file, serialized)
-    except Exception:
-        logger.warning("Failed to write ls output to temp file", exc_info=True)
+    output_path = await write_tmp_output(context, prefix="ls", content=serialized, extension="json")
 
     entries = result.get("entries", [])
     total_entries = result.get("total_entries", result.get("count", len(entries)))
@@ -248,13 +242,13 @@ class ListTool(BaseTool):
         if not await file_operator.exists(path):
             return await _guard_output_size(
                 {"success": False, "error": f"Directory not found: {path}"},
-                file_operator,
+                ctx.deps,
             )
 
         if not await file_operator.is_dir(path):
             return await _guard_output_size(
                 {"success": False, "error": f"Path is not a directory: {path}"},
-                file_operator,
+                ctx.deps,
             )
 
         try:
@@ -276,14 +270,14 @@ class ListTool(BaseTool):
         except Exception as e:
             return await _guard_output_size(
                 {"success": False, "error": f"Failed to list directory: {e!s}"},
-                file_operator,
+                ctx.deps,
             )
 
         response = _build_success_response(path, entries, total_entries)
         skill_documents = (entry["path"] for entry in entries if entry["type"] == "file")
         if contains_skill_document(skill_documents):
             response["system-reminder"] = SKILL_DOCUMENT_REMINDER
-        return await _guard_output_size(response, file_operator)
+        return await _guard_output_size(response, ctx.deps)
 
 
 __all__ = ["ListTool"]

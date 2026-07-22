@@ -117,6 +117,25 @@ runtime = create_agent(
 
 The SDK deliberately does **not** include this tool in its default tool surface: hosts must opt in only when they can present `DeferredToolRequests`, collect answers, and resume with matching `DeferredToolResults.calls`. The tool sets `main_agent_only=True`, so regular subagents and self forks remove it from direct SDK `Toolset` instances, capability wrappers, and sync or async dynamic Toolset factory results at both per-run and per-step resolution. SDK `Toolset` also enforces this policy while listing and calling tools in a subagent context, regardless of `skip_unavailable`, so opaque search/proxy composites and stale caches cannot bypass it. Its runtime availability check additionally requires a root main-agent context as defense in depth. Nested subagent runs do not own the host's user-interaction loop. See [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md) for the question schema and a complete continuation example.
 
+## Environment Temporary Storage
+
+`Environment` owns managed temporary storage. While entered, use `env.tmp_dir` to
+inspect the agent-facing root and `env.resolve_tmp_path("relative/path")` to build a
+contained path. Temporary files use the normal `env.file_operator` methods. Local SDK
+environments create this directory under the system temporary directory by default;
+Sandbox and YA Claw environments place a hidden `.ya-agent/tmp/<id>` directory below
+an existing shared mount so file operations and container commands use the same path.
+Reusable containers therefore need no additional bind mount. Temporary storage is
+removed only after resources, shell, and file operator cleanup.
+
+`FileOperator.read_bytes_stream()` returns an async iterator directly:
+
+```python
+stream = env.file_operator.read_bytes_stream(path)
+async for chunk in stream:
+    ...
+```
+
 ## Local Shell Sandbox Policy
 
 `LocalShell` is the SDK's single local subprocess implementation. By default, `LocalShell` and `LocalEnvironment` preserve raw local subprocess behavior for SDK and YAACLI compatibility. Pass a resolved `ShellSandboxRuntimePolicy` to `LocalShell(sandbox_policy=...)` or `LocalEnvironment(shell_sandbox_policy=...)` to route commands through the selected local sandbox backend. `SandboxedLocalShell` is exported as a direct alias of `LocalShell` for naming convenience.

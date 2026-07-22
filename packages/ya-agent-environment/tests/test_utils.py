@@ -2,15 +2,14 @@
 
 from pathlib import Path
 
-from ya_agent_environment import (
-    LocalTmpFileOperator,
-    generate_filetree,
-)
+from ya_agent_environment import generate_filetree
+
+from .conftest import LocalTestFileOperator
 
 
 async def test_generate_filetree_basic(tmp_path: Path) -> None:
     """generate_filetree should list files and directories."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
 
     # Create test structure
     await op.write_file("file1.txt", "content")
@@ -26,7 +25,7 @@ async def test_generate_filetree_basic(tmp_path: Path) -> None:
 
 async def test_generate_filetree_skip_dirs(tmp_path: Path) -> None:
     """generate_filetree should skip specified directories."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
 
     await op.mkdir("node_modules")
     await op.write_file("node_modules/package.json", "{}")
@@ -40,7 +39,7 @@ async def test_generate_filetree_skip_dirs(tmp_path: Path) -> None:
 
 async def test_generate_filetree_nonexistent_dir(tmp_path: Path) -> None:
     """generate_filetree should handle nonexistent directory."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
 
     tree = await generate_filetree(op, "nonexistent")
     assert "not found" in tree.lower()
@@ -48,7 +47,7 @@ async def test_generate_filetree_nonexistent_dir(tmp_path: Path) -> None:
 
 async def test_generate_filetree_hidden_dirs(tmp_path: Path) -> None:
     """generate_filetree should skip hidden directories except supported workspace metadata."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
 
     await op.mkdir(".hidden")
     await op.write_file(".hidden/secret.txt", "secret")
@@ -66,7 +65,7 @@ async def test_generate_filetree_hidden_dirs(tmp_path: Path) -> None:
 
 async def test_generate_filetree_gitignore(tmp_path: Path) -> None:
     """generate_filetree should respect .gitignore patterns."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
 
     await op.write_file(".gitignore", "*.log\nbuild/")
     await op.write_file("app.js", "code")
@@ -82,7 +81,7 @@ async def test_generate_filetree_gitignore(tmp_path: Path) -> None:
 
 async def test_generate_filetree_max_depth(tmp_path: Path) -> None:
     """generate_filetree should respect max_depth parameter."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
 
     await op.mkdir("level1")
     await op.write_file("level1/file1.txt", "content")

@@ -1,5 +1,7 @@
 """Tests for Environment class."""
 
+import asyncio
+
 import pytest
 from ya_agent_environment import (
     Environment,
@@ -285,3 +287,191 @@ async def test_environment_fork_raises_not_implemented() -> None:
     async with MockEnvironment() as env:
         with pytest.raises(NotImplementedError, match="MockEnvironment does not support fork"):
             env.fork()
+
+
+async def test_environment_tmp_path_requires_entered_environment() -> None:
+    """Temporary storage is part of the entered Environment lifecycle."""
+    from ya_agent_environment import EnvironmentNotEnteredError
+
+    env = MockEnvironment()
+
+    with pytest.raises(EnvironmentNotEnteredError):
+        _ = env.tmp_dir
+    with pytest.raises(EnvironmentNotEnteredError):
+        env.resolve_tmp_path("artifact.json")
+
+
+async def test_environment_resolve_tmp_path_is_safe() -> None:
+    """Only relative paths contained by tmp_dir are accepted."""
+    from pathlib import PurePosixPath
+
+    class TmpEnvironment(MockEnvironment):
+        async def _setup(self) -> None:
+            await super()._setup()
+            self._tmp_dir = PurePosixPath("/workspace/.ya-agent/tmp/session")
+
+    async with TmpEnvironment() as env:
+        assert env.resolve_tmp_path("logs/output.txt") == PurePosixPath(
+            "/workspace/.ya-agent/tmp/session/logs/output.txt"
+        )
+        assert env.resolve_tmp_path(".") == env.tmp_dir
+        for unsafe_path in ("../escape", "nested/../../escape", "/absolute"):
+            with pytest.raises(ValueError, match="must be relative"):
+                env.resolve_tmp_path(unsafe_path)
+
+
+async def test_environment_resolve_tmp_path_rejects_windows_anchors() -> None:
+    """Windows rooted and drive-qualified paths cannot escape temporary storage."""
+    from pathlib import PureWindowsPath
+
+    class WindowsTmpEnvironment(MockEnvironment):
+        async def _setup(self) -> None:
+            await super()._setup()
+            self._tmp_dir = PureWindowsPath(r"C:\agent-tmp\session")
+
+    async with WindowsTmpEnvironment() as env:
+        assert env.resolve_tmp_path(r"logs\output.txt") == PureWindowsPath(r"C:\agent-tmp\session\logs\output.txt")
+        for unsafe_path in (
+            r"\absolute",
+            r"C:\absolute",
+            r"C:drive-relative",
+            r"nested\..\..\escape",
+        ):
+            with pytest.raises(ValueError, match="must be relative"):
+                env.resolve_tmp_path(unsafe_path)
+
+
+async def test_environment_resolve_tmp_path_requires_configured_storage() -> None:
+    async with MockEnvironment() as env:
+        assert env.tmp_dir is None
+        with pytest.raises(RuntimeError, match="not configured"):
+            env.resolve_tmp_path("output.txt")
+
+
+async def test_environment_context_instructions_include_tmp_directory() -> None:
+    from pathlib import PurePosixPath
+
+    class TmpEnvironment(MockEnvironment):
+        async def _setup(self) -> None:
+            await super()._setup()
+            self._tmp_dir = PurePosixPath("/workspace/.ya-agent/tmp/session")
+
+    async with TmpEnvironment() as env:
+        instructions = await env.get_context_instructions()
+
+    assert "<temporary-storage>" in instructions
+    assert "<tmp-directory>/workspace/.ya-agent/tmp/session</tmp-directory>" in instructions
+    assert "Never write deliverables or user-facing files here" in instructions
+
+
+async def test_environment_cleanup_closes_dependants_before_teardown() -> None:
+    """Resources, shell, and file backend close before backend-owned teardown."""
+    events: list[str] = []
+
+    class TrackingResource:
+        async def setup(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            events.append("resource")
+
+        def get_toolsets(self) -> list[object]:
+            return []
+
+    from .conftest import MockFileOperator, MockShell
+
+    class FileOperator(MockFileOperator):
+        async def close(self) -> None:
+            events.append("file_operator")
+
+    class Shell(MockShell):
+        async def close(self) -> None:
+            events.append("shell")
+
+    class TrackingEnvironment(Environment):
+        async def _setup(self) -> None:
+            self._file_operator = FileOperator()
+            self._shell = Shell()
+
+        async def _teardown(self) -> None:
+            events.append("teardown")
+            self._file_operator = None
+            self._shell = None
+
+    async with TrackingEnvironment() as env:
+        env.resources.set("resource", TrackingResource())
+
+    assert events == ["resource", "shell", "file_operator", "teardown"]
+
+
+async def test_environment_setup_failure_uses_same_cleanup_order() -> None:
+    """Partially initialized environments use the normal dependency-safe cleanup."""
+    events: list[str] = []
+    from .conftest import MockFileOperator, MockShell
+
+    class TrackingResource:
+        async def setup(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            events.append("resource")
+
+        def get_toolsets(self) -> list[object]:
+            return []
+
+    class FileOperator(MockFileOperator):
+        async def close(self) -> None:
+            events.append("file_operator")
+
+    class Shell(MockShell):
+        async def close(self) -> None:
+            events.append("shell")
+
+    class FailingEnvironment(Environment):
+        async def _setup(self) -> None:
+            self._file_operator = FileOperator()
+            self._shell = Shell()
+            self.resources.set("resource", TrackingResource())
+            raise RuntimeError("setup failed")
+
+        async def _teardown(self) -> None:
+            events.append("teardown")
+            self._file_operator = None
+            self._shell = None
+
+    env = FailingEnvironment()
+    with pytest.raises(RuntimeError, match="setup failed"):
+        await env.__aenter__()
+
+    assert events == ["resource", "shell", "file_operator", "teardown"]
+    assert env.entered is False
+
+
+async def test_environment_exit_finishes_cleanup_before_propagating_cancellation() -> None:
+    """A cancellation racing with exit cannot abandon backend cleanup."""
+    teardown_started = asyncio.Event()
+    release_teardown = asyncio.Event()
+    teardown_finished = asyncio.Event()
+
+    class SlowTeardownEnvironment(Environment):
+        async def _setup(self) -> None:
+            pass
+
+        async def _teardown(self) -> None:
+            teardown_started.set()
+            await release_teardown.wait()
+            teardown_finished.set()
+
+    env = await SlowTeardownEnvironment().__aenter__()
+    exit_task = asyncio.create_task(env.__aexit__(None, None, None))
+    await teardown_started.wait()
+    exit_task.cancel()
+    await asyncio.sleep(0)
+    exit_task.cancel()
+    release_teardown.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await exit_task
+
+    assert teardown_finished.is_set()
+    assert env.entered is False

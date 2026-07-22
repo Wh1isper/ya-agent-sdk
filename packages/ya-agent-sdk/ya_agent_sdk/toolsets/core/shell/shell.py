@@ -230,7 +230,7 @@ async def _start_background_shell_command(
 
 
 async def _spill_large_shell_streams(
-    file_op: Any,
+    context: AgentContext,
     result: dict[str, Any],
     *,
     prefix: str,
@@ -241,7 +241,7 @@ async def _spill_large_shell_streams(
         if not isinstance(value, str) or len(value) <= OUTPUT_TRUNCATE_LIMIT:
             continue
         output_path = await write_tmp_output(
-            file_op,
+            context,
             prefix=f"{prefix}-{field}",
             content=value,
             extension="log",
@@ -257,14 +257,13 @@ async def _guard_shell_result(
     prefix: str,
 ) -> dict[str, Any]:
     """Guarantee shell result previews stay under the shared output limit."""
-    file_op = ctx.file_operator
-    await _spill_large_shell_streams(file_op, result, prefix=prefix)
+    await _spill_large_shell_streams(ctx, result, prefix=prefix)
     if tool_output_size(result) <= OUTPUT_TRUNCATE_LIMIT:
         return result
 
     full_result = dump_tool_output(result)
     output_path = await write_tmp_output(
-        file_op,
+        ctx,
         prefix=prefix,
         content=full_result,
         extension="json",

@@ -20,14 +20,12 @@ from ya_agent_environment.file_operator import (
     DEFAULT_INSTRUCTIONS_MAX_DEPTH,
     DEFAULT_INSTRUCTIONS_SKIP_DIRS,
     FileOperator,
-    LocalTmpFileOperator,
 )
 from ya_agent_environment.protocols import (
     DEFAULT_CHUNK_SIZE,
     InstructableResource,
     Resource,
     ResumableResource,
-    TmpFileOperator,
 )
 from ya_agent_environment.resources import (
     BaseResource,
@@ -48,7 +46,7 @@ from ya_agent_environment.shell import (
     ShellSessionAccessError,
     StdinAdapter,
 )
-from ya_agent_environment.types import FileEntry, FileStat, TruncatedResult
+from ya_agent_environment.types import FileEntry, FileStat
 from ya_agent_environment.utils import generate_filetree
 
 __all__ = [
@@ -68,7 +66,6 @@ __all__ = [
     "FileOperator",
     "FileStat",
     "InstructableResource",
-    "LocalTmpFileOperator",
     "OutputBuffer",
     "PathNotAllowedError",
     "ReadyState",
@@ -84,7 +81,5 @@ __all__ = [
     "ShellSessionAccessError",
     "ShellTimeoutError",
     "StdinAdapter",
-    "TmpFileOperator",
-    "TruncatedResult",
     "generate_filetree",
 ]

@@ -72,7 +72,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Self
 from uuid import uuid4
 from xml.dom.minidom import parseString
@@ -1475,6 +1475,19 @@ class AgentContext(BaseModel):
         if self.env is not None:
             return self.env.shell
         return None
+
+    @property
+    def tmp_dir(self) -> PurePath | None:
+        """Shared agent-facing temporary directory, derived from the environment."""
+        if self.env is not None:
+            return self.env.tmp_dir
+        return None
+
+    def resolve_tmp_path(self, relative_path: str | PurePath) -> PurePath:
+        """Resolve a safe relative path in environment-owned temporary storage."""
+        if self.env is None:
+            raise RuntimeError("Environment is not configured")
+        return self.env.resolve_tmp_path(relative_path)
 
     @property
     def resources(self) -> ResourceRegistry | None:

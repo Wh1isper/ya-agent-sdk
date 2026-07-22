@@ -14,11 +14,12 @@ from html import escape as _html_escape
 
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.tools import RunContext
-from ya_agent_environment import CompletedProcess, FileOperator
+from ya_agent_environment import CompletedProcess
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import BackgroundShellCompleteEvent
+from ya_agent_sdk.toolsets.core._output import write_tmp_output
 
 logger = get_logger(__name__)
 
@@ -68,17 +69,29 @@ def _format_completed_result(result: CompletedProcess) -> str:
 
 async def _write_truncated_files(
     result: CompletedProcess,
-    file_op: FileOperator,
+    context: AgentContext,
 ) -> list[str]:
     """Write available output to tmp files for truncated streams. Returns path info lines."""
     path_lines: list[str] = []
     label = "Stored" if result.truncated else "Full"
     if len(result.stdout) > _INJECT_TRUNCATE_LIMIT:
-        path = await file_op.write_tmp_file(f"bg-stdout-{result.process_id}.log", result.stdout)
-        path_lines.append(f"  {label} stdout: {path}")
+        path = await write_tmp_output(
+            context,
+            prefix=f"bg-stdout-{result.process_id}",
+            content=result.stdout,
+            extension="log",
+        )
+        if path is not None:
+            path_lines.append(f"  {label} stdout: {path}")
     if len(result.stderr) > _INJECT_TRUNCATE_LIMIT:
-        path = await file_op.write_tmp_file(f"bg-stderr-{result.process_id}.log", result.stderr)
-        path_lines.append(f"  {label} stderr: {path}")
+        path = await write_tmp_output(
+            context,
+            prefix=f"bg-stderr-{result.process_id}",
+            content=result.stderr,
+            extension="log",
+        )
+        if path is not None:
+            path_lines.append(f"  {label} stderr: {path}")
     return path_lines
 
 
@@ -120,14 +133,11 @@ async def inject_background_results(
         return messages
 
     injection_parts: list[str] = []
-    file_op = ctx.deps.file_operator
-
     for result in completed:
         formatted = _format_completed_result(result)
-        if file_op is not None:
-            path_lines = await _write_truncated_files(result, file_op)
-            if path_lines:
-                formatted += "\n" + "\n".join(path_lines)
+        path_lines = await _write_truncated_files(result, ctx.deps)
+        if path_lines:
+            formatted += "\n" + "\n".join(path_lines)
         injection_parts.append(formatted)
 
         await ctx.deps.emit_event(

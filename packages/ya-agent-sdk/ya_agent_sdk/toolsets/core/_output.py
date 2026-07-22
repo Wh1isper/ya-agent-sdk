@@ -6,9 +6,8 @@ import json
 import uuid
 from typing import Any
 
-from ya_agent_environment import FileOperator
-
 from ya_agent_sdk._logger import get_logger
+from ya_agent_sdk.context import AgentContext
 
 logger = get_logger(__name__)
 
@@ -40,19 +39,21 @@ def output_too_large_message(
 
 
 async def write_tmp_output(
-    file_operator: FileOperator | None,
+    context: AgentContext,
     *,
     prefix: str,
     content: str | bytes,
     extension: str = "json",
 ) -> str | None:
-    """Write large output to the environment tmp area when available."""
-    if file_operator is None:
-        return None
-
+    """Write large output to the agent-facing tmp area when available."""
     filename = f"{prefix}-{uuid.uuid4().hex[:12]}.{extension.lstrip('.')}"
     try:
-        return await file_operator.write_tmp_file(filename, content)
+        file_operator = context.file_operator
+        if file_operator is None or context.tmp_dir is None:
+            return None
+        output_path = str(context.resolve_tmp_path(filename))
+        await file_operator.write_file(output_path, content)
+        return output_path
     except Exception:
         logger.warning("Failed to write %s output to temp file", prefix, exc_info=True)
         return None

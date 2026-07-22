@@ -1,13 +1,12 @@
 """Shared test fixtures and mock classes for ya_agent_environment tests."""
 
-from collections.abc import AsyncIterator
+import shutil
 from pathlib import Path
 from typing import Any
 
 from ya_agent_environment import (
     BaseResource,
     Environment,
-    FileEntry,
     FileOperator,
     FileStat,
     Shell,
@@ -129,57 +128,142 @@ class MockFileOperator(FileOperator):
             allowed_paths=[Path("/tmp/mock")],
         )
 
-    async def _read_file_impl(
-        self, path: str, *, encoding: str = "utf-8", offset: int = 0, length: int | None = None
-    ) -> str:
+    async def read_file(self, path: str, *, encoding: str = "utf-8", offset: int = 0, length: int | None = None) -> str:
         return ""
 
-    async def _read_bytes_impl(self, path: str, *, offset: int = 0, length: int | None = None) -> bytes:
+    async def read_bytes(self, path: str, *, offset: int = 0, length: int | None = None) -> bytes:
         return b""
 
-    async def _write_file_impl(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
+    async def write_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
         pass
 
-    async def _append_file_impl(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
+    async def append_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
         pass
 
-    async def _delete_impl(self, path: str) -> None:
+    async def delete(self, path: str) -> None:
         pass
 
-    async def _list_dir_impl(self, path: str) -> list[str]:
+    async def list_dir(self, path: str) -> list[str]:
         return []
 
-    async def _exists_impl(self, path: str) -> bool:
+    async def exists(self, path: str) -> bool:
         return False
 
-    async def _is_file_impl(self, path: str) -> bool:
+    async def is_file(self, path: str) -> bool:
         return False
 
-    async def _is_dir_impl(self, path: str) -> bool:
+    async def is_dir(self, path: str) -> bool:
         return False
 
-    async def _mkdir_impl(self, path: str, *, parents: bool = False) -> None:
+    async def mkdir(self, path: str, *, parents: bool = False) -> None:
         pass
 
-    async def _move_impl(self, src: str, dst: str) -> None:
+    async def move(self, src: str, dst: str) -> None:
         pass
 
-    async def _copy_impl(self, src: str, dst: str) -> None:
+    async def copy(self, src: str, dst: str) -> None:
         pass
 
-    async def _stat_impl(self, path: str) -> FileStat:
+    async def stat(self, path: str) -> FileStat:
         return FileStat(size=0, mtime=0, is_file=False, is_dir=False)
 
-    async def _walk_files_impl(
+
+class LocalTestFileOperator(FileOperator):
+    """Minimal local backend for testing backend-independent utilities."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        super().__init__(default_path=self.root, allowed_paths=[self.root])
+
+    def _path(self, path: str) -> Path:
+        return self.root if path in {"", "."} else self.root / path
+
+    async def read_file(
         self,
-        root: str = ".",
+        path: str,
         *,
-        max_depth: int | None = None,
-        include_hidden: bool = False,
-        follow_symlinks: bool = False,
-    ) -> AsyncIterator[FileEntry]:
-        if False:
-            yield FileEntry(path=root, is_file=False, is_dir=False, size=0, mtime=0)
+        encoding: str = "utf-8",
+        offset: int = 0,
+        length: int | None = None,
+    ) -> str:
+        content = self._path(path).read_text(encoding=encoding)
+        end = None if length is None else offset + length
+        return content[offset:end]
+
+    async def read_bytes(
+        self,
+        path: str,
+        *,
+        offset: int = 0,
+        length: int | None = None,
+    ) -> bytes:
+        content = self._path(path).read_bytes()
+        end = None if length is None else offset + length
+        return content[offset:end]
+
+    async def write_file(
+        self,
+        path: str,
+        content: str | bytes,
+        *,
+        encoding: str = "utf-8",
+    ) -> None:
+        target = self._path(path)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding=encoding)
+
+    async def append_file(
+        self,
+        path: str,
+        content: str | bytes,
+        *,
+        encoding: str = "utf-8",
+    ) -> None:
+        mode = "ab" if isinstance(content, bytes) else "a"
+        with self._path(path).open(mode, encoding=None if isinstance(content, bytes) else encoding) as file:
+            file.write(content)
+
+    async def delete(self, path: str) -> None:
+        target = self._path(path)
+        target.rmdir() if target.is_dir() else target.unlink()
+
+    async def list_dir(self, path: str) -> list[str]:
+        return sorted(entry.name for entry in self._path(path).iterdir())
+
+    async def exists(self, path: str) -> bool:
+        return self._path(path).exists()
+
+    async def is_file(self, path: str) -> bool:
+        return self._path(path).is_file()
+
+    async def is_dir(self, path: str) -> bool:
+        return self._path(path).is_dir()
+
+    async def mkdir(self, path: str, *, parents: bool = False) -> None:
+        self._path(path).mkdir(parents=parents, exist_ok=True)
+
+    async def move(self, src: str, dst: str) -> None:
+        shutil.move(self._path(src), self._path(dst))
+
+    async def copy(self, src: str, dst: str) -> None:
+        source = self._path(src)
+        target = self._path(dst)
+        if source.is_dir():
+            shutil.copytree(source, target)
+        else:
+            shutil.copy2(source, target)
+
+    async def stat(self, path: str) -> FileStat:
+        target = self._path(path)
+        info = target.stat()
+        return FileStat(
+            size=info.st_size,
+            mtime=info.st_mtime,
+            is_file=target.is_file(),
+            is_dir=target.is_dir(),
+        )
 
 
 class MockShell(Shell):

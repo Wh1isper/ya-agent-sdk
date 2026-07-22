@@ -2,12 +2,12 @@
 
 from pathlib import Path
 
-from ya_agent_environment import LocalTmpFileOperator
+from .conftest import LocalTestFileOperator
 
 
-async def test_local_tmp_file_operator_walk_files_lists_logical_entries(tmp_path: Path) -> None:
+async def test_file_operator_walk_files_lists_logical_entries(tmp_path: Path) -> None:
     """walk_files should yield logical paths with file metadata."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
     await op.mkdir("src", parents=True)
     await op.write_file("src/main.py", "print('hello')")
     await op.write_file("README.md", "hello")
@@ -25,9 +25,9 @@ async def test_local_tmp_file_operator_walk_files_lists_logical_entries(tmp_path
     assert main["mtime"] is not None
 
 
-async def test_local_tmp_file_operator_walk_files_hidden_filter(tmp_path: Path) -> None:
+async def test_file_operator_walk_files_hidden_filter(tmp_path: Path) -> None:
     """walk_files should hide dot paths unless include_hidden is enabled."""
-    op = LocalTmpFileOperator(tmp_path)
+    op = LocalTestFileOperator(tmp_path)
     await op.mkdir(".cache", parents=True)
     await op.write_file(".cache/data.txt", "hidden")
     await op.write_file("visible.txt", "visible")
