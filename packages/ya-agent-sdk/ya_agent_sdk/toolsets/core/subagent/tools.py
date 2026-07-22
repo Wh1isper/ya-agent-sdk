@@ -18,6 +18,8 @@ from typing_extensions import TypedDict
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
+_MAX_HINT_CHARS = 500
+
 
 def _extract_first_user_prompt(messages: Sequence[ModelMessage]) -> str | None:
     """Extract the first UserPromptPart content from message history.
@@ -56,6 +58,8 @@ class SubagentEntry(TypedDict):
     has_history: bool
     history_length: NotRequired[int]
     hint: NotRequired[str]
+    hint_truncated: NotRequired[bool]
+    hint_size_chars: NotRequired[int]
 
 
 class SubagentInfoResult(TypedDict):
@@ -131,7 +135,12 @@ class SubagentInfoTool(BaseTool):
                 entry["history_length"] = len(history)
                 hint = _extract_first_user_prompt(history)
                 if hint:
-                    entry["hint"] = hint
+                    if len(hint) > _MAX_HINT_CHARS:
+                        entry["hint"] = hint[: _MAX_HINT_CHARS - 3] + "..."
+                        entry["hint_truncated"] = True
+                        entry["hint_size_chars"] = len(hint)
+                    else:
+                        entry["hint"] = hint
             subagents.append(entry)
 
         return SubagentInfoResult(
