@@ -48,6 +48,38 @@ async def test_grep_find_pattern(tmp_path: Path) -> None:
         assert len(result) == 2
 
 
+async def test_grep_searches_managed_tmp_outside_default_root(tmp_path: Path) -> None:
+    """An explicit temporary root should search absolute, reusable paths."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".gitignore").write_text("*.txt\n")
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[workspace], default_path=workspace))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tmp_dir = env.tmp_dir
+        assert tmp_dir is not None
+        nested = tmp_dir / "nested"
+        artifact = nested / "artifact.txt"
+        await env.file_operator.mkdir(str(nested))
+        await env.file_operator.write_file(str(artifact), "temporary needle\n")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+        result = await GrepTool().call(
+            mock_run_ctx,
+            pattern="needle",
+            include="nested/*.txt",
+            root=str(tmp_dir),
+            max_files=-1,
+        )
+
+        assert isinstance(result, dict)
+        matched_files = {value["file_path"] for value in result.values() if isinstance(value, dict)}
+        assert matched_files == {artifact.as_posix()}
+        assert await env.file_operator.read_file(artifact.as_posix()) == "temporary needle\n"
+
+
 async def test_grep_invalid_regex(tmp_path: Path) -> None:
     """Should return error for invalid regex."""
     async with AsyncExitStack() as stack:

@@ -43,6 +43,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - Environment base definitions live in this package.
 - `Environment` owns agent-facing temporary storage through `tmp_dir` and `resolve_tmp_path()`; cleanup order is registered resources, shell, file operator, then environment backend/container/tmp teardown, including partial setup failure and cancellation.
 - `FileOperator` represents one logical backend and has no temporary routing or convenience API; concrete backends implement public methods directly, and `read_bytes_stream()` returns an `AsyncIterator` without awaiting the call.
+- `LocalFileOperator.walk_files()` returns default-relative paths when possible and directly reusable absolute paths for allowed roots outside `default_path`; glob/grep can explicitly search those roots without implicitly including temporary storage in `root="."`.
 
 ### `packages/ya-agent-sdk`
 

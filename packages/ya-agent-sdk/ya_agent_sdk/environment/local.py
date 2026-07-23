@@ -244,6 +244,30 @@ class LocalFileOperator(FileOperator):
     def _local_allowed_paths(self) -> list[Path]:
         return [path for path in self._allowed_paths if isinstance(path, Path)]
 
+    def _to_logical_path(self, path: Path) -> str:
+        """Return a reusable path relative to the default root when possible."""
+        default_path = self._local_default_path()
+        if default_path is not None:
+            try:
+                return path.relative_to(default_path).as_posix()
+            except ValueError:
+                pass
+        return path.as_posix()
+
+    def get_path_match_candidates(self, path: str) -> tuple[str, ...]:
+        """Include canonical equivalents for allowed paths reached through aliases."""
+        candidates = set(super().get_path_match_candidates(path))
+        lexical = Path(path)
+        if not lexical.is_absolute():
+            return tuple(sorted(candidates))
+        try:
+            resolved = lexical.resolve()
+        except (OSError, RuntimeError):
+            return tuple(sorted(candidates))
+        if resolved != lexical:
+            candidates.update(super().get_path_match_candidates(resolved.as_posix()))
+        return tuple(sorted(candidates))
+
     def _resolve_path(self, path: str) -> Path:
         """Normalize a lexical operand and validate its resolved target."""
         default_path = self._local_default_path()
@@ -514,7 +538,7 @@ class LocalFileOperator(FileOperator):
         include_hidden: bool = False,
         follow_symlinks: bool = False,
     ) -> AsyncIterator[FileEntry]:
-        """Walk files and directories under the local default path."""
+        """Walk files and directories under an allowed local root."""
         default_path = self._local_default_path()
         if default_path is None:
             return
@@ -531,8 +555,16 @@ class LocalFileOperator(FileOperator):
             entries: list[FileEntry] = []
             if resolved_root.is_file():
                 stat = resolved_root.stat()
-                path = resolved_root.relative_to(default_path).as_posix()
-                entries.append(FileEntry(path=path, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime))
+                logical_path = self._to_logical_path(resolved_root)
+                entries.append(
+                    FileEntry(
+                        path=logical_path,
+                        is_file=True,
+                        is_dir=False,
+                        size=stat.st_size,
+                        mtime=stat.st_mtime,
+                    )
+                )
                 return entries
 
             root_depth = len(resolved_root.parts)
@@ -551,15 +583,21 @@ class LocalFileOperator(FileOperator):
                             resolved = path.resolve()
                             if not self._is_path_allowed(resolved):
                                 continue
-                            rel = resolved.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(resolved)
                             stat = path.stat()
                         else:
-                            rel = path.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(path)
                             stat = path.lstat()
-                    except (OSError, ValueError):
+                    except OSError:
                         continue
                     entries.append(
-                        FileEntry(path=rel, is_file=False, is_dir=True, size=stat.st_size, mtime=stat.st_mtime)
+                        FileEntry(
+                            path=logical_path,
+                            is_file=False,
+                            is_dir=True,
+                            size=stat.st_size,
+                            mtime=stat.st_mtime,
+                        )
                     )
                 for name in sorted(filenames):
                     path = current_path / name
@@ -568,15 +606,21 @@ class LocalFileOperator(FileOperator):
                             resolved = path.resolve()
                             if not self._is_path_allowed(resolved):
                                 continue
-                            rel = resolved.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(resolved)
                             stat = path.stat()
                         else:
-                            rel = path.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(path)
                             stat = path.lstat()
-                    except (OSError, ValueError):
+                    except OSError:
                         continue
                     entries.append(
-                        FileEntry(path=rel, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime)
+                        FileEntry(
+                            path=logical_path,
+                            is_file=True,
+                            is_dir=False,
+                            size=stat.st_size,
+                            mtime=stat.st_mtime,
+                        )
                     )
             return entries
 

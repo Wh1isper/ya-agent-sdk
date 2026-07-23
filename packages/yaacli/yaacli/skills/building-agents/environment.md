@@ -135,8 +135,12 @@ traversal. It raises when temporary storage is disabled. Use `tmp_dir` for
 intermediate, agent-only data; write user-facing deliverables to the workspace.
 
 A `FileOperator` has no separate temporary backend, routing API, or temporary-file
-convenience methods. Temporary paths use the operator's normal methods. Likewise,
-`read_bytes_stream()` directly returns an `AsyncIterator`; do not await the call:
+convenience methods. Temporary paths use the operator's normal methods. Local
+walk/search operations accept an explicit absolute root for any allowed path: entries
+under the default path remain relative, while entries outside it use directly reusable
+absolute paths. Searching `root="."` stays scoped to the default path and does not
+implicitly union temporary storage. Likewise, `read_bytes_stream()` directly returns
+an `AsyncIterator`; do not await the call:
 
 ```python
 stream = env.file_operator.read_bytes_stream(str(intermediate))

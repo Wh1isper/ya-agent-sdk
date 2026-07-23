@@ -435,7 +435,7 @@ class GrepTool(BaseTool):
             else:
                 candidates, filter_result = filtered
 
-        candidates = filter_candidates_by_glob(candidates, include)
+        candidates = filter_candidates_by_glob(candidates, include, file_operator)
         candidates = sort_candidates_by_mtime(candidates)
 
         if not include_ignored:

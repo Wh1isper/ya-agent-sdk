@@ -84,6 +84,82 @@ async def test_glob_no_matches(tmp_path: Path) -> None:
         assert result == []
 
 
+async def test_glob_searches_managed_tmp_outside_default_root(tmp_path: Path) -> None:
+    """An explicit temporary root should return absolute, reusable paths."""
+    workspace = tmp_path / "workspace"
+    hidden_tmp_parent = tmp_path / ".cache"
+    workspace.mkdir()
+    hidden_tmp_parent.mkdir()
+    (workspace / ".gitignore").write_text("*.txt\n")
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(
+                allowed_paths=[workspace],
+                default_path=workspace,
+                tmp_base_dir=hidden_tmp_parent,
+            )
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        tmp_dir = env.tmp_dir
+        assert tmp_dir is not None
+        nested = tmp_dir / "nested"
+        artifact = nested / "artifact.txt"
+        await env.file_operator.mkdir(str(nested))
+        await env.file_operator.write_file(str(artifact), "temporary content")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+        tool = GlobTool()
+        result = await tool.call(mock_run_ctx, pattern="nested/*.txt", root=str(tmp_dir))
+        anchored_result = await tool.call(mock_run_ctx, pattern="/nested/*.txt", root=str(tmp_dir))
+
+        assert result == [artifact.as_posix()]
+        assert anchored_result == result
+        assert await env.file_operator.read_file(result[0]) == "temporary content"
+
+
+async def test_glob_matches_external_allowed_root_reached_through_alias(tmp_path: Path) -> None:
+    """Path matching should retain allowed-relative coordinates through aliases."""
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "external"
+    nested = external / "nested"
+    alias_parent = tmp_path / "aliases"
+    alias = alias_parent / "external-alias"
+    workspace.mkdir()
+    nested.mkdir(parents=True)
+    alias_parent.mkdir()
+    artifact = nested / "artifact.txt"
+    artifact.write_text("aliased content")
+    try:
+        alias.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(
+                allowed_paths=[workspace, alias_parent, external],
+                default_path=workspace,
+                enable_tmp_dir=False,
+            )
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await GlobTool().call(
+            mock_run_ctx,
+            pattern="nested/*.txt",
+            root=str(alias / "nested"),
+            include_ignored=True,
+        )
+
+        aliased_artifact = alias / "nested" / "artifact.txt"
+        assert result == [aliased_artifact.as_posix()]
+        assert await env.file_operator.read_file(result[0]) == "aliased content"
+
+
 async def test_glob_specific_extension(tmp_path: Path) -> None:
     """Should match specific file extensions."""
     async with AsyncExitStack() as stack:

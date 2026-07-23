@@ -65,6 +65,43 @@ def test_file_operator_default_path_included_in_allowed(tmp_path: Path) -> None:
     assert other_path.resolve() in op._allowed_paths
 
 
+def test_file_operator_match_candidates_tolerate_resolve_runtime_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A symlink loop should not fail candidate matching on older Python versions."""
+    op = LocalFileOperator(default_path=tmp_path)
+    absolute_path = (tmp_path / "loop").as_posix()
+
+    def raise_runtime_error(_path: Path, *, strict: bool = False) -> Path:
+        del strict
+        raise RuntimeError("symlink loop")
+
+    monkeypatch.setattr(Path, "resolve", raise_runtime_error)
+
+    assert absolute_path in op.get_path_match_candidates(absolute_path)
+
+
+async def test_file_operator_walk_external_allowed_root_returns_absolute_paths(tmp_path: Path) -> None:
+    """Walk results outside the default root should remain directly reusable."""
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "external"
+    nested = external / "nested"
+    workspace.mkdir()
+    nested.mkdir(parents=True)
+    artifact = nested / "artifact.txt"
+    artifact.write_text("external content")
+    op = LocalFileOperator(default_path=workspace, allowed_paths=[workspace, external])
+
+    entries = [entry async for entry in op.walk_files(str(external))]
+
+    assert {entry["path"] for entry in entries} == {nested.as_posix(), artifact.as_posix()}
+    assert await op.read_file(artifact.as_posix()) == "external content"
+
+    file_entries = [entry async for entry in op.walk_files(str(artifact))]
+    assert [entry["path"] for entry in file_entries] == [artifact.as_posix()]
+
+
 async def test_file_operator_read_file(tmp_path: Path) -> None:
     """Should read file content."""
     (tmp_path / "test.txt").write_text("hello world")
