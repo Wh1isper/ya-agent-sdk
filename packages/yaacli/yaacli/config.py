@@ -301,10 +301,13 @@ class MediaConfig(BaseModel):
 
 
 class NotificationConfig(BaseModel):
-    """Terminal notification settings for completed interactive turns."""
+    """Terminal notification settings for interactive turns."""
 
     bell_on_turn_complete: bool = True
     """Emit a terminal bell after a successful interactive agent turn."""
+
+    bell_on_user_action_required: bool = True
+    """Emit a terminal bell when an interactive agent turn requires user input."""
 
 
 class SessionConfig(BaseModel):
@@ -355,7 +358,7 @@ class YaacliConfig(BaseModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     """Saved session persistence and retention configuration."""
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
-    """Terminal notification settings for successful interactive turns."""
+    """Terminal notification settings for interactive turns."""
     oauth_refresh: OAuthRefreshConfig = Field(default_factory=OAuthRefreshConfig)
     """OAuth proactive refresh configuration."""
     env: dict[str, str] = Field(default_factory=dict)

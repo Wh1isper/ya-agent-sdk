@@ -130,10 +130,11 @@ max_sessions = 100
 # max_session_age_days = 90
 
 [notifications]
-# Emit a terminal bell when a successful interactive agent turn completes.
-# This is transported through SSH; terminal behavior is controlled by the local client.
-# Set to false to disable it.
+# Emit terminal bells when a successful interactive turn completes or user input is required.
+# These are transported through SSH; terminal behavior is controlled by the local client.
+# Set either notification to false to disable it.
 bell_on_turn_complete = true
+bell_on_user_action_required = true
 
 [media]
 # Clipboard attachment limits for one prompt.

@@ -23,11 +23,13 @@ def test_session_config_defaults() -> None:
     assert config.max_session_age_days is None
 
 
-def test_packaged_config_template_exposes_completion_bell_policy() -> None:
+def test_packaged_config_template_exposes_terminal_bell_policy() -> None:
     template_path = Path(__file__).resolve().parents[1] / "yaacli" / "templates" / "config.toml"
     notification_template = tomllib.loads(template_path.read_text(encoding="utf-8"))["notifications"]
+    defaults = NotificationConfig()
 
-    assert notification_template["bell_on_turn_complete"] is NotificationConfig().bell_on_turn_complete
+    assert notification_template["bell_on_turn_complete"] is defaults.bell_on_turn_complete
+    assert notification_template["bell_on_user_action_required"] is defaults.bell_on_user_action_required
 
 
 def test_packaged_config_template_exposes_session_persistence_policy() -> None:

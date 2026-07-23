@@ -93,7 +93,7 @@ The status bar is priority ordered and wraps instead of clipping when its displa
 
 Compact layouts below 100 columns omit the active model label, but keep context-window utilization visible when `display.show_token_usage` is enabled.
 
-The timer starts at synchronous foreground claim and retains one `_run_started_at` across thinking, tools, streaming, approval, and saving. It is cleared only after the foreground owner exits or pre-start dispatch is cancelled. Durations render as seconds below one minute (`42s`), minutes plus zero-padded seconds below one hour (`3m 05s`), and hours plus zero-padded minutes and seconds thereafter (`1h 05m 09s`).
+The timer starts at synchronous foreground claim and retains one `_run_started_at` across thinking, tools, streaming, HITL, and saving. While the TUI waits for HITL user input, the displayed duration is frozen and the wait interval is excluded when timing resumes. The timer is cleared only after the foreground owner exits or pre-start dispatch is cancelled. Durations render as seconds below one minute (`42s`), minutes plus zero-padded seconds below one hour (`3m 05s`), and hours plus zero-padded minutes and seconds thereafter (`1h 05m 09s`).
 
 The phase labels are:
 

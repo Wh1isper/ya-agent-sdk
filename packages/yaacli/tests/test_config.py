@@ -50,6 +50,7 @@ def test_default_config() -> None:
     assert config.media.max_pending_attachments == 8
     assert config.media.max_pending_attachment_bytes == 20 * 1024 * 1024
     assert config.notifications.bell_on_turn_complete is True
+    assert config.notifications.bell_on_user_action_required is True
 
     # Tools and security
     assert config.tools.enable_user_input is True
@@ -101,7 +102,9 @@ def test_general_config_accepts_former_loop_iteration_setting() -> None:
 
 def test_notification_config() -> None:
     assert NotificationConfig().bell_on_turn_complete is True
+    assert NotificationConfig().bell_on_user_action_required is True
     assert NotificationConfig(bell_on_turn_complete=False).bell_on_turn_complete is False
+    assert NotificationConfig(bell_on_user_action_required=False).bell_on_user_action_required is False
 
 
 def test_tools_config() -> None:
@@ -146,6 +149,7 @@ code_theme = "light"
 
 [notifications]
 bell_on_turn_complete = false
+bell_on_user_action_required = false
 """)
 
     config = config_manager.load()
@@ -154,6 +158,7 @@ bell_on_turn_complete = false
     assert config.general.model_settings == "openai_high"
     assert config.display.code_theme == "light"
     assert config.notifications.bell_on_turn_complete is False
+    assert config.notifications.bell_on_user_action_required is False
     assert config.tools.need_approval == []
     assert config.security.shell_review.enabled is False
 

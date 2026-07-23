@@ -2095,6 +2095,19 @@ async def test_tui_app_successful_run_emits_completion_bell() -> None:
     app._app.output.flush.assert_called_once_with()
 
 
+def test_tui_app_user_action_bell_can_be_disabled() -> None:
+    app = TUIApp(
+        config=MockConfig(notifications=NotificationConfig(bell_on_user_action_required=False)),
+        config_manager=MockConfigManager(),
+    )
+    app._app = MagicMock()
+
+    app._notify_user_action_required()
+
+    app._app.output.write_raw.assert_not_called()
+    app._app.output.flush.assert_not_called()
+
+
 def test_tui_app_completion_bell_can_be_disabled() -> None:
     """The opt-out must not emit a terminal bell."""
     app = TUIApp(
@@ -3612,6 +3625,130 @@ async def test_tui_app_deferred_flow_resolves_approvals_and_calls() -> None:
     assert isinstance(call_result, RetryPromptPart)
     assert call_result.content == "provided value"
     assert app.phase == TUIPhase.TOOL_CALLING
+
+
+@pytest.mark.asyncio
+async def test_tui_app_hitl_pauses_timer_rings_bell_and_resumes_after_answer() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._app = MagicMock()
+    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
+    app._run_started_at = 100.0
+    deferred = DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="ask_user_question",
+                args={
+                    "questions": [
+                        {
+                            "question": "Which format?",
+                            "header": "Format",
+                            "options": [
+                                {"label": "Summary", "description": "Brief"},
+                                {"label": "Detailed", "description": "Complete"},
+                            ],
+                            "multiSelect": False,
+                        }
+                    ]
+                },
+                tool_call_id="question-1",
+            )
+        ]
+    )
+    now = 110.0
+
+    with patch("yaacli.app.tui.time.monotonic", side_effect=lambda: now):
+        app._set_phase(TUIPhase.THINKING)
+        task = asyncio.create_task(app._request_user_action(deferred))
+        await asyncio.sleep(0)
+
+        assert app.phase == TUIPhase.AWAITING_APPROVAL
+        assert app._run_timer_paused_at == 110.0
+        assert " · 10s" in "".join(text for _style, text in app._get_status_text())
+        app._app.output.write_raw.assert_called_once_with("\a")
+        app._app.output.flush.assert_called_once_with()
+
+        now = 210.0
+        assert " · 10s" in "".join(text for _style, text in app._get_status_text())
+        assert app._approval_event is not None
+        app._approval_result = True
+        app._approval_reason = "2"
+        app._approval_event.set()
+        results = await task
+
+        assert app._run_timer_paused_at is None
+        assert app._run_started_at == 200.0
+        now = 215.0
+        assert " · 15s" in "".join(text for _style, text in app._get_status_text())
+
+    assert results.calls["question-1"] == {
+        "questions": [
+            {
+                "question": "Which format?",
+                "header": "Format",
+                "options": [
+                    {"label": "Summary", "description": "Brief"},
+                    {"label": "Detailed", "description": "Complete"},
+                ],
+                "multiSelect": False,
+            }
+        ],
+        "answers": {"Which format?": "Detailed"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_tui_app_hitl_cancellation_resumes_timer() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._run_started_at = 100.0
+    deferred = DeferredToolRequests(approvals=[ToolCallPart(tool_name="edit", args={}, tool_call_id="approval-1")])
+    now = 110.0
+
+    with patch("yaacli.app.tui.time.monotonic", side_effect=lambda: now):
+        app._set_phase(TUIPhase.THINKING)
+        task = asyncio.create_task(app._request_user_action(deferred))
+        await asyncio.sleep(0)
+        assert app._run_timer_paused_at == 110.0
+
+        now = 210.0
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert app._run_timer_paused_at is None
+    assert app._run_started_at == 200.0
+
+
+@pytest.mark.asyncio
+async def test_tui_app_empty_deferred_batch_does_not_pause_or_ring() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._app = MagicMock()
+    app._run_started_at = 100.0
+
+    results = await app._request_user_action(DeferredToolRequests())
+
+    assert results == DeferredToolResults()
+    assert app._run_started_at == 100.0
+    assert app._run_timer_paused_at is None
+    app._app.output.write_raw.assert_not_called()
+    app._app.output.flush.assert_not_called()
+
+
+def test_tui_app_run_timer_excludes_multiple_paused_intervals() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._run_started_at = 100.0
+    now = 110.0
+
+    with patch("yaacli.app.tui.time.monotonic", side_effect=lambda: now):
+        app._pause_run_timer()
+        now = 210.0
+        app._resume_run_timer()
+        now = 220.0
+        app._pause_run_timer()
+        now = 270.0
+        app._resume_run_timer()
+
+    assert app._run_started_at == 250.0
+    assert app._run_timer_paused_at is None
 
 
 @pytest.mark.asyncio

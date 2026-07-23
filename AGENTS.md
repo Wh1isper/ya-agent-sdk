@@ -83,6 +83,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - runtime-facing CLI behavior belongs here
 - YAACLI managed temporary storage always uses the system temporary directory; the separate system-temp allowed path remains available for user-specified files.
 - interactive YAACLI enables `ask_user_question` by default through `tools.enable_user_input`, which can be disabled in `tools.toml`; headless mode does not expose the tool
+- non-empty interactive HITL batches pause YAACLI's elapsed run timer for the full user wait, resume without charging that interval, and emit one terminal bell when `notifications.bell_on_user_action_required` is enabled
 - `[general]` and `[model_profiles.*]` support static `instructions` for the active main-agent model profile; YAACLI registers them through a dynamic Pydantic AI `instructions` callback so `/model` switches apply to every later model request, including legacy or compacted histories
 - leading catalog-matched `/skill-name` tokens explicitly select one or more skills for an idle prompt; YAACLI snapshots submitted attachments before refreshing the catalog, existing slash commands take precedence on first-token conflicts, and slash-prefixed text matching neither a registered command nor a skill remains ordinary user input
 - `/session` without an ID opens a responsive metadata-only selector with bounded input/output previews; listing never reads history/replay artifacts or waits for artifact writer locks, while explicit load performs legacy validation and migration

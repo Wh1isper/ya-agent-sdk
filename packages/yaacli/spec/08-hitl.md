@@ -57,7 +57,9 @@ sequenceDiagram
 HITL remains part of the same foreground turn:
 
 - `_run_started_at` is established when the turn is synchronously claimed;
-- entering `AWAITING_APPROVAL` does not reset it;
+- entering `AWAITING_APPROVAL` freezes the displayed elapsed time;
+- the entire wait for a deferred request batch is excluded from elapsed time, and timing resumes before the continuation stream starts;
+- entering HITL emits one configurable terminal bell for the batch;
 - ordinary prompts and shell commands cannot start a competing foreground owner;
 - `/cancel` and `Ctrl+C` cancel the active foreground task; and
 - the timer is cleared only when the foreground owner exits.
@@ -131,7 +133,7 @@ Binary attachments cannot steer an active run. They remain queued for the next t
 
 ## Presentation
 
-For each request, YAACLI renders:
+When a non-empty deferred request batch enters HITL, YAACLI emits one terminal BEL if `notifications.bell_on_user_action_required` is enabled. For each request, YAACLI renders:
 
 - request index and total count;
 - tool name;
@@ -191,7 +193,8 @@ Tests must cover:
 - deferred-call result and `/deny` routing;
 - `/cancel` priority;
 - `ToolDenied`, generic `RetryPromptPart`, and structured question-result construction;
-- timer continuity across approval and other phases;
+- elapsed-time freezing throughout HITL and resumption without charging user wait time;
+- one configurable terminal bell when a non-empty HITL batch starts;
 - runtime approval policy surviving state restore;
 - transactional session isolation; and
 - headless exclusion of `ask_user_question`, plus denial, persistence-failure, and cancellation terminal events.
