@@ -130,16 +130,17 @@ code_theme = "auto" # auto, dark, or light
 
 The equivalent environment override is `YAACLI_CODE_THEME=auto`.
 
-## Completion Bell
+## Terminal Bells
 
-YAACLI emits a terminal bell by default after a successful interactive agent turn. Disable it if needed:
+YAACLI emits a terminal bell by default after a successful interactive agent turn and whenever a turn pauses for HITL user input. Either notification can be disabled independently:
 
 ```toml
 [notifications]
 bell_on_turn_complete = false
+bell_on_user_action_required = false
 ```
 
-The bell is emitted by the terminal, so it passes through SSH and is handled by the local terminal client. In VS Code Remote, configure the local VS Code **User** settings (not Remote or workspace settings) to show the visual bell and always play its terminal-bell accessibility signal:
+A run's elapsed timer is paused for the entire HITL wait and resumes after all requested user actions have been answered. The bell is emitted by the terminal, so it passes through SSH and is handled by the local terminal client. In VS Code Remote, configure the local VS Code **User** settings (not Remote or workspace settings) to show the visual bell and always play its terminal-bell accessibility signal:
 
 ```json
 {

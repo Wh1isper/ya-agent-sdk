@@ -529,6 +529,7 @@ class TUIApp:
     _agent_phase: str = field(default="idle", init=False)  # compatibility for older integrations
     _phase_started_at: float = field(default_factory=time.monotonic, init=False)
     _run_started_at: float | None = field(default=None, init=False)
+    _run_timer_paused_at: float | None = field(default=None, init=False)
 
     # Resources (initialized in __aenter__)
     _exit_stack: AsyncExitStack | None = field(default=None, init=False, repr=False)
@@ -724,6 +725,20 @@ class TUIApp:
         self._state = TUIState.IDLE if phase in {TUIPhase.IDLE, TUIPhase.BACKGROUND_RESULT_READY} else TUIState.RUNNING
         if self._app:
             self._app.invalidate()
+
+    def _pause_run_timer(self) -> None:
+        """Freeze the foreground run timer while waiting for human input."""
+        if self._run_started_at is not None and self._run_timer_paused_at is None:
+            self._run_timer_paused_at = time.monotonic()
+
+    def _resume_run_timer(self) -> None:
+        """Resume the foreground run timer without counting the paused interval."""
+        paused_at = self._run_timer_paused_at
+        if paused_at is None:
+            return
+        if self._run_started_at is not None:
+            self._run_started_at += max(0.0, time.monotonic() - paused_at)
+        self._run_timer_paused_at = None
 
     def _is_foreground_busy(self) -> bool:
         """Whether an agent, approval, save, cancellation, or direct shell owns the foreground."""
@@ -1029,19 +1044,31 @@ class TUIApp:
     # Output Management
     # =========================================================================
 
-    def _notify_turn_complete(self) -> None:
-        """Emit the configured terminal notification for a successful agent turn."""
-        if not self.config.notifications.bell_on_turn_complete or self._app is None:
+    def _emit_terminal_bell(self, *, failure_context: str) -> None:
+        """Send a terminal BEL without prompt_toolkit's global bell suppression."""
+        if self._app is None:
             return
 
         try:
             # Do not use Output.bell(): prompt_toolkit intentionally suppresses it
-            # when PROMPT_TOOLKIT_BELL is false. This user-facing notification must
-            # always send the terminal BEL when enabled in YAACLI's own config.
+            # when PROMPT_TOOLKIT_BELL is false. YAACLI notification settings are
+            # authoritative for these user-facing alerts.
             self._app.output.write_raw("\a")
             self._app.output.flush()
         except Exception:
-            logger.debug("Failed to emit completion bell", exc_info=True)
+            logger.debug("Failed to emit %s bell", failure_context, exc_info=True)
+
+    def _notify_turn_complete(self) -> None:
+        """Emit the configured terminal notification for a successful agent turn."""
+        if not self.config.notifications.bell_on_turn_complete:
+            return
+        self._emit_terminal_bell(failure_context="completion")
+
+    def _notify_user_action_required(self) -> None:
+        """Emit the configured terminal notification when HITL input is required."""
+        if not self.config.notifications.bell_on_user_action_required:
+            return
+        self._emit_terminal_bell(failure_context="user-action")
 
     def _throttled_invalidate(self) -> None:
         """Coalesce redraws while preserving the final trailing update."""
@@ -1977,7 +2004,8 @@ class TUIApp:
             parts.append(("class:status-bar", f" · cost {self._session_usage.format_status_cost()}"))
         if self.config.display.show_elapsed_time and self._is_foreground_busy():
             started_at = self._run_started_at if self._run_started_at is not None else self._phase_started_at
-            elapsed = _format_elapsed_duration(time.monotonic() - started_at)
+            elapsed_at = self._run_timer_paused_at if self._run_timer_paused_at is not None else time.monotonic()
+            elapsed = _format_elapsed_duration(elapsed_at - started_at)
             parts.append(("class:status-bar", f" · {elapsed}"))
         return parts
 
@@ -2607,6 +2635,7 @@ class TUIApp:
         self._agent_task = None
         if task.cancelled():
             self._run_started_at = None
+            self._run_timer_paused_at = None
             self._agent_phase = "idle"
             self._reset_hitl_state()
             self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
@@ -2619,6 +2648,7 @@ class TUIApp:
                 logger.error("Uncaught exception in agent task: %s: %s", type(exc).__name__, _safe_exception_str(exc))
                 self._append_error_output(exc)
             self._run_started_at = None
+            self._run_timer_paused_at = None
             self._agent_phase = "idle"
             self._reset_hitl_state()
             self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
@@ -2745,6 +2775,7 @@ class TUIApp:
             return
         if self._run_started_at is None:
             self._run_started_at = time.monotonic()
+            self._run_timer_paused_at = None
         self._set_phase(TUIPhase.THINKING)
         run = (
             self._run_agent(user_input, attachments)
@@ -2765,6 +2796,7 @@ class TUIApp:
         """Execute an agent turn, including all deferred approvals and calls."""
         if self._run_started_at is None:
             self._run_started_at = time.monotonic()
+            self._run_timer_paused_at = None
         self._set_phase(TUIPhase.THINKING)
         if self._background_results_ready:
             self._deliver_background_messages()
@@ -2947,6 +2979,7 @@ class TUIApp:
             self._append_goal_usage_report_if_pending()
             self._agent_phase = "idle"
             self._run_started_at = None
+            self._run_timer_paused_at = None
             self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
             # Surface pending bus messages for the next prompt or an explicit
             # /integrate turn (for example, a task completed while running).
@@ -3078,16 +3111,28 @@ class TUIApp:
         self,
         deferred: DeferredToolRequests,
     ) -> DeferredToolResults:
+        """Collect user actions without charging HITL wait time to the run timer."""
+        if not deferred.approvals and not deferred.calls:
+            return DeferredToolResults()
+
+        self._pause_run_timer()
+        try:
+            return await self._collect_deferred_user_actions(deferred)
+        finally:
+            self._resume_run_timer()
+
+    async def _collect_deferred_user_actions(
+        self,
+        deferred: DeferredToolRequests,
+    ) -> DeferredToolResults:
         """Collect explicit decisions/results for every deferred tool request."""
         results = DeferredToolResults()
         requests = [*deferred.approvals, *deferred.calls]
-        if not requests:
-            return results
-
         self._hitl_pending = True
         self._pending_approvals = requests
         self._current_approval_index = 0
         self._set_phase(TUIPhase.AWAITING_APPROVAL)
+        self._notify_user_action_required()
         self._append_output("")
         self._append_output(
             f"[User action required: {len(deferred.approvals)} approval(s), {len(deferred.calls)} deferred call(s)]"
@@ -3870,6 +3915,7 @@ class TUIApp:
         self._foreground_command_task = None
         if self._agent_task is None or self._agent_task.done():
             self._run_started_at = None
+            self._run_timer_paused_at = None
             if self.phase in {TUIPhase.THINKING, TUIPhase.COMMAND_RUNNING, TUIPhase.CANCELLING}:
                 self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
         if self._background_results_ready and not task.cancelled():
@@ -3895,6 +3941,7 @@ class TUIApp:
         if reserve_foreground:
             if starts_agent:
                 self._run_started_at = time.monotonic()
+                self._run_timer_paused_at = None
                 self._set_phase(TUIPhase.THINKING)
             else:
                 self._set_phase(TUIPhase.COMMAND_RUNNING)
@@ -5083,6 +5130,7 @@ class TUIApp:
         self._goal_usage_report_pending = False
         self._agent_phase = "idle"
         self._run_started_at = None
+        self._run_timer_paused_at = None
         self._display_adapter = None
         self._message_history = None
         self._last_run = None
