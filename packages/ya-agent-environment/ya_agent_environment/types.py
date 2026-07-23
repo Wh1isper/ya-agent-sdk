@@ -16,17 +16,6 @@ class FileStat(TypedDict):
     """True if path is a directory."""
 
 
-class TruncatedResult(TypedDict):
-    """Result from truncate_to_tmp operation."""
-
-    content: str
-    """The truncated content."""
-    file_path: str
-    """Path to the full content file in tmp directory."""
-    message: str
-    """Message indicating truncation occurred."""
-
-
 class FileEntry(TypedDict):
     """File tree entry produced by FileOperator.walk_files."""
 

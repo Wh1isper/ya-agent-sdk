@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path, PureWindowsPath
 
+import pytest
+import ya_claw.workspace.provider as provider_module
 from ya_agent_sdk.environment import LocalShell, SandboxEnvironment, VirtualLocalFileOperator, VirtualMount
 from ya_agent_sdk.environment.sandbox import DockerShell
 from ya_agent_sdk.environment.virtual_path import normalize_virtual_path
@@ -20,7 +22,11 @@ from ya_claw.workspace import (
     format_workspace_guidance,
     load_workspace_guidance,
 )
-from ya_claw.workspace.provider import DockerWorkspaceDeferredShell
+from ya_claw.workspace.provider import (
+    DockerWorkspaceDeferredShell,
+    MappedLocalFileOperator,
+    _local_host_path_as_virtual,
+)
 
 
 class FakeImage:
@@ -89,6 +95,109 @@ async def test_service_local_plus_local_shell_uses_real_paths_for_file_ops_and_s
         stdout_path = PureWindowsPath(stdout_path[1] + ":/" + stdout_path[3:]).as_posix()
     assert binding.host_path.as_posix() == stdout_path
     assert "notes.txt" in stdout
+
+
+def test_mapped_local_file_operator_maps_native_windows_tmp_paths(tmp_path: Path) -> None:
+    """Native drive and UNC paths map through absolute internal POSIX keys."""
+    native_roots = (
+        (
+            PureWindowsPath(r"C:\WorkSpace\.ya-agent\tmp\Session"),
+            PureWindowsPath(r"c:\workspace\.YA-AGENT\TMP\session"),
+        ),
+        (
+            PureWindowsPath(r"\\Server\Share\WorkSpace\.ya-agent\tmp\Session"),
+            PureWindowsPath(r"\\server\share\workspace\.YA-AGENT\TMP\session"),
+        ),
+    )
+
+    for index, (native_root, case_alias) in enumerate(native_roots):
+        host_root = tmp_path / str(index)
+        host_root.mkdir()
+        virtual_root = _local_host_path_as_virtual(native_root)
+        operator = MappedLocalFileOperator(
+            mounts=[VirtualMount(host_path=host_root, virtual_path=virtual_root)],
+            default_virtual_path=virtual_root,
+        )
+
+        assert virtual_root.is_absolute()
+        assert _local_host_path_as_virtual(case_alias) == virtual_root
+        assert operator._to_host(str(native_root / "artifact.txt")) == host_root / "artifact.txt"
+        assert operator._to_host(str(case_alias / "ARTIFACT.TXT")) == host_root / "artifact.txt"
+
+
+async def test_mapped_local_environment_tmp_is_hidden_in_shared_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    binding = LocalWorkspaceProvider(workspace).resolve()
+    environment = LocalEnvironmentFactory(shell_sandbox_enabled=False).build(binding)
+
+    async with environment as env:
+        assert isinstance(env.tmp_dir, Path)
+        tmp_dir = env.tmp_dir
+        assert tmp_dir.parent == workspace.resolve() / ".ya-agent" / "tmp"
+        tmp_file = env.resolve_tmp_path("intermediate.txt")
+        await env.file_operator.write_file(str(tmp_file), "temporary")
+        assert Path(tmp_file).read_text() == "temporary"
+
+    assert not tmp_dir.exists()
+
+
+async def test_mapped_local_tmp_does_not_require_host_cwd_to_exist(tmp_path: Path) -> None:
+    """Temporary storage is anchored to a writable mount, not the shell cwd."""
+    workspace = tmp_path / "workspace"
+    missing_cwd = workspace / "missing" / "nested"
+    environment = MappedLocalEnvironment(
+        mounts=[VirtualMount(host_path=workspace, virtual_path=Path("/workspace"))],
+        host_cwd=missing_cwd,
+    )
+
+    async with environment as env:
+        assert env.tmp_dir is not None
+        assert Path(env.tmp_dir).is_relative_to(workspace.resolve())
+        assert not missing_cwd.exists()
+
+
+@pytest.mark.parametrize("cleanup_error", [PermissionError, FileNotFoundError])
+async def test_mapped_local_tmp_cleanup_failure_retains_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_error: type[OSError],
+) -> None:
+    """Failed deletion is observable and can be retried without losing the path."""
+    workspace = tmp_path / "workspace"
+    environment = MappedLocalEnvironment(
+        mounts=[VirtualMount(host_path=workspace, virtual_path=Path("/workspace"))],
+        host_cwd=workspace,
+    )
+    original_rmtree = provider_module.shutil.rmtree
+    owned_tmp: Path | None = None
+
+    with pytest.raises(cleanup_error, match="cleanup denied"):
+        async with environment as env:
+            assert isinstance(env.tmp_dir, Path)
+            owned_tmp = env.tmp_dir
+
+            def fail_rmtree(path: Path) -> None:
+                raise cleanup_error(f"cleanup denied: {path}")
+
+            monkeypatch.setattr(provider_module.shutil, "rmtree", fail_rmtree)
+
+    assert owned_tmp is not None
+    assert owned_tmp.exists()
+    assert environment._tmp_host_dir == owned_tmp
+    assert environment._tmp_dir == owned_tmp
+    assert environment._file_operator is None
+    assert environment._shell is None
+
+    monkeypatch.setattr(provider_module.shutil, "rmtree", original_rmtree)
+    async with environment as env:
+        assert not owned_tmp.exists()
+        assert isinstance(env.tmp_dir, Path)
+        retry_tmp = env.tmp_dir
+        assert retry_tmp != owned_tmp
+
+    assert not retry_tmp.exists()
+    assert environment._tmp_host_dir is None
+    assert environment._tmp_dir is None
 
 
 async def test_local_environment_factory_passes_workspace_environment(tmp_path: Path) -> None:
@@ -232,6 +341,9 @@ async def test_reusable_sandbox_environment_passes_workspace_identity_to_docker(
     assert container_id == "container-123"
     assert captured_run_kwargs["name"] == "workspace-container"
     assert captured_run_kwargs["working_dir"] == "/workspace"
+    assert captured_run_kwargs["volumes"] == {
+        str((tmp_path / "workspace").resolve()): {"bind": "/workspace", "mode": "rw"}
+    }
     assert captured_run_kwargs["labels"] == {
         "io.ya-claw.workspace.managed": "true",
         "io.ya-claw.workspace.scope": "session",
@@ -281,15 +393,72 @@ async def test_reusable_sandbox_environment_creates_shell_with_exec_user_and_hom
     )
     environment._client = FakeDockerClient()
 
-    await environment._setup()
+    async with environment as entered:
+        assert isinstance(environment._shell, DockerWorkspaceDeferredShell)
+        assert environment.container_id == "container-123"
+        assert environment._ready_shell is None
+        assert entered.tmp_dir is not None
+        assert str(entered.tmp_dir).startswith("/workspace/.ya-agent/tmp/")
+        tmp_host_dir = environment._tmp_host_dir
+        assert tmp_host_dir is not None
+        assert tmp_host_dir.is_relative_to((tmp_path / "workspace").resolve())
+        assert len(environment._mounts) == 1
 
-    assert isinstance(environment._shell, DockerWorkspaceDeferredShell)
-    assert environment.container_id == "container-123"
-    assert environment._ready_shell is None
-    shell = await environment.ensure_ready_shell()
-    assert isinstance(shell, DockerShell)
-    assert shell._exec_user == "1234:2345"
-    assert shell._default_env == {"HOME": "/home/claw", "USER": "claw"}
+        await entered.file_operator.write_file(str(entered.resolve_tmp_path("reuse.txt")), "shared")
+        assert (tmp_host_dir / "reuse.txt").read_text() == "shared"
+
+        instructions = await entered.get_context_instructions()
+        assert "<temporary-storage>" in instructions
+        assert f"<tmp-directory>{entered.tmp_dir}</tmp-directory>" in instructions
+
+        shell = await environment.ensure_ready_shell()
+        assert isinstance(shell, DockerShell)
+        assert shell._exec_user == "1234:2345"
+        assert shell._default_env == {"HOME": "/home/claw", "USER": "claw"}
+
+    assert not tmp_host_dir.exists()
+
+
+async def test_reusable_sandbox_tmp_cleanup_failure_retries_on_reenter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reusable teardown preserves failed tmp ownership for normal lifecycle retry."""
+    environment = ReusableSandboxEnvironment(
+        mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
+        work_dir="/workspace",
+        image="python:3.11",
+        container_ref="workspace-container",
+    )
+    original_rmtree = provider_module.shutil.rmtree
+    owned_tmp: Path | None = None
+
+    with pytest.raises(PermissionError, match="cleanup denied"):
+        async with environment:
+            assert environment._tmp_host_dir is not None
+            owned_tmp = environment._tmp_host_dir
+
+            def fail_rmtree(path: Path) -> None:
+                raise PermissionError(f"cleanup denied: {path}")
+
+            monkeypatch.setattr(provider_module.shutil, "rmtree", fail_rmtree)
+
+    assert owned_tmp is not None
+    assert owned_tmp.exists()
+    assert environment._tmp_host_dir == owned_tmp
+    assert environment._file_operator is None
+    assert environment._shell is None
+
+    monkeypatch.setattr(provider_module.shutil, "rmtree", original_rmtree)
+    async with environment:
+        assert not owned_tmp.exists()
+        assert environment._tmp_host_dir is not None
+        retry_tmp = environment._tmp_host_dir
+        assert retry_tmp != owned_tmp
+
+    assert not retry_tmp.exists()
+    assert environment._tmp_host_dir is None
+    assert environment._tmp_dir is None
 
 
 def test_workspace_sandbox_metadata_preserves_workspace_identity(tmp_path: Path) -> None:
@@ -736,14 +905,13 @@ async def test_reusable_sandbox_environment_setup_defers_container_verification(
     )
     environment._client = FakeDockerClient()
 
-    await environment._setup()
-
-    assert isinstance(environment._shell, DockerWorkspaceDeferredShell)
-    assert environment._client.containers.get_calls == 0
-    instructions = await environment.get_context_instructions()
-    assert "workspace-container" in instructions
-    assert "not_started" in instructions
-    assert environment._client.containers.get_calls == 0
+    async with environment:
+        assert isinstance(environment._shell, DockerWorkspaceDeferredShell)
+        assert environment._client.containers.get_calls == 0
+        instructions = await environment.get_context_instructions()
+        assert "workspace-container" in instructions
+        assert "not_started" in instructions
+        assert environment._client.containers.get_calls == 0
 
 
 async def test_reusable_sandbox_environment_shell_use_ensures_container_once(tmp_path: Path) -> None:
@@ -798,3 +966,37 @@ async def test_reusable_sandbox_environment_shell_use_ensures_container_once(tmp
     assert metadata["verified_container_id"] == "container-123"
     assert metadata["status"] == "running"
     assert metadata["ready_state"] == "ready"
+
+
+async def test_reusable_sandbox_tmp_requires_writable_shared_mount(tmp_path: Path) -> None:
+    """Managed temporary storage fails before setup when the work mount is read-only."""
+    environment = ReusableSandboxEnvironment(
+        mounts=[VirtualMount(host_path=tmp_path / "workspace", virtual_path=Path("/workspace"))],
+        work_dir="/workspace",
+        image="python:3.11",
+        container_ref="workspace-container",
+        docker_mount_modes=["ro"],
+    )
+
+    with pytest.raises(RuntimeError, match="writable shared mount"):
+        await environment.__aenter__()
+
+    assert environment.entered is False
+    assert environment._tmp_host_dir is None
+
+
+async def test_mapped_local_tmp_rejects_symlinked_control_directory(tmp_path: Path) -> None:
+    """Local workspace tmp creation cannot follow a control-directory escape."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / ".ya-agent").symlink_to(outside, target_is_directory=True)
+    binding = LocalWorkspaceProvider(workspace).resolve()
+    environment = LocalEnvironmentFactory(shell_sandbox_enabled=False).build(binding)
+
+    with pytest.raises(RuntimeError, match="escapes the workspace"):
+        await environment.__aenter__()
+
+    assert not (outside / "tmp").exists()
+    assert environment.entered is False

@@ -114,7 +114,7 @@ class ScrapeTool(BaseTool):
             return response
 
         output_path = await write_tmp_output(
-            ctx.deps.file_operator,
+            ctx.deps,
             prefix="scrape",
             content=content,
             extension="md",

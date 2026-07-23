@@ -173,7 +173,7 @@ def _add_preview_metadata(preview: dict[str, Any], metadata: dict[str, Any]) -> 
 
 async def _guard_output_size(
     results: dict[str, Any],
-    file_operator: FileOperator,
+    context: AgentContext,
 ) -> dict[str, Any]:
     """Ensure grep output stays within size limits.
 
@@ -193,7 +193,7 @@ async def _guard_output_size(
 
     # Phase 2: write full truncated results to temp file, return bounded preview
     logger.info("Truncated results still too large (%d chars), writing to temp file", len(serialized))
-    output_path = await write_tmp_output(file_operator, prefix="grep", content=serialized, extension="json")
+    output_path = await write_tmp_output(context, prefix="grep", content=serialized, extension="json")
 
     # Extract match keys and metadata
     match_keys = [k for k in truncated if not k.startswith("<")]
@@ -435,7 +435,7 @@ class GrepTool(BaseTool):
             else:
                 candidates, filter_result = filtered
 
-        candidates = filter_candidates_by_glob(candidates, include)
+        candidates = filter_candidates_by_glob(candidates, include, file_operator)
         candidates = sort_candidates_by_mtime(candidates)
 
         if not include_ignored:
@@ -471,7 +471,7 @@ class GrepTool(BaseTool):
             )
         _add_gitignore_info(results, gitignore_summary)
 
-        return await _guard_output_size(results, file_operator)
+        return await _guard_output_size(results, ctx.deps)
 
 
 __all__ = ["GrepTool"]

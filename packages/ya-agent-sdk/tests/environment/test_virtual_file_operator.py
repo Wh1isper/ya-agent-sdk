@@ -90,7 +90,7 @@ async def test_virtual_file_operator_read_bytes_stream_reads_in_chunks(tmp_path:
         mounts=[VirtualMount(tmp_path, Path("/workspace"))],
     )
 
-    stream = await op.read_bytes_stream("source.bin", chunk_size=4)
+    stream = op.read_bytes_stream("source.bin", chunk_size=4)
     chunks = [chunk async for chunk in stream]
 
     assert b"".join(chunks) == content
@@ -253,6 +253,30 @@ async def test_virtual_file_operator_delete(tmp_path: Path) -> None:
 
     await op.delete("to_delete.txt")
     assert not await op.exists("to_delete.txt")
+
+
+async def test_virtual_file_operator_move_and_delete_preserve_symlink_operand(tmp_path: Path) -> None:
+    """Virtual move and delete should affect an allowed symlink, not its target."""
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "content.txt").write_text("content")
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+    op = VirtualLocalFileOperator(
+        mounts=[VirtualMount(tmp_path, Path("/workspace"))],
+    )
+
+    await op.move("link", "moved-link")
+
+    moved_link = tmp_path / "moved-link"
+    assert not link.exists()
+    assert moved_link.is_symlink()
+    assert (target / "content.txt").read_text() == "content"
+
+    await op.delete("moved-link")
+
+    assert not moved_link.exists()
+    assert (target / "content.txt").read_text() == "content"
 
 
 async def test_virtual_file_operator_file_not_found(tmp_path: Path) -> None:

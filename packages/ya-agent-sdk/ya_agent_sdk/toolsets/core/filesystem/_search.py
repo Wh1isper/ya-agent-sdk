@@ -38,6 +38,7 @@ class SearchCandidate:
     """Logical filesystem candidate for glob/grep tools."""
 
     path: str
+    match_paths: tuple[str, ...] = ()
     size: int | None = None
     mtime: float | None = None
     is_file: bool = False
@@ -58,6 +59,11 @@ def is_hidden_logical_path(path: str) -> bool:
         part.startswith(".") and part not in {".", ".."} and part not in SEARCH_VISIBLE_DOT_DIR_NAMES
         for part in normalize_logical_path(path).split("/")
     )
+
+
+def _is_hidden_search_path(match_paths: tuple[str, ...]) -> bool:
+    """Check hidden segments across equivalent agent-facing match paths."""
+    return all(is_hidden_logical_path(candidate) for candidate in match_paths)
 
 
 def is_skill_document(path: str) -> bool:
@@ -181,12 +187,16 @@ async def collect_walk_entries(
         max_depth=max_depth,
     ):
         path = normalize_logical_path(entry["path"])
-        if path in seen_paths or (not include_hidden and is_hidden_logical_path(path)):
+        if path in seen_paths:
+            continue
+        match_paths = file_operator.get_path_match_candidates(path)
+        if not include_hidden and _is_hidden_search_path(match_paths):
             continue
         seen_paths.add(path)
         candidates.append(
             SearchCandidate(
                 path=path,
+                match_paths=match_paths,
                 size=entry.get("size"),
                 mtime=entry.get("mtime"),
                 is_file=bool(entry.get("is_file", False)),
@@ -215,12 +225,16 @@ async def collect_walk_files(
         if not entry.get("is_file", False):
             continue
         path = normalize_logical_path(entry["path"])
-        if path in seen_paths or (not include_hidden and is_hidden_logical_path(path)):
+        if path in seen_paths:
+            continue
+        match_paths = file_operator.get_path_match_candidates(path)
+        if not include_hidden and _is_hidden_search_path(match_paths):
             continue
         seen_paths.add(path)
         candidates.append(
             SearchCandidate(
                 path=path,
+                match_paths=match_paths,
                 size=entry.get("size"),
                 mtime=entry.get("mtime"),
                 is_file=bool(entry.get("is_file", False)),
@@ -230,15 +244,36 @@ async def collect_walk_files(
     return candidates
 
 
-def filter_candidates_by_glob(candidates: Iterable[SearchCandidate], pattern: str) -> list[SearchCandidate]:
-    """Filter candidates with match_glob."""
+def filter_candidates_by_glob(
+    candidates: Iterable[SearchCandidate],
+    pattern: str,
+    file_operator: FileOperator | None = None,
+) -> list[SearchCandidate]:
+    """Filter candidates against their equivalent agent-facing match paths."""
     candidates_list = list(candidates)
     if not candidates_list:
         return []
-    native_matches = _ripgrep_core.match_globs([candidate.path for candidate in candidates_list], pattern)
+    match_path_groups = [
+        candidate.match_paths
+        or (file_operator.get_path_match_candidates(candidate.path) if file_operator is not None else (candidate.path,))
+        for candidate in candidates_list
+    ]
+    flat_match_paths = [path for group in match_path_groups for path in group]
+    native_matches = _ripgrep_core.match_globs(flat_match_paths, pattern)
     if native_matches is not None:
-        return [candidate for candidate, matched in zip(candidates_list, native_matches, strict=True) if matched]
-    return [candidate for candidate in candidates_list if match_glob(candidate.path, pattern)]
+        matched_candidates: list[SearchCandidate] = []
+        offset = 0
+        for candidate, match_paths in zip(candidates_list, match_path_groups, strict=True):
+            end = offset + len(match_paths)
+            if any(native_matches[offset:end]):
+                matched_candidates.append(candidate)
+            offset = end
+        return matched_candidates
+    return [
+        candidate
+        for candidate, match_paths in zip(candidates_list, match_path_groups, strict=True)
+        if any(match_glob(path, pattern) for path in match_paths)
+    ]
 
 
 async def filter_candidates_ignored(
@@ -363,13 +398,36 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
     local_paths = _get_local_walk_paths(file_operator, root)
     if local_paths is None:
         return None
-    gitignore_spec = await _load_top_level_gitignore(file_operator)
-    if gitignore_spec is None:
-        return None
 
     default_path, resolved_root = local_paths
     if not await anyio.Path(resolved_root).exists():
         return [], GitignoreFilterResult(kept=[], ignored=[])
+
+    try:
+        resolved_root.relative_to(default_path)
+    except ValueError:
+        # The default root's .gitignore has no meaningful coordinate system for
+        # a separate allowed root. Walk it normally and keep its absolute paths.
+        if files_only:
+            candidates = await collect_walk_files(
+                file_operator,
+                root=root,
+                include_hidden=include_hidden,
+                max_depth=max_depth,
+            )
+        else:
+            candidates = await collect_walk_entries(
+                file_operator,
+                root=root,
+                include_hidden=include_hidden,
+                max_depth=max_depth,
+            )
+        paths = [candidate.path for candidate in candidates]
+        return candidates, GitignoreFilterResult(kept=paths, ignored=[])
+
+    gitignore_spec = await _load_top_level_gitignore(file_operator)
+    if gitignore_spec is None:
+        return None
 
     def _walk() -> tuple[list[SearchCandidate], list[str]]:  # noqa: C901
         candidates: list[SearchCandidate] = []
@@ -525,7 +583,7 @@ async def collect_glob_candidates(
         )
         if filtered is not None:
             candidates, filter_result = filtered
-            candidates = filter_candidates_by_glob(candidates, pattern)
+            candidates = filter_candidates_by_glob(candidates, pattern, file_operator)
             filter_result.ignored = _ignored_paths_matching_glob(filter_result.ignored, pattern)
             return sort_candidates_by_mtime(candidates), filter_result
 
@@ -535,7 +593,7 @@ async def collect_glob_candidates(
         include_hidden=include_hidden,
         max_depth=max_depth,
     )
-    candidates = filter_candidates_by_glob(candidates, pattern)
+    candidates = filter_candidates_by_glob(candidates, pattern, file_operator)
     if not include_ignored:
         candidates, filter_result = await filter_candidates_ignored(candidates, file_operator)
     return sort_candidates_by_mtime(candidates), filter_result

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -67,14 +69,25 @@ class TestTUIEnvironment:
             assert "test" in stdout
 
     @pytest.mark.asyncio
-    async def test_tmp_dir_created(self, tmp_path: Path) -> None:
-        """Session tmp_dir should be created."""
-        async with TUIEnvironment(default_path=tmp_path, enable_tmp_dir=True) as env:
-            assert env.tmp_dir is not None
-            assert env.tmp_dir.exists()
-
-    @pytest.mark.asyncio
     async def test_tmp_dir_disabled(self, tmp_path: Path) -> None:
         """tmp_dir should be None when disabled."""
         async with TUIEnvironment(default_path=tmp_path, enable_tmp_dir=False) as env:
             assert env.tmp_dir is None
+
+
+@pytest.mark.asyncio
+async def test_tui_tmp_dir_created_in_system_temp(tmp_path: Path) -> None:
+    """Managed TUI tmp storage defaults to the system temporary directory."""
+    async with TUIEnvironment(default_path=tmp_path, enable_tmp_dir=True) as env:
+        assert isinstance(env.tmp_dir, Path)
+        tmp_dir = env.tmp_dir
+        assert tmp_dir.exists()
+        assert tmp_dir.parent == Path(tempfile.gettempdir()).resolve()
+        assert tmp_dir.parent != tmp_path.resolve()
+
+    assert not tmp_dir.exists()
+
+
+def test_tui_tmp_base_dir_override_is_not_exposed() -> None:
+    """TUIEnvironment intentionally owns the LocalEnvironment tmp policy."""
+    assert "tmp_base_dir" not in inspect.signature(TUIEnvironment).parameters

@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import signal
 import subprocess
-import tempfile
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -29,7 +30,6 @@ import docker.errors
 from ya_agent_environment import (
     DeferredShell,
     Environment,
-    EnvironmentNotEnteredError,
     ExecutionHandle,
     ResourceFactory,
     ResourceRegistryState,
@@ -912,7 +912,6 @@ class SandboxEnvironment(Environment):
         docker_exec_user: str | None = None,
         docker_exec_default_env: dict[str, str] | None = None,
         enable_tmp_dir: bool = True,
-        tmp_base_dir: Path | None = None,
         lazy_shell: bool = False,
         resource_state: ResourceRegistryState | None = None,
         resource_factories: dict[str, ResourceFactory] | None = None,
@@ -938,8 +937,8 @@ class SandboxEnvironment(Environment):
                 Only applies when creating a DockerShell (no custom shell).
             docker_exec_user: Docker exec user for DockerShell.
             docker_exec_default_env: Default environment variables for DockerShell.
-            enable_tmp_dir: Whether to create a session temporary directory.
-            tmp_base_dir: Base directory for creating session temporary directory.
+            enable_tmp_dir: Whether to create a per-environment temporary directory
+                below an existing writable shared mount.
             lazy_shell: Whether Docker container readiness is deferred until shell use.
             resource_state: Optional state to restore resources from.
             resource_factories: Optional dictionary of resource factories.
@@ -977,13 +976,12 @@ class SandboxEnvironment(Environment):
         self._docker_exec_user = docker_exec_user
         self._docker_exec_default_env = dict(docker_exec_default_env or {})
         self._enable_tmp_dir = enable_tmp_dir
-        self._tmp_base_dir = tmp_base_dir
         self._lazy_shell = lazy_shell
 
         # Runtime state
         self._created_container: bool = False
         self._client: docker.DockerClient | None = None
-        self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
+        self._tmp_host_dir: Path | None = None
         self._ready_shell: DockerShell | None = None
         self._ready_lock: asyncio.Lock = asyncio.Lock()
 
@@ -1017,33 +1015,20 @@ class SandboxEnvironment(Environment):
             return self._container_id.strip()
         return None
 
-    @property
-    def tmp_dir(self) -> Path | None:
-        """Return the session temporary directory path, or None if not enabled."""
-        if self._tmp_dir_obj is None:
-            return None
-        return Path(self._tmp_dir_obj.name)
-
     async def _setup(self) -> None:
         """Initialize file operator, shell, and container."""
-        # Create tmp directory if enabled
-        tmp_dir_path: Path | None = None
-        if self._enable_tmp_dir:
-            self._tmp_dir_obj = tempfile.TemporaryDirectory(
-                prefix="ya_agent_sandbox_",
-                dir=str(self._tmp_base_dir) if self._tmp_base_dir else None,
-            )
-            tmp_dir_path = Path(self._tmp_dir_obj.name)
-
-        # Ensure all host directories exist
+        await self._remove_tmp_host_dir()
+        # Ensure all host directories exist before creating shared temporary storage.
         for mount in self._mounts:
             mount.host_path.resolve().mkdir(parents=True, exist_ok=True)
 
-        # Create file operator (virtual paths mapped to host filesystem)
+        if self._enable_tmp_dir:
+            self._setup_shared_tmp_dir()
+
+        # Existing mounts expose the same paths to file operations and the shell.
         self._file_operator = VirtualLocalFileOperator(
             mounts=self._mounts,
             default_virtual_path=Path(self._work_dir),
-            tmp_dir=tmp_dir_path,
         )
 
         # Create shell
@@ -1054,12 +1039,63 @@ class SandboxEnvironment(Environment):
         else:
             self._shell = await self.ensure_ready_shell()
 
+    def _setup_shared_tmp_dir(self) -> None:
+        """Create temporary storage below the mount containing ``work_dir``."""
+        work_dir = normalize_virtual_path(self._work_dir)
+        shared_mounts = [mount for mount in self._mounts if self._is_path_under(work_dir, mount.virtual_path)]
+        if not shared_mounts:
+            raise RuntimeError("Temporary storage requires a writable shared mount")
+        mount = max(shared_mounts, key=lambda item: len(item.virtual_path.parts))
+        relative_tmp = PurePath(".ya-agent") / "tmp" / uuid4().hex
+        host_root = mount.host_path.resolve()
+        control_dir = host_root / ".ya-agent"
+        tmp_parent = control_dir / "tmp"
+        for directory in (control_dir, tmp_parent):
+            if directory.exists() or directory.is_symlink():
+                try:
+                    directory.resolve().relative_to(host_root)
+                except ValueError as exc:
+                    raise RuntimeError("Temporary storage escapes the shared mount") from exc
+            directory.mkdir(exist_ok=True)
+            try:
+                directory.resolve().relative_to(host_root)
+            except ValueError as exc:
+                raise RuntimeError("Temporary storage escapes the shared mount") from exc
+        tmp_host_dir = tmp_parent / relative_tmp.name
+        tmp_host_dir.mkdir()
+        self._tmp_host_dir = tmp_host_dir
+        self._tmp_dir = mount.virtual_path / relative_tmp
+        workspace_stat = host_root.stat()
+        tmp_host_dir.chmod(workspace_stat.st_mode & 0o777)
+        if sys.platform != "win32" and os.geteuid() == 0:
+            os.chown(tmp_host_dir, workspace_stat.st_uid, workspace_stat.st_gid)
+
     async def _ensure_container(self) -> None:
         if self._container_id is None:
-            self._container_id = await self._create_container()
-            self._created_container = True
+            await self._create_owned_container()
         else:
             await self._verify_container()
+
+    async def _create_owned_container(self) -> str:
+        """Create a container without letting caller cancellation lose its handle."""
+        create_task = asyncio.create_task(self._create_container())
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                container_id = await asyncio.shield(create_task)
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+                if create_task.cancelled():
+                    raise
+                if create_task.done():
+                    container_id = create_task.result()
+                    break
+        self._container_id = container_id
+        self._created_container = True
+        if cancellation is not None:
+            raise cancellation
+        return container_id
 
     async def ensure_ready_shell(self) -> DockerShell:
         """Ensure Docker container readiness and return a concrete DockerShell."""
@@ -1117,30 +1153,44 @@ class SandboxEnvironment(Environment):
         await loop.run_in_executor(None, _wait)
 
     async def _teardown(self) -> None:
-        """Clean up container and tmp directory.
-
-        Note: Do NOT null _file_operator or _shell here.
-        The base Environment.__aexit__ calls close() on them after
-        _teardown returns.  Nulling here would skip close() and
-        leak background processes.
-        """
+        """Clean up unowned handles, container, and shared temporary storage."""
         removed_created_container = False
+        try:
+            await self._close_ready_shell_if_unowned()
+        finally:
+            self._ready_shell = None
+            try:
+                # Cleanup container if we created it and cleanup_on_exit is True.
+                if self._cleanup_on_exit and self._created_container and self._container_id is not None:
+                    await self._stop_container()
+                    removed_created_container = True
+            finally:
+                if removed_created_container:
+                    self._container_id = None
+                    self._created_container = False
+                try:
+                    await self._remove_tmp_host_dir()
+                finally:
+                    self._file_operator = None
+                    self._shell = None
 
-        # Cleanup container if we created it and cleanup_on_exit is True
-        if self._cleanup_on_exit and self._created_container and self._container_id is not None:
-            await self._stop_container()
-            removed_created_container = True
-
-        await self._close_ready_shell_if_unowned()
-        self._ready_shell = None
-        if removed_created_container:
-            self._container_id = None
-            self._created_container = False
-
-        # Cleanup tmp directory
-        if self._tmp_dir_obj is not None:
-            self._tmp_dir_obj.cleanup()
-            self._tmp_dir_obj = None
+    async def _remove_tmp_host_dir(self) -> None:
+        """Remove owned temporary storage, retaining ownership on failure."""
+        owned_tmp = self._tmp_host_dir
+        if owned_tmp is None:
+            self._tmp_dir = None
+            return
+        try:
+            await asyncio.to_thread(shutil.rmtree, owned_tmp)
+        except FileNotFoundError:
+            try:
+                owned_tmp.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise
+        self._tmp_host_dir = None
+        self._tmp_dir = None
 
     async def _close_ready_shell_if_unowned(self) -> None:
         ready_shell = self._ready_shell
@@ -1153,21 +1203,17 @@ class SandboxEnvironment(Environment):
         await ready_shell.close()
 
     async def _create_container(self) -> str:
-        """Create and start a new container with all mounts and tmp_dir."""
+        """Create and start a new container with the configured shared mounts."""
         if self._image is None:
             raise ValueError("Image must be provided to create a new container")
 
         image = self._image  # Capture for closure
         work_dir = self._work_dir
         mounts = self._mounts
-        tmp_dir = self.tmp_dir
 
         def _run_container() -> str:
             try:
                 volumes = {str(m.host_path.resolve()): {"bind": str(m.virtual_path), "mode": "rw"} for m in mounts}
-                # Also mount tmp_dir into container so shell can access tmp files
-                if tmp_dir is not None:
-                    volumes[str(tmp_dir)] = {"bind": str(tmp_dir), "mode": "rw"}
                 container = self.client.containers.run(
                     image=image,
                     volumes=volumes,
@@ -1238,26 +1284,3 @@ class SandboxEnvironment(Environment):
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _stop)
-
-    async def get_context_instructions(self) -> str:
-        """Return combined context instructions for file operations and shell.
-
-        Since VirtualLocalFileOperator and shell share the same path space,
-        no mount-mapping instructions are needed.
-
-        Raises:
-            EnvironmentNotEnteredError: If environment has not been entered yet.
-        """
-        if not self._file_operator or not self._shell:
-            raise EnvironmentNotEnteredError("get_context_instructions")
-
-        file_instructions = await self._file_operator.get_context_instructions()
-        shell_instructions = await self._shell.get_context_instructions()
-
-        parts = []
-        if file_instructions:
-            parts.append(file_instructions)
-        if shell_instructions:
-            parts.append(shell_instructions)
-
-        return "\n\n".join(parts)

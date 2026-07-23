@@ -9,9 +9,24 @@ Environment abstractions for general agents.
 - `Shell`
 - `ResourceRegistry`
 - resumable resources
-- `TmpFileOperator`
+- environment-owned temporary storage via `tmp_dir` and `resolve_tmp_path()`
 
 The Python import package is `ya_agent_environment`.
+
+## Environment and File Backend Contracts
+
+`Environment` owns temporary-directory configuration and lifecycle. While entered,
+`env.tmp_dir` exposes the agent-facing root (or `None`) and
+`env.resolve_tmp_path(relative_path)` safely resolves a contained path, rejecting
+absolute paths and parent traversal. Temporary paths are handled through the normal
+`FileOperator` methods; there is no separate temporary-file operator or routing API.
+Environment cleanup closes registered resources, the shell, and the file operator
+before `_teardown()` releases backend/container and temporary-directory resources.
+The same ordering is used after partial setup failures.
+
+A `FileOperator` implementation exposes one logical path space by implementing its
+public abstract methods directly. `read_bytes_stream()` returns an `AsyncIterator`
+directly, so consume the returned iterator without awaiting the method call.
 
 ## Shell Backend Contract
 

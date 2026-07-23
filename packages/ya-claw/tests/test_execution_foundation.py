@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,15 +14,14 @@ from ya_claw.execution.input import map_input_parts, split_input_parts
 from ya_claw.execution.restore import load_restore_point, resolve_restore_run
 from ya_claw.execution.state_machine import complete_run, fail_run, interrupt_run, mark_run_running, queue_run
 from ya_claw.execution.store import RunStore
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionRecord
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path) -> AsyncEngine:
-    engine = create_engine(f"sqlite+aiosqlite:///{(tmp_path / 'execution.sqlite3').resolve()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+    database_url = f"sqlite+aiosqlite:///{(tmp_path / 'execution.sqlite3').resolve()}"
+    initialize_sqlite_database(database_url)
+    engine = create_engine(database_url)
     try:
         yield engine
     finally:

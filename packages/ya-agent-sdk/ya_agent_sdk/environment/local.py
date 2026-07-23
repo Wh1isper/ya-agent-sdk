@@ -33,7 +33,6 @@ from ya_agent_environment import (
     Shell,
     ShellExecutionError,
     StdinAdapter,
-    TmpFileOperator,
 )
 
 from ya_agent_sdk.environment.process import (
@@ -202,9 +201,7 @@ class LocalFileOperator(FileOperator):
     Implements the FileOperator ABC for local file system access.
     Validates all paths against a list of allowed directories.
 
-    This class is unaware of tmp_dir handling - it simply implements
-    the _xxx_impl methods. The base class FileOperator handles tmp
-    routing transparently.
+    Temporary directories are ordinary allowed paths supplied by an Environment.
     """
 
     def __init__(
@@ -214,8 +211,6 @@ class LocalFileOperator(FileOperator):
         instructions_paths: Sequence[Path | PurePath] | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
-        tmp_dir: Path | None = None,
-        tmp_file_operator: TmpFileOperator | None = None,
     ):
         """Initialize LocalFileOperator.
 
@@ -228,8 +223,6 @@ class LocalFileOperator(FileOperator):
                 If None, all allowed_paths are included.
             instructions_skip_dirs: Directories to skip in file tree generation.
             instructions_max_depth: Maximum depth for file tree generation.
-            tmp_dir: Directory for temporary files.
-            tmp_file_operator: Operator for tmp file operations.
         """
         # Fallback: use first allowed_path as default when only allowed_paths is provided
         if default_path is None and allowed_paths:
@@ -242,8 +235,6 @@ class LocalFileOperator(FileOperator):
             instructions_paths=instructions_paths,
             instructions_skip_dirs=instructions_skip_dirs,
             instructions_max_depth=instructions_max_depth,
-            tmp_dir=tmp_dir,
-            tmp_file_operator=tmp_file_operator,
         )
 
     def _local_default_path(self) -> Path | None:
@@ -253,21 +244,45 @@ class LocalFileOperator(FileOperator):
     def _local_allowed_paths(self) -> list[Path]:
         return [path for path in self._allowed_paths if isinstance(path, Path)]
 
+    def _to_logical_path(self, path: Path) -> str:
+        """Return a reusable path relative to the default root when possible."""
+        default_path = self._local_default_path()
+        if default_path is not None:
+            try:
+                return path.relative_to(default_path).as_posix()
+            except ValueError:
+                pass
+        return path.as_posix()
+
+    def get_path_match_candidates(self, path: str) -> tuple[str, ...]:
+        """Include canonical equivalents for allowed paths reached through aliases."""
+        candidates = set(super().get_path_match_candidates(path))
+        lexical = Path(path)
+        if not lexical.is_absolute():
+            return tuple(sorted(candidates))
+        try:
+            resolved = lexical.resolve()
+        except (OSError, RuntimeError):
+            return tuple(sorted(candidates))
+        if resolved != lexical:
+            candidates.update(super().get_path_match_candidates(resolved.as_posix()))
+        return tuple(sorted(candidates))
+
     def _resolve_path(self, path: str) -> Path:
-        """Resolve path and validate against allowed directories."""
+        """Normalize a lexical operand and validate its resolved target."""
         default_path = self._local_default_path()
         if default_path is None:
             raise PathNotAllowedError(path, [])
         target = Path(path)
         if not target.is_absolute():
             target = default_path / target
-        resolved = target.resolve()
-        if not self._is_path_allowed(resolved):
+        lexical = Path(os.path.abspath(target))
+        if not self._is_path_allowed(lexical.resolve()):
             raise PathNotAllowedError(
                 path,
                 [str(p) for p in self._local_allowed_paths()],
             )
-        return resolved
+        return lexical
 
     def _is_path_allowed(self, resolved: Path) -> bool:
         """Check if resolved path is within allowed directories."""
@@ -279,7 +294,7 @@ class LocalFileOperator(FileOperator):
                 continue
         return False
 
-    async def _read_file_impl(
+    async def read_file(
         self,
         path: str,
         *,
@@ -312,7 +327,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("read", path, str(e)) from e
 
-    async def _read_bytes_impl(
+    async def read_bytes(
         self,
         path: str,
         *,
@@ -341,13 +356,15 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("read", path, str(e)) from e
 
-    async def _read_bytes_stream_impl(
+    async def read_bytes_stream(
         self,
         path: str,
         *,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> AsyncIterator[bytes]:
         """Read a local file as a bounded-memory byte stream."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
         resolved = self._resolve_path(path)
         try:
             file = await anyio.open_file(resolved, "rb")
@@ -364,7 +381,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("read", path, str(e)) from e
 
-    async def _write_file_impl(
+    async def write_file(
         self,
         path: str,
         content: str | bytes,
@@ -384,7 +401,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("write", path, str(e)) from e
 
-    async def _append_file_impl(
+    async def append_file(
         self,
         path: str,
         content: str | bytes,
@@ -406,15 +423,15 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("append", path, str(e)) from e
 
-    async def _delete_impl(self, path: str) -> None:
+    async def delete(self, path: str) -> None:
         """Delete file or empty directory."""
         resolved = self._resolve_path(path)
         try:
             apath = anyio.Path(resolved)
-            if await apath.is_dir():
-                await apath.rmdir()
-            else:
+            if await apath.is_symlink() or not await apath.is_dir():
                 await apath.unlink()
+            else:
+                await apath.rmdir()
         except FileNotFoundError as e:
             raise FileOperationError("delete", path, "file not found") from e
         except PermissionError as e:
@@ -422,7 +439,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("delete", path, str(e)) from e
 
-    async def _list_dir_impl(self, path: str) -> list[str]:
+    async def list_dir(self, path: str) -> list[str]:
         """List directory contents."""
         resolved = self._resolve_path(path)
         try:
@@ -440,22 +457,22 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("list", path, str(e)) from e
 
-    async def _exists_impl(self, path: str) -> bool:
+    async def exists(self, path: str) -> bool:
         """Check if path exists."""
         resolved = self._resolve_path(path)
         return await anyio.Path(resolved).exists()
 
-    async def _is_file_impl(self, path: str) -> bool:
+    async def is_file(self, path: str) -> bool:
         """Check if path is a file."""
         resolved = self._resolve_path(path)
         return await anyio.Path(resolved).is_file()
 
-    async def _is_dir_impl(self, path: str) -> bool:
+    async def is_dir(self, path: str) -> bool:
         """Check if path is a directory."""
         resolved = self._resolve_path(path)
         return await anyio.Path(resolved).is_dir()
 
-    async def _mkdir_impl(self, path: str, *, parents: bool = False) -> None:
+    async def mkdir(self, path: str, *, parents: bool = False) -> None:
         """Create directory."""
         resolved = self._resolve_path(path)
         try:
@@ -465,7 +482,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("mkdir", path, str(e)) from e
 
-    async def _move_impl(self, src: str, dst: str) -> None:
+    async def move(self, src: str, dst: str) -> None:
         """Move file or directory."""
         src_resolved = self._resolve_path(src)
         dst_resolved = self._resolve_path(dst)
@@ -478,7 +495,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("move", src, str(e)) from e
 
-    async def _copy_impl(self, src: str, dst: str) -> None:
+    async def copy(self, src: str, dst: str) -> None:
         """Copy file or directory."""
         src_resolved = self._resolve_path(src)
         dst_resolved = self._resolve_path(dst)
@@ -494,7 +511,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("copy", src, str(e)) from e
 
-    async def _stat_impl(self, path: str) -> FileStat:
+    async def stat(self, path: str) -> FileStat:
         """Get file/directory status information."""
         resolved = self._resolve_path(path)
         try:
@@ -513,7 +530,7 @@ class LocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("stat", path, str(e)) from e
 
-    async def _walk_files_impl(  # noqa: C901
+    async def walk_files(  # noqa: C901
         self,
         root: str = ".",
         *,
@@ -521,7 +538,7 @@ class LocalFileOperator(FileOperator):
         include_hidden: bool = False,
         follow_symlinks: bool = False,
     ) -> AsyncIterator[FileEntry]:
-        """Walk files and directories under the local default path."""
+        """Walk files and directories under an allowed local root."""
         default_path = self._local_default_path()
         if default_path is None:
             return
@@ -538,8 +555,16 @@ class LocalFileOperator(FileOperator):
             entries: list[FileEntry] = []
             if resolved_root.is_file():
                 stat = resolved_root.stat()
-                path = resolved_root.relative_to(default_path).as_posix()
-                entries.append(FileEntry(path=path, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime))
+                logical_path = self._to_logical_path(resolved_root)
+                entries.append(
+                    FileEntry(
+                        path=logical_path,
+                        is_file=True,
+                        is_dir=False,
+                        size=stat.st_size,
+                        mtime=stat.st_mtime,
+                    )
+                )
                 return entries
 
             root_depth = len(resolved_root.parts)
@@ -558,15 +583,21 @@ class LocalFileOperator(FileOperator):
                             resolved = path.resolve()
                             if not self._is_path_allowed(resolved):
                                 continue
-                            rel = resolved.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(resolved)
                             stat = path.stat()
                         else:
-                            rel = path.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(path)
                             stat = path.lstat()
-                    except (OSError, ValueError):
+                    except OSError:
                         continue
                     entries.append(
-                        FileEntry(path=rel, is_file=False, is_dir=True, size=stat.st_size, mtime=stat.st_mtime)
+                        FileEntry(
+                            path=logical_path,
+                            is_file=False,
+                            is_dir=True,
+                            size=stat.st_size,
+                            mtime=stat.st_mtime,
+                        )
                     )
                 for name in sorted(filenames):
                     path = current_path / name
@@ -575,15 +606,21 @@ class LocalFileOperator(FileOperator):
                             resolved = path.resolve()
                             if not self._is_path_allowed(resolved):
                                 continue
-                            rel = resolved.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(resolved)
                             stat = path.stat()
                         else:
-                            rel = path.relative_to(default_path).as_posix()
+                            logical_path = self._to_logical_path(path)
                             stat = path.lstat()
-                    except (OSError, ValueError):
+                    except OSError:
                         continue
                     entries.append(
-                        FileEntry(path=rel, is_file=True, is_dir=False, size=stat.st_size, mtime=stat.st_mtime)
+                        FileEntry(
+                            path=logical_path,
+                            is_file=True,
+                            is_dir=False,
+                            size=stat.st_size,
+                            mtime=stat.st_mtime,
+                        )
                     )
             return entries
 
@@ -651,10 +688,9 @@ class VirtualLocalFileOperator(FileOperator):
         self,
         mounts: list[VirtualMount],
         default_virtual_path: Path | VirtualPath | None = None,
+        instructions_paths: Sequence[Path | PurePath] | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
-        tmp_dir: Path | None = None,
-        tmp_file_operator: TmpFileOperator | None = None,
     ):
         """Initialize VirtualLocalFileOperator.
 
@@ -663,10 +699,9 @@ class VirtualLocalFileOperator(FileOperator):
                 At least one mount is required. All virtual_paths must be absolute.
             default_virtual_path: Default virtual path for relative path resolution.
                 If None, uses the first mount's virtual_path.
+            instructions_paths: Virtual paths included in generated file-tree context.
             instructions_skip_dirs: Directories to skip in file tree generation.
             instructions_max_depth: Maximum depth for file tree generation.
-            tmp_dir: Directory for temporary files.
-            tmp_file_operator: Operator for tmp file operations.
         """
         self._mounts = mounts
         default_vp = (
@@ -678,10 +713,9 @@ class VirtualLocalFileOperator(FileOperator):
         super().__init__(
             default_path=default_vp,
             allowed_paths=[m.virtual_path for m in mounts],
+            instructions_paths=instructions_paths,
             instructions_skip_dirs=instructions_skip_dirs,
             instructions_max_depth=instructions_max_depth,
-            tmp_dir=tmp_dir,
-            tmp_file_operator=tmp_file_operator,
         )
 
     def _find_mount(self, normalized_virtual: VirtualPath) -> VirtualMount:
@@ -739,29 +773,31 @@ class VirtualLocalFileOperator(FileOperator):
         return normalized
 
     def _to_host(self, path: str) -> Path:
-        """Translate virtual path to host filesystem path.
+        """Translate a virtual path to a validated lexical host operand.
 
-        Uses longest-prefix matching to find the appropriate mount.
+        Uses longest-prefix matching to find the appropriate mount. The resolved
+        target is checked for symlink escapes, while the returned path preserves
+        the final symlink so delete and move operate on the link itself.
 
         Args:
             path: Virtual path (relative or absolute).
 
         Returns:
-            Resolved host Path for actual I/O.
+            Lexically normalized host Path for actual I/O.
         """
         virtual = self._resolve_virtual(path)
         mount = self._find_mount(virtual)
         rel = virtual.relative_to(mount.virtual_path)
-        resolved = (mount.host_path.resolve() / Path(rel.as_posix())).resolve()
-
-        # Security: verify resolved path hasn't escaped the mount root via symlinks
         mount_root = mount.host_path.resolve()
+        lexical = Path(os.path.abspath(mount_root / Path(rel.as_posix())))
+
+        # Security: verify the resolved target has not escaped via symlinks.
         try:
-            resolved.relative_to(mount_root)
+            lexical.resolve().relative_to(mount_root)
         except ValueError as exc:
             raise PathNotAllowedError(f"Path escapes mount boundary via symlink: {path}") from exc
 
-        return resolved
+        return lexical
 
     def _find_mount_for_host(self, host_path: Path) -> VirtualMount | None:
         """Find the mount that contains a host path.
@@ -819,7 +855,7 @@ class VirtualLocalFileOperator(FileOperator):
 
     # --- FileOperator _impl methods: translate then perform local I/O ---
 
-    async def _read_file_impl(
+    async def read_file(
         self,
         path: str,
         *,
@@ -841,7 +877,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("read", path, str(e)) from e
 
-    async def _read_bytes_impl(
+    async def read_bytes(
         self,
         path: str,
         *,
@@ -860,13 +896,15 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("read", path, str(e)) from e
 
-    async def _read_bytes_stream_impl(
+    async def read_bytes_stream(
         self,
         path: str,
         *,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> AsyncIterator[bytes]:
         """Read a virtual-path file as a bounded-memory byte stream."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
         host = self._to_host(path)
         try:
             file = await anyio.open_file(host, "rb")
@@ -883,7 +921,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("read", path, str(e)) from e
 
-    async def _write_file_impl(
+    async def write_file(
         self,
         path: str,
         content: str | bytes,
@@ -902,7 +940,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("write", path, str(e)) from e
 
-    async def _append_file_impl(
+    async def append_file(
         self,
         path: str,
         content: str | bytes,
@@ -923,14 +961,14 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("append", path, str(e)) from e
 
-    async def _delete_impl(self, path: str) -> None:
+    async def delete(self, path: str) -> None:
         host = self._to_host(path)
         try:
             apath = anyio.Path(host)
-            if await apath.is_dir():
-                await apath.rmdir()
-            else:
+            if await apath.is_symlink() or not await apath.is_dir():
                 await apath.unlink()
+            else:
+                await apath.rmdir()
         except FileNotFoundError as e:
             raise FileOperationError("delete", path, "file not found") from e
         except PermissionError as e:
@@ -938,7 +976,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("delete", path, str(e)) from e
 
-    async def _list_dir_impl(self, path: str) -> list[str]:
+    async def list_dir(self, path: str) -> list[str]:
         host = self._to_host(path)
         try:
             entries: list[str] = []
@@ -954,7 +992,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("list", path, str(e)) from e
 
-    async def _list_dir_with_types_impl(self, path: str) -> list[tuple[str, bool]]:
+    async def list_dir_with_types(self, path: str) -> list[tuple[str, bool]]:
         host = self._to_host(path)
         try:
             result: list[tuple[str, bool]] = []
@@ -971,19 +1009,19 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("list", path, str(e)) from e
 
-    async def _exists_impl(self, path: str) -> bool:
+    async def exists(self, path: str) -> bool:
         host = self._to_host(path)
         return await anyio.Path(host).exists()
 
-    async def _is_file_impl(self, path: str) -> bool:
+    async def is_file(self, path: str) -> bool:
         host = self._to_host(path)
         return await anyio.Path(host).is_file()
 
-    async def _is_dir_impl(self, path: str) -> bool:
+    async def is_dir(self, path: str) -> bool:
         host = self._to_host(path)
         return await anyio.Path(host).is_dir()
 
-    async def _mkdir_impl(self, path: str, *, parents: bool = False) -> None:
+    async def mkdir(self, path: str, *, parents: bool = False) -> None:
         host = self._to_host(path)
         try:
             await anyio.Path(host).mkdir(parents=parents, exist_ok=True)
@@ -992,7 +1030,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("mkdir", path, str(e)) from e
 
-    async def _move_impl(self, src: str, dst: str) -> None:
+    async def move(self, src: str, dst: str) -> None:
         src_host = self._to_host(src)
         dst_host = self._to_host(dst)
         try:
@@ -1004,7 +1042,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("move", src, str(e)) from e
 
-    async def _copy_impl(self, src: str, dst: str) -> None:
+    async def copy(self, src: str, dst: str) -> None:
         src_host = self._to_host(src)
         dst_host = self._to_host(dst)
         try:
@@ -1019,7 +1057,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("copy", src, str(e)) from e
 
-    async def _stat_impl(self, path: str) -> FileStat:
+    async def stat(self, path: str) -> FileStat:
         host = self._to_host(path)
         try:
             apath = anyio.Path(host)
@@ -1037,7 +1075,7 @@ class VirtualLocalFileOperator(FileOperator):
         except OSError as e:
             raise FileOperationError("stat", path, str(e)) from e
 
-    async def _walk_files_impl(  # noqa: C901
+    async def walk_files(  # noqa: C901
         self,
         root: str = ".",
         *,
@@ -1583,13 +1621,6 @@ class LocalEnvironment(Environment):
         self._shell_sandbox_policy = shell_sandbox_policy
         self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
 
-    @property
-    def tmp_dir(self) -> Path | None:
-        """Return the session temporary directory path, or None if not enabled."""
-        if self._tmp_dir_obj is None:
-            return None
-        return Path(self._tmp_dir_obj.name)
-
     async def _setup(self) -> None:
         """Initialize file operator, shell, and tmp directory."""
         tmp_dir_path: Path | None = None
@@ -1598,7 +1629,8 @@ class LocalEnvironment(Environment):
                 prefix="ya_agent_",
                 dir=str(self._tmp_base_dir) if self._tmp_base_dir else None,
             )
-            tmp_dir_path = Path(self._tmp_dir_obj.name)
+            tmp_dir_path = Path(self._tmp_dir_obj.name).resolve()
+            self._tmp_dir = tmp_dir_path
 
         # Determine default_path: use provided value, or infer from allowed_paths.
         # Never fall back to Path.cwd() to avoid exposing the process working directory.
@@ -1618,11 +1650,15 @@ class LocalEnvironment(Environment):
         # When default_path is None, the operator runs in "empty folder" mode:
         # only tmp operations are accessible, all other paths are rejected.
         if default_path is not None or tmp_dir_path is not None:
+            instruction_paths = (
+                self._instructions_paths
+                if self._instructions_paths is not None
+                else [path for path in allowed if path != tmp_dir_path]
+            )
             self._file_operator = LocalFileOperator(
                 default_path=default_path,
                 allowed_paths=allowed or None,
-                instructions_paths=self._instructions_paths,
-                tmp_dir=tmp_dir_path,
+                instructions_paths=instruction_paths,
             )
 
         # Shell requires a real working directory - not created with only tmp_dir.
@@ -1645,6 +1681,11 @@ class LocalEnvironment(Environment):
         _teardown returns.  Nulling here would skip close() and
         leak background processes.
         """
-        if self._tmp_dir_obj is not None:
-            self._tmp_dir_obj.cleanup()
+        try:
+            if self._tmp_dir_obj is not None:
+                self._tmp_dir_obj.cleanup()
+        finally:
             self._tmp_dir_obj = None
+            self._tmp_dir = None
+            self._file_operator = None
+            self._shell = None

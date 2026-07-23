@@ -6,21 +6,26 @@ Resource management, lifecycle hooks, and environment implementations.
 
 ## Overview
 
-- **FileOperator**: Abstraction for file system operations
+- **FileOperator**: One backend-agnostic logical path space for file operations
 - **Shell**: Abstraction for command execution
 - **ResourceRegistry**: Type-safe runtime resource management
+- **Temporary storage**: Environment-owned `tmp_dir` and safe `resolve_tmp_path()`
 - **Lifecycle hooks**: `_setup()` / `_teardown()` pattern for subclasses
 
-```
-Environment (ABC) - Long-lived, owns resources
-  +-- _resources: ResourceRegistry
-  +-- _file_operator: FileOperator
-  +-- _shell: Shell
-  +-- _toolsets: list[AbstractToolset]
-  +-- _setup() -> None           # Subclass hook: initialization
-  +-- _teardown() -> None        # Subclass hook: cleanup
-
-AgentContext - Short-lived, references Environment resources
+```mermaid
+classDiagram
+    class Environment {
+        ResourceRegistry _resources
+        FileOperator _file_operator
+        Shell _shell
+        PurePath~None~ _tmp_dir
+        list _toolsets
+        _setup()
+        _teardown()
+        resolve_tmp_path(relative_path)
+    }
+    class AgentContext
+    AgentContext --> Environment : references
 ```
 
 ## Basic Usage
@@ -60,9 +65,9 @@ registry.set("database", database)  # Must implement Resource protocol (close())
 database = registry.get_typed("database", DatabasePool)
 
 # Collect toolsets from all resources
-toolsets = await registry.get_toolsets()
+toolsets = registry.get_toolsets()
 
-# Cleanup (called automatically by Environment)
+# Cleanup (called automatically by Environment before backend teardown)
 await registry.close_all()
 ```
 
@@ -81,15 +86,19 @@ class MyEnvironment(Environment):
         self._resources.set("db", db)
 
     async def _teardown(self) -> None:
+        # Release environment-owned backend/container/tmp resources.
+        # Registered resources, shell, and file_operator are already closed.
+        await self._backend.close()
         self._file_operator = None
         self._shell = None
-        # resources.close_all() called automatically after this
+        self._tmp_dir = None
 ```
 
 **Why hooks instead of __aenter__/__aexit__?**
 
 - Safe inheritance without `await super().__aenter__()` concerns
-- Base class ensures `resources.close_all()` is always called
+- Base class uses dependency-safe cleanup on normal exit and partial setup failure
+- Cleanup order is resources, shell, file operator, then `_teardown()`
 
 ## Available Implementations
 
@@ -103,10 +112,53 @@ LocalEnvironment(
 )
 ```
 
+By default, `LocalEnvironment` creates managed temporary storage under the system
+temporary directory. Set `enable_tmp_dir=False` to disable it; low-level SDK users
+may pass `tmp_base_dir` when they explicitly need a different parent. The temporary
+directory is added as an ordinary allowed path for both the file operator and shell.
+
+## Temporary Storage
+
+Temporary storage belongs to `Environment`, not `FileOperator`. It is available only
+while the environment is entered:
+
+```python
+async with LocalEnvironment(allowed_paths=[workspace]) as env:
+    if env.tmp_dir is not None:
+        intermediate = env.resolve_tmp_path("downloads/page.html")
+        await env.file_operator.mkdir(str(intermediate.parent), parents=True)
+        await env.file_operator.write_file(str(intermediate), html)
+```
+
+`resolve_tmp_path()` accepts only relative paths and rejects absolute paths and `..`
+traversal. It raises when temporary storage is disabled. Use `tmp_dir` for
+intermediate, agent-only data; write user-facing deliverables to the workspace.
+
+A `FileOperator` has no separate temporary backend, routing API, or temporary-file
+convenience methods. Temporary paths use the operator's normal methods. Local
+walk/search operations accept an explicit absolute root for any allowed path: entries
+under the default path remain relative, while entries outside it use directly reusable
+absolute paths. Searching `root="."` stays scoped to the default path and does not
+implicitly union temporary storage. Likewise, `read_bytes_stream()` directly returns
+an `AsyncIterator`; do not await the call:
+
+```python
+stream = env.file_operator.read_bytes_stream(str(intermediate))
+async for chunk in stream:
+    ...
+```
+
+`SandboxEnvironment` and YA Claw workspace environments create a hidden
+`.ya-agent/tmp/<id>` directory below an existing writable shared mount. The
+agent-facing `tmp_dir` uses the mounted virtual path, so both file operations and the
+container shell see the same location. No extra bind mount is added; this is important
+when reusing an already-created container.
+
 ### SandboxEnvironment
 
 Sandbox environment with virtual file operations and containerized shell.
 Both file operations and shell commands see the same path space (e.g., `/workspace`).
+Managed temporary storage is created below the writable mount containing `work_dir`.
 
 ```python
 # Single mount with Docker

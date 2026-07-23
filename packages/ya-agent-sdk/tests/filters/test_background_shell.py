@@ -1,5 +1,6 @@
 """Tests for background_shell filter."""
 
+from pathlib import PurePosixPath
 from unittest.mock import AsyncMock, MagicMock
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
@@ -14,6 +15,8 @@ def _make_ctx(shell: Shell | None = None, file_operator=None) -> RunContext:
     deps = MagicMock()
     deps.shell = shell
     deps.file_operator = file_operator
+    deps.tmp_dir = PurePosixPath("/agent-tmp") if file_operator is not None else None
+    deps.resolve_tmp_path.side_effect = lambda name: PurePosixPath("/agent-tmp") / name
     deps.run_id = "test-run-12345678"
     deps.emit_event = AsyncMock()
 
@@ -184,7 +187,7 @@ async def test_truncated_output_with_file_op() -> None:
     shell = MockShell(completed=[completed], summary=None)
 
     file_op = AsyncMock()
-    file_op.write_tmp_file = AsyncMock(return_value="/tmp/bg-stdout-big1.log")  # noqa: S108
+    file_op.write_file = AsyncMock()
     ctx = _make_ctx(shell=shell, file_operator=file_op)
     messages = _make_messages_with_user_prompt()
 
@@ -193,7 +196,7 @@ async def test_truncated_output_with_file_op() -> None:
     assert "truncated" in injected.content.lower()
     assert "full output" in injected.content.lower()
     assert "Full stdout:" in injected.content
-    file_op.write_tmp_file.assert_called_once()
+    file_op.write_file.assert_called_once()
 
 
 async def test_source_capped_output_is_not_labeled_as_full() -> None:
@@ -209,7 +212,7 @@ async def test_source_capped_output_is_not_labeled_as_full() -> None:
     )
     shell = MockShell(completed=[completed], summary=None)
     file_op = AsyncMock()
-    file_op.write_tmp_file = AsyncMock(return_value="/tmp/bg-stdout-capped1.log")  # noqa: S108
+    file_op.write_file = AsyncMock()
     ctx = _make_ctx(shell=shell, file_operator=file_op)
     messages = _make_messages_with_user_prompt()
 

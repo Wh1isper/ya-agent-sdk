@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -8,11 +9,14 @@ from fastapi.testclient import TestClient
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
 from ya_claw.db.engine import create_engine, create_session_factory
-from ya_claw.orm.base import Base
 
 
 @pytest.fixture(autouse=True)
-def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def clear_claw_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    initialize_sqlite_database: Callable[[str], None],
+) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
         "YA_CLAW_DATABASE_URL",
@@ -39,25 +43,14 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
 
     get_settings.cache_clear()
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
     yield
     get_settings.cache_clear()
 
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
-
-
-def _create_schema() -> None:
-    async def _run() -> None:
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
 
 
 def _fire_kinds() -> list[str]:
@@ -79,8 +72,6 @@ def _fire_kinds() -> list[str]:
 
 
 def test_agency_config_status_fires_and_no_product_trigger() -> None:
-    _create_schema()
-
     app = create_app()
     with TestClient(app) as client:
         app.state.execution_supervisor = None
@@ -117,8 +108,6 @@ def test_clear_agency_resets_singleton_session_and_workspace_files(
 ) -> None:
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
     get_settings.cache_clear()
-    _create_schema()
-
     workspace_dir = tmp_path / "workspace"
     agency_md = workspace_dir / "AGENCY.md"
     agency_action_log = workspace_dir / "agency" / "ACTION_LOG.md"
@@ -160,7 +149,6 @@ def test_clear_agency_resets_singleton_session_and_workspace_files(
 def test_clear_agency_cancels_active_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
     get_settings.cache_clear()
-    _create_schema()
 
     async def _seed_active_run() -> None:
         from ya_claw.agency.lifecycle import AgencyLifecycle
@@ -206,8 +194,6 @@ def test_clear_agency_cancels_active_run(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_session_submit_copies_message_to_agency(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
     get_settings.cache_clear()
-    _create_schema()
-
     app = create_app()
     with TestClient(app) as client:
         app.state.execution_supervisor = None
@@ -238,7 +224,6 @@ def test_session_submit_copies_message_to_agency(monkeypatch: pytest.MonkeyPatch
 def test_agency_source_session_submit_api_rejects_completed_agency_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "true")
     get_settings.cache_clear()
-    _create_schema()
 
     async def _seed() -> tuple[str, str, str]:
         from ya_claw.agency.lifecycle import AgencyLifecycle

@@ -132,7 +132,7 @@ async def _guard_search_result(
 
     serialized = dump_tool_output(result)
     output_path = await write_tmp_output(
-        ctx.deps.file_operator,
+        ctx.deps,
         prefix=prefix,
         content=serialized,
         extension="json",

@@ -146,7 +146,10 @@ async def test_ls_max_results_limits_stat_work() -> None:
     assert file_operator.stat_calls == ["is_dir:file-0.txt", "file-0.txt", "is_dir:file-1.txt", "file-1.txt"]
 
 
-async def test_ls_writes_oversized_output_to_tmp_file(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_ls_writes_oversized_output_to_tmp_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """Should spill oversized responses to tmp and return a bounded preview."""
 
     monkeypatch.setattr(ls_module, "OUTPUT_TRUNCATE_LIMIT", 700)
@@ -169,14 +172,18 @@ async def test_ls_writes_oversized_output_to_tmp_file(monkeypatch: pytest.Monkey
         async def stat(self, path: str) -> dict[str, object]:
             return {"size": 1, "mtime": 10.0, "is_file": True, "is_dir": False}
 
-        async def write_tmp_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> str:
+        async def write_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
+            del path, encoding
             assert isinstance(content, str)
             self.saved_content = content
-            return f"tmp/{path}"
 
     file_operator = LargeOutputFileOperator()
     mock_run_ctx = MagicMock(spec=RunContext)
-    mock_run_ctx.deps = SimpleNamespace(file_operator=file_operator)
+    mock_run_ctx.deps = SimpleNamespace(
+        file_operator=file_operator,
+        tmp_dir=tmp_path,
+        resolve_tmp_path=lambda name: tmp_path / name,
+    )
 
     result = await ListTool().call(mock_run_ctx, path=".", max_results=-1)
 

@@ -48,10 +48,8 @@ def _append_text_preview(preview_parts: list[str], preview_length: int, chunk: s
 
 
 async def _start_text_spill(ctx: RunContext[AgentContext], preview_parts: list[str], chunk: str) -> str | None:
-    if ctx.deps.file_operator is None:
-        return None
     return await write_tmp_output(
-        ctx.deps.file_operator,
+        ctx.deps,
         prefix="fetch",
         content="".join(preview_parts) + chunk,
         extension="txt",

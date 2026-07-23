@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
-from ya_claw.db.engine import create_engine
-from ya_claw.orm.base import Base
 
 
 @pytest.fixture(autouse=True)
-def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def clear_claw_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    initialize_sqlite_database: Callable[[str], None],
+) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
         "YA_CLAW_DATABASE_URL",
@@ -39,6 +41,8 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("YA_CLAW_HEARTBEAT_ENABLED", "false")
 
     get_settings.cache_clear()
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
     yield
     get_settings.cache_clear()
 
@@ -56,19 +60,6 @@ def _agent_headers() -> dict[str, str]:
     }
 
 
-def _create_schema() -> None:
-    async def _run() -> None:
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
-
-
 def _definition() -> dict[str, object]:
     return {
         "schema": "ya-claw.workflow.v1",
@@ -81,8 +72,6 @@ def _definition() -> dict[str, object]:
 
 
 def test_workflow_api_crud_trigger_events_and_filters() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_response = client.post(
             "/api/v1/agent/workflows",

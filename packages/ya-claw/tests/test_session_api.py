@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,12 +16,15 @@ from ya_claw.app import create_app
 from ya_claw.config import get_settings
 from ya_claw.controller.store import with_usage_snapshot_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 
 
 @pytest.fixture(autouse=True)
-def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
+def clear_claw_settings(
+    monkeypatch,
+    tmp_path: Path,
+    initialize_sqlite_database: Callable[[str], None],
+) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
         "YA_CLAW_DATABASE_URL",
@@ -45,25 +49,14 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
 
     get_settings.cache_clear()
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
     yield
     get_settings.cache_clear()
 
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
-
-
-def _create_schema() -> None:
-    async def _run() -> None:
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
 
 
 def _mark_run_completed(session_id: str, run_id: str, *, output_text: str | None = None) -> None:
@@ -116,8 +109,6 @@ def _set_run_usage_snapshot_index(run_id: str, payload: dict[str, object]) -> No
 
 
 def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
-    _create_schema()
-
     app = create_app()
     with TestClient(app) as client:
         app.state.execution_supervisor = None
@@ -222,8 +213,6 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
 
 
 def test_submit_uses_session_events_for_streaming_and_run_create_rejects_running_session() -> None:
-    _create_schema()
-
     app = create_app()
     settings = get_settings()
     with TestClient(app) as client:
@@ -297,8 +286,6 @@ def test_submit_uses_session_events_for_streaming_and_run_create_rejects_running
 
 
 def test_session_create_uses_single_workspace_response_shape() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_session_response = client.post(
             "/api/v1/sessions",
@@ -356,8 +343,6 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
 
 
 def test_session_detail_can_include_message_and_paginate_runs() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
         assert create_session_response.status_code == 201
@@ -428,8 +413,6 @@ def test_session_detail_can_include_message_and_paginate_runs() -> None:
 
 
 def test_run_get_rejects_non_array_message_blob() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
         assert create_session_response.status_code == 201
@@ -464,8 +447,6 @@ def test_run_get_rejects_non_array_message_blob() -> None:
 
 
 def test_run_get_exposes_session_state_and_message() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
         assert create_session_response.status_code == 201
@@ -515,8 +496,6 @@ def test_run_get_exposes_session_state_and_message() -> None:
 
 
 def test_session_detail_can_include_input_parts_for_run_replay() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_session_response = client.post(
             "/api/v1/sessions",
@@ -561,8 +540,6 @@ def test_session_detail_can_include_input_parts_for_run_replay() -> None:
 
 
 def test_session_turns_return_completed_runs_with_raw_input_and_output() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
         assert create_session_response.status_code == 201
@@ -668,8 +645,6 @@ def test_session_turns_return_completed_runs_with_raw_input_and_output() -> None
 def test_list_sessions_hides_memory_sessions_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
     get_settings.cache_clear()
-    _create_schema()
-
     settings = get_settings()
 
     async def _run() -> None:
@@ -714,8 +689,6 @@ def test_list_sessions_hides_memory_sessions_by_default(monkeypatch: pytest.Monk
 
 
 def test_list_sessions_include_internal_exposes_agency_session() -> None:
-    _create_schema()
-
     settings = get_settings()
 
     async def _run() -> None:
@@ -767,8 +740,6 @@ def test_memory_api_enqueues_jobs_exposes_state_and_uses_filetree_for_reads(monk
     monkeypatch.setenv("YA_CLAW_MEMORY_ENABLED", "true")
     monkeypatch.setenv("YA_CLAW_AGENCY_ENABLED", "false")
     get_settings.cache_clear()
-    _create_schema()
-
     app = create_app()
     with TestClient(app) as client:
         app.state.execution_supervisor = None
@@ -838,8 +809,6 @@ def test_memory_api_enqueues_jobs_exposes_state_and_uses_filetree_for_reads(monk
 
 
 def test_run_trace_extracts_tool_call_and_response_with_trimming() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})
         assert create_session_response.status_code == 201
@@ -909,8 +878,6 @@ def test_run_trace_extracts_tool_call_and_response_with_trimming() -> None:
 
 
 def test_run_and_session_api_expose_latest_usage_cost_without_raw_message() -> None:
-    _create_schema()
-
     with TestClient(create_app()) as client:
         client.app.state.execution_supervisor = None
         create_session_response = client.post("/api/v1/sessions", headers=_auth_headers(), json={})

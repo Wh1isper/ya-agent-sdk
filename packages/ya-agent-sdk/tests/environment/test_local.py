@@ -7,6 +7,7 @@ import shlex
 import shutil
 import signal
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -59,9 +60,46 @@ def test_file_operator_default_path_included_in_allowed(tmp_path: Path) -> None:
     """Should ensure default_path is in allowed_paths."""
     other_path = tmp_path / "other"
     other_path.mkdir()
-    op = LocalFileOperator(allowed_paths=[other_path], default_path=tmp_path, tmp_dir=tmp_path)
+    op = LocalFileOperator(allowed_paths=[other_path], default_path=tmp_path)
     assert tmp_path.resolve() in op._allowed_paths
     assert other_path.resolve() in op._allowed_paths
+
+
+def test_file_operator_match_candidates_tolerate_resolve_runtime_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A symlink loop should not fail candidate matching on older Python versions."""
+    op = LocalFileOperator(default_path=tmp_path)
+    absolute_path = (tmp_path / "loop").as_posix()
+
+    def raise_runtime_error(_path: Path, *, strict: bool = False) -> Path:
+        del strict
+        raise RuntimeError("symlink loop")
+
+    monkeypatch.setattr(Path, "resolve", raise_runtime_error)
+
+    assert absolute_path in op.get_path_match_candidates(absolute_path)
+
+
+async def test_file_operator_walk_external_allowed_root_returns_absolute_paths(tmp_path: Path) -> None:
+    """Walk results outside the default root should remain directly reusable."""
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "external"
+    nested = external / "nested"
+    workspace.mkdir()
+    nested.mkdir(parents=True)
+    artifact = nested / "artifact.txt"
+    artifact.write_text("external content")
+    op = LocalFileOperator(default_path=workspace, allowed_paths=[workspace, external])
+
+    entries = [entry async for entry in op.walk_files(str(external))]
+
+    assert {entry["path"] for entry in entries} == {nested.as_posix(), artifact.as_posix()}
+    assert await op.read_file(artifact.as_posix()) == "external content"
+
+    file_entries = [entry async for entry in op.walk_files(str(artifact))]
+    assert [entry["path"] for entry in file_entries] == [artifact.as_posix()]
 
 
 async def test_file_operator_read_file(tmp_path: Path) -> None:
@@ -120,46 +158,13 @@ async def test_file_operator_read_bytes_with_offset_and_length(tmp_path: Path) -
     assert await op.read_bytes("test.bin", offset=1, length=3) == b"\x01\x02\x03"
 
 
-async def test_read_bytes_stream_from_tmp_returns_tmp_stream(tmp_path: Path) -> None:
-    """Reading a tmp path through FileOperator preserves the tmp streaming contract."""
-    main_dir = tmp_path / "main"
-    tmp_dir = tmp_path / "tmp"
-    main_dir.mkdir()
-    tmp_dir.mkdir()
-    op = LocalFileOperator(default_path=main_dir, tmp_dir=tmp_dir)
-
-    content = b"tmp stream content"
-    assert op._tmp_file_operator is not None
-    await op._tmp_file_operator.write_file("source.bin", content)
-
-    stream = await op.read_bytes_stream(str(tmp_dir / "source.bin"), chunk_size=4)
-    assert b"".join([chunk async for chunk in stream]) == content
-
-
-async def test_read_bytes_stream_from_workspace_symlink_to_tmp_returns_tmp_stream(tmp_path: Path) -> None:
-    """A workspace symlink to tmp should retain tmp stream routing."""
-    main_dir = tmp_path / "main"
-    tmp_dir = tmp_path / "tmp"
-    main_dir.mkdir()
-    tmp_dir.mkdir()
-    op = LocalFileOperator(default_path=main_dir, tmp_dir=tmp_dir)
-
-    content = b"tmp stream content"
-    assert op._tmp_file_operator is not None
-    await op._tmp_file_operator.write_file("source.bin", content)
-    (main_dir / "source-link.bin").symlink_to(tmp_dir / "source.bin")
-
-    stream = await op.read_bytes_stream("source-link.bin", chunk_size=4)
-    assert b"".join([chunk async for chunk in stream]) == content
-
-
 async def test_file_operator_read_bytes_stream_reads_workspace_in_chunks(tmp_path: Path) -> None:
     """Reading a workspace path should not use the whole-file stream fallback."""
     content = b"workspace stream content"
     (tmp_path / "source.bin").write_bytes(content)
     op = LocalFileOperator(default_path=tmp_path)
 
-    stream = await op.read_bytes_stream("source.bin", chunk_size=4)
+    stream = op.read_bytes_stream("source.bin", chunk_size=4)
     chunks = [chunk async for chunk in stream]
 
     assert b"".join(chunks) == content
@@ -167,8 +172,9 @@ async def test_file_operator_read_bytes_stream_reads_workspace_in_chunks(tmp_pat
     assert len(chunks) > 1
 
     for chunk_size in (0, -1):
+        stream = op.read_bytes_stream("source.bin", chunk_size=chunk_size)
         with pytest.raises(ValueError, match="chunk_size must be greater than zero"):
-            await op.read_bytes_stream("source.bin", chunk_size=chunk_size)
+            _ = [chunk async for chunk in stream]
 
 
 async def test_file_operator_write_file_string(tmp_path: Path) -> None:
@@ -253,6 +259,28 @@ async def test_file_operator_move(tmp_path: Path) -> None:
     assert (tmp_path / "dst.txt").read_text() == "content"
 
 
+async def test_file_operator_move_and_delete_preserve_symlink_operand(tmp_path: Path) -> None:
+    """Move and delete should affect an allowed symlink, not its target."""
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "content.txt").write_text("content")
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
+
+    await op.move("link", "moved-link")
+
+    moved_link = tmp_path / "moved-link"
+    assert not link.exists()
+    assert moved_link.is_symlink()
+    assert (target / "content.txt").read_text() == "content"
+
+    await op.delete("moved-link")
+
+    assert not moved_link.exists()
+    assert (target / "content.txt").read_text() == "content"
+
+
 async def test_file_operator_copy(tmp_path: Path) -> None:
     """Should copy file."""
     (tmp_path / "src.txt").write_text("content")
@@ -305,7 +333,7 @@ async def test_file_operator_get_context_instructions(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# readme")
     (tmp_path / ".git").mkdir()
 
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path, tmp_dir=tmp_path)
+    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
     instructions = await op.get_context_instructions()
 
     # Replace dynamic path with placeholder for snapshot
@@ -315,8 +343,6 @@ async def test_file_operator_get_context_instructions(tmp_path: Path) -> None:
         """\
 <file-system>
   <default-directory>/test/workspace</default-directory>
-  <tmp-directory>/test/workspace</tmp-directory>
-  <tmp-directory-note>This is an agent-only temporary directory for intermediate files. Never write deliverables or user-facing files here. Files the user needs to access must be written to the project directory. Never mention this path to the user.</tmp-directory-note>
   <file-trees>
     <directory path="/test/workspace">
 .git/ (skipped)
@@ -845,6 +871,17 @@ async def test_environment_tmp_dir(tmp_path: Path) -> None:
     assert not saved_tmp.exists()
 
 
+async def test_environment_tmp_dir_uses_system_temp_by_default(tmp_path: Path) -> None:
+    """LocalEnvironment does not place managed tmp storage in the workspace."""
+    async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path) as env:
+        assert isinstance(env.tmp_dir, Path)
+        saved_tmp = env.tmp_dir
+        assert saved_tmp.resolve().parent == Path(tempfile.gettempdir()).resolve()
+        assert saved_tmp.parent != tmp_path.resolve()
+
+    assert not saved_tmp.exists()
+
+
 async def test_environment_tmp_dir_disabled(tmp_path: Path) -> None:
     """Should not create tmp_dir when disabled."""
     async with LocalEnvironment(
@@ -855,8 +892,8 @@ async def test_environment_tmp_dir_disabled(tmp_path: Path) -> None:
         assert env.tmp_dir is None
 
 
-async def test_environment_tmp_routing(tmp_path: Path) -> None:
-    """Should route tmp path operations to tmp_file_operator."""
+async def test_environment_tmp_is_an_ordinary_allowed_path(tmp_path: Path) -> None:
+    """Temporary files use the same LocalFileOperator path space as workspace files."""
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
@@ -864,13 +901,12 @@ async def test_environment_tmp_routing(tmp_path: Path) -> None:
     ) as env:
         assert env.tmp_dir is not None
 
-        # Write to tmp_dir via main file_operator
-        tmp_file = env.tmp_dir / "data.txt"
+        tmp_file = env.resolve_tmp_path("data.txt")
+        assert isinstance(tmp_file, Path)
         await env.file_operator.write_file(str(tmp_file), "tmp content")
         assert tmp_file.exists()
         assert tmp_file.read_text() == "tmp content"
 
-        # Read from tmp_dir
         content = await env.file_operator.read_file(str(tmp_file))
         assert content == "tmp content"
 
@@ -935,13 +971,12 @@ async def test_environment_no_default_path_tmp_dir_still_works() -> None:
         assert content == "hello from tmp"
 
 
-async def test_environment_no_default_path_rejects_non_tmp_paths() -> None:
-    """File operator with no default_path routes all operations through tmp_file_operator."""
+async def test_environment_no_default_path_uses_tmp_as_the_only_allowed_path() -> None:
+    """Without workspace paths, the normal file backend is rooted at tmp_dir."""
     async with LocalEnvironment() as env:
         assert env.file_operator is not None
-        # Relative paths get resolved against tmp_dir (tmp-only mode).
-        # Non-existent file in tmp_dir raises FileNotFoundError.
-        with pytest.raises(FileNotFoundError):
+        # Relative paths resolve against tmp_dir because it is the only allowed path.
+        with pytest.raises(FileOperationError, match="file not found"):
             await env.file_operator.read_file("nonexistent_file.txt")
 
 

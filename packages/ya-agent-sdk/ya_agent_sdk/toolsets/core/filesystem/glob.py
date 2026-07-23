@@ -1,7 +1,6 @@
 """Glob tool for file pattern matching."""
 
 import json
-import uuid
 from functools import cache
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -12,6 +11,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.core._output import write_tmp_output
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._gitignore import GitignoreFilterResult
 from ya_agent_sdk.toolsets.core.filesystem._search import (
@@ -112,7 +112,7 @@ class GlobTool(BaseTool):
             result = _build_filtered_result(files, filter_result, max_results)
 
         result = _add_skill_document_reminder(result, skill_documents)
-        return await _guard_output_size(result, file_operator)
+        return await _guard_output_size(result, ctx.deps)
 
 
 def _build_filtered_result(
@@ -191,7 +191,7 @@ def _add_preview_value(preview: dict[str, Any], key: str, value: Any) -> dict[st
 
 async def _guard_output_size(
     result: list[str] | dict[str, Any],
-    file_operator: FileOperator,
+    context: AgentContext,
 ) -> list[str] | dict[str, Any]:
     """Write result to temp file if serialized output exceeds the hard size limit."""
     serialized = json.dumps(result, ensure_ascii=False)
@@ -209,12 +209,7 @@ async def _guard_output_size(
         system_reminder = result.get("system-reminder")
 
     # Write full result to temp file (with fallback on failure)
-    output_path: str | None = None
-    try:
-        output_file = f"glob-{uuid.uuid4().hex[:12]}.json"
-        output_path = await file_operator.write_tmp_file(output_file, serialized)
-    except Exception:
-        logger.warning("Failed to write glob output to temp file", exc_info=True)
+    output_path = await write_tmp_output(context, prefix="glob", content=serialized, extension="json")
 
     # Build preview with exact serialization check to guarantee within limit
     preview: dict[str, Any] = {

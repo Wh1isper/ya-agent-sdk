@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from ya_agent_environment import FileOperationError, FileOperator, FileStat, PathNotAllowedError, TmpFileOperator
+from ya_agent_environment import FileOperationError, FileOperator, FileStat, PathNotAllowedError
 from ya_agent_environment.file_operator import DEFAULT_CHUNK_SIZE
 
 from ya_agent_sdk.environment.virtual_path import VirtualPath, as_virtual_path, normalize_virtual_path
@@ -162,15 +162,12 @@ class CompositeFileOperator(FileOperator):
     - Cross-mount copy/move via streaming
     - Mount-aware context instructions with per-mount file trees and status
     - Backend availability tracking (online/offline for remote mounts)
-    - Transparent tmp file handling (inherited from base FileOperator)
     """
 
     def __init__(
         self,
         mounts: list[Mount],
         default_mount: Path | VirtualPath | None = None,
-        tmp_dir: Path | None = None,
-        tmp_file_operator: TmpFileOperator | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
         default_chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -182,8 +179,6 @@ class CompositeFileOperator(FileOperator):
                 Each maps a virtual path prefix to a FileOperator backend.
             default_mount: Default virtual path for resolving relative paths.
                 If None, uses the first mount's virtual_path.
-            tmp_dir: Directory for temporary files. Handled by base class.
-            tmp_file_operator: Custom tmp file operator. Takes precedence over tmp_dir.
             instructions_skip_dirs: Directories to skip in file tree generation.
             instructions_max_depth: Maximum depth for file tree generation.
             default_chunk_size: Default chunk size for streaming operations.
@@ -202,8 +197,6 @@ class CompositeFileOperator(FileOperator):
             allowed_paths=[m.virtual_path for m in mounts],
             instructions_skip_dirs=instructions_skip_dirs,
             instructions_max_depth=instructions_max_depth,
-            tmp_dir=tmp_dir,
-            tmp_file_operator=tmp_file_operator,
             skip_instructions=True,  # We override get_context_instructions
             default_chunk_size=default_chunk_size,
         )
@@ -298,7 +291,7 @@ class CompositeFileOperator(FileOperator):
 
     # --- _impl methods: resolve mount and delegate ---
 
-    async def _read_file_impl(
+    async def read_file(
         self,
         path: str,
         *,
@@ -310,7 +303,7 @@ class CompositeFileOperator(FileOperator):
         self._check_available(mount, "read", path)
         return await mount.file_operator.read_file(rel, encoding=encoding, offset=offset, length=length)
 
-    async def _read_bytes_impl(
+    async def read_bytes(
         self,
         path: str,
         *,
@@ -321,7 +314,7 @@ class CompositeFileOperator(FileOperator):
         self._check_available(mount, "read", path)
         return await mount.file_operator.read_bytes(rel, offset=offset, length=length)
 
-    async def _write_file_impl(
+    async def write_file(
         self,
         path: str,
         content: str | bytes,
@@ -333,7 +326,7 @@ class CompositeFileOperator(FileOperator):
         self._check_writable(mount, "write", path)
         await mount.file_operator.write_file(rel, content, encoding=encoding)
 
-    async def _append_file_impl(
+    async def append_file(
         self,
         path: str,
         content: str | bytes,
@@ -345,49 +338,49 @@ class CompositeFileOperator(FileOperator):
         self._check_writable(mount, "append", path)
         await mount.file_operator.append_file(rel, content, encoding=encoding)
 
-    async def _delete_impl(self, path: str) -> None:
+    async def delete(self, path: str) -> None:
         mount, rel = self._resolve(path)
         self._check_available(mount, "delete", path)
         self._check_writable(mount, "delete", path)
         await mount.file_operator.delete(rel)
 
-    async def _list_dir_impl(self, path: str) -> list[str]:
+    async def list_dir(self, path: str) -> list[str]:
         mount, rel = self._resolve(path)
         self._check_available(mount, "list", path)
         return await mount.file_operator.list_dir(rel)
 
-    async def _list_dir_with_types_impl(self, path: str) -> list[tuple[str, bool]]:
+    async def list_dir_with_types(self, path: str) -> list[tuple[str, bool]]:
         mount, rel = self._resolve(path)
         self._check_available(mount, "list", path)
         return await mount.file_operator.list_dir_with_types(rel)
 
-    async def _exists_impl(self, path: str) -> bool:
+    async def exists(self, path: str) -> bool:
         mount, rel = self._resolve(path)
         self._check_available(mount, "exists", path)
         return await mount.file_operator.exists(rel)
 
-    async def _is_file_impl(self, path: str) -> bool:
+    async def is_file(self, path: str) -> bool:
         mount, rel = self._resolve(path)
         self._check_available(mount, "is_file", path)
         return await mount.file_operator.is_file(rel)
 
-    async def _is_dir_impl(self, path: str) -> bool:
+    async def is_dir(self, path: str) -> bool:
         mount, rel = self._resolve(path)
         self._check_available(mount, "is_dir", path)
         return await mount.file_operator.is_dir(rel)
 
-    async def _mkdir_impl(self, path: str, *, parents: bool = False) -> None:
+    async def mkdir(self, path: str, *, parents: bool = False) -> None:
         mount, rel = self._resolve(path)
         self._check_available(mount, "mkdir", path)
         self._check_writable(mount, "mkdir", path)
         await mount.file_operator.mkdir(rel, parents=parents)
 
-    async def _stat_impl(self, path: str) -> FileStat:
+    async def stat(self, path: str) -> FileStat:
         mount, rel = self._resolve(path)
         self._check_available(mount, "stat", path)
         return await mount.file_operator.stat(rel)
 
-    async def _move_impl(self, src: str, dst: str) -> None:
+    async def move(self, src: str, dst: str) -> None:
         src_mount, src_rel, dst_mount, dst_rel = self._resolve_pair(src, dst)
         self._check_available(src_mount, "move (source)", src)
         self._check_available(dst_mount, "move (destination)", dst)
@@ -403,11 +396,11 @@ class CompositeFileOperator(FileOperator):
                 raise FileOperationError(
                     "move", src, "cross-mount directory move is not supported; copy files individually"
                 )
-            stream = await src_mount.file_operator.read_bytes_stream(src_rel, chunk_size=self._default_chunk_size)
+            stream = src_mount.file_operator.read_bytes_stream(src_rel, chunk_size=self._default_chunk_size)
             await dst_mount.file_operator.write_bytes_stream(dst_rel, stream)
             await src_mount.file_operator.delete(src_rel)
 
-    async def _copy_impl(self, src: str, dst: str) -> None:
+    async def copy(self, src: str, dst: str) -> None:
         src_mount, src_rel, dst_mount, dst_rel = self._resolve_pair(src, dst)
         self._check_available(src_mount, "copy (source)", src)
         self._check_available(dst_mount, "copy (destination)", dst)
@@ -422,24 +415,26 @@ class CompositeFileOperator(FileOperator):
                 raise FileOperationError(
                     "copy", src, "cross-mount directory copy is not supported; copy files individually"
                 )
-            stream = await src_mount.file_operator.read_bytes_stream(src_rel, chunk_size=self._default_chunk_size)
+            stream = src_mount.file_operator.read_bytes_stream(src_rel, chunk_size=self._default_chunk_size)
             await dst_mount.file_operator.write_bytes_stream(dst_rel, stream)
 
     # --- Streaming overrides ---
 
-    async def _read_bytes_stream_impl(
+    async def read_bytes_stream(
         self,
         path: str,
         *,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> AsyncIterator[bytes]:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
         mount, rel = self._resolve(path)
         self._check_available(mount, "read_stream", path)
-        stream = await mount.file_operator.read_bytes_stream(rel, chunk_size=chunk_size)
+        stream = mount.file_operator.read_bytes_stream(rel, chunk_size=chunk_size)
         async for chunk in stream:
             yield chunk
 
-    async def _write_bytes_stream_impl(
+    async def write_bytes_stream(
         self,
         path: str,
         stream: AsyncIterator[bytes],
@@ -465,9 +460,6 @@ class CompositeFileOperator(FileOperator):
             default_dir = ET.SubElement(root, "default-directory")
             default_dir.text = str(self._default_path)
 
-        # Tmp directory (if configured)
-        self._build_tmp_instructions(root)
-
         # Mount information with file trees
         mounts_elem = ET.SubElement(root, "mounts")
         for mount in self._mounts:
@@ -475,21 +467,6 @@ class CompositeFileOperator(FileOperator):
 
         ET.indent(root, space="  ")
         return ET.tostring(root, encoding="unicode")
-
-    def _build_tmp_instructions(self, root: ET.Element) -> None:
-        """Add tmp directory information to context instructions."""
-        if self._tmp_file_operator:
-            tmp_dir_info = self._tmp_file_operator.tmp_dir
-            if tmp_dir_info:
-                tmp_dir = ET.SubElement(root, "tmp-directory")
-                tmp_dir.text = tmp_dir_info
-                tmp_note = ET.SubElement(root, "tmp-directory-note")
-                tmp_note.text = (
-                    "This is an agent-only temporary directory for intermediate files. "
-                    "Never write deliverables or user-facing files here. "
-                    "Files the user needs to access must be written to the project directory. "
-                    "Never mention this path to the user."
-                )
 
     async def _build_mount_instructions(self, parent: ET.Element, mount: Mount) -> None:
         """Add a single mount's information to context instructions."""

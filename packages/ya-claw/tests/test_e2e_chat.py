@@ -14,8 +14,8 @@ If gateway credentials are missing, the test is skipped.
 
 from __future__ import annotations
 
-import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -31,29 +31,19 @@ def _has_model() -> bool:
     return os.environ.get("GATEWAY_API_KEY", "").strip() != "" and os.environ.get("GATEWAY_BASE_URL", "").strip() != ""
 
 
-def _create_schema() -> None:
-    async def _run() -> None:
-        from ya_claw.db.engine import create_engine
-        from ya_claw.orm.base import Base
-
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
-
-
 @pytest.fixture(autouse=True)
-def _clear_settings(monkeypatch, tmp_path: Path) -> None:
+def _clear_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    initialize_sqlite_database: Callable[[str], None],
+) -> None:
     monkeypatch.setenv("YA_CLAW_API_TOKEN", "test-token")
     monkeypatch.setenv("YA_CLAW_DATA_DIR", str(tmp_path / "runtime-data"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local")
     get_settings.cache_clear()
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
     yield
     get_settings.cache_clear()
 
@@ -69,8 +59,6 @@ def test_full_chat_pipeline_creates_run_streams_events_and_commits_artifacts() -
     Creates a session with input, lets the coordinator execute a real agent
     run, and verifies SSE events, commit artifacts, and session GET.
     """
-    _create_schema()
-
     settings = get_settings()
 
     with TestClient(create_app()) as client:
@@ -168,8 +156,6 @@ def test_sse_event_stream_during_run_execution() -> None:
     Connects to the SSE endpoint after creating a run and verifies
     event flow including RUN_STARTED, TEXT_MESSAGE_CONTENT, RUN_FINISHED.
     """
-    _create_schema()
-
     with TestClient(create_app()) as client:
         create_response = client.post(
             "/api/v1/sessions",

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
@@ -17,8 +16,6 @@ from ya_claw.config import ClawSettings, get_settings
 from ya_claw.controller import windows_workspace_files as windows_workspace_files_module
 from ya_claw.controller import workspace_files as workspace_files_module
 from ya_claw.controller.workspace_files import WorkspaceDownload
-from ya_claw.db.engine import create_engine
-from ya_claw.orm.base import Base
 from ya_claw.workspace import DockerWorkspaceProvider
 
 
@@ -55,27 +52,15 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
 
 @pytest.fixture
-def client() -> TestClient:
-    _create_schema()
+def client(initialize_sqlite_database: Callable[[str], None]) -> TestClient:
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
     with TestClient(create_app()) as test_client:
         yield test_client
 
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
-
-
-def _create_schema() -> None:
-    async def _run() -> None:
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
 
 
 def _create_session(client: TestClient, *, workspace: dict[str, object] | None = None) -> str:

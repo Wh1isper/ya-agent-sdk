@@ -433,38 +433,34 @@ async def test_close_calls_backend_close(mount_dirs: tuple[Path, Path]):
     await composite.close()
 
 
-# --- Tmp file handling ---
+# --- Generic mount handling ---
 
 
 @pytest.mark.anyio
-async def test_tmp_file_operations(mount_dirs: tuple[Path, Path]):
-    """Tmp files are handled by base class tmp routing, not by mounts."""
+async def test_additional_local_mount_uses_normal_composite_routing(mount_dirs: tuple[Path, Path]):
+    """An auxiliary local path is exposed through an ordinary composite mount."""
     workspace, remote = mount_dirs
 
-    with tempfile.TemporaryDirectory(prefix="ya_test_") as tmp_dir:
-        # Resolve to handle macOS /var -> /private/var symlink
-        tmp_dir_resolved = Path(tmp_dir).resolve()
-
+    with tempfile.TemporaryDirectory(prefix="ya_test_") as auxiliary_dir:
+        auxiliary = Path(auxiliary_dir).resolve()
         workspace_op = LocalFileOperator(default_path=workspace, allowed_paths=[workspace])
         remote_op = LocalFileOperator(default_path=remote, allowed_paths=[remote])
+        auxiliary_op = LocalFileOperator(default_path=auxiliary, allowed_paths=[auxiliary])
 
         composite = CompositeFileOperator(
             mounts=[
                 Mount(virtual_path=Path("/workspace"), backend=workspace_op),
                 Mount(virtual_path=Path("/mnt/pc"), backend=remote_op),
+                Mount(virtual_path=Path("/auxiliary"), backend=auxiliary_op),
             ],
             default_mount=Path("/workspace"),
-            tmp_dir=tmp_dir_resolved,
         )
 
-        # Write to tmp (use resolved path for consistency)
-        tmp_file = str(tmp_dir_resolved / "test_output.txt")
-        await composite.write_file(tmp_file, "tmp content")
-        content = await composite.read_file(tmp_file)
-        assert content == "tmp content"
+        auxiliary_file = "/auxiliary/test_output.txt"
+        await composite.write_file(auxiliary_file, "auxiliary content")
 
-        # Verify it's actually in the tmp directory, not in any mount
-        assert Path(tmp_file).read_text() == "tmp content"
+        assert await composite.read_file(auxiliary_file) == "auxiliary content"
+        assert (auxiliary / "test_output.txt").read_text() == "auxiliary content"
         assert not (workspace / "test_output.txt").exists()
         assert not (remote / "test_output.txt").exists()
 

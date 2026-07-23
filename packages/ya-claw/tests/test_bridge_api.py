@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -8,13 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
-from ya_claw.db.engine import create_engine
-from ya_claw.orm.base import Base
 from ya_claw.orm.tables import BridgeConversationRecord, BridgeEventRecord, RunRecord, SessionRecord
 
 
 @pytest.fixture(autouse=True)
-def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
+def clear_claw_settings(
+    monkeypatch,
+    tmp_path: Path,
+    initialize_sqlite_database: Callable[[str], None],
+) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
         "YA_CLAW_DATABASE_URL",
@@ -39,6 +41,8 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
 
     get_settings.cache_clear()
+    settings = get_settings()
+    initialize_sqlite_database(settings.resolved_database_url)
     yield
     get_settings.cache_clear()
 
@@ -47,21 +51,7 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
-def _create_schema() -> None:
-    async def _run() -> None:
-        settings = get_settings()
-        engine = create_engine(settings.resolved_database_url)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_run())
-
-
 def test_bridge_lists_conversations_and_events() -> None:
-    _create_schema()
     app = create_app()
     with TestClient(app) as client:
         session_record = SessionRecord(id="session-1", profile_name="default", active_run_id="run-1")
@@ -129,7 +119,6 @@ def test_bridge_lists_conversations_and_events() -> None:
 
 
 def test_bridge_events_filter_by_status() -> None:
-    _create_schema()
     app = create_app()
     with TestClient(app) as client:
         session_record = SessionRecord(id="session-1", profile_name="default")
