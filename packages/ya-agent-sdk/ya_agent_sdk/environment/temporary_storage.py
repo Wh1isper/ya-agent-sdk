@@ -13,6 +13,7 @@ from pathlib import Path
 WORKSPACE_TMP_DIR_NAME = ".tmp"
 TMP_DIR_PREFIX = "ya-agent-"
 TMP_GITIGNORE_CONTENT = b"*\n"
+_POSIX_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ def prepare_workspace_tmp_parent(workspace_root: Path) -> tuple[Path, DirectoryI
     resolved_root = workspace_root.resolve()
     tmp_parent = resolved_root / WORKSPACE_TMP_DIR_NAME
     if os.name == "posix":
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_flags = _POSIX_DIRECTORY_FLAGS
         root_fd = os.open(resolved_root, directory_flags)
         try:
             with contextlib.suppress(FileExistsError):
@@ -104,7 +105,7 @@ def create_owned_tmp_directory(
     """Create one owned instance without following a replaced POSIX parent."""
     path = parent / instance_name
     if os.name == "posix":
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_flags = _POSIX_DIRECTORY_FLAGS
         parent_fd = os.open(parent, directory_flags)
         try:
             if _identity_from_stat(os.fstat(parent_fd)) != parent_identity:
@@ -148,7 +149,7 @@ def configure_owned_tmp_directory(
 ) -> None:
     """Configure an already-registered instance through stable POSIX handles."""
     if os.name == "posix":
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_flags = _POSIX_DIRECTORY_FLAGS
         parent_fd = os.open(path.parent, directory_flags)
         try:
             if _identity_from_stat(os.fstat(parent_fd)) != parent_identity:
@@ -203,7 +204,7 @@ def write_tmp_gitignore(
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_BINARY", 0)
     if os.name == "posix":
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_flags = _POSIX_DIRECTORY_FLAGS
         parent_fd = os.open(tmp_dir.parent, directory_flags)
         try:
             if _identity_from_stat(os.fstat(parent_fd)) != parent_identity:
@@ -235,7 +236,7 @@ def write_tmp_gitignore(
 
 def _remove_directory_contents_fd(directory_fd: int) -> None:
     """Remove one owned directory tree without following symlink entries."""
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_flags = _POSIX_DIRECTORY_FLAGS
     for name in os.listdir(directory_fd):
         entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         if stat.S_ISDIR(entry_stat.st_mode):
@@ -256,7 +257,7 @@ def _remove_owned_tmp_directory_posix(
     directory_identity: DirectoryIdentity,
 ) -> None:
     """Remove an instance through stable parent and instance directory handles."""
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_flags = _POSIX_DIRECTORY_FLAGS
     parent_fd = os.open(path.parent, directory_flags)
     try:
         if _identity_from_stat(os.fstat(parent_fd)) != parent_identity:
