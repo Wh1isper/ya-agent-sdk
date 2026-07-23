@@ -119,6 +119,27 @@ async def test_glob_searches_managed_tmp_outside_default_root(tmp_path: Path) ->
         assert await env.file_operator.read_file(result[0]) == "temporary content"
 
 
+async def test_glob_searches_workspace_managed_tmp_from_explicit_root(tmp_path: Path) -> None:
+    """A workspace tmp root matches patterns relative to the selected instance."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[workspace], default_path=workspace))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        assert env.tmp_dir is not None
+        artifact = env.tmp_dir / "nested" / "artifact.txt"
+        await env.file_operator.mkdir(str(artifact.parent))
+        await env.file_operator.write_file(str(artifact), "temporary content")
+
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+        result = await GlobTool().call(mock_run_ctx, pattern="nested/*.txt", root=str(env.tmp_dir))
+
+        assert result == [artifact.relative_to(workspace).as_posix()]
+        assert await env.file_operator.read_file(result[0]) == "temporary content"
+
+
 async def test_glob_matches_external_allowed_root_reached_through_alias(tmp_path: Path) -> None:
     """Path matching should retain allowed-relative coordinates through aliases."""
     workspace = tmp_path / "workspace"

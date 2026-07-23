@@ -308,11 +308,11 @@ async def test_environment_resolve_tmp_path_is_safe() -> None:
     class TmpEnvironment(MockEnvironment):
         async def _setup(self) -> None:
             await super()._setup()
-            self._tmp_dir = PurePosixPath("/workspace/.ya-agent/tmp/session")
+            self._tmp_dir = PurePosixPath("/workspace/.tmp/ya-agent-session")
 
     async with TmpEnvironment() as env:
         assert env.resolve_tmp_path("logs/output.txt") == PurePosixPath(
-            "/workspace/.ya-agent/tmp/session/logs/output.txt"
+            "/workspace/.tmp/ya-agent-session/logs/output.txt"
         )
         assert env.resolve_tmp_path(".") == env.tmp_dir
         for unsafe_path in ("../escape", "nested/../../escape", "/absolute"):
@@ -354,13 +354,13 @@ async def test_environment_context_instructions_include_tmp_directory() -> None:
     class TmpEnvironment(MockEnvironment):
         async def _setup(self) -> None:
             await super()._setup()
-            self._tmp_dir = PurePosixPath("/workspace/.ya-agent/tmp/session")
+            self._tmp_dir = PurePosixPath("/workspace/.tmp/ya-agent-session")
 
     async with TmpEnvironment() as env:
         instructions = await env.get_context_instructions()
 
     assert "<temporary-storage>" in instructions
-    assert "<tmp-directory>/workspace/.ya-agent/tmp/session</tmp-directory>" in instructions
+    assert "<tmp-directory>/workspace/.tmp/ya-agent-session</tmp-directory>" in instructions
     assert "Never write deliverables or user-facing files here" in instructions
 
 

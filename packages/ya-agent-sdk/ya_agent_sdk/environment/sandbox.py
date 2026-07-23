@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -39,6 +38,16 @@ from ya_agent_environment import (
 )
 
 from ya_agent_sdk.environment.local import VirtualLocalFileOperator, VirtualMount
+from ya_agent_sdk.environment.temporary_storage import (
+    TMP_DIR_PREFIX,
+    WORKSPACE_TMP_DIR_NAME,
+    DirectoryIdentity,
+    configure_owned_tmp_directory,
+    create_owned_tmp_directory,
+    prepare_workspace_tmp_parent,
+    remove_owned_tmp_directory,
+    write_tmp_gitignore,
+)
 from ya_agent_sdk.environment.virtual_path import VirtualPath, normalize_virtual_path
 
 _DOCKER_CLI_EXECUTABLE = "docker"
@@ -982,6 +991,8 @@ class SandboxEnvironment(Environment):
         self._created_container: bool = False
         self._client: docker.DockerClient | None = None
         self._tmp_host_dir: Path | None = None
+        self._tmp_parent_identity: DirectoryIdentity | None = None
+        self._tmp_dir_identity: DirectoryIdentity | None = None
         self._ready_shell: DockerShell | None = None
         self._ready_lock: asyncio.Lock = asyncio.Lock()
 
@@ -1046,29 +1057,37 @@ class SandboxEnvironment(Environment):
         if not shared_mounts:
             raise RuntimeError("Temporary storage requires a writable shared mount")
         mount = max(shared_mounts, key=lambda item: len(item.virtual_path.parts))
-        relative_tmp = PurePath(".ya-agent") / "tmp" / uuid4().hex
+        instance_name = f"{TMP_DIR_PREFIX}{uuid4().hex}"
+        relative_tmp = PurePath(WORKSPACE_TMP_DIR_NAME) / instance_name
         host_root = mount.host_path.resolve()
-        control_dir = host_root / ".ya-agent"
-        tmp_parent = control_dir / "tmp"
-        for directory in (control_dir, tmp_parent):
-            if directory.exists() or directory.is_symlink():
-                try:
-                    directory.resolve().relative_to(host_root)
-                except ValueError as exc:
-                    raise RuntimeError("Temporary storage escapes the shared mount") from exc
-            directory.mkdir(exist_ok=True)
-            try:
-                directory.resolve().relative_to(host_root)
-            except ValueError as exc:
-                raise RuntimeError("Temporary storage escapes the shared mount") from exc
-        tmp_host_dir = tmp_parent / relative_tmp.name
-        tmp_host_dir.mkdir()
+        workspace_stat = host_root.stat()
+        workspace_mode = workspace_stat.st_mode & 0o777
+        owner = (
+            (workspace_stat.st_uid, workspace_stat.st_gid) if sys.platform != "win32" and os.geteuid() == 0 else None
+        )
+        tmp_parent, parent_identity = prepare_workspace_tmp_parent(host_root)
+        tmp_host_dir, directory_identity = create_owned_tmp_directory(
+            tmp_parent,
+            parent_identity=parent_identity,
+            instance_name=instance_name,
+        )
         self._tmp_host_dir = tmp_host_dir
         self._tmp_dir = mount.virtual_path / relative_tmp
-        workspace_stat = host_root.stat()
-        tmp_host_dir.chmod(workspace_stat.st_mode & 0o777)
-        if sys.platform != "win32" and os.geteuid() == 0:
-            os.chown(tmp_host_dir, workspace_stat.st_uid, workspace_stat.st_gid)
+        self._tmp_parent_identity = parent_identity
+        self._tmp_dir_identity = directory_identity
+        configure_owned_tmp_directory(
+            tmp_host_dir,
+            parent_identity=parent_identity,
+            directory_identity=directory_identity,
+            mode=workspace_mode,
+            owner=owner,
+        )
+        write_tmp_gitignore(
+            tmp_host_dir,
+            parent_identity=parent_identity,
+            directory_identity=directory_identity,
+            owner=owner,
+        )
 
     async def _ensure_container(self) -> None:
         if self._container_id is None:
@@ -1179,18 +1198,23 @@ class SandboxEnvironment(Environment):
         owned_tmp = self._tmp_host_dir
         if owned_tmp is None:
             self._tmp_dir = None
+            self._tmp_parent_identity = None
+            self._tmp_dir_identity = None
             return
-        try:
-            await asyncio.to_thread(shutil.rmtree, owned_tmp)
-        except FileNotFoundError:
-            try:
-                owned_tmp.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                raise
+        parent_identity = self._tmp_parent_identity
+        directory_identity = self._tmp_dir_identity
+        if parent_identity is None or directory_identity is None:
+            raise RuntimeError("Temporary storage ownership identity is unavailable")
+        await asyncio.to_thread(
+            remove_owned_tmp_directory,
+            owned_tmp,
+            parent_identity=parent_identity,
+            directory_identity=directory_identity,
+        )
         self._tmp_host_dir = None
         self._tmp_dir = None
+        self._tmp_parent_identity = None
+        self._tmp_dir_identity = None
 
     async def _close_ready_shell_if_unowned(self) -> None:
         ready_shell = self._ready_shell

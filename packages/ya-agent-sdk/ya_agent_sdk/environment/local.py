@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import anyio
 from ya_agent_environment import (
@@ -39,6 +40,15 @@ from ya_agent_sdk.environment.process import (
     kill_process_tree,
     process_group_kwargs,
     send_process_tree_signal,
+)
+from ya_agent_sdk.environment.temporary_storage import (
+    TMP_DIR_PREFIX,
+    DirectoryIdentity,
+    capture_directory_identity,
+    create_owned_tmp_directory,
+    prepare_workspace_tmp_parent,
+    remove_owned_tmp_directory,
+    write_tmp_gitignore,
 )
 from ya_agent_sdk.environment.virtual_path import (
     VirtualPath,
@@ -1587,9 +1597,11 @@ class LocalEnvironment(Environment):
             instructions_paths: Directories included in generated file-tree context.
                 If None, all allowed_paths are included.
             shell_timeout: Default shell command timeout.
-            tmp_base_dir: Base directory for creating session temporary directory.
-                If None, uses system default temp directory.
-            enable_tmp_dir: Whether to create a session temporary directory.
+            tmp_base_dir: Explicit base directory for the environment temporary
+                directory. When omitted, a workspace-backed environment uses
+                ``<default_path>/.tmp`` and an environment without a workspace
+                uses the system temporary directory.
+            enable_tmp_dir: Whether to create an environment temporary directory.
                 Defaults to True.
             resource_state: Optional state to restore resources from.
                 Resources will be restored when entering the context.
@@ -1619,24 +1631,48 @@ class LocalEnvironment(Environment):
         self._shell_executable = shell_executable
         self._environment_overrides = dict(environment_overrides or {})
         self._shell_sandbox_policy = shell_sandbox_policy
-        self._tmp_dir_obj: tempfile.TemporaryDirectory[str] | None = None
+        self._tmp_host_dir: Path | None = None
+        self._tmp_parent_identity: DirectoryIdentity | None = None
+        self._tmp_dir_identity: DirectoryIdentity | None = None
 
     async def _setup(self) -> None:
         """Initialize file operator, shell, and tmp directory."""
-        tmp_dir_path: Path | None = None
-        if self._enable_tmp_dir:
-            self._tmp_dir_obj = tempfile.TemporaryDirectory(
-                prefix="ya_agent_",
-                dir=str(self._tmp_base_dir) if self._tmp_base_dir else None,
-            )
-            tmp_dir_path = Path(self._tmp_dir_obj.name).resolve()
-            self._tmp_dir = tmp_dir_path
-
+        await self._remove_tmp_host_dir()
         # Determine default_path: use provided value, or infer from allowed_paths.
         # Never fall back to Path.cwd() to avoid exposing the process working directory.
         default_path = self._default_path
         if default_path is None and self._allowed_paths:
             default_path = self._allowed_paths[0]
+
+        tmp_dir_path: Path | None = None
+        if self._enable_tmp_dir:
+            tmp_base_dir = self._tmp_base_dir
+            workspace_tmp_root: Path | None = None
+            if tmp_base_dir is None and default_path is not None:
+                workspace_tmp_root = default_path.resolve()
+                tmp_base_dir, parent_identity = prepare_workspace_tmp_parent(workspace_tmp_root)
+            else:
+                tmp_base_dir = Path(tempfile.gettempdir()).resolve() if tmp_base_dir is None else tmp_base_dir.resolve()
+                parent_identity = capture_directory_identity(tmp_base_dir)
+            tmp_dir_path, directory_identity = create_owned_tmp_directory(
+                tmp_base_dir,
+                parent_identity=parent_identity,
+                instance_name=f"{TMP_DIR_PREFIX}{uuid4().hex}",
+            )
+            self._tmp_host_dir = tmp_dir_path
+            self._tmp_dir = tmp_dir_path
+            self._tmp_parent_identity = parent_identity
+            self._tmp_dir_identity = directory_identity
+            if workspace_tmp_root is not None:
+                try:
+                    tmp_dir_path.relative_to(workspace_tmp_root)
+                except ValueError as exc:
+                    raise RuntimeError("Temporary storage escapes the workspace") from exc
+            write_tmp_gitignore(
+                tmp_dir_path,
+                parent_identity=parent_identity,
+                directory_identity=directory_identity,
+            )
 
         # Build allowed_paths list
         allowed = list(self._allowed_paths) if self._allowed_paths else []
@@ -1674,18 +1710,32 @@ class LocalEnvironment(Environment):
             )
 
     async def _teardown(self) -> None:
-        """Clean up tmp directory.
-
-        Note: Do NOT null _file_operator or _shell here.
-        The base Environment.__aexit__ calls close() on them after
-        _teardown returns.  Nulling here would skip close() and
-        leak background processes.
-        """
+        """Clean up the owned temporary instance after dependants close."""
         try:
-            if self._tmp_dir_obj is not None:
-                self._tmp_dir_obj.cleanup()
+            await self._remove_tmp_host_dir()
         finally:
-            self._tmp_dir_obj = None
-            self._tmp_dir = None
             self._file_operator = None
             self._shell = None
+
+    async def _remove_tmp_host_dir(self) -> None:
+        """Remove owned temporary storage, retaining ownership on failure."""
+        owned_tmp = self._tmp_host_dir
+        if owned_tmp is None:
+            self._tmp_dir = None
+            self._tmp_parent_identity = None
+            self._tmp_dir_identity = None
+            return
+        parent_identity = self._tmp_parent_identity
+        directory_identity = self._tmp_dir_identity
+        if parent_identity is None or directory_identity is None:
+            raise RuntimeError("Temporary storage ownership identity is unavailable")
+        await asyncio.to_thread(
+            remove_owned_tmp_directory,
+            owned_tmp,
+            parent_identity=parent_identity,
+            directory_identity=directory_identity,
+        )
+        self._tmp_host_dir = None
+        self._tmp_dir = None
+        self._tmp_parent_identity = None
+        self._tmp_dir_identity = None

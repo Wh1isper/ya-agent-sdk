@@ -84,8 +84,11 @@ async def test_tui_tmp_dir_created_in_system_temp(tmp_path: Path) -> None:
         assert tmp_dir.exists()
         assert tmp_dir.parent == Path(tempfile.gettempdir()).resolve()
         assert tmp_dir.parent != tmp_path.resolve()
+        assert tmp_dir.name.startswith("ya-agent-")
+        assert (tmp_dir / ".gitignore").read_bytes() == b"*\n"
 
     assert not tmp_dir.exists()
+    assert not (tmp_path / ".tmp").exists()
 
 
 def test_tui_tmp_base_dir_override_is_not_exposed() -> None:

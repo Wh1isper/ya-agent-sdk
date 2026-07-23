@@ -313,7 +313,7 @@ async def test_local_environment_tmp_dir(tmp_path: Path) -> None:
         assert env.tmp_dir is not None
         assert env.tmp_dir.exists()
         assert env.tmp_dir.is_dir()
-        assert "ya_agent_" in env.tmp_dir.name
+        assert env.tmp_dir.name.startswith("ya-agent-")
         assert env.tmp_dir.parent == tmp_path
 
         # Create a file to verify cleanup later
