@@ -22,7 +22,10 @@ absolute paths and parent traversal. Temporary paths are handled through the nor
 `FileOperator` methods; there is no separate temporary-file operator or routing API.
 Environment cleanup closes registered resources, the shell, and the file operator
 before `_teardown()` releases backend/container and temporary-directory resources.
-The same ordering is used after partial setup failures.
+The same ordering is used after partial setup failures. The base class does not assume
+a filesystem backing store and never deletes `_tmp_dir` itself: custom environments
+must allocate their agent-facing temporary backend in `_setup()` and remove only owned
+storage in `_teardown()`.
 
 A `FileOperator` implementation exposes one logical path space by implementing its
 public abstract methods directly. `read_bytes_stream()` returns an `AsyncIterator`

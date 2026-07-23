@@ -170,6 +170,25 @@ async def _walk_search_entries(
             yield entry
 
 
+def _root_aware_match_paths(file_operator: FileOperator, root: str, path: str) -> tuple[str, ...]:
+    """Include coordinates relative to an explicitly selected search root."""
+    match_paths = set(file_operator.get_path_match_candidates(path))
+    if root in {"", "."}:
+        return tuple(sorted(match_paths))
+    root_paths = file_operator.get_path_match_candidates(root)
+    for candidate in tuple(match_paths):
+        normalized_candidate = normalize_logical_path(candidate)
+        for root_path in root_paths:
+            normalized_root = normalize_logical_path(root_path)
+            if normalized_root == ".":
+                continue
+            if normalized_candidate == normalized_root:
+                match_paths.add(".")
+            elif normalized_candidate.startswith(f"{normalized_root}/"):
+                match_paths.add(normalized_candidate[len(normalized_root) + 1 :])
+    return tuple(sorted(match_paths))
+
+
 async def collect_walk_entries(
     file_operator: FileOperator,
     *,
@@ -189,7 +208,7 @@ async def collect_walk_entries(
         path = normalize_logical_path(entry["path"])
         if path in seen_paths:
             continue
-        match_paths = file_operator.get_path_match_candidates(path)
+        match_paths = _root_aware_match_paths(file_operator, root, path)
         if not include_hidden and _is_hidden_search_path(match_paths):
             continue
         seen_paths.add(path)
@@ -227,7 +246,7 @@ async def collect_walk_files(
         path = normalize_logical_path(entry["path"])
         if path in seen_paths:
             continue
-        match_paths = file_operator.get_path_match_candidates(path)
+        match_paths = _root_aware_match_paths(file_operator, root, path)
         if not include_hidden and _is_hidden_search_path(match_paths):
             continue
         seen_paths.add(path)
@@ -441,6 +460,7 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
                     candidates.append(
                         SearchCandidate(
                             path=rel,
+                            match_paths=_root_aware_match_paths(file_operator, root, rel),
                             size=stat.st_size,
                             mtime=stat.st_mtime,
                             is_file=True,
@@ -492,6 +512,7 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
                         candidates.append(
                             SearchCandidate(
                                 path=rel,
+                                match_paths=_root_aware_match_paths(file_operator, root, rel),
                                 size=stat.st_size,
                                 mtime=stat.st_mtime,
                                 is_dir=True,
@@ -508,6 +529,7 @@ async def _collect_local_gitignore_filtered(  # noqa: C901
                 candidates.append(
                     SearchCandidate(
                         path=rel,
+                        match_paths=_root_aware_match_paths(file_operator, root, rel),
                         size=stat.st_size,
                         mtime=stat.st_mtime,
                         is_file=True,

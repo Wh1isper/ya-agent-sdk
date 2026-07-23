@@ -121,12 +121,15 @@ The SDK deliberately does **not** include this tool in its default tool surface:
 
 `Environment` owns managed temporary storage. While entered, use `env.tmp_dir` to
 inspect the agent-facing root and `env.resolve_tmp_path("relative/path")` to build a
-contained path. Temporary files use the normal `env.file_operator` methods. Local SDK
-environments create this directory under the system temporary directory by default;
-Sandbox and YA Claw environments place a hidden `.ya-agent/tmp/<id>` directory below
-an existing shared mount so file operations and container commands use the same path.
-Reusable containers therefore need no additional bind mount. Temporary storage is
-removed only after resources, shell, and file operator cleanup.
+contained path. Temporary files use the normal `env.file_operator` methods.
+Workspace-backed environments use a hidden `.tmp/ya-agent-<id>` directory; a
+`LocalEnvironment` without a workspace falls back to the system temporary directory,
+and an explicit `tmp_base_dir` takes priority. Each owned instance contains a
+self-ignoring `.gitignore`, so temporary contents stay out of Git status without
+editing the project's root ignore file. Sandbox and YA Claw environments create the
+same path below an existing shared mount so file operations and container commands use
+the same path. Reusable containers therefore need no additional bind mount. Temporary
+storage is removed only after resources, shell, and file operator cleanup.
 
 `FileOperator.read_bytes_stream()` returns an async iterator directly:
 

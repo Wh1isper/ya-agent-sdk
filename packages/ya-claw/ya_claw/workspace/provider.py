@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import shutil
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -33,6 +32,14 @@ from ya_agent_sdk.environment import (
     VirtualMount,
 )
 from ya_agent_sdk.environment.sandbox import DockerShell
+from ya_agent_sdk.environment.temporary_storage import (
+    TMP_DIR_PREFIX,
+    DirectoryIdentity,
+    create_owned_tmp_directory,
+    prepare_workspace_tmp_parent,
+    remove_owned_tmp_directory,
+    write_tmp_gitignore,
+)
 from ya_agent_sdk.environment.virtual_path import (
     VirtualPath,
 )
@@ -198,6 +205,8 @@ class MappedLocalEnvironment(Environment):
         self._shell_sandbox_policy = shell_sandbox_policy
         self._read_only_virtual_paths = [normalize_agent_virtual_path(path) for path in read_only_virtual_paths or []]
         self._tmp_host_dir: Path | None = None
+        self._tmp_parent_identity: DirectoryIdentity | None = None
+        self._tmp_dir_identity: DirectoryIdentity | None = None
 
     async def _setup(self) -> None:
         await self._remove_tmp_host_dir()
@@ -251,23 +260,22 @@ class MappedLocalEnvironment(Environment):
         if not writable_mounts:
             raise RuntimeError("Temporary storage requires a writable shared mount")
         host_root = writable_mounts[0].host_path.resolve()
-        control_dir = host_root / ".ya-agent"
-        tmp_parent = control_dir / "tmp"
-        for directory in (control_dir, tmp_parent):
-            if directory.exists() or directory.is_symlink():
-                try:
-                    directory.resolve().relative_to(host_root)
-                except ValueError as exc:
-                    raise RuntimeError("Temporary storage escapes the workspace") from exc
-            directory.mkdir(exist_ok=True)
-            try:
-                directory.resolve().relative_to(host_root)
-            except ValueError as exc:
-                raise RuntimeError("Temporary storage escapes the workspace") from exc
-        tmp_dir_path = tmp_parent / uuid4().hex
-        tmp_dir_path.mkdir()
+        tmp_parent, parent_identity = prepare_workspace_tmp_parent(host_root)
+        tmp_dir_path, directory_identity = create_owned_tmp_directory(
+            tmp_parent,
+            parent_identity=parent_identity,
+            instance_name=f"{TMP_DIR_PREFIX}{uuid4().hex}",
+            mode=0o777,
+        )
         self._tmp_host_dir = tmp_dir_path
         self._tmp_dir = tmp_dir_path
+        self._tmp_parent_identity = parent_identity
+        self._tmp_dir_identity = directory_identity
+        write_tmp_gitignore(
+            tmp_dir_path,
+            parent_identity=parent_identity,
+            directory_identity=directory_identity,
+        )
         return tmp_dir_path
 
     async def _teardown(self) -> None:
@@ -282,18 +290,23 @@ class MappedLocalEnvironment(Environment):
         owned_tmp = self._tmp_host_dir
         if owned_tmp is None:
             self._tmp_dir = None
+            self._tmp_parent_identity = None
+            self._tmp_dir_identity = None
             return
-        try:
-            await asyncio.to_thread(shutil.rmtree, owned_tmp)
-        except FileNotFoundError:
-            try:
-                owned_tmp.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                raise
+        parent_identity = self._tmp_parent_identity
+        directory_identity = self._tmp_dir_identity
+        if parent_identity is None or directory_identity is None:
+            raise RuntimeError("Temporary storage ownership identity is unavailable")
+        await asyncio.to_thread(
+            remove_owned_tmp_directory,
+            owned_tmp,
+            parent_identity=parent_identity,
+            directory_identity=directory_identity,
+        )
         self._tmp_host_dir = None
         self._tmp_dir = None
+        self._tmp_parent_identity = None
+        self._tmp_dir_identity = None
 
 
 class DockerWorkspaceDeferredShell(DeferredShell):

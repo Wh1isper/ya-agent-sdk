@@ -42,6 +42,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - implementation package import name is `ya_agent_environment`
 - Environment base definitions live in this package.
 - `Environment` owns agent-facing temporary storage through `tmp_dir` and `resolve_tmp_path()`; cleanup order is registered resources, shell, file operator, then environment backend/container/tmp teardown, including partial setup failure and cancellation.
+- Workspace-backed concrete environments use `.tmp/ya-agent-<id>` instances with a self-ignoring `.gitignore`; they remove only their owned instance, while custom environments remain responsible for allocating and tearing down their own temporary backend.
 - `FileOperator` represents one logical backend and has no temporary routing or convenience API; concrete backends implement public methods directly, and `read_bytes_stream()` returns an `AsyncIterator` without awaiting the call.
 - `LocalFileOperator.walk_files()` returns default-relative paths when possible and directly reusable absolute paths for allowed roots outside `default_path`; glob/grep can explicitly search those roots without implicitly including temporary storage in `root="."`.
 
@@ -81,7 +82,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 
 - TUI reference implementation built on top of `ya-agent-sdk`
 - runtime-facing CLI behavior belongs here
-- YAACLI managed temporary storage always uses the system temporary directory; the separate system-temp allowed path remains available for user-specified files.
+- YAACLI managed temporary storage intentionally overrides the SDK workspace-first policy and always uses the system temporary directory; the separate system-temp allowed path remains available for user-specified files.
 - interactive YAACLI enables `ask_user_question` by default through `tools.enable_user_input`, which can be disabled in `tools.toml`; headless mode does not expose the tool
 - non-empty interactive HITL batches pause YAACLI's elapsed run timer for the full user wait, resume without charging that interval, and emit one terminal bell when `notifications.bell_on_user_action_required` is enabled
 - `[general]` and `[model_profiles.*]` support static `instructions` for the active main-agent model profile; YAACLI registers them through a dynamic Pydantic AI `instructions` callback so `/model` switches apply to every later model request, including legacy or compacted histories
@@ -123,7 +124,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - workspace provider modules live under `ya_claw/workspace/`
 - `LocalWorkspaceProvider` uses `LocalFileOperator` plus policy-driven `LocalShell` over the real workspace path; Claw passes resolved `ShellSandboxRuntimePolicy` for sandboxed execution, while SDK and YAACLI default local environments keep raw subprocess semantics unless a sandbox policy is provided
 - Shell sandbox architecture target: reusable sandbox shell primitives live in `ya-agent-sdk` under `ya_agent_sdk.environment.shell_sandbox` split into `policy`, `backend`, and `shell` modules; shared subprocess lifecycle helpers live in `ya_agent_sdk.environment.process`; Claw keeps workspace-specific conversion in `ya_claw.workspace.shell_sandbox` and resolves profile/settings/workspace bindings into `ShellSandboxRuntimePolicy` before environment construction; default profile is `workspace_write`; Linux target backend is `linux_bwrap_seccomp` using bubblewrap plus seccomp with optional Landlock; macOS target backend is `macos_seatbelt`; Windows target backend is `windows_restricted_token` using restricted tokens, AppContainer, Job Objects, private desktop, and ACL grants; raw host shell is a privileged audited escalation path
-- `DockerWorkspaceProvider` uses Docker mounts through `SandboxEnvironment`; file operations map the service-visible workspace path to `/workspace`, and Docker shell uses `/workspace`
+- `DockerWorkspaceProvider` uses Docker mounts through `SandboxEnvironment`; file operations map the service-visible workspace path to `/workspace`, Docker shell uses `/workspace`, and managed temporary storage uses `.tmp/ya-agent-<id>` within the shared mount
 - Docker shell execution uses a service-side Docker CLI subprocess for exact stdin/stdout transport and process lifecycle ownership while the Python Docker SDK manages containers; the official `Dockerfile.ya-claw` image bundles the CLI, and custom images or host installs need both the CLI on `PATH` and Docker Engine API access
 - `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` provides the Docker daemon-visible host mount path when the YA Claw service itself runs in Docker
 - Docker workspace containers receive UID/GID envs (`YA_CLAW_WORKSPACE_UID`, `YA_CLAW_WORKSPACE_GID`, `YA_CLAW_HOST_UID`, `YA_CLAW_HOST_GID`) from the service process by default or from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID/GID`

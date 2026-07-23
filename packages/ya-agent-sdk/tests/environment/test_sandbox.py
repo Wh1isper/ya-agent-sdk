@@ -1150,10 +1150,11 @@ async def test_sandbox_environment_tmp_uses_existing_shared_mount(tmp_path: Path
 
     async with env:
         assert env.tmp_dir is not None
-        assert str(env.tmp_dir).startswith("/workspace/.ya-agent/tmp/")
+        assert str(env.tmp_dir).startswith("/workspace/.tmp/ya-agent-")
         tmp_host_dir = env._tmp_host_dir
         assert tmp_host_dir is not None
         assert tmp_host_dir.exists()
+        assert (tmp_host_dir / ".gitignore").read_bytes() == b"*\n"
 
         tmp_file = env.resolve_tmp_path("data.txt")
         await env.file_operator.write_file(str(tmp_file), "shared")
@@ -1285,7 +1286,7 @@ async def test_sandbox_environment_create_container_reuses_mount_for_tmp(tmp_pat
         call_kwargs = mock_client.containers.run.call_args[1]
         assert call_kwargs["volumes"] == {str(tmp_path.resolve()): {"bind": "/workspace", "mode": "rw"}}
         assert env.tmp_dir is not None
-        assert str(env.tmp_dir).startswith("/workspace/.ya-agent/tmp/")
+        assert str(env.tmp_dir).startswith("/workspace/.tmp/ya-agent-")
 
 
 async def test_sandbox_environment_auto_start_stopped_container(tmp_path: Path) -> None:
@@ -1437,13 +1438,13 @@ async def test_sandbox_container_creation_tracks_handle_before_propagating_cance
     assert env._created_container is True
 
 
-async def test_sandbox_tmp_rejects_symlinked_control_directory(tmp_path: Path) -> None:
+async def test_sandbox_tmp_rejects_symlinked_parent_directory(tmp_path: Path) -> None:
     """A workspace symlink cannot redirect managed temporary storage outside its mount."""
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
     workspace.mkdir()
     outside.mkdir()
-    (workspace / ".ya-agent").symlink_to(outside, target_is_directory=True)
+    (workspace / ".tmp").symlink_to(outside, target_is_directory=True)
     shell = MagicMock()
     shell.close = AsyncMock()
     env = SandboxEnvironment(
@@ -1451,10 +1452,10 @@ async def test_sandbox_tmp_rejects_symlinked_control_directory(tmp_path: Path) -
         shell=shell,
     )
 
-    with pytest.raises(RuntimeError, match="escapes the shared mount"):
+    with pytest.raises(RuntimeError, match="escapes the workspace"):
         await env.__aenter__()
 
-    assert not (outside / "tmp").exists()
+    assert list(outside.iterdir()) == []
     assert env.entered is False
 
 
@@ -1470,19 +1471,26 @@ async def test_sandbox_tmp_post_create_failure_cleans_owned_directory(
         mounts=[VirtualMount(workspace, Path("/workspace"))],
         shell=shell,
     )
-    original_chmod = Path.chmod
+    if os.name == "posix":
 
-    def fail_tmp_chmod(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
-        if path.parent.name == "tmp":
+        def fail_tmp_fchmod(descriptor: int, mode: int) -> None:
             raise PermissionError("chmod denied")
-        original_chmod(path, mode, follow_symlinks=follow_symlinks)
 
-    monkeypatch.setattr(Path, "chmod", fail_tmp_chmod)
+        monkeypatch.setattr(os, "fchmod", fail_tmp_fchmod)
+    else:
+        original_chmod = Path.chmod
+
+        def fail_tmp_chmod(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+            if path.parent.name == ".tmp":
+                raise PermissionError("chmod denied")
+            original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(Path, "chmod", fail_tmp_chmod)
 
     with pytest.raises(PermissionError, match="chmod denied"):
         await env.__aenter__()
 
-    tmp_parent = workspace / ".ya-agent" / "tmp"
+    tmp_parent = workspace / ".tmp"
     assert env.entered is False
     assert env._tmp_host_dir is None
     assert env._tmp_dir is None
@@ -1503,7 +1511,7 @@ async def test_sandbox_tmp_cleanup_failure_retains_ownership(
         mounts=[VirtualMount(workspace, Path("/workspace"))],
         shell=shell,
     )
-    original_rmtree = sandbox_module.shutil.rmtree
+    original_remove = sandbox_module.remove_owned_tmp_directory
     owned_tmp: Path | None = None
     virtual_tmp = None
 
@@ -1513,10 +1521,10 @@ async def test_sandbox_tmp_cleanup_failure_retains_ownership(
             owned_tmp = env._tmp_host_dir
             virtual_tmp = env.tmp_dir
 
-            def fail_rmtree(path: Path) -> None:
+            def fail_remove(path: Path, **_: object) -> None:
                 raise cleanup_error(f"cleanup denied: {path}")
 
-            monkeypatch.setattr(sandbox_module.shutil, "rmtree", fail_rmtree)
+            monkeypatch.setattr(sandbox_module, "remove_owned_tmp_directory", fail_remove)
 
     assert owned_tmp is not None
     assert owned_tmp.exists()
@@ -1525,7 +1533,7 @@ async def test_sandbox_tmp_cleanup_failure_retains_ownership(
     assert env._file_operator is None
     assert env._shell is None
 
-    monkeypatch.setattr(sandbox_module.shutil, "rmtree", original_rmtree)
+    monkeypatch.setattr(sandbox_module, "remove_owned_tmp_directory", original_remove)
     async with env:
         assert not owned_tmp.exists()
         assert env._tmp_host_dir is not None

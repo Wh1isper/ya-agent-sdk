@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -856,30 +857,135 @@ async def test_environment_shell_execution(tmp_path: Path) -> None:
         assert "hello" in stdout
 
 
-async def test_environment_tmp_dir(tmp_path: Path) -> None:
-    """Should create and cleanup tmp_dir."""
+async def test_environment_tmp_dir_with_explicit_base(tmp_path: Path) -> None:
+    """An explicit temporary base takes priority and the owned instance is cleaned."""
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
         tmp_base_dir=tmp_path,
     ) as env:
-        assert env.tmp_dir is not None
-        assert env.tmp_dir.exists()
-        assert "ya_agent_" in env.tmp_dir.name
+        assert isinstance(env.tmp_dir, Path)
         saved_tmp = env.tmp_dir
+        assert saved_tmp.parent == tmp_path.resolve()
+        assert saved_tmp.name.startswith("ya-agent-")
+        assert (saved_tmp / ".gitignore").read_bytes() == b"*\n"
 
     assert not saved_tmp.exists()
 
 
-async def test_environment_tmp_dir_uses_system_temp_by_default(tmp_path: Path) -> None:
-    """LocalEnvironment does not place managed tmp storage in the workspace."""
+async def test_environment_tmp_dir_uses_workspace_by_default(tmp_path: Path) -> None:
+    """A workspace-backed environment keeps its owned temporary instance in .tmp."""
     async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path) as env:
         assert isinstance(env.tmp_dir, Path)
         saved_tmp = env.tmp_dir
-        assert saved_tmp.resolve().parent == Path(tempfile.gettempdir()).resolve()
-        assert saved_tmp.parent != tmp_path.resolve()
+        assert saved_tmp.parent == tmp_path.resolve() / ".tmp"
+        assert saved_tmp.name.startswith("ya-agent-")
+        assert (saved_tmp / ".gitignore").read_bytes() == b"*\n"
 
     assert not saved_tmp.exists()
+    assert (tmp_path / ".tmp").is_dir()
+
+
+async def test_environment_workspace_tmp_instances_have_isolated_ownership(tmp_path: Path) -> None:
+    """Each environment removes only its own instance below the shared parent."""
+    first = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+    second = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+
+    async with first:
+        assert isinstance(first.tmp_dir, Path)
+        first_tmp = first.tmp_dir
+        async with second:
+            assert isinstance(second.tmp_dir, Path)
+            second_tmp = second.tmp_dir
+            assert first_tmp != second_tmp
+            assert first_tmp.parent == second_tmp.parent == tmp_path.resolve() / ".tmp"
+        assert first_tmp.exists()
+        assert not second_tmp.exists()
+
+    assert not first_tmp.exists()
+    assert (tmp_path / ".tmp").is_dir()
+
+
+async def test_environment_tmp_cleanup_failure_retains_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed deletion is retried before a new instance is created."""
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+    original_remove = local_module.remove_owned_tmp_directory
+    owned_tmp: Path | None = None
+
+    with pytest.raises(PermissionError, match="cleanup denied"):
+        async with env:
+            assert isinstance(env.tmp_dir, Path)
+            owned_tmp = env.tmp_dir
+
+            def fail_remove(path: Path, **_: object) -> None:
+                raise PermissionError(f"cleanup denied: {path}")
+
+            monkeypatch.setattr(local_module, "remove_owned_tmp_directory", fail_remove)
+
+    assert owned_tmp is not None
+    assert owned_tmp.exists()
+    assert env._tmp_host_dir == owned_tmp
+    assert env._tmp_dir == owned_tmp
+
+    monkeypatch.setattr(local_module, "remove_owned_tmp_directory", original_remove)
+    async with env:
+        assert not owned_tmp.exists()
+        assert isinstance(env.tmp_dir, Path)
+        retry_tmp = env.tmp_dir
+        assert retry_tmp != owned_tmp
+
+    assert not retry_tmp.exists()
+
+
+async def test_environment_tmp_cleanup_rejects_replaced_parent(tmp_path: Path) -> None:
+    """Cleanup never follows a replaced shared parent into an unowned directory."""
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
+    await env.__aenter__()
+    assert isinstance(env.tmp_dir, Path)
+    owned_tmp = env.tmp_dir
+    original_parent = owned_tmp.parent
+    moved_parent = tmp_path / ".tmp-owned"
+    original_parent.rename(moved_parent)
+    original_parent.mkdir()
+    victim = original_parent / owned_tmp.name
+    victim.mkdir()
+    (victim / "keep.txt").write_text("not owned")
+
+    with pytest.raises(RuntimeError, match="parent ownership changed"):
+        await env.__aexit__(None, None, None)
+
+    assert (victim / "keep.txt").read_text() == "not owned"
+    assert env._tmp_host_dir == owned_tmp
+
+    shutil.rmtree(original_parent)
+    moved_parent.rename(original_parent)
+    async with env:
+        assert not owned_tmp.exists()
+        assert isinstance(env.tmp_dir, Path)
+        retry_tmp = env.tmp_dir
+
+    assert not retry_tmp.exists()
+
+
+async def test_environment_workspace_tmp_is_self_ignored_by_git(tmp_path: Path) -> None:
+    """The owned instance and its .gitignore stay out of repository status."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+
+    async with LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path) as env:
+        assert isinstance(env.tmp_dir, Path)
+        (env.tmp_dir / "artifact.txt").write_text("temporary")
+        status = subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--short", "--untracked-files=all"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert status.stdout == ""
 
 
 async def test_environment_tmp_dir_disabled(tmp_path: Path) -> None:
@@ -957,12 +1063,14 @@ async def test_environment_no_default_path_with_allowed_paths(tmp_path: Path) ->
 
 
 async def test_environment_no_default_path_tmp_dir_still_works() -> None:
-    """Should still create tmp_dir and file_operator even when no real paths."""
+    """Without a workspace, temporary storage falls back to the system directory."""
     async with LocalEnvironment(enable_tmp_dir=True) as env:
         assert env.shell is None
         assert env.file_operator is not None
-        assert env.tmp_dir is not None
-        assert env.tmp_dir.exists()
+        assert isinstance(env.tmp_dir, Path)
+        assert env.tmp_dir.parent == Path(tempfile.gettempdir()).resolve()
+        assert env.tmp_dir.name.startswith("ya-agent-")
+        assert (env.tmp_dir / ".gitignore").read_text() == "*\n"
 
         # Can write and read files in tmp_dir via file_operator
         tmp_file = str(env.tmp_dir / "test.txt")

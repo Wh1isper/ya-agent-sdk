@@ -4,6 +4,7 @@ import json
 from pathlib import Path, PureWindowsPath
 
 import pytest
+import ya_agent_sdk.environment.sandbox as sandbox_module
 import ya_claw.workspace.provider as provider_module
 from ya_agent_sdk.environment import LocalShell, SandboxEnvironment, VirtualLocalFileOperator, VirtualMount
 from ya_agent_sdk.environment.sandbox import DockerShell
@@ -101,12 +102,12 @@ def test_mapped_local_file_operator_maps_native_windows_tmp_paths(tmp_path: Path
     """Native drive and UNC paths map through absolute internal POSIX keys."""
     native_roots = (
         (
-            PureWindowsPath(r"C:\WorkSpace\.ya-agent\tmp\Session"),
-            PureWindowsPath(r"c:\workspace\.YA-AGENT\TMP\session"),
+            PureWindowsPath(r"C:\WorkSpace\.tmp\ya-agent-Session"),
+            PureWindowsPath(r"c:\workspace\.TMP\YA-AGENT-session"),
         ),
         (
-            PureWindowsPath(r"\\Server\Share\WorkSpace\.ya-agent\tmp\Session"),
-            PureWindowsPath(r"\\server\share\workspace\.YA-AGENT\TMP\session"),
+            PureWindowsPath(r"\\Server\Share\WorkSpace\.tmp\ya-agent-Session"),
+            PureWindowsPath(r"\\server\share\workspace\.TMP\YA-AGENT-session"),
         ),
     )
 
@@ -133,7 +134,9 @@ async def test_mapped_local_environment_tmp_is_hidden_in_shared_workspace(tmp_pa
     async with environment as env:
         assert isinstance(env.tmp_dir, Path)
         tmp_dir = env.tmp_dir
-        assert tmp_dir.parent == workspace.resolve() / ".ya-agent" / "tmp"
+        assert tmp_dir.parent == workspace.resolve() / ".tmp"
+        assert tmp_dir.name.startswith("ya-agent-")
+        assert (tmp_dir / ".gitignore").read_bytes() == b"*\n"
         tmp_file = env.resolve_tmp_path("intermediate.txt")
         await env.file_operator.write_file(str(tmp_file), "temporary")
         assert Path(tmp_file).read_text() == "temporary"
@@ -168,7 +171,7 @@ async def test_mapped_local_tmp_cleanup_failure_retains_ownership(
         mounts=[VirtualMount(host_path=workspace, virtual_path=Path("/workspace"))],
         host_cwd=workspace,
     )
-    original_rmtree = provider_module.shutil.rmtree
+    original_remove = provider_module.remove_owned_tmp_directory
     owned_tmp: Path | None = None
 
     with pytest.raises(cleanup_error, match="cleanup denied"):
@@ -176,10 +179,10 @@ async def test_mapped_local_tmp_cleanup_failure_retains_ownership(
             assert isinstance(env.tmp_dir, Path)
             owned_tmp = env.tmp_dir
 
-            def fail_rmtree(path: Path) -> None:
+            def fail_remove(path: Path, **_: object) -> None:
                 raise cleanup_error(f"cleanup denied: {path}")
 
-            monkeypatch.setattr(provider_module.shutil, "rmtree", fail_rmtree)
+            monkeypatch.setattr(provider_module, "remove_owned_tmp_directory", fail_remove)
 
     assert owned_tmp is not None
     assert owned_tmp.exists()
@@ -188,7 +191,7 @@ async def test_mapped_local_tmp_cleanup_failure_retains_ownership(
     assert environment._file_operator is None
     assert environment._shell is None
 
-    monkeypatch.setattr(provider_module.shutil, "rmtree", original_rmtree)
+    monkeypatch.setattr(provider_module, "remove_owned_tmp_directory", original_remove)
     async with environment as env:
         assert not owned_tmp.exists()
         assert isinstance(env.tmp_dir, Path)
@@ -398,10 +401,11 @@ async def test_reusable_sandbox_environment_creates_shell_with_exec_user_and_hom
         assert environment.container_id == "container-123"
         assert environment._ready_shell is None
         assert entered.tmp_dir is not None
-        assert str(entered.tmp_dir).startswith("/workspace/.ya-agent/tmp/")
+        assert str(entered.tmp_dir).startswith("/workspace/.tmp/ya-agent-")
         tmp_host_dir = environment._tmp_host_dir
         assert tmp_host_dir is not None
         assert tmp_host_dir.is_relative_to((tmp_path / "workspace").resolve())
+        assert (tmp_host_dir / ".gitignore").read_text() == "*\n"
         assert len(environment._mounts) == 1
 
         await entered.file_operator.write_file(str(entered.resolve_tmp_path("reuse.txt")), "shared")
@@ -430,7 +434,7 @@ async def test_reusable_sandbox_tmp_cleanup_failure_retries_on_reenter(
         image="python:3.11",
         container_ref="workspace-container",
     )
-    original_rmtree = provider_module.shutil.rmtree
+    original_remove = sandbox_module.remove_owned_tmp_directory
     owned_tmp: Path | None = None
 
     with pytest.raises(PermissionError, match="cleanup denied"):
@@ -438,10 +442,10 @@ async def test_reusable_sandbox_tmp_cleanup_failure_retries_on_reenter(
             assert environment._tmp_host_dir is not None
             owned_tmp = environment._tmp_host_dir
 
-            def fail_rmtree(path: Path) -> None:
+            def fail_remove(path: Path, **_: object) -> None:
                 raise PermissionError(f"cleanup denied: {path}")
 
-            monkeypatch.setattr(provider_module.shutil, "rmtree", fail_rmtree)
+            monkeypatch.setattr(sandbox_module, "remove_owned_tmp_directory", fail_remove)
 
     assert owned_tmp is not None
     assert owned_tmp.exists()
@@ -449,7 +453,7 @@ async def test_reusable_sandbox_tmp_cleanup_failure_retries_on_reenter(
     assert environment._file_operator is None
     assert environment._shell is None
 
-    monkeypatch.setattr(provider_module.shutil, "rmtree", original_rmtree)
+    monkeypatch.setattr(sandbox_module, "remove_owned_tmp_directory", original_remove)
     async with environment:
         assert not owned_tmp.exists()
         assert environment._tmp_host_dir is not None
@@ -985,18 +989,18 @@ async def test_reusable_sandbox_tmp_requires_writable_shared_mount(tmp_path: Pat
     assert environment._tmp_host_dir is None
 
 
-async def test_mapped_local_tmp_rejects_symlinked_control_directory(tmp_path: Path) -> None:
-    """Local workspace tmp creation cannot follow a control-directory escape."""
+async def test_mapped_local_tmp_rejects_symlinked_parent_directory(tmp_path: Path) -> None:
+    """Local workspace tmp creation cannot follow a parent-directory escape."""
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
     workspace.mkdir()
     outside.mkdir()
-    (workspace / ".ya-agent").symlink_to(outside, target_is_directory=True)
+    (workspace / ".tmp").symlink_to(outside, target_is_directory=True)
     binding = LocalWorkspaceProvider(workspace).resolve()
     environment = LocalEnvironmentFactory(shell_sandbox_enabled=False).build(binding)
 
     with pytest.raises(RuntimeError, match="escapes the workspace"):
         await environment.__aenter__()
 
-    assert not (outside / "tmp").exists()
+    assert list(outside.iterdir()) == []
     assert environment.entered is False

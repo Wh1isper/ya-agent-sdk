@@ -112,9 +112,10 @@ LocalEnvironment(
 )
 ```
 
-By default, `LocalEnvironment` creates managed temporary storage under the system
-temporary directory. Set `enable_tmp_dir=False` to disable it; low-level SDK users
-may pass `tmp_base_dir` when they explicitly need a different parent. The temporary
+By default, a workspace-backed `LocalEnvironment` creates managed temporary storage
+at `<default_path>/.tmp/ya-agent-<id>`. Without a workspace it falls back to the system
+temporary directory. Set `enable_tmp_dir=False` to disable it; low-level SDK users may
+pass `tmp_base_dir` when they explicitly need a different parent. The temporary
 directory is added as an ordinary allowed path for both the file operator and shell.
 
 ## Temporary Storage
@@ -148,11 +149,17 @@ async for chunk in stream:
     ...
 ```
 
-`SandboxEnvironment` and YA Claw workspace environments create a hidden
-`.ya-agent/tmp/<id>` directory below an existing writable shared mount. The
+Workspace-backed environments, including `SandboxEnvironment` and YA Claw, use a
+hidden `.tmp/ya-agent-<id>` directory below an existing writable shared mount. Every
+owned instance contains a `.gitignore` with `*`, so both the marker and temporary
+contents stay out of Git status without editing the project's root ignore file. The
 agent-facing `tmp_dir` uses the mounted virtual path, so both file operations and the
-container shell see the same location. No extra bind mount is added; this is important
-when reusing an already-created container.
+container shell see the same location. Explicit searches rooted at `tmp_dir` continue
+to use that separately allowed root. No extra bind mount is added; this is important
+when reusing an already-created container. YAACLI intentionally keeps its managed
+instance in the system temporary directory. Lifecycle cleanup removes only the current
+owned instance; abrupt process termination can leave an ignored instance behind, and
+environments do not scan or delete another process's temporary directories.
 
 ### SandboxEnvironment
 

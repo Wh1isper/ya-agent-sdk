@@ -15,6 +15,7 @@ Example:
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 from ya_agent_environment import ResourceFactory, ResourceRegistryState
@@ -48,6 +49,7 @@ class TUIEnvironment(LocalEnvironment):
             default_path=default_path,
             instructions_paths=instructions_paths,
             shell_timeout=shell_timeout,
+            tmp_base_dir=Path(tempfile.gettempdir()).resolve(),
             enable_tmp_dir=enable_tmp_dir,
             resource_state=resource_state,
             resource_factories=resource_factories,
