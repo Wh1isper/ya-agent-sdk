@@ -7,10 +7,10 @@ Configuration files are loaded with project-level priority (no merging):
    - Project: .yaacli/config.toml (overrides global entirely)
    - Contains: model, model_settings, display, session, subagents, env, security.shell_review
 
-2. **tools.toml** (tool permissions and project tool overrides):
+2. **tools.toml** (tool exposure, permissions, and project overrides):
    - Global: ~/.yaacli/tools.toml
    - Project: .yaacli/tools.toml (overrides global entirely)
-   - Contains: need_approval list and optional tool overrides
+   - Contains: MCP exposure mode, need_approval list, and optional tool overrides
 
 3. **mcp.json** (MCP server configurations):
    - Global: ~/.yaacli/mcp.json
@@ -188,6 +188,9 @@ class ToolsConfig(BaseModel):
 
     enable_user_input: bool = True
     """Enable the interactive ``ask_user_question`` tool in the TUI."""
+
+    mcp_mode: Literal["direct", "proxy"] = "direct"
+    """Expose namespaced MCP tools directly or through the fixed MCP tool proxy."""
 
     need_approval: list[str] = Field(default_factory=list)
     """Tools requiring user approval before execution."""

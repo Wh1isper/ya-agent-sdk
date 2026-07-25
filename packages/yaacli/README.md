@@ -94,6 +94,17 @@ The repository sync script keeps bundled skill files under `packages/yaacli/yaac
 
 YAACLI refreshes and resolves `/skill-name` against the effective SDK skill catalog at submission time, including built-in, global, shared, and project skills after normal priority rules. The visible transcript and prompt history retain the original input; the model receives a catalog-grounded explicit-selection marker plus the remaining task. A slash prefix that matches neither a registered command nor an available skill is submitted as ordinary user input.
 
+## MCP Tool Exposure
+
+MCP tools are exposed directly to the model by default. Configure the behavior globally in `~/.yaacli/tools.toml` or per project in `.yaacli/tools.toml`:
+
+```toml
+[tools]
+mcp_mode = "direct" # "direct" (default) or "proxy"
+```
+
+Direct mode registers each configured MCP server as a native toolset and exposes namespaced `<server>_<tool>` names. Proxy mode exposes the fixed `mcp_search_tool` and `mcp_call_tool` pair instead, which can improve prompt-cache stability when many MCP tools are configured. Servers marked `"required": false` remain optional in both modes.
+
 ## Structured User Input
 
 The interactive TUI opts into the SDK's deferred `ask_user_question` tool. Disable it globally in `~/.yaacli/tools.toml` or for one project in `.yaacli/tools.toml`:

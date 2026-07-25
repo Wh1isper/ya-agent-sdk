@@ -54,6 +54,7 @@ def test_default_config() -> None:
 
     # Tools and security
     assert config.tools.enable_user_input is True
+    assert config.tools.mcp_mode == "direct"
     assert config.tools.need_approval == []
     assert config.security.shell_review.enabled is False
 
@@ -111,10 +112,17 @@ def test_tools_config() -> None:
     """Test ToolsConfig (project-only config)."""
     config = ToolsConfig(
         enable_user_input=False,
+        mcp_mode="proxy",
         need_approval=["shell_sandbox", "file_write"],
     )
     assert config.enable_user_input is False
+    assert config.mcp_mode == "proxy"
     assert config.need_approval == ["shell_sandbox", "file_write"]
+
+
+def test_tools_config_rejects_unknown_mcp_mode() -> None:
+    with pytest.raises(ValidationError):
+        ToolsConfig(mcp_mode="search")  # type: ignore[arg-type]
 
 
 # =============================================================================
@@ -237,11 +245,13 @@ def test_load_project_tools_config(
     config_file = project_config_dir / "tools.toml"
     config_file.write_text("""
 [tools]
+mcp_mode = "proxy"
 need_approval = ["shell_sandbox", "file_write"]
 """)
 
     config = config_manager.load()
 
+    assert config.tools.mcp_mode == "proxy"
     assert config.tools.need_approval == ["shell_sandbox", "file_write"]
     # Model should be empty (not configured)
     assert config.general.model == ""
@@ -508,6 +518,7 @@ def test_save_project_config(
     assert config_file.exists()
     content = config_file.read_text()
     assert "[tools]" in content
+    assert 'mcp_mode = "direct"' in content
     assert "need_approval" in content
 
 

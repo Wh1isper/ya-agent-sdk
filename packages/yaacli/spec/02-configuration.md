@@ -7,7 +7,7 @@ Pydantic models in `yaacli.config`. Configuration is split by responsibility:
 
 - `config.toml` contains model, TUI, session, media, subagent, custom-command,
   process-environment, and security settings;
-- `tools.toml` contains interactive tool availability and tool/MCP approval policy;
+- `tools.toml` contains interactive tool availability, MCP exposure mode, and tool/MCP approval policy;
 - `mcp.json` contains MCP server definitions;
 - `.env` files provide supported `YAACLI_*` overrides and provider or SDK
   environment variables;
@@ -200,6 +200,7 @@ permissions without copying model credentials or global UI settings:
 ```toml
 [tools]
 enable_user_input = true
+mcp_mode = "direct"
 need_approval = ["shell_exec", "write"]
 need_approval_mcps = ["production-filesystem"]
 ```
@@ -208,6 +209,15 @@ need_approval_mcps = ["production-filesystem"]
 registers the deferred `ask_user_question` tool. Setting it to `false` removes
 the tool. Headless mode leaves it disabled regardless because it cannot collect
 interactive answers.
+
+`mcp_mode` accepts `"direct"` or `"proxy"` and defaults to `"direct"`. Direct
+mode registers each configured MCP server as a native toolset and exposes its
+tools as `<server>_<tool>`, avoiding cross-server name collisions without an
+intermediate proxy call. Proxy mode wraps all MCP servers in a fixed
+`mcp_search_tool`/`mcp_call_tool` pair, reducing the stable model-facing tool
+surface when many MCP tools are configured. In both modes, a server with
+`"required": false` is skipped with a warning when it cannot initialize or list
+tools.
 
 Project `tools.toml` replaces the global file as a whole rather than merging
 individual fields. Consequently, a project file that omits `enable_user_input`
