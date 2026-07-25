@@ -6,6 +6,8 @@ import json
 import uuid
 from typing import Any
 
+from ya_agent_environment.output import truncate_text_head_tail
+
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 
@@ -76,6 +78,7 @@ def fit_text_fields_to_limit(
     text_fields: tuple[str, ...],
     limit: int = DEFAULT_OUTPUT_TRUNCATE_LIMIT,
     suffix: str,
+    preserve_tail: bool = False,
 ) -> dict[str, Any]:
     """Shrink selected text fields until the serialized dict fits the limit."""
     if tool_output_size(result) <= limit:
@@ -95,7 +98,11 @@ def fit_text_fields_to_limit(
 
     while True:
         for field, value in originals.items():
-            preview[field] = truncate_text(value, per_field, suffix=suffix)
+            preview[field] = (
+                truncate_text_head_tail(value, per_field, marker=suffix)
+                if preserve_tail
+                else truncate_text(value, per_field, suffix=suffix)
+            )
         if tool_output_size(preview) <= limit or per_field <= 0:
             break
         per_field = max(0, int(per_field * 0.8) - 1)

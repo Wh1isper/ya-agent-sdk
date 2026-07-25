@@ -95,6 +95,10 @@ class _DockerExecReadableStream:
         self._registration_task = registration_task
         self._registration = registration
 
+    async def read(self, n: int = -1) -> bytes:
+        await _await_docker_exec_registration(self._registration_task, self._registration)
+        return await self._stream.read(n)
+
     async def readline(self) -> bytes:
         await _await_docker_exec_registration(self._registration_task, self._registration)
         return await self._stream.readline()
