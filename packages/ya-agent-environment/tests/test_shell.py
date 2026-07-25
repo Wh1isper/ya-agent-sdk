@@ -17,13 +17,7 @@ from ya_agent_environment import (
     ShellSessionAccessError,
     ShellTimeoutError,
 )
-from ya_agent_environment.shell import (
-    _MAX_BUFFER_LINES,
-    _MAX_COMPLETED_OUTPUT_BYTES,
-    _MAX_LINE_LENGTH,
-    _truncate_line,
-    _truncate_to_bytes,
-)
+from ya_agent_environment.shell import _MAX_BUFFER_LINES, _MAX_COMPLETED_OUTPUT_BYTES, _MAX_LINE_LENGTH
 
 
 class ConcreteShell(Shell):
@@ -61,7 +55,7 @@ class ConcreteShell(Shell):
             return (0, stdout, "")
         if command.startswith("longline"):
             length = int(command.split()[1]) if len(command.split()) > 1 else _MAX_LINE_LENGTH + 500
-            return (0, "L" * length, "")
+            return (0, "HEAD-" + "L" * length + "-TAIL", "")
         return (0, f"output of {command}", "")
 
     async def _create_process(
@@ -522,6 +516,38 @@ async def test_kill_process() -> None:
     assert pid not in shell.active_background_processes
 
 
+async def test_immediate_kill_terminates_handle_before_background_task_starts() -> None:
+    """An immediate kill must invoke the backend hook even if _run has not started."""
+
+    class ImmediateKillShell(Shell):
+        def __init__(self) -> None:
+            super().__init__(default_cwd=None)
+            self.kill_calls = 0
+
+        async def _create_process(self, command, *, env=None, cwd=None) -> ExecutionHandle:
+            stdout = asyncio.StreamReader()
+            stderr = asyncio.StreamReader()
+
+            async def _wait() -> int:
+                await asyncio.Future()
+                return 0
+
+            async def _kill() -> None:
+                self.kill_calls += 1
+                stdout.feed_eof()
+                stderr.feed_eof()
+
+            return ExecutionHandle(stdout=stdout, stderr=stderr, wait=_wait, kill=_kill)
+
+    shell = ImmediateKillShell()
+    process_id = await shell.start("never ending")
+    await shell.kill_process(process_id)
+
+    assert shell.kill_calls == 1
+    assert process_id not in shell._execution_handles
+    assert shell.has_background_activity is False
+
+
 async def test_kill_process_not_found() -> None:
     """kill_process() should raise KeyError for unknown process_id."""
     shell = ConcreteShell(default_cwd=None)
@@ -847,15 +873,27 @@ async def test_drain_output_clears_deque() -> None:
     await shell.close()
 
 
-async def test_output_buffer_line_truncation() -> None:
-    """Lines exceeding _MAX_LINE_LENGTH should be truncated."""
+async def test_foreground_oversized_line_is_read_fully() -> None:
+    """Foreground capture should not inherit asyncio's readline size limit."""
     shell = ConcreteShell(default_cwd=None)
-    pid = await shell.start("longline")
+    exit_code, stdout, stderr = await shell.execute("longline 70000")
+    assert exit_code == 0
+    assert stdout.startswith("HEAD-")
+    assert stdout.endswith("-TAIL")
+    assert len(stdout) > 70000
+    assert stderr == ""
+
+
+async def test_output_buffer_line_truncation() -> None:
+    """Oversized background lines should retain both ends within the line cap."""
+    shell = ConcreteShell(default_cwd=None)
+    pid = await shell.start("longline 70000")
     stdout, _stderr, is_running, _exit_code = await shell.wait_process(pid, timeout=5.0)
     assert not is_running
-    # Each line should be capped at _MAX_LINE_LENGTH
-    for line in stdout.splitlines():
-        assert len(line) <= _MAX_LINE_LENGTH
+    assert len(stdout) == _MAX_LINE_LENGTH
+    assert stdout.startswith("HEAD-")
+    assert stdout.endswith("-TAIL")
+    assert "truncated" in stdout
 
 
 async def test_output_buffer_line_count_bounded() -> None:
@@ -889,6 +927,20 @@ async def test_completed_results_from_buffer() -> None:
     assert "echo hello" in r.stdout
     assert r.command == "echo hello"
     assert not r.truncated
+    await shell.close()
+
+
+async def test_completed_result_retains_boundaries_of_oversized_single_line() -> None:
+    """Automatic completion consumption should keep both ends of a long line."""
+    shell = ConcreteShell(default_cwd=None)
+    await shell.start("longline 70000")
+
+    results = await _wait_for_completed_results(shell, 1)
+
+    assert len(results) == 1
+    assert results[0].stdout.startswith("HEAD-")
+    assert results[0].stdout.endswith("-TAIL")
+    assert "truncated" in results[0].stdout
     await shell.close()
 
 
@@ -1133,65 +1185,6 @@ async def test_background_status_summary_xml_escaping() -> None:
     assert ' command="echo "hello"' not in summary
 
     await shell.close()
-
-
-# =============================================================================
-# Helper function tests
-# =============================================================================
-
-
-def test_truncate_to_bytes_ascii() -> None:
-    """ASCII text should truncate to exact byte count."""
-    text = "a" * 100
-    result, truncated = _truncate_to_bytes(text, 50)
-    assert len(result) == 50
-    assert truncated is True
-
-
-def test_truncate_to_bytes_no_truncation_needed() -> None:
-    """Text within limit should be returned unchanged."""
-    text = "hello"
-    result, truncated = _truncate_to_bytes(text, 100)
-    assert result == text
-    assert truncated is False
-
-
-def test_truncate_to_bytes_multibyte() -> None:
-    """Multibyte UTF-8 text should be truncated by bytes, not chars."""
-    text = "\u4e2d" * 100  # 300 bytes total
-    result, truncated = _truncate_to_bytes(text, 150)
-    assert truncated is True
-    assert len(result) == 50
-    assert len(result.encode("utf-8")) == 150
-
-
-def test_truncate_to_bytes_boundary() -> None:
-    """Truncation at a multibyte char boundary should not produce partial chars."""
-    text = "a\u4e2d" * 50  # 200 bytes
-    result, truncated = _truncate_to_bytes(text, 5)
-    assert truncated is True
-    assert result == "a\u4e2da"
-    assert len(result.encode("utf-8")) == 5
-
-
-def test_truncate_line_within_limit() -> None:
-    """Line within limit should be returned unchanged."""
-    line = "hello world"
-    assert _truncate_line(line) == line
-
-
-def test_truncate_line_over_limit() -> None:
-    """Line over limit should be truncated to _MAX_LINE_LENGTH."""
-    line = "x" * (_MAX_LINE_LENGTH + 100)
-    result = _truncate_line(line)
-    assert len(result) == _MAX_LINE_LENGTH
-
-
-def test_truncate_line_custom_limit() -> None:
-    """Custom max_length should be respected."""
-    line = "hello world"
-    result = _truncate_line(line, max_length=5)
-    assert result == "hello"
 
 
 # =============================================================================
@@ -1478,60 +1471,112 @@ async def test_active_background_processes_excludes_completed_but_unconsumed() -
     await shell.close()
 
 
-async def test_readline_valueerror_guard() -> None:
-    """readline() ValueError should be caught and produce a truncation marker."""
+async def test_chunked_reader_preserves_oversized_multibyte_line_boundaries() -> None:
+    """Chunked background reads should bypass readline limits and decode split UTF-8 safely."""
+    from collections import deque
+
+    stream = asyncio.StreamReader(limit=32)
+    stream.feed_data(("HEAD-" + "\u4e2d" * 30000 + "-TAIL\nnormal line\n").encode())
+    stream.feed_eof()
+    target: deque[str] = deque(maxlen=_MAX_BUFFER_LINES)
+
+    await Shell._read_stream(stream, target)
+
+    assert len(target) == 2
+    assert len(target[0]) == _MAX_LINE_LENGTH
+    assert target[0].startswith("HEAD-")
+    assert target[0].endswith("-TAIL")
+    assert "truncated" in target[0]
+    assert "\ufffd" not in target[0]
+    assert target[1] == "normal line"
+
+
+async def test_legacy_line_reader_recovers_from_overflow_error() -> None:
+    """Readline-only custom streams should retain their prior overflow fallback."""
+    from collections import deque
 
     class OverflowStream:
-        """Stream that raises ValueError on readline (simulating oversized line)."""
-
-        def __init__(self):
+        def __init__(self) -> None:
             self._calls = 0
 
-        async def readline(self):
+        async def readline(self) -> bytes:
             self._calls += 1
             if self._calls == 1:
                 raise ValueError("Separator is not found, and chunk exceed the limit")
             if self._calls == 2:
                 return b"normal line\n"
-            return b""  # EOF
-
-    shell = ConcreteShell(default_cwd=None)
-    # Manually set up process with custom stream
-    _process_id, _buf = shell._setup_background_process("test", None)
-    overflow_stdout = OverflowStream()
-    normal_stderr = asyncio.StreamReader()
-    normal_stderr.feed_eof()
-
-    ExecutionHandle(
-        stdout=overflow_stdout,
-        stderr=normal_stderr,
-        wait=asyncio.Future,  # won't be called
-        kill=asyncio.Future,  # won't be called
-    )
-
-    # Manually run the _read_stream logic by calling start internals
-    from collections import deque
-
-    from ya_agent_environment.shell import _truncate_line
+            return b""
 
     target: deque[str] = deque(maxlen=_MAX_BUFFER_LINES)
+    await Shell._read_stream(OverflowStream(), target)
 
-    # Simulate _read_stream
-    while True:
-        try:
-            line_bytes = await overflow_stdout.readline()
-        except ValueError:
-            target.append("[line too long, truncated]")
-            continue
-        if not line_bytes:
-            break
-        line = line_bytes.decode("utf-8", errors="replace").rstrip("\n")
-        target.append(_truncate_line(line))
+    assert list(target) == ["[line too long, truncated]", "normal line"]
 
-    assert len(target) == 2
-    assert target[0] == "[line too long, truncated]"
-    assert target[1] == "normal line"
-    await shell.close()
+
+async def test_chunk_reader_propagates_backend_value_error() -> None:
+    """ValueError from read(n) should not be mistaken for a legacy line overflow."""
+    from collections import deque
+
+    class FailingChunkStream:
+        async def read(self, _n: int = -1) -> bytes:
+            raise ValueError("backend read failed")
+
+        async def readline(self) -> bytes:
+            raise AssertionError("chunk-capable stream should not use readline")
+
+    target: deque[str] = deque(maxlen=_MAX_BUFFER_LINES)
+    with pytest.raises(ValueError, match="backend read failed"):
+        await Shell._read_stream(FailingChunkStream(), target)
+    assert target == deque()
+
+
+async def test_kill_process_retains_oversized_partial_line() -> None:
+    """Killing a process should return the bounded in-progress line from its reader."""
+
+    class BlockingChunkStream:
+        def __init__(self) -> None:
+            self.waiting = asyncio.Event()
+            self._first_read = True
+
+        async def read(self, _n: int = -1) -> bytes:
+            if self._first_read:
+                self._first_read = False
+                return ("HEAD-" + "x" * 70000 + "-TAIL").encode()
+            self.waiting.set()
+            await asyncio.Future()
+            return b""
+
+        async def readline(self) -> bytes:
+            return await self.read()
+
+    class KillOutputShell(Shell):
+        def __init__(self) -> None:
+            super().__init__(default_cwd=None)
+            self.stdout = BlockingChunkStream()
+
+        async def _create_process(self, command, *, env=None, cwd=None) -> ExecutionHandle:
+            stderr = asyncio.StreamReader()
+            stderr.feed_eof()
+
+            async def _wait() -> int:
+                await asyncio.Future()
+                return 0
+
+            async def _kill() -> None:
+                return None
+
+            return ExecutionHandle(stdout=self.stdout, stderr=stderr, wait=_wait, kill=_kill)
+
+    shell = KillOutputShell()
+    process_id = await shell.start("long output")
+    await shell.stdout.waiting.wait()
+
+    stdout, stderr = await shell.kill_process(process_id)
+
+    assert stdout.startswith("HEAD-")
+    assert stdout.endswith("-TAIL")
+    assert "truncated" in stdout
+    assert stderr == ""
 
 
 async def test_stdin_adapter_broken_pipe() -> None:

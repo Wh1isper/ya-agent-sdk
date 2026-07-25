@@ -15,6 +15,7 @@ from html import escape as _html_escape
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.tools import RunContext
 from ya_agent_environment import CompletedProcess
+from ya_agent_environment.output import truncate_text_head_tail
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
@@ -38,11 +39,12 @@ def _xml_escape(s: str, *, quote: bool = False) -> str:
 
 
 def _format_stream(tag: str, content: str, *, source_capped: bool) -> str:
-    """Format a stdout/stderr stream element, truncating if needed."""
+    """Format a stdout/stderr stream element, retaining its head and tail when truncated."""
     if len(content) > _INJECT_TRUNCATE_LIMIT:
-        escaped = _xml_escape(content[:_INJECT_TRUNCATE_LIMIT])
         saved_label = "stored output" if source_capped else "full output"
-        return f'  <{tag} truncated="true">\n{escaped}\n...(truncated, {saved_label} at `{tag}_file_path`)\n  </{tag}>'
+        marker = f"\n...(truncated, {saved_label} at `{tag}_file_path`)...\n"
+        preview = truncate_text_head_tail(content, _INJECT_TRUNCATE_LIMIT, marker=marker)
+        return f'  <{tag} truncated="true">\n{_xml_escape(preview)}\n  </{tag}>'
     return f"  <{tag}>{_xml_escape(content)}</{tag}>"
 
 

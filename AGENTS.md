@@ -45,6 +45,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - Workspace-backed concrete environments use `.tmp/ya-agent-<id>` instances with a self-ignoring `.gitignore`; they remove only their owned instance, while custom environments remain responsible for allocating and tearing down their own temporary backend.
 - `FileOperator` represents one logical backend and has no temporary routing or convenience API; concrete backends implement public methods directly, and `read_bytes_stream()` returns an `AsyncIterator` without awaiting the call.
 - `LocalFileOperator.walk_files()` returns default-relative paths when possible and directly reusable absolute paths for allowed roots outside `default_path`; glob/grep can explicitly search those roots without implicitly including temporary storage in `root="."`.
+- Shared bounded-output policy lives in `ya_agent_environment.output`: head/tail budget splitting, character and UTF-8 byte truncation, and incremental bounded text accumulation. Shell ingestion and SDK previews reuse these helpers rather than implementing separate truncation policies.
 
 ### `packages/ya-agent-sdk`
 

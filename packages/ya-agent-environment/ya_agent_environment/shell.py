@@ -6,6 +6,7 @@ via OutputBuffer.
 """
 
 import asyncio
+import codecs
 import contextlib
 from abc import ABC, abstractmethod
 from collections import OrderedDict, deque
@@ -16,10 +17,11 @@ from datetime import datetime
 from enum import StrEnum
 from html import escape as _xml_escape
 from pathlib import Path
-from typing import Any, Protocol, TypeVar, cast, final
+from typing import Any, Protocol, TypeVar, cast, final, runtime_checkable
 from uuid import uuid4
 
 from .exceptions import ShellTimeoutError
+from .output import BoundedTextAccumulator, truncate_utf8_head_tail
 
 _T = TypeVar("_T")
 
@@ -28,6 +30,8 @@ _T = TypeVar("_T")
 _MAX_BUFFER_LINES = 200
 # Max characters per line before truncation (guards against binary/minified blobs).
 _MAX_LINE_LENGTH = 4096
+_LINE_TRUNCATION_MARKER = "...[truncated]..."
+_STREAM_READ_CHUNK_BYTES = 64 * 1024
 
 # --- Completed results limits (for filter consumption) ---
 # Per-process cap on output bytes when constructing CompletedProcess for the filter.
@@ -40,26 +44,6 @@ _MAX_RETAINED_COMPLETED_RESULTS = 50
 _MAX_RETAINED_COMPLETED_OUTPUT_BYTES = 16 * 1024 * 1024  # 16 MB per Shell
 
 
-def _truncate_to_bytes(text: str, max_bytes: int) -> tuple[str, bool]:
-    """Truncate a string so its UTF-8 encoding fits within max_bytes.
-
-    Returns (truncated_text, was_truncated). Uses binary slice then
-    decodes back, ignoring partial chars at the boundary.
-    """
-    encoded = text.encode("utf-8", errors="replace")
-    if len(encoded) <= max_bytes:
-        return text, False
-    truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
-    return truncated, True
-
-
-def _truncate_line(line: str, max_length: int = _MAX_LINE_LENGTH) -> str:
-    """Truncate a single line to max_length characters."""
-    if len(line) <= max_length:
-        return line
-    return line[:max_length]
-
-
 def _combine_status_summaries(*summaries: str | None) -> str | None:
     """Join non-empty status summaries."""
     present = [summary for summary in summaries if summary]
@@ -67,13 +51,30 @@ def _combine_status_summaries(*summaries: str | None) -> str | None:
 
 
 class ReadableStream(Protocol):
-    """Protocol for an async readable byte stream.
-
-    Matches asyncio.StreamReader.readline() and can be implemented
-    by any async byte-line source (subprocess pipes, network streams, etc.).
-    """
+    """Protocol for a legacy asynchronously readable byte-line stream."""
 
     async def readline(self) -> bytes: ...
+
+
+@runtime_checkable
+class ChunkReadableStream(Protocol):
+    """Optional stream capability for size-safe chunked reads."""
+
+    async def read(self, n: int = -1) -> bytes: ...
+
+
+class _LegacyLineOverflowError(ValueError):
+    """Signal that a readline-only stream discarded an oversized line."""
+
+
+async def _read_stream_chunk(stream: ReadableStream, max_bytes: int) -> bytes:
+    """Read one bounded chunk, preserving compatibility with line-only custom streams."""
+    if isinstance(stream, ChunkReadableStream):
+        return await stream.read(max_bytes)
+    try:
+        return await stream.readline()
+    except ValueError as exc:
+        raise _LegacyLineOverflowError from exc
 
 
 class WritableStream(Protocol):
@@ -418,13 +419,15 @@ class Shell(ABC):
 
     @staticmethod
     async def _read_stream_fully(stream: ReadableStream) -> str:
-        """Read a foreground stream without applying background buffer limits."""
+        """Read a foreground stream in chunks without imposing a line-length limit."""
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         chunks: list[str] = []
         while True:
-            data = await stream.readline()
+            data = await _read_stream_chunk(stream, _STREAM_READ_CHUNK_BYTES)
             if not data:
+                chunks.append(decoder.decode(b"", final=True))
                 return "".join(chunks)
-            chunks.append(data.decode("utf-8", errors="replace"))
+            chunks.append(decoder.decode(data))
 
     async def _run_foreground_execution(
         self,
@@ -481,21 +484,38 @@ class Shell(ABC):
         stream: ReadableStream,
         target: deque[str],
     ) -> None:
-        """Read lines from stream and append to target deque."""
-        while True:
-            try:
-                line_bytes = await stream.readline()
-            except ValueError:
-                # Line exceeded stream buffer limit (~64KB) without a
-                # newline.  The data has already been discarded from
-                # the internal buffer by StreamReader, so just note
-                # the truncation and continue reading.
-                target.append("[line too long, truncated]")
-                continue
-            if not line_bytes:
-                break
-            line = line_bytes.decode("utf-8", errors="replace").rstrip("\n")
-            target.append(_truncate_line(line))
+        """Read chunks into bounded logical lines without relying on ``readline()`` limits."""
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        line = BoundedTextAccumulator(_MAX_LINE_LENGTH, marker=_LINE_TRUNCATION_MARKER)
+
+        def _append_text(value: str) -> None:
+            segments = value.split("\n")
+            for segment in segments[:-1]:
+                line.append(segment)
+                target.append(line.finish())
+            line.append(segments[-1])
+
+        def _flush_partial_line() -> None:
+            _append_text(decoder.decode(b"", final=True))
+            if not line.empty:
+                target.append(line.finish())
+
+        try:
+            while True:
+                try:
+                    data = await _read_stream_chunk(stream, _STREAM_READ_CHUNK_BYTES)
+                except _LegacyLineOverflowError:
+                    # Preserve the legacy line-only stream behavior when its
+                    # implementation discards an over-limit line.
+                    target.append("[line too long, truncated]")
+                    continue
+                if not data:
+                    _flush_partial_line()
+                    return
+                _append_text(decoder.decode(data))
+        except asyncio.CancelledError:
+            _flush_partial_line()
+            raise
 
     async def start(
         self,
@@ -953,9 +973,8 @@ class Shell(ABC):
         if task is None and handle is None and buf is None:
             raise KeyError(f"No background process with id: {process_id}")
 
-        # Drain current buffer before cancel.
-        stdout = "\n".join(buf.stdout) if buf and buf.stdout else ""
-        stderr = "\n".join(buf.stderr) if buf and buf.stderr else ""
+        stdout = ""
+        stderr = ""
         terminated = False
 
         try:
@@ -968,9 +987,17 @@ class Shell(ABC):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+                # Cancellation before _run() first executes bypasses its kill
+                # handler, so terminate any handle that remains owned.
+                handle = self._execution_handles.get(process_id)
+                if handle is not None:
+                    await self._kill_execution_handle(process_id, handle)
             elif handle is not None:
                 await self._kill_execution_handle(process_id, handle)
             terminated = True
+            if buf is not None:
+                stdout = "\n".join(buf.stdout) if buf.stdout else ""
+                stderr = "\n".join(buf.stderr) if buf.stderr else ""
         finally:
             if terminated:
                 self._forget_background_process(process_id)
@@ -1201,8 +1228,8 @@ class Shell(ABC):
             )
             self._retain_completed_result(retained_result)
 
-            injected_stdout, stdout_trunc = _truncate_to_bytes(stdout, _MAX_COMPLETED_OUTPUT_BYTES)
-            injected_stderr, stderr_trunc = _truncate_to_bytes(stderr, _MAX_COMPLETED_OUTPUT_BYTES)
+            injected_stdout, stdout_trunc = truncate_utf8_head_tail(stdout, _MAX_COMPLETED_OUTPUT_BYTES)
+            injected_stderr, stderr_trunc = truncate_utf8_head_tail(stderr, _MAX_COMPLETED_OUTPUT_BYTES)
             results.append(
                 CompletedProcess(
                     process_id=pid,

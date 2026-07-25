@@ -282,16 +282,17 @@ async def _guard_shell_result(
     hint = preview.get("hint")
     preview["hint"] = append_guidance(hint if isinstance(hint, str) else None, guidance)
 
-    suffix = (
-        "\n...(truncated; full output saved in `output_file_path`)"
+    marker = (
+        "\n...(truncated; full output saved in `output_file_path`)...\n"
         if output_path is not None
-        else "\n...(truncated; failed to save full output)"
+        else "\n...(truncated; failed to save full output)...\n"
     )
     return fit_text_fields_to_limit(
         preview,
         text_fields=("stdout", "stderr"),
         limit=OUTPUT_TRUNCATE_LIMIT,
-        suffix=suffix,
+        suffix=marker,
+        preserve_tail=True,
     )
 
 

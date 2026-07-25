@@ -189,11 +189,16 @@ async def test_shell_tool_stdout_truncation(tmp_path: Path) -> None:
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
 
-        # Generate large output
-        large_count = OUTPUT_TRUNCATE_LIMIT + 1000
-        result = await tool.call(mock_run_ctx, f"python3 -c \"print('x' * {large_count})\"")
+        # Exceed both the tool preview limit and asyncio's default readline limit.
+        large_count = 70_000
+        result = await tool.call(
+            mock_run_ctx,
+            f'''python3 -c "import sys; sys.stdout.write('HEAD-' + 'x' * {large_count} + '-TAIL')"''',
+        )
 
         assert result["return_code"] == 0
+        assert result["stdout"].startswith("HEAD-")
+        assert result["stdout"].endswith("-TAIL")
         assert "truncated" in result["stdout"]
         assert "stdout_file_path" in result
         assert "output_file_path" in result
@@ -201,6 +206,27 @@ async def test_shell_tool_stdout_truncation(tmp_path: Path) -> None:
         # Verify file exists
         assert Path(result["stdout_file_path"]).exists()
         assert Path(result["output_file_path"]).exists()
+
+
+async def test_shell_wait_retains_boundaries_of_oversized_single_line(tmp_path: Path) -> None:
+    """Background capture should preserve both ends beyond asyncio's readline limit."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        started = await ShellTool().call(
+            run_ctx,
+            '''python3 -c "import sys; sys.stdout.write('HEAD-' + 'x' * 70000 + '-TAIL')"''',
+            background=True,
+        )
+        waited = await ShellWaitTool().call(run_ctx, started["process_id"], timeout_seconds=5)
+
+        assert waited["return_code"] == 0
+        assert waited["stdout"].startswith("HEAD-")
+        assert waited["stdout"].endswith("-TAIL")
+        assert "truncated" in waited["stdout"]
 
 
 @pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")

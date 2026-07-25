@@ -173,8 +173,8 @@ async def test_one_time_consumption() -> None:
 
 
 async def test_truncated_output_with_file_op() -> None:
-    """Large output should be truncated and full content written to tmp."""
-    large_stdout = "x" * 30000
+    """Large output should retain its head and tail and write full content to tmp."""
+    large_stdout = "HEAD-" + "x" * 30000 + "-TAIL"
     completed = CompletedProcess(
         process_id="big1",
         command="big output",
@@ -194,6 +194,8 @@ async def test_truncated_output_with_file_op() -> None:
     await inject_background_results(ctx, messages)
     injected = messages[-1].parts[1]
     assert "truncated" in injected.content.lower()
+    assert "HEAD-" in injected.content
+    assert "-TAIL" in injected.content
     assert "full output" in injected.content.lower()
     assert "Full stdout:" in injected.content
     file_op.write_file.assert_called_once()
