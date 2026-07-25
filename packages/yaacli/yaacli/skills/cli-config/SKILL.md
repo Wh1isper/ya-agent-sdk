@@ -87,11 +87,16 @@ Project-level tool permissions in `.yaacli/tools.toml`:
 # Enable structured clarifying questions in the interactive TUI (default: true)
 enable_user_input = true
 
+# MCP tool exposure: "direct" (default) or "proxy"
+mcp_mode = "direct"
+
 # Tools requiring user approval before execution
 need_approval = ["shell", "write"]
 ```
 
 Set `enable_user_input = false` when the project should not expose the interactive `ask_user_question` tool. Headless mode never exposes it.
+
+Use `mcp_mode = "direct"` to expose each MCP server's native tools as namespaced `<server>_<tool>` names. Use `mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which is useful when many MCP tools would otherwise enlarge or destabilize the model-facing tool list. Servers marked `"required": false` remain optional in both modes.
 
 Common patterns:
 - `[]` - No approval needed (trust all tools)

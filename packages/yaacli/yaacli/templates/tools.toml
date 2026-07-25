@@ -5,6 +5,9 @@
 # Allow the interactive agent to ask structured clarifying questions.
 enable_user_input = true
 
+# Expose namespaced MCP tools directly (default), or through mcp_search_tool/mcp_call_tool.
+mcp_mode = "direct"
+
 # Tools requiring user approval before execution
 # Example: need_approval = ["shell_exec", "write"]
 need_approval = []

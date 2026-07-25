@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import yaacli.runtime as runtime_module
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.toolsets import FunctionToolset, PrefixedToolset
 from pydantic_ai.usage import RequestUsage
 from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.filters.handoff import process_handoff_message
+from ya_agent_sdk.mcp import NamedMCPToolset
 from ya_agent_sdk.toolsets.core.base import Toolset
+from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 from yaacli.background import DELEGATE_BACKEND_TOOL_NAME
 from yaacli.config import (
     GeneralConfig,
@@ -391,8 +396,8 @@ def test_create_tui_runtime_with_model_settings(tmp_path: Path) -> None:
     assert runtime is not None
 
 
-def test_create_tui_runtime_with_mcp_servers(tmp_path: Path) -> None:
-    """Test creating runtime with MCP servers."""
+def test_create_tui_runtime_exposes_mcp_servers_directly_by_default(tmp_path: Path) -> None:
+    """Test that MCP servers use native toolsets unless proxy mode is requested."""
     config = YaacliConfig(
         general=GeneralConfig(model="openai-chat:gpt-4"),
     )
@@ -413,9 +418,105 @@ def test_create_tui_runtime_with_mcp_servers(tmp_path: Path) -> None:
     )
 
     assert runtime is not None
-    mcp_proxy = next(toolset for toolset in runtime.agent.toolsets if getattr(toolset, "prefix", None) == "mcp")
-    assert mcp_proxy.search_tool_name == "mcp_search_tool"
-    assert mcp_proxy.call_tool_name == "mcp_call_tool"
+    direct_toolsets = [toolset for toolset in runtime.agent.toolsets if isinstance(toolset, PrefixedToolset)]
+    assert len(direct_toolsets) == 1
+    assert direct_toolsets[0].prefix == "test"
+    assert isinstance(direct_toolsets[0].wrapped, NamedMCPToolset)
+    assert not any(isinstance(toolset, ToolProxyToolset) for toolset in runtime.agent.toolsets)
+
+
+def test_create_tui_runtime_can_proxy_mcp_servers(tmp_path: Path) -> None:
+    """Test explicitly exposing MCP servers through the fixed tool proxy."""
+    config = YaacliConfig(
+        general=GeneralConfig(model="openai-chat:gpt-4"),
+        tools=ToolsConfig(mcp_mode="proxy"),
+    )
+    mcp_config = MCPConfig(
+        servers={
+            "test": MCPServerConfig(
+                transport="stdio",
+                command="echo",
+                args=["test"],
+            ),
+        }
+    )
+
+    runtime = create_tui_runtime(
+        config=config,
+        mcp_config=mcp_config,
+        working_dir=tmp_path,
+    )
+
+    mcp_proxies = [toolset for toolset in runtime.agent.toolsets if isinstance(toolset, ToolProxyToolset)]
+    assert len(mcp_proxies) == 1
+    assert mcp_proxies[0].search_tool_name == "mcp_search_tool"
+    assert mcp_proxies[0].call_tool_name == "mcp_call_tool"
+    assert not any(isinstance(toolset, PrefixedToolset) for toolset in runtime.agent.toolsets)
+
+
+async def test_create_tui_runtime_namespaces_duplicate_direct_mcp_tools(tmp_path: Path, monkeypatch) -> None:
+    """Direct MCP servers may expose the same native tool name without conflicts."""
+
+    def collide() -> str:
+        return "ok"
+
+    mcp_servers = [
+        FunctionToolset([collide], id="one"),
+        FunctionToolset([collide], id="two"),
+    ]
+    monkeypatch.setattr(runtime_module, "build_mcp_servers", lambda *_args, **_kwargs: mcp_servers)
+    visible_tool_names: set[str] = set()
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible_tool_names.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_tui_runtime(
+        config=YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4")),
+        mcp_config=MCPConfig(
+            servers={
+                "one": MCPServerConfig(command="unused"),
+                "two": MCPServerConfig(command="unused"),
+            }
+        ),
+        working_dir=tmp_path,
+        config_dir=tmp_path / "config",
+        enable_async_subagents=False,
+    )
+
+    async with runtime:
+        with runtime.agent.override(model=FunctionModel(respond)):
+            await runtime.agent.run("test", deps=runtime.ctx)
+
+    assert "one_collide" in visible_tool_names
+    assert "two_collide" in visible_tool_names
+
+
+async def test_create_tui_runtime_skips_unavailable_optional_direct_mcp(tmp_path: Path) -> None:
+    """An unavailable optional MCP server must not block direct-mode startup."""
+    config = YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4"))
+    mcp_config = MCPConfig(
+        servers={
+            "offline": MCPServerConfig(
+                transport="stdio",
+                command=sys.executable,
+                args=["-c", "pass"],
+                required=False,
+            ),
+        }
+    )
+    runtime = create_tui_runtime(
+        config=config,
+        mcp_config=mcp_config,
+        working_dir=tmp_path,
+        config_dir=tmp_path / "config",
+        enable_async_subagents=False,
+    )
+
+    async with runtime:
+        direct_toolsets = [toolset for toolset in runtime.agent.toolsets if isinstance(toolset, PrefixedToolset)]
+        assert len(direct_toolsets) == 1
+        assert direct_toolsets[0].prefix == "offline"
 
 
 def test_create_tui_runtime_with_need_approval(tmp_path: Path) -> None:

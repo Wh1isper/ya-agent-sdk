@@ -24,12 +24,15 @@ Example:
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic_ai import DeferredToolRequests, ModelSettings, RunContext
+from pydantic_ai import DeferredToolRequests, InstructionPart, ModelSettings, RunContext
 from pydantic_ai.output import OutputSpec
+from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig, ToolConfig
@@ -69,6 +72,72 @@ if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class _OptionalMCPToolset(WrapperToolset[Any]):
+    """Keep an optional direct MCP server from blocking the runtime."""
+
+    server_name: str
+    _entered: bool = field(default=False, init=False)
+    _available: bool = field(default=True, init=False)
+
+    @property
+    def id(self) -> str:
+        return self.server_name
+
+    async def __aenter__(self) -> _OptionalMCPToolset:
+        self._available = True
+        self._entered = False
+        try:
+            await self.wrapped.__aenter__()
+        except Exception:
+            self._available = False
+            logger.warning(
+                "Optional MCP server %r failed to initialize, skipping",
+                self.server_name,
+                exc_info=True,
+            )
+        else:
+            self._entered = True
+        return self
+
+    async def __aexit__(self, *args: Any) -> bool | None:
+        if not self._entered:
+            return None
+        self._entered = False
+        return await self.wrapped.__aexit__(*args)
+
+    async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
+        if not self._available:
+            return {}
+        try:
+            return await self.wrapped.get_tools(ctx)
+        except Exception:
+            self._available = False
+            logger.warning(
+                "Optional MCP server %r failed while listing tools, skipping",
+                self.server_name,
+                exc_info=True,
+            )
+            return {}
+
+    async def get_instructions(
+        self,
+        ctx: RunContext[Any],
+    ) -> str | InstructionPart | Sequence[str | InstructionPart] | None:
+        if not self._available:
+            return None
+        try:
+            return await self.wrapped.get_instructions(ctx)
+        except Exception:
+            self._available = False
+            logger.warning(
+                "Optional MCP server %r failed while loading instructions, skipping",
+                self.server_name,
+                exc_info=True,
+            )
+            return None
 
 
 class GoalContextHandoffExtension(BaseLifecycleExtension[TUIContext, TUIEnvironment]):
@@ -211,22 +280,20 @@ def create_tui_runtime(
                 async for event in stream:
                     print(event)
     """
-    # Collect toolsets
-    # Order matters: ToolProxyToolset must be LAST so its two fixed proxy
-    # tools (search_tools, call_tool) occupy stable positions at the end
-    # of the model's tool list, maximizing prompt cache hit rates.
+    # Collect toolsets. MCP toolsets are appended after the skill toolset so
+    # proxy mode keeps its two fixed tools at stable positions at the end of
+    # the model's tool list, maximizing prompt cache hit rates.
     effective_skill_toolset = skill_toolset or SkillToolset(
         toolset_id="skills",
         extra_dir_names=[SHARED_SKILLS_DIR_NAME],
     )
     toolsets: list[AbstractToolset[Any]] = [effective_skill_toolset]
 
-    # Add MCP servers wrapped in ToolProxyToolset for on-demand invocation.
-    # This is intentionally last: proxy tools occupy stable positions at
-    # the end of the tool list, keeping all existing tool positions stable.
+    # Direct mode exposes native MCP tools to the model. Proxy mode keeps the
+    # model-facing tool list fixed and discovers/invokes MCP tools on demand.
     if mcp_config:
         mcp_servers = build_mcp_servers(mcp_config, need_approval_mcps=config.tools.need_approval_mcps)
-        if mcp_servers:
+        if mcp_servers and config.tools.mcp_mode == "proxy":
             mcp_descriptions = extract_mcp_descriptions(mcp_config)
             optional_mcps = extract_optional_mcps(mcp_config)
             mcp_proxy = ToolProxyToolset(
@@ -241,6 +308,22 @@ def create_tui_runtime(
                 "Added %d MCP servers via ToolProxyToolset (descriptions: %d, prefix=mcp)",
                 len(mcp_servers),
                 len(mcp_descriptions),
+            )
+        elif mcp_servers:
+            optional_mcps = extract_optional_mcps(mcp_config)
+            for mcp_server in mcp_servers:
+                server_name = mcp_server.id
+                if server_name is None:
+                    logger.warning("Skipping direct MCP toolset without a server name")
+                    continue
+                direct_toolset: AbstractToolset[Any] = mcp_server
+                if server_name in optional_mcps:
+                    direct_toolset = _OptionalMCPToolset(direct_toolset, server_name=server_name)
+                toolsets.append(direct_toolset.prefixed(server_name))
+            logger.info(
+                "Added %d MCP servers as namespaced direct toolsets (optional: %d)",
+                len(mcp_servers),
+                len(optional_mcps),
             )
 
     # Environment configuration
