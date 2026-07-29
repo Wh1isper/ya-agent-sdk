@@ -358,7 +358,7 @@ async with stream_agent(
 Stream recovery keeps two independent attempt budgets:
 
 - `stream_resume_max_attempts` covers non-transport execution failures.
-- `stream_transport_resume_max_attempts` covers transient model HTTP/WebSocket failures, including HTTP response bodies that disconnect after streaming has started. Transport failures do not consume the execution budget.
+- `stream_transport_resume_max_attempts` covers each consecutive streak of transient model HTTP/WebSocket failures, including HTTP response bodies that disconnect after streaming has started. Transport failures do not consume the execution budget, and a successful model request resets the transport failure streak.
 
 Retry recovery performs durable message-history cleanup before the next attempt:
 

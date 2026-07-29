@@ -1295,10 +1295,10 @@ async def stream_agent(  # noqa: C901
         resume_max_attempts: Maximum total attempts for non-transport stream errors
             when resume_on_error is enabled. If None, uses
             ctx.model_cfg.stream_resume_max_attempts.
-        transport_resume_max_attempts: Independent maximum total attempts for
-            transient model transport failures. These attempts do not consume the
-            non-transport resume budget. If None, uses
-            ctx.model_cfg.stream_transport_resume_max_attempts.
+        transport_resume_max_attempts: Independent maximum attempts for each
+            consecutive transient model transport failure streak. These attempts do
+            not consume the non-transport resume budget, and a successful model request
+            resets the streak. If None, uses ctx.model_cfg.stream_transport_resume_max_attempts.
         resume_prompt: Prompt sent after a recoverable stream failure. If unset,
             uses ctx.model_cfg.stream_resume_prompt, then the built-in default.
         resume_prompt_factory: Callable that builds a resume prompt from the exception,
@@ -1364,6 +1364,7 @@ async def stream_agent(  # noqa: C901
     poll_done = asyncio.Event()
     partial_text = PartialTextAccumulator()
     attempt_failed_during_model_request = False
+    successful_model_request_count = 0
 
     logger.debug(
         "Starting stream_agent with user_prompt=%s",
@@ -1414,7 +1415,7 @@ async def stream_agent(  # noqa: C901
         run: AgentRun[AgentDepsT, OutputT],
     ) -> None:
         """Process a single node with hooks."""
-        nonlocal attempt_failed_during_model_request
+        nonlocal attempt_failed_during_model_request, successful_model_request_count
 
         # PRE NODE HOOK
         logger.debug("Processing node: %s", type(node).__name__)
@@ -1439,6 +1440,9 @@ async def stream_agent(  # noqa: C901
             if event_processing_failed or not suppress_benign_stream_cleanup_error(exc):
                 attempt_failed_during_model_request = isinstance(node, ModelRequestNode) and not event_processing_failed
                 raise
+
+        if isinstance(node, ModelRequestNode):
+            successful_model_request_count += 1
 
         # POST NODE HOOK
         logger.debug("Node completed: %s", type(node).__name__)
@@ -1767,6 +1771,7 @@ async def stream_agent(  # noqa: C901
         current_message_history: Sequence[ModelMessage] | None = message_history
 
         while True:
+            successful_model_requests_before_attempt = successful_model_request_count
             try:
                 attempt_failed_during_model_request = False
                 attempt_message_history, attempt_user_prompt = split_resume_prompt_for_tool_call_history(
@@ -1783,6 +1788,12 @@ async def stream_agent(  # noqa: C901
                 )
                 return
             except Exception as e:
+                if successful_model_request_count > successful_model_requests_before_attempt and transport_failures:
+                    logger.debug(
+                        "Resetting transport failure streak after a successful model request previous_failures=%s",
+                        transport_failures,
+                    )
+                    transport_failures = 0
                 is_transport_failure = attempt_failed_during_model_request and is_retryable_model_stream_exception(e)
                 if is_transport_failure:
                     transport_failures += 1
