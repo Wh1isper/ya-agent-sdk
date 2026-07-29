@@ -111,10 +111,11 @@ The interactive TUI opts into the SDK's deferred `ask_user_question` tool. Disab
 
 ```toml
 [tools]
-enable_user_input = false
+enable_user_input = true
+user_input_timeout_seconds = 120
 ```
 
-The field defaults to `true`. Headless mode does not expose this tool because it cannot collect interactive answers. The SDK also leaves it disabled unless a host explicitly registers it and implements deferred continuation. Project `tools.toml` replaces the global tool policy as a whole; if a project file exists, set `enable_user_input = false` in that project file as well rather than relying on the global value.
+`enable_user_input` defaults to `true`. Each structured question waits up to `user_input_timeout_seconds`, which defaults to 120 seconds. If no answer arrives, YAACLI rejects the deferred call with an English model prompt that explains the timeout and directs the agent to continue using its best judgment rather than requesting the same input again. Set `enable_user_input = false` to remove the tool entirely. Headless mode does not expose this tool because it cannot collect interactive answers. The SDK also leaves it disabled unless a host explicitly registers it and implements deferred continuation. Project `tools.toml` replaces the global tool policy as a whole; if a project file exists, repeat any non-default user-input settings there rather than relying on global values.
 
 ## Development
 

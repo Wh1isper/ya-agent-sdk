@@ -86,6 +86,8 @@ Project-level tool permissions in `.yaacli/tools.toml`:
 [tools]
 # Enable structured clarifying questions in the interactive TUI (default: true)
 enable_user_input = true
+# Seconds to wait for each structured answer before rejecting the call (default: 120)
+user_input_timeout_seconds = 120
 
 # MCP tool exposure: "direct" (default) or "proxy"
 mcp_mode = "direct"
@@ -94,7 +96,7 @@ mcp_mode = "direct"
 need_approval = ["shell", "write"]
 ```
 
-Set `enable_user_input = false` when the project should not expose the interactive `ask_user_question` tool. Headless mode never exposes it.
+Set `enable_user_input = false` when the project should not expose the interactive `ask_user_question` tool. `user_input_timeout_seconds` must be positive and finite; an unanswered question rejects the deferred call after this interval so the agent can continue. Headless mode never exposes it.
 
 Use `mcp_mode = "direct"` to expose each MCP server's native tools as namespaced `<server>_<tool>` names. Use `mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which is useful when many MCP tools would otherwise enlarge or destabilize the model-facing tool list. Servers marked `"required": false` remain optional in both modes.
 

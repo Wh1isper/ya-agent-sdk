@@ -479,6 +479,15 @@ and adjust your work accordingly while continuing toward the goal.
 BACKGROUND_WAKEUP_PROMPT = """<system-reminder>
 A background task is ready. Review the background notification and use the relevant tool if more detail is needed.
 </system-reminder>"""
+USER_INPUT_TIMEOUT_PROMPT = (
+    "The user did not respond before the clarification request timed out. "
+    "Do not wait for or request the same input again. Continue the task using your best judgment "
+    "and make reasonable assumptions where needed."
+)
+
+
+class _UserInputTimeoutError(TimeoutError):
+    """Raised when a structured user question is left unanswered."""
 
 
 # TUIState kept for backward compatibility (used in tests and status bar)
@@ -3174,9 +3183,18 @@ class TUIApp:
             )
             if tool_call.tool_name == AskUserQuestionTool.name or metadata_kind == ASK_USER_QUESTION_KIND:
                 self._approval_kind = "question"
-                answers = await self._collect_user_question_answers(tool_call)
-                results.calls[tool_call.tool_call_id] = format_user_question_answers(answers)
-                self._append_output(f"  [Answered: {tool_call.tool_name}]")
+                try:
+                    answers = await self._collect_user_question_answers(tool_call)
+                except _UserInputTimeoutError:
+                    results.calls[tool_call.tool_call_id] = RetryPromptPart(
+                        content=USER_INPUT_TIMEOUT_PROMPT,
+                        tool_name=tool_call.tool_name,
+                        tool_call_id=tool_call.tool_call_id,
+                    )
+                    self._append_output(f"  [Timed out: {tool_call.tool_name}]")
+                else:
+                    results.calls[tool_call.tool_call_id] = format_user_question_answers(answers)
+                    self._append_output(f"  [Answered: {tool_call.tool_name}]")
                 current_index += 1
                 continue
 
@@ -3208,18 +3226,33 @@ class TUIApp:
         self._append_output("")
         return results
 
-    async def _wait_for_approval_input(self) -> tuple[bool, str | None]:
+    async def _wait_for_approval_input(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> tuple[bool, str | None]:
         """Wait for an explicit approval, denial, or deferred-call response."""
-        self._approval_event = asyncio.Event()
+        event = asyncio.Event()
+        self._approval_event = event
         self._approval_result = None
         self._approval_reason = None
         if self._app:
             self._app.invalidate()
-        await self._approval_event.wait()
-        approved = self._approval_result if self._approval_result is not None else False
-        reason = self._approval_reason
-        self._approval_event = None
-        return approved, reason
+        try:
+            if timeout_seconds is None:
+                await event.wait()
+            else:
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
+                except TimeoutError as error:
+                    self._approval_result = False
+                    self._approval_reason = USER_INPUT_TIMEOUT_PROMPT
+                    raise _UserInputTimeoutError from error
+            approved = self._approval_result if self._approval_result is not None else False
+            return approved, self._approval_reason
+        finally:
+            if self._approval_event is event:
+                self._approval_event = None
 
     async def _collect_user_question_answers(self, tool_call: ToolCallPart) -> UserQuestionAnswers:
         """Render and collect all questions from one structured deferred call."""
@@ -3230,7 +3263,9 @@ class TUIApp:
         for index, question in enumerate(request.questions, start=1):
             while True:
                 self._display_user_question(question, index=index, total=total)
-                provided, response = await self._wait_for_approval_input()
+                provided, response = await self._wait_for_approval_input(
+                    timeout_seconds=self.config.tools.user_input_timeout_seconds
+                )
                 if not provided or not response:
                     continue
                 try:
@@ -3260,10 +3295,11 @@ class TUIApp:
         selection_hint = (
             "numbers separated by commas, or free text" if question.multi_select else "a number, or free text"
         )
+        timeout_seconds = float(self.config.tools.user_input_timeout_seconds)
         panel = Panel(
             Group(*content),
             title=f"[yellow]Clarifying Question {index}/{total}[/yellow]",
-            subtitle=f"[dim]Enter {selection_hint} | Ctrl+C: Cancel[/dim]",
+            subtitle=(f"[dim]Enter {selection_hint} | Timeout: {timeout_seconds:g}s | Ctrl+C: Cancel[/dim]"),
             border_style="yellow",
             padding=(1, 2),
         )

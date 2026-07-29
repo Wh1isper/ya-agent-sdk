@@ -53,6 +53,7 @@ from ya_agent_sdk.usage import CostEstimate, UsageAgentTotal, UsageSnapshot
 from yaacli.app import BUSY_CONTROL_COMMANDS, TUIApp, TUIState
 from yaacli.app.state import TUIPhase
 from yaacli.app.tui import (
+    USER_INPUT_TIMEOUT_PROMPT,
     PendingAttachment,
     _BoundedOutputTail,
     _drain_direct_shell_stream,
@@ -68,6 +69,7 @@ from yaacli.config import (
     GeneralConfig,
     ModelProfileConfig,
     NotificationConfig,
+    ToolsConfig,
     YaacliConfig,
 )
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
@@ -92,6 +94,7 @@ class MockConfig:
         )
     )
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
     commands: dict[str, CommandDefinition] = field(default_factory=dict)
 
     def get_commands(self) -> dict[str, CommandDefinition]:
@@ -3786,7 +3789,8 @@ async def test_tui_app_deferred_flow_collects_structured_clarifying_answers() ->
     )
     responses = iter([(True, "2"), (True, "1, 2")])
 
-    async def fake_wait_for_input() -> tuple[bool, str | None]:
+    async def fake_wait_for_input(*, timeout_seconds: float | None = None) -> tuple[bool, str | None]:
+        assert timeout_seconds == 120.0
         return next(responses)
 
     app._wait_for_approval_input = fake_wait_for_input  # type: ignore[method-assign]
@@ -3801,6 +3805,52 @@ async def test_tui_app_deferred_flow_collects_structured_clarifying_answers() ->
         "Which sections?": ["Intro", "Conclusion"],
     }
     assert app.phase == TUIPhase.TOOL_CALLING
+
+
+@pytest.mark.asyncio
+async def test_tui_app_structured_question_timeout_rejects_call_and_continues() -> None:
+    app = TUIApp(
+        config=MockConfig(tools=ToolsConfig(user_input_timeout_seconds=0.01)),
+        config_manager=MockConfigManager(),
+    )
+    deferred = DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="ask_user_question",
+                args={
+                    "questions": [
+                        {
+                            "question": "Which format?",
+                            "header": "Format",
+                            "options": [
+                                {"label": "Summary", "description": "Brief"},
+                                {"label": "Detailed", "description": "Complete"},
+                            ],
+                            "multiSelect": False,
+                        }
+                    ]
+                },
+                tool_call_id="question-timeout",
+            )
+        ]
+    )
+    app._set_phase(TUIPhase.THINKING)
+
+    results = await app._request_user_action(deferred)
+
+    call_result = results.calls["question-timeout"]
+    assert isinstance(call_result, RetryPromptPart)
+    assert call_result.content == (
+        "The user did not respond before the clarification request timed out. "
+        "Do not wait for or request the same input again. Continue the task using your best judgment "
+        "and make reasonable assumptions where needed."
+    )
+    assert call_result.content == USER_INPUT_TIMEOUT_PROMPT
+    assert call_result.tool_name == "ask_user_question"
+    assert call_result.tool_call_id == "question-timeout"
+    assert app._approval_event is None
+    assert app.phase == TUIPhase.TOOL_CALLING
+    assert "Timed out: ask_user_question" in "\n".join(app._output_lines)
 
 
 @pytest.mark.asyncio
