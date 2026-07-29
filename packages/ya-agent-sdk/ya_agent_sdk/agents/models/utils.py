@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import httpx
 import websockets
 from openai import APIStatusError
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models import get_user_agent
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from tenacity import before_sleep_log, retry_if_exception, stop_after_attempt, wait_exponential
@@ -162,7 +162,7 @@ def is_retryable_model_stream_exception(
     exc: BaseException,
     options: ModelRequestRetryOptions | None = None,
 ) -> bool:
-    """Return whether a model stream failed because of a transient transport error.
+    """Return whether a model stream failed because of a transient provider or transport error.
 
     Streaming response bodies are consumed after the HTTP transport has returned,
     so mid-stream failures cannot be replayed by ``AsyncTenacityTransport``. Walk
@@ -191,6 +191,8 @@ def _is_retryable_model_stream_exception_branch(
         return exc.status_code in options.status_codes
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in options.status_codes
+    if isinstance(exc, UnexpectedModelBehavior):
+        return _is_retryable_unexpected_model_behavior(exc, options, seen=branch_seen)
     if isinstance(exc, httpx.TransportError | websockets.WebSocketException | TimeoutError | OSError):
         return True
     if isinstance(exc, BaseExceptionGroup):
@@ -202,6 +204,24 @@ def _is_retryable_model_stream_exception_branch(
     if not exc.__suppress_context__ and exc.__context__ is not None:
         return _is_retryable_model_stream_exception_branch(exc.__context__, options, seen=branch_seen)
     return False
+
+
+def _is_retryable_unexpected_model_behavior(
+    exc: UnexpectedModelBehavior,
+    options: ModelRequestRetryOptions,
+    *,
+    seen: frozenset[int],
+) -> bool:
+    """Recognize the provider's explicit transient failure signal without retrying all model behavior errors."""
+    if exc.__cause__ is not None:
+        return _is_retryable_model_stream_exception_branch(exc.__cause__, options, seen=seen)
+    if not exc.__suppress_context__ and exc.__context__ is not None:
+        return _is_retryable_model_stream_exception_branch(exc.__context__, options, seen=seen)
+    normalized_message = exc.message.casefold()
+    return (
+        "an error occurred while processing your request" in normalized_message
+        and "retry your request" in normalized_message
+    )
 
 
 def _env_bool(name: str, *, default: bool) -> bool:

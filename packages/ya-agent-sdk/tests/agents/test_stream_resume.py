@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -260,6 +260,78 @@ async def test_stream_transport_failures_use_an_independent_resume_budget(tmp_pa
     assert streamer.run.result.output == "recovered after independent failures"
 
 
+async def test_transport_resume_budget_resets_after_successful_model_request(tmp_path: Path) -> None:
+    calls = 0
+    fail_post_node_once = True
+    events: list[Any] = []
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
+        nonlocal calls
+        calls += 1
+        if calls in {1, 3}:
+            raise UnexpectedModelBehavior(
+                "An error occurred while processing your request. You can retry your request."
+            )
+        yield "intermediate recovery" if calls == 2 else "recovered after reset"
+
+    async def post_node_hook(_node_ctx: Any) -> None:
+        nonlocal fail_post_node_once
+        if calls == 2 and fail_post_node_once:
+            fail_post_node_once = False
+            raise RuntimeError("execution recovery needed after model transport recovered")
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async with stream_agent(
+        runtime,
+        "start task",
+        resume_on_error=True,
+        resume_max_attempts=2,
+        transport_resume_max_attempts=2,
+        post_node_hook=post_node_hook,
+    ) as streamer:
+        async for event in streamer:
+            events.append(event.event)
+        streamer.raise_if_exception()
+
+    assert calls == 4
+    assert streamer.run is not None
+    assert streamer.run.result is not None
+    assert streamer.run.result.output == "recovered after reset"
+    start_events = [event for event in events if isinstance(event, AgentExecutionStartEvent)]
+    assert [event.attempt_index for event in start_events] == [0, 1, 2, 3]
+
+
+async def test_successful_model_request_does_not_reset_execution_resume_budget(tmp_path: Path) -> None:
+    calls = 0
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("execution stream failure")
+        yield "model transport recovered"
+
+    async def post_node_hook(_node_ctx: Any) -> None:
+        raise RuntimeError("persistent post-node failure")
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    with pytest.raises(RuntimeError, match="persistent post-node failure"):
+        async with stream_agent(
+            runtime,
+            "start task",
+            resume_on_error=True,
+            resume_max_attempts=2,
+            transport_resume_max_attempts=10,
+            post_node_hook=post_node_hook,
+        ) as streamer:
+            async for _event in streamer:
+                pass
+
+    assert calls == 2
+
+
 async def test_stream_transport_resume_budget_exhausts_independently(tmp_path: Path) -> None:
     calls = 0
 
@@ -283,6 +355,66 @@ async def test_stream_transport_resume_budget_exhausts_independently(tmp_path: P
                 pass
 
     assert calls == 2
+
+
+async def test_unexpected_model_behavior_uses_transport_resume_budget(tmp_path: Path) -> None:
+    calls = 0
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise UnexpectedModelBehavior(
+                "An error occurred while processing your request. You can retry your request."
+            )
+        yield "recovered after provider error"
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async with stream_agent(
+        runtime,
+        "start task",
+        resume_on_error=True,
+        resume_max_attempts=1,
+        transport_resume_max_attempts=2,
+    ) as streamer:
+        async for _event in streamer:
+            pass
+        streamer.raise_if_exception()
+
+    assert calls == 2
+    assert streamer.run is not None
+    assert streamer.run.result is not None
+    assert streamer.run.result.output == "recovered after provider error"
+
+
+async def test_permanent_unexpected_model_behavior_uses_execution_resume_budget(tmp_path: Path) -> None:
+    calls = 0
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise UnexpectedModelBehavior("Cannot apply a text delta to an existing tool call part")
+        yield "recovered through execution resume"
+
+    runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
+
+    async with stream_agent(
+        runtime,
+        "start task",
+        resume_on_error=True,
+        resume_max_attempts=2,
+        transport_resume_max_attempts=1,
+    ) as streamer:
+        async for _event in streamer:
+            pass
+        streamer.raise_if_exception()
+
+    assert calls == 2
+    assert streamer.run is not None
+    assert streamer.run.result is not None
+    assert streamer.run.result.output == "recovered through execution resume"
 
 
 async def test_stream_event_hook_transport_error_uses_execution_budget(tmp_path: Path) -> None:

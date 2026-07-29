@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 from openai import APIStatusError
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.retries import AsyncTenacityTransport
 from ya_agent_sdk.agents.models import infer_model
@@ -75,6 +76,25 @@ def test_model_stream_retry_recognizes_official_provider_status_error() -> None:
     error = APIStatusError("temporarily unavailable", response=response, body={})
 
     assert is_retryable_model_stream_exception(error) is True
+
+
+def test_model_stream_retry_recognizes_provider_retry_signal() -> None:
+    error = UnexpectedModelBehavior("An error occurred while processing your request. You can retry your request.")
+
+    assert is_retryable_model_stream_exception(error) is True
+
+
+def test_model_stream_retry_rejects_permanent_unexpected_model_behavior() -> None:
+    error = UnexpectedModelBehavior("Cannot apply a text delta to an existing tool call part")
+
+    assert is_retryable_model_stream_exception(error) is False
+
+
+def test_model_stream_retry_rejects_unexpected_behavior_wrapping_permanent_status() -> None:
+    error = UnexpectedModelBehavior("An error occurred while processing your request. You can retry your request.")
+    error.__cause__ = ModelHTTPError(400, "openai-responses:gpt-5", body={"error": "invalid request"})
+
+    assert is_retryable_model_stream_exception(error) is False
 
 
 def test_model_stream_retry_rejects_permanent_status_despite_transport_context() -> None:

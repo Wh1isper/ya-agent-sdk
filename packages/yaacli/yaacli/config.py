@@ -84,7 +84,7 @@ class GeneralConfig(BaseModel):
     """Maximum total streaming attempts for non-transport errors."""
 
     agent_stream_transport_resume_max_attempts: int = 20
-    """Independent maximum total attempts for transient model transport errors."""
+    """Independent maximum attempts per consecutive transient model transport failure streak."""
 
     agent_stream_resume_prompt: str = (
         "The previous streaming model request failed before the agent finished. "

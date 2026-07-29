@@ -840,10 +840,10 @@ class ModelConfig(BaseModel):
     """Default maximum total attempts for non-transport stream recovery."""
 
     stream_transport_resume_max_attempts: int = Field(default=20, ge=1)
-    """Default maximum total attempts for transient model transport recovery.
+    """Default maximum attempts per consecutive transient model transport failure streak.
 
-    Transport attempts use an independent budget and do not consume
-    ``stream_resume_max_attempts``.
+    Transport attempts use an independent budget, do not consume
+    ``stream_resume_max_attempts``, and reset after a successful model request.
     """
 
     stream_resume_prompt: str | None = None
