@@ -54,6 +54,7 @@ def test_default_config() -> None:
 
     # Tools and security
     assert config.tools.enable_user_input is True
+    assert config.tools.user_input_timeout_seconds == 120.0
     assert config.tools.mcp_mode == "direct"
     assert config.tools.need_approval == []
     assert config.security.shell_review.enabled is False
@@ -112,10 +113,12 @@ def test_tools_config() -> None:
     """Test ToolsConfig (project-only config)."""
     config = ToolsConfig(
         enable_user_input=False,
+        user_input_timeout_seconds=30,
         mcp_mode="proxy",
         need_approval=["shell_sandbox", "file_write"],
     )
     assert config.enable_user_input is False
+    assert config.user_input_timeout_seconds == 30.0
     assert config.mcp_mode == "proxy"
     assert config.need_approval == ["shell_sandbox", "file_write"]
 
@@ -123,6 +126,12 @@ def test_tools_config() -> None:
 def test_tools_config_rejects_unknown_mcp_mode() -> None:
     with pytest.raises(ValidationError):
         ToolsConfig(mcp_mode="search")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, float("inf"), float("nan")])
+def test_tools_config_rejects_invalid_user_input_timeout(timeout_seconds: float) -> None:
+    with pytest.raises(ValidationError):
+        ToolsConfig(user_input_timeout_seconds=timeout_seconds)
 
 
 # =============================================================================

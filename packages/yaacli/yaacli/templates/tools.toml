@@ -4,6 +4,8 @@
 [tools]
 # Allow the interactive agent to ask structured clarifying questions.
 enable_user_input = true
+# Reject an unanswered structured question after this many seconds.
+user_input_timeout_seconds = 120
 
 # Expose namespaced MCP tools directly (default), or through mcp_search_tool/mcp_call_tool.
 mcp_mode = "direct"

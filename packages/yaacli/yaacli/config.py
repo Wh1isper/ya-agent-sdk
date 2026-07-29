@@ -189,6 +189,9 @@ class ToolsConfig(BaseModel):
     enable_user_input: bool = True
     """Enable the interactive ``ask_user_question`` tool in the TUI."""
 
+    user_input_timeout_seconds: float = Field(default=120.0, gt=0, allow_inf_nan=False)
+    """Seconds to wait for each structured question answer before rejecting the call."""
+
     mcp_mode: Literal["direct", "proxy"] = "direct"
     """Expose namespaced MCP tools directly or through the fixed MCP tool proxy."""
 

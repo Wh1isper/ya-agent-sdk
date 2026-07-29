@@ -84,7 +84,7 @@ Most architecture work in this repository targets `packages/ya-agent-sdk` and `p
 - TUI reference implementation built on top of `ya-agent-sdk`
 - runtime-facing CLI behavior belongs here
 - YAACLI managed temporary storage intentionally overrides the SDK workspace-first policy and always uses the system temporary directory; the separate system-temp allowed path remains available for user-specified files.
-- interactive YAACLI enables `ask_user_question` by default through `tools.enable_user_input`, which can be disabled in `tools.toml`; headless mode does not expose the tool
+- interactive YAACLI enables `ask_user_question` by default through `tools.enable_user_input`, which can be disabled in `tools.toml`; each structured question has a positive finite `tools.user_input_timeout_seconds` timeout (120 seconds by default), after which YAACLI rejects the whole deferred call with a retry prompt directing the agent to proceed using its best judgment; headless mode does not expose the tool
 - YAACLI exposes configured MCP servers as namespaced `<server>_<tool>` native toolsets by default while preserving `required=false` startup/listing tolerance; `tools.mcp_mode = "proxy"` opts into the fixed `mcp_search_tool`/`mcp_call_tool` proxy surface
 - non-empty interactive HITL batches pause YAACLI's elapsed run timer for the full user wait, resume without charging that interval, and emit one terminal bell when `notifications.bell_on_user_action_required` is enabled
 - `[general]` and `[model_profiles.*]` support static `instructions` for the active main-agent model profile; YAACLI registers them through a dynamic Pydantic AI `instructions` callback so `/model` switches apply to every later model request, including legacy or compacted histories

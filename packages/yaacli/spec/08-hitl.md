@@ -20,6 +20,7 @@ HITL is both:
 Current interaction policy comes from:
 
 - `tools.enable_user_input`, which defaults to `true` and controls registration of the optional `ask_user_question` tool;
+- `tools.user_input_timeout_seconds`, which defaults to 120 seconds and bounds each structured-question wait;
 - `tools.need_approval` for tool names; and
 - `tools.need_approval_mcps` for MCP servers.
 
@@ -79,6 +80,7 @@ For approvals:
 For deferred calls:
 
 - `ask_user_question` is recognized by tool name or deferred metadata kind, parsed into the validated structured schema, and returned as a JSON-compatible answer mapping under the original call ID;
+- if any structured question receives no answer before `tools.user_input_timeout_seconds`, YAACLI discards partial answers and rejects the whole call with a `RetryPromptPart` that explains the timeout and directs the agent to continue using its best judgment without requesting the same input again;
 - any other supplied result becomes a `RetryPromptPart`;
 - an explicit denial for another deferred call also becomes a `RetryPromptPart` whose content records the denial; and
 - the original tool name and tool-call ID are retained.
@@ -113,7 +115,7 @@ Deferred calls have a separate explicit contract:
 | Idle-only/custom registered slash command or `!shell` | Reject locally without supplying a result |
 | `/cancel` | Cancel without supplying a result |
 
-Structured clarification calls render each question separately. A single-select question accepts one option number or free text. A multi-select question accepts comma-separated option numbers or free text. Valid numeric selections are converted to option labels; other non-empty input is preserved as free text, while empty answers keep the question pending. The final call result includes the original questions and an `answers` mapping keyed by exact question text.
+Structured clarification calls render each question separately. A single-select question accepts one option number or free text. A multi-select question accepts comma-separated option numbers or free text. Valid numeric selections are converted to option labels; other non-empty input is preserved as free text, while empty answers keep the question pending without resetting the current wait. Each question receives its own configured timeout. The final successful call result includes the original questions and an `answers` mapping keyed by exact question text; a timeout rejects the whole call instead.
 
 `/cancel` and deferred-call `/deny` are checked before the generic control classifier. Registered slash commands and the `!` namespace are then resolved before approval steering or deferred-call result parsing; unrecognized slash-prefixed text remains ordinary input. Empty Enter never approves, and approval text outside the explicit allowlist never approves accidentally. The entire HITL parser additionally requires the authoritative phase to remain `AWAITING_APPROVAL`; once cancellation or saving begins, cleanup-phase routing wins even if the pending flag has not yet been reset.
 
@@ -194,6 +196,7 @@ Tests must cover:
 - `/cancel` priority;
 - `ToolDenied`, generic `RetryPromptPart`, and structured question-result construction;
 - elapsed-time freezing throughout HITL and resumption without charging user wait time;
+- structured-question timeout rejection, prompt content, event cleanup, and continuation;
 - one configurable terminal bell when a non-empty HITL batch starts;
 - runtime approval policy surviving state restore;
 - transactional session isolation; and

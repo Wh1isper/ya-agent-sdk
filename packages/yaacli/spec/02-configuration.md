@@ -200,6 +200,7 @@ permissions without copying model credentials or global UI settings:
 ```toml
 [tools]
 enable_user_input = true
+user_input_timeout_seconds = 120
 mcp_mode = "direct"
 need_approval = ["shell_exec", "write"]
 need_approval_mcps = ["production-filesystem"]
@@ -207,8 +208,13 @@ need_approval_mcps = ["production-filesystem"]
 
 `enable_user_input` defaults to `true` and controls whether the interactive TUI
 registers the deferred `ask_user_question` tool. Setting it to `false` removes
-the tool. Headless mode leaves it disabled regardless because it cannot collect
-interactive answers.
+the tool. `user_input_timeout_seconds` must be positive and finite, and defaults
+to 120 seconds. It applies separately to each structured question; when a question is
+left unanswered, YAACLI rejects the whole deferred call with a
+`RetryPromptPart` explaining that the user did not respond and directing the
+agent to continue using its best judgment without requesting the same input
+again, then continues the same agent turn. Headless mode leaves the tool disabled regardless because it cannot
+collect interactive answers.
 
 `mcp_mode` accepts `"direct"` or `"proxy"` and defaults to `"direct"`. Direct
 mode registers each configured MCP server as a native toolset and exposes its
