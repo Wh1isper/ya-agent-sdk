@@ -7,9 +7,9 @@ This module provides:
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Container
+from collections.abc import Awaitable, Callable, Container, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from inspect import isawaitable
 from typing import Annotated, Any, cast
 from uuid import uuid4
@@ -23,14 +23,30 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
+    UserContent,
 )
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 
-from ya_agent_sdk.context import AgentContext, ModelConfig
+from ya_agent_sdk._logger import get_logger
+from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
+from ya_agent_sdk.agents.retry_recovery import (
+    DEFAULT_STREAM_RESUME_PROMPT,
+    close_unreturned_tool_calls,
+    extract_resume_history,
+    recover_retry_message_history,
+)
+from ya_agent_sdk.context import AgentContext, ModelConfig, StreamRecoveryPolicy
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.usage import CostEstimate, coerce_run_usage, estimate_latest_model_message_cost
+from ya_agent_sdk.usage import (
+    CostEstimate,
+    coerce_run_usage,
+    estimate_latest_model_message_cost,
+    unavailable_cost_estimate,
+)
+
+logger = get_logger(__name__)
 
 # Type alias for instruction functions
 InstructionFunc = Callable[[RunContext[AgentContext]], str | None]
@@ -136,33 +152,194 @@ def _to_pascal_case(name: str) -> str:
     return "".join(part.capitalize() for part in parts)
 
 
-async def _run_subagent_iter(
+@dataclass(frozen=True)
+class _SubagentRunOutcome:
+    result: AgentRunResult[Any]
+    usage: RunUsage
+
+
+@dataclass
+class _SubagentRunTracker:
+    attempt_index: int = 0
+    model_request_index: int = 0
+    successful_model_request_count: int = 0
+    accumulated_usage: RunUsage = field(default_factory=RunUsage)
+    run: Any | None = None
+    failed_during_model_request: bool = False
+
+
+@dataclass(frozen=True)
+class _SubagentRetryDecision:
+    recoverable: bool
+    budget: str
+    failures: int
+    max_attempts: int
+
+
+@dataclass
+class _SubagentRetryState:
+    max_attempts: int
+    transport_max_attempts: int
+    non_transport_failures: int = 0
+    transport_failures: int = 0
+
+    def reset_transport_after_success(self, tracker: _SubagentRunTracker, previous_successes: int) -> None:
+        if tracker.successful_model_request_count <= previous_successes or not self.transport_failures:
+            return
+        logger.debug(
+            "Resetting subagent transport failure streak previous_failures=%s",
+            self.transport_failures,
+        )
+        self.transport_failures = 0
+
+    def register_failure(self, *, transport: bool) -> _SubagentRetryDecision:
+        if transport:
+            self.transport_failures += 1
+            return _SubagentRetryDecision(
+                recoverable=self.transport_failures + 1 <= self.transport_max_attempts,
+                budget="transport",
+                failures=self.transport_failures,
+                max_attempts=self.transport_max_attempts,
+            )
+        self.non_transport_failures += 1
+        return _SubagentRetryDecision(
+            recoverable=self.non_transport_failures + 1 <= self.max_attempts,
+            budget="execution",
+            failures=self.non_transport_failures,
+            max_attempts=self.max_attempts,
+        )
+
+
+async def _record_subagent_model_request(
+    run: Any,
+    parent_ctx: AgentContext,
+    sub_ctx: AgentContext,
+    tracker: _SubagentRunTracker,
+    *,
+    model_id: str,
+    agent_name: str,
+    usage_id: str | None,
+) -> None:
+    tracker.successful_model_request_count += 1
+    run_usage = tracker.accumulated_usage + coerce_run_usage(run.usage)
+    usage_ledger_key = f"usage:{sub_ctx.agent_id}:{usage_id or sub_ctx.agent_id}"
+    parent_ctx.update_usage_snapshot_entry(
+        ledger_key=usage_ledger_key,
+        agent_id=sub_ctx.agent_id,
+        agent_name=agent_name,
+        model_id=model_id,
+        usage=run_usage,
+        cost_estimate=CostEstimate(),
+        usage_id=usage_id,
+        source="subagent_model_request",
+    )
+    request_usage_id = f"{usage_id or sub_ctx.agent_id}:{tracker.model_request_index}"
+    parent_ctx.update_usage_snapshot_entry(
+        ledger_key=f"cost:{sub_ctx.agent_id}:{request_usage_id}",
+        agent_id=sub_ctx.agent_id,
+        agent_name=agent_name,
+        model_id=model_id,
+        usage=RunUsage(),
+        cost_estimate=estimate_latest_model_message_cost(run.new_messages()),
+        usage_id=request_usage_id,
+        source="subagent_model_request_cost",
+    )
+    snapshot = parent_ctx.build_usage_snapshot()
+    await parent_ctx.emit_event(
+        UsageSnapshotEvent(
+            event_id=(
+                f"{snapshot.run_id}:usage_snapshot:{sub_ctx.agent_id}:"
+                f"model_request_complete:{tracker.model_request_index}"
+            ),
+            snapshot=snapshot,
+            source="model_request_complete",
+        )
+    )
+    tracker.model_request_index += 1
+
+
+async def _record_failed_subagent_model_request(
+    run: Any,
+    parent_ctx: AgentContext,
+    sub_ctx: AgentContext,
+    tracker: _SubagentRunTracker,
+    *,
+    successful_requests_before_attempt: int,
+    model_id: str,
+    agent_name: str,
+    usage_id: str | None,
+) -> None:
+    attempt_usage = coerce_run_usage(run.usage)
+    completed_requests = tracker.successful_model_request_count - successful_requests_before_attempt
+    attempt_usage.requests = max(attempt_usage.requests, completed_requests + 1)
+    tracker.accumulated_usage += attempt_usage
+
+    usage_ledger_key = f"usage:{sub_ctx.agent_id}:{usage_id or sub_ctx.agent_id}"
+    parent_ctx.update_usage_snapshot_entry(
+        ledger_key=usage_ledger_key,
+        agent_id=sub_ctx.agent_id,
+        agent_name=agent_name,
+        model_id=model_id,
+        usage=tracker.accumulated_usage,
+        cost_estimate=CostEstimate(),
+        usage_id=usage_id,
+        source="subagent_model_request",
+    )
+    request_usage_id = f"{usage_id or sub_ctx.agent_id}:{tracker.model_request_index}"
+    parent_ctx.update_usage_snapshot_entry(
+        ledger_key=f"cost:{sub_ctx.agent_id}:{request_usage_id}",
+        agent_id=sub_ctx.agent_id,
+        agent_name=agent_name,
+        model_id=model_id,
+        usage=RunUsage(),
+        cost_estimate=unavailable_cost_estimate(1),
+        usage_id=request_usage_id,
+        source="subagent_model_request_cost",
+    )
+    tracker.model_request_index += 1
+    snapshot = parent_ctx.build_usage_snapshot()
+    await parent_ctx.emit_event(
+        UsageSnapshotEvent(
+            event_id=(
+                f"{snapshot.run_id}:usage_snapshot:{sub_ctx.agent_id}:"
+                f"model_request_failed:{tracker.model_request_index - 1}"
+            ),
+            snapshot=snapshot,
+            source="model_request_failed",
+        )
+    )
+
+
+async def _stream_subagent_node(node: Any, run: Any, sub_ctx: AgentContext, tracker: _SubagentRunTracker) -> None:
+    event_processing_failed = False
+    try:
+        async with node.stream(run.ctx) as request_stream:
+            async for event in request_stream:
+                try:
+                    await sub_ctx.emit_event(sub_ctx.tool_id_wrapper.wrap_event(event))
+                except BaseException:
+                    event_processing_failed = True
+                    raise
+    except BaseException:
+        tracker.failed_during_model_request = Agent.is_model_request_node(node) and not event_processing_failed
+        raise
+
+
+async def _run_subagent_attempt(
     agent: Agent[AgentContext, Any],
     parent_ctx: AgentContext,
     sub_ctx: AgentContext,
-    prompt: str,
-    message_history: list[Any] | None,
+    tracker: _SubagentRunTracker,
+    prompt: str | Sequence[UserContent],
+    message_history: list[ModelMessage] | None,
     *,
     model: Model,
     model_id: str,
     agent_name: str,
-    usage_id: str | None = None,
-) -> AgentRunResult:
-    """Run subagent iteration and stream events to subagent's queue.
-
-    Events are emitted to sub_ctx (subagent context) so they go to the
-    subagent's queue keyed by agent_id, not the parent's queue.
-
-    Args:
-        agent: The subagent to run.
-        sub_ctx: Subagent's context (events emitted here).
-        prompt: The prompt to send to the subagent.
-        message_history: Optional conversation history for resume.
-
-    Returns:
-        AgentRunResult from the subagent execution.
-    """
-    model_request_index = 0
+    usage_id: str | None,
+) -> AgentRunResult[Any]:
+    tracker.run = None
+    tracker.failed_during_model_request = False
     async with agent.iter(
         prompt,
         deps=sub_ctx,
@@ -170,52 +347,138 @@ async def _run_subagent_iter(
         message_history=message_history,
         model=model,
     ) as run:
+        tracker.run = run
         async for node in run:
             if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
                 continue
+            if not (Agent.is_model_request_node(node) or Agent.is_call_tools_node(node)):
+                continue
+            await _stream_subagent_node(node, run, sub_ctx, tracker)
+            if Agent.is_model_request_node(node):
+                await _record_subagent_model_request(
+                    run,
+                    parent_ctx,
+                    sub_ctx,
+                    tracker,
+                    model_id=model_id,
+                    agent_name=agent_name,
+                    usage_id=usage_id,
+                )
+    return cast(AgentRunResult[Any], run.result)
 
-            if Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):
-                async with node.stream(run.ctx) as request_stream:
-                    async for event in request_stream:
-                        await sub_ctx.emit_event(sub_ctx.tool_id_wrapper.wrap_event(event))
-                if Agent.is_model_request_node(node):
-                    run_usage = coerce_run_usage(run.usage)
-                    usage_ledger_key = f"usage:{sub_ctx.agent_id}:{usage_id or sub_ctx.agent_id}"
-                    parent_ctx.update_usage_snapshot_entry(
-                        ledger_key=usage_ledger_key,
-                        agent_id=sub_ctx.agent_id,
-                        agent_name=agent_name,
-                        model_id=model_id,
-                        usage=run_usage,
-                        cost_estimate=CostEstimate(),
-                        usage_id=usage_id,
-                        source="subagent_model_request",
-                    )
-                    request_usage_id = f"{usage_id or sub_ctx.agent_id}:{model_request_index}"
-                    parent_ctx.update_usage_snapshot_entry(
-                        ledger_key=f"cost:{sub_ctx.agent_id}:{request_usage_id}",
-                        agent_id=sub_ctx.agent_id,
-                        agent_name=agent_name,
-                        model_id=model_id,
-                        usage=RunUsage(),
-                        cost_estimate=estimate_latest_model_message_cost(run.new_messages()),
-                        usage_id=request_usage_id,
-                        source="subagent_model_request_cost",
-                    )
-                    snapshot = parent_ctx.build_usage_snapshot()
-                    await parent_ctx.emit_event(
-                        UsageSnapshotEvent(
-                            event_id=(
-                                f"{snapshot.run_id}:usage_snapshot:{sub_ctx.agent_id}:"
-                                f"model_request_complete:{model_request_index}"
-                            ),
-                            snapshot=snapshot,
-                            source="model_request_complete",
+
+async def _resolve_subagent_resume_prompt(
+    policy: StreamRecoveryPolicy,
+    exc: BaseException,
+    attempt_index: int,
+    history: Sequence[ModelMessage],
+) -> str | Sequence[UserContent]:
+    if policy.resume_prompt_factory is None:
+        return policy.resume_prompt
+    value = policy.resume_prompt_factory(exc, attempt_index, history)
+    return await value if isawaitable(value) else value
+
+
+async def _run_subagent_iter(
+    agent: Agent[AgentContext, Any],
+    parent_ctx: AgentContext,
+    sub_ctx: AgentContext,
+    prompt: str,
+    message_history: list[ModelMessage] | None,
+    *,
+    model: Model,
+    model_id: str,
+    agent_name: str,
+    usage_id: str | None = None,
+) -> _SubagentRunOutcome:
+    """Run a subagent with independent stream recovery and event forwarding."""
+    policy = sub_ctx.stream_recovery_policy or StreamRecoveryPolicy(
+        enabled=sub_ctx.model_cfg.stream_resume_on_error,
+        max_attempts=sub_ctx.model_cfg.stream_resume_max_attempts,
+        transport_max_attempts=sub_ctx.model_cfg.stream_transport_resume_max_attempts,
+        resume_prompt=(
+            sub_ctx.model_cfg.stream_resume_prompt
+            if sub_ctx.model_cfg.stream_resume_prompt is not None
+            else DEFAULT_STREAM_RESUME_PROMPT
+        ),
+    )
+    retry_state = _SubagentRetryState(
+        max_attempts=policy.max_attempts if policy.enabled else 1,
+        transport_max_attempts=policy.transport_max_attempts if policy.enabled else 1,
+    )
+    tracker = _SubagentRunTracker()
+    current_prompt: str | Sequence[UserContent] = prompt
+    current_message_history = message_history
+
+    while True:
+        previous_successes = tracker.successful_model_request_count
+        try:
+            result = await _run_subagent_attempt(
+                agent,
+                parent_ctx,
+                sub_ctx,
+                tracker,
+                current_prompt,
+                current_message_history,
+                model=model,
+                model_id=model_id,
+                agent_name=agent_name,
+                usage_id=usage_id,
+            )
+            return _SubagentRunOutcome(
+                result=result,
+                usage=tracker.accumulated_usage + coerce_run_usage(result.usage),
+            )
+        except Exception as exc:
+            if tracker.run is not None:
+                if tracker.failed_during_model_request:
+                    try:
+                        await _record_failed_subagent_model_request(
+                            tracker.run,
+                            parent_ctx,
+                            sub_ctx,
+                            tracker,
+                            successful_requests_before_attempt=previous_successes,
+                            model_id=model_id,
+                            agent_name=agent_name,
+                            usage_id=usage_id,
                         )
-                    )
-                    model_request_index += 1
+                    except Exception:
+                        logger.debug("Failed to record subagent retry usage", exc_info=True)
+                else:
+                    tracker.accumulated_usage += coerce_run_usage(tracker.run.usage)
+            retry_state.reset_transport_after_success(tracker, previous_successes)
+            decision = retry_state.register_failure(
+                transport=(tracker.failed_during_model_request and is_retryable_model_stream_exception(exc))
+            )
+            if not decision.recoverable:
+                raise
 
-    return cast(AgentRunResult, run.result)
+            error_message = str(exc) or repr(exc)
+            resume_history = close_unreturned_tool_calls(
+                extract_resume_history(tracker.run, current_message_history),
+                error_message,
+            )
+            current_message_history = recover_retry_message_history(exc, resume_history, sub_ctx).history
+            tracker.attempt_index += 1
+            if current_message_history:
+                current_prompt = await _resolve_subagent_resume_prompt(
+                    policy,
+                    exc,
+                    tracker.attempt_index,
+                    current_message_history,
+                )
+
+            logger.warning(
+                "Resuming subagent after error agent_id=%s recovery_budget=%s "
+                "failures_in_budget=%s max_attempts=%s error_type=%s error=%s",
+                sub_ctx.agent_id,
+                decision.budget,
+                decision.failures,
+                decision.max_attempts,
+                type(exc).__name__,
+                error_message,
+            )
 
 
 def generate_unique_id(existing: Container[str], *, prefix: str = "", max_retries: int = 10) -> str:
@@ -359,6 +622,7 @@ async def _call_agent_as_subagent(
     success = True
     result_output = ""
     request_count = 0
+    usage_id = ctx.tool_call_id or uuid4().hex
 
     async with deps.create_subagent_context(agent_name, agent_id=agent_id, **override_kwargs) as sub_ctx:
         # Set the subagent's initial prompt for compact
@@ -390,13 +654,12 @@ async def _call_agent_as_subagent(
                     run_model = await wrapped if isawaitable(wrapped) else wrapped
 
                 model_id = run_model.model_name
-                usage_id = ctx.tool_call_id or uuid4().hex
                 message_history = (
                     initial_message_history_factory(ctx, agent_id)
                     if initial_message_history_factory is not None
                     else deps.subagent_history.get(agent_id)
                 )
-                result = await _run_subagent_iter(
+                outcome = await _run_subagent_iter(
                     agent,
                     deps,
                     sub_ctx,
@@ -407,8 +670,9 @@ async def _call_agent_as_subagent(
                     agent_name=agent_name,
                     usage_id=usage_id,
                 )
+                result = outcome.result
                 result_output = result.output
-                result_usage = coerce_run_usage(result.usage)
+                result_usage = outcome.usage
                 request_count = result_usage.requests
 
                 # Store message history for future resume
@@ -429,6 +693,9 @@ async def _call_agent_as_subagent(
         except Exception as e:
             success = False
             error_msg = str(e)
+            usage_entry = deps.usage_snapshot_entries.get(f"usage:{agent_id}:{usage_id}")
+            if usage_entry is not None:
+                request_count = usage_entry.usage.requests
             # Clean up agent_registry for new agents that failed before
             # producing any history, to avoid ghost entries that show up
             # in known-subagents and SubagentInfoTool with no history.

@@ -16,6 +16,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic_ai.messages import (
+    BaseToolCallPart,
+    BaseToolReturnPart,
     BinaryContent,
     CompactionPart,
     FilePart,
@@ -43,6 +45,11 @@ from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.filters.cold_start import _trim_tool_returns
 
 logger = get_logger(__name__)
+
+DEFAULT_STREAM_RESUME_PROMPT = (
+    "The previous streaming model request failed before the agent finished. "
+    "Continue the task from the available conversation history. Avoid repeating completed work."
+)
 
 _MEDIA_REMOVED_REMINDER = (
     "<system-reminder>Media content was removed during retry recovery because the previous "
@@ -99,6 +106,85 @@ class RetryRecoveryResult:
     history: list[ModelMessage]
     changed: bool = False
     reasons: tuple[str, ...] = ()
+
+
+def extract_resume_history(run: Any | None, fallback_history: Sequence[ModelMessage] | None) -> list[ModelMessage]:
+    """Extract the latest available messages from a failed run."""
+    if run is not None:
+        try:
+            messages = list(run.all_messages())
+        except Exception:
+            logger.debug("Failed to extract run messages for stream resume", exc_info=True)
+        else:
+            if messages:
+                return messages
+    return list(fallback_history or [])
+
+
+def _unreturned_tool_calls(
+    history: Sequence[ModelMessage],
+) -> tuple[dict[str, str], set[str]]:
+    ordinary_calls: dict[str, str] = {}
+    native_calls: set[str] = set()
+    for message in history:
+        if isinstance(message, ModelResponse):
+            for part in message.parts:
+                if isinstance(part, NativeToolCallPart):
+                    native_calls.add(part.tool_call_id)
+                elif isinstance(part, NativeToolReturnPart):
+                    native_calls.discard(part.tool_call_id)
+                elif isinstance(part, BaseToolCallPart):
+                    ordinary_calls[part.tool_call_id] = part.tool_name
+        elif isinstance(message, ModelRequest):
+            for part in message.parts:
+                if isinstance(part, BaseToolReturnPart | RetryPromptPart):
+                    ordinary_calls.pop(part.tool_call_id, None)
+    return ordinary_calls, native_calls
+
+
+def history_has_unreturned_tool_calls(history: Sequence[ModelMessage]) -> bool:
+    """Return whether history contains ordinary or native calls without results."""
+    ordinary_calls, native_calls = _unreturned_tool_calls(history)
+    return bool(ordinary_calls or native_calls)
+
+
+def close_unreturned_tool_calls(history: Sequence[ModelMessage], error_message: str) -> list[ModelMessage]:
+    """Close ordinary calls and remove incomplete native calls from recovered history."""
+    ordinary_calls, native_calls = _unreturned_tool_calls(history)
+    if not ordinary_calls and not native_calls:
+        return list(history)
+
+    normalized_history: list[ModelMessage] = []
+    for message in history:
+        if not isinstance(message, ModelResponse) or not native_calls:
+            normalized_history.append(message)
+            continue
+        parts = [
+            part
+            for part in message.parts
+            if not (isinstance(part, NativeToolCallPart) and part.tool_call_id in native_calls)
+        ]
+        if parts:
+            normalized_history.append(replace(message, parts=parts))
+
+    if ordinary_calls:
+        normalized_history.append(
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        content=(
+                            "Tool execution was interrupted by a stream error before a result was available. "
+                            f"stream_error={error_message}"
+                        ),
+                        outcome="failed",
+                    )
+                    for tool_call_id, tool_name in ordinary_calls.items()
+                ]
+            )
+        )
+    return normalized_history
 
 
 def recover_retry_message_history(

@@ -931,6 +931,25 @@ class ModelConfig(BaseModel):
         return ModelCapability.document_understanding in self.capabilities
 
 
+StreamResumePrompt = str | Sequence[UserContent]
+StreamResumePromptFactory = Callable[
+    [BaseException, int, Sequence[ModelMessage]],
+    StreamResumePrompt | Awaitable[StreamResumePrompt],
+]
+
+
+class StreamRecoveryPolicy(BaseModel):
+    """Effective stream recovery policy shared by a root run and its subagents."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    enabled: bool
+    max_attempts: int = Field(ge=1)
+    transport_max_attempts: int = Field(ge=1)
+    resume_prompt: StreamResumePrompt
+    resume_prompt_factory: StreamResumePromptFactory | None = Field(default=None, exclude=True)
+
+
 # =============================================================================
 # Resumable State
 # =============================================================================
@@ -1187,6 +1206,9 @@ class AgentContext(BaseModel):
 
     model_cfg: ModelConfig = Field(default_factory=ModelConfig)
     """Model configuration for context management."""
+
+    stream_recovery_policy: StreamRecoveryPolicy | None = Field(default=None, exclude=True)
+    """Effective root-run recovery policy inherited by subagent contexts."""
 
     tool_config: ToolConfig = Field(default_factory=ToolConfig)
     """Tool-level configuration for API keys and tool-specific settings."""

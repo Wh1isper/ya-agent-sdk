@@ -12,7 +12,10 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     RetryPromptPart,
+    TextPart,
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
@@ -20,6 +23,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from ya_agent_sdk.agents.main import _resolve_agent_retries, create_agent, stream_agent
+from ya_agent_sdk.agents.retry_recovery import close_unreturned_tool_calls, history_has_unreturned_tool_calls
 from ya_agent_sdk.context import ModelConfig
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.events import AgentExecutionFailedEvent, AgentExecutionResumeEvent, AgentExecutionStartEvent
@@ -29,6 +33,42 @@ def test_resolve_agent_retries_merges_partial_dict_with_sdk_defaults() -> None:
     resolved = _resolve_agent_retries({"tools": 4}, output_retries=None)
 
     assert resolved == {"tools": 4, "output": 3}
+
+
+def test_completed_native_tool_pair_is_not_treated_as_unreturned() -> None:
+    history = [
+        ModelResponse(
+            parts=[
+                NativeToolCallPart(tool_name="web_search", args={"query": "test"}, tool_call_id="native-1"),
+                NativeToolReturnPart(
+                    tool_name="web_search",
+                    content={"result": "done"},
+                    tool_call_id="native-1",
+                ),
+            ]
+        )
+    ]
+
+    assert history_has_unreturned_tool_calls(history) is False
+    assert close_unreturned_tool_calls(history, "stream failed") == history
+
+
+def test_incomplete_native_tool_call_is_removed_without_ordinary_return() -> None:
+    history = [
+        ModelResponse(
+            parts=[
+                TextPart(content="Searching"),
+                NativeToolCallPart(tool_name="web_search", args={"query": "test"}, tool_call_id="native-1"),
+            ]
+        )
+    ]
+
+    recovered = close_unreturned_tool_calls(history, "stream failed")
+
+    assert history_has_unreturned_tool_calls(history) is True
+    assert len(recovered) == 1
+    assert isinstance(recovered[0], ModelResponse)
+    assert recovered[0].parts == [TextPart(content="Searching")]
 
 
 def _make_runtime(tmp_path: Path, model: FunctionModel):
@@ -91,6 +131,12 @@ async def test_stream_agent_resumes_after_stream_error(tmp_path: Path) -> None:
     start_events = [event for event in events if isinstance(event, AgentExecutionStartEvent)]
     assert [event.attempt_index for event in start_events] == [0, 1]
     assert start_events[1].is_resume_attempt is True
+    recovery_policy = runtime.ctx.stream_recovery_policy
+    assert recovery_policy is not None
+    assert recovery_policy.enabled is True
+    assert recovery_policy.max_attempts == 2
+    assert recovery_policy.transport_max_attempts == 20
+    assert recovery_policy.resume_prompt == "continue from checkpoint"
 
 
 async def test_stream_agent_uses_model_config_resume_defaults(tmp_path: Path) -> None:
