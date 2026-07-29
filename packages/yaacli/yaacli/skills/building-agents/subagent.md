@@ -211,6 +211,10 @@ You are an expert debugger specializing in systematic root cause analysis.
 - **Main-agent-only tools**: Tools with `main_agent_only=True` are removed from regular subagents and self forks, including SDK Toolsets contributed or wrapped by inherited capabilities and sync or async dynamic Toolset factory results resolved per run or per step, even under full inheritance or explicit selection; SDK Toolset listing and calling also enforce the boundary regardless of `skip_unavailable`, opaque composites, or stale proxy caches
 - **No tools specified**: Subagent inherits all parent tools except main-agent-only tools and is always available
 
+### Stream Recovery
+
+When delegation runs inside `stream_agent(..., resume_on_error=True)`, regular subagents and self forks inherit the root run's effective execution and transport recovery budgets and resume prompt. Each child recovers its own message history, closes interrupted tool calls before replay, and resets its transport failure streak after a successful child model request. Successful child-local recovery does not consume the root agent's non-transport recovery budget; only an exhausted child failure propagates to the root tool-call path. Direct subagent calls outside `stream_agent()` fall back to the child `ModelConfig` stream recovery settings.
+
 ### Auto-Inherit Tools
 
 Some management tools are automatically inherited by all subagents without explicit configuration:

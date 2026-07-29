@@ -25,21 +25,18 @@ from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.messages import (
     BaseToolCallPart,
     ModelMessage,
-    ModelRequest,
     ModelResponse,
     ModelResponsePart,
     NativeToolCallPart,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextPart,
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
     ToolCallPart,
     ToolCallPartDelta,
-    ToolReturnPart,
     UserContent,
 )
 from pydantic_ai.models import KnownModelName, Model
@@ -55,7 +52,13 @@ from ya_agent_sdk.agents.guards import attach_message_bus_guard
 from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
-from ya_agent_sdk.agents.retry_recovery import recover_retry_message_history
+from ya_agent_sdk.agents.retry_recovery import (
+    DEFAULT_STREAM_RESUME_PROMPT,
+    close_unreturned_tool_calls,
+    extract_resume_history,
+    history_has_unreturned_tool_calls,
+    recover_retry_message_history,
+)
 from ya_agent_sdk.context import (
     AgentContext,
     AgentInfo,
@@ -64,6 +67,7 @@ from ya_agent_sdk.context import (
     ModelWrapper,
     ResumableState,
     StreamEvent,
+    StreamRecoveryPolicy,
     SubagentWrapper,
     ToolConfig,
     ToolIdWrapper,
@@ -941,12 +945,6 @@ UserPromptFactory = Callable[[AgentRuntime[AgentDepsT, OutputT, EnvT]], Awaitabl
 ResumePromptFactory = Callable[[BaseException, int, Sequence[ModelMessage]], UserPromptT | Awaitable[UserPromptT]]
 
 
-_DEFAULT_RESUME_PROMPT = """
-The previous streaming model request failed before the agent finished.
-Continue the task from the available conversation history. Avoid repeating completed work.
-""".strip()
-
-
 # =============================================================================
 # Agent Streamer
 # =============================================================================
@@ -1347,6 +1345,39 @@ async def stream_agent(  # noqa: C901
     ctx = fresh_ctx
     ctx.lifecycle_extensions = extensions
 
+    def configure_stream_recovery_policy() -> StreamRecoveryPolicy:
+        effective_resume_on_error = ctx.model_cfg.stream_resume_on_error if resume_on_error is None else resume_on_error
+        effective_resume_max_attempts = (
+            ctx.model_cfg.stream_resume_max_attempts if resume_max_attempts is None else resume_max_attempts
+        )
+        effective_transport_resume_max_attempts = (
+            ctx.model_cfg.stream_transport_resume_max_attempts
+            if transport_resume_max_attempts is None
+            else transport_resume_max_attempts
+        )
+        effective_resume_prompt = (
+            resume_prompt
+            if resume_prompt is not None
+            else (
+                ctx.model_cfg.stream_resume_prompt
+                if ctx.model_cfg.stream_resume_prompt is not None
+                else DEFAULT_STREAM_RESUME_PROMPT
+            )
+        )
+        policy = StreamRecoveryPolicy(
+            enabled=effective_resume_on_error,
+            max_attempts=max(1, effective_resume_max_attempts),
+            transport_max_attempts=max(1, effective_transport_resume_max_attempts),
+            resume_prompt=effective_resume_prompt,
+            resume_prompt_factory=resume_prompt_factory,
+        )
+        ctx.stream_recovery_policy = policy
+        return policy
+
+    # Publish the effective policy before hooks run, then refresh it after
+    # on_runtime_ready in case the hook changed model configuration.
+    configure_stream_recovery_policy()
+
     # Enable streaming for emit_event.
     # Must use object.__setattr__ because Pydantic v2 silently ignores
     # normal attribute assignment on private attrs of model_copy() instances.
@@ -1636,33 +1667,6 @@ async def stream_agent(  # noqa: C901
             error_str = repr(exc)
         return error_str or repr(exc)
 
-    def extract_resume_history(
-        run: AgentRun[AgentDepsT, OutputT] | None,
-        fallback_history: Sequence[ModelMessage] | None,
-    ) -> list[ModelMessage]:
-        if run is not None:
-            try:
-                messages = list(run.all_messages())
-            except Exception:
-                logger.debug("Failed to extract run messages for stream resume", exc_info=True)
-            else:
-                if messages:
-                    return messages
-        return list(fallback_history or [])
-
-    def history_has_unreturned_tool_calls(history: Sequence[ModelMessage]) -> bool:
-        unreturned_tool_call_ids: set[str] = set()
-        for message in history:
-            if isinstance(message, ModelResponse):
-                for part in message.parts:
-                    if isinstance(part, BaseToolCallPart):
-                        unreturned_tool_call_ids.add(part.tool_call_id)
-            elif isinstance(message, ModelRequest):
-                for part in message.parts:
-                    if isinstance(part, ToolReturnPart | RetryPromptPart):
-                        unreturned_tool_call_ids.discard(part.tool_call_id)
-        return bool(unreturned_tool_call_ids)
-
     def split_resume_prompt_for_tool_call_history(
         history: Sequence[ModelMessage] | None,
         prompt: UserPromptT | None,
@@ -1670,40 +1674,6 @@ async def stream_agent(  # noqa: C901
         if prompt is None or not history or not history_has_unreturned_tool_calls(history):
             return history, prompt
         return close_unreturned_tool_calls(history, "new user prompt requested before tool results"), prompt
-
-    def close_unreturned_tool_calls(history: Sequence[ModelMessage], error_message: str) -> list[ModelMessage]:
-        unreturned_tool_calls: dict[str, str] = {}
-        for message in history:
-            if isinstance(message, ModelResponse):
-                for part in message.parts:
-                    if isinstance(part, BaseToolCallPart):
-                        unreturned_tool_calls[part.tool_call_id] = part.tool_name
-            elif isinstance(message, ModelRequest):
-                for part in message.parts:
-                    if isinstance(part, ToolReturnPart | RetryPromptPart):
-                        unreturned_tool_calls.pop(part.tool_call_id, None)
-
-        normalized_history = list(history)
-        if not unreturned_tool_calls:
-            return normalized_history
-
-        normalized_history.append(
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        content=(
-                            "Tool execution was interrupted by a stream error before a result was available. "
-                            f"stream_error={error_message}"
-                        ),
-                        outcome="failed",
-                    )
-                    for tool_call_id, tool_name in unreturned_tool_calls.items()
-                ]
-            )
-        )
-        return normalized_history
 
     async def resolve_resume_prompt(
         exc: BaseException,
@@ -1715,11 +1685,10 @@ async def stream_agent(  # noqa: C901
             if inspect.isawaitable(value):
                 value = await value
             return cast(UserPromptT, value)
-        if resume_prompt is not None:
-            return resume_prompt
-        if ctx.model_cfg.stream_resume_prompt is not None:
-            return ctx.model_cfg.stream_resume_prompt
-        return _DEFAULT_RESUME_PROMPT
+        recovery_policy = ctx.stream_recovery_policy
+        if recovery_policy is not None:
+            return cast(UserPromptT, recovery_policy.resume_prompt)
+        return cast(UserPromptT, DEFAULT_STREAM_RESUME_PROMPT)
 
     async def emit_execution_failed_event(
         exc: BaseException,
@@ -1752,17 +1721,9 @@ async def stream_agent(  # noqa: C901
     ) -> None:
         nonlocal attempt_failed_during_model_request
 
-        effective_resume_on_error = ctx.model_cfg.stream_resume_on_error if resume_on_error is None else resume_on_error
-        effective_resume_max_attempts = (
-            ctx.model_cfg.stream_resume_max_attempts if resume_max_attempts is None else resume_max_attempts
-        )
-        effective_transport_resume_max_attempts = (
-            ctx.model_cfg.stream_transport_resume_max_attempts
-            if transport_resume_max_attempts is None
-            else transport_resume_max_attempts
-        )
-        max_attempts = max(1, effective_resume_max_attempts) if effective_resume_on_error else 1
-        transport_max_attempts = max(1, effective_transport_resume_max_attempts) if effective_resume_on_error else 1
+        recovery_policy = configure_stream_recovery_policy()
+        max_attempts = recovery_policy.max_attempts if recovery_policy.enabled else 1
+        transport_max_attempts = recovery_policy.transport_max_attempts if recovery_policy.enabled else 1
         attempt_index = 0
         non_transport_failures = 0
         transport_failures = 0

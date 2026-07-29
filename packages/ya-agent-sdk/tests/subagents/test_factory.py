@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai import Agent, RunContext
-from ya_agent_sdk.context import AgentContext
+from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from ya_agent_sdk.context import AgentContext, ModelConfig, StreamRecoveryPolicy
 from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.events import SubagentCompleteEvent
 from ya_agent_sdk.subagents import SubagentConfig, create_subagent_tool_from_config
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
@@ -401,6 +407,158 @@ async def async_agent_context(tmp_path):
     ) as env:
         async with AgentContext(env=env) as ctx:
             yield ctx
+
+
+async def test_subagent_retries_transient_provider_stream_failure(
+    async_agent_context: AgentContext,
+) -> None:
+    calls: list[list[ModelMessage]] = []
+
+    async def stream_function(messages: list[ModelMessage], _agent_info: FunctionAgentInfo):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            yield "partial subagent response"
+            raise UnexpectedModelBehavior(
+                "An error occurred while processing your request. You can retry your request."
+            )
+        yield "recovered subagent response"
+
+    async_agent_context.model_cfg = ModelConfig(
+        stream_resume_on_error=True,
+        stream_resume_max_attempts=1,
+        stream_transport_resume_max_attempts=2,
+        stream_resume_prompt="Resume the subagent task.",
+    )
+    agent: Agent[AgentContext, str] = Agent(
+        model=FunctionModel(stream_function=stream_function),
+        name="retrying_agent",
+    )
+    call_func = create_subagent_call_func(agent)
+    mock_ctx = MagicMock(spec=RunContext)
+    mock_ctx.deps = async_agent_context
+    mock_ctx.tool_call_id = "test-tool-call"
+
+    response = await call_func(MagicMock(spec=BaseTool), mock_ctx, "test prompt")
+
+    assert len(calls) == 2
+    assert "recovered subagent response" in response
+    resume_request = calls[1][-1]
+    assert isinstance(resume_request, ModelRequest)
+    assert any(
+        isinstance(part, UserPromptPart) and part.content == "Resume the subagent task."
+        for part in resume_request.parts
+    )
+    agent_id = next(iter(async_agent_context.agent_registry))
+    usage_entry = async_agent_context.usage_snapshot_entries[f"usage:{agent_id}:test-tool-call"]
+    assert usage_entry.usage.requests == 2
+    cost_estimate = async_agent_context.build_usage_snapshot().total_cost_estimate
+    assert cost_estimate is not None
+    assert cost_estimate.total_requests == 2
+    assert cost_estimate.unpriced_requests >= 1
+
+
+async def test_subagent_transport_budget_resets_after_successful_model_request(
+    async_agent_context: AgentContext,
+) -> None:
+    calls = 0
+    tool_calls = 0
+    resume_attempts: list[int] = []
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: FunctionAgentInfo):
+        nonlocal calls
+        calls += 1
+        if calls in {1, 3}:
+            raise UnexpectedModelBehavior(
+                "An error occurred while processing your request. You can retry your request."
+            )
+        if calls == 2:
+            yield {0: DeltaToolCall(name="ping", json_args="{}", tool_call_id="ping-call")}
+            return
+        yield "recovered after transport reset"
+
+    def resume_prompt_factory(
+        _exc: BaseException,
+        attempt_index: int,
+        _history: Sequence[ModelMessage],
+    ) -> str:
+        resume_attempts.append(attempt_index)
+        return f"Resume subagent attempt {attempt_index}."
+
+    async_agent_context.stream_recovery_policy = StreamRecoveryPolicy(
+        enabled=True,
+        max_attempts=1,
+        transport_max_attempts=2,
+        resume_prompt="Unused static prompt.",
+        resume_prompt_factory=resume_prompt_factory,
+    )
+    agent: Agent[AgentContext, str] = Agent(
+        model=FunctionModel(stream_function=stream_function),
+        name="retrying_agent",
+    )
+
+    @agent.tool_plain
+    def ping() -> str:
+        nonlocal tool_calls
+        tool_calls += 1
+        return "pong"
+
+    call_func = create_subagent_call_func(agent)
+    mock_ctx = MagicMock(spec=RunContext)
+    mock_ctx.deps = async_agent_context
+    mock_ctx.tool_call_id = "test-tool-call"
+
+    response = await call_func(MagicMock(spec=BaseTool), mock_ctx, "test prompt")
+
+    assert calls == 4
+    assert tool_calls == 1
+    assert resume_attempts == [1, 2]
+    assert "recovered after transport reset" in response
+    agent_id = next(iter(async_agent_context.agent_registry))
+    usage_entry = async_agent_context.usage_snapshot_entries[f"usage:{agent_id}:test-tool-call"]
+    assert usage_entry.usage.requests == 4
+    cost_estimate = async_agent_context.build_usage_snapshot().total_cost_estimate
+    assert cost_estimate is not None
+    assert cost_estimate.total_requests == 4
+
+
+async def test_subagent_does_not_transport_retry_permanent_model_behavior(
+    async_agent_context: AgentContext,
+) -> None:
+    calls = 0
+
+    async def stream_function(_messages: list[ModelMessage], _agent_info: FunctionAgentInfo):
+        nonlocal calls
+        calls += 1
+        raise UnexpectedModelBehavior("Cannot apply a text delta to an existing tool call part")
+        yield  # pragma: no cover
+
+    async_agent_context.stream_recovery_policy = StreamRecoveryPolicy(
+        enabled=True,
+        max_attempts=1,
+        transport_max_attempts=10,
+        resume_prompt="Resume the subagent task.",
+    )
+    object.__setattr__(async_agent_context, "_stream_queue_enabled", True)
+    agent: Agent[AgentContext, str] = Agent(
+        model=FunctionModel(stream_function=stream_function),
+        name="failing_agent",
+    )
+    call_func = create_subagent_call_func(agent)
+    mock_ctx = MagicMock(spec=RunContext)
+    mock_ctx.deps = async_agent_context
+    mock_ctx.tool_call_id = "test-tool-call"
+
+    with pytest.raises(UnexpectedModelBehavior, match="Cannot apply a text delta"):
+        await call_func(MagicMock(spec=BaseTool), mock_ctx, "test prompt")
+
+    assert calls == 1
+    emitted_events = []
+    for queue in async_agent_context.agent_stream_queues.values():
+        while not queue.empty():
+            emitted_events.append(queue.get_nowait())
+    complete_event = next(event for event in emitted_events if isinstance(event, SubagentCompleteEvent))
+    assert complete_event.success is False
+    assert complete_event.request_count == 1
 
 
 async def test_agent_registry_cleaned_up_on_new_agent_failure(async_agent_context: AgentContext) -> None:
