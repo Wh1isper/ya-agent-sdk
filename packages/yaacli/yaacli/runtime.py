@@ -35,6 +35,7 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
+from ya_agent_sdk.codeact import CodeActConfig
 from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig, ToolConfig
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
 from ya_agent_sdk.presets import resolve_model_settings
@@ -492,6 +493,7 @@ def create_tui_runtime(
         tools=all_tools,
         tool_config=tool_config,
         toolsets=toolsets if toolsets else None,
+        codeact=CodeActConfig() if config.tools.enable_codeact else None,
         system_prompt=effective_system_prompt,
         need_user_approve_tools=config.tools.need_approval or None,
         need_user_approve_mcps=config.tools.need_approval_mcps or None,
@@ -514,10 +516,11 @@ def create_tui_runtime(
     attach_goal_guard(runtime.agent)
 
     logger.info(
-        "Created TUI runtime: model=%s, toolsets=%d, output_retries=%d, async_subagents=%s, delegate_subagents=%s",
+        "Created TUI runtime: model=%s, toolsets=%d, output_retries=%d, codeact=%s, async_subagents=%s, delegate_subagents=%s",
         active_model,
         len(toolsets),
         output_retries,
+        config.tools.enable_codeact,
         enable_async_subagents,
         enable_delegate_subagents,
     )

@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic_ai import ApprovalRequired
+from pydantic_ai import ApprovalRequired, FunctionToolset, RunContext, Tool, UserError
+from pydantic_ai.mcp import MCPToolset
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
+from ya_agent_sdk.codeact import CodeActConfig
+from ya_agent_sdk.codeact.toolset import CodeActToolset
+from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.mcp import (
     MCPConfig,
     MCPServerConfig,
@@ -125,6 +132,101 @@ def test_build_mcp_server_preserves_custom_and_empty_prefixes() -> None:
     assert unprefixed.tool_prefix == ""
     assert custom.id == "github"
     assert unprefixed.id == "local"
+
+
+@pytest.mark.asyncio
+async def test_named_mcp_tools_are_codeact_eligible_by_default(monkeypatch) -> None:
+    async def sample() -> str:
+        return "ok"
+
+    ctx = RunContext(deps=object(), model=TestModel(), usage=RunUsage())
+    base_tools = await FunctionToolset([Tool(sample)]).get_tools(ctx)
+
+    async def get_tools(_self, _ctx):
+        return base_tools
+
+    monkeypatch.setattr(MCPToolset, "get_tools", get_tools)
+    server = build_mcp_server(
+        "sample",
+        MCPServerConfig(transport="streamable_http", url="https://example.test/mcp"),
+    )
+    assert server is not None
+
+    tools = await server.get_tools(ctx)
+
+    assert tools["sample"].tool_def.metadata == {"codeact": True}
+
+
+@pytest.mark.asyncio
+async def test_named_mcp_tool_with_invalid_python_parameter_fails_codeact_closed(monkeypatch) -> None:
+    async def sample(value: str) -> str:
+        return value
+
+    ctx = RunContext(deps=AgentContext(), model=TestModel(), usage=RunUsage())
+    base_tools = await FunctionToolset([Tool(sample)]).get_tools(ctx)
+    base_tool = base_tools["sample"]
+    invalid_definition = replace(
+        base_tool.tool_def,
+        parameters_json_schema={
+            "type": "object",
+            "properties": {"invalid-name": {"type": "string"}},
+            "required": ["invalid-name"],
+        },
+    )
+    invalid_tools = {"sample": replace(base_tool, tool_def=invalid_definition)}
+
+    async def get_tools(_self, _ctx):
+        return invalid_tools
+
+    monkeypatch.setattr(MCPToolset, "get_tools", get_tools)
+    server = build_mcp_server(
+        "sample",
+        MCPServerConfig(transport="streamable_http", url="https://example.test/mcp"),
+    )
+    assert server is not None
+    codeact = CodeActToolset(wrapped=server, config=CodeActConfig())
+
+    with pytest.raises(UserError, match="not valid Python identifiers"):
+        await codeact.get_tools(ctx)
+
+
+@pytest.mark.asyncio
+async def test_named_mcp_nested_invalid_python_parameter_fails_codeact_closed(monkeypatch) -> None:
+    async def sample(payload: dict[str, str]) -> str:
+        return str(payload)
+
+    ctx = RunContext(deps=AgentContext(), model=TestModel(), usage=RunUsage())
+    base_tools = await FunctionToolset([Tool(sample)]).get_tools(ctx)
+    base_tool = base_tools["sample"]
+    invalid_definition = replace(
+        base_tool.tool_def,
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "properties": {"invalid-name": {"type": "string"}},
+                    "required": ["invalid-name"],
+                }
+            },
+            "required": ["payload"],
+        },
+    )
+    invalid_tools = {"sample": replace(base_tool, tool_def=invalid_definition)}
+
+    async def get_tools(_self, _ctx):
+        return invalid_tools
+
+    monkeypatch.setattr(MCPToolset, "get_tools", get_tools)
+    server = build_mcp_server(
+        "sample",
+        MCPServerConfig(transport="streamable_http", url="https://example.test/mcp"),
+    )
+    assert server is not None
+    codeact = CodeActToolset(wrapped=server, config=CodeActConfig())
+
+    with pytest.raises(UserError, match="cannot be rendered as valid Python"):
+        await codeact.get_tools(ctx)
 
 
 def test_build_mcp_server_stdio_no_command() -> None:

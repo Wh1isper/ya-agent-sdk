@@ -59,6 +59,7 @@ from ya_agent_sdk.agents.retry_recovery import (
     history_has_unreturned_tool_calls,
     recover_retry_message_history,
 )
+from ya_agent_sdk.codeact import CodeActCapability, CodeActConfig
 from ya_agent_sdk.context import (
     AgentContext,
     AgentInfo,
@@ -479,6 +480,7 @@ def create_agent(
     capabilities: Sequence[AbstractCapability[AgentDepsT]] | None = None,
     inherit_pre_capabilities: bool = True,
     inherit_capabilities: bool = True,
+    codeact: CodeActConfig | None = None,
     # --- Agent ---
     agent_tools: Sequence[Any] | None = None,
     agent_name: str = "main",
@@ -549,6 +551,8 @@ def create_agent(
         inherit_capabilities: If True (default), subagents inherit the parent's
             capabilities unless overridden by their own config.capabilities.
             If False, subagents get no capabilities unless explicitly set in config.
+        codeact: Optional restricted Python orchestration configuration. When set,
+            installs run_code and run_program around each agent's final tool boundary.
 
         agent_tools: Additional tools to pass directly to Agent (pydantic-ai Tool objects).
         agent_name: Name of the agent for logging.
@@ -655,10 +659,15 @@ def create_agent(
         ProcessHistory(process_auto_load_files),
         ProcessHistory(inject_runtime_instructions),
     ]
+    codeact_capabilities: list[AbstractCapability[AgentDepsT]] = (
+        [cast(AbstractCapability[AgentDepsT], CodeActCapability(config=codeact))] if codeact is not None else []
+    )
     internal_subagent_capabilities: list[AbstractCapability[AgentDepsT]] = [
+        *codeact_capabilities,
         *sdk_history_capabilities,
     ]
     all_capabilities: list[AbstractCapability[AgentDepsT]] = [
+        *codeact_capabilities,
         *user_pre_capabilities,
         *sdk_history_capabilities,
         *user_capabilities,

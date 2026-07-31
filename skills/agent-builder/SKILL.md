@@ -22,7 +22,7 @@ Start with these local references:
 
 - Sessions and restore flow: [`./context.md`](./context.md)
 - Streaming and event handling: [`./streaming.md`](./streaming.md), [`./events.md`](./events.md)
-- Tools, hooks, and toolsets: [`./toolset.md`](./toolset.md), [`./tool-search.md`](./tool-search.md)
+- Tools, hooks, and toolsets: [`./toolset.md`](./toolset.md), [`./tool-search.md`](./tool-search.md), [`./codeact.md`](./codeact.md)
 - Structured clarifying questions and deferred host flows: [`./user-input.md`](./user-input.md)
 - Subagents and delegation: [`./subagent.md`](./subagent.md)
 - Environments and resumable resources: [`./environment.md`](./environment.md), [`./resumable-resources.md`](./resumable-resources.md)
@@ -172,6 +172,7 @@ All paths below are local paths relative to this file.
 | Logging              | [`./logging.md`](./logging.md)                         | You need runtime logging, diagnostics, or instrumentation setup    |
 | Media upload         | [`./media.md`](./media.md)                             | You need image, audio, video, or file media handling               |
 | Tool proxy           | [`./tool-proxy.md`](./tool-proxy.md)                   | You need wrapped, remote, or proxy-style tools                     |
+| CodeAct              | [`./codeact.md`](./codeact.md)                         | You need restricted Python tool orchestration or reusable programs |
 
 ## Example Programs
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
@@ -602,6 +602,10 @@ class Toolset(BaseToolset[AgentDepsT]):
             tool_def = await pydantic_tool.prepare_tool_def(ctx)
             if not tool_def:
                 continue
+            tool_def = replace(
+                tool_def,
+                metadata={**(tool_def.metadata or {}), "codeact": tool_instance.codeact},
+            )
 
             tools[name] = HookableToolsetTool(
                 toolset=self,

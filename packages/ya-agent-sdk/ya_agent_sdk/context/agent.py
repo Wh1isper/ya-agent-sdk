@@ -93,11 +93,10 @@ from pydantic_ai import (
     UserContent,
 )
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
-from pydantic_ai.messages import HandleResponseEvent as PydanticHandleResponseEvent
+from pydantic_ai.messages import AgentStreamEvent as PydanticAgentStreamEvent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
-    ModelResponseStreamEvent,
     NativeToolCallPart,
     NativeToolReturnPart,
     RetryPromptPart,
@@ -337,7 +336,7 @@ def _get_tool_settings() -> ToolSettings:
 
 # Stream event type for the queue
 # Includes pydantic-ai events + custom AgentEvent for user-defined events
-AgentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | AgentEvent
+AgentStreamEvent = PydanticAgentStreamEvent | AgentEvent
 
 
 def _create_stream_queue_factory() -> dict[str, asyncio.Queue[AgentStreamEvent]]:

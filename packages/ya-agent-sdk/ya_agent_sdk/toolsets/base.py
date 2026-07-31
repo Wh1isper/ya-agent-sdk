@@ -154,6 +154,16 @@ class BaseTool(ABC):
     Useful for management/utility tools like task_*, summarize, etc.
     """
 
+    codeact: bool = False
+    """Whether this tool may be called from restricted CodeAct Python.
+
+    This is a trusted host eligibility declaration, not an authorization grant.
+    The tool must be cancellation-cooperative: cancellation stops local work,
+    releases locally owned resources, and propagates. External side effects are
+    not transactional or reversible. Availability, subagent filtering, hooks,
+    approval, and the final agent tool boundary remain authoritative.
+    """
+
     main_agent_only: bool = False
     """Whether this tool must be excluded from every subagent toolset.
 

@@ -53,6 +53,7 @@ def test_default_config() -> None:
     assert config.notifications.bell_on_user_action_required is True
 
     # Tools and security
+    assert config.tools.enable_codeact is True
     assert config.tools.enable_user_input is True
     assert config.tools.user_input_timeout_seconds == 120.0
     assert config.tools.mcp_mode == "direct"
@@ -112,11 +113,13 @@ def test_notification_config() -> None:
 def test_tools_config() -> None:
     """Test ToolsConfig (project-only config)."""
     config = ToolsConfig(
+        enable_codeact=False,
         enable_user_input=False,
         user_input_timeout_seconds=30,
         mcp_mode="proxy",
         need_approval=["shell_sandbox", "file_write"],
     )
+    assert config.enable_codeact is False
     assert config.enable_user_input is False
     assert config.user_input_timeout_seconds == 30.0
     assert config.mcp_mode == "proxy"

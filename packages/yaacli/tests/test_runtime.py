@@ -27,7 +27,13 @@ from yaacli.config import (
     YaacliConfig,
 )
 from yaacli.runtime import GoalContextHandoffExtension, create_tui_runtime
-from yaacli.toolsets.background import AsyncDelegateTool, SpawnDelegateTool, SteerSubagentTool, WaitSubagentTool
+from yaacli.toolsets.background import (
+    AsyncDelegateTool,
+    MonitoredShellTool,
+    SpawnDelegateTool,
+    SteerSubagentTool,
+    WaitSubagentTool,
+)
 
 # =============================================================================
 # create_tui_runtime Tests
@@ -659,6 +665,35 @@ def test_create_tui_runtime_with_model_cfg_dict(tmp_path: Path) -> None:
     assert runtime.ctx.model_cfg.context_window == 100_000
     assert runtime.ctx.model_cfg.max_images == 10
     assert ModelCapability.vision in runtime.ctx.model_cfg.capabilities
+
+
+async def test_create_tui_runtime_enables_codeact_by_default_and_allows_disabling(tmp_path: Path) -> None:
+    visible_tools: list[set[str]] = []
+    run_code_descriptions: list[str] = []
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible_tools.append({tool.name for tool in info.function_tools})
+        run_code_descriptions.extend(tool.description for tool in info.function_tools if tool.name == "run_code")
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    for enable_codeact in (True, False):
+        runtime = create_tui_runtime(
+            config=YaacliConfig(
+                general=GeneralConfig(model="openai-chat:gpt-4"),
+                tools=ToolsConfig(enable_codeact=enable_codeact),
+            ),
+            working_dir=tmp_path,
+            enable_async_subagents=False,
+        )
+        async with runtime:
+            with runtime.agent.override(model=FunctionModel(respond)):
+                await runtime.agent.run("test", deps=runtime.ctx)
+
+    assert {"run_code", "run_program"} <= visible_tools[0]
+    assert {"run_code", "run_program"}.isdisjoint(visible_tools[1])
+    assert len(run_code_descriptions) == 1
+    shell_tool_names = {tool.name for tool in runtime_module.shell_tools} | {MonitoredShellTool.name}
+    assert all(f"{shell_tool}(" not in run_code_descriptions[0] for shell_tool in shell_tool_names)
 
 
 def test_create_tui_runtime_requires_explicit_user_input_support(tmp_path: Path) -> None:

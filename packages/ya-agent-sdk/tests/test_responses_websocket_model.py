@@ -54,6 +54,7 @@ async def test_openai_responses_pro_preset_reaches_http_request_body() -> None:
         "mode": "pro",
         "effort": "medium",
         "summary": "auto",
+        "context": "all_turns",
     }
 
 
@@ -81,6 +82,7 @@ async def test_openai_responses_pro_preset_omits_mode_for_unsupported_http_model
     assert captured_body["reasoning"] == {
         "effort": "medium",
         "summary": "auto",
+        "context": "all_turns",
     }
 
 
@@ -98,6 +100,7 @@ async def test_openai_responses_pro_preset_reaches_websocket_payload() -> None:
         "mode": "pro",
         "effort": "medium",
         "summary": "auto",
+        "context": "all_turns",
     }
 
 
@@ -114,6 +117,7 @@ async def test_openai_responses_pro_preset_omits_mode_for_unsupported_websocket_
     assert payload["reasoning"] == {
         "effort": "medium",
         "summary": "auto",
+        "context": "all_turns",
     }
 
 
