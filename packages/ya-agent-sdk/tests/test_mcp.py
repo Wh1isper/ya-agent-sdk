@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic_ai import ApprovalRequired
 from ya_agent_sdk.mcp import (
     MCPConfig,
     MCPServerConfig,
@@ -34,6 +35,7 @@ def test_mcp_server_config_defaults() -> None:
     config = MCPServerConfig(command="uvx")
     assert config.description == ""
     assert config.required is True
+    assert config.prefix is None
 
 
 def test_mcp_server_spec_stdio() -> None:
@@ -70,6 +72,7 @@ def test_load_mcp_config_file(tmp_path) -> None:
                     "url": "https://mcp.context7.com/mcp",
                     "description": "Library docs",
                     "required": False,
+                    "prefix": "",
                 }
             }
         }),
@@ -81,6 +84,7 @@ def test_load_mcp_config_file(tmp_path) -> None:
     assert isinstance(config, MCPConfig)
     assert config.servers["context7"].url == "https://mcp.context7.com/mcp"
     assert config.servers["context7"].required is False
+    assert config.servers["context7"].prefix == ""
 
 
 def test_filter_mcp_config_enabled_and_disabled() -> None:
@@ -109,6 +113,18 @@ def test_build_mcp_server_stdio() -> None:
 
     assert server is not None
     assert server.tool_prefix == "github"
+
+
+def test_build_mcp_server_preserves_custom_and_empty_prefixes() -> None:
+    custom = build_mcp_server("github", MCPServerConfig(command="npx", prefix="gh"))
+    unprefixed = build_mcp_server("local", MCPServerConfig(command="local-server", prefix=""))
+
+    assert custom is not None
+    assert custom.tool_prefix == "gh"
+    assert unprefixed is not None
+    assert unprefixed.tool_prefix == ""
+    assert custom.id == "github"
+    assert unprefixed.id == "local"
 
 
 def test_build_mcp_server_stdio_no_command() -> None:
@@ -262,8 +278,6 @@ async def test_hook_no_approval_needed(mock_context: MagicMock, mock_call_tool: 
 
 @pytest.mark.asyncio
 async def test_hook_approval_required_raises(mock_context: MagicMock, mock_call_tool: AsyncMock) -> None:
-    from pydantic_ai import ApprovalRequired
-
     hook = create_mcp_approval_hook("filesystem")
     mock_context.deps.need_user_approve_mcps = ["filesystem"]
     mock_context.tool_call_approved = False
@@ -274,6 +288,23 @@ async def test_hook_approval_required_raises(mock_context: MagicMock, mock_call_
     assert exc_info.value.metadata["mcp_server"] == "filesystem"
     assert exc_info.value.metadata["mcp_tool"] == "write_file"
     assert exc_info.value.metadata["full_name"] == "filesystem_write_file"
+    mock_call_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hook_approval_uses_custom_or_empty_tool_prefix(
+    mock_context: MagicMock, mock_call_tool: AsyncMock
+) -> None:
+    mock_context.deps.need_user_approve_mcps = ["filesystem"]
+    mock_context.tool_call_approved = False
+
+    for prefix, expected_name in [("fs", "fs_write_file"), ("", "write_file")]:
+        hook = create_mcp_approval_hook("filesystem", tool_prefix=prefix)
+        with pytest.raises(ApprovalRequired) as exc_info:
+            await hook(mock_context, mock_call_tool, "write_file", {"path": "/home/user/test.txt"})
+        assert exc_info.value.metadata["mcp_server"] == "filesystem"
+        assert exc_info.value.metadata["full_name"] == expected_name
+
     mock_call_tool.assert_not_called()
 
 

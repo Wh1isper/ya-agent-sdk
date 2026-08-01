@@ -98,7 +98,7 @@ need_approval = ["shell", "write"]
 
 Set `enable_user_input = false` when the project should not expose the interactive `ask_user_question` tool. `user_input_timeout_seconds` must be positive and finite; an unanswered question rejects the deferred call after this interval so the agent can continue. Headless mode never exposes it.
 
-Use `mcp_mode = "direct"` to expose each MCP server's native tools as namespaced `<server>_<tool>` names. Use `mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which is useful when many MCP tools would otherwise enlarge or destabilize the model-facing tool list. Servers marked `"required": false` remain optional in both modes.
+Use `mcp_mode = "direct"` to expose each MCP server's native tools as namespaced `<server>_<tool>` names by default. In `mcp.json`, set a server's `prefix` to a custom string to replace `<server>`, or set `prefix` to `""` to expose native tool names without a prefix. Omit `prefix` or set it to `null` to preserve the server-name default. Use `mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which is useful when many MCP tools would otherwise enlarge or destabilize the model-facing tool list. Servers marked `"required": false` remain optional in both modes.
 
 Common patterns:
 - `[]` - No approval needed (trust all tools)
@@ -116,7 +116,8 @@ MCP server configurations:
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@some/mcp-server"],
-      "env": {}
+      "env": {},
+      "prefix": "custom"
     }
   }
 }

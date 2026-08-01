@@ -218,8 +218,11 @@ collect interactive answers.
 
 `mcp_mode` accepts `"direct"` or `"proxy"` and defaults to `"direct"`. Direct
 mode registers each configured MCP server as a native toolset and exposes its
-tools as `<server>_<tool>`, avoiding cross-server name collisions without an
-intermediate proxy call. Proxy mode wraps all MCP servers in a fixed
+tools as `<server>_<tool>` by default, avoiding cross-server name collisions
+without an intermediate proxy call. Each server may set `prefix` in `mcp.json`
+to replace `<server>` with a custom value, or set `prefix` to `""` to expose
+native tool names without a prefix. An omitted or `null` `prefix` preserves the
+server-name default. Proxy mode wraps all MCP servers in a fixed
 `mcp_search_tool`/`mcp_call_tool` pair, reducing the stable model-facing tool
 surface when many MCP tools are configured. In both modes, a server with
 `"required": false` is skipped with a warning when it cannot initialize or list
@@ -246,7 +249,13 @@ MCP servers use the SDK JSON schema:
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-      "env": {}
+      "env": {},
+      "prefix": "files"
+    },
+    "local": {
+      "transport": "stdio",
+      "command": "local-mcp-server",
+      "prefix": ""
     }
   }
 }

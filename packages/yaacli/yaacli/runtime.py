@@ -311,6 +311,7 @@ def create_tui_runtime(
             )
         elif mcp_servers:
             optional_mcps = extract_optional_mcps(mcp_config)
+            unprefixed_mcps = 0
             for mcp_server in mcp_servers:
                 server_name = mcp_server.id
                 if server_name is None:
@@ -319,11 +320,20 @@ def create_tui_runtime(
                 direct_toolset: AbstractToolset[Any] = mcp_server
                 if server_name in optional_mcps:
                     direct_toolset = _OptionalMCPToolset(direct_toolset, server_name=server_name)
-                toolsets.append(direct_toolset.prefixed(server_name))
+
+                server_config = mcp_config.servers.get(server_name)
+                configured_prefix = server_config.prefix if server_config is not None else None
+                tool_prefix = server_name if configured_prefix is None else configured_prefix
+                if tool_prefix:
+                    direct_toolset = direct_toolset.prefixed(tool_prefix)
+                else:
+                    unprefixed_mcps += 1
+                toolsets.append(direct_toolset)
             logger.info(
-                "Added %d MCP servers as namespaced direct toolsets (optional: %d)",
+                "Added %d MCP servers as direct toolsets (optional: %d, unprefixed: %d)",
                 len(mcp_servers),
                 len(optional_mcps),
+                unprefixed_mcps,
             )
 
     # Environment configuration
