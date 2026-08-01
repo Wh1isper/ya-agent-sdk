@@ -67,15 +67,15 @@ Suggested layout:
 ```text
 ~/.ya-claw/
 ├── ya_claw.sqlite3
-├── data/
-│   └── run-store/
-│       └── {run_id}/
-│           ├── state.json
-│           └── message.json
-└── workspace/
-    ├── AGENTS.md
-    ├── HEARTBEAT.md
-    └── ... workspace files ...
+└── data/
+    ├── run-store/
+    │   └── {run_id}/
+    │       ├── state.json
+    │       └── message.json
+    └── workspace/
+        ├── AGENTS.md
+        ├── HEARTBEAT.md
+        └── ... workspace files ...
 ```
 
 ### Run Store Principle
@@ -95,6 +95,17 @@ It should include:
 - compact metadata such as timestamps and version markers
 - workspace binding snapshot when useful for later inspection
 - resolved profile identity when useful for replay and debugging
+- the bounded latest cumulative usage/cost snapshot when available
+
+### Usage and Cost Snapshot
+
+Claw normalizes SDK usage snapshots to the outer Claw run ID and accumulates them
+across deferred-tool continuation segments. The canonical bounded snapshot is persisted
+in `state.json` and copied into internal run metadata as a lightweight summary index.
+
+Run detail reads the metadata index first, then may fall back to `state.json` and replay
+for unindexed legacy or active runs. Paginated run and session summaries use only the
+lightweight index and never scan full state or replay blobs.
 
 ## `message.json`
 

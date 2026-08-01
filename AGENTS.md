@@ -1,159 +1,39 @@
-## Repository Overview
+# Repository Guide
 
-`ya-mono` is a workspace-first monorepo managed with `uv`.
+`ya-mono` is a workspace-first monorepo managed with `uv`. Python packages target
+Python 3.11+; pure-Python packages use Hatchling and `ya-ripgrep-core` uses Maturin.
+Frontend applications use Vite, React, and TypeScript.
 
-Workspace members:
+Most architecture work centers on `packages/ya-agent-sdk` and `packages/ya-claw`.
 
-- `packages/ya-agent-environment` — Environment abstractions for general agents
-- `packages/ya-agent-sdk` — SDK for building AI agents with Pydantic AI
-- `packages/ya-agent-stream-protocol` — shared stream protocol adapters between `ya-agent-sdk` and applications
-- `packages/ya-oauth` — OAuth login, refresh, logout, token storage, and CLI for subscription-backed providers
-- `packages/ya-oauth-provider` — Pydantic AI provider helpers for OAuth-backed model access
-- `packages/yaacli` — TUI reference implementation built on top of the SDK
-- `packages/ya-claw` — workspace-native single-node runtime web service with `WorkspaceProvider`, in-process runtime state, schedules, bridges, and SQLite-first storage
-- `packages/ya-agent-platform` — WIP stateless agent service with TBD scope
+## Package Documentation
 
-Shared repository areas:
+Package behavior, architecture, and maintainer contracts belong in the package README
+or spec set. Read those documents before changing a package and update them with any
+behavioral or architectural change.
+
+| Package                             | Role                                                                        | Canonical documentation                                                                       |
+| ----------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `packages/ya-agent-environment`     | Shared environment, file, shell, lifecycle, and bounded-output abstractions | [README](packages/ya-agent-environment/README.md)                                             |
+| `packages/ya-agent-sdk`             | SDK for building and streaming Pydantic AI agents                           | [README](packages/ya-agent-sdk/README.md), [spec index](packages/ya-agent-sdk/spec/README.md) |
+| `packages/ya-agent-stream-protocol` | Shared AGUI adaptation, replay, validation, and SSE helpers                 | [README](packages/ya-agent-stream-protocol/README.md)                                         |
+| `packages/ya-ripgrep-core`          | Native filesystem search bindings                                           | [README](packages/ya-ripgrep-core/README.md)                                                  |
+| `packages/ya-oauth`                 | OAuth login, refresh, storage, and CLI                                      | [README](packages/ya-oauth/README.md)                                                         |
+| `packages/ya-oauth-provider`        | OAuth-backed Pydantic AI provider integration                               | [README](packages/ya-oauth-provider/README.md)                                                |
+| `packages/yaacli`                   | TUI reference application built on the SDK                                  | [README](packages/yaacli/README.md), [spec index](packages/yaacli/spec/00-overview.md)        |
+| `packages/ya-claw`                  | Workspace-native single-node runtime web service                            | [README](packages/ya-claw/README.md), [spec index](packages/ya-claw/spec/README.md)           |
+| `packages/ya-agent-platform`        | WIP stateless agent service                                                 | [README](packages/ya-agent-platform/README.md)                                                |
+
+## Shared Repository Areas
 
 - `apps/` — frontend applications and user-facing shells
 - `skills/` — canonical skill sources and reference material
 - `examples/` — runnable SDK examples
-- `scripts/` — repository automation scripts
+- `scripts/` — repository automation
 - `.github/` — CI and release workflows
-- `Dockerfile.ya-claw` — YA Claw image build
-- `Dockerfile.ya-claw-workspace` — official YA Claw Docker workspace image build
-- `Dockerfile.ya-agent-platform` — YA Agent Platform image build
-- `.dockerignore` — Docker build context rules
-
-## Primary Package Focus
-
-Most architecture work in this repository targets `packages/ya-agent-sdk` and `packages/ya-claw`.
-
-- **Language**: Python 3.11+
-- **Package Manager**: uv
-- **Build System**: hatchling
-- **Frontend Stack**: Vite + React + TypeScript
-
-## Package Directions
-
-### `packages/ya-agent-environment`
-
-- shared base abstractions for agent environments
-- implementation package import name is `ya_agent_environment`
-- Environment base definitions live in this package.
-- `Environment` owns agent-facing temporary storage through `tmp_dir` and `resolve_tmp_path()`; cleanup order is registered resources, shell, file operator, then environment backend/container/tmp teardown, including partial setup failure and cancellation.
-- Workspace-backed concrete environments use `.tmp/ya-agent-<id>` instances with a self-ignoring `.gitignore`; they remove only their owned instance, while custom environments remain responsible for allocating and tearing down their own temporary backend.
-- `FileOperator` represents one logical backend and has no temporary routing or convenience API; concrete backends implement public methods directly, and `read_bytes_stream()` returns an `AsyncIterator` without awaiting the call.
-- `LocalFileOperator.walk_files()` returns default-relative paths when possible and directly reusable absolute paths for allowed roots outside `default_path`; glob/grep can explicitly search those roots without implicitly including temporary storage in `root="."`.
-- Shared bounded-output policy lives in `ya_agent_environment.output`: head/tail budget splitting, character and UTF-8 byte truncation, and incremental bounded text accumulation. Shell ingestion and SDK previews reuse these helpers rather than implementing separate truncation policies.
-
-### `packages/ya-agent-sdk`
-
-- SDK for building AI agents with Pydantic AI
-- preserves the core execution primitives used across the repository
-- changes here should keep examples, skills, and package docs aligned
-- OAuth-backed model strings use `oauth@provider:model`; Codex currently uses `oauth@codex:gpt-5.5`, uses the `gpt5_350k` model config for its subscription context window, and receives session/thread headers from `AgentContext.get_model_extra_headers()`
-- Generic OpenAI Responses WebSocket transport lives in `ya-agent-sdk` under `ya_agent_sdk.agents.models.websocket`; aliases `openai-responses-ws:<model>` and `openai-responses-rs:<model>` are SDK core model strings and use `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` for `auto`/`websocket`/`http`
-- `stream_agent` separates transient model HTTP/WebSocket recovery from non-transport execution recovery; `stream_transport_resume_max_attempts` limits each consecutive transport failure streak through an independent budget, successful model requests reset that streak, and mid-stream disconnects such as incomplete chunked reads do not consume `stream_resume_max_attempts`; delegated subagents and self forks inherit the root run's effective recovery policy, recover their own message history independently, and accumulate usage across attempts
-- Skill routing is two-stage: inspect plausible candidates with high recall, then activate only direct scope matches; inspected candidates are non-binding, activated skills are mandatory within scope, and compaction carries forward only activated skills still relevant to unfinished work
-- `SkillToolset` publishes its priority-resolved runtime catalog through `AgentContext.available_skills`; hosts should call `refresh_context()` immediately before classifying explicit skill syntax, and the catalog is not persisted in `ResumableState`
-- Structured `ask_user_question` is an opt-in, main-agent-only SDK interaction tool based on `CallDeferred`; it is not part of the SDK default tool surface and requires a host that can return matching `DeferredToolResults.calls`; subagents filter it from static and dynamic SDK Toolsets, while SDK Toolset listing/calling enforces the boundary in child contexts even with `skip_unavailable=False` or opaque proxy/search composites
-- CodeAct is opt-in through `create_agent(codeact=CodeActConfig(...))` but `pydantic-monty` is a core SDK dependency; a YA-owned public-API Pydantic wrapper keeps eligible direct tools visible, dispatches nested calls through `ToolManager`, owns inline Monty REPL state per agent run, and executes `run_program` files in fresh sessions after bounded `Environment.FileOperator.read_bytes()` loading; Monty receives no workspace mount or ambient OS authority, executor admission bounds host argument materialization before dispatch, `timeout_seconds` initiates cancellation while ownership-safe cleanup may finish later, `codeact=True` requires cancellation-cooperative tools, and host-managed `NamedMCPToolset` actual tools carry that declaration by default while preserving normal approval and agent boundaries
-
-### `packages/ya-agent-stream-protocol`
-
-- shared stream protocol layer between `ya-agent-sdk` and applications
-- implementation package import name is `ya_agent_stream_protocol`
-- owns AGUI event adaptation, compact replay buffers, message validation, and SSE framing helpers shared by YAACLI and YA Claw
-- applications configure their own event namespaces through `AguiAdapterConfig`
-
-### `packages/ya-oauth`
-
-- CLI and storage package for OAuth-backed providers
-- stores credentials in `~/.yaai/auth.json` with locked atomic writes, directory mode `0700`, and file mode `0600`
-- `ya-oauth login codex` follows OpenAI Codex device-code auth and preserves Codex token refresh semantics
-
-### `packages/ya-oauth-provider`
-
-- Pydantic AI provider/model package for OAuth token sources
-- owns Codex request auth/header alignment, including bearer token, ChatGPT account ID, FedRAMP, originator/version, both underscore/hyphen session and thread headers, and `x-client-request-id`
-- reuses the SDK generic `WebsocketResponsesModel`; only Codex-specific headers, beta header, token refresh, and payload normalization belong here
-- refreshes once on HTTP 401 through the configured token source
-
-### `packages/yaacli`
-
-- TUI reference implementation built on top of `ya-agent-sdk`
-- runtime-facing CLI behavior belongs here
-- YAACLI managed temporary storage intentionally overrides the SDK workspace-first policy and always uses the system temporary directory; the separate system-temp allowed path remains available for user-specified files.
-- interactive YAACLI enables `ask_user_question` by default through `tools.enable_user_input`, which can be disabled in `tools.toml`; each structured question has a positive finite `tools.user_input_timeout_seconds` timeout (120 seconds by default), after which YAACLI rejects the whole deferred call with a retry prompt directing the agent to proceed using its best judgment; headless mode does not expose the tool
-- YAACLI enables SDK CodeAct by default through `tools.enable_codeact`, exposing `run_code` and FileOperator-backed `run_program`; setting it to false removes both, while shell remains a separate execution surface and is never added to the CodeAct catalog
-- YAACLI exposes configured MCP servers as namespaced `<server>_<tool>` native toolsets by default while preserving `required=false` startup/listing tolerance; each direct-mode server may set `prefix` in `mcp.json` to replace the server-name prefix or set it to `""` to expose native tool names, while an omitted/`null` value retains the default; `tools.mcp_mode = "proxy"` keeps the fixed `mcp_search_tool`/`mcp_call_tool` proxy surface
-- non-empty interactive HITL batches pause YAACLI's elapsed run timer for the full user wait, resume without charging that interval, and emit one terminal bell when `notifications.bell_on_user_action_required` is enabled
-- `[general]` and `[model_profiles.*]` support static `instructions` for the active main-agent model profile; YAACLI registers them through a dynamic Pydantic AI `instructions` callback so `/model` switches apply to every later model request, including legacy or compacted histories
-- leading catalog-matched `/skill-name` tokens explicitly select one or more skills for an idle prompt; YAACLI snapshots submitted attachments before refreshing the catalog, existing slash commands take precedence on first-token conflicts, and slash-prefixed text matching neither a registered command nor a skill remains ordinary user input
-- `/session` without an ID opens a responsive metadata-only selector with bounded input/output previews; listing never reads history/replay artifacts or waits for artifact writer locks, while explicit load performs legacy validation and migration
-- `/new`, `/load`, and `/session` retain the reusable runtime environment and shell backend but terminate and discard all old-session background subagent work, foreground/background shell execution, buffers, retained results, and wakeups; shell-owned shielded process creation prevents caller cancellation from losing an eventual handle, inherited shell-generation leases block cancellation-resistant old tasks and child tasks, LocalShell readiness-gates its supported signals, keeps a stable POSIX group guardian alive until residual members are killed, and never signals a reaped leader's reusable numeric PGID, DockerShell binds PID/starttime identity and ACK to the exact exec stderr/stdin transport before user code starts and verifies in-container exec-group termination without trusting mutable markers or local CLI exit, custom Shell classes are runtime-forbidden from overriding final `execute()`, and a failed or unconfirmed process kill retains its execution handle and aborts the session commit until retry succeeds
-
-### `packages/ya-claw`
-
-- active runtime product in this repository
-- current delivery target is a single-node runtime
-- `WorkspaceProvider` is the core extension boundary
-- active session state, live events, async task coordination, schedules, and bridge coordination stay in process
-- SQLite is the default durable store
-- PostgreSQL is an optional durable store for deployments that prefer an external database
-- YA Claw SQLite tests use the session-scoped `initialize_sqlite_database` fixture to copy a schema-only template into each isolated test database; avoid per-test `Base.metadata.create_all` calls
-- local filesystem stores committed session continuity data
-- requires `YA_CLAW_API_TOKEN` before service startup
-- defaults: SQLite at `~/.ya-claw/ya_claw.sqlite3`, runtime data at `~/.ya-claw/data`, workspace root at `~/.ya-claw/workspace`, Docker workspace image `ghcr.io/wh1isper/ya-claw-workspace:latest`
-- browser workspace downloads have a configurable per-file cap through `YA_CLAW_WORKSPACE_DOWNLOAD_MAX_BYTES` (100 MiB by default); the server enforces the cap both before and during streaming
-- implementation style: organize runtime code by `api/`, `controller/`, and `orm/`
-- internal data objects use Pydantic `BaseModel`
-- code prefers explicit typing and `isinstance` checks
-- session API is the high-level surface and run API is the low-level surface
-- session metadata lives in the database
-- committed continuity blobs live in `run-store/{run_id}/state.json` and `run-store/{run_id}/message.json`; `state.json` also stores the bounded latest cumulative usage/cost snapshot
-- `message.json` stores the compacted replay list of AGUI-aligned events as a top-level JSON array
-- Claw normalizes SDK usage snapshots to the outer Claw run ID, accumulates them across deferred-tool continuation segments, persists the canonical snapshot in `state.json`, and copies the bounded snapshot into internal run metadata as a lightweight summary index; run detail falls back through state and replay for unindexed legacy/active runs, while paginated summaries never scan full state blobs
-- session GET exposes paginated runs with optional raw `input_parts` and compacted message replay lists, returns optional top-level committed state/message from `head_success_run_id` (skippable with `include_head_payload=false`), and derives session status from the latest run
-- the Web session index uses `GET /api/v1/sessions/page`, a lightweight `(updated_at, id)` keyset page with total count; it omits latest-run output and live Docker reconciliation by default, while the backwards-compatible `GET /api/v1/sessions` list remains available
-- session turns API returns successful completed turns with raw `input_parts` and `output_text`
-- run GET returns `session + run + optional state + optional message`; run trace API returns compact tool-call/tool-response projections from `message.json`
-- built-in `session` toolset lets agents inspect only their current session via internal HTTP client tools `list_session_turns` and `get_run_trace`; session ID and bearer token stay inside the client resource
-- runtime instance heartbeat lives in `runtime_instances`; run records carry claim ownership through `claimed_by` and `claimed_at`
-- rerun can explicitly target failed or interrupted runs through `restore_from_run_id`
-- input payloads use `input_parts` rather than a single `input_text`; run records preserve `input_parts` as original JSON-compatible payloads for replay/UI reconstruction
-- successful run records store final `output_text` directly in the database for replay and UI rendering
-- foundational execution modules live under `ya_claw/execution/`
-- workspace provider modules live under `ya_claw/workspace/`
-- `LocalWorkspaceProvider` uses `LocalFileOperator` plus policy-driven `LocalShell` over the real workspace path; Claw passes resolved `ShellSandboxRuntimePolicy` for sandboxed execution, while SDK and YAACLI default local environments keep raw subprocess semantics unless a sandbox policy is provided
-- Shell sandbox architecture target: reusable sandbox shell primitives live in `ya-agent-sdk` under `ya_agent_sdk.environment.shell_sandbox` split into `policy`, `backend`, and `shell` modules; shared subprocess lifecycle helpers live in `ya_agent_sdk.environment.process`; Claw keeps workspace-specific conversion in `ya_claw.workspace.shell_sandbox` and resolves profile/settings/workspace bindings into `ShellSandboxRuntimePolicy` before environment construction; default profile is `workspace_write`; Linux target backend is `linux_bwrap_seccomp` using bubblewrap plus seccomp with optional Landlock; macOS target backend is `macos_seatbelt`; Windows target backend is `windows_restricted_token` using restricted tokens, AppContainer, Job Objects, private desktop, and ACL grants; raw host shell is a privileged audited escalation path
-- `DockerWorkspaceProvider` uses Docker mounts through `SandboxEnvironment`; file operations map the service-visible workspace path to `/workspace`, Docker shell uses `/workspace`, and managed temporary storage uses `.tmp/ya-agent-<id>` within the shared mount
-- Docker shell execution uses a service-side Docker CLI subprocess for exact stdin/stdout transport and process lifecycle ownership while the Python Docker SDK manages containers; the official `Dockerfile.ya-claw` image bundles the CLI, and custom images or host installs need both the CLI on `PATH` and Docker Engine API access
-- `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` provides the Docker daemon-visible host mount path when the YA Claw service itself runs in Docker
-- Docker workspace containers receive UID/GID envs (`YA_CLAW_WORKSPACE_UID`, `YA_CLAW_WORKSPACE_GID`, `YA_CLAW_HOST_UID`, `YA_CLAW_HOST_GID`) from the service process by default or from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID/GID`
-- `Dockerfile.ya-claw` can drop service execution privileges through `YA_CLAW_RUN_UID` and `YA_CLAW_RUN_GID`; the official workspace image defaults to UID/GID 1000 through build args
-- built-in run orchestration lives in `ya_claw/execution/coordinator.py`
-- built-in coordinator dispatch resolves model/runtime behavior from AgentProfile rows; `YA_CLAW_DEFAULT_PROFILE` defaults to `default`
-- bridge adapter types are enumerated through `BridgeAdapterType`; current built-in adapter is `lark`
-- bridge deployment dispatch uses `BridgeDispatchMode` (`embedded`, `manual`) and stays separate from run execution dispatch (`queue`, `async`, `stream`)
-- `embedded` is the default bridge dispatch mode and runs adapter tasks under `BridgeSupervisor` in the same HTTP server lifespan as `ExecutionSupervisor`; `manual` starts the HTTP server without `BridgeSupervisor`
-- Lark bridge event allowlist comes from `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`; defaults cover `im.chat.member.bot.added_v1`, `im.chat.member.user.added_v1`, `im.message.receive_v1`, and `drive.notice.comment_add_v1`
-- Lark message events map `(adapter, tenant_key, chat_id)` one-to-one to a session; other accepted Lark events use `chat_id` when present and fall back to stable event or Drive conversation keys; each accepted inbound event creates a bridge-triggered run after event/message dedupe
-- Lark bridge replies/actions are performed by the agent from the workspace with `lark-cli`; workspace environments receive `LARK_APP_ID` and `LARK_APP_SECRET` from process env or Lark bridge app settings
-- JSON run/session create routes return JSON consistently; foreground SSE creation uses `POST /api/v1/runs:stream`, `POST /api/v1/sessions:stream`, and `POST /api/v1/sessions/{session_id}/runs:stream`
-- session memory is workspace-native: paired internal `session_type="memory"` sessions run background extract/summary jobs with trigger type `memory`, share the source workspace sandbox, and use the same profile tool surface as the primary agent
-- memory agents use fixed XML-style prompts from `ya_claw/memory/extract_prompt.py` and `ya_claw/memory/summary_prompt.py`
-- memory content lives in workspace files: `memory/MEMORY.md`, `memory/CHANGELOG.md`, and `memory/YYYYMMDD-event.md` files with YAML frontmatter (`name`, `description`)
-- `memory/MEMORY.md` is a compact durable brief for stable facts loaded into the main agent system prompt; detailed chronology, file catalogs, and event lists belong in event files and `memory/CHANGELOG.md`
-- primary conversation runs load `AGENTS.md` through workspace guidance and load memory in the system prompt via `WorkspaceMemoryStore` from `memory/MEMORY.md` plus event file frontmatter
-- Agency heartbeat fires follow a fixed interval from `agency_timer_interval_seconds`; `submit_to_session` requires an explicit handoff kind (`context`, `exchange`, `reminder`, `task`, `risk`, `async_result`, `decision`, `conflict`), wraps prompts in a fixed `<system-reminder>` reference block, and uses kind-specific hints so target sessions can apply context or stay silent when useful
-- `memory-context` is registered in `injected_context_tags` so SDK trim-mode handoff strips historical memory context from user prompt history
-- memory orchestration state lives in `session_memory_states`; memory content lives in workspace files; session list/detail responses expose `memory_state`; file browsing uses workspace filetree APIs and agent filesystem tools; manual endpoints are `memory:extract` and `memory:summarize`
-
-### `packages/ya-agent-platform`
-
-- WIP stateless agent service with TBD scope
+- `Dockerfile.ya-claw` — YA Claw service image
+- `Dockerfile.ya-claw-workspace` — official YA Claw workspace image
+- `Dockerfile.ya-agent-platform` — YA Agent Platform image
 
 ## Development Workflow
 
@@ -163,6 +43,9 @@ After changing code, run:
 2. `make check`
 3. `make test`
 
+Use narrower package tests while iterating, but run the repository checks before
+finalizing a broad change.
+
 Useful commands:
 
 | Command                            | Description                               |
@@ -171,43 +54,27 @@ Useful commands:
 | `make web-dev`                     | Run the YA Claw web app                   |
 | `make build-claw`                  | Build the `ya-claw` package               |
 | `make build-platform`              | Build the WIP `ya-agent-platform` package |
-| `make docker-build-claw`           | Build the YA Claw Docker image            |
-| `make docker-build-claw-workspace` | Build the YA Claw workspace Docker image  |
-| `make docker-build-platform`       | Build the YA Agent Platform Docker image  |
+| `make docker-build-claw`           | Build the YA Claw service image           |
+| `make docker-build-claw-workspace` | Build the YA Claw workspace image         |
+| `make docker-build-platform`       | Build the YA Agent Platform image         |
 
 ## Environment Configuration
 
-Environment variables are loaded via `pydantic-settings` from the process environment or `.env` files.
+Environment variables are loaded with `pydantic-settings` from the process environment
+or `.env` files.
 
-- YA Agent SDK example env file: `packages/ya-agent-sdk/.env.example`
-- YAACLI example env file: `packages/yaacli/.env.example`
-- YA Claw example env file: `packages/ya-claw/.env.example`
-- Example runtime env file: `examples/.env.example`
-- YAACLI runtime env prefix: `YAACLI_`
-- YA Agent SDK runtime env prefix: `YA_AGENT_`
-- YA Claw runtime env prefix: `YA_CLAW_`
+| Scope    | Example file                         | Prefix            |
+| -------- | ------------------------------------ | ----------------- |
+| SDK      | `packages/ya-agent-sdk/.env.example` | `YA_AGENT_`       |
+| YAACLI   | `packages/yaacli/.env.example`       | `YAACLI_`         |
+| YA Claw  | `packages/ya-claw/.env.example`      | `YA_CLAW_`        |
+| Examples | `examples/.env.example`              | varies by example |
 
-Keep `packages/ya-agent-sdk/.env.example`, `packages/yaacli/.env.example`, `packages/ya-claw/.env.example`, and `examples/.env.example` updated when environment variables change.
+Keep the affected example environment file current when adding or changing a setting.
 
-## Notes For Repository Changes
+## Cross-Repository Changes
 
-When editing workspace metadata, keep these files aligned:
-
-- `pyproject.toml`
-- `packages/ya-agent-environment/pyproject.toml`
-- `packages/ya-agent-sdk/pyproject.toml`
-- `packages/ya-agent-stream-protocol/pyproject.toml`
-- `packages/yaacli/pyproject.toml`
-- `packages/ya-claw/pyproject.toml`
-- `packages/ya-agent-platform/pyproject.toml`
-- `pnpm-workspace.yaml`
-- `Makefile`
-- `.github/workflows/*.yml`
-- `Dockerfile.ya-claw`
-- `Dockerfile.ya-claw-workspace`
-- `Dockerfile.ya-agent-platform`
-- `.dockerignore`
-- `README.md` and package READMEs
-- `packages/ya-claw/spec/*`
-- `skills/agent-builder/*`
-- `scripts/sync-skills.sh`
+When changing workspace, package, release, or deployment metadata, update all affected
+surfaces together. Check the root and package `pyproject.toml` files, `uv.lock`,
+`pnpm-workspace.yaml`, `Makefile`, CI workflows, Dockerfiles, `.dockerignore`, package
+README/spec files, canonical skills, and skill sync scripts as applicable.

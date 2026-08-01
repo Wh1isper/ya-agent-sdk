@@ -61,7 +61,7 @@ This section is the maintainer index for implementation details that affect code
 - SQLite is the default durable store at `~/.ya-claw/ya_claw.sqlite3`.
 - `YA_CLAW_DATA_DIR` defaults to `~/.ya-claw/data`.
 - `YA_CLAW_WORKSPACE_DIR` defaults to `~/.ya-claw/data/workspace`.
-- Browser workspace downloads are capped at 100 MiB by default; configure `YA_CLAW_WORKSPACE_DOWNLOAD_MAX_BYTES` to change the enforced per-file limit.
+- Browser workspace downloads are capped at 100 MiB by default; configure `YA_CLAW_WORKSPACE_DOWNLOAD_MAX_BYTES` to change the enforced per-file limit. The server enforces the cap both before and during streaming.
 - `GET /api/v1/sessions/{session_id}/workspace/files` uses stable case-insensitive name ordering. Send `limit`, then continue with the opaque `next_cursor` while `has_more` is true; the name-key cursor prevents inserts or deletes before the cursor from shifting later pages. `offset`, `next_offset`, and the `truncated` alias remain available for backwards compatibility, but new clients should use `cursor`/`next_cursor`.
 - The default Docker workspace image is `ghcr.io/wh1isper/ya-claw-workspace:latest`.
 - Session metadata lives in the database; committed continuity blobs live in the local run store.
@@ -74,15 +74,17 @@ This section is the maintainer index for implementation details that affect code
 - Internal data objects use Pydantic `BaseModel`.
 - Code prefers explicit typing and `isinstance` checks.
 - The session API is the high-level surface; the run API is the low-level surface.
+- SQLite tests use the session-scoped `initialize_sqlite_database` fixture, which copies a schema-only template into each isolated database; avoid per-test `Base.metadata.create_all` calls.
 
 ### Session and Run Persistence
 
 - Committed continuity blobs live in `run-store/{run_id}/state.json` and `run-store/{run_id}/message.json`.
 - `message.json` stores the compacted replay list of AGUI-aligned events as a top-level JSON array.
+- `state.json` stores the bounded latest cumulative usage/cost snapshot. Claw normalizes SDK snapshots to the outer run ID, accumulates deferred-tool continuation segments, and indexes the bounded snapshot in internal run metadata. Run detail may fall back through state and replay for legacy or active runs; paginated summaries never scan full state blobs.
 - Input payloads use `input_parts`; run records preserve `input_parts` as original JSON-compatible payloads for replay and UI reconstruction.
 - Successful run records store final `output_text` directly in the database.
 - Session GET exposes paginated runs with optional raw `input_parts` and compacted message replay lists, returns optional top-level committed state/message from `head_success_run_id`, and derives session status from the latest run.
-- Session turns API returns successful completed turns with raw `input_parts`, `output_text`,.
+- Session turns API returns successful completed turns with raw `input_parts` and `output_text`.
 - Run GET returns `session + run + optional state + optional message`.
 - Run trace API returns compact tool-call/tool-response projections from `message.json`.
 - Rerun can explicitly target failed or interrupted runs through `restore_from_run_id`.
@@ -127,8 +129,10 @@ This section is the maintainer index for implementation details that affect code
 - Paired internal `session_type="memory"` sessions run background extract/summary jobs with trigger type `memory`.
 - Memory jobs share the source workspace sandbox and use the same profile tool surface as the primary agent.
 - Memory content lives in workspace files: `memory/MEMORY.md`, `memory/CHANGELOG.md`, and `memory/YYYYMMDD-event.md` files with YAML frontmatter (`name`, `description`).
+- `memory/MEMORY.md` is a compact durable brief for stable facts loaded by the main agent. Detailed chronology, file catalogs, and event lists belong in event files and `memory/CHANGELOG.md`.
 - Memory extract and summary agents use fixed XML-style prompts from `ya_claw/memory/extract_prompt.py` and `ya_claw/memory/summary_prompt.py`.
-- Primary conversation runs inject memory in the system prompt via `WorkspaceMemoryStore`, loading `memory/MEMORY.md` plus event file frontmatter as separate XML-style blocks.
+- Primary conversation runs load workspace guidance from `AGENTS.md` and inject memory in the system prompt via `WorkspaceMemoryStore`, loading `memory/MEMORY.md` plus event file frontmatter as separate XML-style blocks.
+- `memory-context` is registered in `injected_context_tags`, so SDK trim-mode handoff removes historical memory context from prompt history.
 - Memory orchestration state lives in `session_memory_states`.
 - Session list/detail responses expose `memory_state`.
 - Manual endpoints are `memory:extract` and `memory:summarize`.

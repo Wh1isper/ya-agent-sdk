@@ -22,7 +22,7 @@ absolute paths and parent traversal. Temporary paths are handled through the nor
 `FileOperator` methods; there is no separate temporary-file operator or routing API.
 Environment cleanup closes registered resources, the shell, and the file operator
 before `_teardown()` releases backend/container and temporary-directory resources.
-The same ordering is used after partial setup failures. The base class does not assume
+The same ordering is preserved after partial setup failures and during cancellation. The base class does not assume
 a filesystem backing store and never deletes `_tmp_dir` itself: custom environments
 must allocate their agent-facing temporary backend in `_setup()` and remove only owned
 storage in `_teardown()`.
@@ -30,6 +30,23 @@ storage in `_teardown()`.
 A `FileOperator` implementation exposes one logical path space by implementing its
 public abstract methods directly. `read_bytes_stream()` returns an `AsyncIterator`
 directly, so consume the returned iterator without awaiting the method call.
+
+Workspace-backed concrete environments allocate owned temporary instances below
+`.tmp/ya-agent-<id>`. Each instance contains a self-ignoring `.gitignore`, and teardown
+removes only that owned instance. Custom environments remain responsible for allocating
+and tearing down their own temporary backend.
+
+`LocalFileOperator.walk_files()` returns paths relative to `default_path` when possible
+and directly reusable absolute paths for explicitly allowed roots outside it. `glob` and
+`grep` may search those roots explicitly; `root="."` does not implicitly include
+temporary storage.
+
+## Bounded Output
+
+Shared output-bounding policy lives in `ya_agent_environment.output`. It provides
+head/tail budget splitting, character and UTF-8 byte truncation, and incremental bounded
+text accumulation. Shell ingestion and SDK previews should reuse these helpers instead
+of defining independent truncation policies.
 
 ## Shell Backend Contract
 

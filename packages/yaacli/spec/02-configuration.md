@@ -135,6 +135,12 @@ and ignored.
 from `model_profiles`; the selected profile is persisted separately in
 `~/.yaacli/state.json` and does not rewrite `config.toml`.
 
+Both `[general]` and `[model_profiles.*]` may define static `instructions` for the
+active main-agent profile. YAACLI registers them through a dynamic Pydantic AI
+`instructions` callback, so the active profile is evaluated for every later model
+request, including restored or compacted histories. A `/model` switch therefore takes
+effect without rebuilding prior history.
+
 `general.max_loop_iterations` is accepted as a compatibility input only when
 `max_goal_iterations` is absent. The normalized runtime field is
 `max_goal_iterations`.

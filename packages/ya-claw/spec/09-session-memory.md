@@ -27,7 +27,8 @@ Memory files live inside the source workspace.
 
 Rules:
 
-- `memory/MEMORY.md` is the primary memory index loaded for the main agent.
+- `memory/MEMORY.md` is the compact durable brief of stable facts loaded for the main agent.
+- Detailed chronology, file catalogs, and event lists belong in event files and `memory/CHANGELOG.md`, not in the compact brief.
 - `memory/CHANGELOG.md` records memory updates and reorganization decisions.
 - Event files use `memory/YYYYMMDD-event.md` names.
 - Event files use YAML frontmatter with at least `name` and `description`.
@@ -231,6 +232,10 @@ Counting rules:
 ## Compact and Summarize Handoff
 
 SDK lifecycle hooks provide trim-mode handoff payloads to YA Claw.
+
+`memory-context` is registered in `AgentContext.injected_context_tags`, so SDK
+trim-mode handoff strips historical memory context from the prompt history before a
+new memory extraction payload is built.
 
 ```mermaid
 flowchart TB

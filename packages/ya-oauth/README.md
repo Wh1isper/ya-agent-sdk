@@ -10,4 +10,9 @@ ya-oauth status codex
 ya-oauth refresh codex
 ```
 
-Credentials are stored in `~/.yaai/auth.json` with directory mode `0700` and file mode `0600`.
+`ya-oauth login codex` follows the OpenAI Codex device-code flow and preserves Codex
+token refresh semantics.
+
+Credentials are stored in `~/.yaai/auth.json`. The store uses process-safe locking and
+atomic replacement, creates its directory with mode `0700`, and writes the credential
+file with mode `0600`.

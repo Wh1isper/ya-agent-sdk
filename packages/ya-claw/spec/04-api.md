@@ -60,16 +60,24 @@ Workflow semantics live in [13-workflows.md](13-workflows.md). Workflow trigger 
 
 ## Workspace Runtime
 
-| Method | Path                                            | Purpose                                                 |
-| ------ | ----------------------------------------------- | ------------------------------------------------------- |
-| `GET`  | `/api/v1/workspace/runtime`                     | inspect configured workspace backend and runtime checks |
-| `POST` | `/api/v1/workspace:resolve`                     | resolve provider binding for supplied metadata          |
-| `GET`  | `/api/v1/sessions/{session_id}/workspace`       | inspect a session's resolved workspace and sandbox      |
-| `GET`  | `/api/v1/sessions/{session_id}/sandbox`         | inspect a session's sandbox state                       |
-| `POST` | `/api/v1/sessions/{session_id}/sandbox:prepare` | prepare a Docker-backed session sandbox                 |
-| `POST` | `/api/v1/sessions/{session_id}/sandbox:stop`    | stop a Docker-backed session sandbox                    |
+| Method | Path                                                    | Purpose                                                 |
+| ------ | ------------------------------------------------------- | ------------------------------------------------------- |
+| `GET`  | `/api/v1/workspace/runtime`                             | inspect configured workspace backend and runtime checks |
+| `POST` | `/api/v1/workspace:resolve`                             | resolve provider binding for supplied metadata          |
+| `GET`  | `/api/v1/sessions/{session_id}/workspace`               | inspect a session's resolved workspace and sandbox      |
+| `GET`  | `/api/v1/sessions/{session_id}/sandbox`                 | inspect a session's sandbox state                       |
+| `POST` | `/api/v1/sessions/{session_id}/sandbox:prepare`         | prepare a Docker-backed session sandbox                 |
+| `POST` | `/api/v1/sessions/{session_id}/sandbox:stop`            | stop a Docker-backed session sandbox                    |
+| `GET`  | `/api/v1/sessions/{session_id}/workspace/files`         | list files below the resolved workspace                 |
+| `GET`  | `/api/v1/sessions/{session_id}/workspace/file`          | read one workspace text file                            |
+| `GET`  | `/api/v1/sessions/{session_id}/workspace/file:download` | stream one workspace file                               |
 
 `workspace.runtime` exposes backend, execution location, workspace service path, virtual path, checks, Docker daemon/image/cache status, sandbox lifecycle capabilities, and update time. Session summaries and session detail responses include `workspace_state` with the persisted sandbox state when sandbox metadata exists.
+
+Workspace downloads enforce `YA_CLAW_WORKSPACE_DOWNLOAD_MAX_BYTES` per file, with a
+100 MiB default. The controller rejects a known oversized file before response
+streaming, and the streaming iterator independently stops if the bytes actually read
+cross the same limit.
 
 Sandbox state uses `status` for lifecycle (`created`, `preparing`, `ready`, `failed`, `stopped`) and `ready_state` for client display (`not_started`, `starting`, `ready`, `failed`). Docker session sandboxes expose container reference, container id, verified container id, image, work dir, retention policy, idle TTL, computed expiry, and TTL seconds remaining.
 
