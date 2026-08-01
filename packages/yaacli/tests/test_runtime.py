@@ -437,6 +437,7 @@ def test_create_tui_runtime_can_proxy_mcp_servers(tmp_path: Path) -> None:
                 transport="stdio",
                 command="echo",
                 args=["test"],
+                prefix="ignored-in-proxy-mode",
             ),
         }
     )
@@ -490,6 +491,47 @@ async def test_create_tui_runtime_namespaces_duplicate_direct_mcp_tools(tmp_path
 
     assert "one_collide" in visible_tool_names
     assert "two_collide" in visible_tool_names
+
+
+async def test_create_tui_runtime_honors_custom_and_empty_mcp_prefixes(tmp_path: Path, monkeypatch) -> None:
+    """Direct MCP prefixes may be customized or disabled per server."""
+
+    def collide() -> str:
+        return "ok"
+
+    mcp_servers = [
+        FunctionToolset([collide], id="custom"),
+        FunctionToolset([collide], id="unprefixed"),
+    ]
+    monkeypatch.setattr(runtime_module, "build_mcp_servers", lambda *_args, **_kwargs: mcp_servers)
+    visible_tool_names: set[str] = set()
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible_tool_names.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_tui_runtime(
+        config=YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4")),
+        mcp_config=MCPConfig(
+            servers={
+                "custom": MCPServerConfig(command="unused", prefix="docs"),
+                "unprefixed": MCPServerConfig(command="unused", prefix=""),
+            }
+        ),
+        working_dir=tmp_path,
+        config_dir=tmp_path / "config",
+        enable_async_subagents=False,
+    )
+
+    async with runtime:
+        with runtime.agent.override(model=FunctionModel(respond)):
+            await runtime.agent.run("test", deps=runtime.ctx)
+
+    assert "docs_collide" in visible_tool_names
+    assert "collide" in visible_tool_names
+    assert "custom_collide" not in visible_tool_names
+    assert "unprefixed_collide" not in visible_tool_names
+    assert "_collide" not in visible_tool_names
 
 
 async def test_create_tui_runtime_skips_unavailable_optional_direct_mcp(tmp_path: Path) -> None:

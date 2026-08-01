@@ -65,6 +65,9 @@ class MCPServerConfig(MCPServerSpec):
     required: bool = True
     """Whether startup/toolset initialization treats this server as required."""
 
+    prefix: str | None = None
+    """Optional host-facing tool prefix; ``None`` leaves the host default unchanged."""
+
 
 class MCPConfig(BaseModel):
     """Collection of MCP server configurations keyed by namespace."""
@@ -109,8 +112,10 @@ def filter_mcp_config(
     return MCPConfig(servers=filtered_servers)
 
 
-def create_mcp_approval_hook(server_name: str) -> ProcessToolCallback:
+def create_mcp_approval_hook(server_name: str, *, tool_prefix: str | None = None) -> ProcessToolCallback:
     """Create a process_tool_call hook for MCP tool approval."""
+
+    effective_prefix = server_name if tool_prefix is None else tool_prefix
 
     async def hook(
         ctx: RunContext[AgentContext],
@@ -119,7 +124,7 @@ def create_mcp_approval_hook(server_name: str) -> ProcessToolCallback:
         tool_args: dict[str, Any],
     ) -> ToolResult:
         if server_name in ctx.deps.need_user_approve_mcps and not ctx.tool_call_approved:
-            full_name = f"{server_name}_{name}"
+            full_name = f"{effective_prefix}_{name}" if effective_prefix else name
             logger.debug("MCP tool %r requires approval", full_name)
             raise ApprovalRequired(metadata={"mcp_server": server_name, "mcp_tool": name, "full_name": full_name})
 
@@ -135,7 +140,8 @@ def build_mcp_server(
 ) -> AbstractToolset[Any] | None:
     """Build a single MCP toolset instance from configuration."""
 
-    process_tool_call = create_mcp_approval_hook(name) if need_approval else None
+    tool_prefix = name if config.prefix is None else config.prefix
+    process_tool_call = create_mcp_approval_hook(name, tool_prefix=tool_prefix) if need_approval else None
 
     match config.transport:
         case "stdio":
@@ -147,7 +153,7 @@ def build_mcp_server(
                 StdioTransport(
                     command=config.command, args=config.args, env=config.env or None, log_file=Path(null_path)
                 ),
-                tool_prefix=name,
+                tool_prefix=tool_prefix,
                 id=name,
                 process_tool_call=process_tool_call,
             )
@@ -158,7 +164,7 @@ def build_mcp_server(
             return NamedMCPToolset(
                 config.url,
                 headers=config.headers or None,
-                tool_prefix=name,
+                tool_prefix=tool_prefix,
                 id=name,
                 process_tool_call=process_tool_call,
             )
