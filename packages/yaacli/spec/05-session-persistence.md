@@ -68,6 +68,14 @@ A partial, malformed, missing-identity, wrong-identity, symlinked, or schema-v2-
 
 Upgrade copies recognized artifacts into a generated turn, writes turn metadata, commits schema-v2 root metadata, and only then removes the known root legacy artifacts.
 
+## Session Selector
+
+`/session` without an ID opens a responsive selector backed only by committed session
+metadata. Rows contain bounded input/output previews from metadata; listing does not
+read model history, context state, or display replay artifacts and does not wait for
+artifact-writer locks. Selecting a session then enters the explicit load path, where
+full validation and any recognized legacy migration occur.
+
 ## TUI Restore Preparation
 
 `/load <folder>` and `/session <id>` use the same transactional restore pipeline.

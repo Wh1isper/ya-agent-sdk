@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -22,7 +23,7 @@ from fastmcp.client.transports import StdioTransport
 from pydantic import BaseModel, Field
 from pydantic_ai import ApprovalRequired, RunContext
 from pydantic_ai.mcp import MCPToolset, ProcessToolCallback
-from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
 
@@ -76,11 +77,31 @@ class MCPConfig(BaseModel):
 
 
 class NamedMCPToolset(MCPToolset):
-    """MCPToolset with a stable ``tool_prefix`` compatibility attribute."""
+    """Host-managed MCP tools with stable namespace and CodeAct metadata.
+
+    Provider-native MCP integrations do not pass through this class. Tools
+    constructed here remain subject to MCP approval hooks and all ordinary
+    ToolManager policy when invoked from CodeAct. The host-managed client
+    transport is expected to release local request ownership on cancellation;
+    cancellation cannot roll back work already accepted by a remote server.
+    """
 
     def __init__(self, *args: Any, tool_prefix: str, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.tool_prefix = tool_prefix
+
+    async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
+        tools = await super().get_tools(ctx)
+        return {
+            name: replace(
+                tool,
+                tool_def=replace(
+                    tool.tool_def,
+                    metadata={**(tool.tool_def.metadata or {}), "codeact": True},
+                ),
+            )
+            for name, tool in tools.items()
+        }
 
 
 def load_mcp_config_file(file_path: Path) -> MCPConfig:

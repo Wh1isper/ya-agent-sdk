@@ -119,6 +119,25 @@ runtime = create_agent(
 
 The SDK deliberately does **not** include this tool in its default tool surface: hosts must opt in only when they can present `DeferredToolRequests`, collect answers, and resume with matching `DeferredToolResults.calls`. The tool sets `main_agent_only=True`, so regular subagents and self forks remove it from direct SDK `Toolset` instances, capability wrappers, and sync or async dynamic Toolset factory results at both per-run and per-step resolution. SDK `Toolset` also enforces this policy while listing and calling tools in a subagent context, regardless of `skip_unavailable`, so opaque search/proxy composites and stale caches cannot bypass it. Its runtime availability check additionally requires a root main-agent context as defense in depth. Nested subagent runs do not own the host's user-interaction loop. See [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md) for the question schema and a complete continuation example.
 
+## CodeAct
+
+CodeAct lets a model orchestrate eligible host tools from restricted Python while preserving the normal Pydantic AI validation, hooks, approval, tracing, and final-agent boundaries. Enable it explicitly:
+
+```python
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.codeact import CodeActConfig
+
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    tools=[...],
+    codeact=CodeActConfig(),
+)
+```
+
+SDK `BaseTool` classes opt in with `codeact = True`; external toolsets attach `ToolDefinition.metadata["codeact"] = True`. Host-managed `NamedMCPToolset` tools opt in by default. Eligible tools remain directly model-visible as well as callable through `run_code`.
+
+When the current Environment provides a `FileOperator`, `run_program(path, inputs)` reads a strict UTF-8 `.py` file through it and executes `async def main(inputs)` in a fresh Monty session; otherwise that tool is not exposed. Monty receives no workspace mount or ambient OS access: filesystem, shell, browser, network, and computer-use operations still cross the current Environment tool boundary. `max_concurrency` admits calls before host argument materialization and covers argument serialization, nested validation, and execution. `max_output_bytes` bounds each nested argument set, result, explicit model-facing `ToolReturn.content`, cumulative nested results, and the final returned value before large supported host values are fully encoded or cross into Monty. `timeout_seconds` initiates cancellation at the execution deadline; CodeAct still drains active in-process tool ownership before returning, and `codeact=True` therefore requires cancellation-cooperative tools. See [CodeAct](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/codeact.md) and [the program specification](spec/03-codeact-programs.md).
+
 ## Environment Temporary Storage
 
 `Environment` owns managed temporary storage. While entered, use `env.tmp_dir` to

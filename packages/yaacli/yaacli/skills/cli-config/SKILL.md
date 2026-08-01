@@ -84,6 +84,9 @@ Project-level tool permissions in `.yaacli/tools.toml`:
 
 ```toml
 [tools]
+# Enable restricted run_code and run_program orchestration (default: true)
+enable_codeact = true
+
 # Enable structured clarifying questions in the interactive TUI (default: true)
 enable_user_input = true
 # Seconds to wait for each structured answer before rejecting the call (default: 120)
@@ -95,6 +98,8 @@ mcp_mode = "direct"
 # Tools requiring user approval before execution
 need_approval = ["shell", "write"]
 ```
+
+Set `enable_codeact = false` to remove both `run_code` and `run_program`. Shell remains a separate execution surface and is not callable from CodeAct.
 
 Set `enable_user_input = false` when the project should not expose the interactive `ask_user_question` tool. `user_input_timeout_seconds` must be positive and finite; an unanswered question rejects the deferred call after this interval so the agent can continue. Headless mode never exposes it.
 

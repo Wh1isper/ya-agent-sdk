@@ -200,14 +200,15 @@ Authorization: Bearer <access_token>
 ChatGPT-Account-ID: <chatgpt_account_id>
 X-OpenAI-Fedramp: true
 originator: ya_agent_sdk
-version: <ya-agent-sdk-version>
 session_id: <session_id>
 session-id: <session_id>
+x-session-id: <session_id>
 thread_id: <thread_id>
 thread-id: <thread_id>
+x-client-request-id: <thread_id>
 ```
 
-`X-OpenAI-Fedramp` is attached only when the account metadata carries `chatgpt_account_is_fedramp = true`.
+`X-OpenAI-Fedramp` is attached only when the account metadata carries `chatgpt_account_is_fedramp = true`. The provider intentionally omits Codex's `version` header by default so YA package versions are not treated as Codex CLI release versions.
 
 ## SDK Session Headers
 

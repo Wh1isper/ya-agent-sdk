@@ -135,6 +135,12 @@ and ignored.
 from `model_profiles`; the selected profile is persisted separately in
 `~/.yaacli/state.json` and does not rewrite `config.toml`.
 
+Both `[general]` and `[model_profiles.*]` may define static `instructions` for the
+active main-agent profile. YAACLI registers them through a dynamic Pydantic AI
+`instructions` callback, so the active profile is evaluated for every later model
+request, including restored or compacted histories. A `/model` switch therefore takes
+effect without rebuilding prior history.
+
 `general.max_loop_iterations` is accepted as a compatibility input only when
 `max_goal_iterations` is absent. The normalized runtime field is
 `max_goal_iterations`.
@@ -199,12 +205,19 @@ permissions without copying model credentials or global UI settings:
 
 ```toml
 [tools]
+enable_codeact = true
 enable_user_input = true
 user_input_timeout_seconds = 120
 mcp_mode = "direct"
 need_approval = ["shell_exec", "write"]
 need_approval_mcps = ["production-filesystem"]
 ```
+
+`enable_codeact` defaults to `true` and exposes the restricted `run_code` and
+`run_program` tools. `run_program` reads source through the active Environment's
+`FileOperator`. Shell tools remain an independent execution surface and are not
+added to the CodeAct callable catalog. Setting `enable_codeact = false` removes
+both CodeAct tools.
 
 `enable_user_input` defaults to `true` and controls whether the interactive TUI
 registers the deferred `ask_user_question` tool. Setting it to `false` removes
@@ -229,10 +242,10 @@ surface when many MCP tools are configured. In both modes, a server with
 tools.
 
 Project `tools.toml` replaces the global file as a whole rather than merging
-individual fields. Consequently, a project file that omits `enable_user_input`
-uses the schema default `true`, even when the global file sets it to `false`.
-Projects that must disable interactive clarification need to repeat
-`enable_user_input = false` in their own file.
+individual fields. Consequently, a project file that omits `enable_codeact` or
+`enable_user_input` uses the corresponding schema default `true`, even when the
+global file sets it to `false`. Projects that must disable CodeAct or interactive
+clarification need to repeat the relevant setting in their own file.
 
 `need_approval` contains tool names. `need_approval_mcps` contains MCP server
 names whose tools require approval. An empty list means no additional static

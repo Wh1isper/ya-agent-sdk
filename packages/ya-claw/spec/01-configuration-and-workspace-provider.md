@@ -261,6 +261,12 @@ Shape:
 
 `DockerEnvironmentFactory` builds virtual file operations over service-visible mount paths and a Docker shell over declared virtual paths. The session-owned Docker workspace container bind mounts daemon-visible host paths into the declared virtual paths. The provider records one current sandbox generation per session and replaces that state when the workspace fingerprint changes.
 
+The Python Docker SDK manages container lifecycle. Command execution uses a
+service-side Docker CLI subprocess so the shell backend owns exact stdin/stdout
+transport and process termination. The service runtime therefore needs both Docker
+Engine API access and the Docker CLI on `PATH`; the official `Dockerfile.ya-claw`
+image bundles the CLI.
+
 ## EnvironmentFactory
 
 `EnvironmentFactory` turns `WorkspaceBinding` into a concrete SDK `Environment`.

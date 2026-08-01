@@ -186,6 +186,9 @@ class ShellReviewConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Tool permission and availability configuration."""
 
+    enable_codeact: bool = True
+    """Enable the restricted ``run_code`` and ``run_program`` tools."""
+
     enable_user_input: bool = True
     """Enable the interactive ``ask_user_question`` tool in the TUI."""
 

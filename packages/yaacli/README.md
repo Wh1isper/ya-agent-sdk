@@ -94,6 +94,15 @@ The repository sync script keeps bundled skill files under `packages/yaacli/yaac
 
 YAACLI refreshes and resolves `/skill-name` against the effective SDK skill catalog at submission time, including built-in, global, shared, and project skills after normal priority rules. The visible transcript and prompt history retain the original input; the model receives a catalog-grounded explicit-selection marker plus the remaining task. A slash prefix that matches neither a registered command nor an available skill is submitted as ordinary user input.
 
+## CodeAct
+
+YAACLI exposes `run_code` and `run_program` by default. They execute restricted Python for tool orchestration; `run_program` reads reviewed programs through the runtime's `FileOperator`. Shell remains a separate execution surface and is not made callable from CodeAct. Disable both CodeAct tools globally in `~/.yaacli/tools.toml` or per project in `.yaacli/tools.toml`:
+
+```toml
+[tools]
+enable_codeact = false
+```
+
 ## MCP Tool Exposure
 
 MCP tools are exposed directly to the model by default. Configure the behavior globally in `~/.yaacli/tools.toml` or per project in `.yaacli/tools.toml`:

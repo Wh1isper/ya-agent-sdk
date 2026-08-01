@@ -8,6 +8,12 @@
 2. **Resource cleanup**: Ensure managed processes are terminated during shutdown.
 3. **TUI integration**: Surface process state for status and diagnostics.
 
+YAACLI intentionally overrides the SDK workspace-first temporary-storage default. Its
+managed agent temporary directory always uses the system temporary root, while the
+separately allowed system-temp path remains available for user-specified files. This
+keeps CLI-managed scratch data outside the active repository without changing normal
+workspace file access.
+
 > Event emission from `ProcessManager` is planned. The current implementation focuses on lifecycle management and background shell monitoring.
 
 ## Architecture
