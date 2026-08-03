@@ -58,7 +58,13 @@ argument materialization is admission-bounded before dispatch. `timeout_seconds`
 initiates cancellation, while ownership-safe cleanup may finish afterward, so tools
 marked `codeact=True` must cooperate with cancellation. Host-managed
 `NamedMCPToolset` tools carry CodeAct eligibility by default while retaining normal
-approval and agent boundaries.
+approval and agent boundaries. Their MCP adapter keeps `structuredContent` as the
+nested Python value and forwards accompanying media as supplemental
+`ToolReturn.content`. A completed MCP `isError` response is returned as structured data
+for explicit inspection rather than raised as `ModelRetry`; transport or protocol
+failures that produce no result are terminal `ToolFailed` outcomes. This prevents
+completed side-effecting calls from consuming retry budgets or being implicitly
+replayed.
 
 See [03-codeact-programs.md](03-codeact-programs.md) for the complete execution,
 security, replay, and limit contracts.

@@ -13,16 +13,24 @@ This module provides:
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, assert_never
 
+import httpx
+import pydantic_core
+from fastmcp.client.client import CallToolResult
 from fastmcp.client.transports import StdioTransport
+from fastmcp.exceptions import ToolError
+from mcp import types as mcp_types
+from mcp.shared import exceptions as mcp_exceptions
 from pydantic import BaseModel, Field
-from pydantic_ai import ApprovalRequired, RunContext
+from pydantic_ai import ApprovalRequired, RunContext, ToolFailed, ToolReturn
 from pydantic_ai.mcp import MCPToolset, ProcessToolCallback
+from pydantic_ai.messages import BinaryContent, BinaryImage, is_multi_modal_content
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
@@ -33,6 +41,20 @@ if TYPE_CHECKING:
     from ya_agent_sdk.context import AgentContext
 
 logger = get_logger(__name__)
+
+_TRANSPORT_RUNTIME_ERRORS = frozenset({
+    "Server session was closed unexpectedly",
+    "Failed to initialize server session",
+    "Session task completed without exception but connection failed",
+    "Session task completed unexpectedly",
+    "Client is not connected. Use the 'async with client:' context manager first.",
+    ("Cannot access task results outside client context. Task futures must be used within 'async with client:' block."),
+})
+_TRANSPORT_RUNTIME_PREFIXES = ("Client failed to connect:",)
+_PROTOCOL_RUNTIME_PREFIXES = (
+    "Invalid structured content returned by tool ",
+    "Invalid schema for tool ",
+)
 
 
 class MCPServerSpec(BaseModel):
@@ -102,6 +124,128 @@ class NamedMCPToolset(MCPToolset):
             )
             for name, tool in tools.items()
         }
+
+    async def direct_call_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        metadata: dict[str, Any] | None = None,
+        use_task: bool = False,
+    ) -> Any:
+        """Call an MCP tool while preserving structured output alongside media."""
+
+        try:
+            async with self:
+                result = await self._invoke_raw_tool(name, args, metadata=metadata, use_task=use_task)
+        except BaseExceptionGroup as group:
+            _raise_mcp_exception_group(group)
+        except Exception as exc:
+            if _is_mcp_transport_failure(exc):
+                raise ToolFailed(str(exc)) from exc
+            raise
+
+        return _map_mcp_call_tool_result(result)
+
+    async def _invoke_raw_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        metadata: dict[str, Any] | None,
+        use_task: bool,
+    ) -> CallToolResult:
+        if use_task:
+            tool_task = await self.client.call_tool(
+                name=name,
+                arguments=args,
+                task=True,
+                meta=metadata,
+                raise_on_error=False,
+            )
+            return await tool_task.result()
+        return await self.client.call_tool(
+            name=name,
+            arguments=args,
+            meta=metadata,
+            raise_on_error=False,
+        )
+
+
+def _map_mcp_call_tool_result(result: CallToolResult) -> Any:
+    """Keep MCP structured output as the Python value and media as model-facing content."""
+
+    has_structured_result = result.structured_content is not None
+    structured = _structured_result(result.structured_content)
+    mapped_content = [_map_mcp_content(part) for part in result.content]
+    if has_structured_result:
+        media = [item for item in mapped_content if is_multi_modal_content(item)]
+        if media:
+            return ToolReturn(return_value=structured, content=media)
+        return structured
+    return mapped_content[0] if len(mapped_content) == 1 else mapped_content
+
+
+def _structured_result(value: dict[str, Any] | None) -> Any:
+    if isinstance(value, dict) and len(value) == 1 and "result" in value:
+        return value["result"]
+    return value
+
+
+def _map_mcp_content(part: mcp_types.ContentBlock) -> Any:
+    if isinstance(part, mcp_types.TextContent):
+        text = part.text
+        if text.startswith(("[", "{")):
+            try:
+                return pydantic_core.from_json(text)
+            except ValueError:
+                pass
+        return text
+    if isinstance(part, mcp_types.ImageContent):
+        return BinaryImage(data=base64.b64decode(part.data), media_type=part.mimeType)
+    if isinstance(part, mcp_types.AudioContent):
+        return BinaryContent(data=base64.b64decode(part.data), media_type=part.mimeType)
+    if isinstance(part, mcp_types.EmbeddedResource):
+        resource = part.resource
+        if isinstance(resource, mcp_types.TextResourceContents):
+            return resource.text
+        if isinstance(resource, mcp_types.BlobResourceContents):
+            return BinaryContent.narrow_type(
+                BinaryContent(
+                    data=base64.b64decode(resource.blob),
+                    media_type=resource.mimeType or "application/octet-stream",
+                )
+            )
+        assert_never(resource)
+    if isinstance(part, mcp_types.ResourceLink):
+        return str(part.uri)
+    assert_never(part)
+
+
+def _is_mcp_transport_failure(exc: BaseException) -> bool:
+    if isinstance(exc, (ToolError, mcp_exceptions.McpError, httpx.TransportError, httpx.HTTPStatusError)):
+        return True
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = str(exc)
+    if message in _TRANSPORT_RUNTIME_ERRORS or message.startswith((
+        *_TRANSPORT_RUNTIME_PREFIXES,
+        *_PROTOCOL_RUNTIME_PREFIXES,
+    )):
+        return True
+    return message.startswith("Tool ") and message.endswith(
+        " has an output schema but did not return structured content"
+    )
+
+
+def _raise_mcp_exception_group(group: BaseExceptionGroup) -> NoReturn:
+    matched, rest = group.split(_is_mcp_transport_failure)
+    if matched is None or rest is not None:
+        raise group
+    error: BaseException = matched
+    while isinstance(error, BaseExceptionGroup):
+        error = error.exceptions[0]
+    raise ToolFailed(str(error)) from group
 
 
 def load_mcp_config_file(file_path: Path) -> MCPConfig:

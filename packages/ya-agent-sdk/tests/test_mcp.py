@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 from dataclasses import replace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
-from pydantic_ai import ApprovalRequired, FunctionToolset, RunContext, Tool, UserError
+from fastmcp.client.client import CallToolResult
+from mcp import types as mcp_types
+from pydantic_ai import (
+    ApprovalRequired,
+    BinaryContent,
+    FunctionToolset,
+    RunContext,
+    Tool,
+    ToolFailed,
+    ToolReturn,
+    UserError,
+)
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
@@ -18,6 +33,8 @@ from ya_agent_sdk.mcp import (
     MCPConfig,
     MCPServerConfig,
     MCPServerSpec,
+    NamedMCPToolset,
+    _map_mcp_call_tool_result,
     build_mcp_server,
     build_mcp_servers,
     create_mcp_approval_hook,
@@ -26,6 +43,41 @@ from ya_agent_sdk.mcp import (
     filter_mcp_config,
     load_mcp_config_file,
 )
+
+
+class _StubNamedMCPToolset(NamedMCPToolset):
+    def __init__(
+        self,
+        client: Any,
+        *,
+        enter_error: BaseException | None = None,
+        exit_error: BaseException | None = None,
+    ) -> None:
+        self.client = client
+        self.enter_error = enter_error
+        self.exit_error = exit_error
+
+    async def __aenter__(self):
+        if self.enter_error is not None:
+            raise self.enter_error
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        if self.exit_error is not None:
+            raise self.exit_error
+
+
+def _mcp_result(
+    *,
+    structured: dict[str, Any] | None = None,
+    is_error: bool = False,
+) -> CallToolResult:
+    return CallToolResult(
+        content=[mcp_types.TextContent(type="text", text="result")],
+        structured_content=structured,
+        meta=None,
+        is_error=is_error,
+    )
 
 
 def test_mcp_server_spec_defaults() -> None:
@@ -132,6 +184,205 @@ def test_build_mcp_server_preserves_custom_and_empty_prefixes() -> None:
     assert unprefixed.tool_prefix == ""
     assert custom.id == "github"
     assert unprefixed.id == "local"
+
+
+def test_mcp_mixed_structured_and_image_result_preserves_both_channels() -> None:
+    observation = {
+        "catalog_version": {"major": 1, "minor": 1},
+        "observation": {"observation_id": "obs-123", "frame_generation": 4},
+    }
+    result = CallToolResult(
+        content=[
+            mcp_types.TextContent(type="text", text="computer_observe succeeded"),
+            mcp_types.ImageContent(
+                type="image",
+                data=base64.b64encode(b"png-data").decode("ascii"),
+                mimeType="image/png",
+            ),
+        ],
+        structured_content=observation,
+        meta=None,
+    )
+
+    mapped = _map_mcp_call_tool_result(result)
+
+    assert isinstance(mapped, ToolReturn)
+    assert mapped.return_value == observation
+    assert isinstance(mapped.content, list)
+    assert len(mapped.content) == 1
+    assert isinstance(mapped.content[0], BinaryContent)
+    assert mapped.content[0].data == b"png-data"
+    assert mapped.content[0].media_type == "image/png"
+
+
+def test_mcp_structured_result_remains_plain_python_value() -> None:
+    result = CallToolResult(
+        content=[mcp_types.TextContent(type="text", text='{"result": 7}')],
+        structured_content={"result": 7},
+        meta=None,
+    )
+
+    assert _map_mcp_call_tool_result(result) == 7
+
+    null_result = CallToolResult(
+        content=[mcp_types.TextContent(type="text", text="null")],
+        structured_content={"result": None},
+        meta=None,
+    )
+    assert _map_mcp_call_tool_result(null_result) is None
+
+
+@pytest.mark.asyncio
+async def test_mcp_completed_error_is_returned_without_model_retry() -> None:
+    error = {
+        "success": False,
+        "status": "error",
+        "error": {
+            "code": "stale_observation",
+            "message": "observation is unknown, evicted, or stale",
+            "retry": "after_fresh_observation",
+        },
+    }
+    result = CallToolResult(
+        content=[mcp_types.TextContent(type="text", text="stale_observation")],
+        structured_content=error,
+        meta=None,
+        is_error=True,
+    )
+
+    client = MagicMock()
+    client.call_tool = AsyncMock(return_value=result)
+    mapped = await _StubNamedMCPToolset(client).direct_call_tool("computer_click", {})
+
+    assert mapped == error
+    client.call_tool.assert_awaited_once_with(
+        name="computer_click",
+        arguments={},
+        meta=None,
+        raise_on_error=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_task_result_preserves_completed_error_without_retry() -> None:
+    result = _mcp_result(structured={"success": False, "error": {"code": "stale_observation"}}, is_error=True)
+    task = MagicMock()
+    task.result = AsyncMock(return_value=result)
+    client = MagicMock()
+    client.call_tool = AsyncMock(return_value=task)
+
+    mapped = await _StubNamedMCPToolset(client).direct_call_tool(
+        "computer_click",
+        {},
+        metadata={"request": "metadata"},
+        use_task=True,
+    )
+
+    assert mapped == result.structured_content
+    client.call_tool.assert_awaited_once_with(
+        name="computer_click",
+        arguments={},
+        task=True,
+        meta={"request": "metadata"},
+        raise_on_error=False,
+    )
+    task.result.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("connection failed"),
+        httpx.HTTPStatusError(
+            "service unavailable",
+            request=httpx.Request("POST", "https://example.test/mcp"),
+            response=httpx.Response(503),
+        ),
+        RuntimeError("Server session was closed unexpectedly"),
+        RuntimeError("Failed to initialize server session"),
+        RuntimeError("Session task completed unexpectedly"),
+        RuntimeError("Client failed to connect: connection refused"),
+        RuntimeError("Client is not connected. Use the 'async with client:' context manager first."),
+        RuntimeError("Tool computer_observe has an output schema but did not return structured content"),
+        RuntimeError("Invalid structured content returned by tool computer_observe: schema mismatch"),
+        RuntimeError("Invalid schema for tool computer_observe: invalid reference"),
+    ],
+)
+async def test_mcp_transport_failure_becomes_terminal_tool_failure(failure: Exception) -> None:
+    client = MagicMock()
+    client.call_tool = AsyncMock(side_effect=failure)
+
+    with pytest.raises(ToolFailed, match=str(failure)):
+        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+
+
+@pytest.mark.asyncio
+async def test_mcp_task_session_reset_becomes_terminal_tool_failure() -> None:
+    task = MagicMock()
+    task.result = AsyncMock(
+        side_effect=RuntimeError(
+            "Cannot access task results outside client context. "
+            "Task futures must be used within 'async with client:' block."
+        )
+    )
+    client = MagicMock()
+    client.call_tool = AsyncMock(return_value=task)
+
+    with pytest.raises(ToolFailed, match="Cannot access task results outside client context"):
+        await _StubNamedMCPToolset(client).direct_call_tool(
+            "computer_click",
+            {},
+            use_task=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_mcp_lifecycle_transport_failure_becomes_terminal_tool_failure() -> None:
+    client = MagicMock()
+    client.call_tool = AsyncMock(return_value=_mcp_result(structured={"success": True}))
+
+    with pytest.raises(ToolFailed, match="service unavailable"):
+        await _StubNamedMCPToolset(
+            client,
+            enter_error=httpx.HTTPStatusError(
+                "service unavailable",
+                request=httpx.Request("POST", "https://example.test/mcp"),
+                response=httpx.Response(503),
+            ),
+        ).direct_call_tool("computer_observe", {})
+
+    with pytest.raises(ToolFailed, match="Server session was closed unexpectedly"):
+        await _StubNamedMCPToolset(
+            client,
+            exit_error=RuntimeError("Server session was closed unexpectedly"),
+        ).direct_call_tool("computer_observe", {})
+
+
+@pytest.mark.asyncio
+async def test_mcp_unknown_or_mixed_failures_propagate_without_hiding_cancellation() -> None:
+    client = MagicMock()
+    unknown = RuntimeError("application callback failed")
+    client.call_tool = AsyncMock(side_effect=unknown)
+    with pytest.raises(RuntimeError, match="application callback failed"):
+        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+
+    transport_group = ExceptionGroup(
+        "transport failures",
+        [httpx.ConnectError("one"), httpx.ReadError("two")],
+    )
+    client.call_tool = AsyncMock(side_effect=transport_group)
+    with pytest.raises(ToolFailed, match="one"):
+        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+
+    mixed_group = BaseExceptionGroup(
+        "mixed failure",
+        [httpx.ConnectError("connection failed"), asyncio.CancelledError()],
+    )
+    client.call_tool = AsyncMock(side_effect=mixed_group)
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+    assert exc_info.value is mixed_group
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -1380,6 +1381,79 @@ async def test_nested_tool_return_content_is_propagated_on_success(tmp_path: Pat
         for part in message.parts
     )
     assert returned.metadata["codeact"]["tool_calls"][0]["tool_return_metadata_omitted"] is True
+
+
+async def test_run_code_uses_structured_observation_while_propagating_screenshot(tmp_path: Path) -> None:
+    clicked_observation_ids: list[str] = []
+    screenshot = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    async def computer_observe(ctx: RunContext[AgentContext], *, include_accessibility: bool = False) -> ToolReturn:
+        assert include_accessibility is False
+        return ToolReturn(
+            return_value={
+                "catalog_version": {"major": 1, "minor": 1},
+                "observation": {
+                    "observation_id": "obs-123",
+                    "frame_generation": 4,
+                },
+            },
+            content=[BinaryContent(data=screenshot, media_type="image/png")],
+        )
+
+    async def computer_click(ctx: RunContext[AgentContext], *, observation_id: str) -> dict[str, Any]:
+        clicked_observation_ids.append(observation_id)
+        return {"operation_id": "op-456", "effect_status": "committed"}
+
+    external = FunctionToolset([
+        Tool(computer_observe, metadata={"codeact": True}),
+        Tool(computer_click, metadata={"codeact": True}),
+    ])
+    model_calls = 0
+
+    def model_function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="run_code",
+                        args={
+                            "code": (
+                                "result = await computer_observe(include_accessibility=False)\n"
+                                "observation = result['observation']\n"
+                                "await computer_click(observation_id=observation['observation_id'])"
+                            )
+                        },
+                        tool_call_id="observe-click",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    runtime = _runtime(tmp_path, model_function, toolsets=[external])
+    async with runtime:
+        result = await runtime.agent.run("observe and click atomically", deps=runtime.ctx)
+
+    assert clicked_observation_ids == ["obs-123"]
+    returned = _tool_returns(result.all_messages(), "run_code")[0]
+    assert returned.content == {"operation_id": "op-456", "effect_status": "committed"}
+    supplemental = [
+        part.content
+        for message in result.all_messages()
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert any(
+        isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], str)
+        and "<filtered-content type='image'>" in content[0]
+        for content in supplemental
+    )
 
 
 async def test_executor_admits_calls_before_argument_serialization(

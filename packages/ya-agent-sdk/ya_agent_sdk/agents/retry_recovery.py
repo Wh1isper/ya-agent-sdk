@@ -175,8 +175,9 @@ def close_unreturned_tool_calls(history: Sequence[ModelMessage], error_message: 
                         tool_name=tool_name,
                         tool_call_id=tool_call_id,
                         content=(
-                            "Tool execution was interrupted by a stream error before a result was available. "
-                            f"stream_error={error_message}"
+                            "Tool execution did not produce a terminal result before the agent attempt failed. "
+                            "Completion and side-effect status are unknown; verify idempotency and external state before retrying. "
+                            f"agent_error={error_message}"
                         ),
                         outcome="failed",
                     )

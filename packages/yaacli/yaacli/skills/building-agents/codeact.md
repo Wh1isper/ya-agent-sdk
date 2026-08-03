@@ -55,6 +55,7 @@ The model receives `run_code(code, restart=False)`. Eligible direct tools remain
 - `max_concurrency` admits calls before Monty materializes host arguments and covers argument serialization, validation hooks, and execution; a call counts as started only after validation succeeds.
 - `max_output_bytes` bounds each nested argument set, result, explicit `ToolReturn.content`, cumulative nested results, and the final value before large supported host values are fully encoded or cross into Monty; unknown value types fail closed.
 - Nested `ToolReturn.content` remains model-facing on successful CodeAct completion; nested metadata is not merged into outer metadata.
+- Host-managed MCP calls keep `structuredContent` as the Python value and media as supplemental content. Completed MCP errors return structured data for explicit inspection instead of consuming `ModelRetry`; transport or protocol failures without a result are terminal failures.
 
 ## Reusable programs
 
