@@ -114,6 +114,8 @@ mcp_mode = "direct" # "direct" (default) or "proxy"
 
 Direct mode registers each configured MCP server as a native toolset and exposes namespaced `<server>_<tool>` names by default. A server's optional `prefix` field in `mcp.json` overrides `<server>`; set it to `""` to expose the server's native tool names without a prefix. Omitting `prefix` or setting it to `null` preserves the default server-name prefix. Proxy mode exposes the fixed `mcp_search_tool` and `mcp_call_tool` pair instead, which can improve prompt-cache stability when many MCP tools are configured. Servers marked `"required": false` remain optional in both modes.
 
+For direct host-managed MCP tools, structured output remains the tool's Python return value even when the response also contains media. Completed MCP error responses are returned for model or CodeAct inspection without consuming Pydantic AI's `ModelRetry` budget; failures that produce no MCP result are terminal failed tool outcomes.
+
 ```json
 {
   "servers": {

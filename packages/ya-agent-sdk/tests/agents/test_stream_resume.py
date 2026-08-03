@@ -53,6 +53,24 @@ def test_completed_native_tool_pair_is_not_treated_as_unreturned() -> None:
     assert close_unreturned_tool_calls(history, "stream failed") == history
 
 
+def test_incomplete_ordinary_tool_call_gets_neutral_unknown_effect_result() -> None:
+    history = [ModelResponse(parts=[ToolCallPart(tool_name="computer_click", args={}, tool_call_id="click-1")])]
+
+    recovered = close_unreturned_tool_calls(history, "tool retries exhausted")
+
+    assert len(recovered) == 2
+    request = recovered[-1]
+    assert isinstance(request, ModelRequest)
+    returned = request.parts[0]
+    assert isinstance(returned, ToolReturnPart)
+    assert returned.outcome == "failed"
+    assert "did not produce a terminal result" in returned.content
+    assert "Completion and side-effect status are unknown" in returned.content
+    assert "verify idempotency and external state before retrying" in returned.content
+    assert "agent_error=tool retries exhausted" in returned.content
+    assert "stream error" not in returned.content
+
+
 def test_incomplete_native_tool_call_is_removed_without_ordinary_return() -> None:
     history = [
         ModelResponse(
