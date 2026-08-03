@@ -239,7 +239,7 @@ async def test_run_code_preserves_state_only_within_one_run(tmp_path: Path) -> N
 
 
 async def test_run_program_uses_file_operator_and_fresh_session(tmp_path: Path) -> None:
-    program = tmp_path / "counter.py"
+    program = tmp_path / "counter.codeact.py"
     program.write_text(
         "counter = 0\n\n"
         "async def main(inputs):\n"
@@ -258,7 +258,7 @@ async def test_run_program_uses_file_operator_and_fresh_session(tmp_path: Path) 
                 parts=[
                     ToolCallPart(
                         tool_name="run_program",
-                        args={"path": "counter.py", "inputs": {"offset": model_calls}},
+                        args={"path": "counter.codeact.py", "inputs": {"offset": model_calls}},
                         tool_call_id=f"program-{model_calls}",
                     )
                 ]
@@ -271,7 +271,7 @@ async def test_run_program_uses_file_operator_and_fresh_session(tmp_path: Path) 
 
     returned = _tool_returns(result.all_messages(), "run_program")
     assert [part.content for part in returned] == [2, 3]
-    assert all(part.metadata["codeact"]["source_path"] == "counter.py" for part in returned)
+    assert all(part.metadata["codeact"]["source_path"] == "counter.codeact.py" for part in returned)
     assert returned[0].metadata["codeact"]["source_sha256"] == returned[1].metadata["codeact"]["source_sha256"]
 
 
@@ -409,6 +409,50 @@ def test_program_preflight_rejects_top_level_execution() -> None:
         validate_program_source("async def main(value, extra):\n    return value\n")
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import os\nasync def main(inputs):\n    return inputs\n", "ambient-capability module 'os'"),
+        (
+            "from pathlib import Path\nasync def main(inputs):\n    return inputs\n",
+            "ambient-capability module 'pathlib'",
+        ),
+        (
+            "async def main(inputs):\n    return open(inputs['path'])\n",
+            "reserved ambient builtin name 'open'",
+        ),
+        (
+            "async def main(inputs):\n    file_op = open\n    return file_op(inputs['path'])\n",
+            "reserved ambient builtin name 'open'",
+        ),
+        (
+            "def open(value):\n    return value\n\nasync def main(inputs):\n    return open(inputs)\n",
+            "reserved ambient builtin name 'open'",
+        ),
+        (
+            "async def main(inputs):\n    return eval(inputs['expression'])\n",
+            "reserved ambient builtin name 'eval'",
+        ),
+    ],
+)
+def test_program_preflight_rejects_reserved_ambient_names_and_modules(source: str, expected: str) -> None:
+    from ya_agent_sdk.codeact.programs import validate_program_source
+
+    with pytest.raises(ValueError, match=expected):
+        validate_program_source(source)
+
+
+def test_program_preflight_allows_pure_python_and_supported_imports() -> None:
+    from ya_agent_sdk.codeact.programs import validate_program_source
+
+    validate_program_source(
+        "import asyncio\n\n"
+        "async def main(inputs):\n"
+        "    values = await asyncio.gather(*(identity(value=value) for value in inputs['values']))\n"
+        "    return sorted(values), len(values)\n"
+    )
+
+
 async def test_cancellation_awaits_nested_tool_cleanup(tmp_path: Path) -> None:
     started = asyncio.Event()
     cleaned = asyncio.Event()
@@ -474,11 +518,12 @@ async def test_sanitized_tool_name_collisions_fail_closed(tmp_path: Path) -> Non
     ("filename", "content", "expected"),
     [
         (
-            "large.py",
+            "large.codeact.py",
             ("async def main(inputs):\n    return '" + "x" * 200 + "'\n").encode(),
             "max_source_bytes=128",
         ),
-        ("invalid.py", b"async def main(inputs):\n    return '\xff'\n", "strict UTF-8"),
+        ("invalid.codeact.py", b"async def main(inputs):\n    return '\xff'\n", "strict UTF-8"),
+        ("ordinary.py", b"async def main(inputs):\n    return inputs\n", "end in .codeact.py"),
     ],
 )
 async def test_program_source_limits_are_checked_before_sandbox(
@@ -1010,7 +1055,7 @@ async def test_inline_static_preflight_remembers_successful_definitions(tmp_path
 
 
 async def test_program_static_preflight_does_not_inherit_inline_names(tmp_path: Path) -> None:
-    (tmp_path / "isolated.py").write_text(
+    (tmp_path / "isolated.codeact.py").write_text(
         "async def main(inputs):\n    await mutate()\n    return await helper()\n",
         encoding="utf-8",
     )
@@ -1041,7 +1086,7 @@ async def test_program_static_preflight_does_not_inherit_inline_names(tmp_path: 
                 parts=[
                     ToolCallPart(
                         tool_name="run_program",
-                        args={"path": "isolated.py"},
+                        args={"path": "isolated.codeact.py"},
                         tool_call_id="isolated-program",
                     )
                 ]

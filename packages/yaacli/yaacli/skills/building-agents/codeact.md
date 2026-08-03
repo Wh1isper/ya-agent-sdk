@@ -59,7 +59,7 @@ The model receives `run_code(code, restart=False)`. Eligible direct tools remain
 
 ## Reusable programs
 
-A program is a strict UTF-8 `.py` file with this entrypoint:
+A program is a strict UTF-8 `*.codeact.py` file with this entrypoint:
 
 ```python
 import asyncio
@@ -74,7 +74,7 @@ async def main(inputs):
 Execute it with `run_program(path, inputs)`. The tool is exposed only when the current Environment provides a `FileOperator`. The SDK:
 
 1. reads at most `max_source_bytes + 1` through `ctx.deps.file_operator`;
-2. validates the module, safe module-scope declarations, and exact `async def main(inputs)` signature;
+2. validates the module, safe module-scope declarations, exact `async def main(inputs)` signature, reserved ambient-builtin names, and common ambient-capability imports;
 3. hashes the exact source bytes;
 4. injects inputs as data rather than source interpolation;
 5. checks out a fresh Monty session;
@@ -82,6 +82,10 @@ Execute it with `run_program(path, inputs)`. The tool is exposed only when the c
 7. closes the session before returning.
 
 A program source file is durable; interpreter state and prior outputs are not. Running it again re-executes current tools against current external state. There is no rollback or exactly-once guarantee.
+
+The `*.codeact.py` suffix distinguishes this restricted contract from general CPython. Names such as `open`, `eval`, and `exec` are reserved and cannot be referenced even when shadowed; imports of common ambient filesystem, process, or network modules are also rejected during preflight. Other pure builtins and supported modules such as `asyncio` remain available; host effects must use injected CodeAct-eligible tools.
+
+These checks provide deterministic authoring diagnostics, not an exhaustive capability security policy. The security boundary remains Monty's lack of workspace mounts and ambient OS adapters plus dispatch through the current injected-tool catalog.
 
 ## Environment boundary
 

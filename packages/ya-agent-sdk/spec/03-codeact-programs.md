@@ -344,7 +344,7 @@ async def run_program(
 Rules:
 
 - `path` is resolved and read through the current Environment `FileOperator`.
-- The file must use strict UTF-8 and have a `.py` suffix.
+- The file must use strict UTF-8 and end in `.codeact.py`; the dedicated suffix distinguishes the restricted program contract from general CPython.
 - The implementation reads at most `max_source_bytes + 1` bytes and rejects an oversized source before sandbox creation.
 - The source digest is computed from exactly the bytes returned by that bounded read.
 - Exactly one fresh sandbox session is created for each invocation.
@@ -385,6 +385,10 @@ Requirements:
 - Tool arguments are passed by keyword.
 - Only the Python subset and standard-library subset supported by the configured sandbox may be used.
 - The source must not rely on host imports, ambient credentials, or direct network/filesystem access.
+- The names `open`, `input`, `eval`, `exec`, `compile`, and `__import__` are reserved: preflight rejects references to them even if the program shadows the builtin.
+- Preflight rejects imports rooted at `os`, `pathlib`, `socket`, or `subprocess`; host effects must use injected CodeAct-eligible tools.
+- These reserved-name and import checks are deterministic authoring diagnostics, not an exhaustive capability security policy. The security boundary remains the sandbox's lack of ambient authority and dispatch through the current injected-tool catalog.
+- Other pure builtins and sandbox-supported modules such as `asyncio` remain available.
 - A program must not call `main` itself; the host invokes it once.
 - Preflight parses the module and validates the async `main(inputs)` definition and exact signature before creating an executable session.
 - Module scope may contain sandbox-supported imports, declarations, docstrings, and side-effect-free constants only. Assignment targets must be simple names, and annotations/defaults must not contain definition-time execution.
@@ -414,7 +418,7 @@ The recommended agent workflow is:
 1. Prototype orchestration with `run_code`.
 2. Inspect the nested call trace and verify behavior.
 3. Generalize volatile values into the `inputs` object.
-4. Write a program under `.agents/codeact/` with the normal filesystem tools.
+4. Write a `*.codeact.py` program under `.agents/codeact/` with the normal filesystem tools.
 5. Verify it once using `run_program`.
 6. Reuse it later by calling `run_program` with new inputs.
 
@@ -643,7 +647,7 @@ Conceptual outer result metadata:
     "codeact": {
         "execution_id": "...",
         "kind": "program",
-        "path": ".agents/codeact/collect_pages.py",
+        "path": ".agents/codeact/collect_pages.codeact.py",
         "source_sha256": "...",
         "catalog_sha256": "...",
         "status": "completed",
