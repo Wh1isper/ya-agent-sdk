@@ -93,9 +93,10 @@ transactional, retry-safe, or reversible."""
 
 _PROGRAM_DESCRIPTION = """Execute a reviewed CodeAct Python program from the current Environment workspace.
 
-The file must be strict UTF-8, end in .py, and define exactly `async def main(inputs)`.
-Each invocation uses a fresh Monty session. Source is read through the current
-Environment FileOperator; the program receives no ambient filesystem access."""
+The file must be strict UTF-8, end in .codeact.py, and define exactly
+`async def main(inputs)`. Each invocation uses a fresh Monty session. Source is read
+through the current Environment FileOperator; host effects remain available only
+through injected CodeAct-eligible tools."""
 
 
 class _TraceValueDescriptor(TypedDict):
@@ -297,7 +298,7 @@ class CodeActToolset(WrapperToolset[AgentContext]):
     async def _run_program(
         self,
         ctx: RunContext[AgentContext],
-        path: Annotated[str, Field(description="Environment FileOperator path to a .py program.")],
+        path: Annotated[str, Field(description="Environment FileOperator path to a .codeact.py program.")],
         inputs: Annotated[
             dict[str, Any] | None,
             Field(description="JSON-compatible values passed to main(inputs)."),
