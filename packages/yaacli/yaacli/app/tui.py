@@ -30,7 +30,7 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -217,6 +217,12 @@ _MAX_DISPLAY_REPLAY_LOAD_BYTES = MAX_DISPLAY_REPLAY_LOAD_BYTES
 _SESSION_SELECTOR_MAX_VISIBLE = 8
 _SESSION_SELECTOR_MAX_WIDTH = 110
 _SESSION_SELECTOR_MIN_WIDTH = 24
+_RESIZE_SETTLE_SECONDS = 0.15
+_RESIZE_STREAM_RENDER_INTERVAL = 1 / 8
+_MEDIUM_STREAM_RENDER_BYTES = 32 * 1024
+_LARGE_STREAM_RENDER_BYTES = 128 * 1024
+_MEDIUM_STREAM_RENDER_INTERVAL = 0.1
+_LARGE_STREAM_RENDER_INTERVAL = 0.2
 _TOOL_RESULT_TRUNCATION_SUFFIX = "\n... [tool result truncated for display]"
 _TOOL_ARG_TRUNCATION_SUFFIX = "\n... [tool arguments truncated for display]"
 
@@ -564,7 +570,7 @@ class TUIApp:
     _block_line_counts: list[int] = field(default_factory=list, init=False)  # Line count per output block
     _total_line_count: int = field(default=0, init=False)  # Sum of all block line counts
     _output_generation: int = field(default=0, init=False)  # Bumped on any content change
-    _viewport_cache_key: tuple[int, int, int] | None = field(default=None, init=False)
+    _viewport_cache_key: tuple[int, int, int, int] | None = field(default=None, init=False)
     _output_ansi_cache: ANSI | None = field(default=None, init=False)  # Cached visible ANSI
     _renderer: RichRenderer = field(default_factory=RichRenderer, init=False)
     _event_renderer: EventRenderer = field(default_factory=EventRenderer, init=False)
@@ -661,13 +667,20 @@ class TUIApp:
 
     # UI refresh throttling
     _last_invalidate_time: float = field(default=0.0, init=False)
-    _invalidate_interval: float = field(default=1 / 30, init=False)  # Smooth 30fps redraw cadence
+    _invalidate_interval: float = field(default=1 / 15, init=False)  # Terminal-friendly 15fps redraw cadence
     _pending_invalidate_handle: asyncio.TimerHandle | None = field(default=None, init=False, repr=False)
+
+    # Terminal resize coalescing
+    _last_terminal_size: tuple[int, int] | None = field(default=None, init=False)
+    _resize_active: bool = field(default=False, init=False)
+    _pending_resize_settle_handle: asyncio.TimerHandle | None = field(default=None, init=False, repr=False)
 
     # Streaming render throttle (separate from UI invalidation)
     _last_stream_render_time: float = field(default=0.0, init=False)
-    _stream_render_interval: float = field(default=1 / 30, init=False)  # Typewriter-like Markdown cadence
+    _stream_render_interval: float = field(default=1 / 15, init=False)  # Base Markdown preview cadence
     _pending_stream_render_handle: asyncio.TimerHandle | None = field(default=None, init=False, repr=False)
+    _pending_stream_render_deadline: float | None = field(default=None, init=False, repr=False)
+    _pending_stream_render_callback: Callable[[], None] | None = field(default=None, init=False, repr=False)
 
     # HITL (Human-in-the-Loop) approval state
     _hitl_pending: bool = field(default=False, init=False)
@@ -1006,14 +1019,21 @@ class TUIApp:
 
         return self
 
+    async def _run_shutdown_stage(self, name: str, operation: Callable[[], Awaitable[Any]]) -> Any:
+        """Run one shutdown stage and log its duration for slow-exit diagnosis."""
+        started_at = time.monotonic()
+        try:
+            return await operation()
+        finally:
+            logger.info("Shutdown stage %s completed in %.3fs", name, time.monotonic() - started_at)
+
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool | None:
-        """Cleanup resources."""
-        # Clear completion callback
+        """Cleanup resources once after the prompt-toolkit run loop has stopped."""
         self._show_shutdown_status("starting shutdown")
         bg_monitor = self._get_background_monitor()
         if bg_monitor:
@@ -1021,33 +1041,67 @@ class TUIApp:
         if self._pending_invalidate_handle is not None:
             self._pending_invalidate_handle.cancel()
             self._pending_invalidate_handle = None
+        if self._pending_resize_settle_handle is not None:
+            self._pending_resize_settle_handle.cancel()
+            self._pending_resize_settle_handle = None
+        self._resize_active = False
         self._cancel_pending_stream_render()
 
-        # Cancel any running agent task and tracked fire-and-forget tasks
-        await self._cancel_agent_task()
-        await self._cancel_managed_tasks()
-        if self._oauth_refresh_supervisor is not None:
-            await self._oauth_refresh_supervisor.shutdown()
-            self._oauth_refresh_supervisor = None
+        errors: list[BaseException] = []
 
-        # Give event loop a chance to process pending cleanups
-        await asyncio.sleep(0)
-
-        if self._exit_stack:
+        async def attempt_shutdown_stage(
+            name: str,
+            operation: Callable[[], Awaitable[Any]],
+            *,
+            suppress_mcp_cleanup_errors: bool = False,
+        ) -> Any:
             try:
-                self._show_shutdown_status("closing runtime resources")
-                result = await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
-                self._exit_stack = None
-                self._show_shutdown_status("shutdown complete")
-                return result
-            except (RuntimeError, GeneratorExit, BaseExceptionGroup) as e:
-                # Suppress MCP stdio client cleanup errors
-                # These occur due to async generator lifecycle issues in pydantic-ai/mcp
-                logger.debug("Suppressed cleanup error: %s", e)
-                self._exit_stack = None
+                return await self._run_shutdown_stage(name, operation)
+            except BaseException as error:
+                if suppress_mcp_cleanup_errors and isinstance(
+                    error,
+                    RuntimeError | GeneratorExit | BaseExceptionGroup,
+                ):
+                    # MCP stdio clients can raise these during async-generator
+                    # teardown after their useful resources are already closed.
+                    logger.debug("Suppressed cleanup error: %s", error)
+                else:
+                    errors.append(error)
                 return None
+
+        result: bool | None = None
+        try:
+            await attempt_shutdown_stage("agent-task", self._cancel_agent_task)
+            await attempt_shutdown_stage("managed-tasks", self._cancel_managed_tasks)
+            if self._oauth_refresh_supervisor is not None:
+                supervisor = self._oauth_refresh_supervisor
+                self._oauth_refresh_supervisor = None
+                await attempt_shutdown_stage("oauth-refresh", supervisor.shutdown)
+
+            # Give cancellation callbacks one event-loop turn before closing the
+            # runtime resources that they may still reference.
+            await asyncio.sleep(0)
+
+            if self._exit_stack:
+                stack = self._exit_stack
+                self._exit_stack = None
+                self._show_shutdown_status("closing runtime resources")
+                runtime_result = await attempt_shutdown_stage(
+                    "runtime-resources",
+                    lambda: stack.__aexit__(exc_type, exc_val, exc_tb),
+                    suppress_mcp_cleanup_errors=True,
+                )
+                if isinstance(runtime_result, bool) or runtime_result is None:
+                    result = runtime_result
+        finally:
+            perf_log_report()
+
         self._show_shutdown_status("shutdown complete")
-        return None
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("Multiple errors occurred during YAACLI shutdown", errors)
+        return result
 
     # =========================================================================
     # Output Management
@@ -1108,6 +1162,41 @@ class TUIApp:
         self._pending_invalidate_handle = None
         if self._app is not None:
             self._last_invalidate_time = time.monotonic()
+            self._app.invalidate()
+
+    def _observe_terminal_size(self, width: int, height: int) -> None:
+        """Coalesce a resize burst and guarantee one settled redraw."""
+        current = (width, height)
+        if self._last_terminal_size is None:
+            self._last_terminal_size = current
+            return
+        if current == self._last_terminal_size:
+            return
+
+        self._last_terminal_size = current
+        self._resize_active = True
+        if self._pending_stream_render_callback is not None:
+            self._request_stream_render(self._pending_stream_render_callback)
+        if self._pending_resize_settle_handle is not None:
+            self._pending_resize_settle_handle.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._resize_active = False
+            self._pending_resize_settle_handle = None
+            return
+        self._pending_resize_settle_handle = loop.call_later(
+            _RESIZE_SETTLE_SECONDS,
+            self._finish_terminal_resize,
+        )
+
+    def _finish_terminal_resize(self) -> None:
+        """Commit the final frame after terminal dimensions stop changing."""
+        self._pending_resize_settle_handle = None
+        self._resize_active = False
+        if self._pending_stream_render_callback is not None:
+            self._request_stream_render(self._pending_stream_render_callback)
+        if self._app is not None:
             self._app.invalidate()
 
     def _transcript_limits(self) -> TranscriptLimits:
@@ -1429,7 +1518,9 @@ class TUIApp:
                 return ANSI("")
 
             vh = self._get_viewport_height()
-            cache_key = (self._scroll_offset, vh, self._output_generation)
+            width = self._get_terminal_width()
+            self._observe_terminal_size(width, self._get_terminal_height())
+            cache_key = (self._scroll_offset, vh, width, self._output_generation)
             if cache_key == self._viewport_cache_key and self._output_ansi_cache is not None:
                 return self._output_ansi_cache
 
@@ -1493,21 +1584,46 @@ class TUIApp:
         if self._pending_stream_render_handle is not None:
             self._pending_stream_render_handle.cancel()
             self._pending_stream_render_handle = None
+        self._pending_stream_render_deadline = None
+        self._pending_stream_render_callback = None
+
+    def _effective_stream_render_interval(self) -> float:
+        """Reduce expensive full-Markdown preview frequency as input grows."""
+        retained_bytes = max(
+            self._streaming_text_buffer.retained_bytes if self._streaming_text_buffer is not None else 0,
+            self._streaming_thinking_buffer.retained_bytes if self._streaming_thinking_buffer is not None else 0,
+        )
+        interval = self._stream_render_interval
+        if retained_bytes >= _LARGE_STREAM_RENDER_BYTES:
+            interval = max(interval, _LARGE_STREAM_RENDER_INTERVAL)
+        elif retained_bytes >= _MEDIUM_STREAM_RENDER_BYTES:
+            interval = max(interval, _MEDIUM_STREAM_RENDER_INTERVAL)
+        if self._resize_active:
+            interval = max(interval, _RESIZE_STREAM_RENDER_INTERVAL)
+        return interval
 
     def _request_stream_render(self, render: Callable[[], None]) -> None:
-        """Render now when due, otherwise guarantee one trailing preview frame."""
+        """Render when due and move an existing frame when its cadence changes."""
         now = time.monotonic()
-        delay = self._stream_render_interval - (now - self._last_stream_render_time)
+        deadline = self._last_stream_render_time + self._effective_stream_render_interval()
+        delay = deadline - now
         if delay <= 0:
             self._cancel_pending_stream_render()
             render()
             return
         if self._pending_stream_render_handle is not None:
-            return
+            pending_deadline = self._pending_stream_render_deadline
+            if pending_deadline is not None and abs(pending_deadline - deadline) < 1e-9:
+                return
+            self._pending_stream_render_handle.cancel()
+            self._pending_stream_render_handle = None
+            self._pending_stream_render_deadline = None
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        self._pending_stream_render_deadline = deadline
+        self._pending_stream_render_callback = render
         self._pending_stream_render_handle = loop.call_later(
             delay,
             self._run_trailing_stream_render,
@@ -1517,6 +1633,8 @@ class TUIApp:
     def _run_trailing_stream_render(self, render: Callable[[], None]) -> None:
         """Commit the latest coalesced stream state on the event loop."""
         self._pending_stream_render_handle = None
+        self._pending_stream_render_deadline = None
+        self._pending_stream_render_callback = None
         render()
 
     def _render_streaming_text_preview(self) -> None:
@@ -5580,6 +5698,7 @@ class TUIApp:
             model_label=profile.label if profile is not None else None,
             model=profile.model if profile is not None else self._get_configured_model(),
             message_history_json=ModelMessagesTypeAdapter.dump_json(self._message_history or [], indent=2),
+            message_count=len(self._message_history or []),
             context_state_json=state.model_dump_json(indent=2),
             display_messages=self._display_replay.snapshot(),
             input_text=self._last_session_input,
@@ -5641,6 +5760,7 @@ class TUIApp:
                     model_label=profile.label if profile is not None else None,
                     model=profile.model if profile is not None else self._get_configured_model(),
                     message_history_json=ModelMessagesTypeAdapter.dump_json(message_history, indent=2),
+                    message_count=len(message_history),
                     context_state_json=state.model_dump_json(indent=2),
                     display_messages=display_messages,
                     input_text=input_text,
@@ -6047,9 +6167,5 @@ class TUIApp:
             self._show_shutdown_status("leaving TUI")
             # Restore original prompt_toolkit exception handler
             self._app._handle_exception = original_handle_exception  # type: ignore[assignment]
-            # Log performance report on shutdown
-            perf_log_report()
-            # Ensure agent task and tracked fire-and-forget tasks are fully cancelled
-            # and awaited before __aexit__.
-            await self._cancel_agent_task()
-            await self._cancel_managed_tasks()
+            # Foreground and managed task cleanup is owned by __aexit__. Keeping
+            # it in one lifecycle boundary avoids paying each bounded wait twice.

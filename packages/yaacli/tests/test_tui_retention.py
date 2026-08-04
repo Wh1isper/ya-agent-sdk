@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,6 +84,83 @@ def test_scroll_to_bottom_explicitly_reenables_auto_follow(monkeypatch: pytest.M
 
     assert app._follow_latest is True
     assert app._scroll_offset == app._get_max_scroll() + 4
+
+
+def test_viewport_cache_distinguishes_terminal_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = make_app()
+    app._append_block("visible output")
+    monkeypatch.setattr(app, "_get_viewport_height", lambda: 10)
+    monkeypatch.setattr(app, "_get_terminal_height", lambda: 24)
+    width = 80
+    monkeypatch.setattr(app, "_get_terminal_width", lambda: width)
+
+    app._get_output_text()
+    first_key = app._viewport_cache_key
+    width = 120
+    app._get_output_text()
+
+    assert first_key == (0, 10, 80, app._output_generation)
+    assert app._viewport_cache_key == (0, 10, 120, app._output_generation)
+
+
+@pytest.mark.asyncio
+async def test_terminal_resize_burst_schedules_one_settled_redraw(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = make_app()
+    app._app = MagicMock()
+    monkeypatch.setattr("yaacli.app.tui._RESIZE_SETTLE_SECONDS", 0.01)
+
+    app._observe_terminal_size(80, 24)
+    app._observe_terminal_size(81, 24)
+    first_handle = app._pending_resize_settle_handle
+    app._observe_terminal_size(82, 24)
+
+    assert first_handle is not None
+    assert first_handle.cancelled()
+    assert app._resize_active is True
+    await asyncio.sleep(0.02)
+
+    assert app._resize_active is False
+    assert app._pending_resize_settle_handle is None
+    app._app.invalidate.assert_called_once_with()
+
+
+def test_stream_render_interval_adapts_to_content_size_and_resize() -> None:
+    app = make_app()
+    app._stream_render_interval = 1 / 15
+    app._streaming_text_buffer = app._new_stream_accumulator()
+
+    app._streaming_text_buffer.append("x" * (32 * 1024))
+    assert app._effective_stream_render_interval() == 0.1
+
+    app._streaming_text_buffer.append("x" * (128 * 1024))
+    assert app._effective_stream_render_interval() == 0.2
+
+    app._streaming_text_buffer.clear()
+    app._resize_active = True
+    assert app._effective_stream_render_interval() == 1 / 8
+
+
+@pytest.mark.asyncio
+async def test_pending_stream_frame_moves_when_resize_begins() -> None:
+    app = make_app()
+    render = MagicMock()
+    app._observe_terminal_size(80, 24)
+    app._last_stream_render_time = time.monotonic()
+
+    app._request_stream_render(render)
+    first_handle = app._pending_stream_render_handle
+    first_deadline = app._pending_stream_render_deadline
+    app._observe_terminal_size(81, 24)
+
+    assert first_handle is not None
+    assert first_handle.cancelled()
+    assert first_deadline is not None
+    assert app._pending_stream_render_deadline is not None
+    assert app._pending_stream_render_deadline > first_deadline
+    assert render.call_count == 0
+    app._cancel_pending_stream_render()
+    assert app._pending_resize_settle_handle is not None
+    app._pending_resize_settle_handle.cancel()
 
 
 def test_streaming_markdown_is_rendered_before_finalization_and_throttled() -> None:

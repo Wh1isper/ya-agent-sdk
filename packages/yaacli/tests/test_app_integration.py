@@ -1164,6 +1164,10 @@ async def test_tui_app_real_layout_mounts_hidden_task_pane_and_completion_menu(
 
     await app.run()
 
+    app._cancel_agent_task.assert_not_awaited()
+    app._cancel_managed_tasks.assert_not_awaited()
+    assert captured["min_redraw_interval"] == app._invalidate_interval == 1 / 15
+
     layout = captured["layout"]
     assert isinstance(layout, Layout)
     root = layout.container
@@ -2253,6 +2257,47 @@ async def test_tui_app_cancel_after_run_finished_does_not_reclassify_or_resave()
     assert not any(line.startswith("[Cancelled") for line in app._output_lines)
     assert any("persistence was interrupted" in line for line in app._output_lines)
     assert app.phase == TUIPhase.IDLE
+
+
+@pytest.mark.asyncio
+async def test_tui_app_exit_owns_task_cleanup_once() -> None:
+    """The context exit, not run(), owns the single task-cleanup pass."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._show_shutdown_status = MagicMock()  # type: ignore[method-assign]
+    app._cancel_agent_task = AsyncMock()  # type: ignore[method-assign]
+    app._cancel_managed_tasks = AsyncMock()  # type: ignore[method-assign]
+
+    await app.__aexit__(None, None, None)
+
+    app._cancel_agent_task.assert_awaited_once_with()
+    app._cancel_managed_tasks.assert_awaited_once_with()
+    status_messages = [call.args[0] for call in app._show_shutdown_status.call_args_list]
+    assert status_messages == ["starting shutdown", "shutdown complete"]
+
+
+@pytest.mark.asyncio
+async def test_tui_app_exit_continues_cleanup_after_stage_failure() -> None:
+    """A failed task-cleanup stage must not strand later runtime resources."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._show_shutdown_status = MagicMock()  # type: ignore[method-assign]
+    app._cancel_agent_task = AsyncMock(side_effect=ValueError("agent cleanup failed"))  # type: ignore[method-assign]
+    app._cancel_managed_tasks = AsyncMock()  # type: ignore[method-assign]
+    supervisor = MagicMock()
+    supervisor.shutdown = AsyncMock()
+    app._oauth_refresh_supervisor = supervisor
+    stack = MagicMock()
+    stack.__aexit__ = AsyncMock(return_value=None)
+    app._exit_stack = stack
+
+    with pytest.raises(ValueError, match="agent cleanup failed"):
+        await app.__aexit__(None, None, None)
+
+    app._cancel_managed_tasks.assert_awaited_once_with()
+    supervisor.shutdown.assert_awaited_once_with()
+    stack.__aexit__.assert_awaited_once_with(None, None, None)
+    assert app._exit_stack is None
+    assert app._oauth_refresh_supervisor is None
+    assert app._show_shutdown_status.call_args_list[-1].args == ("shutdown complete",)
 
 
 @pytest.mark.asyncio

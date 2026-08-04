@@ -138,6 +138,10 @@ HITL `asyncio.Event` objects and current approval-panel cursors are process-loca
 
 The interactive TUI records terminal display events for completed, cancelled, and failed runs. For failed runs it appends `RUN_ERROR` before writing the error-recovery snapshot, so durable replay contains the terminal event. A response that already emitted `RUN_FINISHED` is not reclassified as cancelled if post-response persistence is interrupted. Persistence errors are shown to the user without duplicating or replacing the terminal event.
 
+The prompt-toolkit run loop only restores terminal state. `TUIApp.__aexit__()` owns the single foreground-task, managed-task, OAuth, and runtime cleanup pass, so cancellation deadlines are not paid once in `run()` and again during context exit. Each shutdown stage records its elapsed time when verbose logging is enabled.
+
+Interactive and headless save callers pass the in-memory model-message count into `save_session_turn()`. The persistence layer retains a compatibility fallback for callers that do not provide it, but normal saves do not reread and fully validate the newly written `message_history.json` merely to populate turn metadata.
+
 ## Headless NDJSON Contract
 
 Headless mode writes protocol events as one JSON object per stdout line and flushes each line. Non-protocol diagnostics are redirected to stderr.

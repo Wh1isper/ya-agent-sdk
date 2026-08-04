@@ -11,7 +11,7 @@ import pytest
 from ya_agent_sdk.context import ResumableState
 from yaacli.config import ConfigManager
 from yaacli.session import TUIContext
-from yaacli.sessions import restore_resumable_state_safely
+from yaacli.sessions import restore_resumable_state_safely, save_session_turn
 
 
 def _write_v2_session(session_dir: Path, *, updated_at: str) -> None:
@@ -86,6 +86,28 @@ def test_session_id_is_12_char_hex() -> None:
 
     assert len(app.session_id) == 12
     assert re.match(r"^[0-9a-f]{12}$", app.session_id)
+
+
+def test_save_session_turn_uses_precomputed_message_count(tmp_path: Path) -> None:
+    """Saving should not reread and revalidate history when the caller knows its count."""
+    config_manager = MagicMock()
+    config_manager.get_sessions_dir.return_value = tmp_path / "sessions"
+
+    with patch("yaacli.sessions._read_message_count", side_effect=AssertionError("history was reparsed")):
+        turn_dir = save_session_turn(
+            config_manager=config_manager,
+            session_id="counted-session",
+            working_dir=tmp_path,
+            message_history_json=b"not parsed by the save path",
+            message_count=37,
+            context_state_json="{}",
+            display_messages=[],
+            output_text=None,
+            save_reason="test",
+        )
+
+    metadata = json.loads((turn_dir / "metadata.json").read_text())
+    assert metadata["message_count"] == 37
 
 
 def test_session_id_unique_per_instance() -> None:

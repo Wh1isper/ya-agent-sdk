@@ -184,6 +184,10 @@ The UI uses one explicit foreground boundary covering agent, shell, save, comman
 
 ## Theme and Rendering
 
+The TUI coalesces application invalidation and streaming Markdown previews at a terminal-friendly base cadence of 15 frames per second. Streaming preview rendering is adaptive because each preview parses and highlights the complete retained response: retained text at or above 32 KiB renders no faster than every 100 ms, and text at or above 128 KiB renders no faster than every 200 ms. Finalization at a text, reasoning, or tool boundary still commits the complete latest content immediately.
+
+Terminal size changes enter a short resize period. Repeated changes replace one 150 ms settle timer, streaming previews are limited to eight frames per second during the burst, and the settled size receives one final invalidation. The virtual viewport cache includes terminal width as well as scroll offset, viewport height, and output generation, so a width-only resize cannot reuse a cache entry for different geometry. Historical blocks remain bounded pre-rendered ANSI and are not reflowed from source Markdown during resize.
+
 `display.code_theme` accepts `auto`, `dark`, or `light`.
 
 For `auto`, YAACLI resolves terminal background in this order:

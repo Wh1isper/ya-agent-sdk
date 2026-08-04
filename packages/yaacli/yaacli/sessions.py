@@ -210,6 +210,7 @@ def save_session_turn(
     display_messages: list[dict[str, Any]],
     output_text: str | None,
     save_reason: str,
+    message_count: int | None = None,
     input_text: str | None = None,
     model_profile_id: str | None = None,
     model_label: str | None = None,
@@ -260,7 +261,11 @@ def save_session_turn(
                     "model": model,
                     "input_text": input_preview,
                     "output_text": output_preview,
-                    "message_count": _read_message_count(turn_dir / "message_history.json"),
+                    "message_count": (
+                        message_count
+                        if isinstance(message_count, int) and not isinstance(message_count, bool) and message_count >= 0
+                        else _read_message_count(turn_dir / "message_history.json")
+                    ),
                     "display_event_count": len(display_messages),
                 }
                 _write_text_atomic(turn_dir / "metadata.json", json.dumps(turn_metadata, ensure_ascii=False, indent=2))
