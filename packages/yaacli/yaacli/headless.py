@@ -184,6 +184,7 @@ def _save_session_artifacts(
         model_label=model_label,
         model=model,
         message_history_json=ModelMessagesTypeAdapter.dump_json(message_history, indent=2),
+        message_count=len(message_history),
         context_state_json=state.model_dump_json(indent=2),
         display_messages=display_messages,
         input_text=input_text,
