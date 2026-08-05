@@ -3,6 +3,7 @@
 import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from ya_agent_sdk.agents.models.gateway import (
+    _build_gateway_http_client,
     _is_deepseek_model,
     _is_mimo_model,
     _supports_required_tool_choice,
@@ -134,6 +135,33 @@ def test_infer_gateway_responses_websocket_aliases_use_websocket_model(monkeypat
         assert model.provider.name == "openai"
         assert model.model_name == "gpt-5"
         assert model.websocket_fallback_state.mode == "auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_name", "expects_session_header"),
+    [
+        ("openai-responses", True),
+        ("openai-responses-rs", True),
+        ("openai-responses-ws", True),
+        ("openai-chat", False),
+        ("anthropic", False),
+    ],
+)
+async def test_gateway_http_client_applies_headers_only_to_supported_providers(
+    provider_name: str,
+    expects_session_header: bool,
+) -> None:
+    client = _build_gateway_http_client(
+        provider_name,
+        "test-key",
+        extra_headers={"x-session-id": "session-1"},
+    )
+    try:
+        request = client.build_request("POST", "https://example.com/v1/responses")
+        assert (request.headers.get("x-session-id") == "session-1") is expects_session_header
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio

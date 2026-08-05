@@ -101,6 +101,23 @@ Pro-effort presets send one authoritative, complete `reasoning` object through `
 
 Use `gpt5_350k` for subscription-backed Codex access with a 350K context window. Use the other GPT-5 `model_cfg` presets when they match the provider's documented context window. The OpenAI preview announcement describes `ultra` as a product mode that leverages subagents, but does not publish a stable Responses API payload field; configure it with inline `model_settings` only after your provider documents the exact field.
 
+### Session-bound prompt caching
+
+`create_agent()` aligns OpenAI prompt-cache routing with its provider session header only when the active `ModelConfig` explicitly declares `ModelCapability.openai_prompt_cache_key`. When the selected transport also receives SDK context headers, the SDK copies `model_settings` and sets `openai_prompt_cache_key` to exactly the value of `x-session-id`. The context session is authoritative: conflicting request-level `extra_headers["x-session-id"]` and `extra_body["prompt_cache_key"]` overrides are normalized or removed on the copied settings. Existing caller-provided cache keys are replaced so the two routing values cannot diverge; neither the top-level settings nor nested mappings supplied by the caller are mutated.
+
+The `gpt5_270k`, `gpt5_350k`, and `gpt5_1m` model-config presets declare this capability. Other presets do not. Custom model configurations can opt in only after confirming provider support:
+
+```python
+from ya_agent_sdk.context import ModelCapability, ModelConfig
+
+model_cfg = ModelConfig(
+    context_window=350_000,
+    capabilities={ModelCapability.openai_prompt_cache_key},
+)
+```
+
+Declaring the capability alone does not invent a provider session header. The SDK currently supplies `x-session-id` for `oauth@codex:`, direct `openai-responses-rs:` / `openai-responses-ws:`, and gateway-backed `openai-responses:`, `openai-responses-rs:`, and `openai-responses-ws:` transports. Gateway HTTP requests and WebSocket HTTP fallback use the same context headers as the WebSocket handshake. Other gateway upstream providers, including `openai-chat`, are not opted into automatic context headers.
+
 ## Google Vertex AI Configuration
 
 Google Cloud Vertex AI requires additional configuration via environment variables. pydantic-ai automatically reads these variables when using the `google-cloud:` prefix.

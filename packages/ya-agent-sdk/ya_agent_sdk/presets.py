@@ -1524,7 +1524,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision},
+        "capabilities": {ModelCapability.vision, ModelCapability.openai_prompt_cache_key},
     },
     ModelConfigPreset.GPT5_350K.value: {
         "context_window": 350_000,
@@ -1534,7 +1534,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision},
+        "capabilities": {ModelCapability.vision, ModelCapability.openai_prompt_cache_key},
     },
     ModelConfigPreset.GPT5_1M.value: {
         "context_window": 922_000,
@@ -1544,7 +1544,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision},
+        "capabilities": {ModelCapability.vision, ModelCapability.openai_prompt_cache_key},
     },
     # DeepSeek V4 models (text-only, high output limits)
     ModelConfigPreset.DEEPSEEK_V4_400K.value: {
