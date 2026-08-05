@@ -53,7 +53,6 @@ The official YA Claw service and workspace Docker images set these allocator def
 | ------------------------ | -------- | --------------------------------------------------------------- |
 | `MALLOC_ARENA_MAX`       | `2`      | Limits glibc malloc arena growth across threads                 |
 | `MALLOC_TRIM_THRESHOLD_` | `131072` | Encourages glibc heap trimming after freed blocks reach 128 KiB |
-| `PYTHONMALLOC`           | `malloc` | Routes Python allocations through libc malloc                   |
 
 Use the same values for systemd or custom container deployments when memory residency matters.
 
@@ -233,7 +232,6 @@ YA_CLAW_BRIDGE_LARK_EVENT_TYPES=im.chat.member.bot.added_v1,im.chat.member.user.
 YA_CLAW_AGENCY_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD=extra_high
 MALLOC_ARENA_MAX=2
 MALLOC_TRIM_THRESHOLD_=131072
-PYTHONMALLOC=malloc
 LARK_APP_ID=cli_xxx
 LARK_APP_SECRET=replace-with-workspace-lark-secret
 MY_TOOL_API_KEY=replace-with-tool-key

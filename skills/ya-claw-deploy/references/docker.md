@@ -61,7 +61,6 @@ YA_CLAW_AUTO_MIGRATE=true
 YA_CLAW_WEB_DIST_DIR=/srv/ya-claw/web-dist
 MALLOC_ARENA_MAX=2
 MALLOC_TRIM_THRESHOLD_=131072
-PYTHONMALLOC=malloc
 ```
 
 The workspace image also sets the same allocator defaults, so Python tools and CLIs in reusable workspace containers inherit the tuning.
@@ -90,7 +89,6 @@ YA_CLAW_PROFILE_SEED_FILE=/etc/ya-claw/profiles.yaml
 YA_CLAW_AUTO_SEED_PROFILES=true
 MALLOC_ARENA_MAX=2
 MALLOC_TRIM_THRESHOLD_=131072
-PYTHONMALLOC=malloc
 GATEWAY_API_KEY=replace-with-provider-key
 GATEWAY_BASE_URL=https://gateway.example.com
 ```
