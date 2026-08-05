@@ -1065,17 +1065,20 @@ def test_model_cfg_capabilities() -> None:
     assert ModelCapability.document_understanding in cfg_claude["capabilities"]
     assert ModelCapability.video_understanding not in cfg_claude["capabilities"]
 
-    # GPT-5: vision only
+    # GPT-5: vision and OpenAI prompt cache keys, no video
     cfg_gpt = get_model_cfg("gpt5_270k")
     assert ModelCapability.vision in cfg_gpt["capabilities"]
+    assert ModelCapability.openai_prompt_cache_key in cfg_gpt["capabilities"]
     assert ModelCapability.video_understanding not in cfg_gpt["capabilities"]
 
     cfg_gpt_350k = get_model_cfg("gpt5_350k")
     assert ModelCapability.vision in cfg_gpt_350k["capabilities"]
+    assert ModelCapability.openai_prompt_cache_key in cfg_gpt_350k["capabilities"]
     assert ModelCapability.video_understanding not in cfg_gpt_350k["capabilities"]
 
     cfg_gpt_1m = get_model_cfg("gpt5_1m")
     assert ModelCapability.vision in cfg_gpt_1m["capabilities"]
+    assert ModelCapability.openai_prompt_cache_key in cfg_gpt_1m["capabilities"]
     assert ModelCapability.video_understanding not in cfg_gpt_1m["capabilities"]
 
     # DeepSeek V4: reasoning round-trip required

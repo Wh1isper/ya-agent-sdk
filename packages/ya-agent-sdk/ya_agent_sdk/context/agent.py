@@ -275,6 +275,9 @@ class ModelCapability(StrEnum):
     reasoning_foreign_incompatible = "reasoning_foreign_incompatible"
     """Provider rejects thinking parts tagged with a different provider."""
 
+    openai_prompt_cache_key = "openai_prompt_cache_key"
+    """Model accepts OpenAI's prompt cache key request setting."""
+
 
 # =============================================================================
 # Tool Settings

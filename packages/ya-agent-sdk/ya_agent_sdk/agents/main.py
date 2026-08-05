@@ -11,7 +11,7 @@ import contextvars
 import inspect
 import sys
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +19,15 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
-from pydantic_ai import Agent, AgentRetries, DeferredToolRequests, DeferredToolResults, UsageLimits, UserError
+from pydantic_ai import (
+    Agent,
+    AgentRetries,
+    DeferredToolRequests,
+    DeferredToolResults,
+    ModelSettings,
+    UsageLimits,
+    UserError,
+)
 from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.messages import (
@@ -64,6 +72,7 @@ from ya_agent_sdk.context import (
     AgentContext,
     AgentInfo,
     AgentStreamEvent,
+    ModelCapability,
     ModelConfig,
     ModelWrapper,
     ResumableState,
@@ -98,7 +107,6 @@ from ya_agent_sdk.utils import AgentDepsT, EnvT, add_toolset_instructions
 from .capabilities import is_process_history_for
 
 if TYPE_CHECKING:
-    from pydantic_ai import ModelSettings
     from pydantic_ai.toolsets import AbstractToolset
 
     from ya_agent_sdk.subagents import SubagentConfig
@@ -396,10 +404,57 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
 # =============================================================================
 
 
+_CONTEXT_HEADER_MODEL_PREFIXES = ("oauth@codex:", "openai-responses-rs:", "openai-responses-ws:")
+_GATEWAY_CONTEXT_HEADER_UPSTREAM_PREFIXES = (
+    "openai-responses:",
+    "openai-responses-rs:",
+    "openai-responses-ws:",
+)
+
+
 def _model_uses_context_headers(model: Model | KnownModelName | str | None) -> bool:
     if not isinstance(model, str):
         return False
-    return model.startswith(("oauth@codex:", "openai-responses-rs:", "openai-responses-ws:"))
+    if model.startswith(_CONTEXT_HEADER_MODEL_PREFIXES):
+        return True
+    gateway_name, separator, upstream_model = model.partition("@")
+    return bool(gateway_name and separator and upstream_model.startswith(_GATEWAY_CONTEXT_HEADER_UPSTREAM_PREFIXES))
+
+
+def _patch_prompt_cache_key(
+    model_cfg: ModelConfig,
+    model_settings: ModelSettings | None,
+    model_extra_headers: dict[str, str] | None,
+) -> ModelSettings | None:
+    """Bind capable model requests to the same session used by their headers."""
+    if not model_cfg.has_capability(ModelCapability.openai_prompt_cache_key) or model_extra_headers is None:
+        return model_settings
+    session_id = model_extra_headers.get("x-session-id")
+    if session_id is None:
+        return model_settings
+
+    patched_settings: dict[str, Any] = dict(model_settings or {})
+    configured_extra_headers = patched_settings.get("extra_headers")
+    patched_extra_headers = (
+        {
+            name: value
+            for name, value in configured_extra_headers.items()
+            if not isinstance(name, str) or name.lower() != "x-session-id"
+        }
+        if isinstance(configured_extra_headers, Mapping)
+        else {}
+    )
+    patched_extra_headers["x-session-id"] = session_id
+    patched_settings["extra_headers"] = patched_extra_headers
+
+    configured_extra_body = patched_settings.get("extra_body")
+    if isinstance(configured_extra_body, Mapping):
+        patched_settings["extra_body"] = {
+            name: value for name, value in configured_extra_body.items() if name != "prompt_cache_key"
+        }
+
+    patched_settings["openai_prompt_cache_key"] = session_id
+    return cast(ModelSettings, patched_settings)
 
 
 def _load_system_prompt(
@@ -627,6 +682,9 @@ def create_agent(
     ).with_state(state)
     logger.debug("Context created: %s (run_id=%s)", type(ctx).__name__, ctx.run_id)
 
+    model_extra_headers = ctx.get_model_extra_headers() if _model_uses_context_headers(model) else None
+    effective_model_settings = _patch_prompt_cache_key(effective_model_cfg, model_settings, model_extra_headers)
+
     # --- Capabilities ---
     # Combine user capabilities, context history capabilities, and built-in ProcessHistory capabilities.
     # Runtime instructions run after compact so restored histories receive fresh runtime context.
@@ -740,7 +798,6 @@ def create_agent(
     effective_system_prompt = _load_system_prompt(system_prompt, system_prompt_template_vars)
 
     # --- Create Model with Wrapper ---
-    model_extra_headers = ctx.get_model_extra_headers() if _model_uses_context_headers(model) else None
     base_model = infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else model
     effective_model: Model | None = base_model
     if base_model is not None and ctx.model_wrapper is not None:
@@ -769,7 +826,7 @@ def create_agent(
             SubagentAgent(
                 model=self_fork_base_model,
                 system_prompt=effective_system_prompt,
-                model_settings=model_settings,
+                model_settings=effective_model_settings,
                 deps_type=AgentContext,
                 output_type=str,
                 tools=agent_tools or (),
@@ -792,7 +849,7 @@ def create_agent(
         Agent(
             model=effective_model,
             system_prompt=effective_system_prompt,
-            model_settings=model_settings,
+            model_settings=effective_model_settings,
             deps_type=context_type,
             output_type=output_type,
             tools=agent_tools or (),

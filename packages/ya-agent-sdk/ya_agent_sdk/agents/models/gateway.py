@@ -152,12 +152,15 @@ def _build_gateway_http_client(
     *,
     extra_headers: dict[str, str] | None,
 ) -> httpx.AsyncClient:
-    # Google Cloud and Bedrock gateway providers need extra headers through the shared http_client.
+    # These gateway providers need extra headers through the shared HTTP client.
+    # Responses WebSocket aliases also use this client for HTTP fallback.
     needs_extra_headers_patch = provider_name in (
         "google-cloud",
         "google",
         "bedrock",
         "converse",
+        "openai-responses",
+        *_OPENAI_RESPONSES_WEBSOCKET_PROVIDER_ALIASES,
     )
 
     http_client = create_async_http_client(
