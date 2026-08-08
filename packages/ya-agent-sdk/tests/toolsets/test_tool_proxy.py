@@ -9,6 +9,7 @@ import pytest
 from pydantic import Field
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
@@ -104,6 +105,30 @@ class FailingTool(BaseTool):
 
     async def call(self, ctx: RunContext[AgentContext]) -> object:
         raise ValueError("Something went wrong")
+
+
+class ControllableToolset(Toolset):
+    def __init__(self, *, toolset_id: str) -> None:
+        super().__init__(tools=[GetWeatherTool], toolset_id=toolset_id)
+        self.fail_enter = False
+        self.fail_get_tools = False
+        self.enter_count = 0
+        self.exit_count = 0
+
+    async def __aenter__(self):
+        self.enter_count += 1
+        if self.fail_enter:
+            raise ConnectionError("initialization failed")
+        return await super().__aenter__()
+
+    async def __aexit__(self, *args):
+        self.exit_count += 1
+        return await super().__aexit__(*args)
+
+    async def get_tools(self, ctx):
+        if self.fail_get_tools:
+            raise ConnectionError("listing failed")
+        return await super().get_tools(ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +762,61 @@ async def test_init_report_populated_after_enter(weather_toolset):
         report = ts.init_report
         assert "weather" in report
         assert report["weather"].value == "connected"
+
+
+@pytest.mark.anyio
+async def test_nested_entries_preserve_optional_startup_failure_event(mock_run_context):
+    optional = ControllableToolset(toolset_id="offline")
+    optional.fail_enter = True
+    proxy = ToolProxyToolset(toolsets=[optional], optional_namespaces={"offline"})
+    mock_run_context.deps._stream_queue_enabled = True
+
+    async with proxy:
+        async with proxy:
+            await proxy.get_tools(mock_run_context)
+
+    queue = mock_run_context.deps.agent_stream_queues[mock_run_context.deps._agent_id]
+    event = queue.get_nowait()
+    assert isinstance(event, ToolSearchInitEvent)
+    assert event.namespace_status == {"offline": NamespaceStatus.skipped}
+    assert optional.enter_count == 2
+    assert optional.exit_count == 0
+
+
+@pytest.mark.anyio
+async def test_nested_entries_exit_each_successful_toolset_entry() -> None:
+    optional = ControllableToolset(toolset_id="available")
+    proxy = ToolProxyToolset(toolsets=[optional], optional_namespaces={"available"})
+
+    async with proxy:
+        async with proxy:
+            pass
+
+    assert optional.enter_count == 2
+    assert optional.exit_count == 2
+
+
+@pytest.mark.anyio
+async def test_optional_namespace_reports_recovery_after_runtime_error(mock_run_context):
+    optional = ControllableToolset(toolset_id="recoverable")
+    proxy = ToolProxyToolset(toolsets=[optional], optional_namespaces={"recoverable"})
+    mock_run_context.deps._stream_queue_enabled = True
+
+    async with proxy:
+        await proxy.get_tools(mock_run_context)
+        optional.fail_get_tools = True
+        await proxy.get_tools(mock_run_context)
+        optional.fail_get_tools = False
+        await proxy.get_tools(mock_run_context)
+
+    queue = mock_run_context.deps.agent_stream_queues[mock_run_context.deps._agent_id]
+    statuses = []
+    while not queue.empty():
+        event = queue.get_nowait()
+        assert isinstance(event, ToolSearchInitEvent)
+        statuses.append(event.namespace_status["recoverable"])
+
+    assert statuses == [NamespaceStatus.connected, NamespaceStatus.error, NamespaceStatus.connected]
 
 
 # ---------------------------------------------------------------------------

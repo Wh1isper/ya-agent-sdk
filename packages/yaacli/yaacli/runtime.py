@@ -37,6 +37,7 @@ from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoff
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.codeact import CodeActConfig
 from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig, ToolConfig
+from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
 from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.subagents import SubagentConfig, load_subagents_from_dir
@@ -80,8 +81,9 @@ class _OptionalMCPToolset(WrapperToolset[Any]):
     """Keep an optional direct MCP server from blocking the runtime."""
 
     server_name: str
-    _entered: bool = field(default=False, init=False)
+    _entry_success: list[bool] = field(default_factory=list, init=False)
     _available: bool = field(default=True, init=False)
+    _status: NamespaceStatus = field(default=NamespaceStatus.connected, init=False)
 
     @property
     def id(self) -> str:
@@ -89,39 +91,56 @@ class _OptionalMCPToolset(WrapperToolset[Any]):
 
     async def __aenter__(self) -> _OptionalMCPToolset:
         self._available = True
-        self._entered = False
+        self._status = NamespaceStatus.connected
         try:
             await self.wrapped.__aenter__()
         except Exception:
             self._available = False
+            self._status = NamespaceStatus.skipped
+            self._entry_success.append(False)
             logger.warning(
                 "Optional MCP server %r failed to initialize, skipping",
                 self.server_name,
                 exc_info=True,
             )
         else:
-            self._entered = True
+            self._entry_success.append(True)
         return self
 
     async def __aexit__(self, *args: Any) -> bool | None:
-        if not self._entered:
+        if not self._entry_success:
+            logger.warning("Optional MCP server %r exited without a matching entry", self.server_name)
             return None
-        self._entered = False
+        if not self._entry_success.pop():
+            return None
         return await self.wrapped.__aexit__(*args)
 
     async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
         if not self._available:
+            await self._emit_status(ctx)
             return {}
         try:
-            return await self.wrapped.get_tools(ctx)
+            tools = await self.wrapped.get_tools(ctx)
         except Exception:
             self._available = False
+            self._status = NamespaceStatus.error
             logger.warning(
                 "Optional MCP server %r failed while listing tools, skipping",
                 self.server_name,
                 exc_info=True,
             )
+            await self._emit_status(ctx)
             return {}
+        await self._emit_status(ctx)
+        return tools
+
+    async def _emit_status(self, ctx: RunContext[Any]) -> None:
+        await ctx.deps.emit_event(
+            ToolSearchInitEvent(
+                event_id=f"optional-mcp-{self.server_name}-{ctx.deps.run_id[:8]}",
+                namespace_status={self.server_name: self._status},
+            )
+        )
 
     async def get_instructions(
         self,
@@ -133,6 +152,7 @@ class _OptionalMCPToolset(WrapperToolset[Any]):
             return await self.wrapped.get_instructions(ctx)
         except Exception:
             self._available = False
+            self._status = NamespaceStatus.error
             logger.warning(
                 "Optional MCP server %r failed while loading instructions, skipping",
                 self.server_name,

@@ -159,6 +159,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
         # Init report: namespace_id -> status (populated during __aenter__)
         self._init_report: dict[str, NamespaceStatus] = {}
+        self._entry_toolsets: list[list[AbstractToolset[AgentContext]]] = []
 
         # Built on each get_tools() call
         self._search_entries: dict[str, ToolMetadata] = {}
@@ -271,7 +272,8 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         self._toolset_tools_cache.clear()
         self._namespace_tools.clear()
 
-        for ts in self._toolsets:
+        active_toolsets = self._entry_toolsets[-1] if self._entry_toolsets else self._toolsets
+        for ts in active_toolsets:
             namespace_id = ts.id
             try:
                 ts_tools = await ts.get_tools(ctx)
@@ -285,6 +287,9 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                     self._init_report[namespace_id] = NamespaceStatus.error
                     continue
                 raise
+
+            if namespace_id and namespace_id in self._optional_namespaces:
+                self._init_report[namespace_id] = NamespaceStatus.connected
 
             for name, tool in ts_tools.items():
                 if name in (self._search_tool_name, self._call_tool_name):
@@ -344,7 +349,8 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         loaded_namespaces = self._loaded_namespaces(ctx)
         loaded_tools = self._loaded_tools(ctx)
 
-        for ts in self._toolsets:
+        active_toolsets = self._entry_toolsets[-1] if self._entry_toolsets else self._toolsets
+        for ts in active_toolsets:
             ns_id = ts.id
             # Only include instructions for loaded toolsets
             if ns_id:
@@ -377,8 +383,8 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
     async def __aenter__(self):
         entered: list[AbstractToolset[AgentContext]] = []
-        failed: list[AbstractToolset[AgentContext]] = []
-        self._init_report.clear()
+        if not self._entry_toolsets:
+            self._init_report.clear()
         try:
             for ts in self._toolsets:
                 try:
@@ -395,7 +401,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                             exc_info=True,
                         )
                         self._init_report[ts_id] = NamespaceStatus.skipped
-                        failed.append(ts)
                     else:
                         raise
         except BaseException:
@@ -406,19 +411,17 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                     logger.warning(f"Error during rollback of {ts!r}", exc_info=True)
             raise
 
-        if failed:
-            self._toolsets = [ts for ts in self._toolsets if ts not in failed]
-            logger.warning(
-                "Skipped %d optional toolset(s), continuing with %d",
-                len(failed),
-                len(self._toolsets),
-            )
-
+        self._entry_toolsets.append(entered)
         return self
 
     async def __aexit__(self, *args):
+        if not self._entry_toolsets:
+            logger.warning("ToolProxyToolset.__aexit__ called without a matching entry")
+            return None
+
+        entered = self._entry_toolsets.pop()
         first_exc: BaseException | None = None
-        for ts in reversed(self._toolsets):
+        for ts in reversed(entered):
             try:
                 await ts.__aexit__(*args)
             except Exception as exc:

@@ -46,7 +46,7 @@ from ya_agent_environment.shell import BackgroundProcess
 from ya_agent_sdk.agents.main import AgentInterrupted
 from ya_agent_sdk.context import AvailableSkill, BusMessage, ResumableState, StreamEvent, TaskManager, TaskStatus
 from ya_agent_sdk.context.agent import AgentInfo
-from ya_agent_sdk.events import TaskEvent
+from ya_agent_sdk.events import NamespaceStatus, TaskEvent, ToolSearchInitEvent
 from ya_agent_sdk.usage import CostEstimate, UsageAgentTotal, UsageSnapshot
 
 # Import the components we're testing
@@ -1261,6 +1261,37 @@ def test_tui_app_task_event_updates_pane_without_appending_panel() -> None:
     )
 
     assert app._output_lines == []
+
+
+def test_tui_app_reports_unavailable_optional_mcp_once_per_status() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    stream_event = StreamEvent(
+        agent_id="main",
+        agent_name="main",
+        event=ToolSearchInitEvent(
+            event_id="mcp-init",
+            namespace_status={"offline": NamespaceStatus.skipped},
+        ),
+    )
+
+    app._handle_stream_event(stream_event)
+    app._handle_stream_event(stream_event)
+    app._handle_stream_event(
+        StreamEvent(
+            agent_id="main",
+            agent_name="main",
+            event=ToolSearchInitEvent(
+                event_id="mcp-recovered",
+                namespace_status={"offline": NamespaceStatus.connected},
+            ),
+        )
+    )
+    app._handle_stream_event(stream_event)
+
+    assert len(app._output_lines) == 2
+    assert all(
+        "Optional MCP server 'offline' failed to connect; continuing without it." in line for line in app._output_lines
+    )
 
 
 # =============================================================================

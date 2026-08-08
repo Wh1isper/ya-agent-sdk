@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import yaacli.runtime as runtime_module
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart
@@ -13,6 +13,8 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset, PrefixedToolset
 from pydantic_ai.usage import RequestUsage
 from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
+from ya_agent_sdk.agents.main import stream_agent
+from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
 from ya_agent_sdk.filters.handoff import process_handoff_message
 from ya_agent_sdk.mcp import NamedMCPToolset
 from ya_agent_sdk.toolsets.core.base import Toolset
@@ -26,7 +28,7 @@ from yaacli.config import (
     ToolsConfig,
     YaacliConfig,
 )
-from yaacli.runtime import GoalContextHandoffExtension, create_tui_runtime
+from yaacli.runtime import GoalContextHandoffExtension, _OptionalMCPToolset, create_tui_runtime
 from yaacli.toolsets.background import (
     AsyncDelegateTool,
     MonitoredShellTool,
@@ -461,6 +463,42 @@ def test_create_tui_runtime_can_proxy_mcp_servers(tmp_path: Path) -> None:
     assert not any(isinstance(toolset, PrefixedToolset) for toolset in runtime.agent.toolsets)
 
 
+async def test_optional_proxy_mcp_streams_startup_failure_status(tmp_path: Path, monkeypatch) -> None:
+    class OfflineToolset(FunctionToolset):
+        async def __aenter__(self):
+            raise ConnectionError("offline")
+
+    offline = OfflineToolset([], id="offline")
+    monkeypatch.setattr(runtime_module, "build_mcp_servers", lambda *_args, **_kwargs: [offline])
+    runtime = create_tui_runtime(
+        config=YaacliConfig(
+            general=GeneralConfig(model="openai-chat:gpt-4"),
+            tools=ToolsConfig(mcp_mode="proxy"),
+        ),
+        mcp_config=MCPConfig(servers={"offline": MCPServerConfig(command="unused", required=False)}),
+        working_dir=tmp_path,
+        config_dir=tmp_path / "config",
+        enable_async_subagents=False,
+    )
+
+    def respond(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    async def stream_respond(_messages: list[ModelMessage], _info: AgentInfo):
+        yield "ok"
+
+    status_events: list[ToolSearchInitEvent] = []
+    async with runtime:
+        with runtime.agent.override(model=FunctionModel(respond, stream_function=stream_respond)):
+            async with stream_agent(runtime, "test") as streamer:
+                async for stream_event in streamer:
+                    if isinstance(stream_event.event, ToolSearchInitEvent):
+                        status_events.append(stream_event.event)
+
+    assert status_events
+    assert status_events[0].namespace_status == {"offline": NamespaceStatus.skipped}
+
+
 async def test_create_tui_runtime_namespaces_duplicate_direct_mcp_tools(tmp_path: Path, monkeypatch) -> None:
     """Direct MCP servers may expose the same native tool name without conflicts."""
 
@@ -538,6 +576,50 @@ async def test_create_tui_runtime_honors_custom_and_empty_mcp_prefixes(tmp_path:
     assert "custom_collide" not in visible_tool_names
     assert "unprefixed_collide" not in visible_tool_names
     assert "_collide" not in visible_tool_names
+
+
+async def test_optional_direct_mcp_emits_skipped_status_after_failed_startup() -> None:
+    class FailingToolset(FunctionToolset):
+        async def __aenter__(self):
+            raise ConnectionError("offline")
+
+    optional = _OptionalMCPToolset(FailingToolset([]), server_name="offline")
+    ctx = MagicMock()
+    ctx.deps.run_id = "run-12345678"
+    ctx.deps.emit_event = AsyncMock()
+
+    async with optional:
+        assert await optional.get_tools(ctx) == {}
+
+    emitted = ctx.deps.emit_event.await_args.args[0]
+    assert isinstance(emitted, ToolSearchInitEvent)
+    assert emitted.namespace_status == {"offline": NamespaceStatus.skipped}
+
+
+async def test_optional_direct_mcp_balances_nested_successful_entries() -> None:
+    class CountingToolset(FunctionToolset):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.enter_count = 0
+            self.exit_count = 0
+
+        async def __aenter__(self):
+            self.enter_count += 1
+            return await super().__aenter__()
+
+        async def __aexit__(self, *args):
+            self.exit_count += 1
+            return await super().__aexit__(*args)
+
+    wrapped = CountingToolset()
+    optional = _OptionalMCPToolset(wrapped, server_name="available")
+
+    async with optional:
+        async with optional:
+            pass
+
+    assert wrapped.enter_count == 2
+    assert wrapped.exit_count == 2
 
 
 async def test_create_tui_runtime_skips_unavailable_optional_direct_mcp(tmp_path: Path) -> None:
