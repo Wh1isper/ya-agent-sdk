@@ -110,11 +110,13 @@ from ya_agent_sdk.events import (
     HandoffStartEvent,
     MessageReceivedEvent,
     ModelRequestStartEvent,
+    NamespaceStatus,
     NoteEvent,
     SubagentCompleteEvent,
     SubagentStartEvent,
     TaskEvent,
     ToolCallsStartEvent,
+    ToolSearchInitEvent,
     UsageSnapshotEvent,
 )
 from ya_agent_sdk.presets import resolve_model_settings
@@ -603,6 +605,7 @@ class TUIApp:
     # Tool tracking
     _tool_messages: dict[str, ToolMessage] = field(default_factory=dict, init=False)
     _printed_tool_calls: set[str] = field(default_factory=set, init=False)
+    _namespace_status: dict[str, NamespaceStatus] = field(default_factory=dict, init=False)
 
     # Subagent state tracking: agent_id -> {"line_index": int, "tool_names": list[str]}
     _subagent_states: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
@@ -3728,6 +3731,15 @@ class TUIApp:
         if isinstance(message_event, UsageSnapshotEvent):
             if message_event.snapshot is not None:
                 self._session_usage.set_run_snapshot(message_event.snapshot)
+            return
+
+        if isinstance(message_event, ToolSearchInitEvent):
+            for namespace, status in message_event.namespace_status.items():
+                previous_status = self._namespace_status.get(namespace)
+                self._namespace_status[namespace] = status
+                if status in {NamespaceStatus.skipped, NamespaceStatus.error} and status != previous_status:
+                    rendered = self._event_renderer.render_mcp_unavailable(namespace, status)
+                    self._append_output(rendered.rstrip())
             return
 
         if not render_display and isinstance(

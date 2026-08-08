@@ -13,6 +13,7 @@ from ya_agent_sdk.events import (
     FileChange,
     FileChangeAction,
     FileChangeEvent,
+    NamespaceStatus,
     NoteEvent,
 )
 
@@ -163,6 +164,14 @@ class EventRenderer:
     # =========================================================================
     # Event Panel Rendering
     # =========================================================================
+
+    def render_mcp_unavailable(self, server_name: str, status: NamespaceStatus) -> str:
+        """Render an optional MCP availability warning."""
+        reason = "failed to connect" if status == NamespaceStatus.skipped else "became unavailable"
+        text = Text()
+        text.append("! ", style="yellow")
+        text.append(f"Optional MCP server {server_name!r} {reason}; continuing without it.", style="yellow")
+        return self._renderer.render(text)
 
     def render_compact_start(self, message_count: int) -> str:
         """Render compact start notification (single line)."""
