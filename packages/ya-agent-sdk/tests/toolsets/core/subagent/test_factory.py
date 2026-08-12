@@ -9,6 +9,7 @@ import pytest
 from pydantic_ai import Agent, FunctionToolCallEvent, FunctionToolResultEvent, RunContext
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage
+from pydantic_graph import End
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
@@ -20,6 +21,34 @@ from ya_agent_sdk.toolsets.core.subagent.factory import _get_self_fork_history, 
 from ya_agent_sdk.usage import CostEstimate
 
 # Tests for create_subagent_tool with create_subagent_call_func
+
+
+def _configure_mock_run(mock_run: MagicMock, nodes: list[object] | None = None) -> None:
+    """Configure a mock for the hook-aware AgentRun driver contract."""
+    configured_nodes = list(nodes or [])
+    mock_run.next_node = configured_nodes[0] if configured_nodes else End(None)
+    if not isinstance(mock_run.usage, RunUsage):
+        mock_run.usage = RunUsage()
+    mock_run.new_messages.return_value = []
+
+    async def advance_graph(node: object):
+        index = next(index for index, candidate in enumerate(configured_nodes) if candidate is node)
+        if index + 1 < len(configured_nodes):
+            return configured_nodes[index + 1]
+        return End(None)
+
+    async def wrap_and_advance(_run_ctx, node: object, step_fn):
+        return await step_fn(node)
+
+    capability = MagicMock()
+
+    async def before_node_run(_run_ctx, *, node: object):
+        return node
+
+    capability.before_node_run = before_node_run
+    mock_run.ctx.deps.root_capability = capability
+    mock_run._advance_graph = advance_graph
+    mock_run._wrap_and_advance = wrap_and_advance
 
 
 def test_creates_tool_class_with_agent():
@@ -230,11 +259,7 @@ async def test_create_subagent_call_func_basic():
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1, input_tokens=10, output_tokens=20))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -279,11 +304,7 @@ async def test_concurrent_subagent_calls_do_not_share_wrapped_agent_model():
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     wrapper_inputs = []
     iter_models = []
@@ -335,11 +356,7 @@ async def test_concurrent_subagent_calls_reserve_distinct_agent_ids(monkeypatch)
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
     first_iter_started = asyncio.Event()
     release_first_iter = asyncio.Event()
     seen_agent_ids = []
@@ -389,11 +406,7 @@ async def test_create_subagent_call_func_registers_agent():
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -431,11 +444,7 @@ async def test_create_subagent_call_func_stores_history():
     mock_run.result.all_messages = MagicMock(return_value=mock_messages)
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -531,7 +540,7 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     mock_run.result.output = "result with streaming"
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=2, input_tokens=20, output_tokens=30))
-    mock_run.usage = MagicMock(return_value=RunUsage(requests=2, input_tokens=20, output_tokens=30))
+    mock_run.usage = RunUsage(requests=2, input_tokens=20, output_tokens=30)
     mock_run.ctx = MagicMock()
 
     # Create mock nodes
@@ -552,13 +561,7 @@ async def test_create_subagent_call_func_with_streaming_nodes():
     mock_model_node.stream = mock_stream
     mock_tools_node.stream = mock_stream
 
-    # Create async iterator that yields nodes
-    async def node_iter():
-        yield mock_model_node
-        yield mock_tools_node
-        yield mock_end_node
-
-    mock_run.__aiter__ = lambda _: node_iter()
+    _configure_mock_run(mock_run, [mock_model_node, mock_tools_node])
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -621,7 +624,7 @@ async def test_create_subagent_call_func_wraps_stream_tool_call_ids(monkeypatch)
     mock_run.result.output = "result with wrapped tool IDs"
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
-    mock_run.usage = MagicMock(return_value=RunUsage(requests=1))
+    mock_run.usage = RunUsage(requests=1)
     mock_run.ctx = MagicMock()
 
     mock_model_node = MagicMock()
@@ -642,11 +645,7 @@ async def test_create_subagent_call_func_wraps_stream_tool_call_ids(monkeypatch)
 
     mock_model_node.stream = mock_stream
 
-    async def node_iter():
-        yield mock_model_node
-        yield mock_end_node
-
-    mock_run.__aiter__ = lambda _: node_iter()
+    _configure_mock_run(mock_run, [mock_model_node])
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -718,11 +717,7 @@ async def test_create_subagent_call_func_agent_id_with_name():
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -758,11 +753,7 @@ async def test_create_subagent_call_func_agent_id_without_name():
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -794,11 +785,7 @@ async def test_create_subagent_call_func_resume_with_agent_id():
     mock_run.result.all_messages = MagicMock(return_value=[{"role": "user", "content": "prev"}])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):
@@ -853,11 +840,7 @@ async def test_usage_recorded_without_tool_call_id():
     mock_run.result.all_messages = MagicMock(return_value=[])
     mock_run.result.usage = MagicMock(return_value=RunUsage(requests=1))
 
-    async def empty_async_iter():
-        return
-        yield
-
-    mock_run.__aiter__ = lambda _: empty_async_iter()
+    _configure_mock_run(mock_run)
 
     @asynccontextmanager
     async def mock_iter(prompt, deps, message_history=None, usage_limits=None, model=None):

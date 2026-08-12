@@ -98,12 +98,13 @@ The state fields:
 
 ### Constructor Parameters
 
-| Parameter                | Type                        | Default                   | Description                                      |
-| ------------------------ | --------------------------- | ------------------------- | ------------------------------------------------ |
-| `toolsets`               | `Sequence[AbstractToolset]` | required                  | Wrapped toolsets. Those with `id` are namespaces |
-| `namespace_descriptions` | `dict[str, str] \| None`    | `None`                    | Human-readable descriptions for namespaces       |
-| `search_strategy`        | `SearchStrategy \| None`    | `KeywordSearchStrategy()` | Search algorithm                                 |
-| `max_results`            | `int`                       | `5`                       | Max results returned per search                  |
+| Parameter                | Type                        | Default                   | Description                                                           |
+| ------------------------ | --------------------------- | ------------------------- | --------------------------------------------------------------------- |
+| `toolsets`               | `Sequence[AbstractToolset]` | required                  | Wrapped toolsets. Those with `id` are namespaces                      |
+| `namespace_descriptions` | `dict[str, str] \| None`    | `None`                    | Human-readable descriptions for namespaces                            |
+| `search_strategy`        | `SearchStrategy \| None`    | `KeywordSearchStrategy()` | Search algorithm                                                      |
+| `max_results`            | `int`                       | `5`                       | Max results returned per search                                       |
+| `max_retries`            | `int \| None`               | `None`                    | Local retry override; otherwise `RetryConfig.tool_search` (default 5) |
 
 ### Namespace Description Resolution
 

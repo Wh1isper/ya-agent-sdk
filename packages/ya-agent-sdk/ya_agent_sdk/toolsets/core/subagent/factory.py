@@ -29,6 +29,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 
 from ya_agent_sdk._logger import get_logger
+from ya_agent_sdk.agents.driver import drive_streamed_run
 from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
 from ya_agent_sdk.agents.retry_recovery import (
     DEFAULT_STREAM_RESUME_PROMPT,
@@ -348,15 +349,16 @@ async def _run_subagent_attempt(
         model=model,
     ) as run:
         tracker.run = run
-        async for node in run:
+
+        async def process_node(node: Any, current_run: Any) -> None:
             if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
-                continue
+                return
             if not (Agent.is_model_request_node(node) or Agent.is_call_tools_node(node)):
-                continue
-            await _stream_subagent_node(node, run, sub_ctx, tracker)
+                return
+            await _stream_subagent_node(node, current_run, sub_ctx, tracker)
             if Agent.is_model_request_node(node):
                 await _record_subagent_model_request(
-                    run,
+                    current_run,
                     parent_ctx,
                     sub_ctx,
                     tracker,
@@ -364,6 +366,8 @@ async def _run_subagent_attempt(
                     agent_name=agent_name,
                     usage_id=usage_id,
                 )
+
+        await drive_streamed_run(run, process_node)
     return cast(AgentRunResult[Any], run.result)
 
 

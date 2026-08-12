@@ -7,13 +7,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, RetryPromptPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
-from ya_agent_sdk.context import AgentContext, ModelConfig, StreamRecoveryPolicy
+from ya_agent_sdk.agents.guards import MessageBusGuardCapability
+from ya_agent_sdk.context import AgentContext, BusMessage, ModelConfig, StreamRecoveryPolicy
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.events import SubagentCompleteEvent
+from ya_agent_sdk.filters.bus_message import inject_bus_messages
 from ya_agent_sdk.subagents import SubagentConfig, create_subagent_tool_from_config
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
@@ -407,6 +410,51 @@ async def async_agent_context(tmp_path):
     ) as env:
         async with AgentContext(env=env) as ctx:
             yield ctx
+
+
+async def test_subagent_pending_bus_message_redirects_without_model_retry(
+    async_agent_context: AgentContext,
+) -> None:
+    calls: list[list[ModelMessage]] = []
+
+    async def stream_function(messages: list[ModelMessage], _agent_info: FunctionAgentInfo):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            agent_id = next(iter(async_agent_context.agent_registry))
+            async_agent_context.send_message(
+                BusMessage(content="Revise the subagent answer", source="main", target=agent_id)
+            )
+            yield "first subagent answer"
+            return
+        yield "revised subagent answer"
+
+    agent: Agent[AgentContext, str] = Agent(
+        model=FunctionModel(stream_function=stream_function),
+        name="steered_agent",
+        retries={"tools": 1, "output": 0},
+        capabilities=[MessageBusGuardCapability(), ProcessHistory(inject_bus_messages)],
+    )
+    call_func = create_subagent_call_func(agent)
+    mock_ctx = MagicMock(spec=RunContext)
+    mock_ctx.deps = async_agent_context
+    mock_ctx.tool_call_id = "test-tool-call"
+
+    response = await call_func(MagicMock(spec=BaseTool), mock_ctx, "test prompt")
+
+    assert len(calls) == 2
+    assert "revised subagent answer" in response
+    assert any(
+        isinstance(part, UserPromptPart) and "Revise the subagent answer" in str(part.content)
+        for message in calls[1]
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+    )
+    assert not any(
+        isinstance(part, RetryPromptPart)
+        for message in async_agent_context.subagent_history[next(iter(async_agent_context.subagent_history))]
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+    )
 
 
 async def test_subagent_retries_transient_provider_stream_failure(

@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import RunContext, UserError
+from pydantic_ai import ModelRetry, RunContext, UserError
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.tools import ToolApproved, ToolDenied
 from ya_agent_sdk.context import AgentContext
@@ -128,6 +128,16 @@ class DelegationTool(BaseTool):
         return "Delegated"
 
 
+class RetryTool(BaseTool):
+    """A tool that asks the model to correct its call."""
+
+    name = "retry_tool"
+    description = "A retrying tool"
+
+    async def call(self, ctx: RunContext[AgentContext]) -> str:
+        raise ModelRetry("correct the arguments")
+
+
 class MainAgentOnlyTool(BaseTool):
     """A host-facing tool that subagents must never receive."""
 
@@ -203,10 +213,71 @@ async def test_base_toolset_get_instructions_returns_none() -> None:
 
 # --- Toolset tests ---
 def test_toolset_initialization(agent_context: AgentContext) -> None:
-    """Should initialize with tools."""
+    """Should initialize with tools and a bounded retry default."""
     toolset = Toolset(tools=[DummyTool])
     assert len(toolset._tool_classes) == 1
     assert "dummy_tool" in toolset._tool_classes
+    assert toolset.max_retries == 5
+
+
+async def test_toolset_retry_config_and_local_override(agent_context: AgentContext) -> None:
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = agent_context
+    agent_context.retry_config.toolset = 7
+
+    inherited = Toolset(tools=[DummyTool])
+    inherited_tools = await inherited.get_tools(run_ctx)
+    assert inherited_tools["dummy_tool"].max_retries == 7
+
+    overridden = Toolset(tools=[DummyTool], max_retries=2)
+    overridden_tools = await overridden.get_tools(run_ctx)
+    assert overridden_tools["dummy_tool"].max_retries == 2
+
+    overridden.max_retries = None
+    inherited_again = await overridden.get_tools(run_ctx)
+    assert inherited_again["dummy_tool"].max_retries == 7
+
+
+async def test_toolset_propagates_model_retry(agent_context: AgentContext) -> None:
+    """BaseTool ModelRetry must reach Pydantic AI's retry accounting."""
+    toolset = Toolset(tools=[RetryTool])
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = agent_context
+    run_ctx.tool_call_approved = False
+    tools = await toolset.get_tools(run_ctx)
+
+    with pytest.raises(ModelRetry, match="correct the arguments"):
+        await toolset.call_tool("retry_tool", {}, run_ctx, tools["retry_tool"])
+
+
+async def test_observation_hook_failure_does_not_replace_model_retry(agent_context: AgentContext) -> None:
+    """Observation-only post-hooks cannot replace Pydantic AI control flow."""
+    observed: list[str] = []
+
+    async def failing_tool_post(_ctx: RunContext[AgentContext], result: object, _metadata: CallMetadata) -> object:
+        observed.append(type(result).__name__)
+        raise RuntimeError("tool hook failed")
+
+    async def failing_global_post(
+        _ctx: RunContext[AgentContext], _name: str, result: object, _metadata: CallMetadata
+    ) -> object:
+        observed.append(type(result).__name__)
+        raise RuntimeError("global hook failed")
+
+    toolset = Toolset(
+        tools=[RetryTool],
+        post_hooks={RetryTool.name: failing_tool_post},
+        global_hooks=GlobalHooks(post=failing_global_post),
+    )
+    run_ctx = MagicMock(spec=RunContext)
+    run_ctx.deps = agent_context
+    run_ctx.tool_call_approved = False
+    tools = await toolset.get_tools(run_ctx)
+
+    with pytest.raises(ModelRetry, match="correct the arguments"):
+        await toolset.call_tool("retry_tool", {}, run_ctx, tools["retry_tool"])
+
+    assert observed == ["ModelRetry", "ModelRetry"]
 
 
 async def test_toolset_skip_unavailable_tools(agent_context: AgentContext) -> None:

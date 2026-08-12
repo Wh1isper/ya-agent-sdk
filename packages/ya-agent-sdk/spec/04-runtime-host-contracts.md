@@ -4,6 +4,31 @@ This document records current cross-cutting SDK contracts that host applications
 preserve. Feature-specific behavior remains documented in the package README and the
 other SDK specifications.
 
+## Model Correction Retry Budgets
+
+SDK-created agents expose five category limits through `RetryConfig` plus one separate
+run-wide boundary:
+
+- Pydantic AI tool retries are tracked per tool name and reset after that tool succeeds.
+- Output retries are cumulative within one Pydantic AI run.
+- SDK `Toolset`, Tool Search, and Tool Proxy wrappers each resolve their category from
+  the runtime context unless the wrapper has an explicit local `max_retries` override.
+- The SDK `overall_retries` ceiling is cumulative across all retry-prompt-producing
+  tool, output, and capability paths and never resets within a run.
+
+All five `RetryConfig` categories default to 5; `overall_retries` independently defaults
+to 3 and can therefore terminate a run before any category reaches 5.
+`overall_retries=None` disables only the run-wide ceiling. Existing `retries`,
+`output_retries`, and `toolset_max_retries` arguments remain explicit compatibility
+overrides. The resolved Pydantic AI tool/output limits propagate to regular subagents
+and self forks, while child contexts inherit the runtime `RetryConfig` used by SDK
+wrappers.
+
+A `BaseTool` `ModelRetry` must propagate to Pydantic AI so these budgets can account for
+it; SDK tool wrappers and post-hooks must not convert it to an ordinary value. Transport
+request retry and stream recovery are separate failure domains and do not consume model
+correction retries.
+
 ## Stream Recovery Budgets
 
 `stream_agent` separates transient model transport recovery from non-transport
@@ -18,6 +43,24 @@ execution recovery.
 - Delegated subagents and self forks inherit the root run's effective recovery policy,
   recover their own message history independently, and accumulate usage across
   attempts.
+
+## Steering Continuation Boundary
+
+Hosts send actual steering content through `AgentContext.send_message()` and the SDK
+message bus. The message-bus completion capability checks the final node boundary and
+uses Pydantic AI `RunContext.enqueue(priority="asap")` only to keep an ending run alive. The next model
+request still consumes and injects the authoritative bus messages, preserving target
+routing, cursor idempotency, `MessageReceivedEvent`, multimodal rendering, and compact
+state. User-source bus messages are appended to `AgentContext.steering_messages`; there
+is no `AgentContext.inputs` field and steering is intentionally not merged into the
+canonical `user_prompts`. Cache-friendly compact, legacy compact, handoff, and
+`ResumableState` all preserve this dedicated text representation. Successful context
+reset clears the accumulated list only after it has been replayed. Steering
+continuation is not a `ModelRetry` and consumes no correction budget.
+
+Because Pydantic AI drains end-of-run enqueued messages from node lifecycle hooks, SDK
+main-agent, subagent, and self-fork stream drivers must use hook-aware graph advancement;
+bare `async for node in AgentRun` is not compatible with this contract.
 
 ## Skill Routing and Runtime Catalog
 

@@ -121,6 +121,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         max_results: int = 5,
         optional_namespaces: set[str] | None = None,
         prefix: str | None = None,
+        max_retries: int | None = None,
     ) -> None:
         """Initialize ToolProxyToolset.
 
@@ -142,12 +143,17 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 tools are exposed as ``{prefix}_search_tool`` and
                 ``{prefix}_call_tool``. When omitted, the legacy names
                 ``search_tools`` and ``call_tool`` are used.
+            max_retries: Explicit per-tool retry budget for the two proxy tools.
+                When omitted, uses ``ctx.deps.retry_config.tool_proxy`` (default 5).
         """
         self._toolsets = list(toolsets)
         self._namespace_descriptions = namespace_descriptions or {}
         self._strategy: SearchStrategy = search_strategy or KeywordSearchStrategy()
         self._max_results = max_results
         self._optional_namespaces = optional_namespaces or set()
+        if max_retries is not None and max_retries < 0:
+            raise ValueError("max_retries must be non-negative or None")
+        self._max_retries = max_retries
         self._prefix = _normalize_prefix(prefix)
         self._search_tool_name = (
             f"{self._prefix}_{_PREFIXED_SEARCH_TOOL_SUFFIX}" if self._prefix else _SEARCH_TOOLS_NAME
@@ -244,7 +250,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
             visible[self._search_tool_name] = ToolsetTool(
                 toolset=self,
                 tool_def=search_tool_def,
-                max_retries=3,
+                max_retries=self._resolve_max_retries(ctx),
                 args_validator=self._search_pydantic_tool.function_schema.validator,
             )
 
@@ -253,7 +259,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
             visible[self._call_tool_name] = ToolsetTool(
                 toolset=self,
                 tool_def=call_tool_def,
-                max_retries=3,
+                max_retries=self._resolve_max_retries(ctx),
                 args_validator=self._call_pydantic_tool.function_schema.validator,
             )
 
@@ -436,6 +442,12 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
     # Tool creation
     # -------------------------------------------------------------------------
 
+    def _resolve_max_retries(self, ctx: RunContext[AgentContext]) -> int:
+        """Resolve a local override or the SDK-wide retry policy."""
+        if self._max_retries is not None:
+            return self._max_retries
+        return ctx.deps.retry_config.tool_proxy
+
     def _create_search_tool(self) -> Tool[AgentContext]:
         """Create the pydantic-ai Tool for tool discovery."""
         toolset_ref = self
@@ -455,7 +467,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 "Use this when you need a capability that is not currently known."
             ),
             takes_ctx=True,
-            max_retries=3,
         )
 
     def _create_call_tool(self) -> Tool[AgentContext]:
@@ -481,7 +492,6 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
                 "the tool's parameter schema."
             ),
             takes_ctx=True,
-            max_retries=3,
         )
 
     # -------------------------------------------------------------------------

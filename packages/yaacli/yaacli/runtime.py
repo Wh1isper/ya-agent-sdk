@@ -485,14 +485,10 @@ def create_tui_runtime(
     # Load system prompt
     effective_system_prompt = system_prompt or _load_system_prompt(config)
 
-    # Output type - SDK's message_bus_guard automatically handles pending messages
+    # Output type - SDK's message-bus completion capability handles pending messages
     output_type: OutputSpec[str | DeferredToolRequests] = [str, DeferredToolRequests]
     # Create runtime using SDK factory
     # Use unified_subagents=True to create single 'delegate' tool for all subagents
-    # Output retry budget must be large enough to support goal iterations + normal retries
-    max_goal = config.general.max_goal_iterations
-    output_retries = max_goal + 5
-
     # Pass profile instructions and config [shell_env] to the runtime context.
     extra_ctx_kwargs: dict[str, Any] = {"model_profile_instructions": active_model_instructions}
     if config.shell_env:
@@ -521,7 +517,6 @@ def create_tui_runtime(
         unified_subagents=True,
         unified_subagent_tool_name="delegate" if enable_delegate_subagents else DELEGATE_BACKEND_TOOL_NAME,
         hide_unified_subagent_tool=not enable_delegate_subagents,
-        retries={"output": output_retries},
         extra_context_kwargs=extra_ctx_kwargs,
         lifecycle_extensions=[GoalContextHandoffExtension()],
     )
@@ -536,10 +531,9 @@ def create_tui_runtime(
     attach_goal_guard(runtime.agent)
 
     logger.info(
-        "Created TUI runtime: model=%s, toolsets=%d, output_retries=%d, codeact=%s, async_subagents=%s, delegate_subagents=%s",
+        "Created TUI runtime: model=%s, toolsets=%d, codeact=%s, async_subagents=%s, delegate_subagents=%s",
         active_model,
         len(toolsets),
-        output_retries,
         config.tools.enable_codeact,
         enable_async_subagents,
         enable_delegate_subagents,

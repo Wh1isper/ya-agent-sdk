@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, AgentRetries, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk.context import AgentContext, ModelConfig
@@ -37,6 +37,7 @@ def create_subagent_tool_from_config(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -49,6 +50,7 @@ def create_subagent_tool_from_config(
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings. Used if config.model_settings is 'inherit' or None.
         model_cfg: Fallback ModelConfig. Used if config.model_cfg is None.
+        retries: Pydantic AI tool and output retry limits for the subagent.
         inherit_hooks: Whether to inherit hooks from parent toolset.
         pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
         capabilities: Parent user capabilities to inherit (if config doesn't override).
@@ -62,6 +64,7 @@ def create_subagent_tool_from_config(
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
+        retries=retries,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
@@ -75,6 +78,7 @@ def _create_subagent_tool(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -87,6 +91,7 @@ def _create_subagent_tool(
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
+        retries=retries,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
@@ -124,6 +129,7 @@ def create_subagent_tool_from_markdown(
     model: str | Model | None = None,
     model_settings: dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -177,6 +183,7 @@ def create_subagent_tool_from_markdown(
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
+        retries=retries,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
@@ -190,6 +197,7 @@ def load_subagent_tools_from_dir(
     model: str | Model | None = None,
     model_settings: dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -229,6 +237,7 @@ def load_subagent_tools_from_dir(
             model=model,
             model_settings=model_settings,
             model_cfg=model_cfg,
+            retries=retries,
             inherit_hooks=inherit_hooks,
             pre_capabilities=pre_capabilities,
             capabilities=capabilities,

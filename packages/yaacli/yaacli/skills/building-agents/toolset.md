@@ -153,13 +153,13 @@ Post-hooks receive the result, which **may be an Exception instance** if tool ex
 
 ### Control Flow Exceptions
 
-Pydantic AI uses `ApprovalRequired` and `CallDeferred` as control flow exceptions (e.g., HITL approval, deferred tool execution). These are handled specially:
+Pydantic AI uses `ModelRetry`, `ApprovalRequired`, and `CallDeferred` as control flow exceptions. These are handled specially:
 
 - **Post-hooks are called for observation only** -- their return values are discarded
-- The original exception is **always re-raised** to preserve pydantic-ai control flow
+- The original exception is **always re-raised** to preserve pydantic-ai control flow and retry accounting
 - This ensures tracing/cleanup hooks (e.g., closing spans) still run
 
-This means post-hooks that receive an `ApprovalRequired` or `CallDeferred` instance should treat it as a notification, not an opportunity to transform the result.
+This means post-hooks that receive a `ModelRetry`, `ApprovalRequired`, or `CallDeferred` instance should treat it as a notification, not an opportunity to transform the result. If an observation-only post-hook raises an ordinary exception, the SDK logs that hook failure and still propagates the original control-flow exception; cancellation and other `BaseException` signals are not suppressed.
 
 > Examples: `ya_agent_sdk/toolsets/core/base.py` docstrings
 
@@ -173,20 +173,44 @@ class TimeoutToolset(Toolset):
         return await asyncio.wait_for(tool.call_func(args, ctx), timeout=30.0)
 ```
 
-**Important**: `ApprovalRequired` and `CallDeferred` must NOT be caught in `_call_tool_func` overrides. The base implementation already re-raises them. If you override this method, ensure these exceptions propagate:
+**Important**: `ModelRetry`, `ApprovalRequired`, and `CallDeferred` must NOT be converted to ordinary values in `_call_tool_func` overrides. The base implementation already re-raises them. If you override this method, ensure these exceptions propagate:
 
 ```python
 class CustomToolset(Toolset):
     async def _call_tool_func(self, args, ctx, tool) -> Any:
         try:
             return await tool.call_func(args, ctx)
-        except (ApprovalRequired, CallDeferred):
+        except (ModelRetry, ApprovalRequired, CallDeferred):
             raise  # Must propagate
         except Exception as e:
             return e
 ```
 
 > Full examples: `ya_agent_sdk/toolsets/core/base.py`
+
+## Retry Budgets
+
+Configure all SDK model-correction categories from `create_agent()`:
+
+```python
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.context import RetryConfig
+
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    retry_config=RetryConfig(
+        tools=5,
+        output=5,
+        toolset=5,
+        tool_search=5,
+        tool_proxy=5,
+    ),
+)
+```
+
+All five categories default to 5. Pydantic AI tool retries are tracked per tool name and reset after that tool succeeds; output retries are cumulative within one run. SDK Toolset, Tool Search, and Tool Proxy wrappers resolve their category from `AgentContext.retry_config` at run time. A wrapper-local `max_retries` value wins, and existing `retries`, `output_retries`, and `toolset_max_retries` arguments remain higher-priority compatibility overrides. Regular subagents and self forks inherit the resolved Pydantic AI tool/output policy, while child contexts inherit the SDK wrapper configuration.
+
+The SDK additionally defaults `overall_retries=3`. This separate run-wide correction ceiling counts requests containing tool, output, or capability retry prompts and never resets after successful calls, so it may terminate the run before a category reaches 5. Set it to `None` only when another explicit boundary owns that risk. Transport request retries and stream recovery do not consume this budget.
 
 ## Human-in-the-Loop (HITL) Approval
 

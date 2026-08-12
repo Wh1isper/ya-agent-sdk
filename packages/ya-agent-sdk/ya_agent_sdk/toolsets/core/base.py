@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
-from pydantic_ai import ApprovalRequired, CallDeferred, RunContext, Tool, UserError
+from pydantic_ai import AgentRetries, ApprovalRequired, CallDeferred, ModelRetry, RunContext, Tool, UserError
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import InstructionPart, ModelMessage
 from pydantic_ai.tools import (
@@ -137,7 +137,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None,
         post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None,
         global_hooks: GlobalHooks | None = None,
-        max_retries: int = 3,
+        max_retries: int | None = None,
         timeout: float | None = None,
         toolset_id: str | None = None,
         skip_unavailable: bool = True,
@@ -150,13 +150,16 @@ class Toolset(BaseToolset[AgentDepsT]):
             pre_hooks: Dict mapping tool names to pre-hook functions.
             post_hooks: Dict mapping tool names to post-hook functions.
             global_hooks: Global hooks applied to all tools.
-            max_retries: Maximum retries for tool execution.
+            max_retries: Explicit maximum retries for tool execution. When omitted,
+                uses ``ctx.deps.retry_config.toolset`` (default 5).
             timeout: Default timeout for tool execution.
             toolset_id: Optional unique ID for the toolset.
             skip_unavailable: If True, skip tools where is_available() returns False in get_tools().
             description: Optional human-readable description for the toolset.
         """
-        self.max_retries = max_retries
+        if max_retries is not None and max_retries < 0:
+            raise ValueError("max_retries must be non-negative or None")
+        self._max_retries = max_retries
         self.timeout = timeout
         self._id = toolset_id
         self._skip_unavailable = skip_unavailable
@@ -181,6 +184,24 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         self._pydantic_tools: dict[str, Tool[AgentDepsT]] = {}
         logger.debug(f"Toolset initialized with tools: {list(self._tool_classes.keys())}")
+
+    @property
+    def max_retries(self) -> int:
+        """Return the explicit retry limit or the SDK default for inspection."""
+        return self._max_retries if self._max_retries is not None else 5
+
+    @max_retries.setter
+    def max_retries(self, value: int | None) -> None:
+        """Set or clear the local retry override."""
+        if value is not None and value < 0:
+            raise ValueError("max_retries must be non-negative or None")
+        self._max_retries = value
+
+    def _resolve_max_retries(self, ctx: RunContext[AgentDepsT]) -> int:
+        """Resolve a local override or the SDK-wide retry policy."""
+        if self._max_retries is not None:
+            return self._max_retries
+        return ctx.deps.retry_config.toolset
 
     @property
     def id(self) -> str | None:
@@ -274,7 +295,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             pre_hooks=pre_hooks,
             post_hooks=post_hooks,
             global_hooks=global_hooks,
-            max_retries=self.max_retries,
+            max_retries=self._max_retries,
             timeout=self.timeout,
             toolset_id=self._id,
             skip_unavailable=self._skip_unavailable,
@@ -314,7 +335,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             pre_hooks=pre_hooks,
             post_hooks=post_hooks,
             global_hooks=global_hooks,
-            max_retries=self.max_retries,
+            max_retries=self._max_retries,
             timeout=self.timeout,
             toolset_id=self._id,
             skip_unavailable=self._skip_unavailable,
@@ -387,7 +408,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             pre_hooks=pre_hooks,
             post_hooks=post_hooks,
             global_hooks=global_hooks,
-            max_retries=self.max_retries,
+            max_retries=self._max_retries,
             timeout=self.timeout,
         )
 
@@ -398,6 +419,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         model: str | Model | None = None,
         model_settings: ModelSettings | dict[str, Any] | str | None = None,
         model_cfg: ModelConfig | None = None,
+        retries: int | AgentRetries = 5,
         unified: bool = False,
         unified_tool_name: str = "delegate",
         hidden: bool = False,
@@ -411,6 +433,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             model=model,
             model_settings=model_settings,
             model_cfg=model_cfg,
+            retries=retries,
             unified=unified,
             unified_tool_name=unified_tool_name,
             hidden=hidden,
@@ -426,6 +449,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         model: str | Model | None = None,
         model_settings: ModelSettings | dict[str, Any] | str | None = None,
         model_cfg: ModelConfig | None = None,
+        retries: int | AgentRetries = 5,
         unified: bool = False,
         unified_tool_name: str = "delegate",
         hidden: bool = False,
@@ -445,6 +469,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             model: Fallback model for subagents with 'inherit' or None model.
             model_settings: Fallback model settings for subagents with 'inherit' or None.
             model_cfg: Fallback ModelConfig for subagents.
+            retries: Pydantic AI tool and output retry limits for subagents.
             unified: If True, create a single unified tool that can call any subagent
                 by name parameter. If False (default), create separate tools for each
                 subagent.
@@ -500,6 +525,7 @@ class Toolset(BaseToolset[AgentDepsT]):
                 model=model,
                 model_settings=model_settings,
                 model_cfg=model_cfg,
+                retries=retries,
                 inherit_hooks=inherit_hooks,
                 pre_capabilities=pre_capabilities,
                 capabilities=capabilities,
@@ -515,6 +541,7 @@ class Toolset(BaseToolset[AgentDepsT]):
                     model=model,
                     model_settings=model_settings,
                     model_cfg=model_cfg,
+                    retries=retries,
                     inherit_hooks=inherit_hooks,
                     pre_capabilities=pre_capabilities,
                     capabilities=capabilities,
@@ -530,7 +557,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             pre_hooks=self.pre_hooks,
             post_hooks=self.post_hooks,
             global_hooks=self.global_hooks,
-            max_retries=self.max_retries,
+            max_retries=self._max_retries,
             timeout=self.timeout,
             toolset_id=self._id,
             skip_unavailable=self._skip_unavailable,
@@ -548,7 +575,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             function=_call,
             name=name,
             description=tool_instance.description,
-            max_retries=self.max_retries,
+            max_retries=self._max_retries,
             takes_ctx=True,
         )
 
@@ -610,7 +637,7 @@ class Toolset(BaseToolset[AgentDepsT]):
             tools[name] = HookableToolsetTool(
                 toolset=self,
                 tool_def=tool_def,
-                max_retries=self.max_retries,
+                max_retries=self._resolve_max_retries(ctx),
                 args_validator=pydantic_tool.function_schema.validator,
                 call_func=pydantic_tool.function_schema.call,
                 is_async=pydantic_tool.function_schema.is_async,
@@ -633,8 +660,8 @@ class Toolset(BaseToolset[AgentDepsT]):
         Subclasses can override this method to customize tool execution,
         e.g., adding timeout handling, retry logic, or custom error handling.
 
-        Note: ApprovalRequired and CallDeferred are pydantic-ai control flow
-        exceptions that must propagate. They are NOT caught here.
+        Note: ApprovalRequired, CallDeferred, and ModelRetry are pydantic-ai
+        control flow exceptions that must propagate. They are NOT caught here.
 
         Args:
             args: The validated tool arguments.
@@ -646,7 +673,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         """
         try:
             return await tool.call_func(args, ctx)
-        except (ApprovalRequired, CallDeferred):
+        except (ApprovalRequired, CallDeferred, ModelRetry):
             raise
         except Exception as e:
             return e
@@ -675,7 +702,7 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         If the final result is still an Exception after all hooks, it will be raised.
 
-        Control flow exceptions (ApprovalRequired, CallDeferred) are handled specially:
+        Control flow exceptions (ApprovalRequired, CallDeferred, ModelRetry) are handled specially:
         post-hooks are called for observation only (return values discarded), and the
         original exception is always re-raised.
         """
@@ -709,20 +736,27 @@ class Toolset(BaseToolset[AgentDepsT]):
         logger.debug(f"call_tool: {name!r} executing tool function")
         try:
             result = await self._call_tool_func(args, ctx, tool)
-        except (ApprovalRequired, CallDeferred) as exc:
+        except (ApprovalRequired, CallDeferred, ModelRetry) as exc:
             # Pydantic AI control flow exceptions must propagate directly.
             # ApprovalRequired: conditional approval from within tool (e.g. protected files)
             # CallDeferred: external tool execution (result provided outside agent run)
+            # ModelRetry: model-correctable tool failure counted by Pydantic AI
             #
             # Post-hooks are called for observation only (e.g., close tracing spans,
             # record metrics). Their return values are ignored -- the original
             # exception is always re-raised to preserve control flow.
             if tool.post_hook:
                 logger.debug(f"call_tool: {name!r} executing tool post-hook (control flow exception)")
-                await tool.post_hook(ctx, exc, metadata)
+                try:
+                    await tool.post_hook(ctx, exc, metadata)
+                except Exception:
+                    logger.exception(f"call_tool: {name!r} tool post-hook failed while observing control flow")
             if self.global_hooks.post:
                 logger.debug(f"call_tool: {name!r} executing global post-hook (control flow exception)")
-                await self.global_hooks.post(ctx, name, exc, metadata)
+                try:
+                    await self.global_hooks.post(ctx, name, exc, metadata)
+                except Exception:
+                    logger.exception(f"call_tool: {name!r} global post-hook failed while observing control flow")
             raise
         except Exception as e:
             # Let the post-hook handle the exception

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai.usage import RunUsage
-from ya_agent_sdk.context import AgentContext, ModelConfig, ShellReviewConfig, TaskStatus
+from ya_agent_sdk.context import AgentContext, ModelConfig, RetryConfig, ShellReviewConfig, TaskStatus
 from ya_agent_sdk.environment.local import LocalEnvironment
 
 
@@ -34,6 +34,20 @@ async def test_agent_context_no_parent_by_default(env: LocalEnvironment) -> None
     """Should have no parent by default."""
     ctx = AgentContext(env=env)
     assert ctx.parent_run_id is None
+
+
+async def test_retry_config_defaults_and_validation() -> None:
+    config = RetryConfig()
+
+    assert config.model_dump() == {
+        "tools": 5,
+        "output": 5,
+        "toolset": 5,
+        "tool_search": 5,
+        "tool_proxy": 5,
+    }
+    with pytest.raises(ValueError):
+        RetryConfig(tools=-1)
 
 
 async def test_model_config_image_split_defaults() -> None:
@@ -163,6 +177,15 @@ async def test_agent_context_create_subagent_context_inherits_security(env: Loca
 
     assert parent.security.shell_review is not None
     assert parent.security.shell_review.on_needs_approval == "defer"
+
+
+async def test_agent_context_create_subagent_context_inherits_retry_config(env: LocalEnvironment) -> None:
+    parent = AgentContext(env=env, retry_config=RetryConfig(tool_search=2, tool_proxy=3))
+
+    async with parent.create_subagent_context("search") as child:
+        assert child.retry_config is parent.retry_config
+        assert child.retry_config.tool_search == 2
+        assert child.retry_config.tool_proxy == 3
 
 
 async def test_agent_context_create_subagent_context_resets_prompts(env: LocalEnvironment) -> None:

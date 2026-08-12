@@ -81,6 +81,7 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
         search_strategy: SearchStrategy | None = None,
         max_results: int = 5,
         optional_namespaces: set[str] | None = None,
+        max_retries: int | None = None,
     ) -> None:
         """Initialize ToolSearchToolSet.
 
@@ -98,12 +99,17 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
                 ``__aenter__``, it will be skipped with a warning instead of
                 raising. Toolsets not in this set (or without an ID) are
                 required and will raise on failure.
+            max_retries: Explicit retry budget for the ``tool_search`` tool.
+                When omitted, uses ``ctx.deps.retry_config.tool_search`` (default 5).
         """
         self._toolsets = list(toolsets)
         self._namespace_descriptions = namespace_descriptions or {}
         self._strategy: SearchStrategy = search_strategy or KeywordSearchStrategy()
         self._max_results = max_results
         self._optional_namespaces = optional_namespaces or set()
+        if max_retries is not None and max_retries < 0:
+            raise ValueError("max_retries must be non-negative or None")
+        self._max_retries = max_retries
 
         # Init report: namespace_id -> status (populated during __aenter__)
         self._init_report: dict[str, NamespaceStatus] = {}
@@ -181,7 +187,7 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
             visible[_TOOL_SEARCH_NAME] = ToolsetTool(
                 toolset=self,
                 tool_def=search_tool_def,
-                max_retries=3,
+                max_retries=self._resolve_max_retries(ctx),
                 args_validator=self._search_pydantic_tool.function_schema.validator,
             )
 
@@ -425,6 +431,12 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
             return f"Toolset: {ns_id}"
         return "Unknown toolset"
 
+    def _resolve_max_retries(self, ctx: RunContext[AgentContext]) -> int:
+        """Resolve a local override or the SDK-wide retry policy."""
+        if self._max_retries is not None:
+            return self._max_retries
+        return ctx.deps.retry_config.tool_search
+
     def _create_search_tool(self) -> Tool[AgentContext]:
         """Create the pydantic-ai Tool for tool_search."""
         toolset_ref = self
@@ -444,7 +456,6 @@ class ToolSearchToolSet(BaseToolset[AgentContext]):
                 "Discovered tools become usable in subsequent turns."
             ),
             takes_ctx=True,
-            max_retries=3,
         )
 
     async def _execute_search_tool(self, ctx: RunContext[AgentContext], tool_args: dict[str, Any]) -> str:

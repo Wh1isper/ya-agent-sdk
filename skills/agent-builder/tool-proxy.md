@@ -91,6 +91,10 @@ When a tool call fails, an XML error with the parameter schema is returned so th
 </tool-call-error>
 ```
 
+## Retry Configuration
+
+Both visible proxy entry points use `AgentContext.retry_config.tool_proxy`, which defaults to 5. Pass `max_retries=<int>` to `ToolProxyToolset` only when that proxy block needs a local override.
+
 ## Prefixes
 
 Use `prefix` when an agent has multiple proxy blocks and each block needs distinct visible tools:

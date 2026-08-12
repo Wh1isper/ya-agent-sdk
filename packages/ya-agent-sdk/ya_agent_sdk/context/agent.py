@@ -952,6 +952,31 @@ class StreamRecoveryPolicy(BaseModel):
     resume_prompt_factory: StreamResumePromptFactory | None = Field(default=None, exclude=True)
 
 
+class RetryConfig(BaseModel):
+    """SDK-wide model-correction retry limits.
+
+    The configuration is attached to :class:`AgentContext`, so SDK toolsets can
+    resolve the same effective policy at run time and subagent contexts inherit
+    it automatically. Explicit legacy retry arguments and toolset-local
+    ``max_retries`` values remain higher-priority compatibility overrides.
+    """
+
+    tools: int = Field(default=5, ge=0)
+    """Pydantic AI retry limit for each tool name."""
+
+    output: int = Field(default=5, ge=0)
+    """Pydantic AI cumulative output retry limit for one run."""
+
+    toolset: int = Field(default=5, ge=0)
+    """Retry limit for tools exposed by SDK ``Toolset`` instances."""
+
+    tool_search: int = Field(default=5, ge=0)
+    """Retry limit for the SDK tool-search tool."""
+
+    tool_proxy: int = Field(default=5, ge=0)
+    """Retry limit for each SDK tool-proxy entry point."""
+
+
 # =============================================================================
 # Resumable State
 # =============================================================================
@@ -1208,6 +1233,9 @@ class AgentContext(BaseModel):
 
     model_cfg: ModelConfig = Field(default_factory=ModelConfig)
     """Model configuration for context management."""
+
+    retry_config: RetryConfig = Field(default_factory=RetryConfig)
+    """SDK-wide model-correction retry limits inherited by subagent contexts."""
 
     stream_recovery_policy: StreamRecoveryPolicy | None = Field(default=None, exclude=True)
     """Effective root-run recovery policy inherited by subagent contexts."""

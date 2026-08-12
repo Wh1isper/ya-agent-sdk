@@ -228,6 +228,21 @@ def test_unified_tool_rejects_subagent_requiring_ask_user_question(mock_run_ctx)
     assert tool.is_available(mock_run_ctx) is False
 
 
+def test_unified_backend_inherits_configured_agent_retries() -> None:
+    from ya_agent_sdk.toolsets.core.subagent.unified import _build_registry
+
+    registry = _build_registry(
+        [SubagentConfig(name="worker", description="Worker", system_prompt="You are a worker.")],
+        Toolset(tools=[]),
+        model="test",
+        retries={"tools": 2, "output": 3},
+    )
+    agent = registry["worker"].agent
+
+    assert agent._max_tool_retries == 2
+    assert agent._max_output_retries == 3
+
+
 def test_unified_backend_capability_toolset_excludes_ask_user_question() -> None:
     from ya_agent_sdk.toolsets.core.subagent.unified import _build_registry
 

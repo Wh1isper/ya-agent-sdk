@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Protocol, runtime_checkable
 
 from pydantic import Field
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, AgentRetries, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 
 from ya_agent_sdk._logger import get_logger
@@ -88,6 +88,7 @@ def _build_subagent_entry(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -100,6 +101,7 @@ def _build_subagent_entry(
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
+        retries=retries,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
@@ -229,6 +231,7 @@ def _build_registry(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -246,6 +249,7 @@ def _build_registry(
             model=model,
             model_settings=model_settings,
             model_cfg=model_cfg,
+            retries=retries,
             inherit_hooks=inherit_hooks,
             pre_capabilities=pre_capabilities,
             capabilities=capabilities,
@@ -265,6 +269,7 @@ def create_unified_subagent_tool(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -284,6 +289,7 @@ def create_unified_subagent_tool(
         model: Fallback model for subagents with model="inherit".
         model_settings: Fallback model settings for subagents.
         model_cfg: Fallback ModelConfig for subagents.
+        retries: Pydantic AI tool and output retry limits for subagents.
         inherit_hooks: Whether to inherit hooks from parent toolset.
         pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
         capabilities: Parent user capabilities to inherit (if config doesn't override).
@@ -300,6 +306,7 @@ def create_unified_subagent_tool(
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
+        retries=retries,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
@@ -399,6 +406,7 @@ def _create_unified_subagent_tool(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -414,6 +422,7 @@ def _create_unified_subagent_tool(
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
+        retries=retries,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
