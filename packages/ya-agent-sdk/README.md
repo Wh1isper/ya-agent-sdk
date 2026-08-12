@@ -103,6 +103,34 @@ async with stream_agent(runtime, "Hello") as streamer:
 
 When stream recovery is enabled, delegated subagents and self forks inherit the root run's effective recovery policy. Each child retries transient provider or network stream failures against its own transport budget and resumes from its own recovered history. Successful child-local recovery does not consume the root agent's execution recovery budget; only an exhausted child failure propagates to the root tool-call path.
 
+## Model Correction Retry Budgets
+
+The five SDK retry categories default to 5 and can be configured together from `create_agent()`:
+
+```python
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.context import RetryConfig
+
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    retry_config=RetryConfig(
+        tools=5,
+        output=5,
+        toolset=5,
+        tool_search=5,
+        tool_proxy=5,
+    ),
+)
+```
+
+`tools` is Pydantic AI's per-tool-name retry limit and resets after that tool succeeds. `output` is cumulative within one run. `toolset`, `tool_search`, and `tool_proxy` configure the corresponding SDK wrappers at run time, including directly supplied toolsets and inherited subagent contexts. An explicit `Toolset(max_retries=...)`, `ToolSearchToolSet(max_retries=...)`, or `ToolProxyToolset(max_retries=...)` remains a local override. Existing `retries`, `output_retries`, and `toolset_max_retries` arguments remain higher-priority compatibility overrides.
+
+`BaseTool` `ModelRetry` signals propagate into Pydantic AI instead of being converted to ordinary error strings. Regular subagents and self forks inherit the resolved Pydantic AI tool/output limits from the root SDK construction path.
+
+`create_agent(overall_retries=3)` adds a separate run-wide ceiling across tool validation, tool execution, output validation, output functions, and capability-hook correction prompts. This counter never resets after an intervening successful tool call, so it can be stricter than any individual category. Set `overall_retries=None` to disable only this ceiling. HTTP/WebSocket request retries and stream recovery are transport/execution recovery mechanisms and do not consume the model correction budget.
+
+Message-bus steering is not model correction. The completion guard uses Pydantic AI `RunContext.enqueue(priority="asap")` to wake an ending run, while the existing message-bus filter remains the source of truth for cursor advancement, actual content injection, events, multimodal content, and compaction. This continuation does not consume tool, output, or overall correction retries.
+
 ## Structured Clarifying Questions
 
 The optional `ask_user_question` tool uses Pydantic AI deferred-tool control flow to request one to four structured questions with suggested options, multi-select support, and free-text answers.

@@ -1,59 +1,43 @@
-"""Output guards for agent execution.
-
-This module provides output validators that are automatically attached
-to agents created via create_agent and subagent factory functions.
-"""
+"""Completion guards for SDK-created agents."""
 
 from __future__ import annotations
 
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import Any
 
-from pydantic_ai import Agent, RunContext
-from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_graph import End
 
 from ya_agent_sdk.context import AgentContext
 
-OutputT = TypeVar("OutputT")
-AgentDepsT = TypeVar("AgentDepsT", bound=AgentContext)
+_PENDING_MESSAGE_REMINDER = (
+    "<system-reminder>There are pending messages in your message bus. "
+    "Please address them before completing.</system-reminder>"
+)
 
 
-async def message_bus_guard(ctx: RunContext[AgentContext], output: OutputT) -> OutputT:
-    """Output guard that checks for pending bus messages.
+@dataclass(kw_only=True)
+class MessageBusGuardCapability(AbstractCapability[AgentContext]):
+    """Redirect an ending run when its SDK message bus has unread messages.
 
-    This guard triggers a ModelRetry when there are pending messages
-    in the message bus for the current agent. This ensures the agent
-    processes any user messages or inter-agent communication before
-    completing.
-
-    Args:
-        ctx: Run context containing AgentContext with message_bus.
-        output: The output from the agent (any type).
-
-    Returns:
-        The output unchanged if no pending messages.
-
-    Raises:
-        ModelRetry: If there are pending bus messages.
-    """
-    agent_id = ctx.deps.agent_id
-    if ctx.deps.message_bus.has_pending(agent_id):
-        raise ModelRetry(
-            "<system-reminder>There are pending messages in your message bus. Please address them before completing.</system-reminder>"
-        )
-
-    return output
-
-
-def attach_message_bus_guard(agent: Agent[AgentDepsT, OutputT]) -> None:
-    """Attach message bus guard to an agent.
-
-    This function adds the message_bus_guard as an output validator
-    to the given agent. It should be called after agent creation.
-
-    Args:
-        agent: The agent to attach the guard to.
+    The authoritative message stays in the SDK bus. This capability only
+    enqueues one lightweight wakeup at the final node boundary. Pydantic AI's
+    outermost pending-message capability then redirects the run, and the normal
+    history filter consumes and injects the actual bus messages on the new
+    model request.
     """
 
-    @agent.output_validator
-    async def _guard(ctx: RunContext[AgentDepsT], output: OutputT) -> OutputT:
-        return await message_bus_guard(ctx, output)  # type: ignore[arg-type]
+    id: str | None = "message_bus_guard"
+
+    async def after_node_run(
+        self,
+        ctx: RunContext[AgentContext],
+        *,
+        node: Any,
+        result: Any,
+    ) -> Any:
+        """Enqueue a continuation immediately before an otherwise terminal result."""
+        if isinstance(result, End) and ctx.deps.message_bus.has_pending(ctx.deps.agent_id):
+            ctx.enqueue(_PENDING_MESSAGE_REMINDER, priority="asap")
+        return result

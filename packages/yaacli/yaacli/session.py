@@ -6,7 +6,7 @@ The message bus (inherited from AgentContext) is used for injecting user
 guidance during agent execution:
 - User sends messages via ctx.send_message("guidance", source="user")
 - SDK's inject_bus_messages filter handles injection
-- SDK's message_bus_guard ensures messages are processed before completion
+- SDK's message-bus completion capability enqueues a continuation at the final node boundary
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class TUIContext(AgentContext):
     """TUI context extending AgentContext with goal mode support.
 
     Goal mode fields are set by the /goal command and read by the
-    goal output guard to drive autonomous task iteration.
+    goal output guard to enqueue autonomous task iterations.
 
     Attributes:
         goal_task: Original task description when goal mode is active. None when inactive.

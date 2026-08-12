@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic_ai.exceptions import ModelRetry
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.guards import (
     GOAL_COMPLETE_MARKER,
@@ -21,6 +20,7 @@ def _make_ctx(deps: TUIContext) -> MagicMock:
     """Create a mock RunContext with the given deps."""
     ctx = MagicMock()
     ctx.deps = deps
+    ctx.enqueue.return_value = "enqueue-1"
     return ctx
 
 
@@ -82,17 +82,19 @@ async def test_goal_guard_verified_complete(tui_ctx: TUIContext) -> None:
 
 @pytest.mark.asyncio
 async def test_goal_guard_continues_iteration(tui_ctx: TUIContext) -> None:
-    """Guard should raise ModelRetry to continue when task is not verified."""
+    """Guard should enqueue a continuation when task is not verified."""
     tui_ctx.goal_task = "fix tests"
     tui_ctx.goal_iteration = 0
     tui_ctx.goal_max_iterations = 10
     ctx = _make_ctx(tui_ctx)
 
     with patch.object(TUIContext, "emit_event", new_callable=AsyncMock) as mock_emit:
-        with pytest.raises(ModelRetry) as exc_info:
-            await goal_guard(ctx, "I think it's done")
+        result = await goal_guard(ctx, "I think it's done")
 
-        message = str(exc_info.value)
+        assert result == "I think it's done"
+        ctx.enqueue.assert_called_once()
+        assert ctx.enqueue.call_args.kwargs == {"priority": "asap"}
+        message = ctx.enqueue.call_args.args[0]
         assert "goal-check" in message
         assert "Completion audit" in message
         assert "Work from evidence" in message
@@ -125,33 +127,32 @@ async def test_goal_guard_max_iterations_reached(tui_ctx: TUIContext) -> None:
         event = mock_emit.call_args[0][0]
         assert isinstance(event, GoalCompleteEvent)
         assert event.reason == GoalCompleteReason.max_iterations
+        ctx.enqueue.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_goal_guard_multiple_iterations(tui_ctx: TUIContext) -> None:
-    """Guard should increment iteration each time it retries."""
+    """Guard should increment iteration each time it queues another turn."""
     tui_ctx.goal_task = "fix tests"
     tui_ctx.goal_iteration = 0
     tui_ctx.goal_max_iterations = 3
     ctx = _make_ctx(tui_ctx)
 
     with patch.object(TUIContext, "emit_event", new_callable=AsyncMock) as mock_emit:
-        with pytest.raises(ModelRetry):
-            await goal_guard(ctx, "working...")
+        await goal_guard(ctx, "working...")
         assert tui_ctx.goal_iteration == 1
 
-        with pytest.raises(ModelRetry):
-            await goal_guard(ctx, "still working...")
+        await goal_guard(ctx, "still working...")
         assert tui_ctx.goal_iteration == 2
 
-        with pytest.raises(ModelRetry):
-            await goal_guard(ctx, "almost done...")
+        await goal_guard(ctx, "almost done...")
         assert tui_ctx.goal_iteration == 3
 
         result = await goal_guard(ctx, "giving up...")
         assert result == "giving up..."
         assert tui_ctx.goal_task is None
 
+        assert ctx.enqueue.call_count == 3
         assert mock_emit.call_count == 4
 
 
@@ -164,10 +165,10 @@ async def test_goal_guard_marker_in_sentence_does_not_complete(tui_ctx: TUIConte
     ctx = _make_ctx(tui_ctx)
 
     with patch.object(TUIContext, "emit_event", new_callable=AsyncMock):
-        with pytest.raises(ModelRetry):
-            await goal_guard(ctx, f"I have more work before {GOAL_COMPLETE_MARKER} can be used")
+        await goal_guard(ctx, f"I have more work before {GOAL_COMPLETE_MARKER} can be used")
 
         assert tui_ctx.goal_iteration == 1
+        ctx.enqueue.assert_called_once()
 
 
 def test_has_completion_marker_standalone_line() -> None:
@@ -215,10 +216,12 @@ async def test_goal_guard_rejects_completion_marker_after_context_restore(tui_ct
     ctx = _make_ctx(tui_ctx)
 
     with patch.object(TUIContext, "emit_event", new_callable=AsyncMock) as mock_emit:
-        with pytest.raises(ModelRetry) as exc_info:
-            await goal_guard(ctx, f"Done.\n{GOAL_COMPLETE_MARKER}")
+        result = await goal_guard(ctx, f"Done.\n{GOAL_COMPLETE_MARKER}")
 
-        message = str(exc_info.value)
+        assert result == f"Done.\n{GOAL_COMPLETE_MARKER}"
+        ctx.enqueue.assert_called_once()
+        assert ctx.enqueue.call_args.kwargs == {"priority": "asap"}
+        message = ctx.enqueue.call_args.args[0]
         assert "goal-post-restore-audit" in message
         assert "handoff/compact" in message
         assert "not proof" in message
@@ -258,6 +261,7 @@ async def test_goal_guard_context_restore_marker_can_stop_at_max_iterations(tui_
         event = mock_emit.call_args[0][0]
         assert isinstance(event, GoalCompleteEvent)
         assert event.reason == GoalCompleteReason.max_iterations
+        ctx.enqueue.assert_not_called()
         assert event.iteration == 10
 
 

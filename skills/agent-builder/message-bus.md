@@ -246,7 +246,7 @@ ctx.send_message(BusMessage(
 ))
 ```
 
-## Filter Integration
+## Filter Integration and End-of-Run Steering
 
 The `inject_bus_messages` filter automatically injects pending messages:
 
@@ -257,6 +257,14 @@ The `inject_bus_messages` filter automatically injects pending messages:
 # [URGENT] Stop current task
 # </bus-message>
 ```
+
+The message bus remains the authoritative content and delivery boundary. If unread messages exist at the final node boundary, the SDK completion capability calls Pydantic AI `RunContext.enqueue(..., priority="asap")` with one short continuation reminder. The official pending-message capability then redirects the ending run, and `inject_bus_messages` consumes and injects the actual messages on the new request. Checking at the node boundary also covers messages that arrive after output validation.
+
+Do not consume the bus in the guard or enqueue each actual message directly. That would bypass cursor idempotency, target routing, `MessageReceivedEvent`, user-steering compact state, and multimodal rendering. Enqueued steering continuation is not a `ModelRetry` and consumes no tool, output, or overall model-correction retry budget.
+
+`AgentContext` has no generic `inputs` field. The primary run prompt is tracked in `user_prompts`; user-source bus messages remain separate in `steering_messages` and are also injected into the current `ModelRequest`. Cache-friendly compact, legacy compact, summarize/handoff, and `ResumableState` explicitly preserve this dedicated steering list. Do not append steering to `user_prompts`, because compact restore already emits an explicit `<user-steering>` block and merging the channels would duplicate instructions.
+
+Custom drivers for SDK agents must advance `AgentRun` through node lifecycle hooks. Bare `async for node in run` skips Pydantic AI's end-of-run pending-message redirect and is therefore incompatible with `enqueue`-based steering.
 
 ## Events
 

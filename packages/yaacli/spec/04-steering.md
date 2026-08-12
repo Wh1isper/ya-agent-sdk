@@ -33,12 +33,17 @@ sequenceDiagram
     participant User
     participant TUI
     participant Bus as AgentContext message bus
+    participant Guard as SDK completion capability
     participant Filter as SDK inject_bus_messages
     participant Agent
 
     User->>TUI: Submit ordinary text during active run
     TUI->>Bus: send_message(BusMessage target="main")
     TUI-->>User: Guidance sent to the active run
+    alt Agent is about to finish
+        Agent->>Guard: Reach final node boundary
+        Guard-->>Agent: enqueue one asap continuation reminder
+    end
     Agent->>Filter: Prepare next model request
     Filter->>Bus: Consume unread messages for main
     Filter-->>Agent: Inject fixed steering template
@@ -51,7 +56,9 @@ The TUI creates a `BusMessage` with:
 - the fixed SDK-compatible steering template;
 - the submitted text as content.
 
-The SDK message-bus filter owns injection and idempotency. YAACLI does not maintain a second local buffer. The status bar derives `steering N pending` directly from unread main-subscriber messages with `source="user"`; it never renders their content. Once the filter consumes those messages for a model request, the count disappears automatically. When a foreground run ends, YAACLI clears the resumable steering list and selectively marks any remaining unread user messages consumed. Background messages remain unread, so user guidance cannot leak into a future run and background results are not swallowed.
+The SDK message-bus filter owns actual content injection and idempotency. If the agent is already completing, the SDK guard uses Pydantic AI `RunContext.enqueue(priority="asap")` only to redirect the ending run; this is not `ModelRetry` and consumes no output retry budget. The bus remains the source of truth so cursor, event, compact, and multimodal semantics are unchanged.
+
+YAACLI does not maintain a second local buffer. The status bar derives `steering N pending` directly from unread main-subscriber messages with `source="user"`; it never renders their content. Once the filter consumes those messages for a model request, the count disappears automatically. When a foreground run ends, YAACLI clears the resumable steering list and selectively marks any remaining unread user messages consumed. Background messages remain unread, so user guidance cannot leak into a future run and background results are not swallowed.
 
 ## Input Routing
 

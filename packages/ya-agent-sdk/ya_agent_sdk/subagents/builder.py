@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentRetries
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 
-from ya_agent_sdk.agents.guards import attach_message_bus_guard
+from ya_agent_sdk.agents.guards import MessageBusGuardCapability
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
@@ -124,9 +124,12 @@ def _resolve_capabilities(
     """Resolve effective capabilities for a subagent."""
     user_pre_capabilities = config.pre_capabilities if config.pre_capabilities is not None else parent_pre_capabilities
     user_capabilities = config.capabilities if config.capabilities is not None else parent_capabilities
+    internal_capabilities = list(sdk_capabilities or [])
+    if not any(isinstance(capability, MessageBusGuardCapability) for capability in internal_capabilities):
+        internal_capabilities.append(MessageBusGuardCapability())
     return [
         *(user_pre_capabilities or []),
-        *(sdk_capabilities or []),
+        *internal_capabilities,
         *(user_capabilities or []),
         ProcessHistory(create_system_prompt_filter(config.system_prompt)),
     ]
@@ -139,6 +142,7 @@ def build_subagent_agent(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -151,6 +155,7 @@ def build_subagent_agent(
         model: Fallback model. Used if config.model is 'inherit' or None.
         model_settings: Fallback model settings.
         model_cfg: Fallback ModelConfig.
+        retries: Pydantic AI tool and output retry limits for the subagent.
         inherit_hooks: Whether to inherit hooks from parent toolset.
         pre_capabilities: Parent pre-capabilities to inherit (if config doesn't override).
         capabilities: Parent user capabilities to inherit (if config doesn't override).
@@ -164,6 +169,7 @@ def build_subagent_agent(
         model=model,
         model_settings=model_settings,
         model_cfg=model_cfg,
+        retries=retries,
         inherit_hooks=inherit_hooks,
         pre_capabilities=pre_capabilities,
         capabilities=capabilities,
@@ -177,6 +183,7 @@ def _build_subagent_agent(
     model: str | Model | None = None,
     model_settings: ModelSettings | dict[str, Any] | str | None = None,
     model_cfg: ModelConfig | None = None,
+    retries: int | AgentRetries = 5,
     inherit_hooks: bool = False,
     pre_capabilities: list[AbstractCapability[Any]] | None = None,
     capabilities: list[AbstractCapability[Any]] | None = None,
@@ -196,10 +203,8 @@ def _build_subagent_agent(
         model_settings=resolved_settings,  # type: ignore[arg-type]
         deps_type=AgentContext,
         capabilities=resolved_capabilities,
+        retries=retries,
         name=config.name,
     )
-
-    # Attach message bus guard for pending message handling
-    attach_message_bus_guard(agent)
 
     return agent, resolved_model_cfg

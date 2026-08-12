@@ -219,6 +219,19 @@ async def test_stale_proxy_cache_cannot_call_main_agent_only_tool_from_subagent(
 
 
 @pytest.mark.anyio
+async def test_tool_proxy_retry_config_and_local_override(weather_toolset, mock_run_context):
+    mock_run_context.deps.retry_config.tool_proxy = 7
+
+    inherited = ToolProxyToolset(toolsets=[weather_toolset])
+    inherited_tools = await inherited.get_tools(mock_run_context)
+    assert {tool.max_retries for tool in inherited_tools.values()} == {7}
+
+    overridden = ToolProxyToolset(toolsets=[weather_toolset], max_retries=2)
+    overridden_tools = await overridden.get_tools(mock_run_context)
+    assert {tool.max_retries for tool in overridden_tools.values()} == {2}
+
+
+@pytest.mark.anyio
 async def test_get_tools_always_returns_two(weather_toolset, mock_run_context):
     """get_tools must always return exactly search_tools and call_tool."""
     ts = ToolProxyToolset(toolsets=[weather_toolset])

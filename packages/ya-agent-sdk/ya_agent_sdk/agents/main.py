@@ -56,10 +56,12 @@ from ya_agent_environment import Environment
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.compact import create_cache_friendly_compact_filter, create_compact_filter
-from ya_agent_sdk.agents.guards import attach_message_bus_guard
+from ya_agent_sdk.agents.driver import drive_streamed_run
+from ya_agent_sdk.agents.guards import MessageBusGuardCapability
 from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
+from ya_agent_sdk.agents.retries import OverallRetryBudget
 from ya_agent_sdk.agents.retry_recovery import (
     DEFAULT_STREAM_RESUME_PROMPT,
     close_unreturned_tool_calls,
@@ -76,6 +78,7 @@ from ya_agent_sdk.context import (
     ModelConfig,
     ModelWrapper,
     ResumableState,
+    RetryConfig,
     StreamEvent,
     StreamRecoveryPolicy,
     SubagentWrapper,
@@ -222,9 +225,17 @@ def _filter_subagent_toolset(
     return toolset
 
 
-def _resolve_agent_retries(retries: int | AgentRetries | None, output_retries: int | None) -> int | AgentRetries:
-    """Resolve SDK retry defaults into Pydantic AI's unified AgentRetries form."""
-    default_retries: AgentRetries = {"tools": 1, "output": 3}
+def _resolve_agent_retries(
+    retries: int | AgentRetries | None,
+    output_retries: int | None,
+    retry_config: RetryConfig | None = None,
+) -> int | AgentRetries:
+    """Resolve SDK retry configuration and compatibility overrides."""
+    effective_config = retry_config or RetryConfig()
+    default_retries: AgentRetries = {
+        "tools": effective_config.tools,
+        "output": effective_config.output,
+    }
     if isinstance(retries, dict):
         resolved: AgentRetries = {**default_retries, **retries}
     elif retries is None:
@@ -501,6 +512,7 @@ def create_agent(
     # --- Context ---
     context_type: type[AgentDepsT] = AgentContext,  # type: ignore[assignment]
     model_cfg: ModelConfig | None = None,
+    retry_config: RetryConfig | None = None,
     # --- Environment ---
     env: EnvT | type[EnvT] = LocalEnvironment,  # type: ignore[assignment]
     env_kwargs: dict[str, Any] | None = None,
@@ -515,7 +527,7 @@ def create_agent(
     pre_hooks: dict[str, Any] | None = None,
     post_hooks: dict[str, Any] | None = None,
     global_hooks: GlobalHooks | None = None,
-    toolset_max_retries: int = 3,
+    toolset_max_retries: int | None = None,
     toolset_timeout: float | None = None,
     skip_unavailable_tools: bool = True,
     # --- Compact Filter ---
@@ -543,6 +555,7 @@ def create_agent(
     system_prompt_template_vars: dict[str, Any] | None = None,
     retries: int | AgentRetries | None = None,
     output_retries: int | None = None,
+    overall_retries: int | None = 3,
     defer_model_check: bool = False,
     end_strategy: str = "exhaustive",
     lifecycle_extensions: Sequence[BaseLifecycleExtension[AgentDepsT, EnvT]] | None = None,
@@ -565,6 +578,8 @@ def create_agent(
 
         context_type: AgentContext subclass to use. Defaults to AgentContext.
         model_cfg: ModelConfig for context window and capability settings.
+        retry_config: SDK-wide retry limits for Pydantic AI tools/output and SDK
+            Toolset, Tool Search, and Tool Proxy wrappers. All five default to 5.
         tool_config: ToolConfig for API keys and tool-specific settings.
         extra_context_kwargs: Additional kwargs passed to context_type constructor.
         state: ResumableState to restore session from. Defaults to None.
@@ -583,7 +598,8 @@ def create_agent(
         pre_hooks: Dict mapping tool names to pre-hook functions.
         post_hooks: Dict mapping tool names to post-hook functions.
         global_hooks: GlobalHooks instance for all tools.
-        toolset_max_retries: Max retries for tool execution. Defaults to 3.
+        toolset_max_retries: Deprecated compatibility override for SDK BaseTool
+            retries. When omitted, uses retry_config.toolset.
         toolset_timeout: Default timeout for tool execution.
         skip_unavailable_tools: Skip tools where is_available() returns False.
 
@@ -616,9 +632,17 @@ def create_agent(
             rendered as a Jinja2 template, supporting conditionals and default values.
         system_prompt_template_vars: Variables for Jinja2 template rendering. Works with
             both custom system_prompt strings and the default template file.
-        retries: Retry budget for tools and structured output. Int sets both budgets;
-            AgentRetries can set tools and output independently. Defaults to tools=1, output=3.
+        retries: Compatibility override for Pydantic AI tool and output retries.
+            Int sets both budgets; AgentRetries can set them independently. When
+            omitted, uses retry_config.tools and retry_config.output (both default 5).
+            Tool retries are tracked per tool name and reset after that tool succeeds;
+            output retries are cumulative within one Pydantic AI run and do not reset
+            after an intervening successful tool call.
         output_retries: Deprecated compatibility override for output retries.
+        overall_retries: Cumulative model correction retry budget for one run. Unlike
+            per-tool retries, it never resets after a successful tool call. Counts retry
+            prompts from tools, output validation, and capability hooks, but not transport
+            retries or enqueued steering. Defaults to 3; set to None to disable.
         defer_model_check: Defer model validation. Defaults to False.
         end_strategy: Strategy for ending agent run. Defaults to "exhaustive".
     Returns:
@@ -661,18 +685,25 @@ def create_agent(
                 async with runtime:  # Only enters ctx and agent
                     result = await runtime.agent.run("Run tests", deps=runtime.ctx)
     """
+    if overall_retries is not None and overall_retries < 0:
+        raise UserError("overall_retries must be non-negative or None")
+
     # --- Environment Setup ---
     actual_env = env if isinstance(env, Environment) else env(**(env_kwargs or {}))
     logger.debug("Environment created: %s", type(actual_env).__name__)
 
     # --- Build Configs ---
     effective_model_cfg = model_cfg or ModelConfig()
+    effective_retry_config = retry_config or RetryConfig()
     effective_tool_config = tool_config or ToolConfig()
+    if toolset_max_retries is not None and toolset_max_retries < 0:
+        raise UserError("toolset_max_retries must be non-negative or None")
 
     # --- Context Setup ---
     ctx = context_type(
         env=actual_env,
         model_cfg=effective_model_cfg,
+        retry_config=effective_retry_config,
         tool_config=effective_tool_config,
         model_wrapper=model_wrapper,
         subagent_wrapper=subagent_wrapper,
@@ -720,11 +751,21 @@ def create_agent(
     codeact_capabilities: list[AbstractCapability[AgentDepsT]] = (
         [cast(AbstractCapability[AgentDepsT], CodeActCapability(config=codeact))] if codeact is not None else []
     )
+    retry_capabilities: list[AbstractCapability[AgentDepsT]] = (
+        [cast(AbstractCapability[AgentDepsT], OverallRetryBudget(max_retries=overall_retries))]
+        if overall_retries is not None
+        else []
+    )
+    guard_capabilities = [cast(AbstractCapability[AgentDepsT], MessageBusGuardCapability())]
     internal_subagent_capabilities: list[AbstractCapability[AgentDepsT]] = [
+        *retry_capabilities,
+        *guard_capabilities,
         *codeact_capabilities,
         *sdk_history_capabilities,
     ]
     all_capabilities: list[AbstractCapability[AgentDepsT]] = [
+        *retry_capabilities,
+        *guard_capabilities,
         *codeact_capabilities,
         *user_pre_capabilities,
         *sdk_history_capabilities,
@@ -773,6 +814,7 @@ def create_agent(
                 model=model,
                 model_settings=model_settings,
                 model_cfg=effective_model_cfg,
+                retries=_resolve_agent_retries(retries, output_retries, effective_retry_config),
                 unified=unified_subagents,
                 unified_tool_name=unified_subagent_tool_name,
                 hidden=hide_unified_subagent_tool,
@@ -812,7 +854,7 @@ def create_agent(
 
     # --- Create Agent ---
     logger.debug("Creating agent with model=%s, output_type=%s", model, output_type)
-    agent_retries = _resolve_agent_retries(retries, output_retries)
+    agent_retries = _resolve_agent_retries(retries, output_retries, effective_retry_config)
 
     delegation_tags = frozenset({"delegation"})
     if core_toolset.has_tags(delegation_tags):
@@ -842,7 +884,6 @@ def create_agent(
             ),
             self_fork_toolsets,
         )
-        attach_message_bus_guard(self_fork_agent)
         ctx.self_fork_agent = self_fork_agent
 
     agent: Agent[AgentDepsT, OutputT] = add_toolset_instructions(
@@ -865,9 +906,6 @@ def create_agent(
         ),
         all_toolsets,
     )
-
-    # Attach message bus guard for pending message handling
-    attach_message_bus_guard(agent)
 
     logger.debug(
         "Agent created: toolsets=%d, capabilities=%d",
@@ -1655,16 +1693,19 @@ async def stream_agent(  # noqa: C901
 
     async def process_all_nodes(run: AgentRun[AgentDepsT, OutputT], *, attempt_index: int) -> None:
         """Process all nodes in the agent run with lifecycle events."""
-        async for node in run:
+
+        async def process_node(node: Any, current_run: AgentRun[Any, Any]) -> None:
             node_start_time = time.perf_counter()
 
             if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
                 # Skip user_prompt and end nodes - their info is in AgentExecution events
-                continue
-            elif Agent.is_model_request_node(node):
-                await handle_model_request_node(node, run, node_start_time, attempt_index=attempt_index)
+                return
+            if Agent.is_model_request_node(node):
+                await handle_model_request_node(node, current_run, node_start_time, attempt_index=attempt_index)
             elif Agent.is_call_tools_node(node):
-                await handle_call_tools_node(node, run, node_start_time)
+                await handle_call_tools_node(node, current_run, node_start_time)
+
+        await drive_streamed_run(run, process_node)
 
     async def run_agent_iteration(
         effective_user_prompt: UserPromptT | None,
@@ -1912,6 +1953,9 @@ async def stream_agent(  # noqa: C901
             await on_runtime_ready(ready_ctx)
         effective_user_prompt = ready_ctx.user_prompt
         effective_deferred_tool_results = ready_ctx.deferred_tool_results
+        # Persist the canonical prompt actually passed to Agent.iter(), including
+        # any host or lifecycle hook edits, so compact and handoff restore it.
+        ctx.user_prompts = effective_user_prompt
         return effective_user_prompt, effective_deferred_tool_results
 
     async def run_main() -> None:

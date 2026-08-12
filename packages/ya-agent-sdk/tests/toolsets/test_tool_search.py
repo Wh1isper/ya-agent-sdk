@@ -411,6 +411,19 @@ async def test_main_agent_only_tool_stays_hidden_when_preloaded_in_subagent() ->
 
 
 @pytest.mark.anyio
+async def test_tool_search_retry_config_and_local_override(weather_toolset, mock_run_context):
+    mock_run_context.deps.retry_config.tool_search = 7
+
+    inherited = ToolSearchToolSet(toolsets=[weather_toolset])
+    inherited_tools = await inherited.get_tools(mock_run_context)
+    assert inherited_tools["tool_search"].max_retries == 7
+
+    overridden = ToolSearchToolSet(toolsets=[weather_toolset], max_retries=2)
+    overridden_tools = await overridden.get_tools(mock_run_context)
+    assert overridden_tools["tool_search"].max_retries == 2
+
+
+@pytest.mark.anyio
 async def test_toolset_all_deferred_initially(weather_toolset, mock_run_context):
     """With no prior state, only tool_search should be visible."""
     ts = ToolSearchToolSet(toolsets=[weather_toolset])

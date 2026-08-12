@@ -1,8 +1,8 @@
 """Output guards for yaacli.
 
 This module provides output validators (guards) that are attached to the
-TUI agent. Guards use ModelRetry to continue agent execution when certain
-conditions are met, such as an active goal that still needs verified work.
+TUI agent. Guards enqueue continuation prompts when certain conditions are
+met, such as an active goal that still needs verified work.
 
 Guards read state from TUIContext (accessed via ctx.deps) and emit events
 via ctx.deps.emit_event() for TUI rendering.
@@ -14,7 +14,6 @@ import uuid
 from typing import TypeVar
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.exceptions import ModelRetry
 
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.logging import get_logger
@@ -133,8 +132,14 @@ async def _emit_goal_complete(
     deps.reset_goal()
 
 
-async def _continue_goal_or_stop(deps: TUIContext, *, task: str, prompt: str) -> None:
-    """Advance a goal iteration or stop when the retry budget is exhausted."""
+async def _continue_goal_or_stop(
+    ctx: RunContext[TUIContext],
+    *,
+    task: str,
+    prompt: str,
+) -> None:
+    """Advance a goal iteration or stop when the goal budget is exhausted."""
+    deps = ctx.deps
     deps.goal_iteration += 1
     iteration = deps.goal_iteration
 
@@ -158,15 +163,15 @@ async def _continue_goal_or_stop(deps: TUIContext, *, task: str, prompt: str) ->
     )
     logger.debug("Goal iteration %d/%d", iteration, deps.goal_max_iterations)
 
-    raise ModelRetry(prompt)
+    ctx.enqueue(prompt, priority="asap")
 
 
 async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
-    """Output guard that drives goal mode via ModelRetry.
+    """Output guard that drives goal mode via the pending-message queue.
 
     When goal mode is active (ctx.deps.goal_task is not None), this guard
-    checks whether the agent has verified task completion. It raises ModelRetry
-    with a goal-check prompt when work should continue.
+    checks whether the agent has verified task completion. It enqueues a
+    goal-check prompt when work should continue.
 
     The guard is a no-op when goal mode is inactive.
 
@@ -175,10 +180,7 @@ async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
         output: The output from the agent (str or DeferredToolRequests).
 
     Returns:
-        The output unchanged if goal mode is inactive or complete.
-
-    Raises:
-        ModelRetry: If the agent should continue working on the goal.
+        The output unchanged. An active incomplete goal queues another turn.
     """
     deps = ctx.deps
 
@@ -195,7 +197,7 @@ async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
         needs_audit, source = deps.consume_goal_context_restore_audit()
         if needs_audit:
             await _continue_goal_or_stop(
-                deps,
+                ctx,
                 task=task,
                 prompt=_build_post_restore_goal_audit_prompt(task, source),
             )
@@ -211,7 +213,7 @@ async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
         logger.info("Goal completed: task verified after %d iteration(s)", iteration)
         return output
 
-    await _continue_goal_or_stop(deps, task=task, prompt=_build_goal_check_prompt(task))
+    await _continue_goal_or_stop(ctx, task=task, prompt=_build_goal_check_prompt(task))
     return output
 
 
