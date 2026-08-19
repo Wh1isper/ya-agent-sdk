@@ -20,7 +20,7 @@ from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
-from ya_agent_sdk.capabilities import build_default_capability_catalog
+from ya_agent_sdk.capabilities import build_capability_catalog, build_default_capability_catalog
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.inputs import (
     EnqueueReceipt,
@@ -99,6 +99,36 @@ def test_resolver_normalizes_templates_and_has_stable_fingerprint() -> None:
     assert str(first.normalized_agent_spec.description) == "Research for YA"
     assert first.custom_capability_audit[0].serialization_name == "AuditCapability"
     assert first.custom_capability_audit[0].provenance.startswith("explicit:")
+
+
+def test_packaging_provenance_does_not_change_plan_identity_or_restore() -> None:
+    explicit_catalog = build_default_capability_catalog(explicit_types=[AuditCapability])
+    explicit_resolver = SubagentPlanResolver(explicit_catalog, default_model="test")
+    sdk_resolver = SubagentPlanResolver(
+        build_capability_catalog(sdk_types=explicit_catalog.custom_capability_types),
+        default_model="test",
+    )
+    spec = SubagentSpec(
+        route="worker",
+        agent=AgentSpec.from_dict({"capabilities": [{"AuditCapability": {"text": "same"}}]}),
+    )
+
+    explicit_plan = explicit_resolver.resolve(spec)
+    sdk_plan = sdk_resolver.resolve(spec)
+    restored = sdk_resolver.restore(explicit_plan.to_descriptor())
+
+    assert explicit_plan.custom_capability_audit != sdk_plan.custom_capability_audit
+    assert explicit_plan.fingerprint == sdk_plan.fingerprint
+    assert restored.fingerprint == explicit_plan.fingerprint
+    assert restored.custom_capability_audit == explicit_plan.custom_capability_audit
+
+    explicit_first = SubagentRegistry([explicit_plan])
+    explicit_first.register_retained(sdk_plan)
+    explicit_first.register_retained(restored)
+    sdk_first = SubagentRegistry([sdk_plan])
+    sdk_first.register_retained(explicit_plan)
+    assert len(explicit_first.list_registered()) == 1
+    assert len(sdk_first.list_registered()) == 1
 
 
 def test_resolver_injects_final_visibility_and_builds_bounded_self_fork() -> None:

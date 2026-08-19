@@ -143,9 +143,7 @@ class LocalExecutionCoordinator:
                             execution_id = command.aggregate_id
                             self._action_events.setdefault(execution_id, asyncio.Event()).set()
                         elif command.command_kind == "cancel_execution":
-                            task = self._tasks.get(command.aggregate_id)
-                            if task is not None and not task.done():
-                                task.cancel()
+                            await self._cancel_execution(command.aggregate_id)
                         elif command.command_kind == "cancel_subagent_execution":
                             await self._cancel_subagent_execution(
                                 _required_string(command.payload, "execution_id"),
@@ -180,19 +178,52 @@ class LocalExecutionCoordinator:
             name=f"yaacli-execution-{execution_id}",
         )
 
-    async def wait(self, logical_run_id: str) -> LogicalRunRecord:
-        run = self.store.get_run(logical_run_id)
-        if run is None:
-            raise KeyError(logical_run_id)
-        task = self._tasks.get(run.execution_id)
-        if task is not None:
-            await asyncio.shield(task)
-        resolved = self.store.get_run(logical_run_id)
-        if resolved is None:  # pragma: no cover - product invariant
-            raise KeyError(logical_run_id)
-        return resolved
+    async def _cancel_execution(self, execution_id: str) -> None:
+        task = self._tasks.get(execution_id)
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
-    async def cancel(self, logical_run_id: str, reason: str) -> None:
+        execution = self.store.get_execution(execution_id)
+        if execution is None:
+            raise KeyError(execution_id)
+        run = self.store.get_run(execution.logical_run_id)
+        if run is None:
+            raise KeyError(execution.logical_run_id)
+        if not run.terminal and run.status is LogicalRunStatus.cancelling:
+            await self._commit_cancelled(run)
+        if task is not None and task.done():
+            self._tasks.pop(execution_id, None)
+
+    async def wait(self, logical_run_id: str) -> LogicalRunRecord:
+        """Drive durable commands until the exact logical run is terminal."""
+        while True:
+            run = self.store.get_run(logical_run_id)
+            if run is None:
+                raise KeyError(logical_run_id)
+            if run.terminal:
+                return run
+
+            try:
+                await self.dispatch_outbox()
+            except Exception:
+                logger.warning(
+                    "Durable command dispatch failed while waiting for logical run %s",
+                    logical_run_id,
+                    exc_info=True,
+                )
+
+            task = self._tasks.get(run.execution_id)
+            if task is None:
+                await asyncio.sleep(0.05)
+                continue
+            done, _pending = await asyncio.wait({task}, timeout=0.05)
+            if done:
+                await asyncio.shield(task)
+
+    def accept_cancel(self, logical_run_id: str, reason: str) -> None:
+        """Durably accept cancellation before attempting process-local dispatch."""
         run = self.store.get_run(logical_run_id)
         if run is None:
             raise KeyError(logical_run_id)
@@ -213,6 +244,9 @@ class LocalExecutionCoordinator:
             },
             command_id=f"cancel:{run.execution_id}",
         )
+
+    async def cancel(self, logical_run_id: str, reason: str) -> None:
+        self.accept_cancel(logical_run_id, reason)
         await self.dispatch_outbox()
 
     async def recover_orphaned_executions(self) -> tuple[str, ...]:

@@ -155,6 +155,7 @@ from yaacli.durable.application import (
 from yaacli.durable.executor import LocalExecutionWorker
 from yaacli.durable.models import (
     ActionBatch,
+    LogicalRunRecord,
     LogicalRunStatus,
     RevisionPayload,
     RevisionRecord,
@@ -620,6 +621,7 @@ class TUIApp:
 
     # Agent execution
     _agent_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _agent_task_logical_run_id: str | None = field(default=None, init=False)
     _foreground_command_task: asyncio.Task[None] | None = field(default=None, init=False)
     _direct_shell_task: asyncio.Task[None] | None = field(default=None, init=False)
     _direct_shell_command: str | None = field(default=None, init=False)
@@ -1969,6 +1971,13 @@ class TUIApp:
         self._next_attachment_id = 1
         return attachments
 
+    def _consume_attachment_snapshot(self, attachments: Sequence[PendingAttachment]) -> None:
+        """Remove only attachments accepted with an asynchronously classified prompt."""
+        accepted = {id(item) for item in attachments}
+        self._pending_attachments = [item for item in self._pending_attachments if id(item) not in accepted]
+        if not self._pending_attachments:
+            self._next_attachment_id = 1
+
     def _remove_pending_attachment(self, index: int | None = None) -> PendingAttachment | None:
         """Remove one queued attachment, defaulting to the most recent."""
         if not self._pending_attachments:
@@ -2157,9 +2166,9 @@ class TUIApp:
     # Steering
     # =========================================================================
 
-    def _add_steering_message(self, message: str) -> None:
-        """Send additional user guidance while the agent is running."""
-        self._send_steering_message(message)
+    def _add_steering_message(self, message: str) -> bool:
+        """Durably accept additional guidance while the agent is running."""
+        return self._send_steering_message(message)
 
     def _get_pending_steering_count(self) -> int:
         """Count persisted active-run inputs not yet applied by Pydantic AI."""
@@ -2173,24 +2182,32 @@ class TUIApp:
     def _clear_unconsumed_user_steering(self) -> None:
         """Persisted accepted input is never silently discarded."""
 
-    def _send_steering_message(self, message: str) -> None:
-        """Persist steering before notifying the active durable workflow."""
+    def _send_steering_message(self, message: str) -> bool:
+        """Persist steering before acknowledging it in the UI."""
         if self._session_service is None or self._active_logical_run_id is None:
             self._append_system_output("No active agent run accepts steering.")
-            return
+            return False
 
-        logical_run_id = self._active_logical_run_id
         service = self._session_service
-
-        async def submit() -> None:
-            await service.submit_input(
-                logical_run_id,
+        try:
+            service.accept_input(
+                self._active_logical_run_id,
                 [message],
                 origin="user",
             )
-            logger.debug("Durable steering accepted: %s", message[:50])
+        except Exception as exc:
+            self._append_error_output(exc)
+            return False
 
-        self._track_managed_task(asyncio.create_task(submit()))
+        async def dispatch() -> None:
+            try:
+                await service.dispatch_pending()
+            except Exception:
+                logger.exception("Durable steering dispatch failed; the accepted input remains pending")
+
+        logger.debug("Durable steering accepted: %s", message[:50])
+        self._track_managed_task(asyncio.create_task(dispatch()))
+        return True
 
     def _create_oauth_refresh_supervisor(self) -> OAuthRefreshSupervisor | None:
         if not self.config.oauth_refresh.enabled:
@@ -2885,42 +2902,45 @@ class TUIApp:
         prompt = "\n\n".join(notification.prompt() for notification in notifications)
 
         if self._active_logical_run_id is not None and self._session_service is not None:
-            logical_run_id = self._active_logical_run_id
             service = self._session_service
+            try:
+                service.accept_input(
+                    self._active_logical_run_id,
+                    [prompt],
+                    origin="feature",
+                )
+            except Exception:
+                logger.debug(
+                    "Active run closed before shell readiness could be accepted",
+                    exc_info=True,
+                )
+                return
+            for notification in notifications:
+                monitor.acknowledge(
+                    notification.process_id,
+                    expected=notification,
+                )
 
-            async def submit() -> None:
+            async def dispatch() -> None:
                 try:
-                    await service.submit_input(
-                        logical_run_id,
-                        [prompt],
-                        origin="feature",
-                    )
+                    await service.dispatch_pending()
                 except Exception:
-                    logger.debug(
-                        "Active run closed before shell readiness could be submitted",
-                        exc_info=True,
-                    )
-                else:
-                    for notification in notifications:
-                        monitor.acknowledge(
-                            notification.process_id,
-                            expected=notification,
-                        )
+                    logger.exception("Shell readiness dispatch failed; the accepted input remains pending")
                 finally:
                     self._shell_notification_task = None
                     if not self._is_foreground_busy():
                         self._route_pending_shell_notifications()
 
-            task = asyncio.create_task(submit(), name="yaacli-shell-notification")
+            task = asyncio.create_task(dispatch(), name="yaacli-shell-notification")
             self._shell_notification_task = task
             self._track_managed_task(task)
             return
 
         if self._is_foreground_busy():
             return
-        for notification in notifications:
-            monitor.acknowledge(notification.process_id, expected=notification)
-        self._launch_agent(prompt, session_input="Background shell readiness")
+        if self._launch_agent(prompt, session_input="Background shell readiness"):
+            for notification in notifications:
+                monitor.acknowledge(notification.process_id, expected=notification)
 
     def _on_agent_task_done(self, task: asyncio.Task[None]) -> None:
         """Recover interaction state if the owning task exits outside normal cleanup."""
@@ -2928,8 +2948,30 @@ class TUIApp:
             if not task.cancelled():
                 task.exception()
             return
+        logical_run_id = self._agent_task_logical_run_id
         self._agent_task = None
+        self._agent_task_logical_run_id = None
         if task.cancelled():
+            if (
+                logical_run_id is not None
+                and self._active_logical_run_id == logical_run_id
+                and self._session_service is not None
+            ):
+                service = self._session_service
+                try:
+                    service.accept_cancel(logical_run_id, reason="agent_task_cancelled_before_start")
+                except Exception:
+                    logger.exception("Failed to persist cancellation for an accepted agent turn")
+                else:
+
+                    async def dispatch_cancel() -> None:
+                        try:
+                            await service.dispatch_pending()
+                        except Exception:
+                            logger.exception("Accepted agent cancellation remains pending dispatch")
+
+                    self._track_managed_task(asyncio.create_task(dispatch_cancel()))
+                self._active_logical_run_id = None
             self._run_started_at = None
             self._run_timer_paused_at = None
             self._agent_phase = "idle"
@@ -3009,22 +3051,51 @@ class TUIApp:
 
         ctx.reset_goal()
 
+    def _accept_agent_turn(
+        self,
+        user_input: str,
+        attachments: Sequence[PendingAttachment] | None,
+    ) -> LogicalRunRecord:
+        """Serialize and durably accept one foreground turn."""
+        if self._session_service is None or self._durable_store is None:
+            raise RuntimeError("Durable session service is not initialized")
+        if self._durable_store.get_session(self._session_id) is None:
+            self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
+        prompt = self._build_user_prompt(user_input, attachments)
+        prompt_items: list[UserContent] = [prompt] if isinstance(prompt, str) else list(prompt)
+        content = cast(
+            list[JsonValue],
+            TypeAdapter(list[UserContent]).dump_python(prompt_items, mode="json"),
+        )
+        return self._session_service.accept_turn(
+            self._session_id,
+            content,
+            descriptor=self._build_runtime_descriptor(self.runtime),
+        )
+
     def _launch_agent(
         self,
         user_input: str,
         attachments: Sequence[PendingAttachment] | None = None,
         *,
         session_input: str | None = None,
-    ) -> None:
-        """Start an agent task after synchronously claiming foreground ownership."""
+    ) -> bool:
+        """Durably accept a turn before claiming the foreground and acknowledging it."""
         if self._agent_task is not None and not self._agent_task.done():
             self._append_system_output("An agent run already owns the foreground.")
-            return
+            return False
         current_task = asyncio.current_task()
         command_reserved = current_task is not None and self._foreground_command_task is current_task
         if self._is_foreground_busy() and not command_reserved:
             self._append_system_output("Foreground work is already in progress.")
-            return
+            return False
+        try:
+            logical_run = self._accept_agent_turn(user_input, attachments)
+        except Exception as exc:
+            self._append_error_output(exc)
+            return False
+
+        self._active_logical_run_id = logical_run.logical_run_id
         if self._run_started_at is None:
             self._run_started_at = time.monotonic()
             self._run_timer_paused_at = None
@@ -3036,7 +3107,9 @@ class TUIApp:
         )
         task = asyncio.create_task(run)
         self._agent_task = task
+        self._agent_task_logical_run_id = logical_run.logical_run_id
         task.add_done_callback(self._on_agent_task_done)
+        return True
 
     async def _run_agent(
         self,
@@ -3071,21 +3144,16 @@ class TUIApp:
 
         wait_task: asyncio.Task[Any] | None = None
         try:
-            if self._durable_store.get_session(self._session_id) is None:
-                self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
-            prompt = self._build_user_prompt(user_input, attachments)
-            prompt_items: list[UserContent] = [prompt] if isinstance(prompt, str) else list(prompt)
-            content = cast(
-                list[JsonValue],
-                TypeAdapter(list[UserContent]).dump_python(prompt_items, mode="json"),
-            )
-            descriptor = self._build_runtime_descriptor(self.runtime)
-            logical_run = await self._session_service.start_turn(
-                self._session_id,
-                content,
-                descriptor=descriptor,
-            )
-            self._active_logical_run_id = logical_run.logical_run_id
+            logical_run_id = self._active_logical_run_id
+            if logical_run_id is None:
+                raise RuntimeError("No durable logical run was accepted for this agent task")
+            logical_run = self._durable_store.get_run(logical_run_id)
+            if logical_run is None:
+                raise RuntimeError(f"Accepted logical run {logical_run_id!r} is unavailable")
+            try:
+                await self._session_service.dispatch_pending()
+            except Exception:
+                logger.exception("Initial turn dispatch failed; the accepted run remains pending")
             wait_task = asyncio.create_task(
                 self._session_service.wait(logical_run.logical_run_id),
                 name=f"yaacli-run:{logical_run.logical_run_id}",
@@ -3107,7 +3175,11 @@ class TUIApp:
                     continue
                 await asyncio.sleep(0.05)
             await wait_task
-            revision = self._current_revision()
+            revision = self._durable_store.get_revision_for_run(logical_run.logical_run_id)
+            if revision is None:
+                raise RuntimeError(
+                    f"Logical run {logical_run.logical_run_id!r} terminated without publishing a revision"
+                )
             self._restore_revision(revision)
             status = str(revision.terminal.get("status", ""))
             if status != LogicalRunStatus.completed.value:
@@ -3215,7 +3287,8 @@ class TUIApp:
             self._display_replay = replay
 
     async def _resolve_durable_action_batch(self, batch: ActionBatch) -> None:
-        if self._session_service is None:
+        session_service = self._session_service
+        if session_service is None:
             raise RuntimeError("Durable session service is not initialized")
         pending = [item for item in batch.items if item.state.value == "pending"]
         if not pending:
@@ -3231,25 +3304,32 @@ class TUIApp:
             if item.decision_kind == "external_result"
         ]
         deferred = DeferredToolRequests(approvals=approvals, calls=calls)
-        results = await self._request_user_action(deferred)
         by_call_id = {item.tool_call_id: item for item in pending}
-        for tool_call_id, result in results.approvals.items():
+        approval_ids = {item.tool_call_id for item in pending if item.decision_kind == "approval"}
+
+        async def persist_result(tool_call_id: str, result: object) -> None:
             item = by_call_id[tool_call_id]
-            decision: dict[str, JsonValue]
-            if result is True:
-                decision = {"approved": True}
+            if tool_call_id in approval_ids:
+                decision: dict[str, JsonValue]
+                if result is True:
+                    decision = {"approved": True}
+                else:
+                    message = result.message if isinstance(result, ToolDenied) else "Tool call denied"
+                    decision = {"approved": False, "message": message}
             else:
-                message = result.message if isinstance(result, ToolDenied) else "Tool call denied"
-                decision = {"approved": False, "message": message}
-            await self._session_service.decide_action(item.action_item_id, decision, actor="tui-user")
-        for tool_call_id, result in results.calls.items():
-            item = by_call_id[tool_call_id]
-            content = result.content if isinstance(result, RetryPromptPart) else result
-            await self._session_service.decide_action(
+                content = result.content if isinstance(result, RetryPromptPart) else result
+                decision = {"result": cast(JsonValue, to_jsonable_python(content))}
+            session_service.accept_action(
                 item.action_item_id,
-                {"result": cast(JsonValue, to_jsonable_python(content))},
+                decision,
                 actor="tui-user",
             )
+
+        await self._request_user_action(deferred, on_result=persist_result)
+        try:
+            await session_service.dispatch_pending()
+        except Exception:
+            logger.exception("Durable action dispatch failed; accepted decisions remain pending")
 
     def _reset_hitl_state(self, *, owner: str | None = None) -> None:
         """Reset one matching HITL interaction, or force-reset all host HITL."""
@@ -3279,6 +3359,7 @@ class TUIApp:
         deferred: DeferredToolRequests,
         *,
         owner: str = "main",
+        on_result: Callable[[str, object], Awaitable[None]] | None = None,
     ) -> DeferredToolResults:
         """Collect user actions without charging HITL wait time to the run timer."""
         if not deferred.approvals and not deferred.calls:
@@ -3288,7 +3369,9 @@ class TUIApp:
             self._hitl_owner = owner
             self._pause_run_timer()
             try:
-                return await self._collect_deferred_user_actions(deferred)
+                if on_result is None:
+                    return await self._collect_deferred_user_actions(deferred)
+                return await self._collect_deferred_user_actions(deferred, on_result=on_result)
             finally:
                 self._resume_run_timer()
                 self._reset_hitl_state(owner=owner)
@@ -3296,6 +3379,8 @@ class TUIApp:
     async def _collect_deferred_user_actions(
         self,
         deferred: DeferredToolRequests,
+        *,
+        on_result: Callable[[str, object], Awaitable[None]] | None = None,
     ) -> DeferredToolResults:
         """Collect explicit decisions/results for every deferred tool request."""
         results = DeferredToolResults()
@@ -3325,12 +3410,17 @@ class TUIApp:
             )
             approved, reason = await self._wait_for_approval_input()
             if approved:
+                result: bool | ToolDenied = True
                 results.approvals[tool_call.tool_call_id] = True
-                self._append_output(f"  [Approved: {tool_call.tool_name}]")
+                confirmation = f"  [Approved: {tool_call.tool_name}]"
             else:
                 denial_reason = reason or "User rejected"
-                results.approvals[tool_call.tool_call_id] = ToolDenied(message=denial_reason)
-                self._append_output(f"  [Rejected: {tool_call.tool_name} - {denial_reason}]")
+                result = ToolDenied(message=denial_reason)
+                results.approvals[tool_call.tool_call_id] = result
+                confirmation = f"  [Rejected: {tool_call.tool_name} - {denial_reason}]"
+            if on_result is not None:
+                await on_result(tool_call.tool_call_id, result)
+            self._append_output(confirmation)
             current_index += 1
 
         for tool_call in deferred.calls:
@@ -3349,15 +3439,19 @@ class TUIApp:
                 try:
                     answers = await self._collect_user_question_answers(tool_call)
                 except _UserInputTimeoutError:
-                    results.calls[tool_call.tool_call_id] = RetryPromptPart(
+                    call_result: Any = RetryPromptPart(
                         content=USER_INPUT_TIMEOUT_PROMPT,
                         tool_name=tool_call.tool_name,
                         tool_call_id=tool_call.tool_call_id,
                     )
-                    self._append_output(f"  [Timed out: {tool_call.tool_name}]")
+                    confirmation = f"  [Timed out: {tool_call.tool_name}]"
                 else:
-                    results.calls[tool_call.tool_call_id] = format_user_question_answers(answers)
-                    self._append_output(f"  [Answered: {tool_call.tool_name}]")
+                    call_result = format_user_question_answers(answers)
+                    confirmation = f"  [Answered: {tool_call.tool_name}]"
+                results.calls[tool_call.tool_call_id] = call_result
+                if on_result is not None:
+                    await on_result(tool_call.tool_call_id, call_result)
+                self._append_output(confirmation)
                 current_index += 1
                 continue
 
@@ -3372,11 +3466,14 @@ class TUIApp:
             content = response or "User declined to provide a deferred tool result."
             if not provided:
                 content = f"Deferred tool call denied by user: {content}"
-            results.calls[tool_call.tool_call_id] = RetryPromptPart(
+            call_result = RetryPromptPart(
                 content=content,
                 tool_name=tool_call.tool_name,
                 tool_call_id=tool_call.tool_call_id,
             )
+            results.calls[tool_call.tool_call_id] = call_result
+            if on_result is not None:
+                await on_result(tool_call.tool_call_id, call_result)
             label = "Provided result" if provided else "Denied deferred call"
             self._append_output(f"  [{label}: {tool_call.tool_name}]")
             current_index += 1
@@ -4111,7 +4208,7 @@ class TUIApp:
         if not task.cancelled():
             self._route_pending_shell_notifications()
 
-    def _schedule_command(self, command: str) -> None:
+    def _schedule_command(self, command: str, *, pending_input: TextArea | None = None) -> None:
         """Schedule a slash command after synchronously reserving idle dispatch."""
         reserve_foreground = not self._is_foreground_busy() and (
             self._foreground_command_task is None or self._foreground_command_task.done()
@@ -4124,21 +4221,33 @@ class TUIApp:
                 self._set_phase(TUIPhase.THINKING)
             else:
                 self._set_phase(TUIPhase.COMMAND_RUNNING)
-        task = asyncio.create_task(self._handle_command(command))
+        task = asyncio.create_task(self._handle_command(command, pending_input=pending_input))
         if reserve_foreground:
             self._foreground_command_task = task
             task.add_done_callback(self._release_foreground_command)
         self._track_managed_task(task)
 
-    def _schedule_skill_or_prompt(self, text: str, attachments: list[PendingAttachment]) -> None:
+    def _schedule_skill_or_prompt(
+        self,
+        text: str,
+        attachments: list[PendingAttachment],
+        input_area: TextArea,
+        compose_snapshot: str,
+    ) -> None:
         """Refresh skill discovery before classifying slash-prefixed user input."""
         self._set_phase(TUIPhase.COMMAND_RUNNING)
-        task = asyncio.create_task(self._handle_skill_or_prompt(text, attachments))
+        task = asyncio.create_task(self._handle_skill_or_prompt(text, attachments, input_area, compose_snapshot))
         self._foreground_command_task = task
         task.add_done_callback(self._release_foreground_command)
         self._track_managed_task(task)
 
-    async def _handle_skill_or_prompt(self, text: str, attachments: list[PendingAttachment]) -> None:
+    async def _handle_skill_or_prompt(
+        self,
+        text: str,
+        attachments: list[PendingAttachment],
+        input_area: TextArea,
+        compose_snapshot: str,
+    ) -> None:
         """Dispatch a catalog-grounded skill invocation or an ordinary prompt."""
         try:
             if self._skill_toolset is not None and self._runtime is not None:
@@ -4154,11 +4263,18 @@ class TUIApp:
                 command_names=self._command_words(),
             )
             if skill_invocation is None:
-                self._launch_agent(text, attachments)
-                return
-
-            agent_prompt = format_skill_invocation(skill_invocation, available_skills)
-            self._launch_agent(agent_prompt, attachments, session_input=text)
+                launched = self._launch_agent(text, attachments)
+            else:
+                agent_prompt = format_skill_invocation(skill_invocation, available_skills)
+                launched = self._launch_agent(agent_prompt, attachments, session_input=text)
+            if launched:
+                self._consume_attachment_snapshot(attachments)
+                self._add_prompt_history(text)
+                current = input_area.buffer.text
+                if current.startswith(compose_snapshot):
+                    input_area.buffer.text = current[len(compose_snapshot) :].lstrip()
+                    input_area.buffer.cursor_position = len(input_area.buffer.text)
+                self._append_user_input(text, attachments)
         except Exception as error:
             logger.exception("Slash dispatch failed: %s", text)
             self._append_error_output(error)
@@ -4191,12 +4307,12 @@ class TUIApp:
 
             if self._accepts_steering():
                 guidance = semantic_text
-                self._detach_pending_attachment_placeholders()
-                input_area.buffer.reset()
                 if guidance:
-                    self._add_prompt_history(guidance)
-                    self._add_steering_message(guidance)
-                    self._append_system_output("Guidance sent to the active run.")
+                    if self._add_steering_message(guidance):
+                        self._detach_pending_attachment_placeholders()
+                        input_area.buffer.reset()
+                        self._add_prompt_history(guidance)
+                        self._append_system_output("Guidance sent to the active run.")
                 elif self._pending_attachments:
                     self._append_system_output(
                         "Images remain attached for the next agent turn; binary input cannot steer an active run."
@@ -4208,20 +4324,25 @@ class TUIApp:
             return
 
         if semantic_text.startswith("/"):
-            self._add_prompt_history(semantic_text)
-            input_area.buffer.reset()
             command_name = semantic_text.split(maxsplit=1)[0].lower()
             if self._is_known_slash_command(command_name):
-                self._detach_pending_attachment_placeholders()
-                self._schedule_command(semantic_text)
+                if self._command_starts_agent(semantic_text):
+                    self._schedule_command(semantic_text, pending_input=input_area)
+                else:
+                    self._add_prompt_history(semantic_text)
+                    self._detach_pending_attachment_placeholders()
+                    input_area.buffer.reset()
+                    self._schedule_command(semantic_text)
             else:
-                # Skill directories can change while the TUI is running. Claim
-                # the current attachments and foreground ownership now, then
-                # refresh before deciding whether this is an explicit skill
-                # selection or an ordinary prompt.
-                attachments = self._consume_pending_attachments()
-                self._append_user_input(semantic_text, attachments)
-                self._schedule_skill_or_prompt(semantic_text, attachments)
+                # Skill directories can change while the TUI is running. Keep
+                # the draft and attachments until the resulting turn is durable.
+                attachments = list(self._pending_attachments)
+                self._schedule_skill_or_prompt(
+                    semantic_text,
+                    attachments,
+                    input_area,
+                    input_area.buffer.text,
+                )
             return
 
         if semantic_text.startswith("!"):
@@ -4246,16 +4367,17 @@ class TUIApp:
         # attachments. Slash commands, direct shell commands, and active-run
         # steering leave the queue intact unless /remove-image changes it.
         self._synchronize_pending_attachments(text)
-        attachments = self._consume_pending_attachments()
+        attachments = list(self._pending_attachments)
         submitted_text = self._strip_attachment_placeholders(text, attachments)
         if not submitted_text and not attachments:
             input_area.buffer.reset()
             return
 
-        self._add_prompt_history(submitted_text)
-        input_area.buffer.reset()
-        self._append_user_input(submitted_text, attachments)
-        self._launch_agent(submitted_text, attachments)
+        if self._launch_agent(submitted_text, attachments):
+            self._consume_pending_attachments()
+            self._add_prompt_history(submitted_text)
+            input_area.buffer.reset()
+            self._append_user_input(submitted_text, attachments)
 
     def _extract_tool_result(self, event: FunctionToolResultEvent | OutputToolResultEvent) -> str:
         """Extract result content from tool result event."""
@@ -4866,10 +4988,13 @@ class TUIApp:
             self._append_output(f"Arguments:\n{args_text}")
         self._append_output(message.content or "[no output]")
 
-    async def _handle_command(self, command: str) -> None:
+    async def _handle_command(self, command: str, *, pending_input: TextArea | None = None) -> None:
         """Handle slash commands."""
         try:
-            await self._handle_command_inner(command)
+            if pending_input is None:
+                await self._handle_command_inner(command)
+            else:
+                await self._handle_command_inner(command, pending_input=pending_input)
         except Exception as e:
             logger.exception("Command failed: %s", command)
             self._append_error_output(e)
@@ -4878,7 +5003,7 @@ class TUIApp:
             if self._app:
                 self._app.invalidate()
 
-    async def _handle_command_inner(self, command: str) -> None:
+    async def _handle_command_inner(self, command: str, *, pending_input: TextArea | None = None) -> None:
         """Inner command dispatch (exceptions caught by _handle_command)."""
         parts = command.split(maxsplit=1)
         cmd = parts[0].lower()
@@ -4941,7 +5066,8 @@ class TUIApp:
                 self._append_user_input(command)
                 await self._paste_clipboard_image()
             case "/goal":
-                self._append_user_input(command)
+                if pending_input is None:
+                    self._append_user_input(command)
                 ctx = self.runtime.ctx
                 if ctx.goal_active:
                     self._append_system_output("Goal is already running. Use Ctrl+C to stop it first.")
@@ -4955,10 +5081,17 @@ class TUIApp:
                     ctx.goal_max_iterations = self.config.general.max_goal_iterations
                     self._goal_usage_start_breakdown = self._session_usage.token_breakdown
                     self._goal_usage_report_pending = False
-                    self._append_system_output(
-                        f"[Goal] Starting goal mode ({ctx.goal_max_iterations} max iterations). Ctrl+C to stop."
-                    )
-                    self._launch_agent(task)
+                    if self._launch_agent(task):
+                        if pending_input is not None:
+                            self._add_prompt_history(command)
+                            self._detach_pending_attachment_placeholders()
+                            pending_input.buffer.reset()
+                            self._append_user_input(command)
+                        self._append_system_output(
+                            f"[Goal] Starting goal mode ({ctx.goal_max_iterations} max iterations). Ctrl+C to stop."
+                        )
+                    else:
+                        ctx.reset_goal()
             case _:
                 # Check custom commands
                 cmd_name = cmd[1:]  # Remove leading /
@@ -4969,9 +5102,15 @@ class TUIApp:
                     prompt = cmd_def.prompt
                     if args.strip():
                         prompt = f"{prompt}\n\nUser instruction: {args.strip()}"
-                    # Show expanded prompt instead of command name
-                    self._append_user_input(prompt)
-                    self._launch_agent(prompt)
+                    # Show the expanded prompt only after its durable turn exists.
+                    if pending_input is None:
+                        self._append_user_input(prompt)
+                        self._launch_agent(prompt)
+                    elif self._launch_agent(prompt):
+                        self._add_prompt_history(command)
+                        self._detach_pending_attachment_placeholders()
+                        pending_input.buffer.reset()
+                        self._append_user_input(prompt)
                 else:
                     candidates = [name.removeprefix("/") for name in self._command_words()]
                     suggestions = difflib.get_close_matches(cmd_name, candidates, n=3, cutoff=0.45)

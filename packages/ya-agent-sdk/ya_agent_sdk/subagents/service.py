@@ -129,12 +129,8 @@ class SubagentRegistry:
         return stored
 
     def _register_descriptor(self, stored: ResolvedSubagentPlan) -> None:
-        existing = self._by_descriptor_id.get(stored.descriptor_id)
-        if existing is None:
+        if stored.descriptor_id not in self._by_descriptor_id:
             self._by_descriptor_id[stored.descriptor_id] = stored
-            return
-        if existing.to_descriptor() != stored.to_descriptor():
-            raise ValueError(f"Subagent descriptor collision for {stored.descriptor_id!r}")
 
 
 @runtime_checkable

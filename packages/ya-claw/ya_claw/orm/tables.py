@@ -115,6 +115,7 @@ class RunRecord(Base):
         Index("ix_runs_session_created_at", "session_id", "created_at"),
         Index("ix_runs_session_sequence_no", "session_id", "sequence_no", unique=True),
         Index("ix_runs_session_status_sequence", "session_id", "status", "sequence_no"),
+        Index("ix_runs_lifecycle_projection", "status", "lifecycle_projected_at", "committed_at"),
         Index("uq_runs_source_delivery", "source_delivery_id", unique=True),
     )
 
@@ -137,6 +138,7 @@ class RunRecord(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lifecycle_projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -162,12 +164,12 @@ class RunInputInboxRecord(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
     delivery_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    origin: Mapped[str] = mapped_column(String(32), default="user")
-    status: Mapped[str] = mapped_column(String(32), default="accepted")
+    origin: Mapped[str] = mapped_column(String(32), default="user", server_default="user")
+    status: Mapped[str] = mapped_column(String(32), default="accepted", server_default="accepted")
     input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     sdk_input_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     enqueue_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
@@ -265,6 +267,21 @@ class SessionMemoryStateRecord(Base):
     memory_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class MemoryLifecycleEffectRecord(Base):
+    __tablename__ = "memory_lifecycle_effects"
+    __table_args__ = (Index("ix_memory_lifecycle_effects_source", "source_session_id", "source_sequence_no"),)
+
+    effect_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    source_session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    projection_run_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    effect_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class AgencyFireRecord(Base):

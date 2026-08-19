@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-import ya_claw.orm.tables  # noqa: F401
 from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import insert
 from sqlalchemy.engine import make_url
 from ya_agent_sdk.inputs import EnqueueReceipt, InputDisposition
-from ya_claw.orm.base import Base
+from ya_claw.cli import ClawCliApplication
 from ya_claw.orm.tables import ProfileRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
@@ -20,11 +20,16 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 def initialize_sqlite_database(tmp_path_factory: pytest.TempPathFactory) -> Callable[[str], None]:
     """Initialize isolated SQLite databases from one schema-only template per worker."""
     template_path = tmp_path_factory.mktemp("sqlite-schema") / "template.sqlite3"
-    template_engine = create_sync_engine(f"sqlite:///{template_path}")
+    database_url = f"sqlite+aiosqlite:///{template_path}"
+    previous_url = os.environ.get("YA_CLAW_DATABASE_URL")
+    os.environ["YA_CLAW_DATABASE_URL"] = database_url
     try:
-        Base.metadata.create_all(template_engine)
+        ClawCliApplication().upgrade_database()
     finally:
-        template_engine.dispose()
+        if previous_url is None:
+            os.environ.pop("YA_CLAW_DATABASE_URL", None)
+        else:
+            os.environ["YA_CLAW_DATABASE_URL"] = previous_url
 
     def initialize(database_url: str, *, profile_names: tuple[str, ...] = ()) -> None:
         url = make_url(database_url)

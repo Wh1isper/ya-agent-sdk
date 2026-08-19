@@ -56,6 +56,7 @@ from ya_claw.execution.input_inbox import (
     mark_run_input_applied,
     reject_open_run_inputs,
 )
+from ya_claw.execution.lifecycle_projection import CompletedRunProjector
 from ya_claw.execution.profile import (
     PROFILE_SNAPSHOT_METADATA_KEY,
     ProfileResolver,
@@ -94,13 +95,6 @@ from ya_claw.workspace.runtime_models import build_session_sandbox_state_from_sa
 
 CLAW_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="ya_claw")
 _ASYNC_DELIVERY_RECOVERY_INTERVAL_SECONDS = 1.0
-
-
-@dataclass(slots=True)
-class AgencyMemorySource:
-    source_session_id: str
-    source_run_id: str | None
-    source_sequence_no: int
 
 
 @dataclass(slots=True)
@@ -220,6 +214,14 @@ class ExecutionSupervisor:
                 raise
             except Exception:
                 logger.exception("Periodic async delivery recovery failed; pending deliveries remain retryable")
+            try:
+                projected = await self.recover_pending_lifecycle_projections()
+                if projected:
+                    logger.info("Periodic lifecycle projection recovery completed run_ids={}", projected)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Periodic lifecycle projection recovery failed; completed runs remain retryable")
 
     async def shutdown(self) -> None:
         self._accepting_submissions = False
@@ -380,24 +382,55 @@ class ExecutionSupervisor:
                 submit_run=self.submit_run,
             )
 
+    async def recover_pending_lifecycle_projections(self) -> list[str]:
+        return await CompletedRunProjector(
+            settings=self._settings,
+            session_factory=self._session_factory,
+            runtime_state=self._runtime_state,
+            run_store=self._run_store,
+            submit_run=self.submit_run,
+            agency_submit_run=self.submit_run,
+        ).recover_pending()
+
     async def startup_recover(self) -> dict[str, list[str]]:
+        empty = {
+            "cancelled_running": [],
+            "recovered_async_tasks": [],
+            "recovered_async_deliveries": [],
+            "recovered_lifecycle_projections": [],
+            "submitted_queued": [],
+        }
         try:
             cancelled_running = await self.cancel_orphaned_running_runs()
-            recovered_async_tasks = await self.recover_stale_async_task_runs()
-            recovered_async_deliveries = await self.recover_pending_async_deliveries()
-            submitted_queued = await self.recover_queued_runs()
         except SQLAlchemyError:
             logger.warning("Run tables are unavailable; skipping startup recovery.")
-            return {
-                "cancelled_running": [],
-                "recovered_async_tasks": [],
-                "recovered_async_deliveries": [],
-                "submitted_queued": [],
-            }
+            return empty
+
+        try:
+            recovered_async_tasks = await self.recover_stale_async_task_runs()
+        except Exception:
+            logger.exception("Stale async task recovery failed; other durable recovery will continue")
+            recovered_async_tasks = []
+        try:
+            recovered_async_deliveries = await self.recover_pending_async_deliveries()
+        except Exception:
+            logger.exception("Async delivery recovery failed; other durable recovery will continue")
+            recovered_async_deliveries = []
+        try:
+            recovered_lifecycle_projections = await self.recover_pending_lifecycle_projections()
+        except Exception:
+            logger.exception("Lifecycle projection recovery failed; queued run recovery will continue")
+            recovered_lifecycle_projections = []
+        try:
+            submitted_queued = await self.recover_queued_runs()
+        except SQLAlchemyError:
+            logger.warning("Run tables became unavailable during queued run recovery.")
+            submitted_queued = []
         return {
             "cancelled_running": cancelled_running,
             "recovered_async_tasks": recovered_async_tasks,
             "recovered_async_deliveries": recovered_async_deliveries,
+            "recovered_lifecycle_projections": recovered_lifecycle_projections,
             "submitted_queued": submitted_queued,
         }
 
@@ -504,6 +537,16 @@ class RunCoordinator:
         self._execution_harness = execution_harness or AgentExecutionHarness()
         self._run_store = run_store or RunStore(settings)
         self._hitl_controller = HitlController()
+
+    def _completed_run_projector(self) -> CompletedRunProjector:
+        return CompletedRunProjector(
+            settings=self._settings,
+            session_factory=self._session_factory,
+            runtime_state=self._runtime_state,
+            run_store=self._run_store,
+            submit_run=self._submit_memory_run,
+            agency_submit_run=self._submit_background_run,
+        )
 
     async def execute(self, run_id: str) -> None:  # noqa: C901
         buffers = ExecutionBuffers()
@@ -655,6 +698,11 @@ class RunCoordinator:
                             run_id,
                             run_record.status,
                         )
+                    if run_record.status == "completed":
+                        try:
+                            await self._completed_run_projector().project(run_id)
+                        except Exception:
+                            logger.exception("Terminal run lifecycle projection failed run_id={}", run_id)
                     return
 
                 fail_run(session_record, run_record)
@@ -741,7 +789,7 @@ class RunCoordinator:
             if buffers.clear_runtime_handle:
                 self._runtime_state.clear_run(run_id)
 
-    async def _commit_successful_run(  # noqa: C901
+    async def _commit_successful_run(
         self,
         *,
         run_id: str,
@@ -836,79 +884,28 @@ class RunCoordinator:
                 buffers.terminal_event_emitted = True
             if not buffers.clear_runtime_handle:
                 self._runtime_state.schedule_run_cleanup(run_id)
-            lifecycle = MemoryLifecycle(
-                settings=self._settings,
-                session_factory=self._session_factory,
-                runtime_state=self._runtime_state,
-                submit_run=self._submit_memory_run,
-                agency_submit_run=self._submit_background_run,
-            )
-            async_task_controller = AsyncTaskController()
-            await async_task_controller.on_run_terminal(
-                db_session,
-                self._settings,
-                self._runtime_state,
-                run_record=run_record,
-                submit_run=self._submit_memory_run,
-            )
-            await async_task_controller.recover_pending_deliveries(
-                db_session,
-                self._settings,
-                self._runtime_state,
-                submit_run=self._submit_memory_run,
-                parent_session_id=session_record.id,
-            )
-            if session_record.session_type == "memory":
-                await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
-            elif session_record.session_type == "async_task":
-                logger.debug("Skipping memory capture for async task session run_id={}", run_record.id)
-            elif session_record.session_type == "agency":
-                agency_lifecycle = AgencyLifecycle(
-                    settings=self._settings,
-                    runtime_state=self._runtime_state,
-                    submit_run=self._submit_background_run,
+            try:
+                async_task_controller = AsyncTaskController()
+                await async_task_controller.on_run_terminal(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    run_record=run_record,
+                    submit_run=self._submit_memory_run,
                 )
-                await agency_lifecycle.on_agency_run_committed(db_session, run_record)
-                if self._settings.agency_memory_capture_enabled:
-                    agency_metadata = (
-                        run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
-                    )
-                    for source in await _agency_memory_sources(db_session, agency_metadata):
-                        await lifecycle.on_run_committed(
-                            source_session_id=source.source_session_id,
-                            source_run_id=source.source_run_id or run_record.id,
-                            source_sequence_no=source.source_sequence_no,
-                            profile_name=run_record.profile_name,
-                            claw_metadata=buffers.claw_metadata,
-                        )
-            else:
-                await lifecycle.on_run_committed(
-                    source_session_id=session_record.id,
-                    source_run_id=run_record.id,
-                    source_sequence_no=run_record.sequence_no,
-                    profile_name=run_record.profile_name,
-                    claw_metadata=buffers.claw_metadata,
+                await async_task_controller.recover_pending_deliveries(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    submit_run=self._submit_memory_run,
+                    parent_session_id=session_record.id,
                 )
-                if self._settings.agency_enabled and run_record.trigger_type != TriggerType.AGENCY_HANDOFF.value:
-                    agency_lifecycle = AgencyLifecycle(
-                        settings=self._settings,
-                        runtime_state=self._runtime_state,
-                        submit_run=self._submit_background_run,
-                    )
-                    await agency_lifecycle.observe_run_output(
-                        db_session,
-                        source_session_id=session_record.id,
-                        source_run_id=run_record.id,
-                        source_sequence_no=run_record.sequence_no,
-                        trigger_type=run_record.trigger_type,
-                        source_kind=run_record.trigger_type,
-                        output_text=run_record.output_text,
-                        metadata={
-                            "profile_name": run_record.profile_name,
-                            "termination_reason": run_record.termination_reason,
-                            "head_success_run_id": session_record.head_success_run_id,
-                        },
-                    )
+            except Exception:
+                logger.exception("Completed run async task projection failed run_id={}", run_id)
+            try:
+                await self._completed_run_projector().project(run_id)
+            except Exception:
+                logger.exception("Completed run lifecycle projection failed run_id={}", run_id)
             logger.info(
                 "Run completed run_id={} session_id={} output_text_chars={}",
                 run_id,
@@ -2009,67 +2006,6 @@ def _agency_primary_source_session_id(agency_metadata: object) -> str | None:
         return value
     source_session_ids = _agency_source_session_ids(agency_metadata)
     return source_session_ids[0] if source_session_ids else None
-
-
-async def _agency_memory_sources(db_session: AsyncSession, agency_metadata: object) -> list[AgencyMemorySource]:
-    if not isinstance(agency_metadata, dict):
-        return []
-    result: list[AgencyMemorySource] = []
-    seen: set[tuple[str, str | None]] = set()
-    for source in _agency_sources(agency_metadata):
-        source_session_id = source.get("source_session_id")
-        source_run_id = source.get("source_run_id")
-        if not isinstance(source_session_id, str) or not source_session_id.strip():
-            continue
-        if source_run_id is not None and not isinstance(source_run_id, str):
-            source_run_id = None
-        key = (source_session_id, source_run_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        sequence_no = await _source_sequence_no(
-            db_session, source_session_id=source_session_id, source_run_id=source_run_id
-        )
-        if sequence_no is None:
-            continue
-        result.append(
-            AgencyMemorySource(
-                source_session_id=source_session_id,
-                source_run_id=source_run_id,
-                source_sequence_no=sequence_no,
-            )
-        )
-    return result
-
-
-def _agency_sources(agency_metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    values = agency_metadata.get("sources")
-    if isinstance(values, list):
-        return [dict(item) for item in values if isinstance(item, dict)]
-    return [
-        {"source_session_id": source_session_id, "source_run_id": None}
-        for source_session_id in _agency_source_session_ids(agency_metadata)
-    ]
-
-
-async def _source_sequence_no(
-    db_session: AsyncSession,
-    *,
-    source_session_id: str,
-    source_run_id: str | None,
-) -> int | None:
-    if isinstance(source_run_id, str) and source_run_id.strip():
-        source_run = await db_session.get(RunRecord, source_run_id)
-        if isinstance(source_run, RunRecord) and source_run.session_id == source_session_id:
-            return source_run.sequence_no
-    result = await db_session.execute(
-        select(RunRecord.sequence_no)
-        .where(RunRecord.session_id == source_session_id)
-        .order_by(RunRecord.sequence_no.desc())
-        .limit(1)
-    )
-    value = result.scalar_one_or_none()
-    return value if isinstance(value, int) else None
 
 
 def _trigger_type_from_run_metadata(run_metadata: dict[str, Any]) -> str | None:

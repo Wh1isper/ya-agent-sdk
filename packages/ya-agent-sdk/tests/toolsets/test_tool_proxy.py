@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field, replace
 from typing import Annotated
-from unittest.mock import MagicMock
 
 import pytest
 from pydantic import Field
-from pydantic_ai import RunContext
+from pydantic_ai import (
+    DeferredToolResults,
+    FunctionToolset,
+    RunContext,
+    RunUsage,
+    Tool,
+    ToolApproved,
+    ToolDefinition,
+    ToolDenied,
+)
+from pydantic_ai.capabilities import AbstractCapability, HandleDeferredToolCalls
+from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.tool_manager import ToolManager
+from pydantic_ai.toolsets import ExternalToolset
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
@@ -141,11 +155,28 @@ def mock_ctx() -> AgentContext:
     return AgentContext(run_id="test-tool-proxy")
 
 
+def _run_context(
+    deps: AgentContext,
+    *,
+    root_capability: AbstractCapability[AgentContext] | None = None,
+) -> RunContext[AgentContext]:
+    ctx = RunContext(
+        deps=deps,
+        model=TestModel(),
+        usage=RunUsage(),
+    )
+    ctx.tool_manager = ToolManager(
+        toolset=FunctionToolset(),
+        root_capability=root_capability,
+        ctx=ctx,
+        tools={},
+    )
+    return ctx
+
+
 @pytest.fixture
 def mock_run_context(mock_ctx: AgentContext) -> RunContext[AgentContext]:
-    ctx = MagicMock(spec=RunContext)
-    ctx.deps = mock_ctx
-    return ctx
+    return _run_context(mock_ctx)
 
 
 @pytest.fixture
@@ -172,6 +203,20 @@ def failing_toolset() -> Toolset:
     return Toolset(tools=[FailingTool])
 
 
+@dataclass
+class ObserveToolHooks(AbstractCapability[AgentContext]):
+    validated: list[str] = field(default_factory=list)
+    executed: list[str] = field(default_factory=list)
+
+    async def before_tool_validate(self, ctx, *, call, tool_def, args):  # type: ignore[no-untyped-def]
+        self.validated.append(call.tool_name)
+        return args
+
+    async def before_tool_execute(self, ctx, *, call, tool_def, args):  # type: ignore[no-untyped-def]
+        self.executed.append(call.tool_name)
+        return args
+
+
 # ---------------------------------------------------------------------------
 # get_tools: always returns exactly 2 tools
 # ---------------------------------------------------------------------------
@@ -185,13 +230,11 @@ async def test_stale_proxy_cache_cannot_call_main_agent_only_tool_from_subagent(
     )
     proxy = ToolProxyToolset(toolsets=[inner])
     parent_ctx = AgentContext()
-    main_run_ctx = MagicMock(spec=RunContext)
-    main_run_ctx.deps = parent_ctx
+    main_run_ctx = _run_context(parent_ctx)
     proxy_tools = await proxy.get_tools(main_run_ctx)
     assert "ask_user_question" in proxy._toolset_tools_cache
 
-    subagent_run_ctx = MagicMock(spec=RunContext)
-    subagent_run_ctx.deps = parent_ctx.create_subagent_context("helper")
+    subagent_run_ctx = _run_context(parent_ctx.create_subagent_context("helper"))
     result = await proxy.call_tool(
         "call_tool",
         {
@@ -216,6 +259,195 @@ async def test_stale_proxy_cache_cannot_call_main_agent_only_tool_from_subagent(
 
     assert isinstance(result, str)
     assert "not available in this agent context" in result
+
+
+@pytest.mark.anyio
+async def test_proxy_dispatches_nested_tool_through_capability_hooks(weather_toolset) -> None:
+    observer = ObserveToolHooks()
+    run_context = _run_context(AgentContext(), root_capability=observer)
+    proxy = ToolProxyToolset(toolsets=[weather_toolset])
+    tools = await proxy.get_tools(run_context)
+
+    result = await proxy.call_tool(
+        "call_tool",
+        {"name": "get_weather", "arguments": {"location": "Rome"}},
+        run_context,
+        tools["call_tool"],
+    )
+
+    assert result == "Weather in Rome: sunny, 25c"
+    assert observer.validated == ["get_weather"]
+    assert observer.executed == ["get_weather"]
+
+
+@pytest.mark.anyio
+async def test_proxy_resolves_inner_approval_before_side_effect() -> None:
+    effects: list[str] = []
+    decisions = [ToolDenied("not allowed"), ToolApproved()]
+    seen: list[ToolCallPart] = []
+
+    async def guarded(value: str) -> str:
+        effects.append(value)
+        return value
+
+    def handle(ctx, requests):  # type: ignore[no-untyped-def]
+        del ctx
+        call = requests.approvals[0]
+        seen.append(call)
+        return DeferredToolResults(approvals={call.tool_call_id: decisions.pop(0)})
+
+    capability = HandleDeferredToolCalls[AgentContext](handler=handle)
+    run_context = _run_context(AgentContext(), root_capability=capability)
+    proxy = ToolProxyToolset(toolsets=[FunctionToolset([Tool(guarded, requires_approval=True)])])
+    tools = await proxy.get_tools(run_context)
+
+    denied = await proxy.call_tool(
+        "call_tool",
+        {"name": "guarded", "arguments": {"value": "first"}},
+        run_context,
+        tools["call_tool"],
+    )
+    approved = await proxy.call_tool(
+        "call_tool",
+        {"name": "guarded", "arguments": {"value": "second"}},
+        run_context,
+        tools["call_tool"],
+    )
+
+    assert isinstance(denied, ToolDenied)
+    assert approved == "second"
+    assert effects == ["second"]
+    assert [call.tool_name for call in seen] == ["guarded", "guarded"]
+    assert all(call.tool_call_id.endswith("__guarded") for call in seen)
+
+
+@pytest.mark.anyio
+async def test_proxy_does_not_reuse_outer_approval_for_inner_tool() -> None:
+    effects: list[str] = []
+    seen: list[ToolCallPart] = []
+
+    async def guarded() -> str:
+        effects.append("executed")
+        return "executed"
+
+    def deny(ctx, requests):  # type: ignore[no-untyped-def]
+        del ctx
+        call = requests.approvals[0]
+        seen.append(call)
+        return DeferredToolResults(approvals={call.tool_call_id: ToolDenied("denied")})
+
+    capability = HandleDeferredToolCalls[AgentContext](handler=deny)
+    run_context = replace(
+        _run_context(AgentContext(), root_capability=capability),
+        tool_call_approved=True,
+        tool_call_id="approved-outer-call",
+    )
+    proxy = ToolProxyToolset(toolsets=[FunctionToolset([Tool(guarded, requires_approval=True)])])
+    tools = await proxy.get_tools(run_context)
+
+    result = await proxy.call_tool(
+        "call_tool",
+        {"name": "guarded", "arguments": {}},
+        run_context,
+        tools["call_tool"],
+    )
+
+    assert isinstance(result, ToolDenied)
+    assert effects == []
+    assert [call.tool_name for call in seen] == ["guarded"]
+
+
+@pytest.mark.anyio
+async def test_proxy_fails_closed_when_inner_approval_is_not_resolved() -> None:
+    effects: list[str] = []
+
+    async def guarded() -> str:
+        effects.append("executed")
+        return "executed"
+
+    def omit(ctx, requests):  # type: ignore[no-untyped-def]
+        del ctx, requests
+        return DeferredToolResults()
+
+    capability = HandleDeferredToolCalls[AgentContext](handler=omit)
+    run_context = _run_context(AgentContext(), root_capability=capability)
+    proxy = ToolProxyToolset(toolsets=[FunctionToolset([Tool(guarded, requires_approval=True)])])
+    tools = await proxy.get_tools(run_context)
+
+    result = await proxy.call_tool(
+        "call_tool",
+        {"name": "guarded", "arguments": {}},
+        run_context,
+        tools["call_tool"],
+    )
+
+    assert isinstance(result, str)
+    assert "Nested deferred tool 'guarded' was not resolved" in result
+    assert effects == []
+
+
+@pytest.mark.anyio
+async def test_proxy_resolves_external_result_with_inner_identity() -> None:
+    seen: list[ToolCallPart] = []
+
+    def handle(ctx, requests):  # type: ignore[no-untyped-def]
+        del ctx
+        call = requests.calls[0]
+        seen.append(call)
+        return DeferredToolResults(calls={call.tool_call_id: "remote result"})
+
+    external = ExternalToolset([
+        ToolDefinition(
+            name="remote",
+            description="Run remotely",
+            parameters_json_schema={
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+        )
+    ])
+    capability = HandleDeferredToolCalls[AgentContext](handler=handle)
+    run_context = _run_context(AgentContext(), root_capability=capability)
+    proxy = ToolProxyToolset(toolsets=[external])
+    tools = await proxy.get_tools(run_context)
+
+    result = await proxy.call_tool(
+        "call_tool",
+        {"name": "remote", "arguments": {"value": "x"}},
+        run_context,
+        tools["call_tool"],
+    )
+
+    assert result == "remote result"
+    assert len(seen) == 1
+    assert seen[0].tool_name == "remote"
+    assert seen[0].args == {"value": "x"}
+    assert seen[0].tool_call_id.endswith("__remote")
+
+
+@pytest.mark.anyio
+async def test_proxy_fails_closed_without_inner_external_resolver() -> None:
+    external = ExternalToolset([
+        ToolDefinition(
+            name="remote",
+            description="Run remotely",
+            parameters_json_schema={"type": "object", "properties": {}},
+        )
+    ])
+    run_context = _run_context(AgentContext())
+    proxy = ToolProxyToolset(toolsets=[external])
+    tools = await proxy.get_tools(run_context)
+
+    result = await proxy.call_tool(
+        "call_tool",
+        {"name": "remote", "arguments": {}},
+        run_context,
+        tools["call_tool"],
+    )
+
+    assert isinstance(result, str)
+    assert "Nested deferred tool 'remote' has no active resolver" in result
 
 
 @pytest.mark.anyio

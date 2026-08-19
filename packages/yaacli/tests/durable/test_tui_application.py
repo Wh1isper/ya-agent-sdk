@@ -50,7 +50,10 @@ session_dir = "{session_dir}"
 
     async with app:
         assert await app._restore_startup_session() is False
-        await app._run_agent("hello durable tui")
+        assert app._launch_agent("hello durable tui") is True
+        task = app._agent_task
+        assert task is not None
+        await task
 
         assert app.has_session_data is True
         assert app._message_history

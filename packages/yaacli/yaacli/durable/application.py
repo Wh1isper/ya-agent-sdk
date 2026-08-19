@@ -34,6 +34,8 @@ class SessionExecutionCoordinator(Protocol):
 
     async def wait(self, logical_run_id: str) -> LogicalRunRecord: ...
 
+    def accept_cancel(self, logical_run_id: str, reason: str) -> None: ...
+
     async def cancel(self, logical_run_id: str, reason: str) -> None: ...
 
 
@@ -149,7 +151,7 @@ class SessionApplicationService:
             source=source,
         )
 
-    async def start_turn(
+    def accept_turn(
         self,
         session_id: str,
         content: Sequence[JsonValue],
@@ -157,8 +159,9 @@ class SessionApplicationService:
         descriptor: RuntimeDescriptor,
         idempotency_key: str | None = None,
     ) -> LogicalRunRecord:
+        """Durably accept one turn without coupling acknowledgement to dispatch."""
         session = self.get_session(session_id)
-        run = self.store.start_run(
+        return self.store.start_run(
             StartRunRequest(
                 session_id=session_id,
                 expected_head_revision_id=session.head_revision_id,
@@ -169,7 +172,26 @@ class SessionApplicationService:
                 executable_version=descriptor.executable_version,
             )
         )
-        await self._require_coordinator().dispatch_outbox()
+
+    async def dispatch_pending(self) -> int:
+        """Best-effort wake the execution backend for already durable work."""
+        return await self._require_coordinator().dispatch_outbox()
+
+    async def start_turn(
+        self,
+        session_id: str,
+        content: Sequence[JsonValue],
+        *,
+        descriptor: RuntimeDescriptor,
+        idempotency_key: str | None = None,
+    ) -> LogicalRunRecord:
+        run = self.accept_turn(
+            session_id,
+            content,
+            descriptor=descriptor,
+            idempotency_key=idempotency_key,
+        )
+        await self.dispatch_pending()
         return run
 
     async def wait(self, logical_run_id: str) -> LogicalRunRecord:
@@ -184,20 +206,35 @@ class SessionApplicationService:
         descriptor: RuntimeDescriptor,
         idempotency_key: str | None = None,
     ) -> RevisionRecord:
-        run = await self.start_turn(
+        run = self.accept_turn(
             session_id,
             content,
             descriptor=descriptor,
             idempotency_key=idempotency_key,
         )
         await self._require_coordinator().wait(run.logical_run_id)
-        session = self.get_session(session_id)
-        if session.head_revision_id is None:
+        revision = self.store.get_revision_for_run(run.logical_run_id)
+        if revision is None:
             raise RuntimeError(f"Logical run {run.logical_run_id!r} terminated without publishing a revision")
-        revision = self.store.get_revision(session.head_revision_id)
-        if revision is None:  # pragma: no cover - database invariant
-            raise RuntimeError(f"Published revision {session.head_revision_id!r} is unavailable")
         return revision
+
+    def accept_input(
+        self,
+        logical_run_id: str,
+        content: Sequence[JsonValue],
+        *,
+        idempotency_key: str | None = None,
+        priority: InputPriority = InputPriority.asap,
+        origin: str = "user",
+    ) -> InputRecord:
+        """Durably accept active-run input before the caller acknowledges it."""
+        return self.store.accept_input(
+            logical_run_id,
+            content,
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
+            priority=priority,
+            origin=origin,
+        )
 
     async def submit_input(
         self,
@@ -208,15 +245,31 @@ class SessionApplicationService:
         priority: InputPriority = InputPriority.asap,
         origin: str = "user",
     ) -> InputRecord:
-        record = self.store.accept_input(
+        record = self.accept_input(
             logical_run_id,
             content,
-            idempotency_key=idempotency_key or str(uuid.uuid4()),
+            idempotency_key=idempotency_key,
             priority=priority,
             origin=origin,
         )
-        await self._require_coordinator().dispatch_outbox()
+        await self.dispatch_pending()
         return record
+
+    def accept_action(
+        self,
+        action_item_id: str,
+        decision: dict[str, JsonValue],
+        *,
+        decision_id: str | None = None,
+        actor: str | None = None,
+    ) -> ActionBatch:
+        """Durably accept one action decision without coupling it to dispatch."""
+        return self.store.decide_action(
+            action_item_id,
+            decision_id=decision_id or str(uuid.uuid4()),
+            decision=decision,
+            actor=actor,
+        )
 
     async def decide_action(
         self,
@@ -226,17 +279,21 @@ class SessionApplicationService:
         decision_id: str | None = None,
         actor: str | None = None,
     ) -> ActionBatch:
-        batch = self.store.decide_action(
+        batch = self.accept_action(
             action_item_id,
-            decision_id=decision_id or str(uuid.uuid4()),
-            decision=decision,
+            decision,
+            decision_id=decision_id,
             actor=actor,
         )
-        await self._require_coordinator().dispatch_outbox()
+        await self.dispatch_pending()
         return batch
 
+    def accept_cancel(self, logical_run_id: str, *, reason: str = "cancelled") -> None:
+        self._require_coordinator().accept_cancel(logical_run_id, reason)
+
     async def cancel(self, logical_run_id: str, *, reason: str = "cancelled") -> None:
-        await self._require_coordinator().cancel(logical_run_id, reason)
+        self.accept_cancel(logical_run_id, reason=reason)
+        await self.dispatch_pending()
 
 
 def _preview_json_values(values: Sequence[JsonValue]) -> str | None:

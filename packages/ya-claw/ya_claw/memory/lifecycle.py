@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from loguru import logger
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_environment import Environment
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
@@ -25,7 +26,7 @@ from ya_claw.execution.profile import (
     capture_execution_profile_descriptor,
 )
 from ya_claw.execution.state_machine import queue_run
-from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
+from ya_claw.orm.tables import MemoryLifecycleEffectRecord, RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
 MEMORY_CONTEXT_TAG = "memory-context"
@@ -170,16 +171,26 @@ class MemoryLifecycle:
         source_sequence_no: int,
         profile_name: str | None,
         claw_metadata: dict[str, Any] | None = None,
+        effect_id: str | None = None,
+        effect_kind: str = "conversation_run",
+        projection_run_id: str | None = None,
     ) -> list[str]:
-        if (
-            not self._settings.memory_enabled
-            or _trigger_type_from_metadata(claw_metadata) in _MEMORY_EXCLUDED_TRIGGER_TYPES
-        ):
+        if not _memory_effect_enabled(self._settings, effect_kind=effect_kind, claw_metadata=claw_metadata):
             return []
         queued_run_ids: list[str] = []
         async with self._session_factory() as db_session:
             source_session = await db_session.get(SessionRecord, source_session_id)
             if not isinstance(source_session, SessionRecord) or source_session.session_type != "conversation":
+                return []
+            claimed = await _claim_memory_effect(
+                db_session,
+                effect_id=effect_id or f"{effect_kind}:{source_run_id}",
+                source_session_id=source_session_id,
+                projection_run_id=projection_run_id or source_run_id,
+                effect_kind=effect_kind,
+                source_sequence_no=source_sequence_no,
+            )
+            if not claimed:
                 return []
             state = await self._ensure_state(db_session, source_session)
             if not state.enabled:
@@ -242,33 +253,46 @@ class MemoryLifecycle:
             if scope is None:
                 return []
             run_record, source_session, state, kind, memory = scope
-            if kind == MemoryJobKind.EXTRACT:
-                state.last_extracted_sequence_no = max(
-                    state.last_extracted_sequence_no,
-                    _int_or_zero(memory.get("source_sequence_end")),
-                )
-                state.turns_since_extract = 0
-                state.extract_count += 1
-                state.extracts_since_summary += 1
-                state.pending_extract = False
-                state.last_extract_run_id = memory_run_id
-                if state.extracts_since_summary >= max(1, self._settings.memory_summary_every_extracts):
-                    run_id = await self._enqueue_or_mark_pending(
-                        db_session,
-                        state,
-                        source_session,
-                        MemoryRunRequest(
-                            source_session_id=source_session.id,
-                            kind=MemoryJobKind.SUMMARY,
-                            reason="extract_threshold",
-                        ),
+            claimed = await _claim_memory_effect(
+                db_session,
+                effect_id=f"memory_run:{memory_run_id}",
+                source_session_id=source_session.id,
+                projection_run_id=memory_run_id,
+                effect_kind="memory_run",
+                source_sequence_no=_int_or_zero(memory.get("source_sequence_end")),
+            )
+            if claimed:
+                if kind == MemoryJobKind.EXTRACT:
+                    state.last_extracted_sequence_no = max(
+                        state.last_extracted_sequence_no,
+                        _int_or_zero(memory.get("source_sequence_end")),
                     )
-                    if run_id is not None:
-                        queued_run_ids.append(run_id)
-            elif kind == MemoryJobKind.SUMMARY:
-                state.extracts_since_summary = 0
-                state.pending_summary = False
-                state.last_summary_run_id = memory_run_id
+                    state.turns_since_extract = 0
+                    state.extract_count += 1
+                    state.extracts_since_summary += 1
+                    state.pending_extract = False
+                    state.last_extract_run_id = memory_run_id
+                    if state.extracts_since_summary >= max(1, self._settings.memory_summary_every_extracts):
+                        run_id = await self._enqueue_or_mark_pending(
+                            db_session,
+                            state,
+                            source_session,
+                            MemoryRunRequest(
+                                source_session_id=source_session.id,
+                                kind=MemoryJobKind.SUMMARY,
+                                reason="extract_threshold",
+                            ),
+                        )
+                        if run_id is not None:
+                            queued_run_ids.append(run_id)
+                elif kind == MemoryJobKind.SUMMARY:
+                    state.extracts_since_summary = 0
+                    state.pending_summary = False
+                    state.last_summary_run_id = memory_run_id
+
+                run_id = await self._enqueue_next_pending(db_session, state, source_session)
+                if run_id is not None:
+                    queued_run_ids.append(run_id)
 
             agency_signal = (
                 source_session.id,
@@ -285,10 +309,6 @@ class MemoryLifecycle:
                     "output_text": run_record.output_text,
                 },
             )
-
-            run_id = await self._enqueue_next_pending(db_session, state, source_session)
-            if run_id is not None:
-                queued_run_ids.append(run_id)
 
             await db_session.commit()
 
@@ -396,7 +416,12 @@ class MemoryLifecycle:
         return run, source_session, state, kind, memory
 
     async def _ensure_state(self, db_session: AsyncSession, source_session: SessionRecord) -> SessionMemoryStateRecord:
-        state = await db_session.get(SessionMemoryStateRecord, source_session.id)
+        result = await db_session.execute(
+            select(SessionMemoryStateRecord)
+            .where(SessionMemoryStateRecord.source_session_id == source_session.id)
+            .with_for_update()
+        )
+        state = result.scalar_one_or_none()
         if isinstance(state, SessionMemoryStateRecord):
             if state.memory_session_id is None:
                 memory_session = await self._ensure_memory_session(db_session, source_session)
@@ -512,6 +537,20 @@ class MemoryLifecycle:
             self._submit_run(run_id)
 
 
+def _memory_effect_enabled(
+    settings: ClawSettings,
+    *,
+    effect_kind: str,
+    claw_metadata: dict[str, Any] | None,
+) -> bool:
+    if not settings.memory_enabled:
+        return False
+    return (
+        effect_kind == "agency_capture"
+        or _trigger_type_from_metadata(claw_metadata) not in _MEMORY_EXCLUDED_TRIGGER_TYPES
+    )
+
+
 def _metadata_memory_enabled(metadata: dict[str, Any], *, default: bool) -> bool:
     memory = metadata.get("memory") if isinstance(metadata, dict) else None
     if isinstance(memory, dict) and isinstance(memory.get("enabled"), bool):
@@ -581,6 +620,35 @@ def _pending_requests(state: SessionMemoryStateRecord) -> list[dict[str, Any]]:
     metadata = dict(state.memory_metadata or {})
     value = metadata.get(_PENDING_MEMORY_REQUESTS_KEY)
     return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+async def _claim_memory_effect(
+    db_session: AsyncSession,
+    *,
+    effect_id: str,
+    source_session_id: str,
+    projection_run_id: str,
+    effect_kind: str,
+    source_sequence_no: int,
+) -> bool:
+    try:
+        async with db_session.begin_nested():
+            db_session.add(
+                MemoryLifecycleEffectRecord(
+                    effect_id=effect_id,
+                    source_session_id=source_session_id,
+                    projection_run_id=projection_run_id,
+                    effect_kind=effect_kind,
+                    source_sequence_no=source_sequence_no,
+                )
+            )
+            await db_session.flush()
+    except IntegrityError:
+        existing = await db_session.get(MemoryLifecycleEffectRecord, effect_id)
+        if isinstance(existing, MemoryLifecycleEffectRecord):
+            return False
+        raise
+    return True
 
 
 def _extract_memory_triggers(claw_metadata: dict[str, Any] | None) -> list[dict[str, Any]]:

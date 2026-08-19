@@ -43,7 +43,6 @@ def validate_resolved_subagent_plan_integrity(plan: ResolvedSubagentPlan) -> Non
         plan.spec,
         plan.normalized_agent_spec,
         plan.template_context,
-        plan.custom_capability_audit,
         plan.injected_policy_ids,
         effective_output_schema=plan.effective_output_schema,
         supports_deferred_output=plan.supports_deferred_output,
@@ -109,7 +108,6 @@ class SubagentPlanResolver:
             spec,
             normalized,
             context,
-            audit,
             injected_policy_ids,
             effective_output_schema=effective_output_schema,
             supports_deferred_output=True,
@@ -155,7 +153,6 @@ class SubagentPlanResolver:
             resolved.spec,
             resolved.normalized_agent_spec,
             resolved.template_context,
-            resolved.custom_capability_audit,
             resolved.injected_policy_ids,
             effective_output_schema=resolved.effective_output_schema,
             supports_deferred_output=resolved.supports_deferred_output,
@@ -192,15 +189,11 @@ class SubagentPlanResolver:
             raise ValueError(f"Subagent {descriptor.spec.route!r} has no model")
         if self.model_policy is not None and not self.model_policy(model_name):
             raise ValueError(f"Subagent {descriptor.spec.route!r} model {model_name!r} is rejected by host policy")
-        audit = self._custom_capability_audit(descriptor.normalized_agent_spec)
-        if audit != descriptor.custom_capability_audit:
-            raise ValueError("Subagent descriptor capability provenance does not match the active catalog")
         self._validate_native_plan(descriptor.normalized_agent_spec)
         fingerprint = _fingerprint(
             descriptor.spec,
             descriptor.normalized_agent_spec,
             descriptor.template_context,
-            descriptor.custom_capability_audit,
             descriptor.injected_policy_ids,
             effective_output_schema=descriptor.effective_output_schema,
             supports_deferred_output=descriptor.supports_deferred_output,
@@ -373,7 +366,6 @@ def _fingerprint(
     spec: SubagentSpec,
     normalized_agent_spec: AgentSpec,
     template_context: AgentTemplateContext,
-    custom_capability_audit: tuple[CustomCapabilityAudit, ...],
     injected_policy_ids: tuple[str, ...],
     *,
     effective_output_schema: dict[str, Any] | None,
@@ -403,7 +395,6 @@ def _fingerprint(
         "linkage": spec.linkage.value,
         "durability": spec.durability.value,
         "template": template_context.model_dump(mode="json"),
-        "custom_capability_audit": [item.model_dump(mode="json") for item in custom_capability_audit],
         "injected_policy_ids": list(injected_policy_ids),
         "effective_output_schema": effective_output_schema,
         "supports_deferred_output": supports_deferred_output,

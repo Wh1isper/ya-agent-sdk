@@ -207,8 +207,16 @@ context, and Environment in reverse order.
 The coordinator owns terminal artifact commit, status transition, durable input
 rejection where applicable, post-run lifecycle processing, event projection, and
 runtime-handle cleanup. It marks success committed immediately after the database
-commit; all later projections are outside the reversible state transition. Process
-shutdown is not used as a hidden compatibility or message-delivery mechanism.
+commit; all later projections are outside the reversible state transition. Completed
+runs keep `lifecycle_projected_at` null until Memory and Agency have durably accepted
+their lifecycle effects. Memory acceptance records a unique effect identity in the same
+transaction as its state changes, so retries are idempotent without collapsing distinct
+effects that reference the same source sequence. Conversation projections preserve
+session sequence: a newer completed run remains unprojected while an earlier marker is
+null. Normal completion attempts projection immediately, while startup and periodic
+recovery replay remaining null markers in commit order. Async-task delivery recovery is
+independent, so one post-commit hook cannot block the other. Process shutdown is not used
+as a hidden compatibility or message-delivery mechanism.
 
 ## Verification Boundary
 

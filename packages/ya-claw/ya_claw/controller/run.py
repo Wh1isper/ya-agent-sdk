@@ -59,6 +59,7 @@ from ya_claw.execution.profile import (
 from ya_claw.execution.state_machine import cancel_run, interrupt_run, queue_run
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
+from ya_claw.session_lineage import require_restore_source
 from ya_claw.workspace.models import metadata_with_workspace
 
 _ACTIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
@@ -611,25 +612,17 @@ class RunController:
         session_id: str,
         restore_from_run_id: str,
     ) -> RunRecord:
-        restore_record = await db_session.get(RunRecord, restore_from_run_id)
-        if not isinstance(restore_record, RunRecord):
-            raise HTTPException(status_code=404, detail=f"Run '{restore_from_run_id}' was not found.")
+        session_record = await db_session.get(SessionRecord, session_id)
+        if not isinstance(session_record, SessionRecord):
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
+        restore_record = await require_restore_source(
+            db_session,
+            target_session=session_record,
+            restore_run_id=restore_from_run_id,
+        )
         restore_session_id = restore_record.session_id
         if restore_session_id == session_id:
             return restore_record
-
-        session_record = await db_session.get(SessionRecord, session_id)
-        ancestor_session_id = session_record.parent_session_id if isinstance(session_record, SessionRecord) else None
-        while isinstance(ancestor_session_id, str) and restore_session_id != ancestor_session_id:
-            ancestor_record = await db_session.get(SessionRecord, ancestor_session_id)
-            ancestor_session_id = (
-                ancestor_record.parent_session_id if isinstance(ancestor_record, SessionRecord) else None
-            )
-        if restore_session_id != ancestor_session_id:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Run '{restore_from_run_id}' is not a valid restore source for session '{session_id}'.",
-            )
 
         try:
             restore_session = await lock_session_reference(db_session, restore_session_id)

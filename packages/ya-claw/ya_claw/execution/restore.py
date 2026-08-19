@@ -3,13 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ya_claw.execution.store import RunStore
 from ya_claw.orm.tables import RunRecord, SessionRecord
-
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+from ya_claw.session_lineage import require_restore_source
 
 
 @dataclass(slots=True)
@@ -31,20 +29,11 @@ async def resolve_restore_run(
     if restore_run_id is None:
         return None
 
-    record = await db_session.get(RunRecord, restore_run_id)
-    if not isinstance(record, RunRecord):
-        raise HTTPException(status_code=404, detail=f"Run '{restore_run_id}' was not found.")
-    if record.session_id != session.id:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Run '{restore_run_id}' does not belong to session '{session.id}'.",
-        )
-    if record.status not in _TERMINAL_STATUSES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Run '{restore_run_id}' is not a terminal restore source for session '{session.id}'.",
-        )
-    return record
+    return await require_restore_source(
+        db_session,
+        target_session=session,
+        restore_run_id=restore_run_id,
+    )
 
 
 async def load_restore_point(

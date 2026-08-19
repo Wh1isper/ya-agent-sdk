@@ -112,7 +112,7 @@ async def test_turn_runs_through_local_coordinator_and_commits_revision(tmp_path
         store.close()
 
 
-async def test_coordinator_retries_delayed_outbox_commands_in_background(
+async def test_run_turn_retries_transient_initial_dispatch_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -133,43 +133,81 @@ async def test_coordinator_retries_delayed_outbox_commands_in_background(
         ),
     )
     original_start = worker.coordinator._start_execution
-    retry_started = asyncio.Event()
     attempts = 0
 
     def transient_start(execution_id: str) -> None:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
+            asyncio.get_running_loop().call_soon(
+                current_time.__setitem__,
+                0,
+                current_time[0] + timedelta(seconds=3),
+            )
             raise RuntimeError("transient dispatch failure")
         original_start(execution_id)
-        retry_started.set()
 
     monkeypatch.setattr(worker.coordinator, "_start_execution", transient_start)
     try:
         service = SessionApplicationService(store, worker.coordinator)
         session = service.create_session(str(tmp_path), session_id="retry-session")
-        with pytest.raises(RuntimeError, match="transient dispatch failure"):
-            await service.start_turn(
+        revision = await asyncio.wait_for(
+            service.run_turn(
                 session.session_id,
                 ["retry me"],
                 descriptor=descriptor,
                 idempotency_key="retry-turn",
-            )
+            ),
+            timeout=5,
+        )
 
-        persisted_session = store.get_session(session.session_id)
-        assert persisted_session is not None
-        assert persisted_session.active_execution_id is not None
-        execution = store.get_execution(persisted_session.active_execution_id)
-        assert execution is not None
-        current_time[0] += timedelta(seconds=3)
-        await asyncio.wait_for(retry_started.wait(), timeout=5)
-
-        run = await asyncio.wait_for(service.wait(execution.logical_run_id), timeout=5)
-        revision = store.get_revision_for_run(run.logical_run_id)
+        run = store.get_run(revision.logical_run_id)
         assert attempts == 2
+        assert run is not None
         assert run.status is LogicalRunStatus.completed
-        assert revision is not None
         assert revision.terminal["output"] == "retried answer"
+    finally:
+        await worker.close()
+        store.close()
+
+
+async def test_cancel_before_dispatch_commits_terminal_revision(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    descriptor = build_runtime_descriptor(
+        agent_spec={"name": "yaacli_main_v2", "model": "test"},
+        main_plan_manifest=_manifest(),
+    )
+    worker = await LocalExecutionWorker.create(
+        store=store,
+        state_path=tmp_path / "coordinator.state",
+        active_descriptor=descriptor,
+        runtime_factory=_runtime_factory(tmp_path, lambda _descriptor: TestModel()),
+    )
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="cancel-before-dispatch")
+        run = service.accept_turn(
+            session.session_id,
+            ["cancel me"],
+            descriptor=descriptor,
+            idempotency_key="cancelled-turn",
+        )
+        service.accept_cancel(run.logical_run_id, reason="cancelled before dispatch")
+
+        await service.dispatch_pending()
+
+        cancelled = store.get_run(run.logical_run_id)
+        revision = store.get_revision_for_run(run.logical_run_id)
+        persisted_session = store.get_session(session.session_id)
+        assert cancelled is not None
+        assert cancelled.status is LogicalRunStatus.cancelled
+        assert revision is not None
+        assert revision.terminal == {
+            "reason": "cancelled before dispatch",
+            "status": "cancelled",
+        }
+        assert persisted_session is not None
+        assert persisted_session.active_execution_id is None
     finally:
         await worker.close()
         store.close()

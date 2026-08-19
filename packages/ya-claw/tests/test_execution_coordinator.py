@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -32,11 +33,19 @@ from ya_claw.execution.coordinator import (
     _runtime_source_metadata,
     _with_cumulative_usage_snapshot,
 )
+from ya_claw.execution.lifecycle_projection import CompletedRunProjector
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.execution.state_machine import interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
 from ya_claw.execution.subagents import resolve_claw_subagent_plan
-from ya_claw.orm.tables import ProfileRecord, RunRecord, SessionAsyncTaskRecord, SessionRecord
+from ya_claw.orm.tables import (
+    MemoryLifecycleEffectRecord,
+    ProfileRecord,
+    RunRecord,
+    SessionAsyncTaskRecord,
+    SessionMemoryStateRecord,
+    SessionRecord,
+)
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
 from ya_claw.workspace import WorkspaceBinding, WorkspaceProvider
 from ya_claw.workspace.models import WorkspaceMountBinding
@@ -996,6 +1005,178 @@ async def test_post_commit_hook_failure_cannot_rewrite_completed_run(
     assert run_record.termination_reason == "completed"
     assert run_record.error_message is None
     assert session_record.head_success_run_id == run_record.id
+    assert run_record.lifecycle_projected_at is not None
+
+
+async def test_completed_run_projection_is_durable_and_idempotent(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    session_record = SessionRecord(
+        id="projection-session",
+        profile_name="general",
+        session_metadata={},
+    )
+    run_record = RunRecord(
+        id="projection-run",
+        session_id=session_record.id,
+        sequence_no=1,
+        status="completed",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[],
+        run_metadata={},
+        output_text="done",
+    )
+    db_session.add_all([session_record, run_record])
+    await db_session.commit()
+    projector = CompletedRunProjector(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        run_store=RunStore(settings),
+    )
+
+    assert await projector.project(run_record.id) is True
+    assert await projector.project(run_record.id) is False
+
+    await db_session.refresh(run_record)
+    assert run_record.lifecycle_projected_at is not None
+
+
+async def test_completed_run_projection_preserves_session_sequence(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    committed_at = datetime(2026, 8, 19, tzinfo=UTC)
+    session_record = SessionRecord(
+        id="ordered-projection-session",
+        profile_name="general",
+        session_metadata={},
+    )
+    older = RunRecord(
+        id="ordered-projection-run-1",
+        session_id=session_record.id,
+        sequence_no=1,
+        status="completed",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[],
+        run_metadata={},
+        output_text="first",
+        committed_at=committed_at,
+    )
+    newer = RunRecord(
+        id="ordered-projection-run-2",
+        session_id=session_record.id,
+        sequence_no=2,
+        status="completed",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[],
+        run_metadata={},
+        output_text="second",
+        committed_at=committed_at + timedelta(seconds=1),
+    )
+    db_session.add_all([session_record, older, newer])
+    await db_session.commit()
+    projector = CompletedRunProjector(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        run_store=RunStore(settings),
+    )
+
+    assert await projector.project(newer.id) is False
+    await db_session.refresh(newer)
+    assert newer.lifecycle_projected_at is None
+
+    assert await projector.recover_pending() == [older.id, newer.id]
+    await db_session.refresh(older)
+    await db_session.refresh(newer)
+    assert older.lifecycle_projected_at is not None
+    assert newer.lifecycle_projected_at is not None
+
+
+async def test_agency_projection_captures_source_memory_with_agency_metadata(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    source_session = SessionRecord(
+        id="agency-memory-source",
+        profile_name="general",
+        session_metadata={},
+    )
+    source_run = RunRecord(
+        id="agency-memory-source-run",
+        session_id=source_session.id,
+        sequence_no=1,
+        status="completed",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[],
+        run_metadata={},
+        output_text="source",
+    )
+    agency_session = SessionRecord(
+        id="agency-memory-session",
+        profile_name="general",
+        session_type="agency",
+        session_metadata={},
+    )
+    agency_run = RunRecord(
+        id="agency-memory-run",
+        session_id=agency_session.id,
+        sequence_no=1,
+        status="completed",
+        trigger_type="agency",
+        profile_name="general",
+        input_parts=[],
+        run_metadata={
+            "agency": {
+                "sources": [
+                    {
+                        "source_session_id": source_session.id,
+                        "source_run_id": source_run.id,
+                    }
+                ]
+            }
+        },
+        output_text="agency output",
+    )
+    db_session.add_all([source_session, source_run, agency_session, agency_run])
+    await db_session.commit()
+    run_store = RunStore(settings)
+    run_store.write_state(
+        agency_run.id,
+        {"context": {"claw_metadata": {"trigger_type": "agency"}}},
+    )
+    projector = CompletedRunProjector(
+        settings=settings.model_copy(update={"memory_extract_every_turns": 100}),
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        run_store=run_store,
+    )
+
+    assert await projector.project(agency_run.id) is True
+
+    effect = await db_session.get(
+        MemoryLifecycleEffectRecord,
+        f"agency:{agency_run.id}:{source_session.id}:1",
+    )
+    memory_state = await db_session.get(SessionMemoryStateRecord, source_session.id)
+    await db_session.refresh(agency_run)
+    assert isinstance(effect, MemoryLifecycleEffectRecord)
+    assert effect.effect_kind == "agency_capture"
+    assert isinstance(memory_state, SessionMemoryStateRecord)
+    assert memory_state.turns_since_extract == 1
+    assert agency_run.lifecycle_projected_at is not None
 
 
 async def test_run_coordinator_loads_restore_point_from_previous_run(

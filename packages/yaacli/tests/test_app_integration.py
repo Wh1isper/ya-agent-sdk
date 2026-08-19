@@ -113,6 +113,12 @@ class MockConfigManager:
         return {}
 
 
+def _stub_agent_turn_acceptance(app: TUIApp) -> None:
+    app._accept_agent_turn = MagicMock(  # type: ignore[method-assign]
+        return_value=MagicMock(logical_run_id="accepted-test-run")
+    )
+
+
 def _session_info(
     session_id: str,
     *,
@@ -1247,6 +1253,7 @@ async def test_tui_app_slash_commands_are_added_to_prompt_history():
         return None
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
     app._submit_input("/commit polish tests", input_area)
 
     command_task = next(iter(app._managed_tasks))
@@ -1570,13 +1577,13 @@ async def test_tui_app_slash_prompt_snapshots_attachments_before_skill_refresh()
     await asyncio.wait_for(refresh_started.wait(), timeout=1)
 
     try:
-        assert app._pending_attachments == []
+        assert app._pending_attachments == [original]
         clipboard_result = ClipboardImageReadResult(image=ClipboardImage(data=b"new", media_type="image/png"))
         with patch("yaacli.app.tui.read_clipboard_image", new=AsyncMock(return_value=clipboard_result)):
             await app._paste_clipboard_image(input_area)
 
-        assert [item.data for item in app._pending_attachments] == [b"new"]
-        assert app._pending_attachments[0].placeholder in input_area.buffer.text
+        assert [item.data for item in app._pending_attachments] == [b"old", b"new"]
+        assert app._pending_attachments[-1].placeholder in input_area.buffer.text
     finally:
         release_refresh.set()
         await dispatch_task
@@ -1669,6 +1676,7 @@ async def test_tui_app_submit_custom_slash_command():
         captured_prompts.append(prompt)
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
 
     app._submit_input("/commit polish tests", input_area)
     assert input_area.buffer.text == ""
@@ -2107,6 +2115,7 @@ async def test_tui_app_real_paste_image_command_delivers_attachment_on_next_prom
         captured_runs.append((prompt, attachments))
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
     input_area.buffer.insert_text("next prompt")
     app._submit_input(input_area.buffer.text.strip(), input_area)
     assert app._agent_task is not None
@@ -2149,6 +2158,7 @@ async def test_tui_app_submit_input_allows_attachment_only_message() -> None:
         captured_runs.append((prompt, attachments))
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
 
     with patch.object(app, "_append_user_input") as mock_append_user_input:
         app._submit_input("", input_area)
@@ -2183,6 +2193,7 @@ async def test_tui_app_submit_input_strips_attachment_placeholder() -> None:
         captured_runs.append((prompt, attachments))
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
 
     with patch.object(app, "_append_user_input") as mock_append_user_input:
         app._submit_input("Please inspect [Attached image 1: image/png 3B]", input_area)
@@ -2240,6 +2251,7 @@ async def test_tui_app_attachment_chips_remain_unique_after_remove_and_readd() -
         captured_runs.append((prompt, attachments))
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
     app._submit_input(submitted_text, input_area)
     assert app._agent_task is not None
     await app._agent_task
@@ -2438,6 +2450,7 @@ async def test_tui_app_submit_slash_command_preserves_visible_queued_attachments
         captured_runs.append((prompt, attachments))
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
     prompt_input = TextArea(text="hello", multiline=True)
     app._submit_input("hello", prompt_input)
     assert app._agent_task is not None
@@ -3153,6 +3166,81 @@ async def test_tui_app_running_input_is_immediate_steering_without_queue(phase: 
     assert any("Guidance sent to the active run" in line for line in app._output_lines)
 
 
+def test_tui_app_steering_acceptance_failure_retains_editor() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    input_area = TextArea(text="keep this guidance", multiline=True)
+    service = MagicMock()
+    service.accept_input.side_effect = RuntimeError("database unavailable")
+    app._session_service = service
+    app._active_logical_run_id = "active-run"
+    app._set_phase(TUIPhase.THINKING)
+
+    app._submit_input("keep this guidance", input_area)
+
+    assert input_area.buffer.text == "keep this guidance"
+    service.accept_input.assert_called_once()
+    assert not any("Guidance sent" in line for line in app._output_lines)
+
+
+@pytest.mark.asyncio
+async def test_tui_app_turn_acceptance_failure_retains_prompt_and_attachments() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    input_area = TextArea(text="keep this prompt", multiline=True)
+    attachment = PendingAttachment(data=b"img", media_type="image/png", size_bytes=3)
+    app._pending_attachments.append(attachment)
+    app._accept_agent_turn = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("database unavailable")
+    )
+
+    with patch.object(app, "_append_user_input") as append_user_input:
+        app._submit_input("keep this prompt", input_area)
+
+    assert input_area.buffer.text == "keep this prompt"
+    assert app._pending_attachments == [attachment]
+    append_user_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tui_app_slash_prompt_acceptance_failure_retains_draft_and_attachments() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    attachment = PendingAttachment(data=b"img", media_type="image/png", size_bytes=3)
+    app._pending_attachments = [attachment]
+    input_area = TextArea(text="/not-a-command keep this", multiline=True)
+    app._launch_agent = MagicMock(return_value=False)  # type: ignore[method-assign]
+
+    app._submit_input(input_area.buffer.text, input_area)
+    task = app._foreground_command_task
+    assert task is not None
+    await task
+
+    assert input_area.buffer.text == "/not-a-command keep this"
+    assert app._pending_attachments == [attachment]
+    assert app._prompt_history == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/goal keep this", "/commit keep this"])
+async def test_tui_app_agent_command_acceptance_failure_retains_draft(command: str) -> None:
+    config = MockConfig(commands={"commit": CommandDefinition(prompt="commit changes")})
+    app = TUIApp(config=config, config_manager=MockConfigManager())
+    app._runtime = MagicMock()
+    app._runtime.ctx = TUIContext()
+    attachment = PendingAttachment(data=b"img", media_type="image/png", size_bytes=3)
+    app._pending_attachments = [attachment]
+    input_area = TextArea(text=command, multiline=True)
+    app._launch_agent = MagicMock(return_value=False)  # type: ignore[method-assign]
+
+    app._submit_input(command, input_area)
+    task = app._foreground_command_task
+    assert task is not None
+    await task
+
+    assert input_area.buffer.text == command
+    assert app._pending_attachments == [attachment]
+    assert app._prompt_history == []
+    assert app.runtime.ctx.goal_active is False
+
+
 @pytest.mark.asyncio
 async def test_tui_app_shell_claim_blocks_back_to_back_prompt_and_second_shell() -> None:
     """A shell submission must own the foreground before its coroutine gets CPU time."""
@@ -3372,6 +3460,7 @@ async def test_tui_app_custom_command_reserves_before_async_dispatch() -> None:
         await release.wait()
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
     app._add_steering_message = MagicMock()  # type: ignore[method-assign]
     app._submit_input("/commit", command_input)
     command_task = app._foreground_command_task
@@ -3419,6 +3508,7 @@ async def test_tui_app_elapsed_timer_starts_when_agent_task_is_launched() -> Non
         await release.wait()
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
     submitted_at = time.monotonic()
 
     app._launch_agent("hello")
@@ -3444,6 +3534,10 @@ async def test_tui_app_immediate_agent_cancellation_clears_timer_and_phase() -> 
         await release.wait()
 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
+    _stub_agent_turn_acceptance(app)
+    service = MagicMock()
+    service.dispatch_pending = AsyncMock(return_value=0)
+    app._session_service = service
     app._launch_agent("hello")
     assert app._agent_task is not None
 
@@ -3453,6 +3547,11 @@ async def test_tui_app_immediate_agent_cancellation_clears_timer_and_phase() -> 
     await asyncio.sleep(0)
 
     assert app._run_started_at is None
+    assert app._active_logical_run_id is None
+    service.accept_cancel.assert_called_once_with(
+        "accepted-test-run",
+        reason="agent_task_cancelled_before_start",
+    )
     assert app.phase == TUIPhase.IDLE
 
 

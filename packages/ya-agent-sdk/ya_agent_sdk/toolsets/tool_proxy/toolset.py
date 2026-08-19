@@ -23,12 +23,14 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 from pydantic_ai import RunContext, Tool
-from pydantic_ai.messages import InstructionPart
+from pydantic_ai.messages import InstructionPart, ToolCallPart
+from pydantic_ai.tool_manager import ToolManager
 from pydantic_ai.toolsets.abstract import AbstractToolset, ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
+from ya_agent_sdk.toolsets._nested_dispatch import execute_nested_tool_call, prepare_nested_tool
 from ya_agent_sdk.toolsets.base import BaseToolset, collect_instruction_parts
 from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
 from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
@@ -636,9 +638,36 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
             )
 
         ts, original_tool = self._toolset_tools_cache[tool_name]
+        parent_manager = ctx.tool_manager
+        if parent_manager is None:
+            raise RuntimeError("ToolProxy requires an active Pydantic AI ToolManager")
 
         try:
-            return await ts.call_tool(tool_name, arguments, ctx, original_tool)
+            prepared_tool = await prepare_nested_tool(parent_manager, ctx, original_tool)
+            nested_manager = ToolManager(
+                toolset=ts,
+                root_capability=parent_manager.root_capability,
+                ctx=ctx,
+                tools={tool_name: prepared_tool},
+                default_max_retries=parent_manager.default_max_retries,
+            )
+            call = ToolCallPart(
+                tool_name=tool_name,
+                args=arguments,
+                tool_call_id=f"{ctx.tool_call_id or self._call_tool_name}__{tool_name}",
+            )
+            validated = await nested_manager.validate_tool_call(
+                call,
+                approved=False,
+                metadata=None,
+                wrap_validation_errors=False,
+            )
+            return await execute_nested_tool_call(
+                nested_manager,
+                validated,
+                call,
+                require_resolution=True,
+            )
         except (ApprovalRequired, CallDeferred):
             raise
         except Exception as e:

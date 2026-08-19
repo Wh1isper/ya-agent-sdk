@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_claw.config import ClawSettings
 from ya_claw.controller.models import CommandPart, ModePart, TextPart, UrlPart
@@ -185,3 +186,37 @@ async def test_state_machine_and_restore_loader(
     explicit_interrupted = await resolve_restore_run(db_session, session, explicit_run_id="run-3")
     assert isinstance(explicit_interrupted, RunRecord)
     assert explicit_interrupted.id == "run-3"
+
+
+async def test_restore_loader_accepts_ancestor_and_rejects_sibling(
+    db_session: AsyncSession,
+) -> None:
+    parent = SessionRecord(id="parent", profile_name="general", session_metadata={})
+    child = SessionRecord(id="child", parent_session_id="parent", profile_name="general", session_metadata={})
+    sibling = SessionRecord(id="sibling", parent_session_id="parent", profile_name="general", session_metadata={})
+    parent_run = RunRecord(
+        id="parent-run",
+        session_id="parent",
+        sequence_no=1,
+        status="completed",
+        trigger_type="api",
+        input_parts=[],
+        run_metadata={},
+    )
+    sibling_run = RunRecord(
+        id="sibling-run",
+        session_id="sibling",
+        sequence_no=1,
+        status="completed",
+        trigger_type="api",
+        input_parts=[],
+        run_metadata={},
+    )
+    db_session.add_all([parent, child, sibling, parent_run, sibling_run])
+    await db_session.commit()
+
+    restored = await resolve_restore_run(db_session, child, explicit_run_id=parent_run.id)
+    assert restored is parent_run
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_restore_run(db_session, child, explicit_run_id=sibling_run.id)
+    assert exc_info.value.status_code == 422

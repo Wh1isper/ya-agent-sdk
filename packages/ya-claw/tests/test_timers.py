@@ -162,7 +162,7 @@ async def test_schedule_controller_dispatch_due_scans_due_records_and_submits_ru
     assert record.next_fire_at.replace(tzinfo=UTC) > now
 
 
-async def test_schedule_fork_session_creates_isolated_run_without_state_restore(
+async def test_schedule_fork_session_restores_source_head_in_isolated_session(
     db_session: AsyncSession,
     settings: ClawSettings,
 ) -> None:
@@ -219,8 +219,8 @@ async def test_schedule_fork_session_creates_isolated_run_without_state_restore(
     assert fork_session.session_metadata["source"] == "schedule"
     assert fork_session.head_run_id != "source-run-1"
     assert run.trigger_type == "schedule"
-    assert run.restore_from_run_id is None
-    assert run.run_metadata["restore_state"] is False
+    assert run.restore_from_run_id == "source-run-1"
+    assert run.run_metadata.get("restore_state") is not False
     assert run.run_metadata["execution_mode"] == "fork_session"
 
 
