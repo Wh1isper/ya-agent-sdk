@@ -9,7 +9,7 @@ import re
 from typing import Protocol, cast
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata
+from ya_agent_sdk.toolsets.search.metadata import ToolMetadata
 
 logger = get_logger(__name__)
 
@@ -77,7 +77,7 @@ class BM25SearchStrategy:
         try:
             from rank_bm25 import BM25Okapi
         except ImportError:
-            msg = "rank-bm25 is required for BM25SearchStrategy. Install it with: pip install ya-agent-sdk[tool-search]"
+            msg = "rank-bm25 is required for BM25SearchStrategy. Install it with: pip install ya-agent-sdk[tool-proxy]"
             raise ImportError(msg) from None
         return cast(type[_BM25Index], BM25Okapi)
 

@@ -25,8 +25,8 @@ from ya_agent_sdk.context import (
 )
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps, filter_mcp_config
 from ya_agent_sdk.subagents import DelegationCapability, SubagentRegistry
+from ya_agent_sdk.toolsets.search import create_best_strategy
 from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME
-from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
 from ya_claw.agency.prompt import AGENCY_SYSTEM_PROMPT
 from ya_claw.config import ClawSettings
@@ -163,7 +163,6 @@ class ClawRuntimeBuilder:
         spec = resolved_spec.model_copy(update={"capabilities": []})
         plan_resolver = build_claw_subagent_plan_resolver()
         return create_agent(
-            model=resolved_spec.model,
             spec=spec,
             custom_capability_types=plan_resolver.catalog.custom_capability_types,
             capabilities=self._resolve_runtime_capabilities(

@@ -89,7 +89,7 @@ OpenAI Responses presets configure reasoning effort, reasoning summaries, storag
 Example:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 runtime = create_agent(
     "openai-responses:gpt-5.6",

@@ -18,6 +18,7 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
 
 from ya_agent_sdk._logger import get_logger
+from ya_agent_sdk.capabilities.foundation.deferred import SupportsDeferredOutput
 from ya_agent_sdk.context import AgentContext
 
 logger = get_logger(__name__)
@@ -62,7 +63,7 @@ class ToolVisibilityCapability(AbstractCapability[AgentContext]):
 
 
 @dataclass(kw_only=True)
-class ToolApprovalCapability(AbstractCapability[AgentContext]):
+class ToolApprovalCapability(SupportsDeferredOutput, AbstractCapability[AgentContext]):
     """Project host approval policy onto native tool definitions."""
 
     tools: frozenset[str] = frozenset()

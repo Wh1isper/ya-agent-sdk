@@ -919,6 +919,8 @@ class RetryConfig(BaseModel):
     ``max_retries`` values remain higher-priority compatibility overrides.
     """
 
+    model_config = {"extra": "forbid"}
+
     tools: int = Field(default=5, ge=0)
     """Pydantic AI retry limit for each tool name."""
 
@@ -928,9 +930,6 @@ class RetryConfig(BaseModel):
     toolset: int = Field(default=5, ge=0)
     """Retry limit for tools exposed by SDK ``Toolset`` instances."""
 
-    tool_search: int = Field(default=5, ge=0)
-    """Retry limit for the SDK tool-search tool."""
-
     tool_proxy: int = Field(default=5, ge=0)
     """Retry limit for each SDK tool-proxy entry point."""
 
@@ -938,6 +937,13 @@ class RetryConfig(BaseModel):
 # =============================================================================
 # Resumable State
 # =============================================================================
+
+
+class ToolProxyState(BaseModel):
+    """Tool Proxy discovery state preserved across session restore."""
+
+    loaded_tools: list[str] = Field(default_factory=list)
+    loaded_namespaces: list[str] = Field(default_factory=list)
 
 
 class ResumableState(BaseModel):
@@ -960,6 +966,8 @@ class ResumableState(BaseModel):
                 state = ResumableState.model_validate_json(f.read())
             new_ctx.restore_state(state)
     """
+
+    model_config = {"extra": "forbid"}
 
     schema_version: Literal[2] = 2
     """Hard-cut durable state schema version."""
@@ -1007,11 +1015,8 @@ class ResumableState(BaseModel):
     notes: dict[str, str] = Field(default_factory=dict)
     """Serialized note entries from NoteManager, keyed by entry key."""
 
-    tool_search_loaded_tools: list[str] = Field(default_factory=list)
-    """Tool names loaded via tool_search during the session."""
-
-    tool_search_loaded_namespaces: list[str] = Field(default_factory=list)
-    """Namespace IDs loaded via tool_search during the session."""
+    tool_proxy: ToolProxyState = Field(default_factory=ToolProxyState)
+    """Tool Proxy discovery state for the session."""
 
     def restore(self, ctx: AgentContext) -> None:
         """Restore state into an AgentContext.
@@ -1047,8 +1052,7 @@ class ResumableState(BaseModel):
         # Restore task_manager from serialized tasks (always reset to avoid stale state)
         ctx.task_manager = TaskManager.from_exported(self.tasks) if self.tasks else TaskManager()
         ctx.note_manager = NoteManager.from_exported(self.notes) if self.notes else NoteManager()
-        ctx.tool_search_loaded_tools = list(self.tool_search_loaded_tools)
-        ctx.tool_search_loaded_namespaces = list(self.tool_search_loaded_namespaces)
+        ctx.tool_proxy = self.tool_proxy.model_copy(deep=True)
 
 
 # =============================================================================
@@ -1265,11 +1269,8 @@ class AgentContext(BaseModel):
     note_manager: NoteManager = Field(default_factory=NoteManager)
     """Note manager for persistent key-value storage within the session."""
 
-    tool_search_loaded_tools: list[str] = Field(default_factory=list)
-    """Tool names loaded via tool_search during the session. Used for session restore."""
-
-    tool_search_loaded_namespaces: list[str] = Field(default_factory=list)
-    """Namespace IDs loaded via tool_search during the session. Used for session restore."""
+    tool_proxy: ToolProxyState = Field(default_factory=ToolProxyState)
+    """Tool Proxy discovery state used for session restore."""
 
     available_skills: dict[str, AvailableSkill] = Field(default_factory=dict, exclude=True)
     """Current effective skill catalog populated by SkillToolset.
@@ -1701,7 +1702,7 @@ class AgentContext(BaseModel):
 
         Returns a shallow copy with per-run state reset while sharing
         long-lived state (env, task manager, note manager, and registries) with
-        the original context.
+        the original context. Mutable Tool Proxy discovery state is copied.
 
         This method is used by stream_agent() to create an isolated context
         for each run, preventing stale per-run state from leaking between
@@ -1740,6 +1741,7 @@ class AgentContext(BaseModel):
                 self.run_input_ledger.model_copy(deep=True) if resume_logical_run else RunInputLedger()
             ),
             "input_router": None,
+            "tool_proxy": self.tool_proxy.model_copy(deep=True),
         }
         new_ctx = self.model_copy(update=update)
         # Reset private state for fresh lifecycle
@@ -1818,8 +1820,7 @@ class AgentContext(BaseModel):
             "auto_load_files": list(self.auto_load_files),
             "task_manager": TaskManager.from_exported(self.task_manager.export_tasks()),
             "note_manager": NoteManager.from_exported(self.note_manager.export_notes()),
-            "tool_search_loaded_tools": list(self.tool_search_loaded_tools),
-            "tool_search_loaded_namespaces": list(self.tool_search_loaded_namespaces),
+            "tool_proxy": self.tool_proxy.model_copy(deep=True),
             # Environment and active-run routing are explicit shared host authorities.
             **override,
         }
@@ -2039,8 +2040,7 @@ class AgentContext(BaseModel):
             auto_load_files=list(self.auto_load_files),
             tasks=self.task_manager.export_tasks(),
             notes=self.note_manager.export_notes(),
-            tool_search_loaded_tools=list(self.tool_search_loaded_tools),
-            tool_search_loaded_namespaces=list(self.tool_search_loaded_namespaces),
+            tool_proxy=self.tool_proxy.model_copy(deep=True),
         )
 
     def with_state(self, state: ResumableState | None) -> Self:

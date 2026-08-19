@@ -46,6 +46,7 @@ from .agent import (
     StreamRecoveryPolicy,
     ToolConfig,
     ToolIdWrapper,
+    ToolProxyState,
     ToolSettings,
 )
 from .note import NoteManager
@@ -78,5 +79,6 @@ __all__ = [
     "TaskStatus",
     "ToolConfig",
     "ToolIdWrapper",
+    "ToolProxyState",
     "ToolSettings",
 ]

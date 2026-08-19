@@ -10,7 +10,7 @@ not a second `create_agent()` composition plane.
 ### SDK feature capabilities
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import (
     FilesystemCapability,
     RuntimeFoundationCapability,
@@ -42,7 +42,7 @@ Wrap ordinary Pydantic AI tools in native `Capability`:
 
 ```python
 from pydantic_ai.capabilities import Capability
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 
 def add(a: int, b: int) -> int:
@@ -186,7 +186,7 @@ Keep the failure domains separate:
 Transport recovery and host execution retries do not consume model-correction budgets.
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import OverallRetryBudget
 
 runtime = create_agent(
@@ -235,7 +235,7 @@ capability hook rather than another adapter hook layer.
 
 - [`subagent.md`](subagent.md) - exact child capability grants
 - [`user-input.md`](user-input.md) - deferred host continuation
-- [`tool-search.md`](tool-search.md) - dynamic tool discovery
+- [`tool-search.md`](tool-search.md) - native deferred tool discovery
 - [`tool-proxy.md`](tool-proxy.md) - fixed proxy entry points
 - [`codeact.md`](codeact.md) - restricted nested orchestration
 - [`environment.md`](environment.md) - filesystem, shell, and resource authority

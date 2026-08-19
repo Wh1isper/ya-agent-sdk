@@ -21,7 +21,7 @@ The CLI uses the Codex device-code login flow, stores credentials in `~/.yaai/au
 SDK users can run:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 async with create_agent("oauth@codex:gpt-5.5") as runtime:
     result = await runtime.agent.run("Hello", deps=runtime.ctx)

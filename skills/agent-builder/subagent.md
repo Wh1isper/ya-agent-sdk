@@ -50,7 +50,7 @@ The layers have distinct responsibilities:
 
 ```python
 from pydantic_ai import AgentSpec
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import (
     RuntimeFoundationCapability,
     build_default_capability_catalog,
@@ -193,7 +193,9 @@ AgentSpec.from_dict(
 SDK built-ins come from `build_default_capability_catalog()`. Selected custom types
 must be added through that catalog's explicit type or selected entry-point inputs.
 Profiles and persisted specs may reference trusted serialization names but cannot add
-Python import targets.
+Python import targets. A custom capability whose tools may emit native deferred output
+must also inherit `SupportsDeferredOutput` so resolved child output types include
+`DeferredToolRequests`.
 
 ## Resolution and Fingerprints
 
@@ -209,12 +211,14 @@ Python import targets.
 7. injects enumerated host policy grants; and
 8. creates a content-addressed immutable plan and descriptor.
 
-The fingerprint includes the complete YA envelope, normalized native spec, template
-projection, custom-type audit, host policy IDs, effective output contract, durability,
-and bounded initial history. It is the full 64-lowercase-hex SHA-256 digest, and the
-content-addressed descriptor ID is `<route>:<full fingerprint>`; host-capability and
-durable-registration identities also retain the full digest. Mutating a plan after
-resolution causes registry or driver validation to fail.
+The fingerprint includes the complete YA envelope, normalized native spec (including
+capability names and configuration), template projection, host policy IDs, effective
+output contract, durability, and bounded initial history. Packaging provenance in
+`custom_capability_audit` is retained separately and does not participate in identity
+or resume compatibility. The fingerprint is the full 64-lowercase-hex SHA-256 digest,
+and the content-addressed descriptor ID is `<route>:<full fingerprint>`;
+host-capability and durable-registration identities also retain the full digest.
+Mutating a plan after resolution causes registry or driver validation to fail.
 
 For restart-durable execution, persist `plan.to_descriptor()` before start and restore
 it with a compatible resolver. Never recover by re-reading a mutable profile name. A

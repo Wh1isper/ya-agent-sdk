@@ -18,7 +18,7 @@ Yet Another Agent SDK for building AI agents with [Pydantic AI](https://ai.pydan
 - Resumable context state plus canonical Pydantic AI message history
 - Native `AgentSpec` profiles and portable subagent execution services
 - Stateless `AgentExecutionHarness` for host-coordinated completed or suspended native segments
-- Tool Search, Tool Proxy, skills, MCP, and CodeAct capability integrations
+- Native Tool Search, Tool Proxy, skills, MCP, and CodeAct capability integrations
 - Human-in-the-loop approval and structured deferred interaction
 - Native logical-run steering through Pydantic AI `AgentRun.enqueue()`
 - Lifecycle, usage, subagent, compact, and handoff event streaming
@@ -38,7 +38,7 @@ pip install 'ya-agent-sdk[docker]'
 pip install 'ya-agent-sdk[web]'
 pip install 'ya-agent-sdk[document]'
 pip install 'ya-agent-sdk[s3]'
-pip install 'ya-agent-sdk[tool-search]'
+pip install 'ya-agent-sdk[tool-proxy]'
 pip install 'ya-agent-sdk[oauth]'
 ```
 
@@ -53,7 +53,7 @@ uv run --package ya-oauth ya-oauth login codex
 Then select the OAuth model string:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 runtime = create_agent("oauth@codex:gpt-5.5")
 ```
@@ -65,7 +65,7 @@ The SDK passes stable session and thread headers into the OAuth provider. YA Cla
 `ya-agent-sdk` includes a built-in OpenAI Responses WebSocket transport for streaming calls. Use either alias to prefer WebSocket with automatic HTTP fallback:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 runtime = create_agent("openai-responses-ws:gpt-5.5")
 # Equivalent alias:
@@ -93,7 +93,7 @@ For workspace development, copy [`packages/ya-agent-sdk/.env.example`](.env.exam
 For the runnable example scripts, copy [`examples/.env.example`](../../examples/.env.example) to `examples/.env`.
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
 runtime = create_agent(
@@ -116,7 +116,7 @@ When stream recovery is enabled, delegated subagents and self forks inherit the 
 Configure native Pydantic AI tool/output correction limits with `create_agent(retries=...)`. The explicit `OverallRetryBudget` capability supplies a separate cumulative run-wide ceiling and is included in `RuntimeFoundationCapability` with a default of three:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import OverallRetryBudget
 
 runtime = create_agent(
@@ -134,7 +134,7 @@ The optional `ask_user_question` tool uses Pydantic AI deferred-tool control flo
 
 ```python
 from pydantic_ai import DeferredToolRequests
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import (
     RuntimeFoundationCapability,
     UserInteractionCapability,
@@ -170,7 +170,7 @@ runtime = create_agent(
 )
 ```
 
-SDK `BaseTool` classes opt in with `codeact = True`; external toolsets attach `ToolDefinition.metadata["codeact"] = True`. Host-managed `NamedMCPToolset` tools opt in by default. Eligible tools remain directly model-visible as well as callable through `run_code`.
+SDK `BaseTool` classes opt in with `codeact = True`; external toolsets attach `ToolDefinition.metadata["codeact"] = True`. Actual tools produced by the private host-managed MCP adapter opt in by default. Eligible tools remain directly model-visible as well as callable through `run_code`.
 
 Host-managed MCP results preserve `structuredContent` as the callable Python value while forwarding accompanying image, audio, or binary content through `ToolReturn.content`. Completed MCP error results are returned as structured values for explicit caller inspection rather than raised as `ModelRetry`; transport or protocol failures without a result become terminal `ToolFailed` outcomes. This avoids consuming per-tool retry budgets or implicitly replaying side effects.
 
@@ -209,7 +209,7 @@ Path masks are opt-in. `ShellSandboxConfig.masked_path_aliases` provides recomme
 Configure shell command review on `AgentContext.security.shell_review` to run a small reviewer model before shell execution:
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig
 
 runtime = create_agent(
@@ -270,7 +270,7 @@ This package lives in the [`ya-mono`](https://github.com/wh1isper/ya-mono) works
 - [Events](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/events.md)
 - [Toolset Architecture](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/toolset.md)
 - [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md)
-- [Tool Search](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/tool-search.md)
+- [Native Tool Search](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/tool-search.md)
 - [Portable Subagent Runtime](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/subagent.md)
 - [Skills System](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/skills.md)
 - [Media Upload](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/media.md)

@@ -4,20 +4,27 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import fields, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic_ai import Agent, AgentSpec, TemplateStr
 from pydantic_ai._spec import CapabilitySpec
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import (
+    CAPABILITY_TYPES,
+    AbstractCapability,
+    CombinedCapability,
+    WrapperCapability,
+)
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.test import TestModel
 
-from ya_agent_sdk.capabilities import CapabilityCatalog
+from ya_agent_sdk.capabilities import CapabilityCatalog, SupportsDeferredOutput
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.subagents.spec import (
     AgentTemplateContext,
@@ -32,6 +39,7 @@ from ya_agent_sdk.subagents.spec import (
 )
 
 ModelPolicy = Callable[[str], bool]
+CapabilityTypeMap = Mapping[str, type[AbstractCapability[Any]]]
 
 
 def validate_resolved_subagent_plan_integrity(plan: ResolvedSubagentPlan) -> None:
@@ -104,13 +112,18 @@ class SubagentPlanResolver:
         self._validate_native_plan(normalized)
         injected_policy_ids = tuple(_capability_identity(capability) for capability in self.host_capabilities)
         effective_output_schema = dict(normalized.output_schema) if normalized.output_schema is not None else None
+        supports_deferred_output = _supports_deferred_output(
+            normalized,
+            self.host_capabilities,
+            capability_types=_capability_type_map(self.catalog),
+        )
         fingerprint = _fingerprint(
             spec,
             normalized,
             context,
             injected_policy_ids,
             effective_output_schema=effective_output_schema,
-            supports_deferred_output=True,
+            supports_deferred_output=supports_deferred_output,
             restart_durable=self.restart_durable,
             initial_history=(),
         )
@@ -124,7 +137,7 @@ class SubagentPlanResolver:
             injected_policy_ids=injected_policy_ids,
             host_capabilities=tuple(copy.deepcopy(self.host_capabilities)),
             effective_output_schema=effective_output_schema,
-            supports_deferred_output=True,
+            supports_deferred_output=supports_deferred_output,
             restart_durable=self.restart_durable,
         )
 
@@ -190,6 +203,12 @@ class SubagentPlanResolver:
         if self.model_policy is not None and not self.model_policy(model_name):
             raise ValueError(f"Subagent {descriptor.spec.route!r} model {model_name!r} is rejected by host policy")
         self._validate_native_plan(descriptor.normalized_agent_spec)
+        if descriptor.supports_deferred_output != _supports_deferred_output(
+            descriptor.normalized_agent_spec,
+            self.host_capabilities,
+            capability_types=_capability_type_map(self.catalog),
+        ):
+            raise ValueError("Subagent descriptor deferred output contract does not match its capabilities")
         fingerprint = _fingerprint(
             descriptor.spec,
             descriptor.normalized_agent_spec,
@@ -256,13 +275,16 @@ class SubagentPlanResolver:
     ) -> tuple[CustomCapabilityAudit, ...]:
         used_names = {
             capability_spec.name
-            for capability_spec in _walk_capability_specs(spec.capabilities)
+            for capability_spec in _walk_capability_specs(
+                spec.capabilities,
+                capability_types=_capability_type_map(self.catalog),
+            )
             if capability_spec.name in self.catalog
         }
         return tuple(
             CustomCapabilityAudit(
                 serialization_name=name,
-                provenance=self.catalog.provenance(name),
+                provenance=self.catalog.provenance(name).display_name,
             )
             for name in sorted(used_names)
         )
@@ -301,22 +323,94 @@ def _render_template_field(value: Any, context: AgentTemplateContext) -> Any:
     return value
 
 
-def _walk_capability_specs(values: Sequence[CapabilitySpec]) -> Iterable[CapabilitySpec]:
+def _capability_type_map(catalog: CapabilityCatalog) -> dict[str, type[AbstractCapability[Any]]]:
+    return {**CAPABILITY_TYPES, **catalog}
+
+
+def _walk_capability_specs(
+    values: Sequence[CapabilitySpec],
+    *,
+    capability_types: CapabilityTypeMap,
+) -> Iterable[CapabilitySpec]:
     for value in values:
         yield value
-        yield from _walk_nested_capability_specs(value.arguments)
+        capability_type = capability_types.get(value.name)
+        if capability_type is None:
+            continue
+        for annotation, argument in _typed_capability_arguments(capability_type, value.arguments):
+            yield from _walk_typed_capability_value(
+                argument,
+                annotation=annotation,
+                capability_types=capability_types,
+            )
 
 
-def _walk_nested_capability_specs(value: Any) -> Iterable[CapabilitySpec]:
-    if isinstance(value, CapabilitySpec):
-        yield value
-        yield from _walk_nested_capability_specs(value.arguments)
-    elif isinstance(value, Mapping):
-        for nested in value.values():
-            yield from _walk_nested_capability_specs(nested)
-    elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
-        for nested in value:
-            yield from _walk_nested_capability_specs(nested)
+def _typed_capability_arguments(
+    capability_type: type[AbstractCapability[Any]],
+    arguments: tuple[Any, ...] | dict[str, Any] | None,
+) -> Iterable[tuple[Any, Any]]:
+    if arguments is None:
+        return
+    signature = inspect.signature(capability_type.from_spec)
+    if isinstance(arguments, Mapping):
+        bound = signature.bind_partial(**arguments)
+    else:
+        bound = signature.bind_partial(*arguments)
+    type_hints = get_type_hints(capability_type.from_spec)
+    for name, value in bound.arguments.items():
+        yield type_hints.get(name), value
+
+
+def _walk_typed_capability_value(
+    value: Any,
+    *,
+    annotation: Any,
+    capability_types: CapabilityTypeMap,
+) -> Iterable[CapabilitySpec]:
+    if annotation is CapabilitySpec:
+        nested_spec = CapabilitySpec.model_validate(value)
+        yield from _walk_capability_specs(
+            (nested_spec,),
+            capability_types=capability_types,
+        )
+        return
+
+    if get_origin(annotation) in (Union, UnionType):
+        non_none = tuple(item for item in get_args(annotation) if item is not type(None))
+        if value is not None and len(non_none) == 1:
+            yield from _walk_typed_capability_value(
+                value,
+                annotation=non_none[0],
+                capability_types=capability_types,
+            )
+
+
+def _supports_deferred_output(
+    spec: AgentSpec,
+    host_capabilities: Sequence[AbstractCapability[Any]] = (),
+    *,
+    capability_types: CapabilityTypeMap,
+) -> bool:
+    if any(
+        issubclass(capability_types[capability_spec.name], SupportsDeferredOutput)
+        for capability_spec in _walk_capability_specs(
+            spec.capabilities,
+            capability_types=capability_types,
+        )
+        if capability_spec.name in capability_types
+    ):
+        return True
+    return any(_host_capability_supports_deferred_output(capability) for capability in host_capabilities)
+
+
+def _host_capability_supports_deferred_output(capability: AbstractCapability[Any]) -> bool:
+    if isinstance(capability, SupportsDeferredOutput):
+        return True
+    if isinstance(capability, CombinedCapability):
+        return any(_host_capability_supports_deferred_output(child) for child in capability.capabilities)
+    if isinstance(capability, WrapperCapability):
+        return _host_capability_supports_deferred_output(capability.wrapped)
+    return False
 
 
 def _capability_identity(capability: AbstractCapability[Any]) -> str:

@@ -147,13 +147,17 @@ host `output_type` that silently overrides native `AgentSpec.output_schema`:
 - without a native `output_schema`, the base is the host's standard child result type;
 - with a native `output_schema`, the base is Pydantic AI `StructuredDict` for that
   schema;
-- when any selected capability may surface stop-the-world approval or external
-  deferral, `DeferredToolRequests` is added to the effective output alternatives; and
+- when a recursively selected capability type or a leaf in the enumerated host grant
+  graph implements `SupportsDeferredOutput`, `DeferredToolRequests` is added to the
+  effective output alternatives; recursive selection follows only native `from_spec()`
+  parameters typed as `CapabilitySpec`, never arbitrary capability metadata; SDK
+  `ToolApprovalCapability` and `UserInteractionCapability` implement that marker; and
 - an unrepresentable host/native combination fails plan resolution.
 
 The effective output contract and deferred-call policy are part of the plan descriptor
-and fingerprint. Structured output never disables host-visible HITL, and enabling HITL
-never discards the native output schema.
+and fingerprint. Restore rejects a descriptor whose deferred flag disagrees with its
+normalized capability specs and host grants. Structured output never disables selected host-visible
+HITL, and enabling HITL never discards the native output schema.
 
 ### 5.2 Portable template projection
 
@@ -413,7 +417,7 @@ Each child execution has:
 
 Sharing a typed durable store does not mean sharing a mutable `AgentContext`. A child
 cannot mutate parent run-local fields by object aliasing. Task, note, input-ledger,
-auto-load, Tool Search, deferred, and usage state are independent snapshots persisted
+auto-load, Tool Proxy, deferred, and usage state are independent snapshots persisted
 with the child execution. Environment and routing authorities are shared only as
 explicit host services and are rebound after restore; they are never recovered from the
 currently visible TUI session.

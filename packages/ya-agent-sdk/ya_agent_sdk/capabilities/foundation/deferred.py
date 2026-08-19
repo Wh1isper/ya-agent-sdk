@@ -10,6 +10,10 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_graph import End
 
 
+class SupportsDeferredOutput:
+    """Marker for capabilities whose tools may emit native deferred output."""
+
+
 @dataclass(kw_only=True)
 class DeferredTerminalCapability(AbstractCapability[Any]):
     """Keep deferred tool requests terminal despite concurrently enqueued input.

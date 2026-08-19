@@ -14,13 +14,20 @@ from pydantic_ai import (
     Tool,
     ToolDenied,
 )
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai._spec import CapabilitySpec
+from pydantic_ai.agent.spec import load_capability_from_nested_spec
+from pydantic_ai.capabilities import AbstractCapability, CombinedCapability, PrefixTools, WrapperCapability
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
-from ya_agent_sdk.capabilities import build_capability_catalog, build_default_capability_catalog
+from ya_agent_sdk.capabilities import (
+    SupportsDeferredOutput,
+    ToolApprovalCapability,
+    build_capability_catalog,
+    build_default_capability_catalog,
+)
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.inputs import (
     EnqueueReceipt,
@@ -47,6 +54,7 @@ from ya_agent_sdk.subagents import (
     SubagentPlanResolver,
     SubagentRegistry,
     SubagentSpec,
+    resolve_subagent_output_type,
 )
 
 
@@ -59,7 +67,7 @@ class AuditCapability(AbstractCapability[AgentContext]):
 
 
 @dataclass
-class DeferredApprovalCapability(AbstractCapability[AgentContext]):
+class DeferredApprovalCapability(SupportsDeferredOutput, AbstractCapability[AgentContext]):
     id: str | None = "deferred-approval"
 
     effects: ClassVar[list[str]] = []
@@ -73,6 +81,30 @@ class DeferredApprovalCapability(AbstractCapability[AgentContext]):
             [Tool(guarded_effect, requires_approval=True)],
             id="approval",
         )
+
+
+@dataclass(init=False)
+class PositionalWrapperCapability(WrapperCapability[AgentContext]):
+    @classmethod
+    def get_serialization_name(cls) -> str:
+        return "PositionalWrapperCapability"
+
+    @classmethod
+    def from_spec(cls, capability: CapabilitySpec) -> PositionalWrapperCapability:
+        return cls(wrapped=load_capability_from_nested_spec(capability))
+
+
+@dataclass(init=False)
+class OptionalWrapperCapability(WrapperCapability[AgentContext]):
+    @classmethod
+    def get_serialization_name(cls) -> str:
+        return "OptionalWrapperCapability"
+
+    @classmethod
+    def from_spec(cls, *, capability: CapabilitySpec | None = None) -> OptionalWrapperCapability:
+        if capability is None:
+            raise ValueError("capability is required")
+        return cls(wrapped=load_capability_from_nested_spec(capability))
 
 
 def test_resolver_normalizes_templates_and_has_stable_fingerprint() -> None:
@@ -99,6 +131,133 @@ def test_resolver_normalizes_templates_and_has_stable_fingerprint() -> None:
     assert str(first.normalized_agent_spec.description) == "Research for YA"
     assert first.custom_capability_audit[0].serialization_name == "AuditCapability"
     assert first.custom_capability_audit[0].provenance.startswith("explicit:")
+
+
+def test_resolver_derives_deferred_output_from_selected_capabilities() -> None:
+    resolver = SubagentPlanResolver(build_default_capability_catalog(), default_model="test")
+    ordinary = resolver.resolve(SubagentSpec(route="ordinary", agent=AgentSpec()))
+    guarded = resolver.resolve(
+        SubagentSpec(
+            route="guarded",
+            agent=AgentSpec.from_dict({"capabilities": ["ToolApprovalCapability"]}),
+        )
+    )
+    host_resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        host_capabilities=(ToolApprovalCapability(),),
+    )
+    host_guarded = host_resolver.resolve(SubagentSpec(route="host-guarded", agent=AgentSpec()))
+    combined_host_resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        host_capabilities=(CombinedCapability([ToolApprovalCapability()]),),
+    )
+    combined_host_guarded = combined_host_resolver.resolve(
+        SubagentSpec(route="combined-host-guarded", agent=AgentSpec())
+    )
+    wrapped_host_resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        host_capabilities=(PrefixTools(wrapped=ToolApprovalCapability(), prefix="host"),),
+    )
+    wrapped_host_guarded = wrapped_host_resolver.resolve(SubagentSpec(route="wrapped-host-guarded", agent=AgentSpec()))
+    nested = resolver.resolve(
+        SubagentSpec(
+            route="nested",
+            agent=AgentSpec.from_dict({
+                "capabilities": [
+                    {
+                        "PrefixTools": {
+                            "prefix": "guarded",
+                            "capability": "ToolApprovalCapability",
+                        }
+                    }
+                ]
+            }),
+        )
+    )
+
+    assert ordinary.supports_deferred_output is False
+    assert resolve_subagent_output_type(ordinary) is str
+    for plan in (guarded, nested, host_guarded, combined_host_guarded, wrapped_host_guarded):
+        assert plan.supports_deferred_output is True
+        assert resolve_subagent_output_type(plan) == [str, DeferredToolRequests]
+    assert resolver.restore(guarded.to_descriptor()).supports_deferred_output is True
+    assert resolver.restore(nested.to_descriptor()).supports_deferred_output is True
+    assert host_resolver.restore(host_guarded.to_descriptor()).supports_deferred_output is True
+    assert combined_host_resolver.restore(combined_host_guarded.to_descriptor()).supports_deferred_output is True
+    assert wrapped_host_resolver.restore(wrapped_host_guarded.to_descriptor()).supports_deferred_output is True
+
+
+@pytest.mark.parametrize(
+    ("wrapper_type", "serialized_capability"),
+    [
+        (
+            PositionalWrapperCapability,
+            {"PositionalWrapperCapability": "ToolApprovalCapability"},
+        ),
+        (
+            OptionalWrapperCapability,
+            {
+                "OptionalWrapperCapability": {
+                    "capability": "ToolApprovalCapability",
+                }
+            },
+        ),
+    ],
+)
+def test_resolver_traverses_typed_custom_wrapper_specs(
+    wrapper_type: type[AbstractCapability[AgentContext]],
+    serialized_capability: dict[str, object],
+) -> None:
+    resolver = SubagentPlanResolver(
+        build_default_capability_catalog(explicit_types=[wrapper_type]),
+        default_model="test",
+    )
+    plan = resolver.resolve(
+        SubagentSpec(
+            route="wrapped",
+            agent=AgentSpec.from_dict({"capabilities": [serialized_capability]}),
+        )
+    )
+
+    audit_names = {audit.serialization_name for audit in plan.custom_capability_audit}
+    assert plan.supports_deferred_output is True
+    assert wrapper_type.__name__ in audit_names
+    assert "ToolApprovalCapability" in audit_names
+    assert resolver.restore(plan.to_descriptor()).supports_deferred_output is True
+
+
+def test_resolver_does_not_treat_arbitrary_capability_arguments_as_nested_specs() -> None:
+    resolver = SubagentPlanResolver(build_default_capability_catalog(), default_model="test")
+    plan = resolver.resolve(
+        SubagentSpec(
+            route="metadata",
+            agent=AgentSpec.from_dict({
+                "capabilities": [
+                    {
+                        "SetToolMetadata": {
+                            "note": "ToolApprovalCapability",
+                            "payload": {"name": []},
+                        }
+                    }
+                ]
+            }),
+        )
+    )
+
+    assert plan.supports_deferred_output is False
+    assert all(audit.serialization_name != "ToolApprovalCapability" for audit in plan.custom_capability_audit)
+
+
+def test_resolver_rejects_descriptor_with_broadened_deferred_output() -> None:
+    resolver = SubagentPlanResolver(build_default_capability_catalog(), default_model="test")
+    plan = resolver.resolve(SubagentSpec(route="ordinary", agent=AgentSpec()))
+    descriptor = plan.to_descriptor().model_copy(update={"supports_deferred_output": True})
+
+    with pytest.raises(ValueError, match="deferred output contract"):
+        resolver.restore(descriptor)
 
 
 def test_packaging_provenance_does_not_change_plan_identity_or_restore() -> None:

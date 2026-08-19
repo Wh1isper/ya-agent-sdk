@@ -18,7 +18,7 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRe
 from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
 from ya_agent_sdk.agents.main import AgentRuntime, RuntimeReadyContext
-from ya_agent_sdk.context import NoteManager, ResumableState, StreamEvent, TaskManager
+from ya_agent_sdk.context import NoteManager, ResumableState, StreamEvent, TaskManager, ToolProxyState
 from ya_agent_sdk.execution import AgentExecutionHarness, AgentSegmentRequest, AgentSegmentStatus
 from ya_agent_sdk.inputs import ActiveRunRegistry, InputDisposition, InputOrigin, RunInputLedger
 from ya_agent_sdk.subagents import DelegationCapability
@@ -493,8 +493,7 @@ class LocalExecutionCoordinator:
         context.active_run_registry = ActiveRunRegistry()
         context.agent_stream_info = {}
         context.auto_load_files = []
-        context.tool_search_loaded_tools = []
-        context.tool_search_loaded_namespaces = []
+        context.tool_proxy = ToolProxyState()
         context.durable_logical_run_id = run.logical_run_id
         context.delegation_scope_id = run.session_id
         context.run_input_ledger = RunInputLedger(logical_run_id=run.logical_run_id)

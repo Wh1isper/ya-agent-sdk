@@ -53,8 +53,8 @@ or deliberately omit it themselves.
 
 `ToolRetryCapability` is a separate host-execution wrapper for configured transient
 exceptions. `ToolTimeoutCapability` bounds one validated execution attempt. Neither
-consumes the native model-correction budget. SDK adapter-local Tool Search or Tool Proxy
-retry settings remain scoped to those wrappers.
+consumes the native model-correction budget. The SDK adapter-local Tool Proxy retry
+setting remains scoped to that implementation adapter.
 
 `ModelRetry`, `ApprovalRequired`, and `CallDeferred` are Pydantic AI control flow and
 must propagate unchanged through SDK adapters and policy wrappers.

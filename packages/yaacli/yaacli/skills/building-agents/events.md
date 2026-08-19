@@ -67,7 +67,7 @@ All events within the same loop share the same `loop_index`.
 ### Usage Example
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.events import (
     AgentExecutionStartEvent,
     AgentExecutionCompleteEvent,
@@ -198,13 +198,13 @@ if isinstance(event, UsageSnapshotEvent) and event.snapshot:
         print(f"Estimated API list price: ${estimate.total_amount}")
 ```
 
-### Tool Search Events
+### Namespace Status Events
 
-Emitted during `ToolSearchToolSet` initialization to report namespace (wrapped toolset) connection status. This event fires once on the first `get_tools()` call after all wrapped toolsets have been initialized.
+Tool Proxy and host-managed MCP adapters emit current namespace availability after checking wrapped toolsets. Later checks may report runtime errors as well as initial connection or skip status.
 
-| Event                 | Description                              | Key Fields         |
-| --------------------- | ---------------------------------------- | ------------------ |
-| `ToolSearchInitEvent` | Namespace initialization status reported | `namespace_status` |
+| Event                  | Description                              | Key Fields         |
+| ---------------------- | ---------------------------------------- | ------------------ |
+| `NamespaceStatusEvent` | Namespace initialization status reported | `namespace_status` |
 
 The `namespace_status` field is a `dict[str, NamespaceStatus]` where each key is a namespace ID and the value is one of:
 
@@ -217,9 +217,9 @@ The `namespace_status` field is a `dict[str, NamespaceStatus]` where each key is
 Required namespaces that fail initialization raise during `__aenter__` and do not appear in this event.
 
 ```python
-from ya_agent_sdk.events import ToolSearchInitEvent, NamespaceStatus
+from ya_agent_sdk.events import NamespaceStatusEvent, NamespaceStatus
 
-if isinstance(event, ToolSearchInitEvent):
+if isinstance(event, NamespaceStatusEvent):
     for ns, status in event.namespace_status.items():
         print(f"  {ns}: {status}")
 ```

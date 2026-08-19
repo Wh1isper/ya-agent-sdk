@@ -16,7 +16,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
-from ya_agent_sdk.capabilities import build_default_capability_catalog
+from ya_agent_sdk.capabilities import SupportsDeferredOutput, build_default_capability_catalog
 from ya_agent_sdk.inputs import InputOrigin, RunInputLedger
 from ya_agent_sdk.subagents import (
     SubagentDeliveryState,
@@ -42,7 +42,7 @@ from yaacli.session import TUIContext
 
 
 @dataclass
-class ApprovalCapability(AbstractCapability[TUIContext]):
+class ApprovalCapability(SupportsDeferredOutput, AbstractCapability[TUIContext]):
     id: str | None = "approval"
 
     effects: ClassVar[list[str]] = []

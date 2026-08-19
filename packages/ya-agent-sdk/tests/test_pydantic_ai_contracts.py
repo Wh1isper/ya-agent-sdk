@@ -150,6 +150,13 @@ async def test_create_agent_preserves_native_spec_name_without_override() -> Non
         assert runtime.agent.name == "native-worker"
 
 
+async def test_create_agent_uses_model_from_spec() -> None:
+    runtime = create_agent(spec=AgentSpec(model="test", name="native-worker"))
+
+    async with runtime:
+        assert runtime.agent.name == "native-worker"
+
+
 async def test_create_agent_explicit_name_overrides_native_spec_name() -> None:
     runtime = create_agent(
         TestModel(call_tools=[]),

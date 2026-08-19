@@ -41,7 +41,7 @@ pip install 'ya-agent-sdk[all]'
 uv add 'ya-agent-sdk[all]'
 ```
 
-Use selective extras such as `docker`, `web`, `document`, `s3`, `tool-search`,
+Use selective extras such as `docker`, `web`, `document`, `s3`, `tool-proxy`,
 `oauth`, or `rs` when a smaller installation is needed.
 
 ## Core Workflows
@@ -49,7 +49,7 @@ Use selective extras such as `docker`, `web`, `document`, `s3`, `tool-search`,
 ### Create and enter a runtime
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
 runtime = create_agent(
@@ -69,7 +69,7 @@ ordering and singleton constraints, and then constructs the Pydantic AI `Agent`.
 ### Compose SDK features
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import (
     FilesystemCapability,
     RuntimeFoundationCapability,
@@ -103,7 +103,7 @@ inject it.
 ### Stream responses
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
 runtime = create_agent(
@@ -123,7 +123,7 @@ you need SDK lifecycle events, logical-run input routing, usage snapshots, or re
 ### Persist and restore sessions
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 async with create_agent("openai-chat:gpt-4o") as runtime:
     result = await runtime.agent.run("Remember this", deps=runtime.ctx)
@@ -141,7 +141,7 @@ Hosts persist both.
 
 ```python
 from pydantic_ai import DeferredToolRequests
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import (
     RuntimeFoundationCapability,
     ToolApprovalCapability,
@@ -195,7 +195,7 @@ inject one `DelegationCapability` backed by a store and driver. See
 | Events               | [`./events.md`](./events.md)                           | Consuming SDK or feature lifecycle events                  |
 | Tools and policies   | [`./toolset.md`](./toolset.md)                         | Writing BaseTool adapters or execution-policy capabilities |
 | Structured input     | [`./user-input.md`](./user-input.md)                   | Approval or external deferred continuation                 |
-| Tool Search          | [`./tool-search.md`](./tool-search.md)                 | Large dynamic tool libraries                               |
+| Native Tool Search   | [`./tool-search.md`](./tool-search.md)                 | Deferred native capabilities and large tool libraries      |
 | Subagents            | [`./subagent.md`](./subagent.md)                       | Child specs, resolution, services, stores, or drivers      |
 | Environment          | [`./environment.md`](./environment.md)                 | Filesystem, shell, resources, and lifecycle authority      |
 | Resumable resources  | [`./resumable-resources.md`](./resumable-resources.md) | Reconstructing long-lived external resources               |

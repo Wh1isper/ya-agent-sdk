@@ -45,10 +45,8 @@ owns the canonical media surface.
 | --- | --- | --- |
 | `WebSearchCapability` | general search and optional stock/image search | typed search provider configuration |
 | `WebContentCapability` | fetch, scrape, download | HTTP/content clients; filesystem for download |
-| `WebCapability` | combined search/content preset | child capabilities only |
 | `SkillsCapability` | skill catalog, routing guidance, load tools, and cached catalog generation | filesystem/catalog sources; resumable activated-skill state where required |
 | `ToolProxyCapability` | proxy protocol, proxy tools, and private proxy adapter | active Pydantic AI `ToolManager` |
-| `NamedMcpCapability` | YA naming, approval, and CodeAct policy around a host-managed MCP server | MCP client and host policy |
 | Pydantic AI `MCP` | native or local MCP without YA-specific wrapping | native Pydantic AI MCP contract |
 | Pydantic AI `ToolSearch` | deferred capability/tool discovery | capabilities with `defer_loading=True` |
 
@@ -58,10 +56,10 @@ SDK `ToolSearchToolSet` is not a public alternative to native Pydantic AI Tool S
 A feature intended for discovery marks its capability `defer_loading=True`, coupling
 its tools, description, model settings, and instructions under one identity.
 
-SDK namespace and replay requirements are implemented on native deferred capabilities
-before the 2.0 cutover. `ToolSearchToolSet`,
-`AgentContext.tool_search_loaded_tools`, and namespace state are removed; there is no
-fallback Tool Search implementation.
+Pydantic AI owns deferred capability discovery and loading. `ToolSearchToolSet` and its
+`AgentContext.tool_search_loaded_*` state are removed; there is no fallback Tool Search
+implementation. Tool Proxy is a separate fixed-surface protocol and persists its typed
+state under `AgentContext.tool_proxy`.
 
 ### 3.2 Tool Proxy
 
@@ -89,8 +87,8 @@ filesystem or network scans do not run independently from multiple prompt paths.
 
 | Capability | Tools and behavior | State boundary |
 | --- | --- | --- |
-| `TaskCapability` | create/get/list/update task tools and task workflow guidance | context-owned `TaskStore` |
-| `NoteCapability` | note read/write/delete tools and note guidance | context-owned `NoteStore` |
+| `TaskCapability` | create/get/list/update task tools and task workflow guidance | context-owned `TaskManager` |
+| `NoteCapability` | note read/write/delete tools and note guidance | context-owned `NoteManager` |
 | `ThinkingCapability` | optional explicit thinking tool | no durable state |
 | `TodoCapability` | optional todo read/write workflow distinct from dependency-aware tasks | context-owned todo store when enabled |
 | `UserInteractionCapability` | `ask_user_question`, deferred interaction guidance, main-agent-only enforcement | host resolves Pydantic AI deferred calls |
@@ -110,8 +108,6 @@ Structured user interaction is absent from child capability sets.
 | `MediaCompatibilityCapability` | request-envelope projection that splits, resizes/compresses, limits, uploads, and filters retained media without persisting provider-specific projection |
 | `ToolArgumentRepairCapability` | repair recoverable truncated tool arguments before lifecycle reduction |
 | `ToolIdCompatibilityCapability` | normalize tool call/result IDs without mutating canonical input objects |
-| `ToolCallCompatibilityCapability` | combined tool argument and ID preset |
-| `ModelCompatibilityCapability` | combined reasoning, media, and tool-call preset |
 | `ContextCompactionCapability` | cache-friendly compaction, typed events, and ordered restoration of applied `RunInputLedger` entries |
 | `ColdStartCapability` | cold-start trim |
 | `FileInspectionCapability` | one-shot request-envelope continuation reminder; replaces the misleading auto-load name |
@@ -134,7 +130,6 @@ metadata enum is renamed from `ModelFeature` to `ModelFeature` without an alias.
 | `ToolVisibilityCapability` | filter prepared definitions, then recheck final host allow/deny and main-agent-only policy before execution |
 | `ToolObservationCapability` | observe one logical validated call around all non-native execution attempts |
 | `ToolRetryCapability` | account for and run non-native execution attempts, separate from model and recovery budgets |
-| `ToolExecutionPolicyCapability` | combined preset over the five policy leaves |
 
 The policy applies through native capability hooks after all built-in and external tool
 contributions are assembled. Visibility and approval use preparation/execution-guard
@@ -148,20 +143,20 @@ observation is omitted. CodeAct eligibility stays trusted tool metadata consumed
 
 | Existing implementation | Capability boundary | Final internal form |
 | --- | --- | --- |
-| core SDK `Toolset` | owning feature capability plus tool policy capabilities | private `BaseTool` adapter until individual tools become native Pydantic AI tools |
-| `BaseToolset` | none | removed as an SDK public base; private adapters use Pydantic AI `AbstractToolset` directly |
+| SDK `BaseTool`, `Toolset`, and `BaseToolset` | owning feature capability or native `Toolset` capability | retained tool-authoring adapters, not `create_agent()` composition inputs |
 | `ToolSearchToolSet` | Pydantic AI `ToolSearch` and deferred feature capabilities | old implementation removed |
-| `ToolProxyToolset` | `ToolProxyCapability` | private manager-backed proxy adapter |
-| `SkillToolset` | `SkillsCapability` | private catalog/tool adapter |
-| `NamedMCPToolset` | Pydantic AI `MCP` or `NamedMcpCapability` | private only when YA policy is required |
+| `ToolProxyToolset` | `ToolProxyCapability` | manager-backed implementation adapter; compose through the capability |
+| `SkillToolset` | `SkillsCapability` | catalog/tool implementation adapter |
+| host-managed MCP adapter | Pydantic AI `MCP`, native `Toolset`, or `ToolProxyCapability` | private only when YA approval, result mapping, or CodeAct policy is required |
 | `CodeActToolset` | `CodeActCapability` | private wrapper toolset |
 | generated subagent tools | `DelegationCapability` | removed; one public-service-backed model tool surface over resolved plans |
 | Environment/resource toolsets | provider-returned capability groups | raw provider toolset contribution removed |
 
-`BaseTool` may remain a private tool-authoring abstraction. Its `call()`, approval
-metadata, availability, and user-input preprocessing are used only inside an owning
-capability. It is not exported as a composition unit, and instruction ownership is
-removed from it.
+`BaseTool`, SDK `Toolset`, and `BaseToolset` remain public tool-authoring adapters for
+built-in and custom feature implementations. Their `call()`, approval metadata,
+availability, preprocessing, and instruction aggregation are used inside an owning
+capability or native Pydantic AI `Toolset` capability. They are not alternate behavior
+inputs to `create_agent()`.
 
 ## 8. Existing Tool Metadata Mapping
 

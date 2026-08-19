@@ -48,23 +48,28 @@ Applications may pass imported classes directly:
 
 ```python
 from acme_agent.capabilities import SearchCapability
-from ya_agent_sdk.capabilities import CapabilityCatalog
+from ya_agent_sdk.capabilities import build_default_capability_catalog
 
-catalog = CapabilityCatalog.create(capability_types=[SearchCapability])
+catalog = build_default_capability_catalog(explicit_types=[SearchCapability])
 ```
 
 A host may combine explicit classes with selected installed entry points through the
-same catalog-construction API. The concrete API may expose class methods or a small
-free function, but it preserves these operations:
+same catalog-construction function:
 
 ```python
+from ya_agent_sdk.capabilities import discover_capability_types
+
 references = discover_capability_types()  # metadata only
 
-catalog = CapabilityCatalog.create(
-    capability_types=[SearchCapability],
-    entry_point_names=["acme.database"],
+catalog = build_default_capability_catalog(
+    explicit_types=[SearchCapability],
+    selected_entry_points=["acme.database"],
 )
 ```
+
+`build_default_capability_catalog()` includes SDK built-ins. The lower-level
+`build_capability_catalog()` is available to hosts that intentionally supply their own
+complete `sdk_types` set.
 
 Passing every discovered name is the explicit "load all installed types" policy. An
 empty selected-name list imports none. The SDK does not silently load ambient entry
@@ -83,8 +88,10 @@ An accepted object must:
 2. satisfy the supported Pydantic AI custom capability serialization contract;
 3. return one non-empty, stable serialization name;
 4. keep schema generation and `from_spec()` deterministic and free of external I/O;
-5. serialize every value required to reconstruct the capability; and
-6. acquire live authorities only from typed runtime dependencies or host APIs.
+5. serialize every value required to reconstruct the capability;
+6. implement `SupportsDeferredOutput` when its tools may emit native deferred output;
+   and
+7. acquire live authorities only from typed runtime dependencies or host APIs.
 
 Third-party serialization names should be namespaced, such as `acme.search`. Renaming a
 serialization name changes the declarative wire contract and requires an explicit data
@@ -138,7 +145,7 @@ class CapabilityCatalog:
         self,
     ) -> tuple[type[AbstractCapability[Any]], ...]: ...
 
-    def resolve_type(self, serialization_name: str) -> type[AbstractCapability[Any]]: ...
+    def __getitem__(self, serialization_name: str) -> type[AbstractCapability[Any]]: ...
 
     def provenance(self, serialization_name: str) -> CapabilityTypeProvenance: ...
 ```

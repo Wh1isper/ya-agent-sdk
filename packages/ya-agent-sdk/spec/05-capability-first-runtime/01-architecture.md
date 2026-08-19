@@ -115,10 +115,14 @@ injected capability and version is visible in the resolved plan and fingerprint.
 runtime entry binds that plan and does not rerun the root merge algorithm.
 
 Declarative plan resolution preserves native `AgentSpec.output_schema`: it becomes the
-base Pydantic AI `StructuredDict` output when present, and the resolver adds
-`DeferredToolRequests` as a separate effective output alternative whenever selected
-tools may suspend for approval/external completion. A host output override cannot
-silently replace either contract. The effective output is fingerprinted.
+base Pydantic AI `StructuredDict` output when present. The resolver adds
+`DeferredToolRequests` as a separate effective output alternative when a selected or
+host-injected capability implements `SupportsDeferredOutput`; native nested
+`CapabilitySpec` fields and standard combined/wrapper capability graphs retain that
+signal. SDK approval and user-interaction capabilities implement the marker. Custom
+capabilities whose tools may suspend for approval or external completion must implement
+it as part of their declared output contract. A host output override cannot silently
+replace either contract. The effective output is fingerprinted.
 
 All declarative profiles render native `TemplateStr` values through the portable
 `template: AgentTemplateContext` dependency projection, whose exact cross-host schema is
@@ -160,11 +164,6 @@ toolset is explicitly wrapped by the Pydantic AI Toolset capability inside
 - Pydantic AI `ReinjectSystemPrompt`; and
 - `OverallRetryBudget` when configured.
 
-`ToolCallCompatibilityCapability` and `ModelCompatibilityCapability` are convenience
-presets over the corresponding leaves. Presets do not introduce a base class or an
-opaque internal pipeline. Pydantic AI flattens nested combined capabilities, allowing
-the leaves to participate in the same ordering pass.
-
 Required relationships use `CapabilityOrdering.requires`, `wraps`, and `wrapped_by`.
 List order breaks ties among leaves ready in the same topological batch; active
 constraints may still move a node past another node with which it has no direct path.
@@ -185,9 +184,9 @@ final assembled Pydantic AI function-tool surface through independently useful l
 - `ToolRetryCapability` for non-native execution retry accounting.
 
 CodeAct eligibility remains trusted tool metadata consumed by `CodeActCapability`; it
-is not a policy capability by itself. `ToolExecutionPolicyCapability` combines the five
-policy leaves. Filesystem, shell, web, external plugin, and other feature capabilities
-do not depend on a monolithic SDK `Toolset` for policy.
+is not a policy capability by itself. Hosts select the independently useful policy
+leaves explicitly. Filesystem, shell, web, external plugin, and other feature
+capabilities do not depend on a monolithic SDK `Toolset` for policy.
 
 The leaves use native capability hooks rather than a five-deep wrapper-toolset stack.
 Visibility filters the prepared definitions and rechecks the validated execution
@@ -218,9 +217,8 @@ state remains in context-owned stores or host persistence.
 
 ### 7.1 Durable stores
 
-`TaskManager` and `NoteManager` become store abstractions, named `TaskStore` and
-`NoteStore`. The default implementations remain owned by `AgentContext` and round-trip
-through `ResumableState`.
+`TaskManager` and `NoteManager` remain the context-owned task and note state
+abstractions. Their default implementations round-trip through `ResumableState`.
 
 `RunInputLedger` is context-owned resumable state keyed by logical run ID. It records
 accepted initial and enqueued user inputs in product order, preserving structured
@@ -253,15 +251,16 @@ Construction-time capability instances are otherwise immutable.
 
 | Object | Owner |
 | --- | --- |
-| task data | context-owned `TaskStore` |
-| note data | context-owned `NoteStore` |
+| task data | context-owned `TaskManager` |
+| note data | context-owned `NoteManager` |
 | logical-run user input record | context-owned `RunInputLedger` and `ResumableState` |
 | handoff and file-inspection continuation state | context and `ResumableState` |
 | Pydantic AI `ToolManager` | Pydantic AI |
 | tool ID mapping | run-local `ToolIdCompatibilityCapability` helper |
 | model feature metadata | `ModelFeature`, not a capability manager |
 | skill catalog/cache | run-local `SkillsCapability` service |
-| Tool Search loaded state | Pydantic AI Tool Search and canonical history |
+| native Tool Search loaded state | Pydantic AI Tool Search and canonical history |
+| Tool Proxy discovery state | context-owned `ToolProxyState` and `ResumableState` |
 | shell process registry | Environment `Shell` |
 | shell completion formatting/delivery | `ShellCapability` |
 | Claw background monitors | Claw host services |

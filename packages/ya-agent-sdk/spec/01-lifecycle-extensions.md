@@ -23,7 +23,7 @@ Typical uses include:
 `lifecycle_extensions=` sequence:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension
 from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 

@@ -1,14 +1,14 @@
-"""Deterministic tool-search retrieval evaluation cases."""
+"""Deterministic tool retrieval evaluation cases."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata
+from ya_agent_sdk.toolsets.search.metadata import ToolMetadata
 
 
 @dataclass(frozen=True)
-class ToolSearchEvalCase:
+class SearchEvalCase:
     """A fixed query and expected search result set for tool retrieval evaluation."""
 
     id: str
@@ -265,98 +265,98 @@ def build_eval_catalog() -> list[ToolMetadata]:
     ]
 
 
-EVAL_CASES: tuple[ToolSearchEvalCase, ...] = (
-    ToolSearchEvalCase(
+EVAL_CASES: tuple[SearchEvalCase, ...] = (
+    SearchEvalCase(
         id="exact_shell_exec", query="shell_exec", expected=frozenset({"shell_exec"}), category="exact_name"
     ),
-    ToolSearchEvalCase(id="exact_grep", query="grep", expected=frozenset({"grep"}), category="exact_name"),
-    ToolSearchEvalCase(
+    SearchEvalCase(id="exact_grep", query="grep", expected=frozenset({"grep"}), category="exact_name"),
+    SearchEvalCase(
         id="snake_case_stock_price",
         query="stock price",
         expected=frozenset({"get_stock_price"}),
         acceptable=frozenset({"finance"}),
         category="snake_case",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="snake_case_old_new_string",
         query="old string new string",
         expected=frozenset({"edit"}),
         category="parameter",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="file_regex_search",
         query="search file contents regex",
         expected=frozenset({"grep"}),
         forbidden=frozenset({"search"}),
         category="multi_term",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="background_process_monitor",
         query="start background process monitor output",
         expected=frozenset({"shell_monitor"}),
         acceptable=frozenset({"shell"}),
         category="multi_term",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="download_file_url",
         query="download file from url",
         expected=frozenset({"download"}),
         category="multi_term",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="calendar_attendees",
         query="attendees start time title",
         expected=frozenset({"create_calendar_event"}),
         acceptable=frozenset({"calendar"}),
         category="parameter",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="email_subject_body",
         query="recipient subject body",
         expected=frozenset({"send_email"}),
         acceptable=frozenset({"mail"}),
         category="parameter",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="filesystem_namespace",
         query="read write edit files",
         expected=frozenset({"filesystem", "view", "write", "edit"}),
         category="namespace",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="calendar_namespace",
         query="calendar schedule meeting",
         expected=frozenset({"calendar", "create_calendar_event"}),
         category="namespace",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="mail_namespace",
         query="email inbox reply forward",
         expected=frozenset({"mail", "reply_email", "send_email"}),
         category="namespace",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="website_to_markdown",
         query="turn website into markdown",
         expected=frozenset({"scrape"}),
         acceptable=frozenset({"web"}),
         category="intent",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="check_url_exists",
         query="check http resource exists",
         expected=frozenset({"fetch"}),
         acceptable=frozenset({"web"}),
         category="intent",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="send_chat_message",
         query="send chat message to someone",
         expected=frozenset({"send_message"}),
         acceptable=frozenset({"im"}),
         category="intent",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="search_chat_history",
         query="search chat history",
         expected=frozenset({"search_messages"}),
@@ -364,7 +364,7 @@ EVAL_CASES: tuple[ToolSearchEvalCase, ...] = (
         forbidden=frozenset({"search", "grep"}),
         category="ambiguous",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="web_search_docs",
         query="search the web for docs",
         expected=frozenset({"search"}),
@@ -372,7 +372,7 @@ EVAL_CASES: tuple[ToolSearchEvalCase, ...] = (
         forbidden=frozenset({"grep", "search_messages"}),
         category="ambiguous",
     ),
-    ToolSearchEvalCase(
+    SearchEvalCase(
         id="local_file_search",
         query="search local file contents",
         expected=frozenset({"grep"}),
@@ -380,8 +380,8 @@ EVAL_CASES: tuple[ToolSearchEvalCase, ...] = (
         forbidden=frozenset({"search"}),
         category="ambiguous",
     ),
-    ToolSearchEvalCase(id="empty_query", query="", expected=frozenset(), category="negative"),
-    ToolSearchEvalCase(
+    SearchEvalCase(id="empty_query", query="", expected=frozenset(), category="negative"),
+    SearchEvalCase(
         id="unknown_capability",
         query="quantum banana allocator",
         expected=frozenset(),

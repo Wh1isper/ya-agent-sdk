@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata
+from ya_agent_sdk.toolsets.search.metadata import ToolMetadata
 
 logger = get_logger(__name__)
 

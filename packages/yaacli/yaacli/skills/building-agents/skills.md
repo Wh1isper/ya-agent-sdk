@@ -33,7 +33,7 @@ flowchart TB
 ## Quick Start
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import (
     FilesystemCapability,
     RuntimeFoundationCapability,

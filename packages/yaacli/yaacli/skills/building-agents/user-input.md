@@ -8,7 +8,7 @@ The SDK does not register this tool by default. Only enable it in a host that su
 
 ```python
 from pydantic_ai import DeferredToolRequests
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import (
     RuntimeFoundationCapability,
     UserInteractionCapability,

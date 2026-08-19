@@ -41,7 +41,7 @@ flowchart TB
 ## Basic Usage
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 
 runtime = create_agent("openai-chat:gpt-4o")
 

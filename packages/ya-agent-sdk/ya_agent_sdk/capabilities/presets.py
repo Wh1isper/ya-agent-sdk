@@ -28,34 +28,6 @@ from .foundation.retry import OverallRetryBudget
 
 
 @dataclass
-class ToolCallCompatibilityCapability(CombinedCapability[AgentContext]):
-    """Combine argument repair and tool-ID compatibility leaves."""
-
-    capabilities: Sequence[AbstractCapability[AgentContext]] = field(
-        default_factory=lambda: [
-            ToolArgumentRepairCapability(),
-            ToolIdCompatibilityCapability(),
-        ]
-    )
-    id: str | None = "tool_call_compatibility"
-
-
-@dataclass
-class ModelCompatibilityCapability(CombinedCapability[AgentContext]):
-    """Combine reasoning, media, and tool-call compatibility leaves."""
-
-    capabilities: Sequence[AbstractCapability[AgentContext]] = field(
-        default_factory=lambda: [
-            ReasoningCompatibilityCapability(),
-            MediaCompatibilityCapability(),
-            ToolArgumentRepairCapability(),
-            ToolIdCompatibilityCapability(),
-        ]
-    )
-    id: str | None = "model_compatibility"
-
-
-@dataclass
 class RuntimeFoundationCapability(CombinedCapability[AgentContext]):
     """Explicit reference-host foundation for history and terminal semantics."""
 

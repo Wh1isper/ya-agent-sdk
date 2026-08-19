@@ -22,7 +22,7 @@ The sync flow is:
 | [`events.md`](events.md)                           | Event model and sideband events     |
 | [`toolset.md`](toolset.md)                         | Toolset architecture                |
 | [`user-input.md`](user-input.md)                   | Structured deferred user input      |
-| [`tool-search.md`](tool-search.md)                 | Dynamic tool search                 |
+| [`tool-search.md`](tool-search.md)                 | Native deferred tool search         |
 | [`subagent.md`](subagent.md)                       | Portable subagent architecture      |
 | [`skills.md`](skills.md)                           | SDK skill system internals          |
 | [`environment.md`](environment.md)                 | Environment abstractions            |

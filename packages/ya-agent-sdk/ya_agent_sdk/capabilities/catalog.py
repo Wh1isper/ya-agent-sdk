@@ -7,13 +7,47 @@ import importlib.metadata
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai import AgentSpec
+from pydantic_ai.capabilities import CAPABILITY_TYPES, AbstractCapability
 
 ENTRY_POINT_GROUP = "ya_agent_sdk.capabilities"
 
 CapabilityType = type[AbstractCapability[Any]]
+CapabilitySourceKind = Literal["sdk", "explicit", "entry_point"]
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityTypeReference:
+    """Metadata for one capability entry point, without importing its target."""
+
+    entry_point_name: str
+    import_target: str
+    distribution_name: str | None
+    distribution_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityTypeProvenance:
+    """Structured origin of one validated capability type."""
+
+    serialization_name: str
+    source_kind: CapabilitySourceKind
+    class_module: str
+    class_qualname: str
+    entry_point: CapabilityTypeReference | None = None
+
+    @property
+    def display_name(self) -> str:
+        """Return a concise stable value for logs and persisted audit records."""
+        class_name = f"{self.class_module}.{self.class_qualname}"
+        if self.entry_point is None:
+            return f"{self.source_kind}:{class_name}"
+        distribution = self.entry_point.distribution_name or "unknown"
+        if self.entry_point.distribution_version:
+            distribution = f"{distribution}@{self.entry_point.distribution_version}"
+        return f"entry-point:{distribution}:{self.entry_point.entry_point_name}={self.entry_point.import_target}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +56,7 @@ class CapabilityRegistration:
 
     serialization_name: str
     capability_type: CapabilityType
-    source: str
+    provenance: CapabilityTypeProvenance
 
 
 class CapabilityCatalog(Mapping[str, CapabilityType]):
@@ -52,11 +86,28 @@ class CapabilityCatalog(Mapping[str, CapabilityType]):
     def custom_capability_types(self) -> tuple[CapabilityType, ...]:
         return tuple(item.capability_type for item in self._registrations)
 
-    def provenance(self, serialization_name: str) -> str:
+    def provenance(self, serialization_name: str) -> CapabilityTypeProvenance:
         for item in self._registrations:
             if item.serialization_name == serialization_name:
-                return item.source
+                return item.provenance
         raise KeyError(serialization_name)
+
+
+def discover_capability_types() -> tuple[CapabilityTypeReference, ...]:
+    """Discover capability plugin metadata without importing plugin code."""
+
+    references = (_entry_point_reference(entry_point) for entry_point in _entry_points())
+    return tuple(
+        sorted(
+            references,
+            key=lambda item: (
+                item.entry_point_name,
+                item.distribution_name or "",
+                item.distribution_version or "",
+                item.import_target,
+            ),
+        )
+    )
 
 
 def build_capability_catalog(
@@ -69,26 +120,25 @@ def build_capability_catalog(
 
     registrations: dict[str, CapabilityRegistration] = {}
     for capability_type in sdk_types:
-        _register(
-            registrations,
-            capability_type,
-            source="sdk",
-        )
+        _register(registrations, capability_type, source_kind="sdk")
     for capability_type in explicit_types:
-        _register(
-            registrations,
-            capability_type,
-            source=f"explicit:{capability_type.__module__}.{capability_type.__qualname__}",
-        )
+        _register(registrations, capability_type, source_kind="explicit")
 
     for registration in _load_selected_entry_points(selected_entry_points):
         _register(
             registrations,
             registration.capability_type,
-            source=registration.source,
+            source_kind="entry_point",
+            entry_point=registration.provenance.entry_point,
         )
 
-    return CapabilityCatalog(tuple(registrations.values()))
+    catalog = CapabilityCatalog(tuple(registrations.values()))
+    try:
+        AgentSpec.model_json_schema_with_capabilities(catalog.custom_capability_types)
+    except Exception as exc:
+        origins = [registration.provenance.display_name for registration in catalog.registrations]
+        raise ValueError(f"Capability catalog schema validation failed for {origins!r}: {exc}") from exc
+    return catalog
 
 
 def _load_selected_entry_points(
@@ -99,7 +149,7 @@ def _load_selected_entry_points(
         return ()
 
     discovered: dict[str, list[importlib.metadata.EntryPoint]] = {}
-    for entry_point in importlib.metadata.entry_points(group=ENTRY_POINT_GROUP):
+    for entry_point in _entry_points():
         if entry_point.name in selected:
             discovered.setdefault(entry_point.name, []).append(entry_point)
 
@@ -107,51 +157,84 @@ def _load_selected_entry_points(
     if missing:
         raise ValueError(f"Selected capability entry points were not found: {sorted(missing)!r}")
 
-    registrations: list[CapabilityRegistration] = []
-    for name in selected:
-        matches = discovered[name]
-        if len(matches) != 1:
-            sources = sorted(_entry_point_source(item) for item in matches)
-            raise ValueError(f"Capability entry point {name!r} is provided more than once: {sources!r}")
-        entry_point = matches[0]
-        loaded = entry_point.load()
-        if not isinstance(loaded, type) or not issubclass(loaded, AbstractCapability):
-            raise TypeError(f"Capability entry point {name!r} must load one AbstractCapability class")
-        capability_type = cast(CapabilityType, loaded)
-        serialization_name = _serialization_name(capability_type)
-        if name != serialization_name:
-            raise ValueError(
-                f"Capability entry point name {name!r} must equal serialization name {serialization_name!r}"
-            )
-        registrations.append(
-            CapabilityRegistration(
-                serialization_name=serialization_name,
-                capability_type=capability_type,
-                source=_entry_point_source(entry_point),
-            )
-        )
+    registrations = [_load_entry_point(_select_entry_point(name, discovered[name])) for name in selected]
     return tuple(registrations)
+
+
+def _select_entry_point(
+    name: str,
+    matches: Sequence[importlib.metadata.EntryPoint],
+) -> importlib.metadata.EntryPoint:
+    if len(matches) == 1:
+        return matches[0]
+    references = sorted(
+        (_entry_point_reference(item) for item in matches),
+        key=lambda item: (
+            item.distribution_name or "",
+            item.distribution_version or "",
+            item.import_target,
+        ),
+    )
+    raise ValueError(f"Capability entry point {name!r} is provided more than once: {references!r}")
+
+
+def _load_entry_point(entry_point: importlib.metadata.EntryPoint) -> CapabilityRegistration:
+    reference = _entry_point_reference(entry_point)
+    try:
+        loaded = entry_point.load()
+    except Exception as exc:
+        raise ImportError(f"Failed to load capability entry point {reference!r}") from exc
+    if not isinstance(loaded, type) or not issubclass(loaded, AbstractCapability):
+        raise TypeError(f"Capability entry point {reference!r} must load one AbstractCapability class")
+    capability_type = cast(CapabilityType, loaded)
+    try:
+        serialization_name = _serialization_name(capability_type)
+    except TypeError as exc:
+        raise TypeError(f"Invalid capability entry point {reference!r}: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"Invalid capability entry point {reference!r}: {exc}") from exc
+    if reference.entry_point_name != serialization_name:
+        raise ValueError(
+            f"Capability entry point {reference!r} name must equal serialization name {serialization_name!r}"
+        )
+    return CapabilityRegistration(
+        serialization_name=serialization_name,
+        capability_type=capability_type,
+        provenance=_provenance(
+            serialization_name,
+            capability_type,
+            source_kind="entry_point",
+            entry_point=reference,
+        ),
+    )
 
 
 def _register(
     registrations: dict[str, CapabilityRegistration],
     capability_type: CapabilityType,
     *,
-    source: str,
+    source_kind: CapabilitySourceKind,
+    entry_point: CapabilityTypeReference | None = None,
 ) -> None:
     serialization_name = _serialization_name(capability_type)
+    provenance = _provenance(
+        serialization_name,
+        capability_type,
+        source_kind=source_kind,
+        entry_point=entry_point,
+    )
     existing = registrations.get(serialization_name)
     if existing is not None:
-        if existing.capability_type is capability_type:
+        if existing.capability_type is capability_type and existing.provenance == provenance:
             return
         raise ValueError(
             f"Capability serialization name {serialization_name!r} is provided by both "
-            f"{existing.source!r} and {source!r}"
+            f"{existing.provenance.display_name!r} and {provenance.display_name!r}"
         )
     registrations[serialization_name] = CapabilityRegistration(
         serialization_name=serialization_name,
         capability_type=capability_type,
-        source=source,
+        provenance=provenance,
     )
 
 
@@ -169,10 +252,36 @@ def _serialization_name(capability_type: CapabilityType) -> str:
             f"Capability class {capability_type.__module__}.{capability_type.__qualname__} "
             "must define a non-empty serialization name"
         )
+    if name in CAPABILITY_TYPES:
+        raise ValueError(f"Capability serialization name {name!r} conflicts with a native Pydantic AI capability")
     return name
 
 
-def _entry_point_source(entry_point: importlib.metadata.EntryPoint) -> str:
+def _provenance(
+    serialization_name: str,
+    capability_type: CapabilityType,
+    *,
+    source_kind: CapabilitySourceKind,
+    entry_point: CapabilityTypeReference | None = None,
+) -> CapabilityTypeProvenance:
+    return CapabilityTypeProvenance(
+        serialization_name=serialization_name,
+        source_kind=source_kind,
+        class_module=capability_type.__module__,
+        class_qualname=capability_type.__qualname__,
+        entry_point=entry_point,
+    )
+
+
+def _entry_points() -> Sequence[importlib.metadata.EntryPoint]:
+    return tuple(importlib.metadata.entry_points(group=ENTRY_POINT_GROUP))
+
+
+def _entry_point_reference(entry_point: importlib.metadata.EntryPoint) -> CapabilityTypeReference:
     distribution = entry_point.dist
-    distribution_name = distribution.name if distribution is not None else "unknown"
-    return f"entry-point:{distribution_name}:{entry_point.name}"
+    return CapabilityTypeReference(
+        entry_point_name=entry_point.name,
+        import_target=entry_point.value,
+        distribution_name=distribution.name if distribution is not None else None,
+        distribution_version=distribution.version if distribution is not None else None,
+    )

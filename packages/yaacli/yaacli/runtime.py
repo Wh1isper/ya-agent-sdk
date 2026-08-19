@@ -63,7 +63,7 @@ from ya_agent_sdk.capabilities import (
     build_default_capability_catalog,
 )
 from ya_agent_sdk.context import ModelConfig, SecurityConfig, ShellReviewConfig, ToolConfig
-from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
+from ya_agent_sdk.events import NamespaceStatus, NamespaceStatusEvent
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
 from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.subagents import (
@@ -78,8 +78,8 @@ from ya_agent_sdk.subagents import (
     SubagentSpec,
 )
 from ya_agent_sdk.toolsets.core.base import Toolset
+from ya_agent_sdk.toolsets.search import create_best_strategy
 from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillToolset
-from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
 from yaacli.config import ConfigManager, MCPConfig, SubagentsConfig, YaacliConfig
 from yaacli.durable.capabilities import DurableInboxPumpCapability
@@ -510,7 +510,7 @@ class _OptionalMCPToolset(WrapperToolset[Any]):
 
     async def _emit_status(self, ctx: RunContext[Any]) -> None:
         await ctx.deps.emit_event(
-            ToolSearchInitEvent(
+            NamespaceStatusEvent(
                 event_id=f"optional-mcp-{self.server_name}-{ctx.deps.run_id[:8]}",
                 namespace_status={self.server_name: self._status},
             )

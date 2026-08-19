@@ -118,11 +118,12 @@ Implementation should proceed in one narrow SDK-first slice:
 3. validate Pydantic AI classes, serialization names, collisions, and deterministic
    catalog ordering without treating it as runtime behavior order;
 4. expose one `custom_capability_types` tuple to schema generation and construction;
-5. pass the catalog through SDK main/subagent resolution; and
+5. derive the main-agent bridge tuple from the catalog and pass the catalog itself to
+   subagent resolution; and
 6. remove any duplicated discovery or custom-registry logic from YAACLI and YA Claw.
 
-A small separately installable fixture should exercise a real entry point. No generic
-plugin framework is introduced.
+Focused discovery tests verify entry-point metadata and selected loading without a
+separate plugin framework.
 
 ## 6. Validation Matrix
 

@@ -277,7 +277,7 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
 
     @property
     def capabilities(self) -> tuple[AbstractCapability[AgentDepsT], ...]:
-        """Return final resolved leaves in native source order after entry."""
+        """Return resolved top-level capabilities in native source order after entry."""
         if self._resolved_capabilities is None:
             raise RuntimeError("AgentRuntime.capabilities are unavailable before runtime entry")
         return self._resolved_capabilities
@@ -499,7 +499,7 @@ def _load_system_prompt(
 
 
 def create_agent(
-    model: Model | KnownModelName | str | None,
+    model: Model | KnownModelName | str | None = None,
     *,
     spec: AgentSpec | None = None,
     custom_capability_types: Sequence[type[AbstractCapability[Any]]] = (),

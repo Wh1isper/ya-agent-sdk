@@ -43,7 +43,7 @@ toolset = FunctionToolset([
 ])
 ```
 
-Eligibility does not bypass availability, subagent filtering, validation, hooks, approval, deferred-call handling, or tracing. Host-managed `NamedMCPToolset` actual tools are marked eligible by default and still use their MCP approval hooks. Provider-native MCP is not bridged locally.
+Eligibility does not bypass availability, subagent filtering, validation, hooks, approval, deferred-call handling, or tracing. Actual tools produced by the SDK's host-managed MCP adapter are marked eligible by default and still use their MCP approval hooks. Provider-native MCP is not bridged locally.
 
 ## Inline execution
 

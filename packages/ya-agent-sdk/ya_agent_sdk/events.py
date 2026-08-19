@@ -381,12 +381,12 @@ class ToolCallsCompleteEvent(AgentEvent):
 
 
 # =============================================================================
-# Tool Search Events
+# Namespace Status Events
 # =============================================================================
 
 
 class NamespaceStatus(StrEnum):
-    """Initialization status of a namespace (toolset) in ToolSearchToolSet."""
+    """Availability status of a host-managed tool namespace."""
 
     connected = "connected"
     """Namespace initialized successfully and is available for use."""
@@ -399,13 +399,12 @@ class NamespaceStatus(StrEnum):
 
 
 @dataclass
-class ToolSearchInitEvent(AgentEvent):
-    """Emitted on first get_tools() call to report namespace initialization status.
+class NamespaceStatusEvent(AgentEvent):
+    """Report current availability for host-managed tool namespaces.
 
-    This event is emitted by ToolSearchToolSet after all wrapped toolsets have
-    been initialized (via __aenter__). It reports which namespaces connected
-    successfully and which were skipped due to initialization failure (when
-    configured as optional via optional_namespaces).
+    Tool Proxy and host-managed MCP adapters emit this event after checking
+    their wrapped toolsets. It reports which namespaces connected successfully,
+    which optional namespaces were skipped, and later runtime errors.
 
     Consumers can use this to display MCP server connection status in the UI.
 

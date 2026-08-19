@@ -1,23 +1,23 @@
-"""Deterministic retrieval evals for tool search strategies."""
+"""Deterministic retrieval evals for Tool Proxy search strategies."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import pytest
-from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata
-from ya_agent_sdk.toolsets.tool_search.strategies import SearchStrategy
-from ya_agent_sdk.toolsets.tool_search.strategies.bm25 import BM25SearchStrategy
-from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
+from ya_agent_sdk.toolsets.search.metadata import ToolMetadata
+from ya_agent_sdk.toolsets.search.strategies import SearchStrategy
+from ya_agent_sdk.toolsets.search.strategies.bm25 import BM25SearchStrategy
+from ya_agent_sdk.toolsets.search.strategies.keyword import KeywordSearchStrategy
 
-from .tool_search_eval_cases import EVAL_CASES, ToolSearchEvalCase, build_eval_catalog
+from .search_eval_cases import EVAL_CASES, SearchEvalCase, build_eval_catalog
 
 
 @dataclass(frozen=True)
 class CaseResult:
     """Search results for a single eval case."""
 
-    case: ToolSearchEvalCase
+    case: SearchEvalCase
     result_names: tuple[str, ...]
 
     @property

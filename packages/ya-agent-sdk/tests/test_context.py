@@ -43,11 +43,12 @@ async def test_retry_config_defaults_and_validation() -> None:
         "tools": 5,
         "output": 5,
         "toolset": 5,
-        "tool_search": 5,
         "tool_proxy": 5,
     }
     with pytest.raises(ValueError):
         RetryConfig(tools=-1)
+    with pytest.raises(ValueError, match="tool_search"):
+        RetryConfig.model_validate({"tool_search": 2})
 
 
 async def test_model_config_image_split_defaults() -> None:
@@ -180,11 +181,10 @@ async def test_agent_context_create_subagent_context_inherits_security(env: Loca
 
 
 async def test_agent_context_create_subagent_context_inherits_retry_config(env: LocalEnvironment) -> None:
-    parent = AgentContext(env=env, retry_config=RetryConfig(tool_search=2, tool_proxy=3))
+    parent = AgentContext(env=env, retry_config=RetryConfig(tool_proxy=3))
 
     async with parent.create_subagent_context("search") as child:
         assert child.retry_config is parent.retry_config
-        assert child.retry_config.tool_search == 2
         assert child.retry_config.tool_proxy == 3
 
 
@@ -788,6 +788,8 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         ctx.handoff_message = "Handoff summary"
         ctx.shell_env = {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
         ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
+        ctx.tool_proxy.loaded_tools = ["view"]
+        ctx.tool_proxy.loaded_namespaces = ["mcp:filesystem"]
 
         # Default export does NOT include usage_snapshot_entries
         state = ctx.export_state()
@@ -811,6 +813,20 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         assert new_ctx.handoff_message == "Handoff summary"
         assert new_ctx.shell_env == {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
+        assert new_ctx.tool_proxy.loaded_tools == ["view"]
+        assert new_ctx.tool_proxy.loaded_namespaces == ["mcp:filesystem"]
+        assert new_ctx.tool_proxy is not state.tool_proxy
+
+
+def test_resumable_state_rejects_removed_tool_search_fields() -> None:
+    from ya_agent_sdk.context import ResumableState
+
+    with pytest.raises(ValueError, match="tool_search_loaded_tools"):
+        ResumableState.model_validate({
+            "schema_version": 2,
+            "tool_search_loaded_tools": ["view"],
+            "tool_search_loaded_namespaces": ["mcp:filesystem"],
+        })
 
 
 async def test_with_state_preserves_runtime_security(env: LocalEnvironment) -> None:
@@ -1444,6 +1460,8 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
             ledger_key="old",
         )
         ctx.deferred_tool_metadata["key"] = {"val": 1}
+        ctx.tool_proxy.loaded_tools = ["view"]
+        ctx.tool_proxy.loaded_namespaces = ["mcp:filesystem"]
 
         new = ctx.prepare_new_run()
 
@@ -1456,6 +1474,13 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
         assert new.start_at is not None  # set by prepare_new_run
         assert new.tool_id_wrapper is not ctx.tool_id_wrapper
         assert new.agent_stream_queues is not ctx.agent_stream_queues
+        assert new.tool_proxy.loaded_tools == ["view"]
+        assert new.tool_proxy.loaded_namespaces == ["mcp:filesystem"]
+        assert new.tool_proxy is not ctx.tool_proxy
+        assert new.tool_proxy.loaded_tools is not ctx.tool_proxy.loaded_tools
+        assert new.tool_proxy.loaded_namespaces is not ctx.tool_proxy.loaded_namespaces
+        new.tool_proxy.loaded_tools.append("edit")
+        assert ctx.tool_proxy.loaded_tools == ["view"]
 
         # Private state is reset
         assert new._entered is False

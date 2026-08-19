@@ -33,7 +33,7 @@ from pydantic_core import to_jsonable_python
 
 from ya_agent_sdk.agents.driver import drive_streamed_run
 from ya_agent_sdk.agents.models import infer_model
-from ya_agent_sdk.context import AgentContext, ResumableState
+from ya_agent_sdk.context import AgentContext, ResumableState, ToolProxyState
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
 from ya_agent_sdk.inputs import (
     EnqueueReceipt,
@@ -370,8 +370,7 @@ class InProcessSubagentDriver:
             input_router=None,
             usage_snapshot_entries={},
             deferred_tool_metadata={},
-            tool_search_loaded_tools=[],
-            tool_search_loaded_namespaces=[],
+            tool_proxy=ToolProxyState(),
         )
         if record.resumable_state:
             ResumableState.model_validate(record.resumable_state).restore(child_ctx)
@@ -1251,8 +1250,7 @@ def _initial_child_state(
     state.handoff_message = None
     state.deferred_tool_metadata = {}
     state.auto_load_files = []
-    state.tool_search_loaded_tools = []
-    state.tool_search_loaded_namespaces = []
+    state.tool_proxy = ToolProxyState()
     return cast(dict[str, Any], to_jsonable_python(state))
 
 

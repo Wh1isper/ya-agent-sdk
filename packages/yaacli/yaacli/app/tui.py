@@ -102,12 +102,12 @@ from ya_agent_sdk.events import (
     HandoffStartEvent,
     ModelRequestStartEvent,
     NamespaceStatus,
+    NamespaceStatusEvent,
     NoteEvent,
     SubagentCompleteEvent,
     SubagentStartEvent,
     TaskEvent,
     ToolCallsStartEvent,
-    ToolSearchInitEvent,
     UsageSnapshotEvent,
 )
 from ya_agent_sdk.subagents import (
@@ -3856,7 +3856,7 @@ class TUIApp:
                 self._session_usage.set_run_snapshot(message_event.snapshot)
             return
 
-        if isinstance(message_event, ToolSearchInitEvent):
+        if isinstance(message_event, NamespaceStatusEvent):
             for namespace, status in message_event.namespace_status.items():
                 previous_status = self._namespace_status.get(namespace)
                 self._namespace_status[namespace] = status
@@ -5371,8 +5371,8 @@ class TUIApp:
         ctx.auto_load_files = []
         ctx.task_manager = TaskManager()
         ctx.note_manager = NoteManager()
-        ctx.tool_search_loaded_tools = []
-        ctx.tool_search_loaded_namespaces = []
+        ctx.tool_proxy.loaded_tools = []
+        ctx.tool_proxy.loaded_namespaces = []
         ctx.tool_tags = set()
         ctx.reset_goal()
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.toolsets import AbstractToolset
 
+from ya_agent_sdk.capabilities.foundation.deferred import SupportsDeferredOutput
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
@@ -127,7 +128,7 @@ class TodoCapability(AbstractCapability[AgentContext]):
 
 
 @dataclass(kw_only=True)
-class UserInteractionCapability(AbstractCapability[AgentContext]):
+class UserInteractionCapability(SupportsDeferredOutput, AbstractCapability[AgentContext]):
     """Own structured deferred user questions."""
 
     id: str | None = "user_interaction"

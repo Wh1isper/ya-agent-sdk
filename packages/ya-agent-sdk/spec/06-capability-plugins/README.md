@@ -34,8 +34,9 @@ imports remain first class:
 
 ```python
 from acme_agent.capabilities import SearchCapability
+from ya_agent_sdk.capabilities import build_default_capability_catalog
 
-catalog = CapabilityCatalog.create(capability_types=[SearchCapability])
+catalog = build_default_capability_catalog(explicit_types=[SearchCapability])
 ```
 
 The SDK owns metadata discovery, selected entry-point loading, class validation,

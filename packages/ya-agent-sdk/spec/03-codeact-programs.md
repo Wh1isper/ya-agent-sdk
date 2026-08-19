@@ -225,7 +225,7 @@ Non-SDK toolsets opt in by attaching the same `ToolDefinition.metadata["codeact"
 
 The CodeAct selector must not infer eligibility from tool name, namespace, MCP origin, description text, or whether the tool appears read-only.
 
-Host toolset assemblers may explicitly attach the metadata as a product policy. In particular, YA's host-managed `NamedMCPToolset` marks its actual MCP tools `codeact=True` by default. This is an explicit MCP builder policy, not selector inference. Provider-native MCP does not pass through this bridge, and proxy mode exposes only its generic proxy calls if those calls are explicitly marked.
+Host toolset assemblers may explicitly attach the metadata as a product policy. In particular, YA's private host-managed MCP adapter marks its actual MCP tools `codeact=True` by default. This is an explicit MCP builder policy, not selector inference. Provider-native MCP does not pass through this bridge, and proxy mode exposes only its generic proxy calls if those calls are explicitly marked.
 
 ### Dynamic eligibility
 

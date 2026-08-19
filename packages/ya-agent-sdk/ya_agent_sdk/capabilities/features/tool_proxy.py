@@ -10,8 +10,8 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.toolsets import AbstractToolset
 
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.search.strategies import SearchStrategy
 from ya_agent_sdk.toolsets.tool_proxy import ToolProxyToolset
-from ya_agent_sdk.toolsets.tool_search.strategies import SearchStrategy
 
 
 @dataclass(kw_only=True)

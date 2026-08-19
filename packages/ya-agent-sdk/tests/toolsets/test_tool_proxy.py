@@ -23,7 +23,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.tool_manager import ToolManager
 from pydantic_ai.toolsets import ExternalToolset
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
+from ya_agent_sdk.events import NamespaceStatus, NamespaceStatusEvent
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from ya_agent_sdk.toolsets.core.interaction import AskUserQuestionTool
 from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
@@ -528,8 +528,8 @@ async def test_prefixed_proxy_search_and_call(weather_toolset, mock_run_context)
         tools["mcp_search_tool"],
     )
     assert "get_weather" in search_result
-    assert "weather" not in mock_run_context.deps.tool_search_loaded_namespaces
-    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "weather" not in mock_run_context.deps.tool_proxy.loaded_namespaces
+    assert "mcp:weather" in mock_run_context.deps.tool_proxy.loaded_namespaces
 
     call_result = await ts.call_tool(
         "mcp_call_tool",
@@ -554,8 +554,8 @@ async def test_prefixed_proxy_state_isolated_between_prefixes(weather_toolset, m
     )
 
     assert "get_weather" in result
-    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
-    assert "builtin:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "mcp:weather" in mock_run_context.deps.tool_proxy.loaded_namespaces
+    assert "builtin:weather" in mock_run_context.deps.tool_proxy.loaded_namespaces
 
 
 @pytest.mark.anyio
@@ -591,14 +591,14 @@ async def test_prefixed_proxy_instruction_replacement_is_single_pass(weather_too
 @pytest.mark.anyio
 async def test_prefixed_proxy_uses_only_prefixed_state(weather_toolset, mock_run_context):
     """Prefixed proxy state should not read unprefixed state from older proxy blocks."""
-    mock_run_context.deps.tool_search_loaded_namespaces.append("weather")
+    mock_run_context.deps.tool_proxy.loaded_namespaces.append("weather")
     ts = ToolProxyToolset(toolsets=[weather_toolset], prefix="mcp")
     tools = await ts.get_tools(mock_run_context)
 
     result = await ts.call_tool("mcp_search_tool", {"query": "weather"}, mock_run_context, tools["mcp_search_tool"])
 
     assert "get_weather" in result
-    assert "mcp:weather" in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "mcp:weather" in mock_run_context.deps.tool_proxy.loaded_namespaces
 
 
 def test_prefix_validation_rejects_invalid_names(weather_toolset):
@@ -610,7 +610,7 @@ def test_prefix_validation_rejects_invalid_names(weather_toolset):
 @pytest.mark.anyio
 async def test_underlying_tools_not_directly_visible(weather_toolset, mock_run_context):
     """Underlying tools must never appear in get_tools result."""
-    mock_run_context.deps.tool_search_loaded_namespaces.append("weather")
+    mock_run_context.deps.tool_proxy.loaded_namespaces.append("weather")
     ts = ToolProxyToolset(toolsets=[weather_toolset])
     tools = await ts.get_tools(mock_run_context)
 
@@ -713,7 +713,7 @@ async def test_search_no_results(weather_toolset, mock_run_context):
 @pytest.mark.anyio
 async def test_search_all_discovered(weather_toolset, mock_run_context):
     """Search when all tools are discovered should say so."""
-    mock_run_context.deps.tool_search_loaded_namespaces.append("weather")
+    mock_run_context.deps.tool_proxy.loaded_namespaces.append("weather")
 
     ts = ToolProxyToolset(toolsets=[weather_toolset])
     tools = await ts.get_tools(mock_run_context)
@@ -744,11 +744,11 @@ async def test_search_updates_context_state(weather_toolset, loose_toolset, mock
 
     # Search namespace
     await ts.call_tool("search_tools", {"query": "weather"}, mock_run_context, tools["search_tools"])
-    assert "weather" in mock_run_context.deps.tool_search_loaded_namespaces
+    assert "weather" in mock_run_context.deps.tool_proxy.loaded_namespaces
 
     # Search loose tool
     await ts.call_tool("search_tools", {"query": "read"}, mock_run_context, tools["search_tools"])
-    assert "view" in mock_run_context.deps.tool_search_loaded_tools
+    assert "view" in mock_run_context.deps.tool_proxy.loaded_tools
 
 
 @pytest.mark.anyio
@@ -953,7 +953,7 @@ async def test_instructions_include_namespace_info(weather_toolset, finance_tool
 @pytest.mark.anyio
 async def test_instructions_include_discovered_tools(weather_toolset, mock_run_context):
     """Instructions should list previously discovered tools."""
-    mock_run_context.deps.tool_search_loaded_namespaces.append("weather")
+    mock_run_context.deps.tool_proxy.loaded_namespaces.append("weather")
 
     ts = ToolProxyToolset(
         toolsets=[weather_toolset],
@@ -1022,7 +1022,7 @@ async def test_nested_entries_preserve_optional_startup_failure_event(mock_run_c
 
     queue = mock_run_context.deps.agent_stream_queues[mock_run_context.deps._agent_id]
     event = queue.get_nowait()
-    assert isinstance(event, ToolSearchInitEvent)
+    assert isinstance(event, NamespaceStatusEvent)
     assert event.namespace_status == {"offline": NamespaceStatus.skipped}
     assert optional.enter_count == 2
     assert optional.exit_count == 0
@@ -1058,7 +1058,7 @@ async def test_optional_namespace_reports_recovery_after_runtime_error(mock_run_
     statuses = []
     while not queue.empty():
         event = queue.get_nowait()
-        assert isinstance(event, ToolSearchInitEvent)
+        assert isinstance(event, NamespaceStatusEvent)
         statuses.append(event.namespace_status["recoverable"])
 
     assert statuses == [NamespaceStatus.connected, NamespaceStatus.error, NamespaceStatus.connected]

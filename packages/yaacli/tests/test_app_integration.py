@@ -41,7 +41,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 from ya_agent_environment.shell import BackgroundProcess
 from ya_agent_sdk.context import AvailableSkill, StreamEvent, TaskManager, TaskStatus
-from ya_agent_sdk.events import NamespaceStatus, TaskEvent, ToolSearchInitEvent
+from ya_agent_sdk.events import NamespaceStatus, NamespaceStatusEvent, TaskEvent
 from ya_agent_sdk.usage import CostEstimate
 
 # Import the components we're testing
@@ -1137,7 +1137,7 @@ def test_tui_app_reports_unavailable_optional_mcp_once_per_status() -> None:
     stream_event = StreamEvent(
         agent_id="main",
         agent_name="main",
-        event=ToolSearchInitEvent(
+        event=NamespaceStatusEvent(
             event_id="mcp-init",
             namespace_status={"offline": NamespaceStatus.skipped},
         ),
@@ -1149,7 +1149,7 @@ def test_tui_app_reports_unavailable_optional_mcp_once_per_status() -> None:
         StreamEvent(
             agent_id="main",
             agent_name="main",
-            event=ToolSearchInitEvent(
+            event=NamespaceStatusEvent(
                 event_id="mcp-recovered",
                 namespace_status={"offline": NamespaceStatus.connected},
             ),

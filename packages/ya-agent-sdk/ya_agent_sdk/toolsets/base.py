@@ -288,7 +288,7 @@ class BaseToolset(AbstractToolset[AgentDepsT], ABC):
     def description(self) -> str | None:
         """Human-readable description of this toolset.
 
-        Used by ToolSearchToolSet for namespace description resolution.
+        Used by discovery adapters for namespace description resolution.
         Override in subclasses to provide a description.
 
         Returns:

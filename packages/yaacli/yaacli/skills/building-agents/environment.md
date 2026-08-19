@@ -33,7 +33,7 @@ classDiagram
 ### Recommended: create_agent
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 
 # Default: uses LocalEnvironment
 runtime = create_agent("openai-chat:gpt-4")

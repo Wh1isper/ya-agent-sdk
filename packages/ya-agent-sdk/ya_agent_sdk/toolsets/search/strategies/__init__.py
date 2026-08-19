@@ -1,6 +1,6 @@
 """Search strategies for tool discovery.
 
-Provides pluggable search algorithms for ToolSearchToolSet:
+Provides pluggable search algorithms for Tool Proxy:
 - KeywordSearchStrategy: Zero-dependency regex/keyword matching
 - BM25SearchStrategy: Lightweight ranked lexical search via rank-bm25
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata
+from ya_agent_sdk.toolsets.search.metadata import ToolMetadata
 
 
 class SearchStrategy(Protocol):
@@ -53,7 +53,7 @@ class SearchStrategy(Protocol):
     def get_search_hint(self) -> str:
         """Return a brief hint for the model on how to formulate search queries.
 
-        Included in the tool_search instruction to guide query style.
+        Included in Tool Proxy instructions to guide query style.
         """
         ...
 

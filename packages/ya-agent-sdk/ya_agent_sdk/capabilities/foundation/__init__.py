@@ -1,6 +1,6 @@
 """Runtime foundation capability leaves."""
 
-from .deferred import DeferredTerminalCapability
+from .deferred import DeferredTerminalCapability, SupportsDeferredOutput
 from .history import (
     ColdStartCapability,
     ContextCompactionCapability,
@@ -28,6 +28,7 @@ __all__ = [
     "OverallRetryBudget",
     "ReasoningCompatibilityCapability",
     "RuntimeContextCapability",
+    "SupportsDeferredOutput",
     "ToolArgumentRepairCapability",
     "ToolIdCompatibilityCapability",
 ]
