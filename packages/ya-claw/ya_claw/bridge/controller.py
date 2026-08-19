@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import uuid4
 from xml.sax.saxutils import escape
@@ -103,34 +104,35 @@ class BridgeController:
                         input_parts=[part.model_dump(mode="json") for part in input_parts],
                         source_metadata={"bridge": metadata},
                     )
-                    await self._observe_agency_message(
-                        db_session,
-                        settings,
-                        runtime_state,
-                        dispatcher,
-                        source_session_id=conversation.session_id,
-                        source_run_id=session_record.active_run_id,
-                        input_parts=input_parts,
-                        metadata={"bridge": metadata},
-                        client_token=message.event_id,
-                    )
-                    event_record.conversation_id = conversation.id
-                    event_record.session_id = conversation.session_id
-                    event_record.run_id = session_record.active_run_id
-                    event_record.status = BridgeEventStatus.DEFERRED
-                    conversation.last_event_at = datetime.now(UTC)
-                    conversation.updated_at = datetime.now(UTC)
-                    await db_session.commit()
-                    return BridgeDispatchResult(
-                        status=BridgeEventStatus.DEFERRED,
-                        adapter=message.adapter,
-                        event_id=message.event_id,
-                        message_id=message.message_id,
-                        chat_id=message.chat_id,
-                        session_id=conversation.session_id,
-                        run_id=session_record.active_run_id,
-                        queued_count=queued_count,
-                    )
+                    if queued_count is not None:
+                        await self._observe_agency_message(
+                            db_session,
+                            settings,
+                            runtime_state,
+                            dispatcher,
+                            source_session_id=conversation.session_id,
+                            source_run_id=session_record.active_run_id,
+                            input_parts=input_parts,
+                            metadata={"bridge": metadata},
+                            client_token=message.event_id,
+                        )
+                        event_record.conversation_id = conversation.id
+                        event_record.session_id = conversation.session_id
+                        event_record.run_id = session_record.active_run_id
+                        event_record.status = BridgeEventStatus.DEFERRED
+                        conversation.last_event_at = datetime.now(UTC)
+                        conversation.updated_at = datetime.now(UTC)
+                        await db_session.commit()
+                        return BridgeDispatchResult(
+                            status=BridgeEventStatus.DEFERRED,
+                            adapter=message.adapter,
+                            event_id=message.event_id,
+                            message_id=message.message_id,
+                            chat_id=message.chat_id,
+                            session_id=conversation.session_id,
+                            run_id=session_record.active_run_id,
+                            queued_count=queued_count,
+                        )
             snapshot = self._snapshot_from_message(message)
             active_run = (
                 await db_session.get(RunRecord, session_record.active_run_id)
@@ -240,14 +242,22 @@ class BridgeController:
             )
         session_id, run_id, interaction_id = parts[0], parts[1], parts[2]
         try:
-            response = await self._hitl_controller.respond_interaction(
+            result = await self._hitl_controller.respond_interaction(
                 db_session,
-                runtime_state,
                 run_id,
                 interaction_id,
                 InteractionRespondRequest(approved=action.approved, reason=action.reason),
             )
             await db_session.commit()
+            with suppress(KeyError):
+                await runtime_state.resolve_hitl_interaction(
+                    run_id,
+                    interaction_id,
+                    approved=result.resolution.approved,
+                    reason=result.resolution.reason,
+                    user_input=result.resolution.user_input,
+                )
+            response = result.response
         except HTTPException as exc:
             return BridgeDispatchResult(
                 status=BridgeEventStatus.FAILED,

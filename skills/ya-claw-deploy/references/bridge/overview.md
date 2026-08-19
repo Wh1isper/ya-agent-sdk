@@ -76,7 +76,7 @@ Seed or pre-create the selected AgentProfile before enabling bridge traffic. See
 
 Interactive runs can enter HITL when shell review, tool approval, or MCP approval returns deferred tool requests. YA Claw persists the approval batch and interactions in the database, publishes `hitl_pending` status in run/session notifications, and waits for a response through the run interaction API or bridge action path.
 
-Bridge messages that arrive while the run is HITL pending are stored as deferred input rows. After the approval batch resolves, YA Claw consumes queued input in sequence order and injects it into the same running agent through the message bus. This keeps user follow-up messages durable while a bridge approval card is active.
+Bridge messages that arrive while the run is HITL pending are stored as deferred input rows. After the approval batch resolves, YA Claw consumes queued input in sequence order through the durable logical-run inbox and native Pydantic AI enqueue path. This keeps user follow-up messages durable while a bridge approval card is active.
 
 Relevant durable records:
 

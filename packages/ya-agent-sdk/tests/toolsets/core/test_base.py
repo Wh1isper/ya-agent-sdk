@@ -13,13 +13,7 @@ from ya_agent_sdk.toolsets.base import (
     InstructableToolset,
     UserInputPreprocessResult,
 )
-from ya_agent_sdk.toolsets.core.base import (
-    CallMetadata,
-    GlobalHooks,
-    HookableToolsetTool,
-    Toolset,
-    UserInteraction,
-)
+from ya_agent_sdk.toolsets.core.base import Toolset, UserInteraction
 
 from .._instruction_helpers import instruction_text as _instruction_text
 
@@ -64,30 +58,6 @@ def test_user_input_preprocess_result_empty() -> None:
     result = UserInputPreprocessResult()
     assert result.override_args is None
     assert result.metadata is None
-
-
-# --- GlobalHooks tests ---
-def test_global_hooks_empty() -> None:
-    """Should create with no hooks."""
-    hooks = GlobalHooks()
-    assert hooks.pre is None
-    assert hooks.post is None
-
-
-def test_global_hooks_with_hooks() -> None:
-    """Should accept hook functions."""
-
-    async def pre_hook(
-        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        return args
-
-    async def post_hook(ctx: RunContext[AgentContext], name: str, result: object, metadata: CallMetadata) -> object:
-        return result
-
-    hooks = GlobalHooks(pre=pre_hook, post=post_hook)
-    assert hooks.pre is pre_hook
-    assert hooks.post is post_hook
 
 
 # --- Test tool classes ---
@@ -250,36 +220,6 @@ async def test_toolset_propagates_model_retry(agent_context: AgentContext) -> No
         await toolset.call_tool("retry_tool", {}, run_ctx, tools["retry_tool"])
 
 
-async def test_observation_hook_failure_does_not_replace_model_retry(agent_context: AgentContext) -> None:
-    """Observation-only post-hooks cannot replace Pydantic AI control flow."""
-    observed: list[str] = []
-
-    async def failing_tool_post(_ctx: RunContext[AgentContext], result: object, _metadata: CallMetadata) -> object:
-        observed.append(type(result).__name__)
-        raise RuntimeError("tool hook failed")
-
-    async def failing_global_post(
-        _ctx: RunContext[AgentContext], _name: str, result: object, _metadata: CallMetadata
-    ) -> object:
-        observed.append(type(result).__name__)
-        raise RuntimeError("global hook failed")
-
-    toolset = Toolset(
-        tools=[RetryTool],
-        post_hooks={RetryTool.name: failing_tool_post},
-        global_hooks=GlobalHooks(post=failing_global_post),
-    )
-    run_ctx = MagicMock(spec=RunContext)
-    run_ctx.deps = agent_context
-    run_ctx.tool_call_approved = False
-    tools = await toolset.get_tools(run_ctx)
-
-    with pytest.raises(ModelRetry, match="correct the arguments"):
-        await toolset.call_tool("retry_tool", {}, run_ctx, tools["retry_tool"])
-
-    assert observed == ["ModelRetry", "ModelRetry"]
-
-
 async def test_toolset_skip_unavailable_tools(agent_context: AgentContext) -> None:
     """Should skip unavailable tools when skip_unavailable=True in get_tools()."""
     from unittest.mock import MagicMock
@@ -329,97 +269,7 @@ async def test_toolset_get_tools(agent_context: AgentContext) -> None:
     mock_run_ctx.deps = agent_context
     tools = await toolset.get_tools(mock_run_ctx)
     assert "dummy_tool" in tools
-    assert isinstance(tools["dummy_tool"], HookableToolsetTool)
-
-
-async def test_toolset_call_tool_with_hooks(agent_context: AgentContext) -> None:
-    """Should execute hooks in order."""
-    call_order: list[str] = []
-
-    async def global_pre(
-        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        call_order.append("global_pre")
-        return args
-
-    async def global_post(ctx: RunContext[AgentContext], name: str, result: object, metadata: CallMetadata) -> object:
-        call_order.append("global_post")
-        return result
-
-    async def tool_pre(
-        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        call_order.append("tool_pre")
-        return args
-
-    async def tool_post(ctx: RunContext[AgentContext], result: object, metadata: CallMetadata) -> object:
-        call_order.append("tool_post")
-        return result
-
-    toolset = Toolset(
-        tools=[DummyTool],
-        pre_hooks={"dummy_tool": tool_pre},
-        post_hooks={"dummy_tool": tool_post},
-        global_hooks=GlobalHooks(pre=global_pre, post=global_post),
-    )
-    mock_run_ctx = MagicMock(spec=RunContext)
-    mock_run_ctx.deps = agent_context
-    tools = await toolset.get_tools(mock_run_ctx)
-    tool = tools["dummy_tool"]
-    await toolset.call_tool("dummy_tool", {"message": "test"}, mock_run_ctx, tool)
-    assert call_order == ["global_pre", "tool_pre", "tool_post", "global_post"]
-
-
-async def test_toolset_call_tool_metadata_shared_across_hooks(agent_context: AgentContext) -> None:
-    """Should share metadata dict across all hooks in a single call_tool invocation."""
-    captured_metadata: list[dict] = []
-
-    async def global_pre(
-        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        metadata["global_pre_time"] = "t0"
-        captured_metadata.append(dict(metadata))
-        return args
-
-    async def tool_pre(
-        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        metadata["tool_pre_time"] = "t1"
-        captured_metadata.append(dict(metadata))
-        return args
-
-    async def tool_post(ctx: RunContext[AgentContext], result: object, metadata: CallMetadata) -> object:
-        metadata["tool_post_time"] = "t2"
-        captured_metadata.append(dict(metadata))
-        return result
-
-    async def global_post(ctx: RunContext[AgentContext], name: str, result: object, metadata: CallMetadata) -> object:
-        metadata["global_post_time"] = "t3"
-        captured_metadata.append(dict(metadata))
-        return result
-
-    toolset = Toolset(
-        tools=[DummyTool],
-        pre_hooks={"dummy_tool": tool_pre},
-        post_hooks={"dummy_tool": tool_post},
-        global_hooks=GlobalHooks(pre=global_pre, post=global_post),
-    )
-    mock_run_ctx = MagicMock(spec=RunContext)
-    mock_run_ctx.deps = agent_context
-    tools = await toolset.get_tools(mock_run_ctx)
-    tool = tools["dummy_tool"]
-    await toolset.call_tool("dummy_tool", {"message": "test"}, mock_run_ctx, tool)
-    # Verify metadata accumulates across hooks
-    assert len(captured_metadata) == 4
-    assert captured_metadata[0] == {"global_pre_time": "t0"}
-    assert captured_metadata[1] == {"global_pre_time": "t0", "tool_pre_time": "t1"}
-    assert captured_metadata[2] == {"global_pre_time": "t0", "tool_pre_time": "t1", "tool_post_time": "t2"}
-    assert captured_metadata[3] == {
-        "global_pre_time": "t0",
-        "tool_pre_time": "t1",
-        "tool_post_time": "t2",
-        "global_post_time": "t3",
-    }
+    assert tools["dummy_tool"].tool_def.name == "dummy_tool"
 
 
 async def test_toolset_process_hitl_call_approved(agent_context: AgentContext) -> None:
@@ -483,9 +333,9 @@ def test_instructable_toolset_protocol_check(agent_context: AgentContext) -> Non
     assert isinstance(toolset, InstructableToolset)
 
 
-# --- Toolset.subset tests ---
+# --- Toolset inspection and child-boundary tests ---
 class AnotherTool(BaseTool):
-    """Another test tool for subset tests."""
+    """Another test tool."""
 
     name = "another_tool"
     description = "Another tool"
@@ -495,180 +345,8 @@ class AnotherTool(BaseTool):
 
 
 def test_toolset_tool_names(agent_context: AgentContext) -> None:
-    """Should return list of tool names."""
     toolset = Toolset(tools=[DummyTool, AnotherTool])
-    names = toolset.tool_names
-    assert set(names) == {"dummy_tool", "another_tool"}
-
-
-def test_toolset_subset_all_tools(agent_context: AgentContext) -> None:
-    """Should return all tools when tool_names is None."""
-    toolset = Toolset(tools=[DummyTool, AnotherTool])
-    subset = toolset.subset(None)
-    assert set(subset.tool_names) == {"dummy_tool", "another_tool"}
-
-
-def test_toolset_subset_specific_tools(agent_context: AgentContext) -> None:
-    """Should return only specified tools."""
-    toolset = Toolset(tools=[DummyTool, AnotherTool])
-    subset = toolset.subset(["dummy_tool"])
-    assert subset.tool_names == ["dummy_tool"]
-    assert "another_tool" not in subset.tool_names
-
-
-def test_toolset_subset_inherit_hooks(agent_context: AgentContext) -> None:
-    """Should inherit hooks when inherit_hooks=True."""
-
-    async def pre_hook(
-        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        return args
-
-    async def post_hook(ctx: RunContext[AgentContext], result: object, metadata: CallMetadata) -> object:
-        return result
-
-    async def global_pre(
-        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        return args
-
-    toolset = Toolset(
-        tools=[DummyTool, AnotherTool],
-        pre_hooks={"dummy_tool": pre_hook},
-        post_hooks={"dummy_tool": post_hook},
-        global_hooks=GlobalHooks(pre=global_pre),
-    )
-    subset = toolset.subset(["dummy_tool"], inherit_hooks=True)
-    assert "dummy_tool" in subset.pre_hooks
-    assert "dummy_tool" in subset.post_hooks
-    assert subset.global_hooks.pre is global_pre
-
-
-def test_toolset_subset_no_inherit_hooks(agent_context: AgentContext) -> None:
-    """Should not inherit hooks by default."""
-
-    async def pre_hook(
-        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        return args
-
-    toolset = Toolset(
-        tools=[DummyTool],
-        pre_hooks={"dummy_tool": pre_hook},
-    )
-    subset = toolset.subset(["dummy_tool"], inherit_hooks=False)
-    assert subset.pre_hooks == {}
-    assert subset.post_hooks == {}
-    assert subset.global_hooks.pre is None
-
-
-def test_toolset_subset_nonexistent_tool_skipped(agent_context: AgentContext) -> None:
-    """Should skip non-existent tools with warning."""
-    toolset = Toolset(tools=[DummyTool])
-    subset = toolset.subset(["dummy_tool", "nonexistent_tool"])
-    assert subset.tool_names == ["dummy_tool"]
-
-
-# --- Toolset.with_subagents tests ---
-def test_toolset_with_subagents_empty_configs(agent_context: AgentContext) -> None:
-    """Should return self when configs is empty."""
-    toolset = Toolset(tools=[DummyTool])
-    result = toolset.with_subagents([])
-    assert result is toolset
-
-
-def test_toolset_with_subagents_creates_new_toolset(agent_context: AgentContext) -> None:
-    """Should create new toolset with subagent tools added."""
-    from ya_agent_sdk.subagents import SubagentConfig
-
-    toolset = Toolset(tools=[DummyTool])
-    config = SubagentConfig(
-        name="test_subagent",
-        description="A test subagent",
-        system_prompt="You are a test subagent.",
-        tools=["dummy_tool"],
-    )
-    result = toolset.with_subagents([config])
-    assert result is not toolset
-    assert "dummy_tool" in result.tool_names
-    assert "test_subagent" in result.tool_names
-
-
-def test_toolset_with_subagents_preserves_hooks(agent_context: AgentContext) -> None:
-    """Should preserve hooks in new toolset."""
-    from ya_agent_sdk.subagents import SubagentConfig
-
-    async def pre_hook(
-        ctx: RunContext[AgentContext], args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        return args
-
-    toolset = Toolset(
-        tools=[DummyTool],
-        pre_hooks={"dummy_tool": pre_hook},
-        max_retries=5,
-        timeout=30.0,
-    )
-    config = SubagentConfig(
-        name="test_subagent",
-        description="A test subagent",
-        system_prompt="You are a test subagent.",
-    )
-    result = toolset.with_subagents([config])
-    assert result.max_retries == 5
-    assert result.timeout == 30.0
-    assert "dummy_tool" in result.pre_hooks
-
-
-def test_toolset_with_subagents_multiple_configs(agent_context: AgentContext) -> None:
-    """Should handle multiple subagent configs."""
-    from ya_agent_sdk.subagents import SubagentConfig
-
-    toolset = Toolset(tools=[DummyTool])
-    configs = [
-        SubagentConfig(
-            name="subagent_a",
-            description="Subagent A",
-            system_prompt="You are subagent A.",
-        ),
-        SubagentConfig(
-            name="subagent_b",
-            description="Subagent B",
-            system_prompt="You are subagent B.",
-        ),
-    ]
-    result = toolset.with_subagents(configs)
-    assert "dummy_tool" in result.tool_names
-    assert "subagent_a" in result.tool_names
-    assert "subagent_b" in result.tool_names
-
-
-def test_toolset_exclude_tags(agent_context: AgentContext) -> None:
-    """Should filter tagged tools while preserving ordinary tools."""
-    toolset = Toolset(tools=[DummyTool, DelegationTool])
-    result = toolset.exclude_tags(frozenset({"delegation"}))
-    assert "dummy_tool" in result.tool_names
-    assert "delegation_tool" not in result.tool_names
-    assert toolset.has_tags(frozenset({"delegation"}))
-
-
-def test_toolset_for_subagent_excludes_main_only_and_requested_tags() -> None:
-    toolset = Toolset(tools=[DummyTool, DelegationTool, MainAgentOnlyTool])
-
-    result = toolset.for_subagent(excluded_tags=frozenset({"delegation"}))
-
-    assert result.tool_names == ["dummy_tool"]
-    assert toolset.tool_names == ["dummy_tool", "delegation_tool", "main_agent_only_tool"]
-
-
-def test_main_agent_only_tool_is_not_available_to_subagents(agent_context: AgentContext) -> None:
-    toolset = Toolset(tools=[DummyTool, MainAgentOnlyTool])
-    run_ctx = MagicMock(spec=RunContext)
-    run_ctx.deps = agent_context
-
-    assert toolset.is_tool_available("main_agent_only_tool", run_ctx) is True
-    assert toolset.is_tool_available_to_subagent("main_agent_only_tool", run_ctx) is False
-    assert toolset.is_tool_available_to_subagent("dummy_tool", run_ctx) is True
+    assert set(toolset.tool_names) == {"dummy_tool", "another_tool"}
 
 
 async def test_main_agent_only_policy_cannot_be_disabled_by_skip_unavailable(
@@ -678,9 +356,9 @@ async def test_main_agent_only_policy_cannot_be_disabled_by_skip_unavailable(
         tools=[DummyTool, MainAgentOnlyTool],
         skip_unavailable=False,
     )
-    subagent_ctx = agent_context.create_subagent_context("helper")
+    child_ctx = agent_context.create_subagent_context("helper")
     run_ctx = MagicMock(spec=RunContext)
-    run_ctx.deps = subagent_ctx
+    run_ctx.deps = child_ctx
 
     tools = await toolset.get_tools(run_ctx)
 
@@ -701,86 +379,13 @@ async def test_main_agent_only_policy_rejects_stale_cached_tool_call(
     main_run_ctx.deps = agent_context
     stale_tool = (await toolset.get_tools(main_run_ctx))["main_agent_only_tool"]
 
-    subagent_run_ctx = MagicMock(spec=RunContext)
-    subagent_run_ctx.deps = agent_context.create_subagent_context("helper")
+    child_run_ctx = MagicMock(spec=RunContext)
+    child_run_ctx.deps = agent_context.create_subagent_context("helper")
 
     with pytest.raises(UserError, match="not available in this agent context"):
         await toolset.call_tool(
             "main_agent_only_tool",
             {},
-            subagent_run_ctx,
+            child_run_ctx,
             stale_tool,
         )
-
-
-def test_toolset_with_subagents_inherit_hooks(agent_context: AgentContext) -> None:
-    """Should pass inherit_hooks through to subagent toolsets."""
-    from unittest.mock import patch
-
-    from ya_agent_sdk.subagents import SubagentConfig
-
-    async def global_pre(
-        ctx: RunContext[AgentContext], name: str, args: dict[str, object], metadata: CallMetadata
-    ) -> dict[str, object]:
-        return args
-
-    toolset = Toolset(
-        tools=[DummyTool],
-        global_hooks=GlobalHooks(pre=global_pre),
-    )
-    config = SubagentConfig(
-        name="test_subagent",
-        description="A test subagent",
-        system_prompt="You are a test subagent.",
-        tools=["dummy_tool"],
-    )
-
-    # Track what inherit_hooks value reaches subset()
-    captured_kwargs: list[dict[str, object]] = []
-    original_subset = Toolset.subset
-
-    def tracking_subset(
-        self: Toolset[AgentContext],
-        *args: object,
-        **kwargs: object,
-    ) -> Toolset[AgentContext]:
-        captured_kwargs.append(kwargs)
-        return original_subset(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    with patch.object(Toolset, "subset", tracking_subset):
-        toolset.with_subagents([config], inherit_hooks=True)
-
-    # Verify inherit_hooks=True was passed to subset()
-    assert any(kw.get("inherit_hooks") is True for kw in captured_kwargs)
-
-
-def test_toolset_with_subagents_no_inherit_hooks_by_default(agent_context: AgentContext) -> None:
-    """Should default inherit_hooks=False in with_subagents."""
-    from unittest.mock import patch
-
-    from ya_agent_sdk.subagents import SubagentConfig
-
-    toolset = Toolset(tools=[DummyTool])
-    config = SubagentConfig(
-        name="test_subagent",
-        description="A test subagent",
-        system_prompt="You are a test subagent.",
-        tools=["dummy_tool"],
-    )
-
-    captured_kwargs: list[dict[str, object]] = []
-    original_subset = Toolset.subset
-
-    def tracking_subset(
-        self: Toolset[AgentContext],
-        *args: object,
-        **kwargs: object,
-    ) -> Toolset[AgentContext]:
-        captured_kwargs.append(kwargs)
-        return original_subset(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    with patch.object(Toolset, "subset", tracking_subset):
-        toolset.with_subagents([config])
-
-    # Verify inherit_hooks=False was passed (default)
-    assert any(kw.get("inherit_hooks") is False for kw in captured_kwargs)

@@ -141,7 +141,7 @@ Confirm Lark card action events reach the adapter and normalize to a `BridgeInbo
 
 ### Messages During HITL
 
-Bridge messages received while a run is HITL pending should create `bridge_events.status=deferred` and rows in `hitl_deferred_inputs`. After all interactions resolve, the coordinator consumes pending deferred input rows in sequence order and sends them to the agent message bus.
+Bridge messages received while a run is HITL pending create durable deferred input rows. After all interactions resolve, the coordinator consumes them in sequence order through the logical-run input inbox and native Pydantic AI enqueue path.
 
 ### Unattended Schedule and Heartbeat Runs
 

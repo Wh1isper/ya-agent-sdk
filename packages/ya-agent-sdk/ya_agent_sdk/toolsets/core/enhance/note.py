@@ -36,7 +36,6 @@ class NoteTool(BaseTool):
         "Notes persist across turns. Runtime context shows note keys; use note_get to read values. "
         "Omit value to delete the entry."
     )
-    auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
         """Get instruction for this tool."""
@@ -70,7 +69,6 @@ class NoteGetTool(BaseTool):
 
     name = "note_get"
     description = "Read note entries by key. Omit key to list all notes with values."
-    auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
         """Get instruction for this tool."""

@@ -15,7 +15,7 @@ from ya_claw.db.engine import create_engine, create_session_factory
 def clear_claw_settings(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    initialize_sqlite_database: Callable[[str], None],
+    initialize_sqlite_database: Callable[..., None],
 ) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
@@ -44,7 +44,10 @@ def clear_claw_settings(
 
     get_settings.cache_clear()
     settings = get_settings()
-    initialize_sqlite_database(settings.resolved_database_url)
+    initialize_sqlite_database(
+        settings.resolved_database_url,
+        profile_names=("default", "general"),
+    )
     yield
     get_settings.cache_clear()
 

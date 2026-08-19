@@ -34,18 +34,23 @@ flowchart TB
 
 ```python
 from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.toolsets.skills import SkillToolset
-from ya_agent_sdk.toolsets.core.filesystem import tools as fs_tools
-from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
-
-skill_toolset = SkillToolset()
+from ya_agent_sdk.capabilities import (
+    FilesystemCapability,
+    RuntimeFoundationCapability,
+    ShellCapability,
+    SkillsCapability,
+)
 
 async with create_agent(
     model="anthropic:claude-sonnet-4",
-    tools=[*fs_tools, *shell_tools],
-    toolsets=[skill_toolset],
+    capabilities=[
+        RuntimeFoundationCapability(),
+        FilesystemCapability(),
+        ShellCapability(),
+        SkillsCapability(),
+    ],
 ) as runtime:
-    # Skills from all allowed_paths/skills/ directories are available
+    # Skills from all allowed_paths/skills/ directories are available.
     result = await runtime.agent.run("Help me build an AI agent", deps=runtime.ctx)
 ```
 
@@ -61,11 +66,20 @@ for name, skill in runtime.ctx.available_skills.items():
     print(name, skill.description, skill.path)
 ```
 
-A normal model request refreshes the catalog through `SkillToolset.get_instructions()`. Hosts that need the catalog before the first request can keep the configured toolset instance and scan explicitly after entering the runtime:
+A normal model request refreshes the catalog through `SkillToolset.get_instructions()`.
+`SkillsCapability` owns its run-isolated toolset and is the normal public API. A host
+that specifically needs the catalog before the first request may retain an explicit
+`SkillToolset` instance and wrap it with Pydantic AI's native toolset capability:
 
 ```python
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
+from ya_agent_sdk.toolsets.skills import SkillToolset
+
 skill_toolset = SkillToolset()
-runtime = create_agent("anthropic:claude-sonnet-4", toolsets=[skill_toolset])
+runtime = create_agent(
+    "anthropic:claude-sonnet-4",
+    capabilities=[ToolsetCapability(skill_toolset, id="skills")],
+)
 
 async with runtime:
     await skill_toolset.refresh_context(runtime.ctx)

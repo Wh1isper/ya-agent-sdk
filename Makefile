@@ -179,7 +179,7 @@ bench-search-quick: bench-file-search-quick ## Alias for bench-file-search-quick
 .PHONY: test
 test: ## Run environment, SDK, stream protocol, CLI, and YA Claw tests
 	@echo "Running pytest for workspace packages"
-	@uv run python -m pytest packages/ya-agent-environment/tests packages/ya-ripgrep-core/tests packages/ya-agent-sdk/tests packages/ya-agent-stream-protocol/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
+	@uv run --all-packages python -m pytest packages/ya-agent-environment/tests packages/ya-ripgrep-core/tests packages/ya-agent-sdk/tests packages/ya-agent-stream-protocol/tests packages/yaacli/tests packages/ya-claw/tests -n auto -vv --inline-snapshot=disable --cov --cov-config=pyproject.toml --cov-report term-missing
 
 .PHONY: test-environment
 test-environment: ## Run ya-agent-environment tests

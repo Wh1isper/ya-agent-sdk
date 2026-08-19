@@ -8,7 +8,7 @@ Example::
     from contextlib import AsyncExitStack
     from pydantic_ai import Agent
 
-    from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+    from ya_agent_sdk.context import AgentContext, ModelFeature, ModelConfig
     from ya_agent_sdk.environment.local import LocalEnvironment
     from ya_agent_sdk.filters.image import drop_extra_images, drop_extra_videos
 
@@ -20,7 +20,7 @@ Example::
                 model_cfg=ModelConfig(
                     max_images=20,  # Limit to 20 images (default)
                     max_videos=1,   # Limit to 1 video (default)
-                    capabilities={ModelCapability.vision},
+                    capabilities={ModelFeature.vision},
                 ),
             )
         )

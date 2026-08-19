@@ -25,7 +25,7 @@ from ya_claw.memory.lifecycle import (
 )
 from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.memory.summary_prompt import MEMORY_SUMMARY_SYSTEM_PROMPT
-from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
+from ya_claw.orm.tables import ProfileRecord, RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import create_runtime_state
 from ya_claw.workspace import LocalWorkspaceProvider
 
@@ -902,6 +902,18 @@ async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], 
 async def db_session(db_engine: AsyncEngine) -> AsyncSession:
     session_factory = create_session_factory(db_engine)
     async with session_factory() as session:
+        session.add(
+            ProfileRecord(
+                name="general",
+                agent_spec={"model": "test"},
+                host_config={},
+                subagent_specs=[],
+                enabled=True,
+                source_type="test",
+                source_version="1",
+            )
+        )
+        await session.commit()
         yield session
 
 

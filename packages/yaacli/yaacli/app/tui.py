@@ -51,15 +51,12 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Box, Frame, TextArea
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue, TypeAdapter
 from pydantic_ai import (
-    AgentRunResult,
     BinaryContent,
     DeferredToolRequests,
     DeferredToolResults,
-    ModelSettings,
     ToolDenied,
-    UsageLimits,
     UserContent,
 )
 from pydantic_ai.messages import (
@@ -81,19 +78,14 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
-from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRun
+from pydantic_core import to_jsonable_python
 from rich.table import Table
 from rich.text import Text
-from ya_agent_environment import ShellBackgroundResetError
-from ya_agent_sdk.agents.main import AgentRuntime, AgentStreamer, stream_agent
-from ya_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.main import AgentRuntime
 from ya_agent_sdk.context import (
     PROJECT_GUIDANCE_TAG,
     USER_RULES_TAG,
-    AgentContext,
-    BusMessage,
-    MessageBus,
     NoteManager,
     StreamEvent,
     Task,
@@ -108,7 +100,6 @@ from ya_agent_sdk.events import (
     HandoffCompleteEvent,
     HandoffFailedEvent,
     HandoffStartEvent,
-    MessageReceivedEvent,
     ModelRequestStartEvent,
     NamespaceStatus,
     NoteEvent,
@@ -119,7 +110,14 @@ from ya_agent_sdk.events import (
     ToolSearchInitEvent,
     UsageSnapshotEvent,
 )
-from ya_agent_sdk.presets import resolve_model_settings
+from ya_agent_sdk.subagents import (
+    DelegationCapability,
+    SubagentDeliveryState,
+    SubagentExecutionMode,
+    SubagentExecutionRecord,
+    SubagentExecutionService,
+    SubagentExecutionState,
+)
 from ya_agent_sdk.toolsets.core.interaction import (
     ASK_USER_QUESTION_KIND,
     AskUserQuestionTool,
@@ -146,15 +144,30 @@ from yaacli.app.commands import (
     parse_skill_invocation,
 )
 from yaacli.app.state import TUIPhase, TUIStateMachine
-from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor, BackgroundTaskInfo, BackgroundTaskResult
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display import EventRenderer, RichRenderer, ToolMessage
-from yaacli.display_replay import MAX_DISPLAY_REPLAY_LOAD_BYTES, BoundedDisplayReplay, load_display_replay
+from yaacli.display_replay import BoundedDisplayReplay
+from yaacli.durable.application import (
+    SessionApplicationService,
+    build_runtime_descriptor,
+)
+from yaacli.durable.executor import LocalExecutionWorker
+from yaacli.durable.models import (
+    ActionBatch,
+    LogicalRunStatus,
+    RevisionPayload,
+    RevisionRecord,
+    RuntimeDescriptor,
+    SessionRecord,
+    SessionSummary,
+)
+from yaacli.durable.restoration import restore_resumable_state_safely
+from yaacli.durable.sqlite import SQLiteSessionStore
+from yaacli.durable.subagents import SQLiteSubagentExecutionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.errors import safe_exception_str as _safe_exception_str
-from yaacli.events import ContextUpdateEvent, GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
-from yaacli.hooks import emit_context_update
+from yaacli.events import GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.logging import configure_tui_logging, get_logger
 from yaacli.model_profiles import (
     ResolvedModelProfile,
@@ -162,24 +175,21 @@ from yaacli.model_profiles import (
     format_model_profile_choice,
     format_model_profile_label,
     get_startup_model_profile,
-    resolve_profile_model_cfg,
     save_selected_model_profile_id,
 )
 from yaacli.perf import perf_log_report, perf_report, perf_timer
 from yaacli.rendering.transcript import BlockId, BoundedTextAccumulator, TranscriptLimits, TranscriptStore
-from yaacli.runtime import create_tui_runtime
-from yaacli.session import TUIContext, TUIResumableState
-from yaacli.sessions import (
-    SessionInfo,
-    get_head_artifact_paths,
-    get_session_info,
-    list_sessions,
-    read_head_artifacts,
-    resolve_session_dir,
-    restore_resumable_state_safely,
-    save_session_turn,
-    trim_sessions,
+from yaacli.runtime import (
+    RuntimeSourceSnapshot,
+    build_main_runtime_manifest,
+    build_runtime_agent_spec,
+    compile_child_plan_manifest,
+    compile_runtime_sources,
+    create_tui_runtime,
+    restore_main_runtime_manifest,
 )
+from yaacli.session import TUIContext, TUIResumableState
+from yaacli.shell_monitor import SHELL_MONITOR_KEY, ShellMonitor, ShellNotification
 from yaacli.theme import (
     ResolvedTheme,
     ThemePreference,
@@ -209,13 +219,10 @@ _DIRECT_SHELL_TIMEOUT = 300.0
 _DIRECT_SHELL_READ_CHUNK_BYTES = 16 * 1024
 _DIRECT_SHELL_OUTPUT_TAIL_BYTES = 64 * 1024
 _DIRECT_SHELL_LIVE_FRAGMENT_CHARS = 16 * 1024
-_DEFAULT_MAX_TURNS_PER_SESSION = 20
-_DEFAULT_MAX_SESSIONS = 100
 _DEFAULT_MAX_PENDING_ATTACHMENTS = 8
 _DEFAULT_MAX_PENDING_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _MAX_RETAINED_TOOL_RESULT_CHARS = 64 * 1024
 _MAX_RETAINED_TOOL_ARG_CHARS = 64 * 1024
-_MAX_DISPLAY_REPLAY_LOAD_BYTES = MAX_DISPLAY_REPLAY_LOAD_BYTES
 _SESSION_SELECTOR_MAX_VISIBLE = 8
 _SESSION_SELECTOR_MAX_WIDTH = 110
 _SESSION_SELECTOR_MIN_WIDTH = 24
@@ -365,10 +372,6 @@ def _positive_int_config(value: object, default: int) -> int:
     return value if isinstance(value, int) and value > 0 else default
 
 
-def _optional_positive_int_config(value: object) -> int | None:
-    return value if isinstance(value, int) and value > 0 else None
-
-
 def _single_line_session_preview(value: str | None) -> str | None:
     """Normalize untrusted session metadata for one terminal line."""
     if value is None:
@@ -406,9 +409,10 @@ def _pad_display_text(value: str, width: int) -> str:
     return f"{truncated}{' ' * max(0, width - display_width)}"
 
 
-def _format_session_timestamp(value: str) -> str:
-    """Format an ISO session timestamp for the compact selector table."""
-    normalized = _single_line_session_preview(value) or "unknown"
+def _format_session_timestamp(value: str | datetime) -> str:
+    """Format a session timestamp for the compact selector table."""
+    raw_value = value.isoformat() if isinstance(value, datetime) else value
+    normalized = _single_line_session_preview(raw_value) or "unknown"
     try:
         parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
     except ValueError:
@@ -433,12 +437,6 @@ def _session_detail_line(label: str, value: str | None, max_width: int) -> Style
         ("class:session-selector.detail-label", label_text),
         ("class:session-selector.detail-value", _truncate_display_text(preview, value_width)),
     ]
-
-
-def _completed_result_request_count(result: AgentRunResult[Any]) -> int:
-    """Return a conservative model-request count for one completed stream."""
-    requests = result.usage.requests
-    return requests if isinstance(requests, int) and requests > 0 else 1
 
 
 def _is_benign_contextvar_cleanup_error(e: BaseException | None) -> bool:
@@ -484,9 +482,6 @@ Review the <steering> content carefully, consider how it affects your current ap
 and adjust your work accordingly while continuing toward the goal.
 </system-reminder>"""
 
-BACKGROUND_WAKEUP_PROMPT = """<system-reminder>
-A background task is ready. Review the background notification and use the relevant tool if more detail is needed.
-</system-reminder>"""
 USER_INPUT_TIMEOUT_PROMPT = (
     "The user did not respond before the clarification request timed out. "
     "Do not wait for or request the same input again. Continue the task using your best judgment "
@@ -519,6 +514,26 @@ class PendingAttachment:
 # =============================================================================
 # TUI Application
 # =============================================================================
+
+
+@dataclass(slots=True)
+class _TUISubagentDeferredResolver:
+    app: TUIApp
+
+    async def resolve(
+        self,
+        record: SubagentExecutionRecord,
+        requests: DeferredToolRequests,
+    ) -> DeferredToolResults:
+        self.app._append_system_output(f"Subagent {record.route} requires user action: {record.execution_id}")
+        try:
+            return await self.app._request_user_action(
+                requests,
+                owner=f"subagent:{record.execution_id}",
+            )
+        finally:
+            if not self.app._is_foreground_busy():
+                self.app._set_phase(TUIPhase.IDLE)
 
 
 @dataclass
@@ -554,7 +569,19 @@ class TUIApp:
         default=None, init=False
     )
     _skill_toolset: SkillToolset | None = field(default=None, init=False, repr=False)
+    _skill_toolsets: dict[str, SkillToolset] = field(default_factory=dict, init=False, repr=False)
+    _runtime_descriptors_by_profile: dict[str, RuntimeDescriptor] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _runtime_sources: RuntimeSourceSnapshot | None = field(default=None, init=False, repr=False)
+    _runtime_behavior_base: str = field(default="", init=False, repr=False)
     _oauth_refresh_supervisor: OAuthRefreshSupervisor | None = field(default=None, init=False, repr=False)
+    _durable_store: SQLiteSessionStore | None = field(default=None, init=False, repr=False)
+    _execution_worker: LocalExecutionWorker | None = field(default=None, init=False, repr=False)
+    _session_service: SessionApplicationService | None = field(default=None, init=False, repr=False)
+    _active_logical_run_id: str | None = field(default=None, init=False)
 
     # UI components
     _app: Application[None] | None = field(default=None, init=False, repr=False)
@@ -588,7 +615,7 @@ class TUIApp:
     _last_session_input: str | None = field(default=None, init=False)
     _last_session_output: str | None = field(default=None, init=False)
     _session_selector_open: bool = field(default=False, init=False)
-    _session_selector_entries: list[SessionInfo] = field(default_factory=list, init=False)
+    _session_selector_entries: list[SessionSummary] = field(default_factory=list, init=False)
     _session_selector_index: int = field(default=0, init=False)
 
     # Agent execution
@@ -687,6 +714,8 @@ class TUIApp:
 
     # HITL (Human-in-the-Loop) approval state
     _hitl_pending: bool = field(default=False, init=False)
+    _hitl_owner: str | None = field(default=None, init=False, repr=False)
+    _hitl_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     _approval_event: asyncio.Event | None = field(default=None, init=False)
     _approval_result: bool | None = field(default=None, init=False)  # True=approve, False=reject
     _approval_reason: str | None = field(default=None, init=False)
@@ -697,10 +726,11 @@ class TUIApp:
     _current_deferred_request: ToolCallPart | None = field(default=None, init=False)
     _current_deferred_metadata: dict[str, Any] | None = field(default=None, init=False)
 
-    # Background task completion tracking
-    _pending_bus_check_needed: bool = field(default=False, init=False)
-    _background_results_ready: bool = field(default=False, init=False)
-    _pending_background_wakeup_kinds: set[str] = field(default_factory=set, init=False)
+    # Durable background readiness projection
+    _shell_notification_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _subagent_execution_store: SQLiteSubagentExecutionStore | None = field(default=None, init=False, repr=False)
+    _subagent_execution_service: SubagentExecutionService | None = field(default=None, init=False, repr=False)
+    _projected_subagent_completion_ids: set[str] = field(default_factory=set, init=False, repr=False)
     _session_clear_in_progress: bool = field(default=False, init=False)
 
     # Deferred screen recovery scheduling
@@ -747,7 +777,7 @@ class TUIApp:
             return
         if previous != phase:
             self._phase_started_at = time.monotonic()
-        self._state = TUIState.IDLE if phase in {TUIPhase.IDLE, TUIPhase.BACKGROUND_RESULT_READY} else TUIState.RUNNING
+        self._state = TUIState.IDLE if phase is TUIPhase.IDLE else TUIState.RUNNING
         if self._app:
             self._app.invalidate()
 
@@ -947,36 +977,153 @@ class TUIApp:
     # =========================================================================
 
     async def __aenter__(self) -> TUIApp:
-        """Initialize resources."""
+        """Initialize one durable worker shared by every TUI turn."""
         self._configure_theme(query_terminal=True)
-        logger.debug("Resolved terminal theme: %s (%s)", self._theme.variant, self._theme.source)
-
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
+        try:
+            return await self._initialize_runtime()
+        except BaseException as error:
+            await self.__aexit__(type(error), error, error.__traceback__)
+            raise
 
-        # Configure stderr-safe logging; verbose mode uses a bounded rotating file.
-
-        # Load MCP config
+    async def _initialize_runtime(self) -> TUIApp:
+        """Build runtime resources under the lifecycle cleanup boundary."""
+        logger.debug("Resolved terminal theme: %s (%s)", self._theme.variant, self._theme.source)
         mcp_config = self.config_manager.load_mcp_config()
-
         self._active_model_profile = get_startup_model_profile(self.config, self.config_manager.config_dir)
-
-        # Create runtime and preload the same effective skill catalog used by
-        # model instructions so slash completion works before the first turn.
-        self._skill_toolset = SkillToolset(toolset_id="skills", extra_dir_names=[SHARED_SKILLS_DIR_NAME])
-        self._runtime = create_tui_runtime(
-            config=self.config,
-            mcp_config=mcp_config,
-            working_dir=self.working_dir,
+        sources = compile_runtime_sources(
+            self.config,
             config_dir=self.config_manager.config_dir,
-            model_profile=self._active_model_profile,
-            enable_user_input=self.config.tools.enable_user_input,
-            skill_toolset=self._skill_toolset,
+            include_subagents=True,
         )
-        await self._exit_stack.enter_async_context(self._runtime)
-        await self._skill_toolset.refresh_context(self._runtime.ctx)
+        self._runtime_sources = sources
+        database_path = self.config_manager.get_session_database_path()
+        self._durable_store = SQLiteSessionStore(database_path)
+        child_store = SQLiteSubagentExecutionStore(database_path)
+        try:
+            retained_child_descriptors = child_store.list_referenced_descriptors()
+        finally:
+            child_store.close_sync()
 
-        # Register application-level injected context tags for compact stripping
+        configured_profiles = build_model_profiles(self.config)
+        runtime_profiles: list[ResolvedModelProfile | None] = [*configured_profiles] or [None]
+        descriptors: list[RuntimeDescriptor] = []
+        self._runtime_descriptors_by_profile.clear()
+        for profile in runtime_profiles:
+            child_manifest = compile_child_plan_manifest(
+                self.config,
+                profile=profile,
+                sources=sources,
+                retained_descriptors=retained_child_descriptors,
+            )
+            main_manifest = build_main_runtime_manifest(
+                self.config,
+                mcp_config,
+                profile=profile,
+                sources=sources,
+                working_dir=self.working_dir,
+                config_dir=self.config_manager.config_dir,
+                subagent_default_mode=SubagentExecutionMode.background,
+                enable_user_input=self.config.tools.enable_user_input,
+                frontend="tui",
+                hitl_policy="wait",
+            )
+            descriptor = build_runtime_descriptor(
+                agent_spec=build_runtime_agent_spec(
+                    self.config,
+                    profile=profile,
+                    sources=sources,
+                ),
+                main_plan_manifest=main_manifest,
+                child_plan_manifest=child_manifest,
+                host_envelope={
+                    "schema_version": 3,
+                    "workspace_ref": main_manifest.workspace_ref,
+                    "model_profile_id": profile.id if profile is not None else None,
+                    "frontend": "tui",
+                },
+            )
+            descriptors.append(descriptor)
+            self._runtime_descriptors_by_profile[profile.id if profile is not None else "default"] = descriptor
+
+        active_profile_key = self._active_model_profile.id if self._active_model_profile is not None else "default"
+        active_descriptor = self._runtime_descriptors_by_profile[active_profile_key]
+
+        async def event_sink(event: StreamEvent) -> None:
+            if self._display_adapter is not None:
+                display_events = self._display_adapter.adapt_stream_event(event)
+                self._handle_and_record_display_events(display_events)
+                self._handle_stream_event(event, render_display=False)
+            else:
+                self._handle_stream_event(event)
+
+        def runtime_factory(
+            descriptor: RuntimeDescriptor,
+            binding_ref: str,
+        ) -> AgentRuntime[TUIContext, Any, TUIEnvironment]:
+            (
+                runtime_config,
+                runtime_mcp,
+                runtime_profile,
+                runtime_sources,
+                runtime_workspace,
+                runtime_config_dir,
+            ) = restore_main_runtime_manifest(
+                descriptor.main_plan_manifest,
+                current_config=self.config,
+                current_mcp_config=mcp_config,
+            )
+            mode_value = descriptor.main_plan_manifest.subagent_default_mode
+            mode = SubagentExecutionMode(mode_value) if mode_value is not None else None
+            skill_toolset = SkillToolset(
+                toolset_id="skills",
+                extra_dir_names=[SHARED_SKILLS_DIR_NAME],
+            )
+            self._skill_toolsets[descriptor.descriptor_id] = skill_toolset
+            return create_tui_runtime(
+                config=runtime_config,
+                mcp_config=runtime_mcp,
+                working_dir=runtime_workspace,
+                system_prompt=runtime_sources.system_prompt,
+                child_plan_manifest=descriptor.child_plan_manifest,
+                config_dir=runtime_config_dir,
+                model_profile=runtime_profile,
+                subagent_default_mode=mode,
+                enable_user_input=descriptor.main_plan_manifest.enable_user_input,
+                skill_toolset=skill_toolset,
+                durable_binding_ref=binding_ref,
+                durable_database_path=database_path,
+                subagent_deferred_resolver=_TUISubagentDeferredResolver(self),
+                agent_name="yaacli_main_v2",
+            )
+
+        try:
+            self._execution_worker = await LocalExecutionWorker.create(
+                store=self._durable_store,
+                state_path=database_path,
+                active_descriptor=active_descriptor,
+                available_descriptors=descriptors,
+                runtime_factory=runtime_factory,
+                event_sink=event_sink,
+                display_projection_provider=lambda: cast(list[JsonValue], self._display_replay.snapshot()),
+            )
+        except BaseException:
+            self._durable_store.close()
+            self._durable_store = None
+            raise
+        self._runtime = cast(
+            AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment],
+            self._execution_worker.runtime,
+        )
+        self._skill_toolset = self._skill_toolsets[active_descriptor.descriptor_id]
+        self._subagent_execution_store = SQLiteSubagentExecutionStore(database_path)
+        for capability in self._runtime.capabilities:
+            if isinstance(capability, DelegationCapability):
+                self._subagent_execution_service = capability.service
+                break
+        self._session_service = SessionApplicationService(self._durable_store, self._execution_worker.coordinator)
+        await self._skill_toolset.refresh_context(self._runtime.ctx)
         self._runtime.ctx.injected_context_tags = (
             *self._runtime.ctx.injected_context_tags,
             PROJECT_GUIDANCE_TAG,
@@ -987,14 +1134,12 @@ class TUIApp:
         if self._oauth_refresh_supervisor is not None:
             await self._oauth_refresh_supervisor.start()
             logger.info(
-                "OAuth refresh supervisor started providers=%s", sorted(self._oauth_refresh_supervisor.provider_names)
+                "OAuth refresh supervisor started providers=%s",
+                sorted(self._oauth_refresh_supervisor.provider_names),
             )
 
-        # Initialize context window size from model config
         if self._runtime.ctx.model_cfg.context_window:
             self._context_window_size = self._runtime.ctx.model_cfg.context_window
-
-        # Apply display retention config.
         self._max_output_lines = self.config.display.max_output_lines
         self._max_output_blocks = self.config.display.max_output_blocks
         self._max_output_bytes = self.config.display.max_output_bytes
@@ -1003,23 +1148,18 @@ class TUIApp:
         self._transcript.configure(self._transcript_limits())
         self._sync_transcript_state()
 
-        logger.info("TUIApp initialized")
+        logger.info("TUIApp initialized with durable session execution")
         configure_tui_logging(verbose=self.verbose)
-
-        # Set core_toolset on BackgroundMonitor so it can find the delegate tool
-        bg_monitor = self._get_background_monitor()
-        if bg_monitor and self._runtime:
-            bg_monitor.set_core_toolset(self._runtime.core_toolset)
-            bg_monitor.set_completion_callback(self._on_background_task_complete)
-
-            # Start shell process completion monitoring
+        shell_monitor = self._get_shell_monitor()
+        if shell_monitor is not None and self._runtime is not None:
+            shell_monitor.set_notification_callback(self._on_shell_notification)
             if self._runtime.env.shell is not None:
-                bg_monitor.start_shell_monitor(
-                    shell=self._runtime.env.shell,
-                    bus=self._runtime.ctx.message_bus,
-                    agent_id=self._runtime.ctx.agent_id,
-                )
-
+                shell_monitor.start(self._runtime.env.shell)
+        projection_task = asyncio.create_task(
+            self._poll_subagent_completion_projection(),
+            name="yaacli-subagent-completion-projection",
+        )
+        self._track_managed_task(projection_task)
         return self
 
     async def _run_shutdown_stage(self, name: str, operation: Callable[[], Awaitable[Any]]) -> Any:
@@ -1038,9 +1178,9 @@ class TUIApp:
     ) -> bool | None:
         """Cleanup resources once after the prompt-toolkit run loop has stopped."""
         self._show_shutdown_status("starting shutdown")
-        bg_monitor = self._get_background_monitor()
-        if bg_monitor:
-            bg_monitor.set_completion_callback(None)
+        shell_monitor = self._get_shell_monitor()
+        if shell_monitor is not None:
+            shell_monitor.set_notification_callback(None)
         if self._pending_invalidate_handle is not None:
             self._pending_invalidate_handle.cancel()
             self._pending_invalidate_handle = None
@@ -1076,6 +1216,10 @@ class TUIApp:
         try:
             await attempt_shutdown_stage("agent-task", self._cancel_agent_task)
             await attempt_shutdown_stage("managed-tasks", self._cancel_managed_tasks)
+            if self._subagent_execution_store is not None:
+                subagent_store = self._subagent_execution_store
+                self._subagent_execution_store = None
+                await attempt_shutdown_stage("subagent-projection-store", subagent_store.close)
             if self._oauth_refresh_supervisor is not None:
                 supervisor = self._oauth_refresh_supervisor
                 self._oauth_refresh_supervisor = None
@@ -1085,18 +1229,31 @@ class TUIApp:
             # runtime resources that they may still reference.
             await asyncio.sleep(0)
 
+            if self._execution_worker is not None:
+                worker = self._execution_worker
+                self._execution_worker = None
+                self._show_shutdown_status("closing durable worker")
+                await attempt_shutdown_stage(
+                    "durable-worker",
+                    worker.close,
+                    suppress_mcp_cleanup_errors=True,
+                )
+                self._runtime = None
+
             if self._exit_stack:
                 stack = self._exit_stack
                 self._exit_stack = None
-                self._show_shutdown_status("closing runtime resources")
-                runtime_result = await attempt_shutdown_stage(
-                    "runtime-resources",
+                stack_result = await attempt_shutdown_stage(
+                    "application-resources",
                     lambda: stack.__aexit__(exc_type, exc_val, exc_tb),
-                    suppress_mcp_cleanup_errors=True,
                 )
-                if isinstance(runtime_result, bool) or runtime_result is None:
-                    result = runtime_result
+                if isinstance(stack_result, bool) or stack_result is None:
+                    result = stack_result
         finally:
+            if self._durable_store is not None:
+                self._durable_store.close()
+                self._durable_store = None
+            self._session_service = None
             perf_log_report()
 
         self._show_shutdown_status("shutdown complete")
@@ -2005,34 +2162,35 @@ class TUIApp:
         self._send_steering_message(message)
 
     def _get_pending_steering_count(self) -> int:
-        """Count user steering messages not yet consumed by a model request."""
-        if self._runtime is None or not isinstance(self._runtime.ctx, TUIContext):
+        """Count persisted active-run inputs not yet applied by Pydantic AI."""
+        if self._durable_store is None or self._active_logical_run_id is None:
             return 0
-        ctx = self._runtime.ctx
-        return sum(message.source == "user" for message in ctx.message_bus.peek(ctx.agent_id))
+        return sum(
+            item.order_index > 0 and item.state.value in {"accepted", "enqueued"}
+            for item in self._durable_store.list_inputs(self._active_logical_run_id)
+        )
 
     def _clear_unconsumed_user_steering(self) -> None:
-        """Discard unread user guidance without consuming background results."""
-        ctx = self.runtime.ctx
-        ctx.steering_messages.clear()
-        pending_user_ids = {message.id for message in ctx.message_bus.peek(ctx.agent_id) if message.source == "user"}
-        if pending_user_ids:
-            ctx.message_bus.mark_consumed(ctx.agent_id, pending_user_ids)
+        """Persisted accepted input is never silently discarded."""
 
     def _send_steering_message(self, message: str) -> None:
-        """Send steering guidance to the message bus with TUI formatting."""
-        try:
-            self.runtime.ctx.send_message(
-                BusMessage(
-                    content=message,
-                    source="user",
-                    target="main",
-                    template=STEERING_TEMPLATE,
-                )
+        """Persist steering before notifying the active durable workflow."""
+        if self._session_service is None or self._active_logical_run_id is None:
+            self._append_system_output("No active agent run accepts steering.")
+            return
+
+        logical_run_id = self._active_logical_run_id
+        service = self._session_service
+
+        async def submit() -> None:
+            await service.submit_input(
+                logical_run_id,
+                [message],
+                origin="user",
             )
-            logger.debug("Steering message sent: %s", message[:50])
-        except Exception:
-            logger.exception("Failed to send steering message")
+            logger.debug("Durable steering accepted: %s", message[:50])
+
+        self._track_managed_task(asyncio.create_task(submit()))
 
     def _create_oauth_refresh_supervisor(self) -> OAuthRefreshSupervisor | None:
         if not self.config.oauth_refresh.enabled:
@@ -2074,7 +2232,6 @@ class TUIApp:
             TUIPhase.COMMAND_RUNNING: "Command",
             TUIPhase.SAVING: "Saving",
             TUIPhase.CANCELLING: "Cancelling",
-            TUIPhase.BACKGROUND_RESULT_READY: "Background ready",
         }
         parts: StyleAndTextTuples = [
             (
@@ -2091,8 +2248,6 @@ class TUIApp:
         pending_steering = self._get_pending_steering_count()
         if pending_steering:
             parts.append(("class:status-bar.warning", f" · steering {pending_steering} pending"))
-        if self._background_results_ready:
-            parts.append(("class:status-bar.warning", " · /integrate ready"))
         if self._pending_attachments:
             label = f"attach {len(self._pending_attachments)}" if compact else self._format_pending_attachments_label()
             parts.append(("class:status-bar.warning", f" · {label}"))
@@ -2281,8 +2436,14 @@ class TUIApp:
         overflow_lines += int(total > max_visible and self._model_selector_index < total - max_visible // 2 - 1)
         return visible_items + 3 + overflow_lines
 
+    def _durable_session_infos(self, *, limit: int = 100) -> list[SessionSummary]:
+        """Return durable session projections for the selector."""
+        if self._session_service is None:
+            return []
+        return list(self._session_service.list_session_summaries(limit=limit))
+
     async def _show_session_selector(self) -> None:
-        """Open the metadata-only session selector without blocking the event loop."""
+        """Open the durable session selector without blocking the event loop."""
         current_task = asyncio.current_task()
         owns_command_dispatch = (
             self.phase == TUIPhase.COMMAND_RUNNING
@@ -2294,9 +2455,9 @@ class TUIApp:
             return
 
         try:
-            entries = await asyncio.to_thread(list_sessions, self.config_manager)
+            entries = self._durable_session_infos()
         except (OSError, ValueError) as exc:
-            logger.warning("Failed to list sessions: %s", exc)
+            logger.warning("Failed to list durable sessions: %s", exc)
             self._append_system_output(f"Unable to list sessions: {exc}")
             return
         if not entries:
@@ -2306,7 +2467,7 @@ class TUIApp:
         self._close_model_selector()
         self._session_selector_entries = entries
         self._session_selector_index = next(
-            (index for index, entry in enumerate(entries) if entry.id == self._session_id),
+            (index for index, entry in enumerate(entries) if entry.session_id == self._session_id),
             0,
         )
         self._session_selector_open = True
@@ -2335,7 +2496,7 @@ class TUIApp:
         if not self._session_selector_open or not self._session_selector_entries:
             return
         index = max(0, min(self._session_selector_index, len(self._session_selector_entries) - 1))
-        session_id = self._session_selector_entries[index].id
+        session_id = self._session_selector_entries[index].session_id
         self._close_session_selector()
         self._schedule_command(f"/session {session_id}")
 
@@ -2452,17 +2613,17 @@ class TUIApp:
         for index in range(start, end):
             entry = self._session_selector_entries[index]
             cursor = ">" if index == self._session_selector_index else " "
-            current = "*" if entry.id == self._session_id else " "
-            session_id = _single_line_session_preview(entry.id) or "unknown"
+            current = "*" if entry.session_id == self._session_id else " "
+            session_id = _single_line_session_preview(entry.session_id) or "unknown"
             row = f"{cursor} {current} {_pad_display_text(session_id, session_width)}"
             if show_updated:
                 row += f" {_pad_display_text(_format_session_timestamp(entry.updated_at), updated_width)}"
             if show_workspace:
-                directory = _single_line_session_preview(entry.working_dir) or "unknown"
+                directory = _single_line_session_preview(entry.workspace_ref) or "unknown"
                 row += f" {_pad_display_text(directory, workspace_width)}"
             if index == self._session_selector_index:
                 style = "class:session-selector.selection"
-            elif entry.id == self._session_id:
+            elif entry.session_id == self._session_id:
                 style = "class:session-selector.current"
             else:
                 style = "class:session-selector.row"
@@ -2479,7 +2640,7 @@ class TUIApp:
         if show_details:
             selected_index = max(0, min(self._session_selector_index, total - 1))
             selected = self._session_selector_entries[selected_index]
-            selected_id = _single_line_session_preview(selected.id) or "unknown"
+            selected_id = _single_line_session_preview(selected.session_id) or "unknown"
             detail_id = _truncate_display_text(selected_id, max(1, line_width - len("DETAILS  ")))
             lines.extend([
                 [("class:session-selector.separator", "─" * line_width)],
@@ -2487,9 +2648,9 @@ class TUIApp:
                     ("class:session-selector.section", "DETAILS"),
                     ("class:session-selector.detail-id", f"  {detail_id}"),
                 ],
-                _session_detail_line("Directory", selected.working_dir, line_width),
-                _session_detail_line("Last input", selected.input_text, line_width),
-                _session_detail_line("Last output", selected.output_text, line_width),
+                _session_detail_line("Directory", selected.workspace_ref, line_width),
+                _session_detail_line("Last input", selected.input_preview, line_width),
+                _session_detail_line("Last output", selected.output_preview, line_width),
             ])
         return lines
 
@@ -2513,21 +2674,33 @@ class TUIApp:
             self._append_system_output("Model selection is available after foreground work finishes.")
             return
 
-        model_settings = resolve_model_settings(profile.model_settings)
-        model_cfg = resolve_profile_model_cfg(profile.model_cfg)
-
-        model_extra_headers = (
-            self.runtime.ctx.get_model_extra_headers() if profile.model.startswith("oauth@codex:") else None
+        if self._execution_worker is None:
+            raise RuntimeError("Durable worker is not initialized")
+        try:
+            descriptor = self._runtime_descriptors_by_profile[profile.id]
+        except KeyError as exc:
+            raise RuntimeError(f"Model profile {profile.id!r} has no registered runtime plan") from exc
+        plan = self._execution_worker.activate(descriptor.descriptor_id)
+        self._runtime = cast(
+            AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment],
+            plan.runtime,
         )
-        self.runtime.agent.model = infer_model(profile.model, extra_headers=model_extra_headers)
-        self.runtime.agent.model_settings = cast(ModelSettings, model_settings)
-        self.runtime.ctx.model_cfg = model_cfg
-        self.runtime.ctx.model_profile_instructions = profile.instructions
+        self._skill_toolset = self._skill_toolsets[descriptor.descriptor_id]
+        self._subagent_execution_service = None
+        for capability in self._runtime.capabilities:
+            if isinstance(capability, DelegationCapability):
+                self._subagent_execution_service = capability.service
+                break
+        await self._skill_toolset.refresh_context(self._runtime.ctx)
+        self._runtime.ctx.injected_context_tags = tuple(
+            dict.fromkeys((
+                *self._runtime.ctx.injected_context_tags,
+                PROJECT_GUIDANCE_TAG,
+                USER_RULES_TAG,
+            ))
+        )
         self._active_model_profile = profile
-        if model_cfg.context_window:
-            self._context_window_size = model_cfg.context_window
-        else:
-            self._context_window_size = 200000
+        self._context_window_size = self._runtime.ctx.model_cfg.context_window or 200000
 
         if persist:
             save_selected_model_profile_id(self.config_manager.config_dir, profile.id)
@@ -2613,148 +2786,141 @@ class TUIApp:
 
         return prompt_parts
 
-    def _get_background_monitor(self) -> BackgroundMonitor | None:
-        """Get BackgroundMonitor from environment resources."""
-        if self._runtime and self._runtime.env and self._runtime.env.resources:
-            resource = self._runtime.env.resources.get(BACKGROUND_MONITOR_KEY)
-            if isinstance(resource, BackgroundMonitor):
-                return resource
-        return None
-
-    def _get_background_task_count(self) -> int:
-        """Get the number of active background tasks."""
-        monitor = self._get_background_monitor()
-        if monitor is None:
-            return 0
-        return len(monitor.active_tasks)
+    def _get_shell_monitor(self) -> ShellMonitor | None:
+        """Return the environment-owned shell monitor when the runtime is entered."""
+        if self._runtime is None or self._runtime.env.resources is None:
+            return None
+        resource = self._runtime.env.resources.get(SHELL_MONITOR_KEY)
+        return resource if isinstance(resource, ShellMonitor) else None
 
     def _get_background_process_count(self) -> int:
-        """Get the number of active background shell processes."""
+        """Return the number of active environment shell processes."""
         try:
-            if self._runtime and self._runtime.env and self._runtime.env.shell:
+            if self._runtime is not None and self._runtime.env.shell is not None:
                 return len(self._runtime.env.shell.active_background_processes)
         except RuntimeError:
             pass
         return 0
 
     def _format_background_label(self) -> str:
-        """Format background indicator label combining tasks and processes.
-
-        Returns empty string if nothing is running. Examples:
-        - "BG: 2 tasks" (only subagent tasks)
-        - "BG: 3 procs" (only shell processes)
-        - "BG: 2 tasks, 3 procs" (both)
-        """
-        task_count = self._get_background_task_count()
-        proc_count = self._get_background_process_count()
-        if task_count == 0 and proc_count == 0:
+        """Format the status label for environment shell processes."""
+        process_count = self._get_background_process_count()
+        if process_count == 0:
             return ""
-        parts: list[str] = []
-        if task_count > 0:
-            parts.append(f"{task_count} task{'s' if task_count != 1 else ''}")
-        if proc_count > 0:
-            parts.append(f"{proc_count} proc{'s' if proc_count != 1 else ''}")
-        return f"BG: {', '.join(parts)}"
+        suffix = "proc" if process_count == 1 else "procs"
+        return f"BG: {process_count} {suffix}"
 
-    def _on_background_task_complete(self, agent_id: str) -> None:
-        """Handle subagent completion or shell output/completion readiness.
+    async def _poll_subagent_completion_projection(self) -> None:
+        """Project durable background completion readiness into the active session UI."""
+        try:
+            while True:
+                await self._refresh_subagent_completion_projection()
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Durable subagent completion projection stopped")
+            raise
 
-        This is called synchronously from the asyncio event loop. If the main
-        agent is idle, its queued background notification starts an empty turn
-        immediately; otherwise the turn that owns the foreground wakes it when
-        it finishes.
-
-        Args:
-            agent_id: Background agent ID or shell process ID.
-        """
-        monitor = self._get_background_monitor()
-        if monitor is not None and monitor.is_current_task_discarded():
-            self._drain_background_usage(monitor)
-            logger.debug("Discarded late background completion after session clear: %s", agent_id)
+    async def _refresh_subagent_completion_projection(self) -> None:
+        """Read durable records once without transporting any model input."""
+        execution_store = self._subagent_execution_store
+        session_store = self._durable_store
+        if execution_store is None or session_store is None:
             return
+        if self._subagent_execution_service is not None and self._runtime is not None:
+            self._runtime.ctx.delegation_scope_id = self._session_id
+            await self._subagent_execution_service.deliver_pending(self._runtime.ctx)
+        records = await execution_store.list(owner_scope_id=self._session_id)
+        for record in records:
+            if record.execution_id in self._projected_subagent_completion_ids:
+                continue
+            if (
+                record.mode is not SubagentExecutionMode.background
+                or not record.terminal
+                or record.delivery_state is not SubagentDeliveryState.pending
+                or record.parent_logical_run_id is None
+            ):
+                continue
+            parent_run = session_store.get_run(record.parent_logical_run_id)
+            if parent_run is None or parent_run.session_id != self._session_id:
+                continue
+            self._projected_subagent_completion_ids.add(record.execution_id)
+            self._append_system_output(self._format_subagent_completion(record))
 
+    @staticmethod
+    def _format_subagent_completion(record: SubagentExecutionRecord) -> str:
+        if record.state is SubagentExecutionState.succeeded:
+            status = "completed"
+        elif record.state is SubagentExecutionState.cancelled:
+            status = "was cancelled"
+        else:
+            status = "failed"
+        return (
+            f"Background subagent {record.route} {status}: "
+            f"{record.execution_id}. The result is ready for the next agent turn."
+        )
+
+    def _on_shell_notification(self, notification: ShellNotification) -> None:
+        """Expose shell readiness in the UI and route it through durable input."""
         if self._session_clear_in_progress:
-            logger.debug("Discarding background completion during session clear: %s", agent_id)
+            return
+        if notification.kind == "output":
+            self._append_system_output(f"Background shell output ready: {notification.process_id}")
+        else:
+            self._append_system_output(f"Background shell process completed: {notification.process_id}")
+        self._route_pending_shell_notifications()
+
+    def _route_pending_shell_notifications(self) -> None:
+        """Persist shell readiness into an active run or start one idle turn."""
+        monitor = self._get_shell_monitor()
+        if monitor is None or self._session_clear_in_progress:
+            return
+        current_delivery = self._shell_notification_task
+        if current_delivery is not None and not current_delivery.done():
+            return
+        notifications = monitor.pending()
+        if not notifications:
+            return
+        prompt = "\n\n".join(notification.prompt() for notification in notifications)
+
+        if self._active_logical_run_id is not None and self._session_service is not None:
+            logical_run_id = self._active_logical_run_id
+            service = self._session_service
+
+            async def submit() -> None:
+                try:
+                    await service.submit_input(
+                        logical_run_id,
+                        [prompt],
+                        origin="feature",
+                    )
+                except Exception:
+                    logger.debug(
+                        "Active run closed before shell readiness could be submitted",
+                        exc_info=True,
+                    )
+                else:
+                    for notification in notifications:
+                        monitor.acknowledge(
+                            notification.process_id,
+                            expected=notification,
+                        )
+                finally:
+                    self._shell_notification_task = None
+                    if not self._is_foreground_busy():
+                        self._route_pending_shell_notifications()
+
+            task = asyncio.create_task(submit(), name="yaacli-shell-notification")
+            self._shell_notification_task = task
+            self._track_managed_task(task)
             return
 
-        shell_kind = monitor.pending_shell_notification_kind(agent_id) if monitor is not None else None
-        result = monitor.task_results.get(agent_id) if monitor is not None else None
-        status = result.status if result is not None else "completed"
-        if shell_kind == "output":
-            self._append_system_output(f"Background shell output ready: {agent_id}")
-        elif shell_kind == "completion":
-            self._append_system_output(f"Background shell process completed: {agent_id}")
-        elif status == "failed":
-            detail = f": {result.error}" if result is not None and result.error else ""
-            self._append_system_output(f"Background task failed: {agent_id}{detail}")
-        elif status == "cancelled":
-            self._append_system_output(f"Background task cancelled: {agent_id}")
-        else:
-            self._append_system_output(f"Background task completed: {agent_id}")
-
-        if shell_kind is not None:
-            self._pending_background_wakeup_kinds.add("shell")
-        elif monitor is not None and (agent_id in monitor.task_infos or agent_id in monitor.task_results):
-            self._pending_background_wakeup_kinds.add("subagent")
-        else:
-            self._pending_background_wakeup_kinds.add("other")
-
-        self._pending_bus_check_needed = True
-        self._background_results_ready = True
-        if self._is_foreground_busy():
-            logger.debug("Background task %s will wake the main agent after foreground work", agent_id)
-            return
-
-        self._wake_main_agent_for_background_results()
-
-    def _build_background_wakeup_prompt(self) -> str:
-        """Build a compact reminder from monitor-verified wakeup provenance."""
-        kinds = self._pending_background_wakeup_kinds
-        if not kinds:
-            return BACKGROUND_WAKEUP_PROMPT
-
-        descriptions: list[str] = []
-        if "subagent" in kinds:
-            descriptions.append(
-                "- An asynchronous subagent result is available; use wait_subagent for its retained result if needed."
-            )
-        if "shell" in kinds:
-            descriptions.append(
-                "- The monitored shell has unread output or a completed process; use shell_wait if needed."
-            )
-        if "other" in kinds:
-            descriptions.append(
-                "- Another background notification is available; review the notification before taking action."
-            )
-
-        return "\n".join([
-            "<system-reminder>",
-            "Background work is ready. Review the notification(s):",
-            *descriptions,
-            "</system-reminder>",
-        ])
-
-    def _wake_main_agent_for_background_results(self) -> None:
-        """Start one main-agent turn when a deliverable background event is queued."""
         if self._is_foreground_busy():
             return
-        if not self._deliver_background_messages():
-            self._background_results_ready = False
-            self._pending_bus_check_needed = False
-            self._pending_background_wakeup_kinds.clear()
-            if self.phase == TUIPhase.BACKGROUND_RESULT_READY:
-                self._set_phase(TUIPhase.IDLE)
-            logger.debug("Background completion had no deliverable notification")
-            return
-
-        self._background_results_ready = True
-        logger.info("Background result available, waking main agent")
-        # The bus notification is delivered independently of this reminder, so
-        # future bus-buffer changes cannot turn the wake-up into a blank turn.
-        # _launch_agent does not consume the compose buffer, preserving a draft.
-        prompt = self._build_background_wakeup_prompt()
-        self._pending_background_wakeup_kinds.clear()
-        self._launch_agent(prompt)
+        for notification in notifications:
+            monitor.acknowledge(notification.process_id, expected=notification)
+        self._launch_agent(prompt, session_input="Background shell readiness")
 
     def _on_agent_task_done(self, task: asyncio.Task[None]) -> None:
         """Recover interaction state if the owning task exits outside normal cleanup."""
@@ -2767,74 +2933,30 @@ class TUIApp:
             self._run_started_at = None
             self._run_timer_paused_at = None
             self._agent_phase = "idle"
-            self._reset_hitl_state()
-            self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
+            self._reset_hitl_state(owner="main")
+            self._set_phase(TUIPhase.IDLE)
+            self._route_pending_shell_notifications()
             return
         exc = task.exception()
         if exc is not None:
             if _is_benign_contextvar_cleanup_error(exc):
-                logger.debug("Suppressed benign ContextVar cleanup error from agent task: %s", _safe_exception_str(exc))
+                logger.debug(
+                    "Suppressed benign ContextVar cleanup error from agent task: %s",
+                    _safe_exception_str(exc),
+                )
             else:
-                logger.error("Uncaught exception in agent task: %s: %s", type(exc).__name__, _safe_exception_str(exc))
+                logger.error(
+                    "Uncaught exception in agent task: %s: %s",
+                    type(exc).__name__,
+                    _safe_exception_str(exc),
+                )
                 self._append_error_output(exc)
             self._run_started_at = None
             self._run_timer_paused_at = None
             self._agent_phase = "idle"
-            self._reset_hitl_state()
-            self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
-
-        if self._background_results_ready:
-            self._wake_main_agent_for_background_results()
-
-    def _drain_background_usage(self, monitor: BackgroundMonitor) -> None:
-        """Commit queued background usage without delivering conversation messages."""
-        drained_snapshots = monitor.drain_usage_snapshots()
-        for snapshot in drained_snapshots:
-            self._session_usage.set_run_snapshot(snapshot)
-            self._session_usage.commit_run_snapshot(snapshot.run_id)
-        for run_id in monitor.drain_retired_usage_run_ids():
-            self._session_usage.finalize_run_snapshots(run_id)
-        for snapshot in drained_snapshots:
-            if not monitor.can_publish_late_usage_snapshot(snapshot.run_id):
-                self._session_usage.finalize_run_snapshots(snapshot.run_id)
-
-    def _deliver_background_messages(self) -> bool:
-        """Redeliver queued background notifications into the current main-agent bus."""
-        monitor = self._get_background_monitor()
-        ctx = self.runtime.ctx
-        delivered = 0
-        if monitor is not None:
-            self._drain_background_usage(monitor)
-            delivered = monitor.deliver_pending_messages(ctx.message_bus, ctx.agent_id)
-        # User-authored steering shares the bus but is not a background result.
-        # Do not let pending guidance make /integrate claim that work arrived.
-        pending_background = any(message.source != "user" for message in ctx.message_bus.peek(ctx.agent_id))
-        return delivered > 0 or pending_background
-
-    def _check_pending_bus_messages(self) -> None:
-        """Wake the main agent for messages that arrived during a foreground turn.
-
-        Called after agent execution completes to redeliver messages that
-        arrived while the main agent was still running.
-        """
-        # Only proceed if flag was set (background task completed during run)
-        if not self._pending_bus_check_needed:
-            return
-        self._pending_bus_check_needed = False
-        if not self._deliver_background_messages():
-            self._background_results_ready = False
-            self._pending_background_wakeup_kinds.clear()
-            if self.phase == TUIPhase.BACKGROUND_RESULT_READY:
-                self._set_phase(TUIPhase.IDLE)
-            return
-
-        self._background_results_ready = True
-        # _run_agent() invokes this method from its finally block, before the
-        # owning task has transitioned to done. _launch_agent() correctly
-        # rejects a second foreground task at that point, so defer the wakeup
-        # to _on_agent_task_done(), after it releases the old task handle.
-        if self._agent_task is None or self._agent_task.done():
-            self._wake_main_agent_for_background_results()
+            self._reset_hitl_state(owner="main")
+            self._set_phase(TUIPhase.IDLE)
+        self._route_pending_shell_notifications()
 
     def _mark_goal_usage_report_pending(self) -> None:
         """Mark the active goal usage report to be printed after final usage persistence."""
@@ -2923,21 +3045,15 @@ class TUIApp:
         *,
         session_input: str | None = None,
     ) -> None:
-        """Execute an agent turn, including all deferred approvals and calls."""
+        """Execute one product logical run through the durable application service."""
+        if self._session_service is None or self._durable_store is None:
+            raise RuntimeError("Durable session service is not initialized")
         if self._run_started_at is None:
             self._run_started_at = time.monotonic()
             self._run_timer_paused_at = None
         self._set_phase(TUIPhase.THINKING)
-        if self._background_results_ready:
-            self._deliver_background_messages()
-            self._background_results_ready = False
-            self._pending_background_wakeup_kinds.clear()
-        turn_attachments = list(attachments or [])
-        self._pending_bus_check_needed = False
-        self._last_snapshot_saved = None
         self._last_session_input = session_input if session_input is not None else user_input
         self._last_session_output = None
-        auto_save_history = bool(getattr(getattr(self.config, "session", None), "auto_save_history", False))
         self._tool_messages.clear()
         self._printed_tool_calls.clear()
         self._subagent_states.clear()
@@ -2947,156 +3063,109 @@ class TUIApp:
         run_finished = False
         run_id = uuid.uuid4().hex[:12]
         self._display_adapter = AguiEventAdapter(
-            session_id=self._session_id, run_id=run_id, config=YAACLI_AGUI_ADAPTER_CONFIG
+            session_id=self._session_id,
+            run_id=run_id,
+            config=YAACLI_AGUI_ADAPTER_CONFIG,
         )
         self._handle_and_record_display_events([self._display_adapter.build_run_started_event()])
 
+        wait_task: asyncio.Task[Any] | None = None
         try:
-            # Initial agent execution. Every deferred continuation belongs to
-            # this same foreground turn and therefore shares one request budget.
-            max_model_requests = self.config.general.max_requests
-            cumulative_model_requests = 0
-            result = await self._execute_stream(
-                user_input,
-                turn_attachments,
-                request_limit=max_model_requests,
+            if self._durable_store.get_session(self._session_id) is None:
+                self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
+            prompt = self._build_user_prompt(user_input, attachments)
+            prompt_items: list[UserContent] = [prompt] if isinstance(prompt, str) else list(prompt)
+            content = cast(
+                list[JsonValue],
+                TypeAdapter(list[UserContent]).dump_python(prompt_items, mode="json"),
             )
-
-            # Resolve every deferred approval and call before reporting completion.
-            while result and isinstance(result.output, DeferredToolRequests):
-                deferred = result.output
-                if not deferred.approvals and not deferred.calls:
-                    raise RuntimeError("Agent returned an empty DeferredToolRequests payload.")
-                cumulative_model_requests += _completed_result_request_count(result)
-                remaining_model_requests = max_model_requests - cumulative_model_requests
-                if remaining_model_requests <= 0:
-                    raise RuntimeError(
-                        "TUI deferred continuation exhausted the cumulative "
-                        f"model request limit of {max_model_requests}."
-                    )
-                user_response = await self._request_user_action(deferred)
-                result = await self._execute_stream(
-                    user_response,
-                    request_limit=remaining_model_requests,
-                )
-
-            if result is None or not isinstance(result.output, str):
-                raise RuntimeError("Agent completed without a final text result.")
-            output = result.output
-            self._last_session_output = output
+            descriptor = self._build_runtime_descriptor(self.runtime)
+            logical_run = await self._session_service.start_turn(
+                self._session_id,
+                content,
+                descriptor=descriptor,
+            )
+            self._active_logical_run_id = logical_run.logical_run_id
+            wait_task = asyncio.create_task(
+                self._session_service.wait(logical_run.logical_run_id),
+                name=f"yaacli-run:{logical_run.logical_run_id}",
+            )
+            handled_batches: set[str] = set()
+            while not wait_task.done():
+                current = self._durable_store.get_run(logical_run.logical_run_id)
+                if (
+                    current is not None
+                    and current.status is LogicalRunStatus.suspended
+                    and current.pending_action_batch_id is not None
+                    and current.pending_action_batch_id not in handled_batches
+                ):
+                    batch = self._durable_store.get_action_batch(current.pending_action_batch_id)
+                    if batch is None:
+                        raise RuntimeError(f"Pending action batch {current.pending_action_batch_id!r} is unavailable")
+                    handled_batches.add(batch.batch_id)
+                    await self._resolve_durable_action_batch(batch)
+                    continue
+                await asyncio.sleep(0.05)
+            await wait_task
+            revision = self._current_revision()
+            self._restore_revision(revision)
+            status = str(revision.terminal.get("status", ""))
+            if status != LogicalRunStatus.completed.value:
+                error = revision.terminal.get("error")
+                raise RuntimeError(str(error or f"Agent run ended with status {status}"))
+            output_value = revision.terminal.get("output")
+            if not isinstance(output_value, str):
+                raise TypeError("Agent completed without a final text result.")
+            self._last_session_output = output_value
             self._handle_and_record_display_events([
-                self._display_adapter.build_run_finished_event(result={"output_text": output})
+                self._display_adapter.build_run_finished_event(result={"output_text": output_value})
             ])
             run_finished = True
+            self._last_snapshot_saved = True
             self._notify_turn_complete()
-            # Steering that did not reach the completed run must not be
-            # serialized into a snapshot and replayed by a future turn.
-            self._clear_unconsumed_user_steering()
-            if auto_save_history:
-                try:
-                    self._last_snapshot_saved = await self._save_session_snapshot_async(
-                        include_usage_ledger=False,
-                        save_reason="success",
-                    )
-                except Exception as save_error:
-                    self._last_snapshot_saved = False
-                    logger.exception("Agent completed, but session persistence failed")
-                    self._append_system_output(
-                        "Response completed, but the session snapshot could not be saved: "
-                        f"{type(save_error).__name__}: {_safe_exception_str(save_error)}"
-                    )
-
         except asyncio.CancelledError:
-            self._finalize_streaming_text()
-            self._finalize_streaming_thinking()
-            if run_finished:
-                # The response already has its terminal event. Persistence
-                # cancellation must not reclassify the completed run or start
-                # a second "cancelled" snapshot.
-                self._last_snapshot_saved = False
-                logger.warning("Session persistence was interrupted after the response completed")
-                self._append_system_output(
-                    "Response completed, but session persistence was interrupted before confirmation."
+            cancelled = True
+            logical_run_id = self._active_logical_run_id
+            if logical_run_id is not None:
+                cancel_task = asyncio.create_task(
+                    self._session_service.cancel(logical_run_id, reason="user_interrupted")
                 )
-            else:
-                cancelled = True
-                if self._display_adapter is not None:
-                    self._handle_and_record_display_events([
-                        self._display_adapter.build_run_custom_event("run_cancelled", {"reason": "user_interrupted"})
-                    ])
-                # Keep the partial execution state, but discard steering that
-                # the cancelled run never consumed before exporting it.
-                self._clear_unconsumed_user_steering()
-                if auto_save_history:
-                    try:
-                        self._last_snapshot_saved = await self._save_session_snapshot_async(
-                            include_usage_ledger=True,
-                            save_reason="cancelled",
-                        )
-                    except Exception as save_error:
-                        self._last_snapshot_saved = False
-                        logger.exception("Cancelled run persistence failed")
-                        self._append_system_output(
-                            "The run was cancelled, but its partial snapshot could not be saved: "
-                            f"{type(save_error).__name__}: {_safe_exception_str(save_error)}"
-                        )
-                saved_text = "partial state saved" if self._last_snapshot_saved else "no recoverable state"
-                self._append_output(f"[Cancelled · {saved_text}]")
-        except Exception as e:
-            if _is_benign_contextvar_cleanup_error(e):
-                logger.debug("Suppressed benign ContextVar cleanup error in agent run: %s", _safe_exception_str(e))
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await asyncio.shield(cancel_task)
+            if self._display_adapter is not None and not run_finished:
+                self._handle_and_record_display_events([
+                    self._display_adapter.build_run_custom_event("run_cancelled", {"reason": "user_interrupted"})
+                ])
+            self._append_output("[Cancelled · durable cancellation recorded]")
+        except Exception as exc:
+            if _is_benign_contextvar_cleanup_error(exc):
+                logger.debug(
+                    "Suppressed benign ContextVar cleanup error in agent run: %s",
+                    _safe_exception_str(exc),
+                )
             else:
                 reported_error = True
                 self._finalize_streaming_text()
                 self._finalize_streaming_thinking()
-                self._handle_and_record_display_events([
-                    self._display_adapter.build_run_error_event(
-                        message=_safe_exception_str(e),
-                        code=type(e).__name__,
-                    )
-                ])
-                # Failed runs must not persist unconsumed steering into a
-                # later restored interaction.
-                self._clear_unconsumed_user_steering()
-                if auto_save_history:
-                    try:
-                        self._last_snapshot_saved = await self._save_session_snapshot_async(
-                            include_usage_ledger=True,
-                            save_reason="error",
+                if self._display_adapter is not None:
+                    self._handle_and_record_display_events([
+                        self._display_adapter.build_run_error_event(
+                            message=_safe_exception_str(exc),
+                            code=type(exc).__name__,
                         )
-                    except Exception as save_error:
-                        self._last_snapshot_saved = False
-                        logger.exception("Failed run persistence failed")
-                        self._append_system_output(
-                            "The run failed, and its recovery snapshot could not be saved: "
-                            f"{type(save_error).__name__}: {_safe_exception_str(save_error)}"
-                        )
-                self._append_error_output(e, saved=self._last_snapshot_saved)
-                if self._last_snapshot_saved:
-                    self._append_system_output(
-                        "Session state saved. Enter your next prompt to continue from the current context."
-                    )
-                    self._append_system_output(
-                        f"After restarting, run /session {self._session_id} to restore this session."
-                    )
-                logger.exception("Agent execution failed")
+                    ])
+                self._last_snapshot_saved = self.has_session_data
+                self._append_error_output(exc, saved=self._last_snapshot_saved)
+                logger.exception("Durable agent execution failed")
         finally:
-            # Finalize any remaining streaming text/thinking
+            if wait_task is not None and not wait_task.done():
+                wait_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await wait_task
+            self._active_logical_run_id = None
             self._finalize_streaming_text()
             self._finalize_streaming_thinking()
-            # Reset all HITL state
-            self._reset_hitl_state()
-            # NOTE: Do NOT call consume_messages() here.
-            # It would swallow background subagent results that arrived after
-            # the last LLM request. The inject_bus_messages filter already
-            # tracks consumed IDs for idempotency, so messages won't duplicate.
-            # Clear user steering messages that were not consumed this turn.
-            # These are messages injected via bus from user during execution.
-            # If not cleared, they would leak into unrelated future tasks.
-            self._clear_unconsumed_user_steering()
-            # Finish active goal state explicitly. Verified and max-iteration
-            # endings are handled by the goal guard; if the guard did not end
-            # goal mode, the run stopped without accepted completion.
+            self._reset_hitl_state(owner="main")
             ctx = self.runtime.ctx
             if isinstance(ctx, TUIContext) and ctx.goal_active:
                 if cancelled:
@@ -3110,22 +3179,84 @@ class TUIApp:
             self._agent_phase = "idle"
             self._run_started_at = None
             self._run_timer_paused_at = None
-            self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
-            # Surface pending bus messages for the next prompt or an explicit
-            # /integrate turn (for example, a task completed while running).
-            # After an explicit cancellation, leave them queued instead of
-            # redelivering them into the just-cancelled interaction.
+            self._set_phase(TUIPhase.IDLE)
             self._display_adapter = None
-            if not cancelled:
-                self._check_pending_bus_messages()
 
-    def _reset_hitl_state(self) -> None:
-        """Reset all HITL-related state variables.
+    def _build_runtime_descriptor(
+        self,
+        runtime: AgentRuntime[TUIContext, Any, TUIEnvironment],
+    ) -> RuntimeDescriptor:
+        if self._execution_worker is None or runtime is not self._execution_worker.runtime:
+            raise RuntimeError("The active runtime is not registered by the durable worker")
+        return self._execution_worker.descriptor
 
-        Called after agent execution completes (success, error, or cancel)
-        to ensure clean state for next execution.
-        """
+    def _current_revision(self) -> RevisionRecord:
+        if self._durable_store is None:
+            raise RuntimeError("Durable store is not initialized")
+        session = self._durable_store.get_session(self._session_id)
+        if session is None or session.head_revision_id is None:
+            raise RuntimeError(f"Session {self._session_id!r} has no committed revision")
+        revision = self._durable_store.get_revision(session.head_revision_id)
+        if revision is None:
+            raise RuntimeError(f"Revision {session.head_revision_id!r} is unavailable")
+        return revision
+
+    def _restore_revision(self, revision: RevisionRecord) -> None:
+        self._message_history = ModelMessagesTypeAdapter.validate_python(revision.message_history)
+        latest_usage = get_latest_request_usage(self._message_history)
+        self._current_context_tokens = latest_usage.total_tokens if latest_usage is not None else 0
+        if revision.resumable_state:
+            state = TUIResumableState.model_validate(revision.resumable_state)
+            restore_resumable_state_safely(state, self.runtime.ctx)
+        if revision.display_projection:
+            display_events = validate_display_events(revision.display_projection)
+            replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
+            replay.extend_snapshot(display_events)
+            self._display_replay = replay
+
+    async def _resolve_durable_action_batch(self, batch: ActionBatch) -> None:
+        if self._session_service is None:
+            raise RuntimeError("Durable session service is not initialized")
+        pending = [item for item in batch.items if item.state.value == "pending"]
+        if not pending:
+            return
+        approvals = [
+            TypeAdapter(ToolCallPart).validate_python(item.request)
+            for item in pending
+            if item.decision_kind == "approval"
+        ]
+        calls = [
+            TypeAdapter(ToolCallPart).validate_python(item.request)
+            for item in pending
+            if item.decision_kind == "external_result"
+        ]
+        deferred = DeferredToolRequests(approvals=approvals, calls=calls)
+        results = await self._request_user_action(deferred)
+        by_call_id = {item.tool_call_id: item for item in pending}
+        for tool_call_id, result in results.approvals.items():
+            item = by_call_id[tool_call_id]
+            decision: dict[str, JsonValue]
+            if result is True:
+                decision = {"approved": True}
+            else:
+                message = result.message if isinstance(result, ToolDenied) else "Tool call denied"
+                decision = {"approved": False, "message": message}
+            await self._session_service.decide_action(item.action_item_id, decision, actor="tui-user")
+        for tool_call_id, result in results.calls.items():
+            item = by_call_id[tool_call_id]
+            content = result.content if isinstance(result, RetryPromptPart) else result
+            await self._session_service.decide_action(
+                item.action_item_id,
+                {"result": cast(JsonValue, to_jsonable_python(content))},
+                actor="tui-user",
+            )
+
+    def _reset_hitl_state(self, *, owner: str | None = None) -> None:
+        """Reset one matching HITL interaction, or force-reset all host HITL."""
+        if owner is not None and self._hitl_owner != owner:
+            return
         self._hitl_pending = False
+        self._hitl_owner = None
         self._pending_approvals.clear()
         self._current_approval_index = 0
         self._approval_result = None
@@ -3143,113 +3274,24 @@ class TUIApp:
             self._approval_event.set()
         self._approval_event = None
 
-    async def _execute_stream(
-        self,
-        prompt: str | DeferredToolResults,
-        attachments: Sequence[PendingAttachment] | None = None,
-        *,
-        request_limit: int | None = None,
-    ) -> AgentRunResult[str | DeferredToolRequests] | None:
-        """Execute a single agent stream and return the result.
-
-        Args:
-            prompt: User prompt string or DeferredToolResults from approval.
-
-        Returns:
-            AgentRunResult with output (str or DeferredToolRequests).
-        """
-        # Reset per-stream rendering markers while retaining tool details for /tool.
-        self._printed_tool_calls.clear()
-        self._subagent_states.clear()
-
-        # Build user prompt if string input
-        if isinstance(prompt, str):
-            user_prompt = self._build_user_prompt(prompt, attachments)
-            deferred_results = None
-        else:
-            user_prompt = ""
-            deferred_results = prompt
-
-        async with stream_agent(
-            self.runtime,  # type: ignore[arg-type] # TUIContext is subclass of AgentContext
-            user_prompt=user_prompt if user_prompt else None,
-            message_history=self._message_history,
-            deferred_tool_results=deferred_results,
-            usage_limits=UsageLimits(
-                request_limit=self.config.general.max_requests if request_limit is None else request_limit
-            ),
-            post_node_hook=emit_context_update,
-            resume_on_error=self.config.general.agent_stream_resume_on_error,
-            resume_max_attempts=self.config.general.agent_stream_resume_max_attempts,
-            transport_resume_max_attempts=self.config.general.agent_stream_transport_resume_max_attempts,
-            resume_prompt=self.config.general.agent_stream_resume_prompt,
-        ) as stream:
-            try:
-                async for event in stream:
-                    if self._display_adapter is not None:
-                        display_events = self._display_adapter.adapt_stream_event(event)
-                        self._handle_and_record_display_events(display_events)
-                        self._handle_stream_event(event, render_display=False)
-                    else:
-                        self._handle_stream_event(event)
-
-                stream.raise_if_exception()
-            except BaseException:
-                self._persist_stream_recoverable_state(stream)
-                raise
-
-            self._persist_stream_recoverable_state(stream)
-            monitor = self._get_background_monitor()
-            if monitor is not None:
-                monitor.acknowledge_enqueued_task_results(self.runtime.ctx.message_bus, self.runtime.ctx.agent_id)
-            return stream.run.result if stream.run else None
-
-    def _persist_stream_recoverable_state(
-        self, stream: AgentStreamer[AgentContext, str | DeferredToolRequests]
-    ) -> bool:
-        """Persist stream recoverable messages and usage to in-memory session state."""
-        self._last_run = stream.run
-        if stream.run is None:
-            return False
-        try:
-            message_history = stream.recoverable_messages()
-            self._message_history = message_history
-            usage = stream.run.usage
-            latest_usage = get_latest_request_usage(message_history)
-            self._current_context_tokens = latest_usage.total_tokens if latest_usage else usage.total_tokens
-
-            # Accumulate main-agent usage when no realtime snapshot was emitted.
-            if not self._session_usage.has_run_snapshot:
-                model_id = cast(Model, self.runtime.agent.model).model_name
-                self._session_usage.add("main", model_id, usage)
-            committed_run_ids = self._session_usage.commit_run_snapshot()
-            monitor = self._get_background_monitor()
-            for run_id in committed_run_ids:
-                if monitor is not None:
-                    monitor.observe_usage_run(run_id)
-                if monitor is None or not monitor.can_publish_late_usage_snapshot(run_id):
-                    self._session_usage.finalize_run_snapshots(run_id)
-            if monitor is not None:
-                for run_id in monitor.drain_retired_usage_run_ids():
-                    self._session_usage.finalize_run_snapshots(run_id)
-        except Exception:
-            logger.debug("Failed to persist recoverable stream state", exc_info=True)
-            return False
-        return True
-
     async def _request_user_action(
         self,
         deferred: DeferredToolRequests,
+        *,
+        owner: str = "main",
     ) -> DeferredToolResults:
         """Collect user actions without charging HITL wait time to the run timer."""
         if not deferred.approvals and not deferred.calls:
             return DeferredToolResults()
 
-        self._pause_run_timer()
-        try:
-            return await self._collect_deferred_user_actions(deferred)
-        finally:
-            self._resume_run_timer()
+        async with self._hitl_lock:
+            self._hitl_owner = owner
+            self._pause_run_timer()
+            try:
+                return await self._collect_deferred_user_actions(deferred)
+            finally:
+                self._resume_run_timer()
+                self._reset_hitl_state(owner=owner)
 
     async def _collect_deferred_user_actions(
         self,
@@ -3679,33 +3721,17 @@ class TUIApp:
         if updated:
             self._throttled_invalidate()
 
-    @staticmethod
-    def _is_background_agent(agent_id: str) -> bool:
-        """Check if an agent_id belongs to a background subagent."""
-        return "-bg-" in agent_id
-
     def _handle_stream_event(self, event: StreamEvent, *, render_display: bool = True) -> None:
         """Handle non-display state updates from agent execution."""
         message_event = event.event
         agent_id = event.agent_id
 
-        # Suppress all events from background subagents.
-        # Their results are delivered via message bus, not streamed.
-        if self._is_background_agent(agent_id):
-            return
-
-        # Handle subagent lifecycle events (from any agent)
+        # Handle durable subagent lifecycle events before ordinary stream parts.
         if isinstance(message_event, SubagentStartEvent):
-            # Suppress background subagent start events
-            if self._is_background_agent(message_event.agent_id):
-                return
             self._handle_subagent_start(message_event)
             return
 
         if isinstance(message_event, SubagentCompleteEvent):
-            # Suppress background subagent complete events
-            if self._is_background_agent(message_event.agent_id):
-                return
             self._handle_subagent_complete(message_event)
             return
 
@@ -3912,11 +3938,6 @@ class TUIApp:
                 )
             self._mark_goal_usage_report_pending()
 
-        elif isinstance(message_event, ContextUpdateEvent):
-            self._current_context_tokens = message_event.total_tokens
-            if message_event.context_window_size > 0:
-                self._context_window_size = message_event.context_window_size
-
         # Handle SDK lifecycle events for status bar
         elif isinstance(message_event, ModelRequestStartEvent):
             self._agent_phase = "thinking"
@@ -3927,14 +3948,6 @@ class TUIApp:
             self._finalize_streaming_thinking()
             self._agent_phase = "tools"
             self._set_phase(TUIPhase.TOOL_CALLING)
-
-        elif isinstance(message_event, MessageReceivedEvent):
-            # Render user messages after they have been injected into the run.
-            user_messages = [m for m in message_event.messages if m.source == "user"]
-            if user_messages:
-                previews = [m.content_text for m in user_messages]
-                rendered = self._event_renderer.render_steering_injected(previews)
-                self._append_output(rendered.rstrip())
 
         self._throttled_invalidate()
 
@@ -4031,7 +4044,7 @@ class TUIApp:
         args = parts[1].strip() if len(parts) > 1 else ""
         builtin_name = command_name.removeprefix("/")
         if builtin_name in BUILTIN_COMMANDS:
-            return (command_name == "/goal" and bool(args)) or command_name == "/integrate"
+            return command_name == "/goal" and bool(args)
         return builtin_name in self.config.get_commands()
 
     def _is_known_slash_command(self, command_name: str) -> bool:
@@ -4083,9 +4096,9 @@ class TUIApp:
             self._run_started_at = None
             self._run_timer_paused_at = None
             if self.phase in {TUIPhase.THINKING, TUIPhase.COMMAND_RUNNING, TUIPhase.CANCELLING}:
-                self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
-        if self._background_results_ready and not task.cancelled():
-            self._wake_main_agent_for_background_results()
+                self._set_phase(TUIPhase.IDLE)
+        if not task.cancelled():
+            self._route_pending_shell_notifications()
 
     def _release_direct_shell_task(self, task: asyncio.Future[None]) -> None:
         """Release shell ownership and wake only after the shell task is done."""
@@ -4094,9 +4107,9 @@ class TUIApp:
         self._direct_shell_command = None
         self._direct_shell_task = None
         if self.phase in {TUIPhase.SHELL_RUNNING, TUIPhase.CANCELLING}:
-            self._set_phase(TUIPhase.BACKGROUND_RESULT_READY if self._background_results_ready else TUIPhase.IDLE)
-        if self._background_results_ready and not task.cancelled():
-            self._wake_main_agent_for_background_results()
+            self._set_phase(TUIPhase.IDLE)
+        if not task.cancelled():
+            self._route_pending_shell_notifications()
 
     def _schedule_command(self, command: str) -> None:
         """Schedule a slash command after synchronously reserving idle dispatch."""
@@ -4668,9 +4681,9 @@ class TUIApp:
         ]
 
     def _session_completion_ids(self) -> list[str]:
-        """Return current session IDs for contextual /session completion."""
+        """Return durable session IDs for contextual /session completion."""
         try:
-            return [info.id for info in list_sessions(self.config_manager)]
+            return [info.session_id for info in self._durable_session_infos()]
         except (OSError, ValueError):
             logger.debug("Failed to list sessions for completion", exc_info=True)
             return []
@@ -4682,40 +4695,41 @@ class TUIApp:
         self._append_system_output("Transcript cleared. Conversation context is unchanged; use /new to reset it.")
 
     async def _start_new_session(self) -> None:
-        """Reset conversation state and atomically roll forward session identity."""
+        """Tombstone the current product session and create a clean durable one."""
         if self._session_clear_in_progress:
             self._append_system_output("A session switch is already in progress.")
             return
-
+        if self._session_service is None or self._durable_store is None:
+            raise RuntimeError("Durable session service is not initialized")
         old_session_id = self._session_id
-        new_session_id = uuid.uuid4().hex[:12]
-        # Publish the new identity before the first cleanup await. Once the old
-        # conversation is tombstoned, cancellation must never pair a fresh
-        # context with the old durable session ID.
-        self._session_id = new_session_id
-        cancelled: asyncio.CancelledError | None = None
-        try:
-            await self._clear_session()
-        except ShellBackgroundResetError as exc:
-            # Process ownership is unresolved, so keep the durable identity and
-            # conversation context that were active before /new.
-            self._session_id = old_session_id
-            self._set_phase(TUIPhase.IDLE)
-            self._append_system_output(f"New session was not started: {_safe_exception_str(exc)}")
-            return
-        except asyncio.CancelledError as exc:
-            cancelled = exc
-
+        old_session = self._durable_store.get_session(old_session_id)
+        if old_session is not None:
+            if old_session.active_execution_id is not None:
+                self._append_system_output("The active run must finish or be cancelled before starting a new session.")
+                return
+            self._durable_store.tombstone_session(old_session_id)
+        new_session = self._session_service.create_session(str(self.working_dir.resolve()))
+        await self._clear_session()
+        self._session_id = new_session.session_id
         self._display_adapter = None
         self._set_phase(TUIPhase.IDLE)
-        self._append_system_output(f"New session {new_session_id} started (previous: {old_session_id}).")
-        if cancelled is not None:
-            raise cancelled
+        self._append_system_output(f"New session {new_session.session_id} started (previous: {old_session_id}).")
 
     def _cancel_foreground(self) -> None:
         """Request cancellation once without interrupting persistence cleanup."""
         if self.phase == TUIPhase.SAVING:
-            self._append_system_output("A session snapshot is being saved; waiting for persistence to finish.")
+            self._append_system_output("A durable commit is in progress; waiting for it to finish.")
+            return
+        if self._active_logical_run_id is not None and self._session_service is not None:
+            self._set_phase(TUIPhase.CANCELLING)
+            logical_run_id = self._active_logical_run_id
+            service = self._session_service
+
+            async def cancel_run() -> None:
+                await service.cancel(logical_run_id, reason="user_interrupted")
+
+            self._track_managed_task(asyncio.create_task(cancel_run()))
+            self._append_system_output("Cancelling durable agent run...")
             return
 
         current_task = asyncio.current_task()
@@ -4735,46 +4749,6 @@ class TUIApp:
             self._append_system_output(f"Cancelling {label}...")
             return
         self._append_system_output("Nothing is running.")
-
-    def _integrate_background_results(self) -> None:
-        """Integrate ready background messages into this or a fresh agent turn."""
-        current_task = asyncio.current_task()
-        command_reserved = current_task is not None and self._foreground_command_task is current_task
-        if self._is_foreground_busy() and not command_reserved:
-            if not self._accepts_steering():
-                self._append_system_output("Background results remain queued until foreground work finishes.")
-                return
-            if not self._deliver_background_messages():
-                self._background_results_ready = False
-                self._pending_bus_check_needed = False
-                self._pending_background_wakeup_kinds.clear()
-                self._append_system_output("No background results are ready.")
-                return
-            # Delivery to the active run is not a future wake-up. Its queued
-            # bus messages remain available for the next model request, while
-            # later completions establish fresh wakeup provenance.
-            self._background_results_ready = True
-            self._pending_bus_check_needed = True
-            self._pending_background_wakeup_kinds.clear()
-            self._append_system_output(
-                "Background results delivered to the active run; they will be used by its next model request."
-            )
-            return
-        if not self._deliver_background_messages():
-            self._background_results_ready = False
-            self._pending_background_wakeup_kinds.clear()
-            if self.phase == TUIPhase.BACKGROUND_RESULT_READY:
-                self._set_phase(TUIPhase.IDLE)
-            self._append_system_output("No background results are ready.")
-            return
-        # The messages are already queued on the main-agent bus for the turn
-        # we are about to start. Do not let the command done callback schedule
-        # a second wake-up before that new owner begins running.
-        self._background_results_ready = False
-        self._pending_bus_check_needed = False
-        self._pending_background_wakeup_kinds.clear()
-        self._append_system_output("Integrating background results...")
-        self._launch_agent("")
 
     def _show_attachments(self) -> None:
         """List attachments queued for the next prompt."""
@@ -4921,8 +4895,6 @@ class TUIApp:
                 await self._start_new_session()
             case "/cancel":
                 self._cancel_foreground()
-            case "/integrate":
-                self._integrate_background_results()
             case "/cost":
                 self._append_user_input(command)
                 self._show_cost()
@@ -4955,7 +4927,7 @@ class TUIApp:
                 await self._show_model_selector()
             case "/agents":
                 self._append_user_input(command)
-                self._show_agents()
+                await self._show_agents()
             case "/process":
                 self._append_user_input(command)
                 self._show_processes()
@@ -5254,18 +5226,15 @@ class TUIApp:
         ctx.shell_review_records.clear()
         ctx.user_prompts = None
         ctx.previous_assistant_response_reference = None
-        ctx.steering_messages = []
         ctx.tool_id_wrapper.clear()
         ctx.agent_stream_queues = {}
-        ctx.subagent_history = {}
-        ctx.agent_registry = {}
+        ctx.agent_stream_info = {}
         ctx.auto_load_files = []
         ctx.task_manager = TaskManager()
         ctx.note_manager = NoteManager()
         ctx.tool_search_loaded_tools = []
         ctx.tool_search_loaded_namespaces = []
         ctx.tool_tags = set()
-        ctx.message_bus = MessageBus()
         ctx.reset_goal()
 
     def _reset_tui_session_state(self) -> None:
@@ -5288,9 +5257,6 @@ class TUIApp:
         self._display_replay.clear()
         self._event_renderer.clear()
         self._reset_pending_attachments()
-        self._pending_bus_check_needed = False
-        self._background_results_ready = False
-        self._pending_background_wakeup_kinds.clear()
         self._reset_hitl_state()
         self._goal_usage_start_breakdown = None
         self._goal_usage_report_pending = False
@@ -5308,106 +5274,89 @@ class TUIApp:
         self._current_context_tokens = 0
 
     async def _clear_session(self) -> None:
-        """Start a clean conversation while preserving reusable runtime configuration."""
+        """Reset frontend and resumable context state without replacing worker authority."""
         if self._session_clear_in_progress:
             return
         self._session_clear_in_progress = True
-        monitor = self._get_background_monitor()
-        commit_fresh_context = True
         try:
+            monitor = self._get_shell_monitor()
             if monitor is not None:
-                # Establish the isolation boundary before any operation that
-                # can fail or yield to an old background task.
-                monitor.begin_session_reset()
-                try:
-                    self._drain_background_usage(monitor)
-                except Exception:
-                    logger.exception("Failed to preserve background usage before session clear")
-                try:
-                    await monitor.reset_session_state()
-                except ShellBackgroundResetError:
-                    # A live process may still exist. Do not commit a new
-                    # conversation until its retained handle can be killed.
-                    commit_fresh_context = False
-                    raise
-                except Exception:
-                    logger.exception("Failed to fully reset background session state")
-                try:
-                    self._drain_background_usage(monitor)
-                except Exception:
-                    logger.exception("Failed to preserve final background usage during session clear")
+                await monitor.reset_session_state()
+            self._reset_tui_session_state()
+            self._session_usage.clear()
+            if self._runtime is not None:
+                self._reset_context_session_state(self._runtime.ctx)
         finally:
-            try:
-                if monitor is not None:
-                    monitor.finish_session_reset()
-                if commit_fresh_context:
-                    # Non-shell cleanup errors roll forward after tombstoning;
-                    # shell termination failure is the only fatal boundary.
-                    self._reset_tui_session_state()
-                    self._session_usage.clear()
-                    if self._runtime is not None:
-                        ctx = self._runtime.ctx
-                        if isinstance(ctx, TUIContext):
-                            fresh_ctx = ctx.prepare_new_run()
-                            self._reset_context_session_state(fresh_ctx)
-                            self._runtime.ctx = fresh_ctx
-                            if monitor is not None:
-                                monitor.set_message_bus(fresh_ctx.message_bus, fresh_ctx.agent_id)
-            finally:
-                self._session_clear_in_progress = False
+            self._session_clear_in_progress = False
 
     def _show_cost(self) -> None:
         """Show token usage summary for the current session."""
         summary = self._session_usage.format_summary()
         self._append_system_output(summary)
 
-    def _show_agents(self) -> None:
-        """Show running and recently completed background subagents."""
-        monitor = self._get_background_monitor()
-        active: dict[str, asyncio.Task[Any]] = {}
-        infos: dict[str, BackgroundTaskInfo] = {}
-        results: dict[str, BackgroundTaskResult] = {}
-        if monitor is not None:
-            active = monitor.active_tasks
-            infos = monitor.task_infos
-            results = monitor.task_results
-
-        if not infos:
-            self._append_system_output("No background subagents.")
+    async def _show_agents(self) -> None:
+        """Show durable subagent executions linked to the current session."""
+        if self._durable_store is None:
+            raise RuntimeError("Durable store is not initialized")
+        store = SQLiteSubagentExecutionStore(self.config_manager.get_session_database_path())
+        try:
+            all_records = await store.list()
+        finally:
+            await store.close()
+        records = []
+        for record in all_records:
+            if record.parent_logical_run_id is None:
+                continue
+            parent_run = self._durable_store.get_run(record.parent_logical_run_id)
+            if parent_run is not None and parent_run.session_id == self._session_id:
+                records.append(record)
+        if not records:
+            self._append_system_output("No durable subagent executions for this session.")
             return
 
-        running_count = sum(agent_id in active and not active[agent_id].done() for agent_id in infos)
+        running_states = {"pending", "running", "suspended"}
+        running_count = sum(record.state.value in running_states for record in records)
         header = Text(
-            f"Background Subagents ({running_count} running, {len(infos) - running_count} finished)",
+            f"Durable Subagents ({running_count} active, {len(records) - running_count} terminal)",
             style="bold cyan",
         )
         table = Table(show_header=True, box=None, padding=(0, 2))
-        table.add_column("Agent ID", style="dim")
-        table.add_column("Subagent", style="bold")
+        table.add_column("Execution ID", style="dim")
+        table.add_column("Route", style="bold")
+        table.add_column("Mode")
         table.add_column("Status")
         table.add_column("Elapsed", style="dim")
         table.add_column("Prompt", style="dim")
-
         now = datetime.now(UTC)
-        status_styles = {"completed": "green", "failed": "red", "cancelled": "yellow"}
-        for agent_id, info in sorted(infos.items()):
-            is_running = agent_id in active and not active[agent_id].done()
-            result = results.get(agent_id)
-            if is_running:
-                status_text = Text("running", style="cyan")
-                ended_at = now
-            elif result is not None:
-                status_text = Text(result.status, style=status_styles.get(result.status, ""))
-                ended_at = result.completed_at
-            else:
-                status_text = Text("finished", style="dim")
-                ended_at = now
-            elapsed = ended_at - info.started_at
-            elapsed_str = f"{max(0, int(elapsed.total_seconds()))}s"
-            prompt_preview = info.prompt[:60] + "..." if len(info.prompt) > 60 else info.prompt
-            name = f"{info.subagent_name} (resume)" if info.is_resume else info.subagent_name
-            table.add_row(agent_id, name, status_text, elapsed_str, prompt_preview)
-
+        status_styles = {
+            "pending": "cyan",
+            "running": "cyan",
+            "suspended": "yellow",
+            "succeeded": "green",
+            "failed": "red",
+            "cancelled": "yellow",
+            "lost": "red",
+        }
+        for record in sorted(records, key=lambda item: item.created_at):
+            ended_at = record.completed_at or now
+            started_at = record.started_at or record.created_at
+            elapsed = max(0, int((ended_at - started_at).total_seconds()))
+            prompt = (
+                record.prompt
+                if isinstance(record.prompt, str)
+                else json.dumps(record.prompt, ensure_ascii=False, default=str)
+            )
+            if len(prompt) > 60:
+                prompt = prompt[:57] + "..."
+            route = f"{record.route} (resume)" if record.resumed_from else record.route
+            table.add_row(
+                record.execution_id,
+                route,
+                record.mode.value,
+                Text(record.state.value, style=status_styles.get(record.state.value, "")),
+                f"{elapsed}s",
+                prompt,
+            )
         self._append_output(f"{self._renderer.render(header).rstrip()}\n{self._renderer.render(table).rstrip()}")
 
     def _show_processes(self) -> None:
@@ -5439,374 +5388,104 @@ class TUIApp:
         self._append_output(f"{self._renderer.render(header).rstrip()}\n{self._renderer.render(table).rstrip()}")
 
     def _dump_history(self, folder_path: str | None) -> None:
-        """Dump session state to a folder.
-
-        Creates a folder containing:
-        - message_history.json: The conversation history
-        - context_state.json: The agent context state (subagent history, etc.)
-
-        Args:
-            folder_path: Target folder path. Defaults to ".yaacli-session".
-        """
-        if not self._message_history:
-            self._append_system_output("No conversation history to dump")
+        """Export the committed durable head as an offline transfer bundle."""
+        if not self.has_session_data:
+            self._append_system_output("No committed conversation history to dump")
             return
-
         dump_dir = Path(folder_path or ".yaacli-session").expanduser().resolve()
         try:
-            # Create folder
+            revision = self._current_revision()
             dump_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save message history
-            history_file = dump_dir / "message_history.json"
-            history_file.write_bytes(ModelMessagesTypeAdapter.dump_json(self._message_history, indent=2))
-
-            display_file = dump_dir / "display_messages.json"
-            display_file.write_text(json.dumps(self._display_replay.snapshot(), ensure_ascii=False, indent=2))
-
-            # Save context state
-            state_file = dump_dir / "context_state.json"
-            state = self._export_session_state(include_usage_ledger=False)
-            state_file.write_text(state.model_dump_json(indent=2))
-
-            self._append_system_output(f"Session dumped to {dump_dir}")
-            self._append_system_output(f"  - message_history.json ({len(self._message_history)} messages)")
-            self._append_system_output(f"  - display_messages.json ({len(self._display_replay.snapshot())} events)")
-            self._append_system_output("  - context_state.json")
-        except Exception as e:
-            self._append_system_output(f"Error: {e}")
+            (dump_dir / "message_history.json").write_text(
+                json.dumps(revision.message_history, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (dump_dir / "context_state.json").write_text(
+                json.dumps(revision.resumable_state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (dump_dir / "display_messages.json").write_text(
+                json.dumps(revision.display_projection, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (dump_dir / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "session_id": revision.session_id,
+                        "revision_id": revision.revision_id,
+                        "working_dir": str(self.working_dir.resolve()),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            self._append_system_output(f"Durable session exported to {dump_dir}")
+        except Exception as exc:
+            self._append_system_output(f"Error: {exc}")
 
     async def _load_history(self, folder_path: str, *, target_session_id: str | None = None) -> bool:
-        """Transactionally load history into an isolated conversation context.
-
-        ``/load`` keeps the current durable session ID. ``/session`` supplies
-        ``target_session_id`` so context, transcript, replay, and identity all
-        change in the same no-await commit.
-        """
-        if self._session_clear_in_progress:
-            self._append_system_output("A session switch is already in progress.")
-            return False
-
+        """Import one offline bundle into the durable product store."""
+        if target_session_id is not None:
+            raise ValueError("Offline import cannot replace an existing session identity")
+        if self._session_service is None or self._durable_store is None:
+            raise RuntimeError("Durable session service is not initialized")
         load_dir = Path(folder_path).expanduser().resolve()
-        if not load_dir.is_dir():
-            self._append_system_output(f"Not a directory: {load_dir}")
-            return False
-
         history_file = load_dir / "message_history.json"
-        display_file = load_dir / "display_messages.json"
         state_file = load_dir / "context_state.json"
-        history_payload: bytes | None = None
-        state_payload: bytes | None = None
-        display_payload: bytes | None = None
-        atomic_session_snapshot = False
-        if not history_file.exists():
-            try:
-                snapshot = read_head_artifacts(
-                    self.config_manager,
-                    load_dir.name,
-                    max_display_messages_bytes=_MAX_DISPLAY_REPLAY_LOAD_BYTES,
-                )
-            except (FileNotFoundError, ValueError):
-                snapshot = None
-            if snapshot is not None:
-                atomic_session_snapshot = True
-                history_payload = snapshot.message_history_json
-                state_payload = snapshot.context_state_json
-                display_payload = snapshot.display_messages_json
-
-        if history_payload is None and not history_file.exists():
-            self._append_system_output(f"message_history.json not found in {load_dir}")
+        display_file = load_dir / "display_messages.json"
+        if not load_dir.is_dir() or not history_file.is_file():
+            self._append_system_output(f"Offline bundle requires {history_file}")
             return False
-
         try:
-            # Stage every fallible artifact and context operation before
-            # touching the active conversation or its background monitor.
-            history = ModelMessagesTypeAdapter.validate_json(
-                history_payload if history_payload is not None else history_file.read_bytes()
+            history = ModelMessagesTypeAdapter.validate_json(history_file.read_bytes())
+            history_payload = cast(
+                list[JsonValue],
+                ModelMessagesTypeAdapter.dump_python(history, mode="json"),
             )
-            if atomic_session_snapshot:
-                state = TUIResumableState.model_validate_json(state_payload) if state_payload is not None else None
-            else:
-                state = TUIResumableState.model_validate_json(state_file.read_text()) if state_file.exists() else None
-            display_events: list[dict[str, Any]] = []
-            display_warning: str | None = None
-            if atomic_session_snapshot:
-                if display_payload is None:
-                    display_warning = (
-                        "Display replay is too large to restore safely; conversation history was still loaded."
-                    )
-                else:
-                    try:
-                        display_events = validate_display_events(json.loads(display_payload.decode("utf-8")))
-                    except Exception as exc:
-                        logger.warning("Failed to restore atomic display replay for %s: %s", load_dir, exc)
-                        display_warning = (
-                            "Display replay is invalid and was skipped; conversation history was still loaded."
-                        )
-            elif display_file.exists():
-                try:
-                    loaded_display_events = load_display_replay(
-                        display_file,
-                        max_bytes=_MAX_DISPLAY_REPLAY_LOAD_BYTES,
-                    )
-                    if loaded_display_events is None:
-                        display_warning = (
-                            "Display replay is too large to restore safely; conversation history was still loaded."
-                        )
-                    else:
-                        display_events = loaded_display_events
-                except Exception as exc:
-                    logger.warning("Failed to restore display replay from %s: %s", display_file, exc)
-                    display_warning = (
-                        "Display replay is invalid and was skipped; conversation history was still loaded."
-                    )
-
-            replacement_replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
-            replacement_replay.extend_snapshot(display_events)
-
-            old_ctx = self.runtime.ctx
-            if not isinstance(old_ctx, TUIContext):
-                raise TypeError(f"Expected TUIContext, got {type(old_ctx).__name__}")
-            candidate_ctx = old_ctx.prepare_new_run()
-            self._reset_context_session_state(candidate_ctx)
-            if state is not None:
-                restore_resumable_state_safely(state, candidate_ctx)
-            restored_usage = state.session_usage_snapshot if state is not None else None
-            if restored_usage is None and candidate_ctx.usage_snapshot_entries:
-                restored_usage = candidate_ctx.build_usage_snapshot()
+            state_payload: dict[str, JsonValue] = {}
+            if state_file.is_file():
+                state = TUIResumableState.model_validate_json(state_file.read_text(encoding="utf-8"))
+                state_payload = cast(dict[str, JsonValue], state.model_dump(mode="json"))
+            display_payload: list[JsonValue] = []
+            if display_file.is_file():
+                display_payload = cast(
+                    list[JsonValue],
+                    validate_display_events(json.loads(display_file.read_text(encoding="utf-8"))),
+                )
         except Exception as exc:
-            self._append_system_output(f"Error loading session: {exc}")
+            self._append_system_output(f"Invalid offline session bundle: {exc}")
             return False
 
-        monitor = self._get_background_monitor()
-        cancelled: asyncio.CancelledError | None = None
-        shell_cleanup_error: ShellBackgroundResetError | None = None
-        self._session_clear_in_progress = True
-        try:
-            if monitor is not None:
-                # Tombstone old subagents and revoke their inherited shell lease
-                # before the first await.
-                monitor.begin_session_reset()
-                try:
-                    self._drain_background_usage(monitor)
-                except Exception:
-                    logger.exception("Failed to preserve background usage before session switch")
-                try:
-                    await monitor.reset_session_state()
-                except ShellBackgroundResetError as exc:
-                    shell_cleanup_error = exc
-                    logger.exception("Shell process cleanup blocked session switch")
-                except asyncio.CancelledError as exc:
-                    cancelled = exc
-                    logger.debug("Session switch cancelled while resetting old subagents; committing isolated state")
-                except Exception:
-                    logger.exception("Failed to fully reset background subagent state during session switch")
-                try:
-                    self._drain_background_usage(monitor)
-                except Exception:
-                    logger.exception("Failed to preserve final background usage during session switch")
-        finally:
-            try:
-                if monitor is not None:
-                    monitor.finish_session_reset()
-
-                if shell_cleanup_error is None:
-                    # No await is permitted in this commit: observers see either
-                    # the complete old session or the complete restored session.
-                    committed_session_id = target_session_id or self._session_id
-                    self._reset_tui_session_state()
-                    self.runtime.ctx = candidate_ctx
-                    if monitor is not None:
-                        monitor.set_message_bus(candidate_ctx.message_bus, candidate_ctx.agent_id)
-                    self._message_history = history
-                    self._display_replay = replacement_replay
-                    self._session_id = committed_session_id
-                    self._set_phase(TUIPhase.IDLE)
-                    self._restore_output_from_display_events(replacement_replay.snapshot())
-                    self._session_usage.clear()
-
-                    if restored_usage is not None:
-                        self._session_usage.set_run_snapshot(restored_usage)
-                        self._session_usage.commit_run_snapshot(restored_usage.run_id)
-                        self._session_usage.finalize_run_snapshots(restored_usage.run_id)
-                        # Avoid counting restored ledger entries again on the next run.
-                        candidate_ctx.usage_snapshot_entries.clear()
-            finally:
-                self._session_clear_in_progress = False
-
-        if shell_cleanup_error is not None:
-            self._append_system_output(f"Session was not loaded: {_safe_exception_str(shell_cleanup_error)}")
-            return False
-        if display_warning is not None:
-            self._append_system_output(display_warning)
-        self._append_system_output(f"Session loaded from {load_dir}")
-        self._append_system_output(f"  - message_history.json ({len(history)} messages)")
-        if atomic_session_snapshot or display_file.exists():
-            self._append_system_output(f"  - display_messages.json ({len(replacement_replay.snapshot())} events)")
-        self._append_system_output(
-            "  - context_state.json (restored)" if state is not None else "  - context_state.json (not found, skipped)"
+        session = self._durable_store.get_session(self._session_id)
+        if session is None:
+            session = self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
+        revision = self._session_service.import_snapshot(
+            session.session_id,
+            descriptor=build_runtime_descriptor(
+                agent_spec={"name": "yaacli_main_v2", "model": "offline-import"},
+                host_envelope={
+                    "schema_version": 2,
+                    "workspace_ref": str(self.working_dir.resolve()),
+                    "import_source": str(load_dir),
+                },
+            ),
+            payload=RevisionPayload(
+                message_history=history_payload,
+                resumable_state=state_payload,
+                display_projection=display_payload,
+                terminal={"status": "completed", "output": None},
+            ),
+            source=str(load_dir),
         )
-        self._append_system_output("Next message will continue from loaded history.")
-        if cancelled is not None:
-            raise cancelled
+        await self._clear_session()
+        self._session_id = session.session_id
+        self._restore_revision(revision)
+        if revision.display_projection:
+            self._restore_output_from_display_events(self._display_replay.snapshot())
+        self._append_system_output(f"Offline session imported from {load_dir}")
         return True
-
-    def _export_session_state(
-        self,
-        *,
-        include_usage_ledger: bool,
-        include_extra_usages: bool | None = None,
-    ) -> TUIResumableState:
-        """Export resumable context plus cumulative session usage."""
-        if include_extra_usages is None:
-            base_state = self.runtime.ctx.export_state(include_usage_ledger=include_usage_ledger)
-        else:
-            base_state = self.runtime.ctx.export_state(include_extra_usages=include_extra_usages)
-        usage_snapshot = (
-            None
-            if self._session_usage.is_empty()
-            else self._session_usage.export_snapshot(run_id=f"session:{self._session_id}")
-        )
-        return TUIResumableState(
-            **base_state.model_dump(),
-            session_usage_snapshot=usage_snapshot,
-        )
-
-    def _save_session_snapshot(
-        self,
-        *,
-        include_usage_ledger: bool | None = None,
-        save_reason: str,
-        include_extra_usages: bool | None = None,
-    ) -> bool:
-        """Persist the current session to disk.
-
-        Args:
-            include_usage_ledger: Whether to include the usage ledger in exported state.
-                Use True for error recovery snapshots.
-            save_reason: Metadata tag describing why the snapshot was saved.
-            include_extra_usages: Backward-compatible alias for include_usage_ledger.
-
-        Returns:
-            True when a snapshot was written, False when there is no message history.
-        """
-        if include_usage_ledger is None:
-            include_usage_ledger = bool(include_extra_usages)
-
-        if not self._message_history and not self._display_replay.snapshot():
-            return False
-
-        state = self._export_session_state(
-            include_usage_ledger=include_usage_ledger,
-            include_extra_usages=include_extra_usages,
-        )
-
-        profile = self._active_model_profile
-        turn_dir = save_session_turn(
-            config_manager=self.config_manager,
-            session_id=self._session_id,
-            working_dir=self.working_dir,
-            model_profile_id=profile.id if profile is not None else None,
-            model_label=profile.label if profile is not None else None,
-            model=profile.model if profile is not None else self._get_configured_model(),
-            message_history_json=ModelMessagesTypeAdapter.dump_json(self._message_history or [], indent=2),
-            message_count=len(self._message_history or []),
-            context_state_json=state.model_dump_json(indent=2),
-            display_messages=self._display_replay.snapshot(),
-            input_text=self._last_session_input,
-            output_text=self._last_session_output,
-            save_reason=save_reason,
-            max_turns=_positive_int_config(
-                getattr(getattr(self.config, "session", None), "max_turns_per_session", None),
-                _DEFAULT_MAX_TURNS_PER_SESSION,
-            ),
-            max_sessions=_positive_int_config(
-                getattr(getattr(self.config, "session", None), "max_sessions", None), _DEFAULT_MAX_SESSIONS
-            ),
-            max_session_age_days=_optional_positive_int_config(
-                getattr(getattr(self.config, "session", None), "max_session_age_days", None)
-            ),
-        )
-
-        logger.debug("Saved session snapshot to %s (reason=%s)", turn_dir, save_reason)
-        return True
-
-    async def _save_session_snapshot_async(
-        self,
-        *,
-        include_usage_ledger: bool,
-        save_reason: str,
-    ) -> bool:
-        """Prepare a consistent snapshot, then serialize/write it off-loop."""
-        async with self._session_save_lock:
-            display_messages = self._display_replay.snapshot()
-            message_history = list(self._message_history or [])
-            if not message_history and not display_messages:
-                return False
-
-            # Read mutable runtime structures on the event-loop thread. The
-            # prepared Pydantic state and shallow message list are stable while
-            # this turn awaits the worker write.
-            state = self._export_session_state(include_usage_ledger=include_usage_ledger)
-            max_turns = _positive_int_config(
-                getattr(getattr(self.config, "session", None), "max_turns_per_session", None),
-                _DEFAULT_MAX_TURNS_PER_SESSION,
-            )
-            max_sessions = _positive_int_config(
-                getattr(getattr(self.config, "session", None), "max_sessions", None), _DEFAULT_MAX_SESSIONS
-            )
-            max_session_age_days = _optional_positive_int_config(
-                getattr(getattr(self.config, "session", None), "max_session_age_days", None)
-            )
-
-            profile = self._active_model_profile
-            input_text = self._last_session_input
-            output_text = self._last_session_output
-
-            def persist() -> Path:
-                return save_session_turn(
-                    config_manager=self.config_manager,
-                    session_id=self._session_id,
-                    working_dir=self.working_dir,
-                    model_profile_id=profile.id if profile is not None else None,
-                    model_label=profile.label if profile is not None else None,
-                    model=profile.model if profile is not None else self._get_configured_model(),
-                    message_history_json=ModelMessagesTypeAdapter.dump_json(message_history, indent=2),
-                    message_count=len(message_history),
-                    context_state_json=state.model_dump_json(indent=2),
-                    display_messages=display_messages,
-                    input_text=input_text,
-                    output_text=output_text,
-                    save_reason=save_reason,
-                    max_turns=max_turns,
-                    max_sessions=max_sessions,
-                    max_session_age_days=max_session_age_days,
-                )
-
-            previous_phase = self.phase
-            self._set_phase(TUIPhase.SAVING)
-            worker = asyncio.create_task(asyncio.to_thread(persist))
-            try:
-                turn_dir = await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                # A worker thread cannot be cancelled. Keep the save lock until
-                # it finishes so a newer writer cannot race the same session.
-                with contextlib.suppress(Exception):
-                    await worker
-                raise
-            finally:
-                if self.phase == TUIPhase.SAVING:
-                    self._set_phase(previous_phase)
-            logger.debug("Saved session snapshot to %s (reason=%s)", turn_dir, save_reason)
-            return True
-
-    async def _auto_save_history(self) -> None:
-        """Auto-save a successful turn when session persistence is enabled."""
-        if self.config.session.auto_save_history:
-            self._last_snapshot_saved = await self._save_session_snapshot_async(
-                include_usage_ledger=False,
-                save_reason="success",
-            )
 
     @property
     def session_id(self) -> str:
@@ -5815,117 +5494,91 @@ class TUIApp:
 
     @property
     def has_session_data(self) -> bool:
-        """Check whether the current session has a legacy or schema-v2 snapshot."""
-        try:
-            paths = get_head_artifact_paths(self.config_manager, self._session_id)
-        except (FileNotFoundError, ValueError):
+        """Whether the current durable session has a committed revision."""
+        if self._durable_store is None:
             return False
-        return paths.message_history_file is not None and paths.message_history_file.exists()
-
-    def _prune_sessions(self, sessions_dir: Path, max_sessions: int = 100) -> None:
-        """Remove old sessions beyond the retention limit.
-
-        Keeps the most recent `max_sessions` sessions, deleting the rest.
-        Sessions are sorted by updated_at from metadata.json, falling back
-        to directory mtime.
-
-        Args:
-            sessions_dir: Path to ~/.yaacli/sessions/
-            max_sessions: Maximum number of sessions to retain.
-        """
-        try:
-            trim_sessions(
-                sessions_dir,
-                max_sessions=max_sessions,
-                max_session_age_days=_optional_positive_int_config(
-                    getattr(getattr(self.config, "session", None), "max_session_age_days", None)
-                ),
-                protected_session_id=self._session_id,
-            )
-        except OSError as e:
-            logger.warning("Failed to prune sessions in %s: %s", sessions_dir, e)
+        session = self._durable_store.get_session(self._session_id)
+        return session is not None and session.head_revision_id is not None
 
     def _list_sessions(self, max_display: int = 20) -> None:
-        """List recent sessions.
-
-        Shows session ID, timestamp, and working directory.
-
-        Args:
-            max_display: Maximum number of sessions to show.
-        """
-        from rich.table import Table
-
-        try:
-            sessions = list_sessions(self.config_manager)
-        except (OSError, ValueError) as exc:
-            logger.warning("Failed to list sessions: %s", exc)
-            self._append_system_output(f"Unable to list sessions: {exc}")
-            return
+        """List recent durable sessions."""
+        sessions = self._durable_session_infos(limit=max_display)
         if not sessions:
             self._append_system_output("No sessions found.")
             return
-
-        current_id = self._session_id
         table = Table(show_header=True, box=None, padding=(0, 2))
         table.add_column("Session ID", style="cyan")
         table.add_column("Updated", style="dim")
         table.add_column("Working Dir", style="dim")
-
-        for session in sessions[:max_display]:
-            marker = f"{session.id} *" if session.id == current_id else session.id
-            updated = session.updated_at[:19].replace("T", " ")
-            table.add_row(marker, updated, session.working_dir or "unknown")
-
-        self._append_system_output(
-            f"Sessions ({len(sessions)} total, showing latest {min(len(sessions), max_display)}):"
-        )
+        for session in sessions:
+            marker = f"{session.session_id} *" if session.session_id == self._session_id else session.session_id
+            table.add_row(
+                marker,
+                _format_session_timestamp(session.updated_at),
+                session.workspace_ref or "unknown",
+            )
+        self._append_system_output(f"Sessions (showing latest {len(sessions)}):")
         self._append_output(self._renderer.render(table).rstrip())
         self._append_system_output("Use /session <id> to restore. (* = current session)")
 
+    def _resolve_durable_session(self, session_id: str) -> SessionRecord:
+        if self._session_service is None:
+            raise RuntimeError("Durable session service is not initialized")
+        return self._session_service.resolve_session(session_id)
+
     async def _load_session(self, session_id: str) -> bool:
-        """Load a saved session by exact ID or unambiguous prefix."""
+        """Restore a durable session by exact ID or unambiguous prefix."""
         try:
-            target = resolve_session_dir(self.config_manager, session_id)
-            info = get_session_info(self.config_manager, target.name)
-        except (FileNotFoundError, ValueError) as exc:
+            target = self._resolve_durable_session(session_id)
+        except (KeyError, ValueError) as exc:
             self._append_system_output(str(exc))
             return False
-
-        if not await self._load_history(str(target), target_session_id=target.name):
-            return False
-
-        self._last_session_input = info.input_text
-        self._last_session_output = info.output_text
-        if info.working_dir is not None and Path(info.working_dir).resolve() != self.working_dir.resolve():
+        if target.active_execution_id is not None:
             self._append_system_output(
-                f"Workspace warning: session was saved in {info.working_dir}; current workspace is {self.working_dir}."
+                f"Session {target.session_id} has an active execution and cannot be switched in-place."
             )
-        active_model = (
-            self._active_model_profile.model if self._active_model_profile is not None else self._get_configured_model()
-        )
-        if info.model and active_model and info.model != active_model:
-            self._append_system_output(f"Model warning: session used {info.model}; continuing with {active_model}.")
+            return False
+        await self._clear_session()
+        self._session_id = target.session_id
+        if target.head_revision_id is not None:
+            if self._durable_store is None:
+                raise RuntimeError("Durable store is not initialized")
+            revision = self._durable_store.get_revision(target.head_revision_id)
+            if revision is None:
+                raise RuntimeError(f"Session head revision {target.head_revision_id!r} is unavailable")
+            self._restore_revision(revision)
+            if revision.display_projection:
+                self._restore_output_from_display_events(self._display_replay.snapshot())
+            output = revision.terminal.get("output")
+            self._last_session_output = output if isinstance(output, str) else None
+        self._set_phase(TUIPhase.IDLE)
+        self._append_system_output(f"Session {target.session_id} restored.")
+        if Path(target.workspace_ref).resolve() != self.working_dir.resolve():
+            self._append_system_output(
+                f"Workspace warning: session belongs to {target.workspace_ref}; "
+                f"current workspace is {self.working_dir}."
+            )
         return True
 
     async def _restore_startup_session(self) -> bool:
-        """Restore an explicitly requested session or the newest workspace match."""
-        requested = self.initial_session_id
-        if requested:
-            if await self._load_session(requested):
+        """Restore an explicitly requested session or newest workspace head."""
+        if self._session_service is None or self._durable_store is None:
+            raise RuntimeError("Durable session service is not initialized")
+        if self.initial_session_id:
+            if await self._load_session(self.initial_session_id):
                 return True
-            raise RuntimeError(f"Unable to restore requested session: {requested}")
-        if not isinstance(self.config, YaacliConfig) or not self.config.session.auto_restore:
-            return False
-
-        workspace = self.working_dir.resolve()
-        candidates = [
-            info
-            for info in list_sessions(self.config_manager)
-            if info.working_dir is not None and Path(info.working_dir).resolve() == workspace
-        ]
-        for candidate in candidates:
-            if await self._load_session(candidate.id):
-                return True
+            raise RuntimeError(f"Unable to restore requested session: {self.initial_session_id}")
+        if self.config.session.auto_restore:
+            workspace = str(self.working_dir.resolve())
+            for candidate in self._durable_store.list_sessions(limit=1000):
+                if (
+                    candidate.workspace_ref == workspace
+                    and candidate.head_revision_id is not None
+                    and await self._load_session(candidate.session_id)
+                ):
+                    return True
+        session = self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
+        self._session_id = session.session_id
         return False
 
     def _append_system_output(self, text: str) -> None:

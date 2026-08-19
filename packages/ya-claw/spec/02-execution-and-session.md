@@ -76,7 +76,7 @@ Suggested run fields:
 - `trigger_type`
 - `profile_name`
 - `input_parts`
-- `metadata` including optional run-level `workspace` override
+- `metadata` including the server-owned content-addressed execution profile descriptor and an optional run-level `workspace` override
 - `output_text`
 - `error_message`
 - `termination_reason`
@@ -84,6 +84,12 @@ Suggested run fields:
 - `started_at`
 - `finished_at`
 - `committed_at`
+
+### Exact Run Admission
+
+For every non-child run, admission resolves the effective profile in the same SQL transaction that creates the queued run. The controller stores a strict `ExecutionProfileDescriptor` under the server-owned `metadata["execution_profile_snapshot"]` key. The descriptor contains the native `AgentSpec`, host policy, subagent specifications, source provenance, and a full content fingerprint.
+
+Execution validates and restores this descriptor without consulting the mutable profile catalog. Editing, disabling, or deleting a profile after admission cannot change accepted work. External metadata cannot provide or observe the descriptor. Async child runs instead use their existing immutable `SubagentPlanDescriptor`.
 
 ### Run States
 
@@ -176,9 +182,11 @@ The single-node runtime keeps active execution state in memory.
 Recommended split:
 
 - `ExecutionRegistry` for active coordinator tasks and control handles
-- runtime event buffer store for replayable events, steering queues, and termination signals
+- runtime event buffer store for replayable events, live subscribers, and termination signals
 
-This split keeps execution ownership separate from event delivery.
+Durable steering ownership lives in SQL `run_input_inbox`; the SDK logical-run router
+owns active native delivery. The event buffer is not a steering queue or recovery
+source. This split keeps execution ownership separate from event delivery.
 
 ## Input Model
 
@@ -217,7 +225,7 @@ sequenceDiagram
     API->>SUP: submit(run_id)
     SUP->>SUP: claim queued run
     SUP->>COORD: start coordinator
-    COORD->>SDK: stream_agent(...)
+    COORD->>SDK: AgentExecutionHarness.stream_segment(...)
     loop runtime events
         SDK-->>COORD: stream event
         COORD->>ADAPTER: transform SDK event -> AGUI event

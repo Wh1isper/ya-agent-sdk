@@ -9,8 +9,8 @@ Export and restore resource states across process restarts via async factories.
 - **Resource**: Protocol requiring `close()` method
 - **ResumableResource**: Protocol adding `export_state()`/`restore_state()`
 - **InstructableResource**: Protocol adding `get_context_instructions()`
-- **ToolableResource**: Protocol adding `get_toolsets()` for resource-provided tools
-- **BaseResource**: Abstract base class implementing all protocols with defaults
+- **Resource capabilities**: `get_capabilities()` contributes opaque Pydantic AI capabilities
+- **BaseResource**: Abstract base class with lifecycle, capability, and resumable defaults
 - **ResourceFactory**: Async callable that creates resources
 - **ResourceRegistryState**: Serializable state container
 
@@ -43,7 +43,9 @@ flowchart LR
 `BaseResource` is a convenience abstract class with async `close()` and default no-op export/restore:
 
 ```python
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from ya_agent_environment import BaseResource
+
 
 class ApiClientSession(BaseResource):
     def __init__(self, client: ApiClient):
@@ -61,9 +63,14 @@ class ApiClientSession(BaseResource):
     async def get_context_instructions(self) -> str | None:
         return f"API client cursor: {self._client.cursor}"
 
-    def get_toolsets(self) -> list[Any]:
-        """Provide tools backed by this API client."""
-        return [ApiClientToolset(self._client)]
+    def get_capabilities(self) -> tuple[object, ...]:
+        """Provide a capability backed by this API client."""
+        return (
+            ToolsetCapability(
+                ApiClientToolset(self._client),
+                id="api_client",
+            ),
+        )
 ```
 
 For resources that don't need state persistence, just implement `close()`:
@@ -101,39 +108,37 @@ Lifecycle order:
 4. Resource is ready for use
 5. `close()` called on cleanup
 
-## Resource-Provided Toolsets
+## Resource-Provided Capabilities
 
-Resources can provide toolsets via `get_toolsets()`. This enables encapsulation where a resource owns both its state and the tools that operate on it:
+Resources encapsulate both state and agent behavior through `get_capabilities()`. The
+Environment layer keeps these values opaque; an application resource may use Pydantic
+AI's native toolset capability:
 
 ```python
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
+
+
 class ProcessManager(BaseResource):
-    def get_toolsets(self) -> list[Any]:
-        """Return process management tools."""
+    def get_capabilities(self) -> tuple[object, ...]:
         from my_app.toolsets import ProcessToolset
-        return [ProcessToolset(self)]
+
+        return (
+            ToolsetCapability(
+                ProcessToolset(self),
+                id="process_manager",
+            ),
+        )
 
     async def get_context_instructions(self) -> str | None:
-        """Report running processes to agent."""
         if not self._processes:
             return None
         return f"<processes count='{len(self._processes)}'>...</processes>"
 ```
 
-Collect all resource toolsets via `ResourceRegistry`:
-
-```python
-async with LocalEnvironment() as env:
-    env.resources.register_factory("process_manager", create_process_manager)
-    await env.resources.get_or_create("process_manager")
-
-    # Aggregate toolsets from all resources
-    resource_toolsets = env.resources.get_toolsets()
-
-    agent = Agent(
-        ...,
-        toolsets=[*core_toolsets, *env.get_toolsets()],
-    )
-```
+After resources are restored, `ResourceRegistry.get_agent_contributions()` returns one
+provenance-preserving group per resource. SDK runtime entry combines those groups with
+explicit and Environment capabilities; callers must not manually flatten toolsets into
+a second composition path.
 
 ## Implementing ResumableResource Protocol
 
@@ -210,8 +215,8 @@ state = await registry.export_state()
 count = await registry.restore_all()
 restored = await registry.restore_one("key")
 
-# Toolset collection (aggregates from all resources)
-toolsets = registry.get_toolsets()
+# Provenance-preserving capability contribution groups
+groups = registry.get_agent_contributions()
 
 # Existing API (preserved)
 registry.set("key", resource)
@@ -226,7 +231,7 @@ registry.get_typed("key", MyResource)
 - **Lazy restoration**: Use `restore_one()` to restore on demand
 - **Automatic restore**: `Environment.__aenter__` calls `restore_all()` after `_setup()`
 - **Context instructions**: Resources with `get_context_instructions()` contribute to `Environment.get_context_instructions()`
-- **Toolset aggregation**: Resources with `get_toolsets()` contribute tools via `ResourceRegistry.get_toolsets()`
+- **Capability contribution**: `get_capabilities()` values are returned in one source-labelled group per resource
 
 ## See Also
 

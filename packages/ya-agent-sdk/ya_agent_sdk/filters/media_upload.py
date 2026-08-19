@@ -45,7 +45,7 @@ from pydantic_ai.messages import (
 )
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.context import AgentContext, ModelCapability
+from ya_agent_sdk.context import AgentContext, ModelFeature
 from ya_agent_sdk.media import MediaUploader
 
 if TYPE_CHECKING:
@@ -143,8 +143,8 @@ def create_media_upload_filter(
         caps = model_cfg.capabilities if model_cfg else set()
 
         # Check what we should upload based on capabilities
-        should_upload_images = upload_images and ModelCapability.image_url in caps
-        should_upload_videos = upload_videos and ModelCapability.video_url in caps
+        should_upload_images = upload_images and ModelFeature.image_url in caps
+        should_upload_videos = upload_videos and ModelFeature.video_url in caps
 
         if not should_upload_images and not should_upload_videos:
             return message_history

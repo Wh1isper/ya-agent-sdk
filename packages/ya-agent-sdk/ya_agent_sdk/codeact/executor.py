@@ -12,6 +12,7 @@ from collections.abc import Callable, Container, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
+import anyio
 from pydantic_monty import (
     AsyncFunctionSnapshot,
     AsyncFutureSnapshot,
@@ -75,7 +76,8 @@ class MontyExecutor:
         tasks: list[asyncio.Task[Any]] = []
         for call in self._pending.values():
             if isinstance(call, asyncio.Task):
-                call.cancel()
+                if not call.done() and call.cancelling() == 0:
+                    call.cancel()
                 tasks.append(call)
             else:
                 call.close()
@@ -83,23 +85,19 @@ class MontyExecutor:
         if not tasks:
             return
 
-        # A second cancellation must not let this executor report cleanup while
-        # nested calls still own host resources. Shield the ownership drain,
-        # re-request child cancellation, and propagate only after every task
-        # has settled. A tool that suppresses cancellation indefinitely
-        # violates the CodeAct eligibility contract and necessarily blocks its
-        # in-process owner; hard termination requires process isolation.
+        # Cancel each child at most once, then retain ownership until every task
+        # settles. AnyIO cancellation is level-triggered and direct Task.cancel()
+        # may also be repeated; neither may be forwarded to a child that is
+        # already performing asynchronous cancellation cleanup.
         drain = asyncio.gather(*tasks, return_exceptions=True)
         interrupted = False
-        while not drain.done():
-            try:
-                await asyncio.shield(drain)
-            except asyncio.CancelledError:
-                interrupted = True
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-        await drain
+        with anyio.CancelScope(shield=True):
+            while not drain.done():
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError:
+                    interrupted = True
+            await drain
         if interrupted:
             raise asyncio.CancelledError
 

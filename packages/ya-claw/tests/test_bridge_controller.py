@@ -17,9 +17,9 @@ from ya_claw.runtime_state import create_runtime_state
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[..., None]) -> AsyncEngine:
     database_url = f"sqlite+aiosqlite:///{(tmp_path / 'bridge.sqlite3').resolve()}"
-    initialize_sqlite_database(database_url)
+    initialize_sqlite_database(database_url, profile_names=("default", "general"))
     engine = create_engine(database_url)
     try:
         yield engine
@@ -214,7 +214,10 @@ async def test_bridge_controller_includes_previous_messages_snapshot_from_messag
     assert event_record.normalized_event["previous_messages_snapshot"]["items"][0]["speaker"] == "self"
 
 
-async def test_bridge_controller_steer_skips_previous_messages_snapshot(db_session: AsyncSession) -> None:
+async def test_bridge_controller_steer_skips_previous_messages_snapshot(
+    db_session: AsyncSession,
+    bind_recording_input_ingress: Callable[..., list[list[dict[str, object]]]],
+) -> None:
     runtime_state = create_runtime_state()
     controller = BridgeController()
     settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
@@ -240,6 +243,7 @@ async def test_bridge_controller_steer_skips_previous_messages_snapshot(db_sessi
     session.active_run_id = first.run_id
     run.status = "running"
     await db_session.commit()
+    batches = bind_recording_input_ingress(runtime_state, first.run_id)
     snapshot = BridgePreviousMessagesSnapshot(
         items=[
             BridgePreviousMessageSnapshotItem(
@@ -267,10 +271,8 @@ async def test_bridge_controller_steer_skips_previous_messages_snapshot(db_sessi
         ),
     )
 
-    handle = runtime_state.get_run_handle(first.run_id)
     assert result.status == BridgeEventStatus.STEERED
-    assert handle is not None
-    steered_prompt = handle.steering_inputs[0][0]["text"]
+    steered_prompt = batches[0][0]["text"]
     assert "context that steer should skip" not in steered_prompt
     assert "<previous_messages_snapshot" not in steered_prompt
 
@@ -320,7 +322,10 @@ async def test_bridge_controller_reuses_chat_session(db_session: AsyncSession) -
     assert "<content>second</content>" in run_record.input_parts[1]["text"]
 
 
-async def test_bridge_controller_steers_active_conversation_session(db_session: AsyncSession) -> None:
+async def test_bridge_controller_steers_active_conversation_session(
+    db_session: AsyncSession,
+    bind_recording_input_ingress: Callable[..., list[list[dict[str, object]]]],
+) -> None:
     runtime_state = create_runtime_state()
     controller = BridgeController()
     settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
@@ -347,6 +352,7 @@ async def test_bridge_controller_steers_active_conversation_session(db_session: 
     assert isinstance(run, RunRecord)
     run.status = "running"
     await db_session.commit()
+    batches = bind_recording_input_ingress(runtime_state, first.run_id)
 
     second = await controller.handle_inbound_message(
         db_session,
@@ -363,7 +369,6 @@ async def test_bridge_controller_steers_active_conversation_session(db_session: 
         ),
     )
 
-    handle = runtime_state.get_run_handle(first.run_id)
     event_record_result = await db_session.execute(
         select(BridgeEventRecord).where(BridgeEventRecord.event_id == "event-2")
     )
@@ -373,10 +378,8 @@ async def test_bridge_controller_steers_active_conversation_session(db_session: 
     assert second.status == BridgeEventStatus.STEERED
     assert second.session_id == first.session_id
     assert second.run_id == first.run_id
-    assert isinstance(handle, object)
-    assert handle is not None
-    assert len(handle.steering_inputs) == 1
-    steered_prompt = handle.steering_inputs[0][0]["text"]
+    assert len(batches) == 1
+    steered_prompt = batches[0][0]["text"]
     assert "<content>second</content>" in steered_prompt
     assert event_record.status == BridgeEventStatus.STEERED
     assert event_record.run_id == first.run_id

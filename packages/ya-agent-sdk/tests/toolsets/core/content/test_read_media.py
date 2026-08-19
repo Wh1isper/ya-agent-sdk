@@ -13,7 +13,7 @@ import pytest
 from PIL import Image
 from pydantic_ai import BinaryContent, RunContext, ToolReturn, VideoUrl
 from pydantic_ai.usage import RunUsage
-from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig, ToolConfig
+from ya_agent_sdk.context import AgentContext, ModelConfig, ModelFeature, ToolConfig
 from ya_agent_sdk.toolsets.core.content import LoadMediaUrlTool, ReadMediaTool, tools
 
 PNG_1X1 = bytes([
@@ -157,7 +157,7 @@ def httpx2_mock(monkeypatch: pytest.MonkeyPatch) -> _HTTPX2Mock:
 
 
 def _run_context(
-    *capabilities: ModelCapability,
+    *capabilities: ModelFeature,
     model_cfg: ModelConfig | None = None,
     tool_config: ToolConfig | None = None,
 ) -> RunContext[AgentContext]:
@@ -192,7 +192,7 @@ def test_content_toolset_registers_read_media_by_default() -> None:
 
 
 async def test_read_media_instruction_describes_download_view_fallback() -> None:
-    instruction = await ReadMediaTool().get_instruction(_run_context(ModelCapability.vision))
+    instruction = await ReadMediaTool().get_instruction(_run_context(ModelFeature.vision))
 
     assert instruction is not None
     assert "YouTube" in instruction
@@ -205,7 +205,7 @@ async def test_read_media_returns_youtube_video_url_for_youtube_url_model() -> N
     url = "https://www.youtube.com/watch?v=9hE5-98ZeCg"
 
     result = await ReadMediaTool().call(
-        _run_context(ModelCapability.video_understanding, ModelCapability.youtube_url),
+        _run_context(ModelFeature.video_understanding, ModelFeature.youtube_url),
         url=url,
         instructions="Summarize the video.",
     )
@@ -235,7 +235,7 @@ async def test_read_media_uses_video_fallback_for_youtube_without_youtube_url_ca
     ):
         result = await ReadMediaTool().call(
             _run_context(
-                ModelCapability.video_understanding,
+                ModelFeature.video_understanding,
                 tool_config=ToolConfig(video_understanding_model="google:gemini-2.5-flash"),
             ),
             url=url,
@@ -292,7 +292,7 @@ async def test_read_media_returns_image_binary_with_instructions(httpx2_mock: An
     )
 
     result = await ReadMediaTool().call(
-        _run_context(ModelCapability.vision),
+        _run_context(ModelFeature.vision),
         url="https://example.com/image.png",
         instructions="Extract all visible text.",
     )
@@ -317,7 +317,7 @@ async def test_read_media_returns_video_binary_from_extension_when_content_type_
     )
 
     result = await ReadMediaTool().call(
-        _run_context(ModelCapability.video_understanding),
+        _run_context(ModelFeature.video_understanding),
         url="https://example.com/movie.mp4",
     )
 
@@ -370,7 +370,7 @@ async def test_read_media_rejects_declared_oversized_media_before_reading(httpx2
 
     result = await ReadMediaTool().call(
         _run_context(
-            ModelCapability.vision,
+            ModelFeature.vision,
             tool_config=ToolConfig(view_max_inline_image_bytes=1024),
         ),
         url="https://example.com/huge.png",
@@ -427,7 +427,7 @@ async def test_read_media_compresses_images_to_model_limit(httpx2_mock: Any) -> 
 
     result = await ReadMediaTool().call(
         _run_context(
-            model_cfg=ModelConfig(max_image_bytes=max_image_bytes, capabilities={ModelCapability.vision}),
+            model_cfg=ModelConfig(max_image_bytes=max_image_bytes, capabilities={ModelFeature.vision}),
             tool_config=ToolConfig(view_max_inline_image_bytes=len(image_data) + 1),
         ),
         url="https://example.com/large-image.png",
@@ -453,7 +453,7 @@ async def test_read_media_resizes_image_that_exceeds_dimension_limit(httpx2_mock
         _run_context(
             model_cfg=ModelConfig(
                 max_image_dimension=8000,
-                capabilities={ModelCapability.vision},
+                capabilities={ModelFeature.vision},
             ),
         ),
         url="https://example.com/wide-image.png",
@@ -617,7 +617,7 @@ async def test_read_media_uses_image_fallback_for_non_inline_image_format_with_v
             _run_context(
                 model_cfg=ModelConfig(
                     max_image_dimension=0,
-                    capabilities={ModelCapability.vision},
+                    capabilities={ModelFeature.vision},
                 ),
                 tool_config=ToolConfig(image_understanding_model="google:gemini-2.5-flash"),
             ),
@@ -695,7 +695,7 @@ async def test_read_media_reports_http_status_when_url_read_fails(httpx2_mock: A
         headers={"Content-Type": "text/plain"},
     )
 
-    result = await ReadMediaTool().call(_run_context(ModelCapability.vision), url="https://example.com/missing.png")
+    result = await ReadMediaTool().call(_run_context(ModelFeature.vision), url="https://example.com/missing.png")
 
     assert isinstance(result, dict)
     assert result["success"] is False
@@ -711,7 +711,7 @@ async def test_read_media_returns_fallback_for_unknown_content(httpx2_mock: Any)
         headers={"Content-Type": "text/html"},
     )
 
-    result = await ReadMediaTool().call(_run_context(ModelCapability.vision), url="https://example.com/page.html")
+    result = await ReadMediaTool().call(_run_context(ModelFeature.vision), url="https://example.com/page.html")
 
     assert isinstance(result, dict)
     assert result["success"] is False
@@ -721,7 +721,7 @@ async def test_read_media_returns_fallback_for_unknown_content(httpx2_mock: Any)
 
 
 async def test_read_media_rejects_non_http_urls() -> None:
-    result = await ReadMediaTool().call(_run_context(ModelCapability.vision), url="file:///tmp/image.png")
+    result = await ReadMediaTool().call(_run_context(ModelFeature.vision), url="file:///tmp/image.png")
 
     assert isinstance(result, dict)
     assert result["success"] is False

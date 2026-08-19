@@ -23,8 +23,7 @@ The sync flow is:
 | [`toolset.md`](toolset.md)                         | Toolset architecture                |
 | [`user-input.md`](user-input.md)                   | Structured deferred user input      |
 | [`tool-search.md`](tool-search.md)                 | Dynamic tool search                 |
-| [`subagent.md`](subagent.md)                       | Subagent architecture               |
-| [`message-bus.md`](message-bus.md)                 | Message bus behavior                |
+| [`subagent.md`](subagent.md)                       | Portable subagent architecture      |
 | [`skills.md`](skills.md)                           | SDK skill system internals          |
 | [`environment.md`](environment.md)                 | Environment abstractions            |
 | [`resumable-resources.md`](resumable-resources.md) | Resumable resources                 |

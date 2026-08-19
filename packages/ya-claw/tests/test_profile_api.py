@@ -25,17 +25,14 @@ def clear_claw_settings(
         "YA_CLAW_AUTO_SEED_PROFILES",
     ):
         monkeypatch.delenv(env_name, raising=False)
-
     monkeypatch.setenv("YA_CLAW_API_TOKEN", "test-token")
     monkeypatch.setenv("YA_CLAW_DATA_DIR", str(tmp_path / "runtime-data"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local")
     monkeypatch.setenv("YA_CLAW_PROFILE_SEED_FILE", str(tmp_path / "profiles.yaml"))
     monkeypatch.setenv("YA_CLAW_AUTO_SEED_PROFILES", "false")
-
     get_settings.cache_clear()
-    settings = get_settings()
-    initialize_sqlite_database(settings.resolved_database_url)
+    initialize_sqlite_database(get_settings().resolved_database_url)
     yield
     get_settings.cache_clear()
 
@@ -44,119 +41,124 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
+def _profile_payload(*, model: str = "test") -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "agent": {
+            "model": model,
+            "name": "custom",
+            "instructions": "You are a custom profile.",
+            "model_settings": {"temperature": 0},
+            "capabilities": ["FilesystemCapability", "ShellCapability"],
+        },
+        "host": {
+            "model_config_preset": "gpt5_270k",
+            "tool_groups": ["session"],
+            "need_user_approve_mcps": ["context7"],
+            "enabled_mcps": ["context7"],
+            "mcp_servers": {
+                "context7": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.context7.com/mcp",
+                    "required": False,
+                }
+            },
+            "workspace_backend_hint": "local",
+        },
+        "subagents": [
+            {
+                "schema_version": 1,
+                "route": "debugger",
+                "execution_modes": ["foreground", "background"],
+                "durability": "restart",
+                "agent": {
+                    "model": "test",
+                    "name": "debugger",
+                    "description": "Debug runtime issues",
+                    "instructions": "Return a root cause.",
+                    "capabilities": ["FilesystemCapability"],
+                },
+            }
+        ],
+        "enabled": True,
+        "source_type": "api",
+    }
+
+
 def test_profile_crud_and_seed_api(tmp_path: Path) -> None:
     seed_file = tmp_path / "profiles.yaml"
     seed_file.write_text(
         """
+version: 2
 profiles:
-  - name: seeded
-    model: gateway@openai-responses:gpt-5.5
-    model_settings_preset: openai_responses_high
-    model_config_preset: gpt5_270k
-    builtin_toolsets: [core, web]
-    enabled_mcps: [context7]
-    mcp_servers:
-      context7:
-        transport: streamable_http
-        url: https://mcp.context7.com/mcp
-        description: Library docs
-        required: false
-    unified_subagents: true
-    subagents:
-      - name: explorer
-        description: Explore the codebase
-        system_prompt: |
-          You explore the codebase.
+  - schema_version: 2
+    name: seeded
+    agent:
+      model: test
+      name: seeded
+      capabilities: [FilesystemCapability]
+    host:
+      tool_groups: [session]
+    enabled: true
+    source_type: seed
+    source_version: '2'
 """.strip(),
         encoding="utf-8",
     )
 
     with TestClient(create_app()) as client:
-        put_response = client.put(
+        response = client.put(
             "/api/v1/profiles/custom",
             headers=_auth_headers(),
-            json={
-                "model": "gateway@openai-responses:gpt-5.5",
-                "model_settings_preset": "openai_responses_high",
-                "model_config_preset": "gpt5_270k",
-                "system_prompt": "You are a custom profile.",
-                "toolsets": ["filesystem", "shell"],
-                "need_user_approve_mcps": ["context7"],
-                "enabled_mcps": ["context7", "github"],
-                "disabled_mcps": ["github"],
-                "mcp_servers": {
-                    "context7": {
-                        "transport": "streamable_http",
-                        "url": "https://mcp.context7.com/mcp",
-                        "description": "Library docs",
-                        "required": False,
-                    },
-                    "github": {
-                        "transport": "streamable_http",
-                        "url": "https://mcp.github.example/mcp",
-                    },
-                },
-                "subagents": [
-                    {
-                        "name": "debugger",
-                        "description": "Debug runtime issues",
-                        "system_prompt": "You debug runtime issues.",
-                        "model": "inherit",
-                    }
-                ],
-                "include_builtin_subagents": False,
-                "unified_subagents": True,
-                "workspace_backend_hint": "local",
-                "enabled": True,
-            },
+            json=_profile_payload(),
         )
-        assert put_response.status_code == 200
-        assert put_response.json()["name"] == "custom"
-        assert put_response.json()["system_prompt"] == "You are a custom profile."
-        assert put_response.json()["builtin_toolsets"] == ["filesystem", "shell"]
-        assert put_response.json()["toolsets"] == ["filesystem", "shell"]
-        assert put_response.json()["need_user_approve_mcps"] == ["context7"]
-        assert put_response.json()["enabled_mcps"] == ["context7", "github"]
-        assert put_response.json()["disabled_mcps"] == ["github"]
-        assert put_response.json()["mcp_servers"] == {
-            "context7": {
-                "transport": "streamable_http",
-                "url": "https://mcp.context7.com/mcp",
-                "headers": {},
-                "description": "Library docs",
-                "required": False,
-            },
-            "github": {
-                "transport": "streamable_http",
-                "url": "https://mcp.github.example/mcp",
-                "headers": {},
-                "description": "",
-                "required": True,
-            },
-        }
+        assert response.status_code == 200
+        detail = response.json()
+        assert detail["schema_version"] == 2
+        assert detail["name"] == "custom"
+        assert detail["model"] == "test"
+        assert detail["agent"]["instructions"] == "You are a custom profile."
+        assert detail["host"]["tool_groups"] == ["session"]
+        assert detail["subagents"][0]["route"] == "debugger"
+        assert detail["host"]["mcp_servers"]["context7"]["required"] is False
 
-        invalid_mcp_response = client.put(
-            "/api/v1/profiles/invalid-mcp",
+        legacy = client.put(
+            "/api/v1/profiles/legacy",
             headers=_auth_headers(),
-            json={
-                "model": "gateway@openai-responses:gpt-5.5",
-                "mcp_servers": {"github": {"transport": "stdio", "url": "https://example.test/mcp"}},
-            },
+            json={"model": "test", "builtin_toolsets": ["core"]},
         )
-        assert invalid_mcp_response.status_code == 422
+        assert legacy.status_code == 422
+
+        mixed = _profile_payload()
+        mixed["include_builtin_subagents"] = False
+        mixed_response = client.put(
+            "/api/v1/profiles/mixed",
+            headers=_auth_headers(),
+            json=mixed,
+        )
+        assert mixed_response.status_code == 422
+
+        unknown = _profile_payload()
+        unknown["future_field"] = "ignored-no-more"
+        unknown_response = client.put(
+            "/api/v1/profiles/unknown",
+            headers=_auth_headers(),
+            json=unknown,
+        )
+        assert unknown_response.status_code == 422
+
+        mismatched = _profile_payload()
+        mismatched["agent"] = {"model": "test", "name": "other"}
+        mismatch_response = client.put(
+            "/api/v1/profiles/custom",
+            headers=_auth_headers(),
+            json=mismatched,
+        )
+        assert mismatch_response.status_code == 422
 
         list_response = client.get("/api/v1/profiles", headers=_auth_headers())
         assert list_response.status_code == 200
         assert [item["name"] for item in list_response.json()] == ["custom"]
-
-        get_response = client.get("/api/v1/profiles/custom", headers=_auth_headers())
-        assert get_response.status_code == 200
-        assert get_response.json()["unified_subagents"] is True
-        assert get_response.json()["subagents"][0]["name"] == "debugger"
-        assert get_response.json()["subagents"][0]["model"] == "inherit"
-        assert get_response.json()["builtin_toolsets"] == ["filesystem", "shell"]
-        assert get_response.json()["toolsets"] == ["filesystem", "shell"]
-        assert get_response.json()["mcp_servers"]["context7"]["url"] == "https://mcp.context7.com/mcp"
 
         seed_response = client.post(
             "/api/v1/profiles/seed",
@@ -166,55 +168,22 @@ profiles:
         assert seed_response.status_code == 200
         assert seed_response.json()["seeded_names"] == ["seeded"]
 
-        list_after_seed_response = client.get("/api/v1/profiles", headers=_auth_headers())
-        assert list_after_seed_response.status_code == 200
-        assert [item["name"] for item in list_after_seed_response.json()] == ["custom", "seeded"]
-
-        seeded_get_response = client.get("/api/v1/profiles/seeded", headers=_auth_headers())
-        assert seeded_get_response.status_code == 200
-        assert seeded_get_response.json()["subagents"][0]["name"] == "explorer"
-        assert seeded_get_response.json()["builtin_toolsets"] == ["core", "web"]
-        assert seeded_get_response.json()["enabled_mcps"] == ["context7"]
-        assert seeded_get_response.json()["mcp_servers"]["context7"]["required"] is False
-
-        seed_file.write_text(
-            """
-profiles:
-  - name: seeded
-    model: gateway@openai-responses:gpt-5.5
-    builtin_toolsets: [core, shell]
-    enabled_mcps: []
-    subagents:
-      - name: debugger
-        description: Debug runtime issues
-        system_prompt: |
-          You debug runtime issues.
-        model: inherit
-        model_settings_preset: inherit
-        model_config_preset: inherit
-""".strip(),
-            encoding="utf-8",
-        )
-        update_seed_response = client.post(
-            "/api/v1/profiles/seed",
+        seeded = client.get(
+            "/api/v1/profiles/seeded",
             headers=_auth_headers(),
-            json={"prune_missing": False},
         )
-        assert update_seed_response.status_code == 200
-        assert update_seed_response.json()["seeded_names"] == ["seeded"]
+        assert seeded.status_code == 200
+        assert seeded.json()["agent"]["capabilities"] == [{"name": "FilesystemCapability", "arguments": None}]
 
-        updated_seeded_response = client.get("/api/v1/profiles/seeded", headers=_auth_headers())
-        assert updated_seeded_response.status_code == 200
-        assert updated_seeded_response.json()["model"] == "gateway@openai-responses:gpt-5.5"
-        assert updated_seeded_response.json()["builtin_toolsets"] == ["core", "shell"]
-        assert updated_seeded_response.json()["enabled_mcps"] == []
-        assert [item["name"] for item in updated_seeded_response.json()["subagents"]] == ["debugger"]
-        assert updated_seeded_response.json()["subagents"][0]["model"] == "inherit"
-        assert updated_seeded_response.json()["subagents"][0]["model_settings_preset"] == "inherit"
-        assert updated_seeded_response.json()["subagents"][0]["model_config_preset"] == "inherit"
-
-        delete_response = client.delete("/api/v1/profiles/custom", headers=_auth_headers())
+        delete_response = client.delete(
+            "/api/v1/profiles/custom",
+            headers=_auth_headers(),
+        )
         assert delete_response.status_code == 204
-
-        missing_response = client.get("/api/v1/profiles/custom", headers=_auth_headers())
-        assert missing_response.status_code == 404
+        assert (
+            client.get(
+                "/api/v1/profiles/custom",
+                headers=_auth_headers(),
+            ).status_code
+            == 404
+        )

@@ -9,16 +9,22 @@ The SDK does not register this tool by default. Only enable it in a host that su
 ```python
 from pydantic_ai import DeferredToolRequests
 from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.toolsets.core.interaction import tools as interaction_tools
+from ya_agent_sdk.capabilities import (
+    RuntimeFoundationCapability,
+    UserInteractionCapability,
+)
 
 runtime = create_agent(
     "anthropic:claude-sonnet-4",
-    tools=[*interaction_tools],
+    capabilities=[
+        RuntimeFoundationCapability(),
+        UserInteractionCapability(),
+    ],
     output_type=[str, DeferredToolRequests],
 )
 ```
 
-`AskUserQuestionTool.main_agent_only` is `True`, so regular subagents and self forks remove it from direct SDK `Toolset` instances, capability wrappers, and sync or async dynamic Toolset factory results at both per-run and per-step resolution. SDK `Toolset` also rejects main-agent-only tools while listing or calling tools in a subagent context regardless of `skip_unavailable`, including through opaque search/proxy composites and stale caches. `is_available()` also requires a root context (`agent_id="main"` with no `parent_run_id`) as defense in depth, and subagent ID allocation reserves `main` for that root. A subagent that declares the tool as required is unavailable because its runner cannot resume a nested user-interaction flow.
+`ask_user_question` carries `main_agent_only` metadata. The final `ToolVisibilityCapability` rejects it in child execution contexts, and the tool's own availability check additionally requires a root context (`agent_id="main"` with no `parent_run_id`). Do not grant `UserInteractionCapability` to a child unless that host explicitly implements a nested deferred-continuation protocol.
 
 ## Question Schema
 

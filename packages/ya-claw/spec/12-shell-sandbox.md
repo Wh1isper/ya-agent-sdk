@@ -444,22 +444,29 @@ Firejail is useful for desktop application sandboxing. Its SUID-oriented trust s
 Execution profiles should accept shell sandbox metadata:
 
 ```yaml
+version: 2
 profiles:
-  - name: default
-    model: oauth@codex:gpt-5.5
-    builtin_toolsets:
-      - session
-    need_user_approve_tools:
-      - shell
-    shell_sandbox:
-      profile: workspace_write
-      backend_preference: auto
-      network: full
-      env_allowlist:
-        - "*"
-      raw_shell_approval: requires_human
-      timeout_seconds: 120
-      output_limit_bytes: 1048576
+  - schema_version: 2
+    name: default
+    agent:
+      model: oauth@codex:gpt-5.5
+      name: default
+      capabilities: [ShellCapability]
+    host:
+      tool_groups: [session]
+      need_user_approve_tools: [shell_exec]
+      model_config_override:
+        security:
+          shell_sandbox:
+            enabled: true
+            profile: workspace_write
+            backend_preference: auto
+            network: full
+            env_allowlist: ["*"]
+            raw_shell_approval: requires_human
+            timeout_seconds: 120
+            output_limit_bytes: 1048576
+    subagents: []
 ```
 
 Recommended environment variables:

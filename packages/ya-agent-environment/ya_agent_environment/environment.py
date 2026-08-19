@@ -11,6 +11,7 @@ from pathlib import PurePath
 from typing import Any, Self
 from xml.etree import ElementTree as ET
 
+from ya_agent_environment.contributions import AgentContributionGroup
 from ya_agent_environment.exceptions import EnvironmentNotEnteredError
 from ya_agent_environment.file_operator import FileOperator
 from ya_agent_environment.resources import ResourceFactory, ResourceRegistry, ResourceRegistryState
@@ -27,7 +28,7 @@ class Environment(ABC):
     - Call super().__init__() to initialize the resource registry
     - Implement _setup() to create file_operator, shell, and any custom resources
     - Implement _teardown() to clean up environment-specific resources
-    - Optionally populate self._toolsets in _setup() to provide environment-specific tools
+    - Optionally populate self._capabilities in _setup() with agent capabilities
     - NOT override __aenter__ or __aexit__ (use _setup/_teardown instead)
 
     The base class handles:
@@ -88,9 +89,10 @@ class Environment(ABC):
             ctx = await stack.enter_async_context(
                 AgentContext(env=env)
             )
-            # Get combined toolsets from environment and resources
-            toolsets = env.get_toolsets()
-            agent = Agent(..., toolsets=[*core_toolsets, *toolsets])
+            # Collect provenance-preserving capability groups after restore
+            groups = env.get_agent_contributions()
+            capabilities = [capability for group in groups for capability in group.capabilities]
+            agent = Agent(..., capabilities=capabilities)
             ...
         # Resources cleaned up when stack exits
         ```
@@ -116,7 +118,7 @@ class Environment(ABC):
         self._file_operator: FileOperator | None = None
         self._shell: Shell | None = None
         self._tmp_dir: PurePath | None = None
-        self._toolsets: list[Any] = []
+        self._capabilities: list[Any] = []
         self._entered: bool = False
         self._enter_lock: asyncio.Lock = asyncio.Lock()
 
@@ -189,28 +191,23 @@ class Environment(ABC):
         """
         return self._resources
 
-    def get_toolsets(self) -> list[Any]:
-        """Return combined toolsets from environment and all resources.
+    def get_capabilities(self) -> tuple[Any, ...]:
+        """Return ordered Environment-owned opaque agent capabilities."""
+        return tuple(self._capabilities)
 
-        Collects toolsets from:
-        1. Environment-level toolsets (self._toolsets, set in _setup())
-        2. All registered resources via ResourceRegistry.get_toolsets()
-
-        This is the recommended way to get all available toolsets.
-
-        Returns:
-            Combined list of toolsets from environment and resources.
-
-        Example:
-            ```python
-            async with MyEnvironment() as env:
-                toolsets = env.get_toolsets()
-                agent = Agent(..., toolsets=[*core_toolsets, *toolsets])
-            ```
-        """
-        toolsets = list(self._toolsets)
-        toolsets.extend(self._resources.get_toolsets())
-        return toolsets
+    def get_agent_contributions(self) -> tuple[AgentContributionGroup, ...]:
+        """Return Environment and resource capabilities without losing provenance."""
+        groups: list[AgentContributionGroup] = []
+        capabilities = self.get_capabilities()
+        if capabilities:
+            groups.append(
+                AgentContributionGroup(
+                    source_id="environment",
+                    capabilities=capabilities,
+                )
+            )
+        groups.extend(self._resources.get_agent_contributions())
+        return tuple(groups)
 
     # --- Chaining API for resource factories and state ---
 

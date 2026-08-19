@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette.sse import EventSourceResponse
 
 from ya_claw.config import ClawSettings
+from ya_claw.controller.async_task import AsyncTaskController
 from ya_claw.controller.models import (
     ControlResponse,
     DispatchMode,
@@ -133,6 +134,18 @@ async def interrupt_run(request: Request, run_id: str) -> RunDetail:
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
         run = await controller.interrupt(db_session, settings, runtime_state, run_id)
+        await AsyncTaskController().recover_pending_deliveries(
+            db_session,
+            settings,
+            runtime_state,
+            submit_run=lambda pending_run_id: _dispatch_run(
+                request,
+                pending_run_id,
+                DispatchMode.ASYNC,
+                require_submission=False,
+            ),
+            parent_session_id=run.session_id,
+        )
     await _publish_run_notification(request, "run.updated", run)
     return run
 
@@ -144,6 +157,18 @@ async def cancel_run(request: Request, run_id: str) -> RunDetail:
     session_factory = _get_session_factory(request)
     async with session_factory() as db_session:
         run = await controller.cancel(db_session, settings, runtime_state, run_id)
+        await AsyncTaskController().recover_pending_deliveries(
+            db_session,
+            settings,
+            runtime_state,
+            submit_run=lambda pending_run_id: _dispatch_run(
+                request,
+                pending_run_id,
+                DispatchMode.ASYNC,
+                require_submission=False,
+            ),
+            parent_session_id=run.session_id,
+        )
     await _publish_run_notification(request, "run.updated", run)
     return run
 

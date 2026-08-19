@@ -1,10 +1,19 @@
 # Profiles
 
-Profiles define reusable agent runtime behavior. They live in the database and can be seeded from YAML.
+YA Claw profiles are strict version 2 documents stored in the database and optionally
+seeded from YAML. Each profile has three boundaries:
+
+- native Pydantic AI `AgentSpec` behavior;
+- Claw-owned host policy; and
+- native SDK `SubagentSpec` children.
+
+The runtime and HTTP API accept only this schema. Alembic performs the one-time upgrade
+of persisted 1.x rows.
 
 ## Default Profile
 
-`YA_CLAW_DEFAULT_PROFILE` defaults to `default`. Set it only when a deployment uses another profile name as the request fallback.
+`YA_CLAW_DEFAULT_PROFILE` defaults to `default`. Set it only when a deployment uses
+another profile name as the request fallback.
 
 ```env
 YA_CLAW_DEFAULT_PROFILE=default
@@ -19,12 +28,20 @@ YA_CLAW_PROFILE_SEED_FILE=/etc/ya-claw/profiles.yaml
 YA_CLAW_AUTO_SEED_PROFILES=true
 ```
 
-Seeded profiles use create/update semantics. Every startup refreshes matching database profiles from the YAML file, including subagent configuration. Database profiles absent from the YAML file remain available.
+Seeded profiles use create/update semantics. Startup refreshes matching rows from the
+YAML file. Rows absent from YAML remain available unless an operator explicitly requests
+pruning.
 
 Manual seed:
 
 ```bash
 ya-claw profiles seed --seed-file /etc/ya-claw/profiles.yaml
+```
+
+Explicit destructive pruning:
+
+```bash
+ya-claw profiles seed --seed-file /etc/ya-claw/profiles.yaml --prune-missing
 ```
 
 API seed:
@@ -35,168 +52,217 @@ curl -X POST \
   http://127.0.0.1:9042/api/v1/profiles/seed
 ```
 
-## Profile Contents
+## Native Profile Schema
 
-Profiles can define:
+```yaml
+version: 2
+profiles:
+  - schema_version: 2
+    name: default
+    agent:
+      model: gateway@openai-responses:gpt-5.5
+      name: default
+      instructions: You are a workspace-bound execution agent.
+      model_settings:
+        openai_reasoning_effort: high
+      capabilities:
+        - FilesystemCapability
+        - ShellCapability
+        - WebSearchCapability
+        - WebContentCapability
+    host:
+      model_config_preset: gpt5_270k
+      model_config_override:
+        security:
+          shell_review:
+            enabled: false
+          shell_sandbox:
+            enabled: true
+            profile: workspace_write
+            backend_preference: auto
+            network: full
+            env_allowlist: ["*"]
+            raw_shell_approval: requires_human
+            audit_enabled: true
+      tool_groups: [session, schedule, workflow, agency]
+      need_user_approve_tools: []
+      need_user_approve_mcps: []
+      enabled_mcps: []
+      disabled_mcps: []
+      mcp_servers: {}
+      workspace_backend_hint: docker
+    subagents:
+      - schema_version: 1
+        route: explorer
+        execution_modes: [foreground, background]
+        durability: restart
+        agent:
+          model: gateway@anthropic:claude-sonnet-4-6
+          name: explorer
+          description: Inspect the bound workspace.
+          instructions: Return evidence with file paths and line numbers.
+          capabilities:
+            - FilesystemCapability
+          metadata:
+            claw:
+              tool_groups: [session]
+              need_user_approve_tools: []
+              need_user_approve_mcps: []
+              enabled_mcps: []
+              disabled_mcps: []
+              mcp_servers: {}
+    enabled: true
+    source_type: seed
+    source_version: "2"
+```
 
-- model
-- system prompt
-- model settings and config presets
-- built-in tool groups
-- subagents
-- tool approval policy
-- shell command review policy
-- MCP server definitions
-- enabled and disabled MCP namespaces
-- workspace backend hint
+Rules:
 
-Important built-in toolsets:
-
-- `session`: read-only current-session inspection tools
-- `schedule`: agent-owned schedule management tools
+- `agent.name`, when present, equals the profile name.
+- Every child `agent.name` equals its `route`.
+- Native behavior grants live in `agent.capabilities`.
+- Claw host groups are limited to `session`, `schedule`, `workflow`, and `agency`.
+- Filesystem, shell, media, web, document conversion, code execution, skills, and
+  delegation are capabilities, not host groups.
+- Child behavior is explicit. There is no parent inheritance compiler, Markdown
+  front matter, required/optional tool list, or automatic capability copy.
+- Unknown fields are rejected.
 
 ## Subscription-backed Codex Profiles
 
-YA Claw can use a ChatGPT/Codex subscription account through the OAuth model provider. Create the host credential store before starting or seeding the service:
+Create the host credential store before starting or seeding the service:
 
 ```bash
 uvx ya-oauth login codex
 ```
 
-Then seed a profile with the OAuth Codex model string:
+Then use the OAuth model string in a native profile:
 
 ```yaml
+version: 2
 profiles:
-- name: codex-oauth
-  model: oauth@codex:gpt-5.5
-  model_settings: openai_responses_high
-  model_cfg: gpt5_270k
+  - schema_version: 2
+    name: codex-oauth
+    agent:
+      model: oauth@codex:gpt-5.5
+      name: codex-oauth
+      model_settings:
+        openai_reasoning_effort: high
+      capabilities: [FilesystemCapability, ShellCapability]
+    host:
+      model_config_preset: gpt5_270k
+      tool_groups: [session]
+    subagents: []
 ```
 
-The service process reads credentials from `~/.yaai/auth.json`. Docker deployments should mount a persistent host directory to the service user's `~/.yaai` so refresh tokens survive image upgrades and container replacement.
+The service process reads credentials from `~/.yaai/auth.json`. Docker deployments
+should mount a persistent host directory to the service user's `~/.yaai` so refresh
+tokens survive image upgrades and container replacement.
 
 ## Shell Command Review
 
-Shell command review is configured per profile under `security.shell_review` in the seed YAML or stored AgentProfile `model_config_override`.
+Shell review is Claw execution policy under
+`host.model_config_override.security.shell_review`:
 
 ```yaml
-profiles:
-- name: default
-  model: gateway@openai-responses:gpt-5.5
-  security:
-    shell_review:
-      enabled: true
-      model: gateway@openai-responses:gpt-5.4-mini
-      model_settings: openai_responses_low
-      on_needs_approval: deny
-      risk_threshold: extra_high
+host:
+  model_config_override:
+    security:
+      shell_review:
+        enabled: true
+        model: gateway@openai-responses:gpt-5.4-mini
+        model_settings: openai_responses_low
+        on_needs_approval: defer
+        risk_threshold: high
+        unattended_risk_threshold: extra_high
 ```
 
-Supported `risk_threshold` values are `low`, `medium`, `high`, and `extra_high`. Commands with reviewer risk below the threshold execute directly. Commands at or above the threshold enter the configured action.
+Supported risk values are `low`, `medium`, `high`, and `extra_high`. Commands below the
+threshold execute directly. Commands at or above it use `on_needs_approval`, which is
+`defer` or `deny`.
 
-YA Claw uses `extra_high` as the profile shell review threshold default. Set `risk_threshold` explicitly when a deployment wants a stricter policy, for example `high` for remote code execution, broad destructive workspace changes, writes outside the workspace, sensitive file reads, sudo usage, or system-level changes.
+Interactive API, stream, and bridge runs can defer to HITL. Schedule, heartbeat,
+workflow, and agency runs are unattended: deferred review becomes denial. The review
+`model` is required when review is enabled.
 
-`on_needs_approval` accepts `deny` and `defer`. Interactive API, stream, and bridge runs can use `defer` to enter HITL and wait for an explicit user response. Schedule and heartbeat runs use unattended approval behavior: `defer` is converted to `deny`, so threshold-triggering commands are blocked and background automation keeps running.
+Unattended threshold precedence is:
 
-`model` is required when shell review is enabled. `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object.
+1. profile `unattended_risk_threshold`;
+2. `YA_CLAW_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD`; and
+3. profile `risk_threshold`.
 
 ## Shell Sandbox Policy
 
-Shell sandbox policy is configured per profile under `security.shell_sandbox` in the seed YAML or stored AgentProfile `model_config_override`.
+Sandbox policy is adjacent host runtime policy:
 
 ```yaml
-profiles:
-- name: default
-  model: gateway@openai-responses:gpt-5.5
-  security:
-    shell_sandbox:
-      enabled: true
-      profile: workspace_write
-      backend_preference: auto
-      network: full
-      env_allowlist:
-        - "*"
-      # Optional path masks hide selected host paths in local sandbox shells.
-      # Recommended aliases: common_credentials, ssh, gnupg, aws, gcloud, docker, kube.
-      masked_path_aliases: []
-      masked_paths: []
-      raw_shell_approval: requires_human
-      audit_enabled: true
+host:
+  model_config_override:
+    security:
+      shell_sandbox:
+        enabled: true
+        profile: workspace_write
+        backend_preference: auto
+        network: full
+        env_allowlist: ["*"]
+        masked_path_aliases: []
+        masked_paths: []
+        raw_shell_approval: requires_human
+        audit_enabled: true
 ```
 
-Supported `profile` values are `read_only`, `workspace_write`, `mounted_workspace_write`, `network_proxy`, and `danger_full_access`. Current runtime enforcement comes from the resolved workspace mount modes, backend, network, environment allowlist, and raw host gate. The profile value is also recorded in metadata and shell context so agents, logs, and future audit storage can see the selected policy intent.
+Supported profiles are `read_only`, `workspace_write`,
+`mounted_workspace_write`, `network_proxy`, and `danger_full_access`. Supported backend
+preferences are `auto`, `linux_bwrap_seccomp`, `macos_seatbelt`,
+`windows_restricted_token`, `docker`, `podman`, `nsjail`, and `raw_host`.
 
-Supported `backend_preference` values are `auto`, `linux_bwrap_seccomp`, `macos_seatbelt`, `windows_restricted_token`, `docker`, `podman`, `nsjail`, and `raw_host`. Local shell execution currently implements Linux bubblewrap, macOS seatbelt, guarded Windows behavior, and guarded raw host execution. Docker workspace isolation is configured through the Docker workspace provider shape.
+Network policy is `blocked`, `restricted`, `proxy`, or `full`. The environment allowlist
+controls variables copied into sandboxed subprocesses. Path masks are opt-in; the
+`common_credentials` alias masks the recommended SSH, GnuPG, cloud, Docker, and
+Kubernetes credential directories.
 
-Supported `network` values are `blocked`, `restricted`, `proxy`, and `full`. The default is `full` so local coding workflows can install packages, run dev servers, and use external API tools while filesystem access stays bound to the workspace policy. Linux bubblewrap unshares networking for `blocked` and `restricted`; macOS seatbelt allows network access for `proxy` and `full`.
-
-`env_allowlist` is the environment variable allowlist copied into sandboxed subprocesses. The default `"*"` passes the effective process and workspace environment through. Set explicit names when a deployment wants a narrower subprocess environment; workspace environment overrides outside the explicit list are dropped before process creation.
-
-`masked_path_aliases` and `masked_paths` are opt-in path masks for local sandbox shells. The default is empty. Use the `common_credentials` alias to mask the recommended credential directory set (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gcloud`, `~/.docker`, `~/.kube`), or use narrower aliases such as `ssh`, `aws`, and `kube`. Use `masked_paths` for deployment-specific directories.
-
-`raw_shell_approval` accepts `forbidden`, `requires_human`, and `allowed_for_profile`. Raw host shell execution also requires service-level allowance through `YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST=true` or profile-level `allowed_for_profile`. Treat raw host shell as an audited maintenance path.
+Raw host approval is `forbidden`, `requires_human`, or `allowed_for_profile`. Raw host
+execution also requires service-level allowance through
+`YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST=true` or explicit profile allowance.
 
 ## Tool and MCP Approval
 
-Profiles can require HITL for specific tools or MCP servers with `need_user_approve_tools` and `need_user_approve_mcps`.
+Host approval and MCP selection stay outside the native agent definition:
 
 ```yaml
-profiles:
-- name: lark-interactive
-  model: gateway@openai-responses:gpt-5.5
-  need_user_approve_tools:
-    - file_write
-  need_user_approve_mcps:
-    - github
+host:
+  need_user_approve_tools: [write]
+  need_user_approve_mcps: [github]
+  enabled_mcps: [github]
+  disabled_mcps: []
+  mcp_servers: {}
 ```
 
-Interactive runs surface these approvals through the same HITL mechanism as shell review. Bridge-triggered Lark runs render one active approval card in the source chat and update it in place as each interaction resolves.
+Interactive runs surface these approvals through the same HITL mechanism as shell
+review. Unattended runs clear interactive approval requirements. Use dedicated profiles
+to narrow unattended capabilities and MCP namespaces.
 
-Schedule and heartbeat runs clear `need_user_approve_tools` and `need_user_approve_mcps` for that run. Use dedicated schedule or heartbeat profiles to narrow the available tool surface, disable optional MCP servers, or set stricter shell review thresholds.
+## API Update Shape
 
-## Profile Patterns for Interactive and Background Runs
+The profile name is the URL identity and is not duplicated at the request root:
 
-Use an interactive profile for bridge or API sessions that should ask users for approval:
-
-```yaml
-profiles:
-- name: lark-interactive
-  model: gateway@openai-responses:gpt-5.5
-  security:
-    shell_review:
-      enabled: true
-      model: gateway@openai-responses:gpt-5.4-mini
-      model_settings: openai_responses_low
-      on_needs_approval: defer
-      risk_threshold: high
+```bash
+curl -X PUT \
+  -H "Authorization: Bearer ${YA_CLAW_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schema_version": 2,
+    "agent": {
+      "model": "gateway@openai-responses:gpt-5.5",
+      "name": "minimal",
+      "capabilities": ["FilesystemCapability"]
+    },
+    "host": {"tool_groups": ["session"]},
+    "subagents": [],
+    "enabled": true
+  }' \
+  http://127.0.0.1:9042/api/v1/profiles/minimal
 ```
-
-Use an unattended profile for schedule and heartbeat jobs:
-
-```yaml
-profiles:
-- name: scheduled-maintenance
-  model: gateway@openai-responses:gpt-5.5
-  builtin_toolsets: [filesystem, shell, session]
-  security:
-    shell_review:
-      enabled: true
-      model: gateway@openai-responses:gpt-5.4-mini
-      model_settings: openai_responses_low
-      on_needs_approval: deny
-      risk_threshold: extra_high
-      unattended_risk_threshold: high
-```
-
-Shell review risk threshold precedence for unattended runs:
-
-1. `unattended_risk_threshold`
-2. service-level `YA_CLAW_UNATTENDED_SHELL_REVIEW_RISK_THRESHOLD`
-3. `risk_threshold`
-
-Schedule and heartbeat share the same unattended threshold. The service-level value is a fallback. Prefer profile-level thresholds for agent-specific behavior.
-
-The bundled `packages/ya-claw/profiles.yaml` keeps shell review disabled by default and includes the default review model and `risk_threshold: extra_high` fields as an operator-ready template.
 
 ## Test Run
 

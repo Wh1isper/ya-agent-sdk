@@ -151,7 +151,10 @@ The response reports delivery:
 - `merged`: input was durably appended to a queued run.
 - `steered`: input was sent to a running runtime.
 
-Existing session run and steer routes may remain as compatibility aliases. Product-facing clients should prefer `/submit` for user input and use the GET event streams to follow the active session or run.
+Session and run steering are explicit low-level control endpoints with addressed-run
+semantics, distinct from `/submit`. Product-facing clients use
+`/submit` when queued merge/create behavior is required and the GET event streams to
+follow the active session or run.
 
 ## Message Copy Path
 
@@ -296,6 +299,6 @@ Backend tests should cover:
 - bridge message delivery through unified submit and Agency copy;
 - Agency disabled behavior produces no Agency delivery side effects;
 - API config/status/fires/clear surfaces;
-- legacy run/steer route compatibility where retained.
+- distinct direct run/session steering and unified submit semantics.
 
 Agency is a singleton session that observes messages and memory completions through durable fires, then wakes source conversation sessions through the same session submit machinery used by every Claw session.

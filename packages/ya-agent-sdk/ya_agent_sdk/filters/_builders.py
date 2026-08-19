@@ -97,35 +97,6 @@ def build_previous_assistant_reference_parts(
     ]
 
 
-def build_steering_parts(
-    steering_messages: list[str] | None,
-) -> list[UserPromptPart]:
-    """Build user-steering parts.
-
-    Wraps steering messages (sent by the user during the previous work session)
-    with an XML label and individual message prefixes.
-
-    Args:
-        steering_messages: List of steering message strings. None or empty to skip.
-
-    Returns:
-        List of UserPromptPart (empty if no steering messages).
-    """
-    if not steering_messages:
-        return []
-    steering_content = "\n".join(f"[User Steering] {steering}" for steering in steering_messages)
-    return [
-        UserPromptPart(
-            content=(
-                "<user-steering>\n"
-                "Below are messages the user sent during your previous work session:\n\n"
-                f"{steering_content}\n"
-                "</user-steering>"
-            )
-        ),
-    ]
-
-
 def build_context_restored_part() -> UserPromptPart:
     """Build context-restored marker part.
 

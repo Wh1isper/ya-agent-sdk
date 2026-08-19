@@ -10,6 +10,8 @@ This solves two problems that compound as tool counts scale:
 ## Quick Start
 
 ```python
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
+from ya_agent_sdk.agents import create_agent
 from ya_agent_sdk.toolsets import Toolset
 from ya_agent_sdk.toolsets.tool_search import ToolSearchToolSet
 
@@ -31,7 +33,10 @@ search_toolset = ToolSearchToolSet(
 )
 
 # Use with create_agent
-async with create_agent("anthropic:claude-sonnet-4", toolsets=[search_toolset]) as runtime:
+async with create_agent(
+    "anthropic:claude-sonnet-4",
+    capabilities=[ToolsetCapability(search_toolset, id="tool_search")],
+) as runtime:
     result = await runtime.agent.run("...", deps=runtime.ctx)
 ```
 
@@ -76,7 +81,10 @@ Loaded tool state is stored in `AgentContext` and automatically persisted via `R
 
 ```python
 # Session 1: discover and use tools
-async with create_agent("openai-chat:gpt-4o", toolsets=[search_toolset]) as runtime:
+async with create_agent(
+    "openai-chat:gpt-4o",
+    capabilities=[ToolsetCapability(search_toolset, id="tool_search")],
+) as runtime:
     result = await runtime.agent.run("Search arxiv for transformers", deps=runtime.ctx)
 
     # Export state - includes tool_search_loaded_namespaces and tool_search_loaded_tools
@@ -84,7 +92,11 @@ async with create_agent("openai-chat:gpt-4o", toolsets=[search_toolset]) as runt
     save_to_disk(state)
 
 # Session 2: restore - arxiv tools are immediately available
-async with create_agent("openai-chat:gpt-4o", toolsets=[search_toolset], state=saved_state) as runtime:
+async with create_agent(
+    "openai-chat:gpt-4o",
+    capabilities=[ToolsetCapability(search_toolset, id="tool_search")],
+    state=saved_state,
+) as runtime:
     # No need to call tool_search again for arxiv tools
     result = await runtime.agent.run("Get paper details for 2401.12345", deps=runtime.ctx)
 ```
@@ -240,7 +252,9 @@ ToolSearchToolSet is designed for stable, append-only tool positioning:
 - **`tool_search` is always the first tool** returned by `get_tools()`. This gives it a fixed position in the model's tool list regardless of how many tools have been dynamically loaded.
 - **Loaded tools are appended after `tool_search`**. Each time the model discovers new tools, they appear after existing tools in the list, never before.
 
-To ensure dynamically loaded tools do not shift the positions of other toolsets, **register ToolSearchToolSet as the last toolset**:
+To ensure dynamically loaded tools do not shift other tool positions, place the native
+capability wrapping `ToolSearchToolSet` after capabilities that contribute always-visible
+tools:
 
 ```python
 # Always-visible core tools
@@ -255,7 +269,10 @@ search_toolset = ToolSearchToolSet(
 # Combine: core first, search last
 async with create_agent(
     "openai-chat:gpt-4o",
-    toolsets=[core_toolset, search_toolset],
+    capabilities=[
+        ToolsetCapability(core_toolset, id="core"),
+        ToolsetCapability(search_toolset, id="tool_search"),
+    ],
 ) as runtime:
     ...
 ```
@@ -267,11 +284,13 @@ graph LR
     A["Core tools<br/>(stable)"] --> B["tool_search<br/>(stable)"] --> C["Loaded tools<br/>(append-only)"]
 ```
 
-If ToolSearchToolSet were placed before other toolsets, dynamically loaded tools would shift those toolsets' positions in the tool list on each load.
+If its capability is placed before other tool-contributing capabilities, dynamically
+loaded tools shift the later tools' positions on each load.
 
 ### Separation of Concerns
 
-ToolSearchToolSet is purely for dynamic loading. Always-visible tools should be placed in separate toolsets passed directly to `create_agent`:
+`ToolSearchToolSet` is purely for dynamic loading. Keep always-visible tools in a
+separate toolset and wrap both toolsets in native Pydantic AI capabilities:
 
 ```python
 # Always-visible core tools
@@ -286,7 +305,10 @@ search_toolset = ToolSearchToolSet(
 # Combine both
 async with create_agent(
     "openai-chat:gpt-4o",
-    toolsets=[core_toolset, search_toolset],
+    capabilities=[
+        ToolsetCapability(core_toolset, id="core"),
+        ToolsetCapability(search_toolset, id="tool_search"),
+    ],
 ) as runtime:
     ...
 ```
@@ -294,5 +316,5 @@ async with create_agent(
 ## See Also
 
 - [toolset.md](toolset.md) -- Toolset architecture and BaseTool
-- [subagent.md](subagent.md) -- Subagent system with tool inheritance
+- [subagent.md](subagent.md) -- Portable children with explicit capability grants
 - [context.md](context.md) -- AgentContext and session persistence

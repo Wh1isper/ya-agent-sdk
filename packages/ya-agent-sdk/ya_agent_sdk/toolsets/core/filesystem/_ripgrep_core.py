@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from functools import cache
+from importlib import import_module
 from typing import Any, Protocol, runtime_checkable
 
 _DISABLE_ENV = "YA_RIPGREP_CORE_DISABLE"
@@ -40,10 +41,9 @@ def _native() -> Any | None:
     if is_disabled():
         return None
     try:
-        import ya_ripgrep_core
+        return import_module("ya_ripgrep_core")
     except ImportError:
         return None
-    return ya_ripgrep_core
 
 
 def is_available() -> bool:

@@ -108,7 +108,7 @@ The phase labels are:
 - `Cancelling`;
 - `Background ready`.
 
-The status bar shows `steering N pending` when unread user steering is waiting in the authoritative main-agent message bus. It does not expose message content or maintain a second local queue, and it disappears when the model-request filter consumes the messages. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` explicitly advertise a wait state rather than claiming that Enter will send or steer.
+The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain `accepted` or `enqueued`. It reads the count from `SessionStore`, exposes no content, and maintains no second local queue. The count disappears after native enqueue application or explicit terminal rejection. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
 
 `TUIStateMachine` enforces `VALID_TRANSITIONS`: an invalid transition returns `False`, leaves the authoritative phase unchanged, and is logged by the TUI boundary. The transition table includes all ten phase origins and the valid background-ready exit from every live agent phase.
 
@@ -131,7 +131,7 @@ The compose area is three rows on small terminals and five rows otherwise. It su
 | Active agent phase | Ordinary text, including unrecognized slash-prefixed text, is immediate steering; busy-safe slash commands execute locally |
 | Awaiting approval | Explicit decisions/results resolve HITL; ordinary non-decision text steers; control syntax remains local |
 | Command/Shell/Saving/Cancelling | Ordinary and idle-only control drafts are preserved; busy-safe commands retain local semantics |
-| Background result ready | A deliverable notification automatically starts a main-agent turn with a small system reminder; `/integrate` remains available to deliver it to an active run |
+| Background result ready | Shows session-scoped readiness only; the next accepting agent turn receives canonical durable completion input |
 
 Registered `/command` tokens and the `!` namespace are classified before prompt, steering, or HITL-result parsing. While idle, one or more consecutive leading `/skill-name` tokens that match the effective skill catalog create an explicit skill-selection prompt; the remaining text is the task. For slash tokens that are not known commands, YAACLI synchronously reserves foreground ownership and snapshots the submitted attachments, refreshes `AgentContext.available_skills`, and only then classifies the submitted text, so runtime skill additions, removals, and overrides cannot race dispatch. Attachments added during that refresh remain queued for the next prompt. Existing built-in and configured commands take precedence when the first token conflicts with a skill name. If no command or skill matches, the complete slash-prefixed text is ordinary user input, allowing prompts such as `/home/user/file is the input`. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before routing; if the user deleted the chip, the binary is dropped before dispatch.
 
@@ -157,7 +157,7 @@ The UI uses one explicit foreground boundary covering agent, shell, save, comman
 
 - Ownership is claimed before creating the asynchronous task.
 - A second prompt or shell cannot race the first submission.
-- Busy-safe commands (`/cancel`, `/integrate`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`) remain available without taking foreground ownership from the active task.
+- Busy-safe commands (`/cancel`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`) remain available without taking foreground ownership from the active task.
 - Repeated cancellation does not add another `Task.cancel()` request.
 - A `/cancel` command never cancels its own dispatch task.
 - Non-agent slash commands use `COMMAND_RUNNING`, so Ctrl+C cancellation and Ctrl+D exit gating share the authoritative foreground state.

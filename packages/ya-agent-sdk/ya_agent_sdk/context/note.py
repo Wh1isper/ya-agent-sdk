@@ -19,8 +19,8 @@ class NoteManager(BaseModel):
     Runtime instructions expose keys on every user prompt, giving the
     agent persistent recall without injecting full note values.
 
-    NoteManager is shared between parent and subagent contexts (shallow copy),
-    providing a unified note view across the agent hierarchy.
+    Root run attempts share one session manager. A subagent receives an independent
+    snapshot so child mutation and durable continuation cannot alias parent state.
 
     Example:
         manager = NoteManager()

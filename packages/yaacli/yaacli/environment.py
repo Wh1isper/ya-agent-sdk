@@ -1,9 +1,7 @@
-"""TUI Environment for yaacli.
+"""TUI environment with host-side background shell readiness monitoring.
 
-TUIEnvironment extends LocalEnvironment with BackgroundMonitor
-for managing background subagent tasks and shell process monitoring.
-Shell background process management is handled by the Shell ABC from
-ya-agent-environment directly.
+Shell process ownership remains in the shared environment abstraction. The
+additional monitor only reports readiness to the durable TUI application.
 
 Example:
     async with TUIEnvironment(default_path=Path.cwd()) as env:
@@ -21,17 +19,11 @@ from pathlib import Path
 from ya_agent_environment import ResourceFactory, ResourceRegistryState
 from ya_agent_sdk.environment.local import LocalEnvironment
 
-from yaacli.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
+from yaacli.shell_monitor import SHELL_MONITOR_KEY, ShellMonitor
 
 
 class TUIEnvironment(LocalEnvironment):
-    """Extended environment for TUI with background monitoring.
-
-    Background process management is provided by Shell ABC directly
-    (start/drain_output/wait_process/kill_process). BackgroundMonitor
-    handles subagent task tracking and shell process completion
-    monitoring, and is registered as a resource.
-    """
+    """Local environment with a lifecycle-managed shell monitor resource."""
 
     def __init__(
         self,
@@ -55,23 +47,23 @@ class TUIEnvironment(LocalEnvironment):
             resource_factories=resource_factories,
             include_os_env=include_os_env,
         )
-        self._background_monitor: BackgroundMonitor | None = None
+        self._shell_monitor: ShellMonitor | None = None
 
     async def _setup(self) -> None:
         await super()._setup()
-        self._background_monitor = BackgroundMonitor()
-        self.resources.set(BACKGROUND_MONITOR_KEY, self._background_monitor)
+        self._shell_monitor = ShellMonitor()
+        self.resources.set(SHELL_MONITOR_KEY, self._shell_monitor)
 
     async def _teardown(self) -> None:
         """Clean up environment-owned state after registered resources close."""
         try:
             await super()._teardown()
         finally:
-            self._background_monitor = None
+            self._shell_monitor = None
 
     @property
-    def background_monitor(self) -> BackgroundMonitor:
-        """Get the BackgroundMonitor resource."""
-        if self._background_monitor is None:
+    def shell_monitor(self) -> ShellMonitor:
+        """Return the entered shell monitor resource."""
+        if self._shell_monitor is None:
             raise RuntimeError("TUIEnvironment not entered. Use 'async with TUIEnvironment() as env:'")
-        return self._background_monitor
+        return self._shell_monitor

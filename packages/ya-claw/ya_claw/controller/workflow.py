@@ -230,13 +230,6 @@ class WorkflowEventListResponse(BaseModel):
     events: list[WorkflowEventSummary] = Field(default_factory=list)
 
 
-class AgentPresetCard(BaseModel):
-    name: str
-    model: str | None = None
-    enabled: bool = True
-    builtin_toolsets: list[str] = Field(default_factory=list)
-
-
 class WorkflowController:
     def __init__(self) -> None:
         self._run_controller = RunController()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import AbstractCapability
@@ -17,7 +17,7 @@ from ya_agent_sdk.context import AgentContext
 class CodeActCapability(AbstractCapability[AgentContext]):
     """Install a run-local CodeAct wrapper around an agent's final toolset."""
 
-    config: CodeActConfig
+    config: CodeActConfig = field(default_factory=CodeActConfig)
     id: str | None = "codeact"
 
     async def for_run(self, ctx: RunContext[AgentContext]) -> AbstractCapability[AgentContext]:

@@ -1,391 +1,198 @@
 # 01 - Lifecycle Extensions
 
-`ya-agent-sdk` should expose lifecycle extensions as first-class runtime components.
+Status: Implemented
 
-The goal is to let products such as YA Claw attach cross-cutting runtime behavior around agent execution without rebuilding `stream_agent` or passing many one-off hook functions at every call site.
+## Purpose
 
-## Current State
+Lifecycle extensions attach host orchestration and observation to the SDK streaming
+boundary without creating another behavior-composition system. Pydantic AI capabilities
+remain the sole agent behavior boundary; lifecycle extensions observe or coordinate an
+entered runtime and its stream.
 
-The SDK already has these pieces:
+Typical uses include:
 
-- `create_agent(...)` accepts Pydantic AI capabilities through `pre_capabilities` and `capabilities`.
-- SDK history behavior is implemented with `ProcessHistory` capabilities.
-- `stream_agent(...)` accepts call-site hooks:
-  - `on_runtime_ready`
-  - `on_agent_start`
-  - `on_agent_complete`
-  - `pre_node_hook`
-  - `post_node_hook`
-  - `pre_event_hook`
-  - `post_event_hook`
-- compact is implemented as a history processor and emits:
-  - `CompactStartEvent`
-  - `CompactCompleteEvent`
-  - `CompactFailedEvent`
-- the cache-friendly compact filter reuses the current agent and keeps cache-sensitive model settings intact.
-- the legacy compact filter pre-trims history through `_trim_history_for_compact(...)` before running the compact agent.
+- initializing a service integration after Environment entry;
+- observing model nodes and stream events;
+- recording terminal results and failures;
+- consuming compact or handoff summaries for memory systems; and
+- publishing telemetry that should not alter the agent's tool or instruction catalog.
 
-This provides a strong base for memory, observability, and runtime policy hooks.
+## Composition Boundary
 
-## Problem
-
-Runtime products need stable extension points that span the whole agent lifecycle.
-
-Examples:
-
-- inject runtime memory into the prompt after the runtime has entered
-- observe compact and summarize operations with trimmed history
-- schedule background extract or consolidation jobs after an execution completes
-- collect usage and terminal result data through one interface
-- register reusable runtime behavior once at agent construction time
-
-Passing hook callables into `stream_agent(...)` works for local scripts. Service runtimes benefit from reusable extension objects that are configured during runtime assembly.
-
-## Design Goals
-
-- Keep the existing `stream_agent(...)` hook API compatible.
-- Support extension objects that can be registered through `create_agent(...)` or `AgentRuntime`.
-- Preserve Pydantic AI capabilities for model-history processing.
-- Make compact and summarize activity observable through typed callback contexts.
-- Support trimmed message-history handoff for memory extraction.
-- Avoid cache coupling between main execution and memory extraction.
-- Keep extension failures isolated by policy.
-
-## Proposed API
-
-### Lifecycle Extension Protocol
+`create_agent()` accepts one ordered `capabilities=` sequence and an independent ordered
+`lifecycle_extensions=` sequence:
 
 ```python
-from typing import Protocol, Sequence, Generic, TypeVar
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
-class AgentLifecycleExtension(Protocol, Generic[AgentDepsT, OutputT, EnvT]):
-    name: str
 
-    async def on_runtime_ready(
-        self,
-        ctx: RuntimeReadyContext[AgentDepsT, OutputT, EnvT],
-    ) -> None: ...
+class AuditExtension(BaseLifecycleExtension):
+    name = "audit"
 
-    async def on_agent_start(
-        self,
-        ctx: AgentStartContext[AgentDepsT, OutputT, EnvT],
-    ) -> None: ...
+    async def on_agent_complete(self, ctx) -> None:
+        await write_audit_record(ctx.result)
 
-    async def on_before_node(
-        self,
-        ctx: NodeHookContext[AgentDepsT, OutputT],
-    ) -> None: ...
 
-    async def on_after_node(
-        self,
-        ctx: NodeHookContext[AgentDepsT, OutputT],
-    ) -> None: ...
-
-    async def on_before_event(
-        self,
-        ctx: EventHookContext[AgentDepsT, OutputT],
-    ) -> None: ...
-
-    async def on_after_event(
-        self,
-        ctx: EventHookContext[AgentDepsT, OutputT],
-    ) -> None: ...
-
-    async def on_agent_complete(
-        self,
-        ctx: AgentCompleteContext[AgentDepsT, OutputT, EnvT],
-    ) -> None: ...
-
-    async def on_agent_error(
-        self,
-        ctx: AgentErrorContext[AgentDepsT, OutputT, EnvT],
-    ) -> None: ...
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    capabilities=[RuntimeFoundationCapability()],
+    lifecycle_extensions=[AuditExtension()],
+)
 ```
 
-Each method is optional in concrete classes. The SDK should ship a base class with no-op implementations:
+The two surfaces have different authority:
+
+- capabilities own tools, instructions, history/request processing, wrappers, and
+  run-local capability state;
+- lifecycle extensions own host callbacks around `stream_agent()` and compact/handoff
+  operations.
+
+An extension must not mutate private Pydantic AI agent internals to simulate capability
+composition.
+
+## Extension Contract
+
+`BaseLifecycleExtension[AgentDepsT, EnvT]` provides async no-op methods:
 
 ```python
-class BaseLifecycleExtension(Generic[AgentDepsT, OutputT, EnvT]):
-    name = "base"
-
-    async def on_runtime_ready(self, ctx): pass
-    async def on_agent_start(self, ctx): pass
-    async def on_before_node(self, ctx): pass
-    async def on_after_node(self, ctx): pass
-    async def on_before_event(self, ctx): pass
-    async def on_after_event(self, ctx): pass
-    async def on_agent_complete(self, ctx): pass
-    async def on_agent_error(self, ctx): pass
-```
-
-### Registration
-
-Add an optional parameter to `create_agent(...)`:
-
-```python
-def create_agent(
-    ...,
-    lifecycle_extensions: Sequence[AgentLifecycleExtension[AgentDepsT, OutputT, EnvT]] | None = None,
-) -> AgentRuntime[AgentDepsT, OutputT, EnvT]: ...
-```
-
-Store extensions on `AgentRuntime`:
-
-```python
-@dataclass
-class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
-    env: EnvT
-    ctx: AgentDepsT
-    agent: Agent[AgentDepsT, OutputT]
-    core_toolset: Toolset[AgentDepsT] | None = None
-    lifecycle_extensions: list[AgentLifecycleExtension[AgentDepsT, OutputT, EnvT]] = field(default_factory=list)
-```
-
-`stream_agent(...)` should merge runtime extensions with call-site hooks:
-
-```python
-extensions = list(runtime.lifecycle_extensions)
-
-await run_extensions("on_runtime_ready", RuntimeReadyContext(...))
-if on_runtime_ready is not None:
-    await on_runtime_ready(context)
-```
-
-Ordering rule:
-
-1. runtime extensions in registration order
-2. call-site hook
-
-This gives runtime products deterministic baseline behavior and lets local callers add one-off logic.
-
-### Error Policy
-
-Each extension can declare its failure policy:
-
-```python
-class ExtensionFailurePolicy(StrEnum):
-    RAISE = "raise"
-    LOG_AND_CONTINUE = "log_and_continue"
-
 class BaseLifecycleExtension:
-    failure_policy = ExtensionFailurePolicy.RAISE
+    async def on_runtime_ready(self, ctx): ...
+    async def on_agent_start(self, ctx): ...
+    async def on_before_node(self, ctx): ...
+    async def on_after_node(self, ctx): ...
+    async def on_before_event(self, ctx): ...
+    async def on_after_event(self, ctx): ...
+    async def on_agent_complete(self, ctx): ...
+    async def on_agent_error(self, ctx): ...
+    async def on_context_handoff_complete(self, ctx): ...
+    async def on_compact_start(self, ctx): ...
+    async def on_compact_complete(self, ctx): ...
+    async def on_compact_failed(self, ctx): ...
 ```
 
-Default `RAISE` keeps behavior explicit during development. Runtime products can set `LOG_AND_CONTINUE` for optional telemetry extensions.
+Extensions execute in registration order. Errors propagate; the SDK does not silently
+log and continue. An optional telemetry integration that wants best-effort behavior must
+catch and report its own failures.
 
-## Compact and Summary Hooks
+The extension instances are runtime objects. They are copied onto each fresh
+`AgentContext` run but are excluded from `ResumableState`; a restored host reconstructs
+them from runtime configuration.
 
-Compact currently emits typed events through `AgentContext.emit_event(...)`. Runtime extensions can observe those events through `on_after_event(...)`, but compact-specific hooks provide a cleaner contract for systems that need trimmed histories or compact output.
+## Streaming Lifecycle
 
-### Compact Hook Contexts
+`stream_agent()` invokes extension methods and then the matching call-site hook at each
+boundary:
 
-Add typed compact callback contexts:
+```mermaid
+flowchart TD
+    Enter[Enter runtime and fresh AgentContext] --> Ready[on_runtime_ready]
+    Ready --> Start[on_agent_start]
+    Start --> BeforeNode[on_before_node]
+    BeforeNode --> BeforeEvent[on_before_event]
+    BeforeEvent --> Publish[Publish StreamEvent]
+    Publish --> AfterEvent[on_after_event]
+    AfterEvent --> MoreEvents{More events?}
+    MoreEvents -->|yes| BeforeEvent
+    MoreEvents -->|no| AfterNode[on_after_node]
+    AfterNode --> MoreNodes{More nodes?}
+    MoreNodes -->|yes| BeforeNode
+    MoreNodes -->|no| Complete[on_agent_complete]
+    Enter -->|failure| Error[on_agent_error]
+    Ready -->|failure| Error
+    Start -->|failure| Error
+    BeforeNode -->|failure| Error
+    BeforeEvent -->|failure| Error
+```
+
+The supported call-site hooks remain:
+
+- `on_runtime_ready`
+- `on_agent_start`
+- `on_agent_complete`
+- `pre_node_hook` and `post_node_hook`
+- `pre_event_hook` and `post_event_hook`
+
+Runtime extensions run first, in registration order, followed by the one call-site hook.
+`on_agent_error` is extension-only and receives `AgentErrorContext` with the runtime,
+agent metadata, output queue, and original exception.
+
+`stream_agent()` creates a fresh per-run context and logical input router before these
+callbacks. Extensions therefore observe native steering/enqueue behavior rather than a
+MessageBus or replay cursor.
+
+## Compact and Handoff Callbacks
+
+Automatic compaction and summarize-tool handoff share a typed completion boundary:
 
 ```python
 @dataclass
-class CompactStartContext(Generic[AgentDepsT]):
+class ContextHandoffCompleteContext:
     event_id: str
     deps: AgentDepsT
-    original_messages: list[ModelMessage]
-    trigger: CompactTrigger
-    mode: CompactMode
-
-@dataclass
-class CompactCompleteContext(Generic[AgentDepsT]):
-    event_id: str
-    deps: AgentDepsT
+    source: ContextHandoffSource
     original_messages: list[ModelMessage]
     trimmed_messages: list[ModelMessage]
-    compacted_messages: list[ModelMessage]
+    handoff_messages: list[ModelMessage]
     summary_markdown: str
-    condense_result: CondenseResult | None
-    usage: Usage | None
-    trigger: CompactTrigger
-    mode: CompactMode
-
-@dataclass
-class CompactFailedContext(Generic[AgentDepsT]):
-    event_id: str
-    deps: AgentDepsT
-    original_messages: list[ModelMessage]
-    trimmed_messages: list[ModelMessage] | None
-    error: BaseException
-    trigger: CompactTrigger
-    mode: CompactMode
+    usage: RunUsage | None
+    metadata: dict[str, Any]
 ```
 
-### Compact Trigger and Mode
+`ContextHandoffSource` is `COMPACT` or `SUMMARIZE_TOOL`.
+`CompactCompleteContext` extends this value with `compacted_messages` and the optional
+structured `condense_result`. Start and failure callbacks receive
+`CompactStartContext` and `CompactFailedContext` respectively.
 
-```python
-class CompactTrigger(StrEnum):
-    TOKEN_THRESHOLD = "token_threshold"
-    MANUAL_COMPACT = "manual_compact"
-    MANUAL_SUMMARIZE = "manual_summarize"
+The ordering on successful automatic compact is:
 
-class CompactMode(StrEnum):
-    CACHE_FRIENDLY = "cache_friendly"
-    LEGACY_AGENT = "legacy_agent"
-    TRIM_ONLY = "trim_only"
-```
+1. `on_compact_start`;
+2. compact execution and history replacement;
+3. `on_context_handoff_complete`;
+4. `on_compact_complete`;
+5. filter-local `CompactLifecycleCallback` values;
+6. typed compact completion event for stream consumers.
 
-`MANUAL_SUMMARIZE` represents an application-level handoff or summarize action that clears context and preserves a summary. SDK call sites can pass the trigger when invoking a manual compact/summarize helper.
+On failure, `on_compact_failed` runs before the failed sideband event is emitted.
+Summarize-tool handoff invokes `on_context_handoff_complete` with the same canonical
+history views.
 
-### Compact Callback Registration
+Memory integrations should consume `trimmed_messages` and `summary_markdown` rather
+than scraping display events. `handoff_messages` is the canonical replacement history;
+stream events are notification only.
 
-Compact filters should accept callbacks:
+## Cache-Friendly Compact Invariant
 
-```python
-CompactCallback = Callable[[CompactCompleteContext[AgentContext]], Awaitable[None]]
+Cache-friendly compact reuses the active agent but disables tools for the compact model
+request with `ModelSettings(tool_choice="none")`. Pydantic AI performs the normal model
+settings merge, so provider settings, prompt-cache fields, headers, and model-specific
+values remain intact. Extensions may observe this operation but must not reconstruct or
+replace that settings merge.
 
-def create_cache_friendly_compact_filter(
-    model_cfg: ModelConfig | None = None,
-    callbacks: Sequence[CompactLifecycleCallback] | None = None,
-) -> HistoryProcessor[AgentContext]: ...
+## Non-goals
 
-def create_compact_filter(
-    ...,
-    callbacks: Sequence[CompactLifecycleCallback] | None = None,
-) -> HistoryProcessor[AgentContext]: ...
-```
+Lifecycle extensions do not provide:
 
-`AgentLifecycleExtension` can also expose compact-specific methods:
+- a second tool, toolset, filter, or capability registration path;
+- portable child-agent construction or background execution;
+- durable scheduling, exactly-once delivery, or session persistence;
+- hidden error suppression policies; or
+- cross-run MessageBus delivery.
 
-```python
-class AgentLifecycleExtension(...):
-    async def on_compact_start(self, ctx: CompactStartContext[AgentDepsT]) -> None: ...
-    async def on_compact_complete(self, ctx: CompactCompleteContext[AgentDepsT]) -> None: ...
-    async def on_compact_failed(self, ctx: CompactFailedContext[AgentDepsT]) -> None: ...
-```
+Portable named children and self forks use `AgentSpec`, `SubagentSpec`,
+`SubagentPlanResolver`, and `SubagentExecutionService`. Durable hosts implement their
+own execution store/driver and input delivery at the application boundary.
 
-The compact filter can load callbacks from `agent_ctx.lifecycle_extensions` when the context provides them, then run them alongside filter-local callbacks.
+## Verification Contract
 
-## Trim Mode for Memory Handoff
+The SDK tests must cover:
 
-Memory extraction wants a compact-safe view of the conversation. It does not need provider cache consistency or a replayable history that will be sent back to the main model.
-
-The SDK should expose the compact pre-trim operation as a public utility:
-
-```python
-@dataclass
-class TrimHistoryOptions:
-    preserve_last_turn: bool = False
-    injected_context_tags: tuple[str, ...] = (
-        RUNTIME_CONTEXT_TAG,
-        ENVIRONMENT_CONTEXT_TAG,
-    )
-    max_tool_return_chars: int = 500
-    strip_media: bool = True
-    strip_injected_context: bool = True
-    preserve_keep_tagged_messages: bool = True
-
-@dataclass
-class TrimHistoryResult:
-    messages: list[ModelMessage]
-    original_message_count: int
-    trimmed_message_count: int
-    removed_part_count: int
-    truncated_tool_return_count: int
-    stripped_media_count: int
-    stripped_injected_context_count: int
-
-async def trim_history_for_summary(
-    message_history: Sequence[ModelMessage],
-    options: TrimHistoryOptions | None = None,
-) -> TrimHistoryResult: ...
-```
-
-The current private `_trim_history_for_compact(...)` can become the implementation base.
-
-### Memory Handoff on Compact Complete
-
-When compact or manual summarize completes, the SDK should let extensions receive:
-
-- `original_messages`: full message history before compact
-- `trimmed_messages`: trim-mode view for secondary summarization or extraction
-- `compacted_messages`: replay messages used by the main agent continuation
-- `summary_markdown`: continuation summary
-- `condense_result`: structured result for legacy compact
-
-Memory extensions should consume `trimmed_messages` and `summary_markdown`.
-
-The main continuation keeps cache-friendly compact behavior. Memory extraction receives trim-mode input because its output goes to a separate memory store.
-
-## Manual Summarize Contract
-
-A runtime may provide a user-facing summarize or handoff action. The SDK should expose a shared helper that mirrors compact output:
-
-```python
-async def summarize_history(
-    *,
-    agent: Agent[AgentDepsT, OutputT],
-    deps: AgentDepsT,
-    message_history: Sequence[ModelMessage],
-    prompt: str | None = None,
-    mode: CompactMode = CompactMode.CACHE_FRIENDLY,
-    trigger: CompactTrigger = CompactTrigger.MANUAL_SUMMARIZE,
-) -> CompactCompleteContext[AgentDepsT]: ...
-```
-
-This helper should:
-
-1. build `trimmed_messages` using trim mode
-2. produce `summary_markdown`
-3. build `compacted_messages` for handoff continuation
-4. emit compact lifecycle events
-5. call compact lifecycle extension methods
-
-## Forked Background Agents
-
-Memory extractors and consolidators need isolated execution with restricted tools. A lifecycle extension may start an internal agent after compact or after run completion.
-
-Proposed helper:
-
-```python
-@dataclass
-class ForkAgentOptions(Generic[AgentDepsT]):
-    name: str
-    model: str | Model | None = None
-    model_settings: ModelSettings | None = None
-    system_prompt: str | None = None
-    message_history: Sequence[ModelMessage] | None = None
-    user_prompt: str | Sequence[UserContent] | None = None
-    tools: Sequence[type[BaseTool]] | None = None
-    toolsets: Sequence[AbstractToolset[Any]] | None = None
-    capabilities: Sequence[AbstractCapability[AgentDepsT]] | None = None
-    inherit_model_wrapper: bool = True
-    inherit_usage_sink: bool = True
-    isolated_context: bool = True
-
-async def fork_agent(
-    runtime: AgentRuntime[AgentDepsT, OutputT, EnvT],
-    options: ForkAgentOptions[AgentDepsT],
-) -> AgentRunResult[Any]: ...
-```
-
-This is useful for SDK consumers beyond YA Claw: background summarizers, evaluators, validators, and auditors.
-
-## Interaction with Pydantic AI Capabilities
-
-Lifecycle extensions complement Pydantic AI capabilities.
-
-Recommended split:
-
-- Pydantic AI capabilities own model-history processing, tool availability, and model settings.
-- SDK lifecycle extensions own runtime orchestration, event observation, secondary agent jobs, and service integrations.
-
-`create_agent(...)` should keep `pre_capabilities` and `capabilities` as the low-level model request composition mechanism.
-
-## Implementation Plan
-
-1. Add `lifecycle_extensions` to `AgentRuntime` and `create_agent(...)`.
-2. Add extension runner utilities with failure policy handling.
-3. Route existing `stream_agent(...)` hook sites through the extension runner.
-4. Promote trim-mode history processing to a public helper.
-5. Add compact callback contexts and compact-specific extension methods.
-6. Feed compact callbacks from both cache-friendly and legacy compact filters.
-7. Add `summarize_history(...)` helper for manual handoff flows.
-8. Add `fork_agent(...)` after the lifecycle API stabilizes.
-
-## Compatibility
-
-Existing callers can keep using the current hook parameters. Existing compact behavior remains the default. The new API mainly moves service-level integration from ad hoc call-site hooks into reusable extension objects.
+- ordered runtime extension and call-site hook execution;
+- fresh-run context attachment;
+- error propagation and `on_agent_error` notification;
+- compact start, complete, failure, and shared handoff callbacks;
+- filter-local compact callbacks;
+- TestModel execution through `stream_agent()`; and
+- cache-friendly compact preserving native settings merge while forcing
+  `tool_choice="none"`.

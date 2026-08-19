@@ -1,31 +1,42 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any
 
-import pytest
-from pydantic_ai import DeferredToolRequests, RunContext
+from pydantic_ai import AgentSpec, DeferredToolRequests
+from pydantic_ai.models.test import TestModel
+from sqlalchemy import create_engine as create_sync_engine
 from ya_agent_sdk.agents.main import stream_agent
-from ya_agent_sdk.context import ResumableState, ShellReviewAction, ShellReviewConfig
-from ya_agent_sdk.environment import SandboxEnvironment, VirtualMount
-from ya_agent_sdk.environment.local import LocalEnvironment
-from ya_agent_sdk.toolsets.skills.toolset import SkillToolset
-from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
-from ya_claw.agency.prompt import AGENCY_SYSTEM_PROMPT
+from ya_agent_sdk.capabilities import FilesystemCapability, ShellCapability, SkillsCapability
+from ya_agent_sdk.environment import VirtualMount
+from ya_agent_sdk.subagents import (
+    DelegationCapability,
+    SubagentDurability,
+    SubagentExecutionMode,
+    SubagentSpec,
+)
 from ya_claw.config import ClawSettings
+from ya_claw.db.engine import create_engine, create_session_factory
+from ya_claw.execution.capabilities import ClawToolsCapability
 from ya_claw.execution.profile import ClawShellReviewConfig, ResolvedProfile
 from ya_claw.execution.runtime import ClawRuntimeBuilder
+from ya_claw.orm.base import Base
+from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY
 from ya_claw.workspace import MappedLocalEnvironment, WorkspaceBinding
 from ya_claw.workspace.models import WorkspaceMountBinding
 
 
-def _build_workspace_binding(
-    host_path: Path,
-    *,
-    backend_hint: str = "local",
-    metadata: dict[str, object] | None = None,
-) -> WorkspaceBinding:
+def _settings(tmp_path: Path) -> ClawSettings:
+    return ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        _env_file=None,
+    )
+
+
+def _binding(host_path: Path, *, metadata: dict[str, object] | None = None) -> WorkspaceBinding:
+    host_path.mkdir(parents=True, exist_ok=True)
     mount = WorkspaceMountBinding(
         id="workspace",
         host_path=host_path,
@@ -41,970 +52,319 @@ def _build_workspace_binding(
         mounts=[mount],
         fingerprint="sha256:test",
         metadata=dict(metadata or {}),
-        backend_hint=backend_hint,
+        backend_hint="local",
     )
 
 
-def test_runtime_builder_propagates_container_id_from_workspace_metadata(
+class _StubSubagentClient:
+    async def setup(self) -> None:
+        return None
+
+    def get_capabilities(self) -> tuple[Any, ...]:
+        return ()
+
+    async def close(self) -> None:
+        return None
+
+    async def spawn_delegate(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(kwargs)
+
+    async def get_async_subagent(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(kwargs)
+
+    async def steer_async_subagent(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(kwargs)
+
+    async def cancel_async_subagent(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(kwargs)
+
+
+def _environment(host_path: Path) -> MappedLocalEnvironment:
+    environment = MappedLocalEnvironment(
+        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
+        host_cwd=host_path,
+    )
+    environment.resources.set(CLAW_SELF_CLIENT_KEY, _StubSubagentClient())
+    return environment
+
+
+def _profile(
+    *,
+    capabilities: list[object] | None = None,
+    host_tool_groups: tuple[str, ...] = (),
+    subagent_specs: tuple[SubagentSpec, ...] = (),
+    approval_tools: frozenset[str] = frozenset(),
+    shell_review: ClawShellReviewConfig | None = None,
+    instructions: str = "Be concise.",
+) -> ResolvedProfile:
+    return ResolvedProfile(
+        name="default",
+        agent_spec=AgentSpec.model_validate({
+            "model": "test",
+            "name": "default",
+            "instructions": instructions,
+            "capabilities": capabilities or [],
+        }),
+        host_tool_groups=host_tool_groups,
+        subagent_specs=subagent_specs,
+        approval_tools=approval_tools,
+        shell_review=shell_review,
+        workspace_backend_hint="local",
+    )
+
+
+def _build_runtime(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GATEWAY_API_KEY", "test-gateway-key")
-    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.example.test")
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
+    profile: ResolvedProfile,
+    *,
+    source_kind: str = "api",
+    source_metadata: dict[str, object] | None = None,
+):
     host_path = tmp_path / "workspace"
-    host_path.mkdir(parents=True, exist_ok=True)
-    binding = _build_workspace_binding(
-        host_path,
-        backend_hint="docker",
-        metadata={
-            "provider": "docker",
-            "sandbox": {
-                "container_id": "container-xyz",
-                "container_ref": "ya-claw-workspace-ref",
-            },
-        },
-    )
-    environment = SandboxEnvironment(
-        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
-        work_dir="/workspace",
-        container_id="container-xyz",
-    )
-    profile = ResolvedProfile(
-        name="default",
-        model="gateway@openai-responses:gpt-5.5",
-        model_settings=None,
-        model_config=None,
-        workspace_backend_hint="docker",
-    )
-
-    runtime = builder.build(
+    binding = _binding(host_path)
+    database_path = tmp_path / "runtime-builder.sqlite3"
+    sync_engine = create_sync_engine(f"sqlite:///{database_path}")
+    Base.metadata.create_all(sync_engine)
+    sync_engine.dispose()
+    session_factory = create_session_factory(create_engine(f"sqlite+aiosqlite:///{database_path}"))
+    runtime = ClawRuntimeBuilder(
+        settings=_settings(tmp_path),
+        session_factory=session_factory,
+    ).build(
         profile=profile,
         binding=binding,
-        environment=environment,
+        environment=_environment(host_path),
         restore_state=None,
         session_id="session-1",
         run_id="run-1",
         restore_from_run_id=None,
         dispatch_mode="async",
-        source_kind="api",
-        source_metadata={},
+        source_kind=source_kind,
+        source_metadata=dict(source_metadata or {}),
         claw_metadata={},
     )
-
-    assert runtime.ctx.container_id == "container-xyz"
-    assert runtime.ctx.workspace_binding is not None
-    assert runtime.ctx.workspace_binding.metadata["sandbox"]["container_id"] == "container-xyz"
-    assert runtime.ctx.is_async_subagent is False
+    return runtime, binding
 
 
-def test_runtime_builder_sets_async_subagent_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GATEWAY_API_KEY", "test-gateway-key")
-    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.example.test")
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    host_path.mkdir(parents=True, exist_ok=True)
-    binding = _build_workspace_binding(host_path)
-    environment = SandboxEnvironment(
-        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
-        work_dir="/workspace",
-        container_id="container-xyz",
-    )
-    profile = ResolvedProfile(
-        name="default",
-        model="gateway@openai-responses:gpt-5.5",
-        model_settings=None,
-        model_config=None,
-    )
-
-    runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="child-session",
-        run_id="child-run",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="async_task",
-        source_metadata={"async_task": {"parent_session_id": "parent-session"}},
-        claw_metadata={},
-    )
-
-    assert runtime.ctx.is_async_subagent is True
-    assert "async_parent_session_id" not in runtime.ctx.get_wrapper_metadata()
-
-
-def test_runtime_builder_keeps_parent_wake_runs_in_parent_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GATEWAY_API_KEY", "test-gateway-key")
-    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.example.test")
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    host_path.mkdir(parents=True, exist_ok=True)
-    binding = _build_workspace_binding(host_path)
-    environment = SandboxEnvironment(
-        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
-        work_dir="/workspace",
-        container_id="container-xyz",
-    )
-    profile = ResolvedProfile(
-        name="default",
-        model="gateway@openai-responses:gpt-5.5",
-        model_settings=None,
-        model_config=None,
-        builtin_toolsets=["core"],
-        include_builtin_subagents=True,
-    )
-
-    runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="parent-session",
-        run_id="parent-wake-run",
-        restore_from_run_id="parent-previous-run",
-        dispatch_mode="async",
-        source_kind="async_task",
-        source_metadata={"async_task_wake": {"task_id": "task-1"}},
-        claw_metadata={},
-    )
-    toolset = runtime.agent._user_toolsets[0]
-
-    assert runtime.ctx.is_async_subagent is False
-    assert "spawn_delegate" in toolset._tool_classes
-    assert "get_async_subagent" in toolset._tool_classes
-    assert "steer_async_subagent" in toolset._tool_classes
-    assert any(isinstance(toolset, SkillToolset) for toolset in runtime.agent._user_toolsets)
-
-
-def test_runtime_builder_resolves_core_builtin_toolset(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-
-    resolved_tool_names = [getattr(tool, "name", tool.__name__) for tool in builder._resolve_builtin_tools(["core"])]
-
-    assert "read_media" in resolved_tool_names
-    assert "view" in resolved_tool_names
-    assert "shell_exec" in resolved_tool_names
-    assert "spawn_delegate" in resolved_tool_names
-    assert "list_async_subagents" in resolved_tool_names
-    assert "get_async_subagent" in resolved_tool_names
-    assert "steer_async_subagent" in resolved_tool_names
-    assert "cancel_async_subagent" in resolved_tool_names
-    assert "list_session_turns" in resolved_tool_names
-    assert "get_run_trace" in resolved_tool_names
-    assert "submit_to_session" in resolved_tool_names
-    assert "list_workflows" in resolved_tool_names
-    assert "start_workflow" in resolved_tool_names
-
-
-def test_runtime_builder_gives_agency_full_profile_builtin_tools_by_default(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-
-    resolved_tool_names = [getattr(tool, "name", tool.__name__) for tool in builder._resolve_builtin_tools(["core"])]
-
-    assert "read_media" in resolved_tool_names
-    assert "view" in resolved_tool_names
-    assert "write" in resolved_tool_names
-    assert "shell_exec" in resolved_tool_names
-    assert "delete" in resolved_tool_names
-    assert "spawn_delegate" in resolved_tool_names
-    assert "list_source_session_turns" in resolved_tool_names
-    assert "get_source_run_trace" in resolved_tool_names
-    assert "submit_to_session" in resolved_tool_names
-    assert "create_schedule" in resolved_tool_names
-    assert "create_workflow_schedule" in resolved_tool_names
-    assert "create_workflow" in resolved_tool_names
-    assert "list_agent_presets" in resolved_tool_names
-
-
-def test_agency_prompt_instructs_async_subagent_orchestration() -> None:
-    assert "<async_subagents>" in AGENCY_SYSTEM_PROMPT
-    assert "Spawn subagents with stable names" in AGENCY_SYSTEM_PROMPT
-    assert "Keep ownership of proactive strategy" in AGENCY_SYSTEM_PROMPT
-    assert "Use `list_async_subagents` and `get_async_subagent`" in AGENCY_SYSTEM_PROMPT
-    assert "submit_to_session" in AGENCY_SYSTEM_PROMPT
-
-
-def test_agency_prompt_allows_noop_heartbeat_without_file_writes() -> None:
-    assert "<durable_file_policy>" in AGENCY_SYSTEM_PROMPT
-    assert "Make no file changes" in AGENCY_SYSTEM_PROMPT
-    assert "brief no-op episode report" in AGENCY_SYSTEM_PROMPT
-
-
-def test_runtime_builder_filters_async_subagent_management_tools(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    tools = builder._filter_builtin_tools(
-        builder._resolve_builtin_tools(["core"]),
-        None,
-        is_async_subagent=True,
-    )
-    resolved_tool_names = [getattr(tool, "name", tool.__name__) for tool in tools]
-
-    assert "spawn_delegate" not in resolved_tool_names
-    assert "list_async_subagents" not in resolved_tool_names
-    assert "get_async_subagent" not in resolved_tool_names
-    assert "steer_async_subagent" not in resolved_tool_names
-    assert "cancel_async_subagent" not in resolved_tool_names
-    assert "read_media" in resolved_tool_names
-    assert "view" in resolved_tool_names
-    assert "shell_exec" in resolved_tool_names
-
-
-def test_runtime_builder_skips_skill_toolset_for_async_subagents(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    binding = _build_workspace_binding(tmp_path / "workspace")
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-    )
-
-    toolsets = builder._resolve_runtime_toolsets(
-        profile=profile,
-        binding=binding,
-        source_kind="async_task",
-        is_async_subagent=True,
-    )
-
-    assert toolsets == []
-
-
-def test_runtime_builder_resolves_runtime_mcp_toolsets_from_profile(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    binding = _build_workspace_binding(tmp_path / "workspace")
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-        mcp_servers={
-            "github": {
-                "transport": "streamable_http",
-                "url": "https://mcp.github.example/mcp",
-            },
-            "context7": {
-                "transport": "streamable_http",
-                "url": "https://mcp.context7.com/mcp",
-                "description": "Library docs",
-                "required": False,
-            },
-        },
-        enabled_mcps=["context7", "github"],
-        disabled_mcps=["github"],
-        need_user_approve_mcps=["context7"],
-    )
-
-    toolsets = builder._resolve_runtime_toolsets(profile=profile, binding=binding)
-
-    assert len(toolsets) == 2
-    assert isinstance(toolsets[0], SkillToolset)
-    assert isinstance(toolsets[1], ToolProxyToolset)
-    assert toolsets[1].prefix == "mcp"
-    assert toolsets[1].search_tool_name == "mcp_search_tool"
-    assert toolsets[1].call_tool_name == "mcp_call_tool"
-    assert [toolset.tool_prefix for toolset in toolsets[1]._toolsets] == ["context7"]
-    assert toolsets[1]._optional_namespaces == {"context7"}
-
-
-def test_runtime_builder_rejects_profile_stdio_mcp(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    binding = _build_workspace_binding(tmp_path / "workspace")
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-        mcp_servers={"github": {"transport": "stdio", "command": "npx"}},
-    )
-
-    with pytest.raises(ValueError, match="unsupported transport"):
-        builder._resolve_runtime_toolsets(profile=profile, binding=binding)
-
-
-async def test_runtime_builder_discovers_workspace_skills_through_virtual_paths(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    skill_dir = host_path / ".agents" / "skills" / "workspace-skill"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        """---
-name: workspace-skill
-description: A workspace skill exposed through the Claw virtual path.
----
-
-# Workspace Skill
-""",
-        encoding="utf-8",
-    )
-    binding = _build_workspace_binding(host_path)
-    environment = MappedLocalEnvironment(
-        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
-        host_cwd=host_path,
-    )
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-        builtin_toolsets=[],
-        workspace_backend_hint="local",
-    )
-    runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="session-1",
-        run_id="run-1",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="api",
-        source_metadata={},
-        claw_metadata={},
-    )
-
-    async with runtime:
-        skill_toolset = next(toolset for toolset in runtime.agent._user_toolsets if isinstance(toolset, SkillToolset))
-        run_ctx = MagicMock(spec=RunContext)
-        run_ctx.deps = runtime.ctx
-        instructions = await skill_toolset.get_instructions(run_ctx)
-
-    assert instructions is not None
-    instruction_text = "\n".join(str(part.content) for part in instructions)
-    assert "workspace-skill" in instruction_text
-    assert "<path>/workspace/.agents/skills/workspace-skill</path>" in instruction_text
-
-
-async def test_runtime_builder_streams_with_pydantic_ai_test_model_and_exports_state(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    host_path.mkdir(parents=True, exist_ok=True)
-    binding = _build_workspace_binding(host_path)
-    environment = MappedLocalEnvironment(
-        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
-        host_cwd=host_path,
-    )
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-        builtin_toolsets=[],
-        workspace_backend_hint="local",
-    )
-
-    runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="session-1",
-        run_id="run-1",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="api",
-        source_metadata={},
-        claw_metadata={},
-    )
+async def test_runtime_builder_streams_with_test_model_and_native_agent_spec(tmp_path: Path) -> None:
+    runtime, _ = _build_runtime(tmp_path, _profile(capabilities=["FilesystemCapability"]))
 
     seen_events: list[object] = []
     async with runtime:
-        async with stream_agent(runtime, "say hello") as streamer:
-            async for event in streamer:
-                seen_events.append(event)
+        with runtime.agent.override(model=TestModel(call_tools=[])):
+            async with stream_agent(runtime, "say hello") as streamer:
+                async for event in streamer:
+                    seen_events.append(event)
         assert streamer.run is not None
         assert streamer.run.result is not None
-        result_output = streamer.run.result.output
+        output = streamer.run.result.output
         exported_state = runtime.ctx.export_state()
+        resolved_capability_types = {type(capability) for capability in runtime.capabilities}
 
-    assert result_output == "success (no tool calls)"
+    assert output == "success (no tool calls)"
     assert seen_events
+    assert FilesystemCapability in resolved_capability_types
+    assert SkillsCapability in resolved_capability_types
     assert runtime.ctx.session_id == "session-1"
     assert runtime.ctx.claw_run_id == "run-1"
-    assert runtime.ctx.workspace_binding is not None
-    assert runtime.ctx.workspace_binding.cwd == "/workspace"
     assert exported_state is not None
 
 
-def test_runtime_builder_injects_shell_env_from_source_metadata_and_restore_state(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    host_path.mkdir(parents=True, exist_ok=True)
-    binding = _build_workspace_binding(host_path)
-    environment = MappedLocalEnvironment(
-        mounts=[VirtualMount(host_path=host_path, virtual_path=Path("/workspace"))],
-        host_cwd=host_path,
-    )
+async def test_runtime_builder_preserves_native_output_and_execution_contract(tmp_path: Path) -> None:
     profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-        builtin_toolsets=[],
-        workspace_backend_hint="local",
+        name="structured",
+        agent_spec=AgentSpec.model_validate({
+            "model": "test",
+            "name": "structured",
+            "instructions": "Return the structured answer.",
+            "output_schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+            "retries": {"tools": 2, "output": 3},
+            "end_strategy": "exhaustive",
+            "tool_timeout": 12.5,
+            "metadata": {"contract": "native"},
+        }),
     )
-    restore_state = ResumableState(shell_env={"BASE_KEY": "restored", "RESTORED_ONLY": "1"})
+    runtime, _ = _build_runtime(tmp_path, profile)
+    model = TestModel(call_tools=[], custom_output_args={"answer": "ok"})
 
-    runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=restore_state,
-        session_id="session-1",
-        run_id="run-1",
-        restore_from_run_id="restore-run-1",
-        dispatch_mode="async",
-        source_kind="workflow",
-        source_metadata={"shell_env": {"BASE_KEY": "workflow", "WORKFLOW_ONLY": "1"}},
-        claw_metadata={},
+    async with runtime:
+        with runtime.agent.override(model=model):
+            async with stream_agent(runtime, "answer") as streamer:
+                async for _ in streamer:
+                    pass
+        assert streamer.run is not None
+        assert streamer.run.result is not None
+        output = streamer.run.result.output
+        schema = runtime.agent.output_json_schema()
+        end_strategy = runtime.agent.end_strategy
+        tool_timeout = runtime.agent._tool_timeout
+
+    request_parameters = model.last_model_request_parameters
+    assert output == {"answer": "ok"}
+    assert "answer" in str(schema)
+    assert end_strategy == "exhaustive"
+    assert tool_timeout == 12.5
+    assert request_parameters is not None
+    assert any("Return the structured answer." in str(part.content) for part in request_parameters.instruction_parts)
+
+
+async def test_runtime_builder_uses_native_deferred_approval(tmp_path: Path) -> None:
+    profile = _profile(
+        capabilities=["FilesystemCapability"],
+        approval_tools=frozenset({"write"}),
     )
+    runtime, _ = _build_runtime(tmp_path, profile)
 
-    assert runtime.ctx.shell_env == {
-        "BASE_KEY": "workflow",
-        "RESTORED_ONLY": "1",
-        "WORKFLOW_ONLY": "1",
-    }
+    async with runtime:
+        with runtime.agent.override(model=TestModel(call_tools=["write"])):
+            async with stream_agent(runtime, "write a file") as streamer:
+                async for _ in streamer:
+                    pass
+        assert streamer.run is not None
+        assert streamer.run.result is not None
+        output = streamer.run.result.output
+
+    assert isinstance(output, DeferredToolRequests)
+    assert [request.tool_name for request in output.approvals] == ["write"]
 
 
-def test_runtime_builder_system_prompt_loads_workspace_guidance(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
+async def test_runtime_builder_resolves_feature_and_claw_capabilities(tmp_path: Path) -> None:
+    profile = _profile(
+        capabilities=["FilesystemCapability", "ShellCapability"],
+        host_tool_groups=("session", "schedule"),
     )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    host_path.mkdir(parents=True, exist_ok=True)
-    (host_path / "AGENTS.md").write_text("# Workspace\nUse pytest.\n", encoding="utf-8")
-    binding = _build_workspace_binding(host_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-    )
+    runtime, _ = _build_runtime(tmp_path, profile)
 
-    system_prompt = builder._build_system_prompt(profile=profile, binding=binding)
+    async with runtime:
+        capability_types = {type(capability) for capability in runtime.capabilities}
 
-    assert '<workspace-guidance path="/workspace/AGENTS.md">' in system_prompt
-    assert "# Workspace\nUse pytest." in system_prompt
-    assert "Workspace virtual root: /workspace" in system_prompt
-    assert "Default working directory: /workspace" in system_prompt
-    assert "Workspace skills are discovered from /workspace/.agents/skills/." in system_prompt
+    assert FilesystemCapability in capability_types
+    assert ShellCapability in capability_types
+    assert ClawToolsCapability in capability_types
 
 
-def test_runtime_builder_system_prompt_skips_memory_for_heartbeat_and_loads_automated_context(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        memory_enabled=True,
-        memory_inject_enabled=True,
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    memory_path = host_path / "memory"
-    memory_path.mkdir(parents=True, exist_ok=True)
-    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
-    (host_path / "HEARTBEAT.md").write_text("# Heartbeat\nCheck runtime health.\n", encoding="utf-8")
-    binding = _build_workspace_binding(host_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-    )
-
-    system_prompt = builder._build_system_prompt(
-        profile=profile,
-        binding=binding,
-        source_kind="heartbeat",
-        source_metadata={"heartbeat_fire_id": "heartbeat-fire-1"},
-    )
-
-    assert '<heartbeat-context source="heartbeat">' in system_prompt
-    assert "Heartbeat fire ID: heartbeat-fire-1" in system_prompt
-    assert '<heartbeat-guidance path="/workspace/HEARTBEAT.md">' in system_prompt
-    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' not in system_prompt
-    assert '<memory-file-index path="/workspace/memory">' not in system_prompt
-
-
-def test_runtime_builder_system_prompt_skips_memory_for_schedule_and_loads_schedule_context(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        memory_enabled=True,
-        memory_inject_enabled=True,
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    memory_path = host_path / "memory"
-    memory_path.mkdir(parents=True, exist_ok=True)
-    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
-    binding = _build_workspace_binding(host_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-    )
-
-    system_prompt = builder._build_system_prompt(
-        profile=profile,
-        binding=binding,
-        source_kind="schedule",
-        source_metadata={
-            "schedule_id": "schedule-1",
-            "schedule_fire_id": "fire-1",
-            "execution_mode": "fork_session",
-        },
-    )
-
-    assert '<schedule-context source="schedule">' in system_prompt
-    assert "Schedule ID: schedule-1" in system_prompt
-    assert "Schedule fire ID: fire-1" in system_prompt
-    assert "Execution mode: fork_session" in system_prompt
-    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' not in system_prompt
-    assert '<memory-file-index path="/workspace/memory">' not in system_prompt
-
-
-def test_runtime_builder_system_prompt_loads_agency_handoff_context(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        memory_enabled=True,
-        memory_inject_enabled=True,
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    memory_path = host_path / "memory"
-    memory_path.mkdir(parents=True, exist_ok=True)
-    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
-    binding = _build_workspace_binding(host_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-    )
-
-    system_prompt = builder._build_system_prompt(
-        profile=profile,
-        binding=binding,
-        source_kind="agency_handoff",
-        source_metadata={
-            "agency_handoff": {
-                "latest": {
-                    "agency_session_id": "agency-session",
-                    "agency_run_id": "agency-run",
-                    "source_session_id": "source-session",
-                    "kind": "exchange",
-                }
-            }
-        },
-    )
-
-    assert '<agency-handoff-context source="agency_handoff" kind="exchange" tag="agency-reminder">' in system_prompt
-    assert "<hint>Use this cross-session context when it improves local judgment.</hint>" in system_prompt
-    assert '<tags>["agency-reminder"]</tags>' in system_prompt
-    assert '"agency_run_id": "agency-run"' in system_prompt
-    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' in system_prompt
-
-
-def test_runtime_builder_memory_system_prompt_loads_source_identity(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    host_path.mkdir(parents=True, exist_ok=True)
-    binding = _build_workspace_binding(host_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-    )
-
-    system_prompt = builder._build_system_prompt(
-        profile=profile,
-        binding=binding,
-        source_kind="memory",
-        source_metadata={
-            "memory": {
-                "kind": "extract",
-                "source_session_id": "session-1",
-                "source_identity": {
-                    "bridge": {
-                        "latest_message": {
-                            "adapter": "lark",
-                            "tenant_key": "tenant-1",
-                            "chat_id": "chat-1",
-                            "sender_id": "user-1",
-                        }
-                    }
-                },
-            }
-        },
-    )
-
-    assert "Source identity:" in system_prompt
-    assert '"chat_id": "chat-1"' in system_prompt
-    assert '"sender_id": "user-1"' in system_prompt
-
-
-def test_runtime_builder_system_prompt_loads_memory_context(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        memory_enabled=True,
-        memory_inject_enabled=True,
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    host_path = tmp_path / "workspace"
-    memory_path = host_path / "memory"
-    memory_path.mkdir(parents=True, exist_ok=True)
-    (memory_path / "MEMORY.md").write_text("# Memory\n\n- User prefers concise updates.\n", encoding="utf-8")
-    (memory_path / "20260501-event.md").write_text(
-        "---\nname: Project Facts\ndescription: Stable project facts\n---\n\nBody\n",
-        encoding="utf-8",
-    )
-    binding = _build_workspace_binding(host_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-    )
-
-    system_prompt = builder._build_system_prompt(profile=profile, binding=binding)
-
-    assert '<memory-md-context path="/workspace/memory/MEMORY.md">' in system_prompt
-    assert '"untrusted": true' in system_prompt
-    assert '"content": "# Memory\\n\\n- User prefers concise updates."' in system_prompt
-    assert '<memory-file-index path="/workspace/memory">' in system_prompt
-    assert (
-        '<memory-file path="/workspace/memory/20260501-event.md" name="Project Facts" description="Stable project facts" />'
-        in system_prompt
-    )
-
-
-def test_runtime_builder_preserves_claw_shell_review_defer_mode_for_api_runs(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    binding = _build_workspace_binding(tmp_path / "workspace")
-    environment = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-        shell_review=ShellReviewConfig(
-            enabled=True,
-            model="test:model",
-            model_settings={"openai_reasoning_effort": "low"},
-            on_needs_approval="defer",
-            risk_threshold="extra_high",
+async def test_runtime_builder_resolves_portable_registry_to_durable_delegation(tmp_path: Path) -> None:
+    child = SubagentSpec(
+        route="explorer",
+        agent=AgentSpec(
+            model="test",
+            name="explorer",
+            description="Explore a codebase",
+            instructions="Explore and report evidence.",
+            capabilities=["FilesystemCapability"],
         ),
+        execution_modes=(SubagentExecutionMode.foreground, SubagentExecutionMode.background),
+        durability=SubagentDurability.restart,
+    )
+    runtime, _ = _build_runtime(tmp_path, _profile(subagent_specs=(child,)))
+
+    async with runtime:
+        delegation = next(
+            capability for capability in runtime.capabilities if isinstance(capability, DelegationCapability)
+        )
+
+    assert [plan.spec.route for plan in delegation.registry.list()] == ["explorer"]
+    assert delegation.registry.get("explorer").restart_durable is True
+
+
+async def test_async_child_omits_skills_and_recursive_delegation(tmp_path: Path) -> None:
+    child = SubagentSpec(
+        route="explorer",
+        agent=AgentSpec(model="test", name="explorer", capabilities=["FilesystemCapability"]),
+        execution_modes=(SubagentExecutionMode.foreground, SubagentExecutionMode.background),
+        durability=SubagentDurability.restart,
+    )
+    profile = _profile(subagent_specs=(child,))
+    runtime, _ = _build_runtime(
+        tmp_path,
+        profile,
+        source_kind="async_task",
+        source_metadata={"async_task": {"task_id": "task-1"}},
     )
 
-    runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="session-1",
-        run_id="run-1",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="api",
-        source_metadata={},
-        claw_metadata={},
+    async with runtime:
+        capability_types = {type(capability) for capability in runtime.capabilities}
+
+    assert runtime.ctx.is_async_subagent is True
+    assert SkillsCapability not in capability_types
+    assert DelegationCapability not in capability_types
+
+
+async def test_unattended_run_denies_shell_review_deferral(tmp_path: Path) -> None:
+    review = ClawShellReviewConfig(
+        enabled=True,
+        model="test",
+        on_needs_approval="defer",
+        risk_threshold="extra_high",
+    )
+    runtime, _ = _build_runtime(
+        tmp_path,
+        _profile(capabilities=["ShellCapability"], shell_review=review),
+        source_kind="schedule",
     )
 
     assert runtime.ctx.security.shell_review is not None
-    assert runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DEFER
-    assert runtime.ctx.security.shell_review.risk_threshold == "extra_high"
-    assert runtime.ctx.security.shell_review.model_settings == {"openai_reasoning_effort": "low"}
-    assert runtime.agent.output_type == [str, DeferredToolRequests]
-    assert runtime.agent._output_schema.allows_deferred_tools is True
+    assert runtime.ctx.security.shell_review.on_needs_approval == "deny"
 
 
-def test_runtime_builder_uses_deny_policy_for_unattended_shell_review(tmp_path: Path) -> None:
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    binding = _build_workspace_binding(tmp_path / "workspace")
-    environment = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
-    profile = ResolvedProfile(
-        name="default",
+async def test_api_run_preserves_shell_review_deferral(tmp_path: Path) -> None:
+    review = ClawShellReviewConfig(
+        enabled=True,
         model="test",
-        model_settings=None,
-        model_config=None,
-        need_user_approve_tools=["file_write"],
-        need_user_approve_mcps=["context7"],
-        shell_review=ClawShellReviewConfig(
-            enabled=True,
-            model="test:model",
-            on_needs_approval="defer",
-            risk_threshold="extra_high",
-            unattended_risk_threshold="high",
-        ),
+        on_needs_approval="defer",
+        risk_threshold="extra_high",
+    )
+    runtime, _ = _build_runtime(tmp_path, _profile(capabilities=["ShellCapability"], shell_review=review))
+
+    assert runtime.ctx.security.shell_review is not None
+    assert runtime.ctx.security.shell_review.on_needs_approval == "defer"
+
+
+def test_workspace_prompt_adds_guidance_without_duplicating_native_instructions(tmp_path: Path) -> None:
+    host_path = tmp_path / "workspace"
+    host_path.mkdir(parents=True)
+    (host_path / "AGENTS.md").write_text("# Workspace\nUse pytest.\n", encoding="utf-8")
+    binding = _binding(host_path)
+    builder = ClawRuntimeBuilder(settings=_settings(tmp_path))
+
+    prompt = builder._build_system_prompt(
+        profile=_profile(instructions="Native profile instructions."),
+        binding=binding,
+        source_kind="api",
+        source_metadata={},
     )
 
-    runtime = builder.build(
+    assert "Native profile instructions." not in prompt
+    assert "Use pytest." in prompt
+    assert "Default working directory: /workspace" in prompt
+
+
+def test_heartbeat_prompt_includes_heartbeat_guidance_only_for_heartbeat(tmp_path: Path) -> None:
+    host_path = tmp_path / "workspace"
+    host_path.mkdir(parents=True)
+    (host_path / "HEARTBEAT.md").write_text("Check runtime health.", encoding="utf-8")
+    binding = _binding(host_path)
+    builder = ClawRuntimeBuilder(settings=_settings(tmp_path))
+    profile = _profile()
+
+    heartbeat = builder._build_system_prompt(
         profile=profile,
         binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="session-1",
-        run_id="run-1",
-        restore_from_run_id=None,
-        dispatch_mode="async",
+        source_kind="heartbeat",
+        source_metadata={"heartbeat_fire_id": "fire-1"},
+    )
+    schedule = builder._build_system_prompt(
+        profile=profile,
+        binding=binding,
         source_kind="schedule",
         source_metadata={"schedule_id": "schedule-1"},
-        claw_metadata={},
     )
 
-    assert runtime.ctx.security.shell_review is not None
-    assert runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
-    assert runtime.ctx.security.shell_review.risk_threshold == "high"
-    assert runtime.ctx.need_user_approve_tools == []
-    assert runtime.ctx.need_user_approve_mcps == []
-
-    heartbeat_runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="session-1",
-        run_id="run-2",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="heartbeat",
-        source_metadata={"heartbeat_fire_id": "heartbeat-1"},
-        claw_metadata={},
-    )
-    assert heartbeat_runtime.ctx.security.shell_review is not None
-    assert heartbeat_runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
-    assert heartbeat_runtime.ctx.security.shell_review.risk_threshold == "high"
-
-    agency_runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="agency-session-1",
-        run_id="agency-run-1",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="agency",
-        source_metadata={"agency": {"episode_id": "episode-1"}},
-        claw_metadata={},
-    )
-    assert agency_runtime.ctx.security.shell_review is not None
-    assert agency_runtime.ctx.security.shell_review.on_needs_approval == ShellReviewAction.DENY
-    assert agency_runtime.ctx.security.shell_review.risk_threshold == "high"
-    assert agency_runtime.ctx.need_user_approve_tools == []
-    assert agency_runtime.ctx.need_user_approve_mcps == []
-
-
-def test_agency_global_tools_are_available_only_for_agency_runs(tmp_path: Path) -> None:
-    from ya_claw.toolsets.agency import (
-        GetSourceRunTraceTool,
-        ListAgencyRunsTool,
-        ListSourceSessionTurnsTool,
-        SubmitToSessionTool,
-    )
-    from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY, ClawSelfClient
-
-    settings = ClawSettings(
-        api_token="test-token",  # noqa: S106
-        data_dir=tmp_path / "runtime-data",
-        workspace_dir=tmp_path / "workspace",
-        _env_file=None,
-    )
-    builder = ClawRuntimeBuilder(settings=settings)
-    binding = _build_workspace_binding(tmp_path / "workspace")
-    environment = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path)
-    profile = ResolvedProfile(
-        name="default",
-        model="test",
-        model_settings=None,
-        model_config=None,
-        builtin_toolsets=["core"],
-    )
-
-    api_runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="session-1",
-        run_id="run-1",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="api",
-        source_metadata={},
-        claw_metadata={},
-    )
-    assert api_runtime.ctx.resources is not None
-    api_runtime.ctx.resources.set(
-        CLAW_SELF_CLIENT_KEY,
-        ClawSelfClient(
-            base_url="http://example.test",
-            api_token="test-token",  # noqa: S106
-            session_id="session-1",
-            run_id="run-1",
-        ),
-    )
-
-    agency_runtime = builder.build(
-        profile=profile,
-        binding=binding,
-        environment=environment,
-        restore_state=None,
-        session_id="agency-session",
-        run_id="agency-run",
-        restore_from_run_id=None,
-        dispatch_mode="async",
-        source_kind="agency",
-        source_metadata={"agency": {"episode_id": "episode-1"}},
-        claw_metadata={},
-    )
-    assert agency_runtime.ctx.resources is not None
-    agency_runtime.ctx.resources.set(
-        CLAW_SELF_CLIENT_KEY,
-        ClawSelfClient(
-            base_url="http://example.test",
-            api_token="test-token",  # noqa: S106
-            session_id="agency-session",
-            run_id="agency-run",
-        ),
-    )
-
-    class _RunContext:
-        def __init__(self, deps: object) -> None:
-            self.deps = deps
-
-    tools = [
-        ListSourceSessionTurnsTool(),
-        GetSourceRunTraceTool(),
-        ListAgencyRunsTool(),
-        SubmitToSessionTool(),
-    ]
-    api_ctx = _RunContext(api_runtime.ctx)
-    agency_ctx = _RunContext(agency_runtime.ctx)
-
-    assert [tool.is_available(api_ctx) for tool in tools] == [False, False, False, False]  # type: ignore[arg-type]
-    assert [tool.is_available(agency_ctx) for tool in tools] == [True, True, True, True]  # type: ignore[arg-type]
-    submit_instruction = asyncio.run(tools[-1].get_instruction(agency_ctx))  # type: ignore[arg-type]
-    assert submit_instruction is not None
-    assert '<tool-instruction name="submit_to_session">' in submit_instruction
-    assert "global conversation awareness" in submit_instruction
-    assert "useful context exchange" in submit_instruction
-
-    api_tool_names = [
-        getattr(tool, "name", tool.__name__)
-        for tool in builder._filter_builtin_tools(builder._resolve_builtin_tools(["core"]), None, source_kind="api")
-    ]
-    agency_tool_names = [
-        getattr(tool, "name", tool.__name__)
-        for tool in builder._filter_builtin_tools(builder._resolve_builtin_tools(["core"]), None, source_kind="agency")
-    ]
-    assert "submit_to_session" not in api_tool_names
-    assert "submit_to_session" in agency_tool_names
+    assert "Check runtime health." in heartbeat
+    assert "Heartbeat fire ID: fire-1" in heartbeat
+    assert "Check runtime health." not in schedule

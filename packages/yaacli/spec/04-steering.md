@@ -1,121 +1,148 @@
-# Steering and TUI Context
+# Durable Steering and Input Admission
 
 ## Overview
 
-YAACLI treats every ordinary input submitted while the main agent is active as immediate steering. There is no steering prefix, steering configuration section, dedicated steering queue, or deferred next-prompt queue.
+Ordinary compose input submitted while a main-agent turn is active is immediate
+steering. YAACLI first persists it in the product `SessionStore`, then wakes the owning
+local execution task. The host capability drains the durable inbox at native Pydantic AI
+graph boundaries and calls `RunContext.enqueue(priority="asap")`.
 
-Steering is useful for:
+There is no MessageBus, process-local steering buffer, steering prefix, or deferred
+next-prompt queue.
 
-- correcting the current approach;
-- adding context or constraints;
-- redirecting a long-running tool workflow;
-- responding while the model is still thinking or streaming.
-
-The built-in `steer_subagent` tool is a separate mechanism for targeting a background subagent. Compose-area input always targets the main agent.
+The built-in `steer_subagent` tool is a separate targeted child-input operation.
+Compose-area input always targets the active main logical run.
 
 ## Input Contract
 
 | Foreground state | Ordinary input | Special input |
 | --- | --- | --- |
-| `IDLE` / `BACKGROUND_RESULT_READY` | Starts a new main-agent turn | Registered slash commands, explicit skill invocations, and `!shell` use their own dispatch paths |
-| `THINKING` | Sent to the active run as steering, including unrecognized slash-prefixed text | Busy-safe slash commands retain local command semantics; `!shell` and idle-only registered commands are rejected |
-| `TOOL_CALLING` | Sent to the active run as steering, including unrecognized slash-prefixed text | Busy-safe commands remain available; registered control syntax is never steering |
-| `STREAMING_OUTPUT` | Sent to the active run as steering, including unrecognized slash-prefixed text | Busy-safe commands remain available; registered control syntax is never steering |
-| `AWAITING_APPROVAL` | Non-decision ordinary text is steering and approval remains pending | Explicit decisions, deferred-call results, and busy-safe commands are handled before ordinary text |
-| `COMMAND_RUNNING` / `SHELL_RUNNING` / `SAVING` / `CANCELLING` | Rejected without clearing the draft | Busy-safe commands retain local semantics; `/cancel` follows lifecycle rules and an in-progress save cannot be cancelled |
+| `IDLE` | Starts a new durable logical run | Registered slash commands, explicit skills, and `!shell` use local dispatch |
+| `THINKING` | Persisted as active-run steering | Busy-safe commands retain local semantics |
+| `TOOL_CALLING` | Persisted as active-run steering | Busy-safe commands retain local semantics |
+| `STREAMING_OUTPUT` | Persisted as active-run steering | Busy-safe commands retain local semantics |
+| `AWAITING_APPROVAL` | Non-decision ordinary text is steering; the action remains pending | Explicit approval/deferred results and busy-safe commands are handled first |
+| `COMMAND_RUNNING` / `SHELL_RUNNING` / `SAVING` / `CANCELLING` | Rejected without clearing the draft | Busy-safe commands retain local semantics |
 
-Binary attachments cannot steer an active run. They remain attached for the next turn while any accompanying text is sent as steering.
+Binary attachments do not steer an active run. They remain queued for the next turn
+while accompanying text may be admitted as steering.
 
-## Delivery Path
+## Durable Delivery Path
 
 ```mermaid
 sequenceDiagram
     participant User
     participant TUI
-    participant Bus as AgentContext message bus
-    participant Guard as SDK completion capability
-    participant Filter as SDK inject_bus_messages
-    participant Agent
+    participant App as SessionApplicationService
+    participant Store as SessionStore
+    participant Outbox
+    participant Coordinator as Local execution coordinator
+    participant Pump as DurableInboxPumpCapability
+    participant PAI as Pydantic AI AgentRun
 
-    User->>TUI: Submit ordinary text during active run
-    TUI->>Bus: send_message(BusMessage target="main")
-    TUI-->>User: Guidance sent to the active run
-    alt Agent is about to finish
-        Agent->>Guard: Reach final node boundary
-        Guard-->>Agent: enqueue one asap continuation reminder
-    end
-    Agent->>Filter: Prepare next model request
-    Filter->>Bus: Consume unread messages for main
-    Filter-->>Agent: Inject fixed steering template
+    User->>TUI: Submit ordinary text during active turn
+    TUI->>App: submit_input(logical_run_id, content)
+    App->>Store: accept_input(state=accepted, priority=asap)
+    Store->>Outbox: enqueue notify_input command
+    App->>Outbox: dispatch
+    Outbox->>Coordinator: idempotent wake notification
+    Coordinator->>Pump: next graph boundary
+    Pump->>Store: list accepted/enqueued input
+    Pump->>PAI: RunContext.enqueue(priority=asap)
+    Pump->>Store: state=enqueued, native_enqueue_id
+    PAI-->>Pump: EnqueuedMessagesEvent
+    Pump->>Store: state=applied
 ```
 
-The TUI creates a `BusMessage` with:
+Persistence precedes acknowledgement and notification. The outbox command ID and input
+idempotency key make retry safe. A workflow notification contains only the durable
+input identity; the payload remains in `SessionStore`.
 
-- `source="user"`;
-- `target="main"`;
-- the fixed SDK-compatible steering template;
-- the submitted text as content.
+`DurableInboxPumpCapability` runs from the workflow-owned native capability hook. It:
 
-The SDK message-bus filter owns actual content injection and idempotency. If the agent is already completing, the SDK guard uses Pydantic AI `RunContext.enqueue(priority="asap")` only to redirect the ending run; this is not `ModelRetry` and consumes no output retry budget. The bus remains the source of truth so cursor, event, compact, and multimodal semantics are unchanged.
+- drains only records for the current logical run;
+- validates stored content as Pydantic AI `UserContent`;
+- records the input in `RunInputLedger`;
+- uses the persisted `asap` or `when_idle` priority;
+- records the native enqueue ID; and
+- marks application only after matching `EnqueuedMessagesEvent`.
 
-YAACLI does not maintain a second local buffer. The status bar derives `steering N pending` directly from unread main-subscriber messages with `source="user"`; it never renders their content. Once the filter consumes those messages for a model request, the count disappears automatically. When a foreground run ends, YAACLI clears the resumable steering list and selectively marks any remaining unread user messages consumed. Background messages remain unread, so user guidance cannot leak into a future run and background results are not swallowed.
+At a terminal graph boundary it closes ingress and reconciles every remaining record.
+Accepted input is therefore applied or explicitly rejected; it is never silently
+cleared because a foreground task ended.
+
+## Input States
+
+| State | Meaning |
+| --- | --- |
+| `accepted` | Payload and idempotency identity committed to product storage |
+| `enqueued` | Owning native run accepted it and returned an enqueue ID |
+| `applied` | Native enqueue event confirmed canonical graph application |
+| `rejected` | Terminal fence or policy rejected unapplied input with a reason |
+
+The status bar counts non-initial user inputs in `accepted` or `enqueued`. It never
+renders their content and does not maintain another queue.
 
 ## Input Routing
 
-The routing order is intentional:
+Routing order is intentional:
 
-1. Reject input while a session reset is active.
-2. Reconcile attachment chips, dropping binaries whose chip was deleted; remove any remaining generated chip text for classification without consuming its queued binary.
-3. Recognize registered `/command` tokens and the `!` namespace before any steering or HITL-result parsing.
-4. Dispatch busy-safe slash commands and reject idle-only or custom registered commands without clearing the draft.
-5. During an active agent phase, route ordinary text, including unrecognized slash-prefixed text, to the message bus immediately.
-6. During non-agent foreground work, preserve ordinary drafts and ask the user to wait.
-7. While idle, dispatch registered slash commands, explicit skill invocations, direct shell commands, or a new prompt.
+1. reject input while a session transition is active;
+2. reconcile attachment chips and queued binaries;
+3. recognize registered `/command` tokens and the `!` namespace;
+4. dispatch busy-safe commands and reject idle-only/custom commands while busy;
+5. parse explicit HITL decisions/results when an action is pending;
+6. during an active agent phase, persist ordinary text for that logical run;
+7. during non-agent foreground work, preserve the draft and ask the user to wait; and
+8. while idle, dispatch a command, explicit skill invocation, shell command, or new
+   durable turn.
 
-The busy-safe command surface is `/cancel`, `/integrate`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`. There is no fallback that converts registered control syntax into steering or stores ordinary active-run input for a later turn.
+Busy-safe commands are `/cancel`, `/agents`, `/process`, `/cost`, `/perf`, `/help`,
+`/attachments`, `/paste-image`, `/remove-image`, and `/tool`. `/integrate` is not a 2.0
+command; canonical feature/subagent delivery is owned by durable input records.
 
 ## HITL Interaction
 
-HITL decisions must be explicit:
+HITL decisions are explicit:
 
 - empty Enter never approves;
-- `y`, `yes`, or `approve` approves an approval request;
-- `n`, `no`, or `reject <reason>` rejects it;
-- a deferred call accepts non-empty text as its result, while `/deny <reason>` denies it;
-- `/cancel` has priority over all approval and call parsing;
-- all busy-safe commands retain command semantics before approval or deferred-call result parsing;
-- idle-only/custom registered slash commands and `!shell` input are rejected without resolving the request, while unrecognized slash-prefixed text remains an ordinary result or steering message;
-- the HITL parser is active only while the authoritative phase is `AWAITING_APPROVAL`; `SAVING` and `CANCELLING` always use cleanup-phase routing;
-- for approval requests, non-decision ordinary text is steering and leaves the request pending.
+- `y`, `yes`, or `approve` approves;
+- `n`, `no`, or `reject <reason>` rejects;
+- an external deferred call accepts non-empty text, while `/deny <reason>` denies it;
+- `/cancel` and busy-safe commands are classified before action input;
+- idle-only/custom control syntax is rejected without resolving the action; and
+- non-decision ordinary text during approval is steering, not an implicit decision.
 
-This preserves both safety and the global active-run steering contract.
+The coordinator persists an `ActionBatch`, waits on a process-local wake after the
+stable checkpoint, reconstructs `DeferredToolResults` from audited decisions, and starts
+the next segment of the same logical run. The TUI
+is a presenter; action truth remains in `SessionStore`.
 
 ## Foreground Ownership
 
-Steering does not start another task. A single foreground owner covers:
+Steering does not start a second foreground task. One foreground boundary owns agent
+execution, action collection, direct shell, session persistence, commands,
+cancellation, and cleanup. Ownership is claimed synchronously before asynchronous work
+starts, preventing double submission races.
 
-- agent execution;
-- deferred approval/call handling;
-- direct shell execution;
-- session persistence;
-- slash/custom command dispatch;
-- cancellation cleanup.
+## Background Results
 
-Foreground ownership is claimed synchronously before a new task receives event-loop time. This prevents a second prompt or shell command from racing the first submission.
+Durable subagent completion and shell readiness have different presentation policies:
 
-## Lifecycle and Recovery
-
-- The elapsed timer starts when foreground dispatch is claimed, not when the model emits its first event.
-- The same start time is retained across thinking, tools, output streaming, approval, and saving.
-- Background completion never modifies or clears the compose buffer. When idle, a deliverable notification automatically starts a main-agent turn with a small system reminder; the notification reaches the model through the message bus.
-- During an active run, `/integrate` can deliver queued background results to the current message bus for the next model request. Otherwise, any unread deliverable notification automatically wakes the main agent after the foreground turn releases ownership.
-- `/agents` inspects running and recently completed background subagents; `/process` inspects active background shell processes. Neither command changes agent context.
-- Session restore preserves the current runtime approval policy and restores into a clean session context.
-- Every terminal path clears the resumable steering list and unread main-subscriber user messages before snapshot export, with final cleanup as a fallback; background bus messages remain pending.
+- a terminal background subagent commits its result and delivery state in the durable
+  subagent store; the TUI only projects pending readiness for the active session;
+- the projection does not transport model input and does not wake the model;
+- canonical subagent completion is delivered by `SubagentExecutionService` through the
+  parent durable inbox on the next accepting turn/boundary;
+- monitored-shell notifications are persisted as feature input and may start one idle
+  turn according to shell-monitor product policy; and
+- switching sessions scopes projections by parent logical-run ownership, so an old
+  session cannot surface as a new session's result.
 
 ## Configuration
 
-Steering has no YAACLI configuration section and no environment variables. In particular, the following legacy settings are unsupported and must not appear in examples:
+Steering has no configuration section or environment variables. These legacy settings
+are unsupported:
 
 ```text
 YAACLI_STEERING_ENABLED
@@ -125,17 +152,17 @@ prefix
 buffer_size
 ```
 
-This is a behavioral invariant rather than an optional mode.
+## Verification Invariants
 
-## Verification
+Tests cover:
 
-The test suite covers:
-
-- real active phases routing ordinary input to steering;
-- no `_queued_prompts` state;
-- strict HITL decisions and `/cancel` priority;
-- non-decision HITL text steering without resolving approval;
-- foreground race prevention;
-- timer continuity across real lifecycle phases;
-- steering delivery through `AgentContext.send_message()`;
-- cleanup and session-boundary isolation.
+- persistence before workflow notification;
+- idempotent input and outbox handling;
+- native enqueue and application-state transitions;
+- terminal accepted/applied/rejected fencing;
+- active-phase input routing and busy control precedence;
+- strict HITL decisions without implicit approval;
+- foreground ownership race prevention;
+- status counts from persisted input state;
+- session-scoped background completion projection; and
+- absence of MessageBus or a second local steering queue.

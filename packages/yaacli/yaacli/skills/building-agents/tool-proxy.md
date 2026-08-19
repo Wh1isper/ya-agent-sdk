@@ -43,6 +43,30 @@ mcp_proxy = ToolProxyToolset(
 )
 ```
 
+`ToolProxyToolset(toolsets=...)` is the valid internal wrapper constructor. Attach a
+proxy to an SDK runtime through the capability surface:
+
+```python
+from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.capabilities import ToolProxyCapability
+
+runtime = create_agent(
+    "anthropic:claude-sonnet-4",
+    capabilities=[
+        ToolProxyCapability(
+            toolsets=(arxiv, github, misc),
+            namespace_descriptions={
+                "arxiv": "Search academic papers on arXiv",
+                "github": "GitHub repository operations",
+            },
+        )
+    ],
+)
+```
+
+Do not pass the proxy through a removed SDK `create_agent(toolsets=...)` composition
+path.
+
 ## How It Works
 
 ```mermaid

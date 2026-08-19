@@ -109,7 +109,7 @@ def configure_tui_logging(
     """
     global _initialized
 
-    if _initialized:
+    if _initialized and logging.getLogger().handlers == _configured_root_handlers:
         return
 
     effective_level = logging.DEBUG if verbose else level

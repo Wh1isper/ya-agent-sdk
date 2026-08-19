@@ -5,18 +5,21 @@ Use restricted Python to compose eligible tools without weakening the current ag
 ## Enable CodeAct
 
 ```python
+from pydantic_ai.capabilities import Capability, Toolset as ToolsetCapability
 from ya_agent_sdk.agents.main import create_agent
-from ya_agent_sdk.codeact import CodeActConfig
+from ya_agent_sdk.codeact import CodeActCapability, CodeActConfig
 
 runtime = create_agent(
     model,
-    tools=[...],
-    toolsets=[...],
-    codeact=CodeActConfig(),
+    capabilities=[
+        Capability(tools=[...], id="application_tools"),
+        ToolsetCapability(external_toolset, id="external"),
+        CodeActCapability(config=CodeActConfig()),
+    ],
 )
 ```
 
-CodeAct is disabled when `codeact=None`. Monty is still an SDK core dependency so deployment shape does not change when the capability is enabled.
+CodeAct is disabled when `CodeActCapability` is absent. Monty is still an SDK core dependency so deployment shape does not change when the capability is enabled.
 
 ## Mark eligible tools
 

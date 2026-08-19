@@ -1,4 +1,3 @@
-from ya_claw.toolsets.background import SpawnDelegateTool, SteerSubagentTool
 from ya_claw.toolsets.schedule import (
     CreateOnceScheduleTool,
     CreateOnceWorkflowScheduleTool,
@@ -38,9 +37,7 @@ __all__ = [
     "ListSchedulesTool",
     "ListWorkflowRunsTool",
     "ListWorkflowsTool",
-    "SpawnDelegateTool",
     "StartWorkflowTool",
-    "SteerSubagentTool",
     "SteerWorkflowNodeTool",
     "TriggerScheduleTool",
     "UpdateScheduleTool",

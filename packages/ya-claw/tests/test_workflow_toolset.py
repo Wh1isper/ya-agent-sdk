@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ya_agent_environment import Environment
+from ya_agent_environment import BaseResource, Environment
 from ya_agent_sdk.context import AgentContext
 from ya_claw.toolsets.schedule import CreateWorkflowScheduleTool
 from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY
@@ -29,21 +29,15 @@ class FakeRunContext:
         self.deps = deps
 
 
-class FakeWorkflowClient:
+class FakeWorkflowClient(BaseResource):
     def __init__(self) -> None:
         self.session_id = "session-1"
         self.run_id = "run-1"
         self.profile_name = "default"
         self.calls: list[dict[str, Any]] = []
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
-
-    async def setup(self) -> None:
-        return None
-
-    def get_toolsets(self) -> list[Any]:
-        return []
 
     async def list_session_turns(
         self, *, limit: int, before_sequence_no: int | None, cursor: str | None

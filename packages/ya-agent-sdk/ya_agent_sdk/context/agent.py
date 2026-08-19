@@ -65,15 +65,13 @@ Example:
 from __future__ import annotations
 
 import asyncio
-import json
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path, PurePath
-from typing import Any, Self
+from typing import Any, Literal, Self
 from uuid import uuid4
 from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -92,11 +90,10 @@ from pydantic_ai import (
     ToolCallPartDelta,
     UserContent,
 )
-from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import AgentStreamEvent as PydanticAgentStreamEvent
 from pydantic_ai.messages import (
     ModelMessage,
-    ModelMessagesTypeAdapter,
     NativeToolCallPart,
     NativeToolReturnPart,
     RetryPromptPart,
@@ -110,6 +107,7 @@ from ya_agent_environment import Environment, FileOperator, ResourceRegistry, Sh
 
 from ya_agent_sdk.agents.lifecycle import LifecycleExtension
 from ya_agent_sdk.events import AgentEvent, UsageSnapshotEvent
+from ya_agent_sdk.inputs import ActiveRunRegistry, LogicalRunInputRouter, RunInputLedger
 from ya_agent_sdk.usage import (
     CostEstimate,
     PricedRunUsage,
@@ -122,7 +120,6 @@ from ya_agent_sdk.usage import (
 )
 from ya_agent_sdk.utils import get_latest_request_usage
 
-from .bus import BusMessage, MessageBus
 from .note import NoteManager
 from .tasks import TaskManager, TaskStatus
 
@@ -202,50 +199,11 @@ Example::
 
 
 # =============================================================================
-# Subagent Wrapper Type
-# =============================================================================
-
-
-SubagentWrapper = Callable[[str, str, dict[str, Any]], AbstractAsyncContextManager[None]]
-"""Type alias for subagent execution wrapper functions.
-
-A subagent wrapper receives agent_name, agent_id, and a metadata dict,
-and returns an async context manager that wraps the entire subagent execution.
-This enables creating observability spans (e.g., Langfuse agent observations)
-that properly nest all subagent activity underneath.
-
-Args:
-    agent_name: Name of the subagent (e.g., 'debugger', 'searcher').
-    agent_id: Unique identifier for this subagent invocation.
-    metadata: Context dict from get_wrapper_metadata().
-
-Returns:
-    An async context manager wrapping the subagent execution.
-
-Example::
-
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def trace_subagent(name: str, id: str, meta: dict[str, Any]):
-        with langfuse.start_as_current_observation(
-            name=f"agent:{name}", as_type="agent",
-        ):
-            yield
-
-    runtime = create_agent(
-        "openai-chat:gpt-4",
-        subagent_wrapper=trace_subagent,
-    )
-"""
-
-
-# =============================================================================
 # Model Capability
 # =============================================================================
 
 
-class ModelCapability(StrEnum):
+class ModelFeature(StrEnum):
     """Model capabilities that can be used to describe what a model supports."""
 
     vision = "vision"
@@ -900,37 +858,37 @@ class ModelConfig(BaseModel):
     image_split_overlap: int = 50
     """Overlap (in pixels) between adjacent image segments when splitting."""
 
-    capabilities: set[ModelCapability] = Field(default_factory=set)
+    capabilities: set[ModelFeature] = Field(default_factory=set)
     """Set of capabilities supported by the model."""
 
-    def has_capability(self, capability: ModelCapability) -> bool:
+    def has_capability(self, capability: ModelFeature) -> bool:
         """Check if the model has a specific capability."""
         return capability in self.capabilities
 
     @property
     def has_vision(self) -> bool:
         """Check if the model supports vision (image understanding)."""
-        return ModelCapability.vision in self.capabilities
+        return ModelFeature.vision in self.capabilities
 
     @property
     def has_video_understanding(self) -> bool:
         """Check if the model supports video understanding."""
-        return ModelCapability.video_understanding in self.capabilities
+        return ModelFeature.video_understanding in self.capabilities
 
     @property
     def has_youtube_url(self) -> bool:
         """Check if the model supports receiving public YouTube videos directly by URL."""
-        return ModelCapability.youtube_url in self.capabilities
+        return ModelFeature.youtube_url in self.capabilities
 
     @property
     def has_audio_understanding(self) -> bool:
         """Check if the model supports audio understanding."""
-        return ModelCapability.audio_understanding in self.capabilities
+        return ModelFeature.audio_understanding in self.capabilities
 
     @property
     def has_document_understanding(self) -> bool:
         """Check if the model supports document understanding."""
-        return ModelCapability.document_understanding in self.capabilities
+        return ModelFeature.document_understanding in self.capabilities
 
 
 StreamResumePrompt = str | Sequence[UserContent]
@@ -985,12 +943,9 @@ class RetryConfig(BaseModel):
 class ResumableState(BaseModel):
     """Resumable session state for AgentContext.
 
-    This model captures the session state that can be serialized to JSON and
-    restored later. It handles the special serialization requirements of
-    ModelMessage using ModelMessagesTypeAdapter.
-
-    The subagent_history is stored as serialized dict format (list[dict]) rather
-    than ModelMessage objects, making the entire model JSON-serializable.
+    This model captures SDK-owned session state that can be serialized to JSON and
+    restored later. Portable child histories and execution metadata belong to the
+    configured `SubagentExecutionStore`, not to parent context state.
 
     Example:
         Saving state to JSON file::
@@ -1006,8 +961,11 @@ class ResumableState(BaseModel):
             new_ctx.restore_state(state)
     """
 
-    subagent_history: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    """Serialized subagent history, keyed by agent_id. Values are list[dict] from ModelMessagesTypeAdapter.dump_python()."""
+    schema_version: Literal[2] = 2
+    """Hard-cut durable state schema version."""
+
+    run_input_ledger: RunInputLedger = Field(default_factory=RunInputLedger)
+    """Structured retention truth for the current logical run."""
 
     usage_snapshot_entries: dict[str, UsageSnapshotEntry] = Field(default_factory=dict)
     """Serialized usage ledger entries, keyed by agent/source ID."""
@@ -1022,9 +980,6 @@ class ResumableState(BaseModel):
     numbered items ("1", "2", "3"), "the above", or "that option".
     """
 
-    steering_messages: list[str] = Field(default_factory=list)
-    """Accumulated user steering messages for compact."""
-
     handoff_message: str | None = None
     """Rendered handoff message."""
 
@@ -1033,9 +988,6 @@ class ResumableState(BaseModel):
 
     deferred_tool_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Metadata for deferred tool calls."""
-
-    agent_registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    """Serialized agent registry for tracking agent metadata."""
 
     need_user_approve_tools: list[str] = Field(default_factory=list)
     """List of tool names that require user approval before execution."""
@@ -1061,19 +1013,6 @@ class ResumableState(BaseModel):
     tool_search_loaded_namespaces: list[str] = Field(default_factory=list)
     """Namespace IDs loaded via tool_search during the session."""
 
-    def to_subagent_history(self) -> dict[str, list[ModelMessage]]:
-        """Deserialize subagent_history to ModelMessage objects.
-
-        Returns:
-            Dict mapping agent_id to list of ModelMessage objects.
-        """
-        result: dict[str, list[ModelMessage]] = {}
-        for key, messages_data in self.subagent_history.items():
-            # subagent_history stores JSON-compatible ModelMessagesTypeAdapter.dump_python(..., mode="json") output.
-            # validate_json applies val_json_bytes="base64" to nested BinaryContent inside ToolReturnPart.content.
-            result[key] = ModelMessagesTypeAdapter.validate_json(json.dumps(messages_data).encode())
-        return result
-
     def restore(self, ctx: AgentContext) -> None:
         """Restore state into an AgentContext.
 
@@ -1092,16 +1031,13 @@ class ResumableState(BaseModel):
                     super().restore(ctx)
                     ctx.custom_field = self.custom_field
         """
-        ctx.subagent_history = self.to_subagent_history()
         ctx.usage_snapshot_entries = dict(self.usage_snapshot_entries)
         ctx.user_prompts = self.user_prompts
         ctx.previous_assistant_response_reference = self.previous_assistant_response_reference
-        ctx.steering_messages = list(self.steering_messages)
+        ctx.run_input_ledger = self.run_input_ledger.model_copy(deep=True)
         ctx.handoff_message = self.handoff_message
         ctx.shell_env = {**ctx.shell_env, **self.shell_env}
         ctx.deferred_tool_metadata = dict(self.deferred_tool_metadata)
-        # Restore agent_registry from serialized format
-        ctx.agent_registry = {agent_id: AgentInfo(**info) for agent_id, info in self.agent_registry.items()}
         ctx.need_user_approve_tools = list(self.need_user_approve_tools)
         ctx.need_user_approve_mcps = list(self.need_user_approve_mcps)
         # Security is a runtime policy supplied by the current profile/config.
@@ -1192,6 +1128,21 @@ class AgentContext(BaseModel):
     parent_run_id: str | None = None
     """Parent run_id if this is a subagent context."""
 
+    subagent_depth: int = 0
+    """Portable execution depth; zero identifies a root context."""
+
+    subagent_target: str | None = None
+    """Resolved subagent route for recursion and spawn-policy diagnostics."""
+
+    subagent_descriptor_id: str | None = None
+    """Exact immutable child-plan descriptor authorizing nested delegation."""
+
+    runtime_descriptor_id: str | None = None
+    """Host runtime descriptor that owns this main or nested execution."""
+
+    delegation_scope_id: str | None = None
+    """Stable host-defined authorization scope for child execution operations."""
+
     provider_session_id: str | None = None
     """Provider-facing session identifier for model request headers."""
 
@@ -1259,15 +1210,14 @@ class AgentContext(BaseModel):
     numbered items ("1", "2", "3"), "the above", or "that option".
     """
 
-    steering_messages: list[str] = Field(default_factory=list)
-    """Accumulated user steering messages received via message bus.
+    run_input_ledger: RunInputLedger = Field(default_factory=RunInputLedger)
+    """Durable structured input retention for the active logical run."""
 
-    When messages with source="user" are injected via inject_bus_messages filter,
-    they are also appended here. This ensures steering messages are preserved
-    for compact even if the agent is interrupted and resumed.
+    active_run_registry: ActiveRunRegistry = Field(default_factory=ActiveRunRegistry, exclude=True)
+    """Shared root service for locating accepting logical-run routers."""
 
-    Cleared after compact to avoid duplication (steering content is summarized).
-    """
+    input_router: LogicalRunInputRouter | None = Field(default=None, exclude=True)
+    """Run-local native enqueue router, bound only while a logical run is active."""
 
     tool_id_wrapper: ToolIdWrapper = Field(default_factory=ToolIdWrapper)
     """Tool ID wrapper for normalizing tool call IDs across providers."""
@@ -1279,8 +1229,10 @@ class AgentContext(BaseModel):
 
     Each queue receives AgentStreamEvent instances during agent execution,
     enabling real-time streaming of agent responses via a sideband channel.
-    The key matches agent_registry keys for consistent lookup in poll_subagents.
     """
+
+    agent_stream_info: dict[str, AgentInfo] = Field(default_factory=dict, exclude=True)
+    """Run-process attribution for sideband queues; never persisted as child state."""
 
     need_user_approve_tools: list[str] = Field(default_factory=list)
     """List of tool names that require user approval before execution.
@@ -1303,16 +1255,6 @@ class AgentContext(BaseModel):
 
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     """Security-related runtime configuration."""
-
-    subagent_history: dict[str, list[ModelMessage]] = Field(default_factory=dict)
-    """Subagent history for resuming sessions."""
-
-    agent_registry: dict[str, AgentInfo] = Field(default_factory=dict)
-    """Registry of agent metadata, keyed by agent_id.
-
-    Used by stream_agent to track agent identity and hierarchy.
-    Populated by enter_subagent when subagents are created.
-    """
 
     auto_load_files: list[str] = Field(default_factory=list)
     """File paths to mention for on-demand inspection on the next request."""
@@ -1384,20 +1326,6 @@ class AgentContext(BaseModel):
             ...
     """
 
-    message_bus: MessageBus = Field(default_factory=MessageBus)
-    """Message bus for inter-agent communication.
-
-    Enables real-time communication between user and agents, or between agents.
-    The inject_bus_messages filter consumes and injects pending messages
-    into the conversation.
-
-    The message_bus is shared between parent and child contexts to allow
-    bidirectional communication during subagent execution.
-
-    Example:
-        ctx.send_message(BusMessage(content="Please stop", source="user"))
-    """
-
     model_wrapper: ModelWrapper | None = Field(default=None, exclude=True)
     """Optional wrapper applied to all models created within this context.
 
@@ -1425,46 +1353,6 @@ class AgentContext(BaseModel):
         )
     """
 
-    subagent_wrapper: SubagentWrapper | None = Field(default=None, exclude=True)
-    """Optional wrapper applied around subagent execution.
-
-    When set, the SDK will call this wrapper as an async context manager
-    around the entire subagent run. This enables consumers to create
-    observability spans (e.g., Langfuse agent observations) that properly
-    nest all subagent activity underneath.
-
-    The wrapper receives agent_name, agent_id, and a metadata dict
-    from get_wrapper_metadata().
-
-    Note:
-        This field is excluded from serialization (not resumable).
-        Wrappers must be re-configured when restoring sessions.
-
-    Example::
-
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def trace_subagent(name: str, id: str, meta: dict[str, Any]):
-            with langfuse.start_as_current_observation(
-                name=f"agent:{name}", as_type="agent",
-            ):
-                yield
-
-        runtime = create_agent(
-            "openai-chat:gpt-4",
-            subagent_wrapper=trace_subagent,
-        )
-    """
-
-    self_fork_agent: Any | None = Field(default=None, exclude=True)
-    """Runtime-only agent used by delegate(subagent_name="self") forks.
-
-    The self fork agent is created by create_agent() with the same model,
-    system prompt, capabilities, and ordinary tools as the parent agent. It is
-    excluded from serialization and restored per runtime construction.
-    """
-
     wrapper_metadata: dict[str, Any] = Field(default_factory=dict, exclude=True)
     """Additional context passed to model_wrapper via get_wrapper_metadata().
 
@@ -1480,7 +1368,7 @@ class AgentContext(BaseModel):
         runtime = create_agent(
             "openai-chat:gpt-4",
             model_wrapper=my_wrapper,
-            extra_context_kwargs={
+            context_kwargs={
                 "wrapper_metadata": {
                     "trace_id": "abc123",
                     "user_id": "user_456",
@@ -1503,6 +1391,8 @@ class AgentContext(BaseModel):
     def __init__(self, **data: object) -> None:
         """Initialize AgentContext."""
         super().__init__(**data)
+        if self.delegation_scope_id is None:
+            self.delegation_scope_id = self.run_id
         object.__setattr__(self, "_enter_lock", asyncio.Lock())
         object.__setattr__(self, "_subagent_state_lock", asyncio.Lock())
 
@@ -1729,20 +1619,6 @@ class AgentContext(BaseModel):
             usage_elem = SubElement(root, "token-usage")
             SubElement(usage_elem, "total-tokens").text = str(request_usage.total_tokens)
 
-        # Known subagents from agent_registry (excluding main agent)
-        # Only include on user prompts, not tool responses
-        if is_user_prompt:
-            known_subagents = {
-                agent_id: info for agent_id, info in self.agent_registry.items() if agent_id != self._agent_id
-            }
-            if known_subagents:
-                subagents_elem = SubElement(root, "known-subagents")
-                subagents_elem.set("hint", "Use subagent_info tool for more details")
-                for _agent_id, info in known_subagents.items():
-                    agent_elem = SubElement(subagents_elem, "agent")
-                    agent_elem.set("id", info.agent_id)
-                    agent_elem.set("name", info.agent_name)
-
         # Active tasks (pending + in_progress)
         self._build_active_tasks_element(root, detailed=is_user_prompt)
 
@@ -1820,12 +1696,12 @@ class AgentContext(BaseModel):
             entry_elem = SubElement(notes_elem, "entry")
             entry_elem.set("key", key)
 
-    def prepare_new_run(self) -> Self:
-        """Create a fresh context copy for a new agent run.
+    def prepare_new_run(self, *, resume_logical_run: bool = False) -> Self:
+        """Create an isolated context copy for a native run attempt.
 
         Returns a shallow copy with per-run state reset while sharing
-        long-lived state (env, message_bus, task_manager, etc.) with the
-        original context.
+        long-lived state (env, task manager, note manager, and registries) with
+        the original context.
 
         This method is used by stream_agent() to create an isolated context
         for each run, preventing stale per-run state from leaking between
@@ -1841,9 +1717,8 @@ class AgentContext(BaseModel):
 
         Shared state (same reference as original):
             - env, model_cfg, tool_config
-            - message_bus, task_manager, note_manager
-            - subagent_history, agent_registry
-            - model_wrapper, subagent_wrapper
+            - task_manager, note_manager
+            - agent_stream_info, model_wrapper
             - need_user_approve_tools, need_user_approve_mcps
             - All other fields not explicitly reset
 
@@ -1861,6 +1736,10 @@ class AgentContext(BaseModel):
             "deferred_tool_metadata": {},
             "force_inject_instructions": False,
             "previous_assistant_response_reference": None,
+            "run_input_ledger": (
+                self.run_input_ledger.model_copy(deep=True) if resume_logical_run else RunInputLedger()
+            ),
+            "input_router": None,
         }
         new_ctx = self.model_copy(update=update)
         # Reset private state for fresh lifecycle
@@ -1870,22 +1749,6 @@ class AgentContext(BaseModel):
         object.__setattr__(new_ctx, "_stream_queue_enabled", False)
         object.__setattr__(new_ctx, "_compact_depth", 0)
         return new_ctx
-
-    def reserve_subagent_id(self, agent_name: str, agent_id: str | None = None) -> str:
-        """Reserve and register a subagent ID synchronously.
-
-        The caller must hold ``_subagent_state_lock`` while calling this method.
-        """
-        effective_agent_id = agent_id or _generate_run_id()
-        if effective_agent_id == "main":
-            raise ValueError("Subagent agent_id 'main' is reserved for the root agent")
-        if effective_agent_id not in self.agent_registry:
-            self.agent_registry[effective_agent_id] = AgentInfo(
-                agent_id=effective_agent_id,
-                agent_name=agent_name,
-                parent_agent_id=self._agent_id,
-            )
-        return effective_agent_id
 
     def create_subagent_context(
         self,
@@ -1900,7 +1763,7 @@ class AgentContext(BaseModel):
         - parent_run_id set to current run_id
         - Fresh timing (start_at/end_at managed by __aenter__/__aexit__)
         - Shared file_operator and shell from parent
-        - Registers agent info in parent's agent_registry
+        - Registers transient stream attribution in the shared runtime mapping
 
         Note:
             The returned context should be used with `async with` to properly
@@ -1920,7 +1783,17 @@ class AgentContext(BaseModel):
         Returns:
             A new context instance configured for the subagent.
         """
-        effective_agent_id = self.reserve_subagent_id(agent_name, agent_id)
+        effective_agent_id = agent_id or _generate_run_id()
+        if effective_agent_id == "main":
+            raise ValueError("Subagent agent_id 'main' is reserved for the root agent")
+        self.agent_stream_info.setdefault(
+            effective_agent_id,
+            AgentInfo(
+                agent_id=effective_agent_id,
+                agent_name=agent_name,
+                parent_agent_id=self._agent_id,
+            ),
+        )
 
         update: dict[str, Any] = {
             "run_id": _generate_run_id(),
@@ -1928,14 +1801,26 @@ class AgentContext(BaseModel):
             "start_at": None,  # Will be set by __aenter__
             "end_at": None,  # Will be set by __aexit__
             "handoff_message": None,  # Subagents don't inherit handoff state
+            "subagent_depth": self.subagent_depth + 1,
+            "subagent_target": agent_name,
+            "subagent_descriptor_id": None,
             "user_prompts": None,  # Subagent has its own initial prompt (set by caller)
             "previous_assistant_response_reference": None,
-            "steering_messages": [],  # Subagent has its own steering queue
+            "run_input_ledger": RunInputLedger(),
+            "input_router": None,
             "tool_id_wrapper": ToolIdWrapper(),  # Fresh wrapper for subagent
             "tool_tags": set(),  # Fresh tags for subagent (recomputed by its own Toolset)
             "shell_review_records": deque(maxlen=10),
             "security": self.security.model_copy(deep=True),
-            # env is inherited via model_copy (shares parent's env reference)
+            "shell_env": dict(self.shell_env),
+            "usage_snapshot_entries": {},
+            "deferred_tool_metadata": {},
+            "auto_load_files": list(self.auto_load_files),
+            "task_manager": TaskManager.from_exported(self.task_manager.export_tasks()),
+            "note_manager": NoteManager.from_exported(self.note_manager.export_notes()),
+            "tool_search_loaded_tools": list(self.tool_search_loaded_tools),
+            "tool_search_loaded_namespaces": list(self.tool_search_loaded_namespaces),
+            # Environment and active-run routing are explicit shared host authorities.
             **override,
         }
         new_ctx = self.model_copy(update=update)
@@ -1947,59 +1832,15 @@ class AgentContext(BaseModel):
         object.__setattr__(new_ctx, "_compact_depth", 0)
         return new_ctx
 
-    def _build_history_processors(self) -> list[Callable[..., Any]]:
-        """Build the ordered context history processor callables."""
-        # Import filters here to avoid circular imports
-        from ya_agent_sdk.filters.auto_load_files import process_auto_load_files
-        from ya_agent_sdk.filters.background_shell import inject_background_results
-        from ya_agent_sdk.filters.bus_message import inject_bus_messages
-        from ya_agent_sdk.filters.capability import filter_by_capability
-        from ya_agent_sdk.filters.handoff import process_handoff_message
-        from ya_agent_sdk.filters.image import (
-            compress_large_images,
-            drop_extra_images,
-            drop_extra_videos,
-            drop_gif_images,
-            split_large_images,
-        )
-        from ya_agent_sdk.filters.reasoning_normalize import normalize_reasoning_for_model
-        from ya_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
-        from ya_agent_sdk.filters.tool_args import fix_truncated_tool_args
+    def get_capabilities(self) -> tuple[AbstractCapability[AgentContext], ...]:
+        """Return ordered context-owned capability contributions.
 
-        def dynamic_tool_id_wrapper(ctx: RunContext[AgentContext], messages: list[ModelMessage]) -> list[ModelMessage]:
-            """Dynamically get tool_id_wrapper from current context."""
-            return ctx.deps.tool_id_wrapper.wrap_messages(ctx, messages)
-
-        return [
-            normalize_reasoning_for_model,
-            split_large_images,
-            compress_large_images,
-            drop_extra_images,
-            drop_gif_images,
-            drop_extra_videos,
-            fix_truncated_tool_args,
-            process_handoff_message,
-            process_auto_load_files,
-            filter_by_capability,
-            inject_bus_messages,  # Before runtime_instructions, after handoff/auto_load
-            inject_background_results,  # Consume completed bg results, before runtime_instructions
-            inject_runtime_instructions,
-            dynamic_tool_id_wrapper,
-        ]
-
-    def get_history_capabilities(self) -> list[AbstractCapability[AgentContext]]:
-        """Return ProcessHistory capabilities for this context.
-
-        Example::
-
-            async with AgentContext(...) as ctx:
-                agent = Agent(
-                    'openai-chat:gpt-4',
-                    deps_type=AgentContext,
-                    capabilities=ctx.get_history_capabilities(),
-                )
+        The base context contributes no behavior. Subclasses may override this
+        method to provide capabilities backed by typed context authorities.
+        Root assembly preserves this source separately from explicit and
+        Environment/resource contributions.
         """
-        return [ProcessHistory(processor) for processor in self._build_history_processors()]
+        return ()
 
     def update_usage_snapshot_entry(
         self,
@@ -2143,67 +1984,6 @@ class AgentContext(BaseModel):
             return
         await self.agent_stream_queues[self._agent_id].put(event)
 
-    def send_message(self, message: BusMessage) -> BusMessage:
-        """Send a message to the message bus.
-
-        This operation is idempotent: if a message with the same id already
-        exists, the existing message is returned.
-
-        Args:
-            message: The message to send.
-
-        Returns:
-            The sent message, or existing message if id already exists.
-
-        Example::
-
-            from ya_agent_sdk.context import BusMessage
-
-            # User sends message to main agent
-            ctx.send_message(BusMessage(content="Please stop", source="user"))
-
-            # Targeted message to subagent
-            ctx.send_message(BusMessage(
-                content="Focus on security",
-                source="main",
-                target=subagent_id,
-            ))
-
-            # With explicit id for idempotent send
-            ctx.send_message(BusMessage(
-                id="unique-id-123",
-                content="Important",
-                source="user",
-            ))
-        """
-        return self.message_bus.send(message)
-
-    def consume_messages(self) -> list[BusMessage]:
-        """Consume pending messages for this agent (idempotent).
-
-        Returns messages that:
-        1. Are pending for this agent (targeted or broadcast)
-        2. Have not been consumed before (tracked by message ID)
-
-        This method is idempotent: each message is returned only once,
-        even if called multiple times. This ensures messages are not
-        duplicated on LLM retries.
-
-        Returns:
-            List of new messages, in FIFO order (oldest first).
-
-        Example::
-
-            # First call returns pending messages
-            messages = ctx.consume_messages()
-            # [BusMessage(id="abc", content="Hello"), ...]
-
-            # Second call returns empty (already consumed)
-            messages = ctx.consume_messages()
-            # []
-        """
-        return self.message_bus.consume(self._agent_id)
-
     async def __aenter__(self):
         """Enter the context and start timing.
 
@@ -2222,97 +2002,37 @@ class AgentContext(BaseModel):
             object.__setattr__(self, "_entered", True)
         self.start_at = datetime.now(UTC)
         self.tool_id_wrapper.clear()
-        # Subscribe to message bus for this agent
-        self.message_bus.subscribe(self._agent_id)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and record end time."""
         self.end_at = datetime.now(UTC)
-        # For main agent: clear message bus on exit only when there is no
-        # pending work. Late background notifications may arrive after the last
-        # output guard check; preserving unread messages lets the next turn
-        # consume them instead of losing them during context cleanup.
-        # For subagents: unsubscribe to free cursor.
-        if self._agent_id == "main":
-            if not self.message_bus.has_pending(self._agent_id):
-                self.message_bus.clear()
-        else:
-            self.message_bus.unsubscribe(self._agent_id)
         async with self._enter_lock:
             object.__setattr__(self, "_entered", False)
 
     def export_state(
         self,
         *,
-        include_subagent: bool = True,
         include_usage_ledger: bool = False,
-        include_extra_usages: bool | None = None,
     ) -> ResumableState:
-        """Export resumable session state.
+        """Export SDK-owned resumable state.
 
-        Creates a ResumableState containing all session data that can be
-        serialized to JSON and restored later.
+        Portable child history and execution records remain in the configured
+        `SubagentExecutionStore`. Transient stream attribution is process-local and is
+        intentionally excluded.
 
         Args:
-            include_subagent: Whether to include subagent history and registry.
-                Defaults to True. Set to False to exclude subagent data,
-                which can reduce state size for main agent-only persistence.
-            include_usage_ledger: Whether to include usage ledger entries in the state.
-                Defaults to False. Usage ledger data is per-run billing data.
-                Set to True for crash recovery scenarios where interrupted-run
-                usage should be preserved.
-            include_extra_usages: Backward-compatible alias for include_usage_ledger.
-
-        Returns:
-            ResumableState instance ready for serialization.
-
-        Example::
-
-            # Save full state including subagent history (default, no usage ledger records)
-            state = ctx.export_state()
-
-            # Save state without subagent data
-            state = ctx.export_state(include_subagent=False)
-
-            # Save state with usage ledger records for crash recovery
-            state = ctx.export_state(include_usage_ledger=True)
-
-            with open("session.json", "w") as f:
-                f.write(state.model_dump_json(indent=2))
+            include_usage_ledger: Include per-run usage entries for crash recovery.
+                Completed-turn persistence normally leaves this false.
         """
-        if include_extra_usages is not None:
-            include_usage_ledger = include_extra_usages
-
-        serialized_history: dict[str, list[dict[str, Any]]] = {}
-        serialized_registry: dict[str, dict[str, Any]] = {}
-
-        if include_subagent:
-            # Serialize subagent_history using ModelMessagesTypeAdapter
-            # Use mode='json' to ensure bytes (e.g., BinaryContent.data) are base64-encoded
-            for key, messages in self.subagent_history.items():
-                serialized_history[key] = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
-
-            # Serialize agent_registry to dict format
-            serialized_registry = {
-                agent_id: {
-                    "agent_id": info.agent_id,
-                    "agent_name": info.agent_name,
-                    "parent_agent_id": info.parent_agent_id,
-                }
-                for agent_id, info in self.agent_registry.items()
-            }
-
         return ResumableState(
-            subagent_history=serialized_history,
             usage_snapshot_entries=dict(self.usage_snapshot_entries) if include_usage_ledger else {},
             user_prompts=self.user_prompts,
             previous_assistant_response_reference=self.previous_assistant_response_reference,
-            steering_messages=list(self.steering_messages),
+            run_input_ledger=self.run_input_ledger.model_copy(deep=True),
             handoff_message=self.handoff_message,
             shell_env=dict(self.shell_env),
             deferred_tool_metadata=dict(self.deferred_tool_metadata),
-            agent_registry=serialized_registry,
             need_user_approve_tools=list(self.need_user_approve_tools),
             need_user_approve_mcps=list(self.need_user_approve_mcps),
             security=self.security.model_copy(deep=True),

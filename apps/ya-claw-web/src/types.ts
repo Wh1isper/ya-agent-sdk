@@ -921,15 +921,31 @@ export type RunTraceResponse = {
   trace: RunTraceItem[]
 }
 
-export type ProfileSubagent = {
-  name: string
-  description: string
-  system_prompt: string
+export type NativeAgentSpec = Record<string, unknown> & {
   model?: string | null
-  model_settings_preset?: string | null
-  model_settings_override?: Record<string, unknown> | null
+  name?: string | null
+  description?: string | null
+  instructions?: string | string[] | null
+  model_settings?: Record<string, unknown> | null
+  capabilities?: unknown[]
+}
+
+export type ClawProfileHostConfig = {
   model_config_preset?: string | null
   model_config_override?: Record<string, unknown> | null
+  tool_groups: string[]
+  need_user_approve_tools: string[]
+  need_user_approve_mcps: string[]
+  enabled_mcps: string[]
+  disabled_mcps: string[]
+  mcp_servers: Record<string, ProfileMCPServer>
+  workspace_backend_hint?: string | null
+}
+
+export type NativeSubagentSpec = Record<string, unknown> & {
+  schema_version: 1
+  route: string
+  agent: NativeAgentSpec
 }
 
 export type ProfileMCPServer = {
@@ -960,42 +976,19 @@ export type ProfileSummary = {
 }
 
 export type ProfileDetail = ProfileSummary & {
-  model_settings_preset?: string | null
-  model_settings_override?: Record<string, unknown> | null
-  model_config_preset?: string | null
-  model_config_override?: Record<string, unknown> | null
-  system_prompt?: string | null
-  builtin_toolsets: string[]
-  toolsets: string[]
-  subagents: ProfileSubagent[]
-  include_builtin_subagents: boolean
-  unified_subagents: boolean
-  need_user_approve_tools: string[]
-  need_user_approve_mcps: string[]
-  enabled_mcps: string[]
-  disabled_mcps: string[]
-  mcp_servers: Record<string, ProfileMCPServer>
+  schema_version: 2
+  agent: NativeAgentSpec
+  host: ClawProfileHostConfig
+  subagents: NativeSubagentSpec[]
   source_checksum?: string | null
   created_at: string
 }
 
 export type ProfileUpsertRequest = {
-  model: string
-  model_settings_preset?: string | null
-  model_settings_override?: Record<string, unknown> | null
-  model_config_preset?: string | null
-  model_config_override?: Record<string, unknown> | null
-  system_prompt?: string | null
-  builtin_toolsets: string[]
-  subagents: ProfileSubagent[]
-  include_builtin_subagents: boolean
-  unified_subagents: boolean
-  need_user_approve_tools: string[]
-  need_user_approve_mcps: string[]
-  enabled_mcps: string[]
-  disabled_mcps: string[]
-  mcp_servers: Record<string, ProfileMCPServer>
-  workspace_backend_hint?: string | null
+  schema_version: 2
+  agent: NativeAgentSpec
+  host: ClawProfileHostConfig
+  subagents: NativeSubagentSpec[]
   enabled: boolean
   source_type?: string | null
   source_version?: string | null

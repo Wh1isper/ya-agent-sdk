@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic_ai import AgentSpec
+from ya_agent_sdk.subagents import SubagentSpec
 from ya_agent_sdk.usage import UsageSnapshot
 
 from ya_claw.json_types import JsonObject, JsonValue
@@ -13,6 +15,10 @@ from ya_claw.orm.tables import (
     RunRecord,
     SessionMemoryStateRecord,
     SessionRecord,
+)
+from ya_claw.profile_spec import (
+    CLAW_PROFILE_SCHEMA_VERSION,
+    ClawProfileHostConfig,
 )
 from ya_claw.workspace.models import WorkspaceBindingSpec
 from ya_claw.workspace.runtime_models import SessionWorkspaceState, build_session_workspace_state
@@ -269,6 +275,7 @@ class RunCreateRequest(BaseModel):
 
 class SteerRequest(BaseModel):
     input_parts: list[InputPart] = Field(default_factory=list)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class SessionSubmitRequest(BaseModel):
@@ -297,11 +304,29 @@ class AsyncTaskSpawnRequest(BaseModel):
     wake_policy: AsyncTaskWakePolicy = AsyncTaskWakePolicy.STEER_OR_RUN
     parent_run_id: str | None = None
     parent_agent_id: str = "main"
+    sdk_owner_scope_id: str | None = Field(default=None, min_length=1, max_length=32)
+    sdk_idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
+    sdk_intent_fingerprint: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="after")
+    def validate_sdk_identity(self) -> Self:
+        values = (
+            self.sdk_owner_scope_id,
+            self.sdk_idempotency_key,
+            self.sdk_intent_fingerprint,
+        )
+        if any(value is not None for value in values) and not all(value is not None for value in values):
+            raise ValueError("SDK owner, idempotency key, and intent fingerprint must be supplied together")
+        return self
 
 
 class AsyncTaskSteerRequest(BaseModel):
     input_parts: list[InputPart] = Field(default_factory=list)
     prompt: str | None = None
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class AsyncTaskCancelRequest(BaseModel):
@@ -331,10 +356,15 @@ class AsyncTaskDetail(AsyncTaskSummary):
     child_session: dict[str, Any] | None = None
     latest_run: dict[str, Any] | None = None
     output_text: str | None = None
+    output_json: JsonValue = None
     trace_ref: dict[str, Any] | None = None
-    delivery: Literal["submitted", "existing_active", "resumed", "recorded", "steered", "cancelled", "idle"] | None = (
-        None
-    )
+    delivery: Literal["submitted", "existing_active", "resumed", "recorded", "steered", "cancelled"] | None = None
+    input_id: str | None = None
+    input_delivery_key: str | None = None
+    input_disposition: Literal["accepted", "enqueued", "applied", "rejected"] | None = None
+    input_sdk_id: str | None = None
+    input_enqueue_id: str | None = None
+    sdk_input_state: Literal["accepted", "applied", "rejected"] | None = None
     instruction: str | None = None
 
 
@@ -358,6 +388,7 @@ class RunSummary(BaseModel):
     input_preview: str | None = None
     input_parts: list[InputPart] | None = None
     output_text: str | None = None
+    output_json: JsonValue = None
     error_message: str | None = None
     termination_reason: TerminationReason | None = None
     created_at: datetime
@@ -383,6 +414,7 @@ class SessionTurn(BaseModel):
     input_preview: str | None = None
     input_parts: list[InputPart] = Field(default_factory=list)
     output_text: str | None = None
+    output_json: JsonValue = None
     created_at: datetime
     committed_at: datetime | None = None
 
@@ -590,19 +622,11 @@ class ControlResponse(BaseModel):
     run_id: str
     status: RunStatus
     accepted: bool = True
-
-
-class ProfileSubagent(BaseModel):
-    name: str
-    description: str
-    system_prompt: str
-    tools: list[str] | None = None
-    optional_tools: list[str] | None = None
-    model: str | None = None
-    model_settings_preset: str | None = None
-    model_settings_override: dict[str, Any] | None = None
-    model_config_preset: str | None = None
-    model_config_override: dict[str, Any] | None = None
+    input_id: str | None = None
+    input_delivery_key: str | None = None
+    input_disposition: Literal["accepted", "enqueued", "applied", "rejected"] | None = None
+    input_sdk_id: str | None = None
+    input_enqueue_id: str | None = None
 
 
 class ProfileMCPServer(BaseModel):
@@ -614,29 +638,28 @@ class ProfileMCPServer(BaseModel):
 
 
 class ProfileUpsertRequest(BaseModel):
-    model: str
-    model_settings_preset: str | None = None
-    model_settings_override: dict[str, Any] | None = None
-    model_config_preset: str | None = None
-    model_config_override: dict[str, Any] | None = None
-    system_prompt: str | None = None
-    builtin_toolsets: list[str] = Field(
-        default_factory=list,
-        validation_alias=AliasChoices("builtin_toolsets", "toolsets"),
-    )
-    subagents: list[ProfileSubagent] = Field(default_factory=list)
-    include_builtin_subagents: bool = False
-    unified_subagents: bool = False
-    need_user_approve_tools: list[str] = Field(default_factory=list)
-    need_user_approve_mcps: list[str] = Field(default_factory=list)
-    enabled_mcps: list[str] = Field(default_factory=list)
-    disabled_mcps: list[str] = Field(default_factory=list)
-    mcp_servers: dict[str, ProfileMCPServer] = Field(default_factory=dict)
-    workspace_backend_hint: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[2] = CLAW_PROFILE_SCHEMA_VERSION
+    agent: AgentSpec
+    host: ClawProfileHostConfig = Field(default_factory=ClawProfileHostConfig)
+    subagents: list[SubagentSpec] = Field(default_factory=list)
     enabled: bool = True
     source_type: str | None = None
     source_version: str | None = None
     source_checksum: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_native_profile(self) -> ProfileUpsertRequest:
+        if not isinstance(self.agent.model, str) or not self.agent.model.strip():
+            raise ValueError("Profile AgentSpec must define a model")
+        routes = [spec.route for spec in self.subagents]
+        if len(routes) != len(set(routes)):
+            raise ValueError("Profile subagent routes must be unique")
+        for spec in self.subagents:
+            if not isinstance(spec.agent.model, str) or not spec.agent.model.strip():
+                raise ValueError(f"Claw subagent {spec.route!r} must define an explicit model")
+        return self
 
 
 class ProfileSummary(BaseModel):
@@ -650,21 +673,10 @@ class ProfileSummary(BaseModel):
 
 
 class ProfileDetail(ProfileSummary):
-    model_settings_preset: str | None = None
-    model_settings_override: dict[str, Any] | None = None
-    model_config_preset: str | None = None
-    model_config_override: dict[str, Any] | None = None
-    system_prompt: str | None = None
-    builtin_toolsets: list[str] = Field(default_factory=list)
-    toolsets: list[str] = Field(default_factory=list)
-    subagents: list[ProfileSubagent] = Field(default_factory=list)
-    include_builtin_subagents: bool = False
-    unified_subagents: bool = False
-    need_user_approve_tools: list[str] = Field(default_factory=list)
-    need_user_approve_mcps: list[str] = Field(default_factory=list)
-    enabled_mcps: list[str] = Field(default_factory=list)
-    disabled_mcps: list[str] = Field(default_factory=list)
-    mcp_servers: dict[str, ProfileMCPServer] = Field(default_factory=dict)
+    schema_version: Literal[2] = CLAW_PROFILE_SCHEMA_VERSION
+    agent: AgentSpec
+    host: ClawProfileHostConfig = Field(default_factory=ClawProfileHostConfig)
+    subagents: list[SubagentSpec] = Field(default_factory=list)
     source_checksum: str | None = None
     created_at: datetime
 
@@ -709,9 +721,18 @@ def parse_input_parts(raw_input_parts: list[dict[str, Any]] | None) -> list[Inpu
     return parsed_parts
 
 
+_SERVER_RUN_METADATA_KEYS = frozenset({
+    "async_task",
+    "async_task_wake",
+    "execution_profile_snapshot",
+})
+
+
 def sanitize_external_run_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     sanitized = dict(metadata or {})
     sanitized.pop(RUN_USAGE_SNAPSHOT_METADATA_KEY, None)
+    for key in _SERVER_RUN_METADATA_KEYS:
+        sanitized.pop(key, None)
     return sanitized
 
 
@@ -740,6 +761,7 @@ def run_summary_from_record(
         input_preview=extract_input_preview(input_parts),
         input_parts=input_parts if include_input_parts else None,
         output_text=record.output_text if include_output_text else None,
+        output_json=record.output_json if include_output_text else None,
         error_message=record.error_message,
         termination_reason=termination_reason,
         created_at=record.created_at,
@@ -781,6 +803,7 @@ def session_turn_from_record(record: RunRecord) -> SessionTurn:
         input_preview=extract_input_preview(input_parts),
         input_parts=input_parts,
         output_text=record.output_text,
+        output_json=record.output_json,
         created_at=record.created_at,
         committed_at=record.committed_at,
     )

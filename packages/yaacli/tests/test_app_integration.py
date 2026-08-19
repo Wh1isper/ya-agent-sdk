@@ -17,13 +17,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from prompt_toolkit import Application
-from prompt_toolkit.application import create_app_session
 from prompt_toolkit.completion import Completion
-from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import ConditionalContainer, FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
@@ -41,13 +39,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage
-from ya_agent_environment import ShellBackgroundResetError
 from ya_agent_environment.shell import BackgroundProcess
-from ya_agent_sdk.agents.main import AgentInterrupted
-from ya_agent_sdk.context import AvailableSkill, BusMessage, ResumableState, StreamEvent, TaskManager, TaskStatus
-from ya_agent_sdk.context.agent import AgentInfo
+from ya_agent_sdk.context import AvailableSkill, StreamEvent, TaskManager, TaskStatus
 from ya_agent_sdk.events import NamespaceStatus, TaskEvent, ToolSearchInitEvent
-from ya_agent_sdk.usage import CostEstimate, UsageAgentTotal, UsageSnapshot
+from ya_agent_sdk.usage import CostEstimate
 
 # Import the components we're testing
 from yaacli.app import BUSY_CONTROL_COMMANDS, TUIApp, TUIState
@@ -61,7 +56,6 @@ from yaacli.app.tui import (
     _format_elapsed_duration,
     _is_benign_contextvar_cleanup_error,
 )
-from yaacli.background import BackgroundMonitor, BackgroundTaskInfo, BackgroundTaskResult
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import (
     CommandDefinition,
@@ -72,9 +66,9 @@ from yaacli.config import (
     ToolsConfig,
     YaacliConfig,
 )
+from yaacli.durable.models import SessionStatus, SessionSummary
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
-from yaacli.session import TUIContext, TUIResumableState
-from yaacli.sessions import SessionInfo, save_session_turn
+from yaacli.session import TUIContext
 from yaacli.theme import prompt_toolkit_style_rules
 
 
@@ -126,23 +120,18 @@ def _session_info(
     input_text: str | None = "last input",
     output_text: str | None = "last output",
     updated_at: str = "2026-01-01T12:34:56+00:00",
-) -> SessionInfo:
-    return SessionInfo(
-        id=session_id,
-        path=Path("/sessions") / session_id,
-        updated_at=updated_at,
-        created_at="2026-01-01T00:00:00+00:00",
-        working_dir=working_dir,
-        model_profile_id=None,
-        model_label=None,
-        model=None,
-        input_text=input_text,
-        output_text=output_text,
+) -> SessionSummary:
+    return SessionSummary(
+        session_id=session_id,
+        workspace_ref=working_dir,
+        status=SessionStatus.active,
+        head_revision_id="revision-1",
+        created_at=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+        updated_at=datetime.fromisoformat(updated_at),
+        input_preview=input_text,
+        output_preview=output_text,
         message_count=2,
         display_event_count=3,
-        metadata={},
-        head_turn_id="turn-1",
-        turn_count=1,
     )
 
 
@@ -309,91 +298,6 @@ def test_tui_app_show_processes_handles_naive_background_process_timestamp():
     assert "running (" in output
 
 
-def test_tui_app_show_agents_separates_subagents_from_processes() -> None:
-    """The agents view shows subagent lifecycle data without shell processes."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    started_at = datetime.now().astimezone() - timedelta(seconds=5)
-    completed_at = started_at + timedelta(seconds=3)
-    monitor = MagicMock(spec=BackgroundMonitor)
-    monitor.active_tasks = {}
-    monitor.task_infos = {
-        "executor-bg-1": BackgroundTaskInfo(
-            agent_id="executor-bg-1",
-            subagent_name="executor",
-            prompt="Run focused tests",
-            started_at=started_at,
-        )
-    }
-    monitor.task_results = {
-        "executor-bg-1": BackgroundTaskResult(
-            agent_id="executor-bg-1",
-            subagent_name="executor",
-            status="completed",
-            content="done",
-            completed_at=completed_at,
-        )
-    }
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-
-    app._show_agents()
-
-    output = "\n".join(app._output_lines)
-    assert "Background Subagents (0 running, 1 finished)" in output
-    assert "executor-bg-1" in output
-    assert "completed" in output
-    assert "Run focused tests" in output
-    assert "Background Processes" not in output
-
-
-def test_tui_app_background_inspection_commands_have_specific_empty_states() -> None:
-    agents_app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    processes_app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-
-    agents_app._show_agents()
-    processes_app._show_processes()
-
-    assert "No background subagents." in agents_app._output_lines[-1]
-    assert "No active background processes." in processes_app._output_lines[-1]
-
-
-@pytest.mark.asyncio
-async def test_tui_session_selector_renders_metadata_previews_and_current_marker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    app._session_id = "current-session"
-    entries = [
-        _session_info("older-session", working_dir="/workspace/older"),
-        _session_info(
-            "current-session",
-            working_dir="/workspace/current",
-            input_text="fix\nthis selector",
-            output_text="done\x1b[31m safely",
-        ),
-    ]
-    monkeypatch.setattr("yaacli.app.tui.list_sessions", lambda _: entries)
-
-    await app._show_session_selector()
-
-    assert app._session_selector_open is True
-    assert app._session_selector_index == 1
-    title = "".join(text for _, text in app._get_session_selector_title())
-    rendered = "".join(text for _, text in app._get_session_selector_text())
-    assert title == "Sessions · 2"
-    assert "Up/Down navigate" in rendered
-    assert "SESSION" in rendered
-    assert "UPDATED" in rendered
-    assert "WORKSPACE" in rendered
-    assert "> * current-session" in rendered
-    assert "DETAILS  current-session" in rendered
-    assert "Directory   /workspace/current" in rendered
-    assert "Last input  fix this selector" in rendered
-    assert "Last output done [31m safely" in rendered
-    assert "\x1b" not in rendered
-    assert app._get_session_selector_height() == rendered.count("\n") + 1
-    assert any(style == "class:session-selector.selection" for style, _ in app._get_session_selector_text())
-
-
 def test_tui_session_selector_adapts_columns_and_scroll_hints_to_terminal_width() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     app._session_selector_open = True
@@ -492,59 +396,11 @@ async def test_tui_session_command_without_id_opens_selector() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tui_scheduled_session_command_opens_selector_as_foreground_owner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    monkeypatch.setattr("yaacli.app.tui.list_sessions", lambda _: [_session_info("session-a")])
-
-    app._schedule_command("/session")
-    command_task = app._foreground_command_task
-    assert command_task is not None
-    await command_task
-
-    assert app._session_selector_open is True
-    assert app._session_selector_entries[0].id == "session-a"
-
-
-@pytest.mark.asyncio
-async def test_tui_session_selector_rejects_busy_non_owner(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    list_mock = MagicMock(return_value=[_session_info("session-a")])
-    monkeypatch.setattr("yaacli.app.tui.list_sessions", list_mock)
-    app._set_phase(TUIPhase.THINKING)
-
-    await app._show_session_selector()
-
-    list_mock.assert_not_called()
-    assert app._session_selector_open is False
-    assert any("after foreground work finishes" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_auto_restore_skips_unloadable_shallow_legacy_candidate(
+async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
+    monkeypatch,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = YaacliConfig()
-    config.session.auto_restore = True
-    app = TUIApp(config=config, config_manager=MockConfigManager(), working_dir=tmp_path)
-    candidates = [
-        _session_info("broken-newest", working_dir=str(tmp_path), updated_at="2026-01-02T00:00:00+00:00"),
-        _session_info("valid-older", working_dir=str(tmp_path), updated_at="2026-01-01T00:00:00+00:00"),
-    ]
-    monkeypatch.setattr("yaacli.app.tui.list_sessions", lambda _: candidates)
-    app._load_session = AsyncMock(side_effect=[False, True])  # type: ignore[method-assign]
-
-    restored = await app._restore_startup_session()
-
-    assert restored is True
-    assert [call.args[0] for call in app._load_session.await_args_list] == ["broken-newest", "valid-older"]
-
-
-@pytest.mark.asyncio
-async def test_tui_model_selector_applies_gateway_websocket_responses_profile(monkeypatch, tmp_path: Path) -> None:
-    """The model selector should not raise for gateway@openai-responses-ws profiles."""
+    """The selector activates the exact prebuilt plan for a gateway websocket profile."""
     monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
     monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
     config = YaacliConfig(
@@ -562,20 +418,28 @@ async def test_tui_model_selector_applies_gateway_websocket_responses_profile(mo
     config_manager = MockConfigManager(config_dir=tmp_path)
     app = TUIApp(config=config, config_manager=config_manager)
 
+    descriptor = MagicMock(descriptor_id="ws-descriptor")
     runtime = MagicMock()
-    runtime.agent = MagicMock()
-    runtime.ctx = MagicMock()
-    runtime.ctx.model_cfg = MagicMock()
-    runtime.ctx.get_model_extra_headers.return_value = {"unused": "header"}
-    app._runtime = runtime
+    runtime.capabilities = []
+    runtime.ctx.injected_context_tags = ()
+    runtime.ctx.model_cfg.context_window = 270000
+    plan = MagicMock(runtime=runtime)
+    worker = MagicMock()
+    worker.activate.return_value = plan
+    skill_toolset = MagicMock()
+    skill_toolset.refresh_context = AsyncMock()
+    app._execution_worker = worker
+    app._runtime_descriptors_by_profile = {"ws": descriptor}
+    app._skill_toolsets = {"ws-descriptor": skill_toolset}
     app._model_selector_open = True
     app._model_selector_profiles = build_model_profiles(config)
     app._model_selector_index = 1
 
     await app._apply_model_selector_selection()
 
-    assert runtime.agent.model.model_name == "gpt-5"
-    assert runtime.agent.model.provider.name == "openai"
+    worker.activate.assert_called_once_with("ws-descriptor")
+    skill_toolset.refresh_context.assert_awaited_once_with(runtime.ctx)
+    assert app._runtime is runtime
     assert app._active_model_profile == ResolvedModelProfile(
         id="ws",
         label="Responses WS Gateway",
@@ -584,7 +448,7 @@ async def test_tui_model_selector_applies_gateway_websocket_responses_profile(mo
         model_cfg="gpt5_270k",
         instructions="Use the websocket profile instructions.",
     )
-    assert runtime.ctx.model_profile_instructions == "Use the websocket profile instructions."
+    assert app._context_window_size == 270000
     assert app._model_selector_open is False
     persisted_state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert persisted_state["model_profile"]["selected_profile_id"] == "ws"
@@ -917,7 +781,6 @@ async def test_tui_app_hitl_cancel_takes_priority_over_approval_input(approval_k
     [
         "/agents",
         "/attachments",
-        "/integrate",
         "/cost",
         "/help",
         "/paste-image",
@@ -1297,65 +1160,6 @@ def test_tui_app_reports_unavailable_optional_mcp_once_per_status() -> None:
 # =============================================================================
 # Steering Message Tests
 # =============================================================================
-
-
-def test_tui_app_steering_sends_without_dedicated_pane() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    runtime = MagicMock()
-    app._runtime = runtime
-
-    app._add_steering_message("Do this instead")
-
-    runtime.ctx.send_message.assert_called_once()
-    message = runtime.ctx.send_message.call_args.args[0]
-    assert isinstance(message, BusMessage)
-    assert message.content == "Do this instead"
-    assert not hasattr(app, "_steering_items")
-
-
-def test_tui_app_status_counts_only_unconsumed_user_steering() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    ctx = TUIContext()
-    ctx.message_bus.subscribe(ctx.agent_id)
-    ctx.message_bus.send(BusMessage(id="user-1", content="first secret", source="user", target=ctx.agent_id))
-    ctx.message_bus.send(BusMessage(id="background-1", content="result", source="subagent-1", target=ctx.agent_id))
-    ctx.message_bus.send(BusMessage(id="user-2", content="second secret", source="user", target=ctx.agent_id))
-    app._runtime = MagicMock(ctx=ctx)
-
-    pending_status = "".join(text for _style, text in app._get_status_text())
-
-    assert app._get_pending_steering_count() == 2
-    assert "steering 2 pending" in pending_status
-    assert "first secret" not in pending_status
-    assert "second secret" not in pending_status
-
-    assert ctx.message_bus.mark_consumed(ctx.agent_id, {"user-1"}) == 1
-    assert app._get_pending_steering_count() == 1
-    assert "steering 1 pending" in "".join(text for _style, text in app._get_status_text())
-
-    assert ctx.message_bus.mark_consumed(ctx.agent_id, {"user-2"}) == 1
-    ctx.steering_messages.extend(["first secret", "second secret"])
-    applied_status = "".join(text for _style, text in app._get_status_text())
-    assert app._get_pending_steering_count() == 0
-    assert "steering" not in applied_status
-    assert [message.id for message in ctx.message_bus.peek(ctx.agent_id)] == ["background-1"]
-
-
-def test_tui_app_terminal_cleanup_discards_user_bus_messages_but_preserves_background() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    ctx = TUIContext(steering_messages=["unconsumed guidance"])
-    ctx.message_bus.subscribe(ctx.agent_id)
-    ctx.message_bus.send(BusMessage(id="user-1", content="guidance", source="user", target=ctx.agent_id))
-    ctx.message_bus.send(BusMessage(id="background-1", content="result", source="subagent-1", target=ctx.agent_id))
-    app._runtime = MagicMock(ctx=ctx)
-
-    assert app._get_pending_steering_count() == 1
-    app._clear_unconsumed_user_steering()
-
-    assert app._get_pending_steering_count() == 0
-    assert ctx.steering_messages == []
-    assert [message.id for message in ctx.message_bus.peek(ctx.agent_id)] == ["background-1"]
-    assert [message.id for message in ctx.consume_messages()] == ["background-1"]
 
 
 # =============================================================================
@@ -1877,62 +1681,6 @@ async def test_tui_app_submit_custom_slash_command():
     assert captured_prompts == ["Create a git commit for the current changes.\n\nUser instruction: polish tests"]
 
 
-@pytest.mark.asyncio
-async def test_tui_app_run_async_accepts_custom_slash_command_enter() -> None:
-    """Ensure prompt_toolkit run_async submits slash commands from terminal input."""
-    config = MockConfig(
-        commands={
-            "commit": CommandDefinition(
-                prompt="Create a git commit for the current changes.",
-                description="Commit changes",
-            )
-        }
-    )
-    config_manager = MockConfigManager()
-    app = TUIApp(config=config, config_manager=config_manager)
-    captured_prompts: list[str] = []
-
-    async def fake_run_agent(prompt: str, attachments: object = None) -> None:
-        captured_prompts.append(prompt)
-        if app._app:
-            app._app.exit()
-
-    app._run_agent = fake_run_agent  # type: ignore[method-assign]
-
-    with create_pipe_input() as pipe_input:
-        with create_app_session(input=pipe_input, output=DummyOutput()):
-            run_task = asyncio.create_task(app.run())
-            await asyncio.sleep(0.1)
-            pipe_input.send_text("/commit polish tests\r")
-            await asyncio.wait_for(run_task, timeout=2)
-
-    assert captured_prompts == ["Create a git commit for the current changes.\n\nUser instruction: polish tests"]
-
-
-@pytest.mark.asyncio
-async def test_tui_app_run_async_accepts_absolute_path_prompt_enter() -> None:
-    """A leading absolute path must remain typeable and submit as ordinary text."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    captured_prompts: list[str] = []
-    prompt = "/home/user/project/file.txt is the input"
-
-    async def fake_run_agent(text: str, attachments: object = None) -> None:
-        captured_prompts.append(text)
-        if app._app:
-            app._app.exit()
-
-    app._run_agent = fake_run_agent  # type: ignore[method-assign]
-
-    with create_pipe_input() as pipe_input:
-        with create_app_session(input=pipe_input, output=DummyOutput()):
-            run_task = asyncio.create_task(app.run())
-            await asyncio.sleep(0.1)
-            pipe_input.send_text(f"{prompt}\r")
-            await asyncio.wait_for(run_task, timeout=2)
-
-    assert captured_prompts == [prompt]
-
-
 # =============================================================================
 # Session Usage Tests
 # =============================================================================
@@ -2026,113 +1774,6 @@ def test_tui_app_task_done_suppresses_benign_contextvar_cleanup_error():
     assert app.state == TUIState.IDLE
 
 
-@pytest.mark.asyncio
-async def test_tui_app_run_agent_suppresses_benign_contextvar_cleanup_error():
-    """Top-level agent loop should not surface benign cleanup errors to the UI."""
-    config = MockConfig()
-    config_manager = MockConfigManager()
-
-    app = TUIApp(config=config, config_manager=config_manager)
-    runtime = MagicMock()
-    runtime.ctx = MagicMock(loop_active=False)
-    runtime.ctx.steering_messages = []
-    app._runtime = runtime
-    app._execute_stream = AsyncMock(side_effect=_make_contextvar_cleanup_error())
-    app._check_pending_bus_messages = MagicMock()
-
-    await app._run_agent("hello")
-
-    assert app._output_lines == []
-    assert app.state == TUIState.IDLE
-
-
-@pytest.mark.asyncio
-async def test_tui_app_deferred_continuations_share_one_request_budget() -> None:
-    """Repeated HITL continuations must not reset max_requests within one turn."""
-    config = MockConfig()
-    config.general.max_requests = 2
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    runtime = MagicMock()
-    runtime.ctx = MagicMock(loop_active=False)
-    runtime.ctx.steering_messages = []
-    app._runtime = runtime
-
-    deferred = DeferredToolRequests(approvals=[ToolCallPart(tool_name="edit", args={}, tool_call_id="approval-1")])
-    first = MagicMock(output=deferred)
-    first.usage.requests = 1
-    second = MagicMock(output=deferred)
-    second.usage.requests = 1
-    app._execute_stream = AsyncMock(side_effect=[first, second])
-    app._request_user_action = AsyncMock(return_value=DeferredToolResults())  # type: ignore[method-assign]
-    app._check_pending_bus_messages = MagicMock()
-
-    await app._run_agent("hello")
-
-    assert [call.kwargs["request_limit"] for call in app._execute_stream.await_args_list] == [2, 1]
-    assert app._request_user_action.await_count == 1
-    assert any("cumulative model request limit of 2" in line for line in app._output_lines)
-    replay = app._display_replay.snapshot()
-    assert [event.get("type") for event in replay].count("RUN_ERROR") == 1
-    assert not any(event.get("type") == "RUN_FINISHED" for event in replay)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_successful_run_save_failure_keeps_single_finished_terminal_event() -> None:
-    """Post-run persistence failures are warnings, not contradictory RUN_ERROR events."""
-    config = MockConfig()
-    config.session = MagicMock(auto_save_history=True)
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    app._app = MagicMock()
-    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
-    runtime = MagicMock()
-    runtime.ctx = MagicMock(loop_active=False)
-    runtime.ctx.steering_messages = ["unconsumed guidance"]
-    app._runtime = runtime
-    result = MagicMock()
-    result.output = "done"
-    app._execute_stream = AsyncMock(return_value=result)
-    steering_at_save: list[list[str]] = []
-
-    async def fail_snapshot(**_: object) -> bool:
-        steering_at_save.append(list(runtime.ctx.steering_messages))
-        raise OSError("disk full")
-
-    app._save_session_snapshot_async = AsyncMock(side_effect=fail_snapshot)  # type: ignore[method-assign]
-    app._check_pending_bus_messages = MagicMock()
-
-    await app._run_agent("hello")
-
-    assert steering_at_save == [[]]
-    event_types = [str(event.get("type")) for event in app._display_replay.snapshot()]
-    assert event_types.count("RUN_FINISHED") == 1
-    assert "RUN_ERROR" not in event_types
-    assert any("snapshot could not be saved" in line for line in app._output_lines)
-    assert app._app.output.write_raw.call_args_list == [call("\a")]
-    assert app._app.output.flush.call_count == 1
-    assert app.phase == TUIPhase.IDLE
-
-
-@pytest.mark.asyncio
-async def test_tui_app_successful_run_emits_completion_bell() -> None:
-    """A successful foreground turn rings the configured terminal bell once."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    app._app = MagicMock()
-    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
-    runtime = MagicMock()
-    runtime.ctx = MagicMock(loop_active=False)
-    runtime.ctx.steering_messages = []
-    app._runtime = runtime
-    result = MagicMock()
-    result.output = "done"
-    app._execute_stream = AsyncMock(return_value=result)
-    app._check_pending_bus_messages = MagicMock()
-
-    await app._run_agent("hello")
-
-    app._app.output.write_raw.assert_called_once_with("\a")
-    app._app.output.flush.assert_called_once_with()
-
-
 def test_tui_app_user_action_bell_can_be_disabled() -> None:
     app = TUIApp(
         config=MockConfig(notifications=NotificationConfig(bell_on_user_action_required=False)),
@@ -2158,136 +1799,6 @@ def test_tui_app_completion_bell_can_be_disabled() -> None:
 
     app._app.output.write_raw.assert_not_called()
     app._app.output.flush.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_tui_app_failed_run_persists_run_error_before_snapshot() -> None:
-    """A durable failed snapshot must already contain its terminal RUN_ERROR."""
-    config = MockConfig()
-    config.session = MagicMock(auto_save_history=True)
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    app._app = MagicMock()
-    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
-    runtime = MagicMock()
-    runtime.ctx = MagicMock(loop_active=False)
-    runtime.ctx.steering_messages = ["unconsumed guidance"]
-    app._runtime = runtime
-    app._execute_stream = AsyncMock(side_effect=RuntimeError("provider failed"))
-    persisted_replay: list[dict[str, object]] = []
-    steering_at_save: list[list[str]] = []
-
-    async def capture_snapshot(**_: object) -> bool:
-        persisted_replay.extend(app._display_replay.snapshot())
-        steering_at_save.append(list(runtime.ctx.steering_messages))
-        return True
-
-    app._save_session_snapshot_async = AsyncMock(side_effect=capture_snapshot)  # type: ignore[method-assign]
-    app._check_pending_bus_messages = MagicMock()
-
-    await app._run_agent("hello")
-
-    assert persisted_replay[-1]["type"] == "RUN_ERROR"
-    assert persisted_replay[-1]["message"] == "provider failed"
-    assert steering_at_save == [[]]
-    app._save_session_snapshot_async.assert_awaited_once_with(
-        include_usage_ledger=True,
-        save_reason="error",
-    )
-    app._app.output.write_raw.assert_not_called()
-    app._app.output.flush.assert_not_called()
-    assert app.phase == TUIPhase.IDLE
-
-
-@pytest.mark.asyncio
-async def test_tui_app_cancelled_run_saves_partial_snapshot_and_clears_steering() -> None:
-    """Cancelling active execution preserves recovery state and isolates future turns."""
-    config = MockConfig()
-    config.session = MagicMock(auto_save_history=True)
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    app._app = MagicMock()
-    app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
-    ctx = TUIContext(steering_messages=["unconsumed guidance"])
-    ctx.message_bus.subscribe(ctx.agent_id)
-    ctx.message_bus.send(BusMessage(content="guidance", source="user", target=ctx.agent_id))
-    ctx.message_bus.send(BusMessage(content="result", source="subagent-1", target=ctx.agent_id))
-    runtime = MagicMock(ctx=ctx)
-    app._runtime = runtime
-    stream_started = asyncio.Event()
-
-    async def wait_for_cancellation(*_: object, **__: object) -> None:
-        stream_started.set()
-        await asyncio.sleep(3600)
-
-    app._execute_stream = AsyncMock(side_effect=wait_for_cancellation)
-    steering_in_exported_state: list[list[str]] = []
-    pending_bus_sources_at_export: list[list[str]] = []
-
-    async def capture_snapshot(**_: object) -> bool:
-        state = ctx.export_state(include_usage_ledger=True)
-        steering_in_exported_state.append(state.steering_messages)
-        pending_bus_sources_at_export.append([message.source for message in ctx.message_bus.peek(ctx.agent_id)])
-        return True
-
-    app._save_session_snapshot_async = AsyncMock(side_effect=capture_snapshot)  # type: ignore[method-assign]
-    app._check_pending_bus_messages = MagicMock()
-
-    run_task = asyncio.create_task(app._run_agent("hello"))
-    await stream_started.wait()
-    run_task.cancel()
-    await run_task
-
-    app._save_session_snapshot_async.assert_awaited_once_with(
-        include_usage_ledger=True,
-        save_reason="cancelled",
-    )
-    replay = app._display_replay.snapshot()
-    assert replay[-1]["name"].endswith("run_cancelled")
-    assert replay[-1]["value"] == {"reason": "user_interrupted"}
-    assert steering_in_exported_state == [[]]
-    assert pending_bus_sources_at_export == [["subagent-1"]]
-    assert runtime.ctx.steering_messages == []
-    assert any(line == "[Cancelled · partial state saved]" for line in app._output_lines)
-    app._app.output.write_raw.assert_not_called()
-    app._app.output.flush.assert_not_called()
-    app._check_pending_bus_messages.assert_not_called()
-    assert app.phase == TUIPhase.IDLE
-
-
-@pytest.mark.asyncio
-async def test_tui_app_cancel_after_run_finished_does_not_reclassify_or_resave() -> None:
-    """Persistence cancellation after RUN_FINISHED must not emit run_cancelled or save twice."""
-    config = MockConfig()
-    config.session = MagicMock(auto_save_history=True)
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    runtime = MagicMock()
-    runtime.ctx = MagicMock(loop_active=False)
-    runtime.ctx.steering_messages = []
-    app._runtime = runtime
-    result = MagicMock()
-    result.output = "done"
-    app._execute_stream = AsyncMock(return_value=result)
-    save_started = asyncio.Event()
-
-    async def wait_for_cancellation(**_: object) -> bool:
-        save_started.set()
-        await asyncio.sleep(3600)
-        return True
-
-    app._save_session_snapshot_async = AsyncMock(side_effect=wait_for_cancellation)  # type: ignore[method-assign]
-    app._check_pending_bus_messages = MagicMock()
-
-    run_task = asyncio.create_task(app._run_agent("hello"))
-    await save_started.wait()
-    run_task.cancel()
-    await run_task
-
-    replay = app._display_replay.snapshot()
-    assert [event.get("type") for event in replay].count("RUN_FINISHED") == 1
-    assert not any(event.get("name") == "run_cancelled" for event in replay)
-    assert app._save_session_snapshot_async.await_count == 1
-    assert not any(line.startswith("[Cancelled") for line in app._output_lines)
-    assert any("persistence was interrupted" in line for line in app._output_lines)
-    assert app.phase == TUIPhase.IDLE
 
 
 @pytest.mark.asyncio
@@ -2754,662 +2265,6 @@ async def test_tui_app_clear_session_clears_pending_attachments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tui_app_clear_session_resets_conversation_state() -> None:
-    """Clearing should remove all conversation state while retaining runtime policy."""
-    config = MockConfig()
-    config_manager = MockConfigManager()
-    app = TUIApp(config=config, config_manager=config_manager)
-    ctx = TUIContext()
-    ctx.provider_session_id = "provider-session"
-    ctx.provider_thread_id = "provider-thread"
-    ctx.deferred_tool_metadata["call-1"] = {"tool": "shell"}
-    ctx.handoff_message = "old handoff"
-    ctx.force_inject_instructions = True
-    ctx.shell_env["OLD_SESSION"] = "1"
-    ctx.update_usage_snapshot_entry(
-        agent_id="main",
-        agent_name="main",
-        model_id="test-model",
-        usage=RunUsage(input_tokens=7, output_tokens=3),
-        source="test",
-    )
-    ctx.shell_review_records.append("old review")
-    ctx.user_prompts = "old prompt"
-    ctx.previous_assistant_response_reference = "old response"
-    ctx.steering_messages.append("old steering")
-    ctx.tool_id_wrapper.upsert_tool_call_id("old-tool-call")
-    ctx.agent_stream_queues["old-agent"].put_nowait(MagicMock())
-    ctx.subagent_history["explorer-1"] = []
-    ctx.agent_registry["explorer-1"] = AgentInfo(agent_id="explorer-1", agent_name="explorer", parent_agent_id="main")
-    ctx.auto_load_files.append("old.py")
-    ctx.task_manager.create("Inspect issue", "Investigate stale state after clear")
-    ctx.note_manager.set("old-note", "old value")
-    ctx.tool_search_loaded_tools.append("search")
-    ctx.tool_search_loaded_namespaces.append("web")
-    ctx.tool_tags.add("shell")
-    ctx.message_bus.subscribe("main")
-    ctx.message_bus.send(BusMessage(content="old message", source="explorer-1", target="main"))
-    ctx.goal_task = "old goal"
-    ctx.goal_iteration = 3
-    ctx.need_user_approve_tools = ["shell"]
-    ctx.need_user_approve_mcps = ["filesystem"]
-
-    runtime = MagicMock()
-    runtime.ctx = ctx
-    runtime.env = None
-    app._runtime = runtime
-    app._pending_bus_check_needed = True
-    app._goal_usage_start_breakdown = app._session_usage.token_breakdown
-    app._goal_usage_report_pending = True
-    usage_snapshot = ctx.build_usage_snapshot()
-    app._session_usage.set_run_snapshot(usage_snapshot)
-    app._session_usage.commit_run_snapshot(usage_snapshot.run_id)
-    app._session_usage.finalize_run_snapshots(usage_snapshot.run_id)
-
-    await app._clear_session()
-
-    cleared_ctx = runtime.ctx
-    assert cleared_ctx is not ctx
-    assert cleared_ctx.provider_session_id is None
-    assert cleared_ctx.provider_thread_id is None
-    assert cleared_ctx.deferred_tool_metadata == {}
-    assert cleared_ctx.handoff_message is None
-    assert cleared_ctx.force_inject_instructions is False
-    assert cleared_ctx.shell_env == {}
-    assert cleared_ctx.usage_snapshot_entries == {}
-    assert list(cleared_ctx.shell_review_records) == []
-    assert cleared_ctx.user_prompts is None
-    assert cleared_ctx.previous_assistant_response_reference is None
-    assert cleared_ctx.steering_messages == []
-    assert cleared_ctx.tool_id_wrapper._tool_call_maps == {}
-    assert cleared_ctx.agent_stream_queues == {}
-    assert cleared_ctx.subagent_history == {}
-    assert cleared_ctx.agent_registry == {}
-    assert cleared_ctx.auto_load_files == []
-    assert cleared_ctx.task_manager.list_all() == []
-    assert cleared_ctx.note_manager.list_all() == []
-    assert cleared_ctx.tool_search_loaded_tools == []
-    assert cleared_ctx.tool_search_loaded_namespaces == []
-    assert cleared_ctx.tool_tags == set()
-    assert len(cleared_ctx.message_bus) == 0
-    assert cleared_ctx.message_bus.subscriber_count == 0
-    assert cleared_ctx.goal_active is False
-    assert cleared_ctx.goal_iteration == 0
-    assert cleared_ctx.need_user_approve_tools == ["shell"]
-    assert cleared_ctx.need_user_approve_mcps == ["filesystem"]
-    assert app._pending_bus_check_needed is False
-    assert app._goal_usage_start_breakdown is None
-    assert app._goal_usage_report_pending is False
-    assert app._session_usage.total_input_tokens == 0
-    assert app._session_usage.total_output_tokens == 0
-    assert app._session_usage.estimated_total_cost is None
-
-
-@pytest.mark.asyncio
-async def test_tui_app_clear_session_discards_deferred_shell_notification() -> None:
-    """A shell completion from the old session must not enter the fresh context."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    ctx = TUIContext()
-    runtime = MagicMock()
-    runtime.ctx = ctx
-    runtime.env = None
-    app._runtime = runtime
-    monitor = BackgroundMonitor()
-    monitor.enqueue_shell_message(
-        BusMessage(content="shell output ready", source="shell-monitor", target="main"),
-        process_id="proc-1",
-        kind="output",
-    )
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-
-    await app._clear_session()
-
-    assert app._agent_task is None
-    assert app.phase == TUIPhase.IDLE
-    assert app._background_results_ready is False
-    assert runtime.ctx.message_bus.has_pending("main") is False
-    assert monitor.has_pending_messages is False
-
-
-@pytest.mark.asyncio
-async def test_tui_app_new_dispatch_restores_shell_env_without_old_background_ready() -> None:
-    """Real /new dispatch should retain runtime policy but discard old shell readiness."""
-    config = YaacliConfig(shell_env={"CONFIGURED_BASE": "enabled"})
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    old_ctx = TUIContext(shell_env={"OLD_SESSION": "stale"})
-    runtime = MagicMock(ctx=old_ctx, env=None)
-    app._runtime = runtime
-    old_session_id = app.session_id
-    monitor = BackgroundMonitor()
-    shell = MagicMock()
-    shell.reset_background_processes = AsyncMock()
-    monitor._shell = shell
-    monitor.enqueue_shell_message(
-        BusMessage(content="shell output ready", source="shell-monitor", target="main"),
-        process_id="proc-new",
-        kind="completion",
-    )
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-    input_area = TextArea(text="/new")
-
-    app._submit_input("/new", input_area)
-    command_task = app._foreground_command_task
-    assert command_task is not None
-    await command_task
-
-    assert app.session_id != old_session_id
-    assert runtime.ctx is not old_ctx
-    assert runtime.ctx.shell_env == {"CONFIGURED_BASE": "enabled"}
-    assert app.phase == TUIPhase.IDLE
-    assert app._background_results_ready is False
-    assert runtime.ctx.message_bus.has_pending("main") is False
-    assert monitor.has_pending_messages is False
-    shell.reset_background_processes.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_tui_app_cancelled_new_rolls_identity_forward_before_next_save() -> None:
-    """Cancelling /new after isolation starts must never reuse the old durable identity."""
-    config = YaacliConfig(shell_env={"CONFIGURED_BASE": "enabled"})
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    old_ctx = TUIContext(shell_env={"OLD_SESSION": "stale"})
-    runtime = MagicMock(ctx=old_ctx, env=None)
-    app._runtime = runtime
-    app._message_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
-    app._session_usage.add(
-        "main",
-        "model-a",
-        RunUsage(requests=1),
-        cost_estimate=CostEstimate(total_amount=Decimal("0.25"), priced_requests=1),
-    )
-    old_session_id = app.session_id
-    monitor = BackgroundMonitor()
-    reset_started = asyncio.Event()
-
-    async def slow_reset() -> None:
-        reset_started.set()
-        await asyncio.Event().wait()
-
-    monitor.reset_session_state = slow_reset  # type: ignore[method-assign]
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-    input_area = TextArea(text="/new")
-
-    app._submit_input("/new", input_area)
-    command_task = app._foreground_command_task
-    assert command_task is not None
-    await asyncio.wait_for(reset_started.wait(), timeout=1)
-    new_session_id = app.session_id
-    assert new_session_id != old_session_id
-
-    app._cancel_foreground()
-    with pytest.raises(asyncio.CancelledError):
-        await command_task
-    await asyncio.sleep(0)
-
-    assert runtime.ctx is not old_ctx
-    assert runtime.ctx.shell_env == {"CONFIGURED_BASE": "enabled"}
-    assert app._message_history is None
-    assert app.session_id == new_session_id
-    assert app.phase == TUIPhase.IDLE
-    assert app._session_clear_in_progress is False
-    assert app._session_usage.is_empty()
-
-    app._message_history = [ModelRequest(parts=[UserPromptPart(content="new history")])]
-    with patch("yaacli.app.tui.save_session_turn", return_value=Path("turn")) as save_turn:
-        assert app._save_session_snapshot(save_reason="test") is True
-    assert save_turn.call_args.kwargs["session_id"] == new_session_id
-
-
-@pytest.mark.asyncio
-async def test_tui_app_new_rolls_back_when_shell_process_cleanup_fails() -> None:
-    """A live process with a failed kill hook must prevent a new-session commit."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    old_ctx = TUIContext(user_prompts="keep me")
-    runtime = MagicMock(ctx=old_ctx, env=None)
-    app._runtime = runtime
-    old_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
-    app._message_history = old_history
-    app._session_usage.add(
-        "main",
-        "model-a",
-        RunUsage(requests=1),
-        cost_estimate=CostEstimate(total_amount=Decimal("0.25"), priced_requests=1),
-    )
-    old_session_id = app.session_id
-    monitor = BackgroundMonitor()
-    reset_error = ShellBackgroundResetError({"proc-failed": RuntimeError("kill failed")})
-    monitor.reset_session_state = AsyncMock(side_effect=reset_error)  # type: ignore[method-assign]
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-
-    await app._start_new_session()
-
-    assert app.session_id == old_session_id
-    assert runtime.ctx is old_ctx
-    assert app._message_history is old_history
-    assert app.phase == TUIPhase.IDLE
-    assert app._session_clear_in_progress is False
-    assert app._session_usage.estimated_total_cost is not None
-    assert app._session_usage.estimated_total_cost.total_amount == Decimal("0.25")
-    assert any("New session was not started" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_clear_session_still_clears_context_when_monitor_reset_fails() -> None:
-    """Background cleanup errors must not leave the old conversation active."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    ctx = TUIContext(subagent_history={"old-agent": []}, user_prompts="old prompt")
-    runtime = MagicMock()
-    runtime.ctx = ctx
-    runtime.env = None
-    app._runtime = runtime
-    app._message_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
-    monitor = BackgroundMonitor()
-    release = asyncio.Event()
-
-    async def publish_late_result() -> None:
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            await release.wait()
-        monitor.record_task_result(
-            BackgroundTaskResult(
-                agent_id="old-agent",
-                subagent_name="executor",
-                status="completed",
-                content="stale result",
-            )
-        )
-        if monitor.should_deliver_task_result_message("old-agent"):
-            monitor.enqueue_message(BusMessage(content="stale result", source="old-agent", target="main"))
-        monitor.notify_completion("old-agent")
-
-    stale_task = asyncio.create_task(publish_late_result())
-    monitor.register_task("old-agent", stale_task)
-    monitor.set_completion_callback(app._on_background_task_complete)
-    await asyncio.sleep(0)
-    monitor.reset_session_state = AsyncMock(side_effect=RuntimeError("reset failed"))  # type: ignore[method-assign]
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-
-    await app._clear_session()
-    release.set()
-    await stale_task
-    await asyncio.sleep(0)
-
-    assert app._message_history is None
-    assert runtime.ctx is not ctx
-    assert runtime.ctx.subagent_history == {}
-    assert runtime.ctx.user_prompts is None
-    assert runtime.ctx.message_bus.has_pending("main") is False
-    assert monitor.task_results == {}
-    assert monitor.has_pending_messages is False
-    assert app._session_clear_in_progress is False
-
-
-@pytest.mark.asyncio
-async def test_tui_app_load_history_does_not_commit_when_shell_cleanup_fails(tmp_path: Path) -> None:
-    """A restore candidate remains uncommitted until old processes are terminated."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    old_ctx = TUIContext(user_prompts="active context")
-    runtime = MagicMock(ctx=old_ctx, env=None)
-    app._runtime = runtime
-    old_history = [ModelRequest(parts=[UserPromptPart(content="active history")])]
-    app._message_history = old_history
-    old_session_id = app.session_id
-    monitor = BackgroundMonitor()
-    reset_error = ShellBackgroundResetError({"proc-failed": RuntimeError("kill failed")})
-    monitor.reset_session_state = AsyncMock(side_effect=reset_error)  # type: ignore[method-assign]
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-    load_dir = tmp_path / "candidate"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-
-    loaded = await app._load_history(str(load_dir), target_session_id="candidate123")
-
-    assert loaded is False
-    assert app.session_id == old_session_id
-    assert runtime.ctx is old_ctx
-    assert app._message_history is old_history
-    assert app._session_clear_in_progress is False
-    assert any("Session was not loaded" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_load_history_clears_pending_attachments(tmp_path: Path) -> None:
-    """Loading a session should reset queued clipboard images."""
-    config = MockConfig()
-    config_manager = MockConfigManager()
-    app = TUIApp(config=config, config_manager=config_manager)
-    app._runtime = MagicMock(ctx=TUIContext(), env=None)
-    original_session_id = app.session_id
-    app._pending_attachments.append(PendingAttachment(data=b"img", media_type="image/png", size_bytes=3))
-
-    load_dir = tmp_path / "session"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-
-    await app._load_history(str(load_dir))
-
-    assert app._pending_attachments == []
-    assert app._message_history == []
-    assert app.session_id == original_session_id
-
-
-@pytest.mark.asyncio
-async def test_tui_app_load_history_reads_schema_v2_head_as_atomic_snapshot(tmp_path: Path) -> None:
-    sessions_dir = tmp_path / "sessions"
-    config_manager = MagicMock()
-    config_manager.get_sessions_dir.return_value = sessions_dir
-    config_manager.config_dir = tmp_path / "config"
-    turn_dir = save_session_turn(
-        config_manager=config_manager,
-        session_id="atomic-session",
-        working_dir=tmp_path,
-        message_history_json=b"[]",
-        context_state_json=ResumableState().model_dump_json(),
-        display_messages=[],
-        output_text="done",
-        save_reason="test",
-        turn_id="turn-0",
-        max_turns=1,
-        max_sessions=10,
-    )
-    session_dir = turn_dir.parents[1]
-    assert not (session_dir / "message_history.json").exists()
-
-    app = TUIApp(config=MockConfig(), config_manager=config_manager)
-    app._runtime = MagicMock(ctx=TUIContext(), env=None)
-
-    loaded = await app._load_history(str(session_dir), target_session_id="atomic-session")
-
-    assert loaded is True
-    assert app.session_id == "atomic-session"
-    assert app._message_history == []
-    assert any("display_messages.json (0 events)" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_load_history_isolates_context_and_background_state(tmp_path: Path) -> None:
-    """A valid restore must switch all conversation state without rebuilding runtime resources."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    old_ctx = TUIContext(need_user_approve_tools=["shell"], need_user_approve_mcps=["filesystem"])
-    old_ctx.provider_session_id = "provider-old"
-    old_ctx.provider_thread_id = "thread-old"
-    old_ctx.shell_env = {"OLD_SESSION": "secret"}
-    old_ctx.steering_messages = ["old steering"]
-    old_ctx.subagent_history = {"old-agent": []}
-    old_ctx.goal_task = "old goal"
-    old_bus = old_ctx.message_bus
-    runtime_env = object()
-    runtime = MagicMock(ctx=old_ctx, env=runtime_env)
-    app._runtime = runtime
-    app._message_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
-    app._display_replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "old", "delta": "old output"})
-    original_session_id = app.session_id
-
-    monitor = BackgroundMonitor()
-    monitor.set_message_bus(old_bus, old_ctx.agent_id)
-    stale_task = asyncio.create_task(_sleep_forever())
-    monitor.register_task("old-agent", stale_task)
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-
-    load_dir = tmp_path / "session-b"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-
-    loaded = await app._load_history(str(load_dir), target_session_id="target123456")
-
-    assert loaded is True
-    assert app.session_id == "target123456"
-    assert app.session_id != original_session_id
-    assert app._runtime is runtime
-    assert runtime.env is runtime_env
-    assert runtime.ctx is not old_ctx
-    assert runtime.ctx.provider_session_id is None
-    assert runtime.ctx.provider_thread_id is None
-    assert runtime.ctx.shell_env == {}
-    assert runtime.ctx.steering_messages == []
-    assert runtime.ctx.subagent_history == {}
-    assert runtime.ctx.goal_active is False
-    assert runtime.ctx.need_user_approve_tools == ["shell"]
-    assert runtime.ctx.need_user_approve_mcps == ["filesystem"]
-    assert runtime.ctx.message_bus is not old_bus
-    assert monitor._bus is runtime.ctx.message_bus
-    assert stale_task.cancelled()
-    assert monitor.active_tasks == {}
-    assert app._message_history == []
-
-
-@pytest.mark.asyncio
-async def test_tui_app_load_history_rolls_forward_when_background_reset_fails(tmp_path: Path) -> None:
-    """After tombstoning old subagents, cleanup failure must not reactivate the old context."""
-    config = YaacliConfig(shell_env={"CONFIGURED_BASE": "enabled"})
-    app = TUIApp(config=config, config_manager=MockConfigManager())
-    old_ctx = TUIContext(shell_env={"OLD_SESSION": "value"})
-    runtime = MagicMock(ctx=old_ctx, env=object())
-    app._runtime = runtime
-    monitor = BackgroundMonitor()
-    monitor.reset_session_state = AsyncMock(side_effect=RuntimeError("reset failed"))  # type: ignore[method-assign]
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-
-    load_dir = tmp_path / "session-b"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-    (load_dir / "context_state.json").write_text(
-        ResumableState(shell_env={"TARGET_SESSION": "value"}).model_dump_json()
-    )
-
-    loaded = await app._load_history(str(load_dir), target_session_id="target123456")
-
-    assert loaded is True
-    assert runtime.ctx is not old_ctx
-    assert runtime.ctx.shell_env == {"CONFIGURED_BASE": "enabled", "TARGET_SESSION": "value"}
-    assert app.session_id == "target123456"
-    assert monitor._bus is runtime.ctx.message_bus
-    assert app._session_clear_in_progress is False
-
-
-@pytest.mark.asyncio
-async def test_tui_app_load_history_cancellation_commits_isolation_then_reraises(tmp_path: Path) -> None:
-    """Cancellation after tombstoning must not restore the old conversation."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    old_ctx = TUIContext(shell_env={"OLD_SESSION": "value"})
-    runtime = MagicMock(ctx=old_ctx, env=object())
-    app._runtime = runtime
-    monitor = BackgroundMonitor()
-    monitor.reset_session_state = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-
-    load_dir = tmp_path / "session-b"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-
-    with pytest.raises(asyncio.CancelledError):
-        await app._load_history(str(load_dir), target_session_id="target123456")
-
-    assert runtime.ctx is not old_ctx
-    assert runtime.ctx.shell_env == {}
-    assert app.session_id == "target123456"
-    assert monitor._bus is runtime.ctx.message_bus
-    assert app._session_clear_in_progress is False
-
-
-@pytest.mark.asyncio
-async def test_tui_app_saves_and_restores_display_messages(tmp_path: Path) -> None:
-    """Session restore should rebuild visible output from display_messages.json."""
-    config = MockConfig()
-    sessions_dir = tmp_path / "sessions"
-    config_manager = MockConfigManager()
-    config_manager.get_sessions_dir = MagicMock(return_value=sessions_dir)
-    app = TUIApp(config=config, config_manager=config_manager)
-    app._runtime = MagicMock()
-    app._runtime.ctx.export_state.return_value.model_dump_json.return_value = "{}"
-    app._message_history = []
-    app._last_session_input = "last user input"
-    app._last_session_output = "last assistant output"
-    app._display_replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"})
-
-    app._save_session_snapshot(save_reason="test")
-
-    assert app.has_session_data is True
-    save_dir = sessions_dir / app.session_id
-    metadata = json.loads((save_dir / "metadata.json").read_text())
-    assert metadata["input_text"] == "last user input"
-    assert metadata["output_text"] == "last assistant output"
-    display_file = next((save_dir / "turns").iterdir()) / "display_messages.json"
-    assert display_file.exists()
-    assert json.loads(display_file.read_text()) == [{"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"}]
-
-    load_dir = tmp_path / "load"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-    (load_dir / "display_messages.json").write_text(display_file.read_text())
-
-    restored = TUIApp(config=config, config_manager=config_manager)
-    restored._runtime = MagicMock(ctx=TUIContext(), env=None)
-    await restored._load_history(str(load_dir))
-
-    assert restored._message_history == []
-    assert restored._display_replay.snapshot() == [{"type": "TEXT_MESSAGE_CHUNK", "messageId": "m1", "delta": "hello"}]
-    assert any("hello" in line for line in restored._output_lines)
-
-
-@pytest.mark.parametrize(
-    ("display_payload", "max_bytes"),
-    [
-        (json.dumps([{"type": "TEXT_MESSAGE_CHUNK", "messageId": "new", "delta": "new"}]), 1),
-        ("{invalid", 1024),
-    ],
-)
-@pytest.mark.asyncio
-async def test_tui_app_skipped_display_replay_clears_prior_session_output(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    display_payload: str,
-    max_bytes: int,
-) -> None:
-    """Unsafe replay data must not leave the previous session visible or retained."""
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    app._runtime = MagicMock(ctx=TUIContext(), env=None)
-    app._message_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
-    app._display_replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "old", "delta": "prior-session-output"})
-    app._restore_output_from_display_events(app._display_replay.snapshot())
-
-    load_dir = tmp_path / "session-b"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-    (load_dir / "display_messages.json").write_text(display_payload)
-    monkeypatch.setattr("yaacli.app.tui._MAX_DISPLAY_REPLAY_LOAD_BYTES", max_bytes)
-
-    await app._load_history(str(load_dir))
-
-    assert app._message_history == []
-    assert app._display_replay.snapshot() == []
-    assert all("prior-session-output" not in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_state_restore_failure_keeps_prior_session(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    app._message_history = [ModelRequest(parts=[UserPromptPart(content="old history")])]
-    app._display_replay.append({"type": "TEXT_MESSAGE_CHUNK", "messageId": "old", "delta": "prior-session-output"})
-    app._restore_output_from_display_events(app._display_replay.snapshot())
-    prior_history = app._message_history
-    prior_replay = app._display_replay.snapshot()
-    prior_output = list(app._output_lines)
-    active_ctx = TUIContext(shell_env={"EXISTING": "value"}, steering_messages=["old steering"])
-    app._runtime = MagicMock(ctx=active_ctx, env=None)
-    monitor = MagicMock(spec=BackgroundMonitor)
-    app._get_background_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
-    failing_state = MagicMock()
-
-    def fail_after_partial_restore(ctx: MagicMock) -> None:
-        ctx.shell_env = {**ctx.shell_env, "INCOMING": "leak"}
-        ctx.steering_messages = ["new steering"]
-        raise RuntimeError("incompatible state")
-
-    failing_state.restore.side_effect = fail_after_partial_restore
-    monkeypatch.setattr(ResumableState, "model_validate_json", MagicMock(return_value=failing_state))
-
-    load_dir = tmp_path / "session-b"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-    (load_dir / "context_state.json").write_text("{}")
-
-    await app._load_history(str(load_dir))
-
-    assert app._message_history is prior_history
-    assert app._display_replay.snapshot() == prior_replay
-    assert app._output_lines[:-1] == prior_output
-    assert "Error loading session: incompatible state" in app._output_lines[-1]
-    assert app.runtime.ctx is active_ctx
-    assert app.runtime.ctx.shell_env == {"EXISTING": "value"}
-    assert app.runtime.ctx.steering_messages == ["old steering"]
-    monitor.begin_session_reset.assert_not_called()
-    monitor.reset_session_state.assert_not_called()
-
-
-def test_tui_app_persist_stream_recoverable_state_updates_memory_only_on_interrupt():
-    """Recoverable stream state should update in-memory history without saving session files."""
-    config = MockConfig()
-    config_manager = MockConfigManager()
-    app = TUIApp(config=config, config_manager=config_manager)
-    app._runtime = MagicMock()
-    app._runtime.agent.model.model_name = "test-model"
-    app._session_usage = MagicMock()
-    app._session_usage.has_run_snapshot = True
-    app._auto_save_history = MagicMock()
-    app._save_session_snapshot = MagicMock()
-
-    history = [
-        ModelRequest(parts=[UserPromptPart(content="hello")]),
-        ModelResponse(
-            parts=[TextPart(content="partial")],
-            metadata={"ya_agent_sdk": {"partial": True, "reason": "stream_interrupted"}},
-        ),
-    ]
-    stream = MagicMock()
-    stream.run = MagicMock()
-    stream.run.usage.total_tokens = 123
-    stream.recoverable_messages.return_value = history
-    stream.exception = AgentInterrupted("Agent execution was interrupted")
-
-    assert app._persist_stream_recoverable_state(stream) is True
-
-    assert app._message_history == history
-    assert app._last_run is stream.run
-    app._auto_save_history.assert_not_called()
-    app._save_session_snapshot.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_tui_app_run_agent_reports_saved_recovery_session():
-    """Agent errors should surface recovery guidance when session data is saved."""
-    config = MockConfig()
-    config.session = MagicMock(auto_save_history=True)
-    config_manager = MockConfigManager()
-
-    app = TUIApp(config=config, config_manager=config_manager)
-    runtime = MagicMock()
-    runtime.ctx = MagicMock(loop_active=False)
-    runtime.ctx.steering_messages = []
-    app._runtime = runtime
-    app._execute_stream = AsyncMock(side_effect=RuntimeError("peer closed connection"))
-    app._save_session_snapshot_async = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    app._check_pending_bus_messages = MagicMock()
-
-    with patch.object(TUIApp, "has_session_data", new_callable=PropertyMock, return_value=True):
-        await app._run_agent("hello")
-
-    joined_output = "\n".join(app._output_lines)
-    assert "Session state saved." in joined_output
-    assert f"/session {app.session_id}" in joined_output
-    assert app.state == TUIState.IDLE
-
-
-@pytest.mark.asyncio
 async def test_tui_app_model_command_opens_in_tui_selector_from_submit_dispatch() -> None:
     """Real /model submission should let its command owner open the selector."""
     config = YaacliConfig(
@@ -3537,25 +2392,6 @@ def test_tui_app_clear_command_preserves_conversation_context() -> None:
     assert app._message_history is history
     assert all("old transcript" not in line for line in app._output_lines)
     assert any("Conversation context is unchanged" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_new_command_resets_context_and_changes_session_id() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    runtime = MagicMock()
-    runtime.ctx = TUIContext(user_prompts="old prompt")
-    runtime.env = None
-    app._runtime = runtime
-    app._get_background_monitor = MagicMock(return_value=None)  # type: ignore[method-assign]
-    app._message_history = [ModelRequest(parts=[UserPromptPart(content="old")])]
-    old_session_id = app.session_id
-
-    await app._start_new_session()
-
-    assert app.session_id != old_session_id
-    assert app._message_history is None
-    assert runtime.ctx.user_prompts is None
-    assert any("New session" in line for line in app._output_lines)
 
 
 @pytest.mark.asyncio
@@ -4180,97 +3016,6 @@ def test_tui_app_busy_direct_shell_syntax_is_rejected_without_leaking_to_model(
     assert any("Direct shell commands are unavailable" in line for line in app._output_lines)
 
 
-@pytest.mark.asyncio
-async def test_tui_app_active_integrate_command_delivers_to_current_run() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    input_area = TextArea(text="/integrate", multiline=True)
-    app._set_phase(TUIPhase.THINKING)
-    app._pending_background_wakeup_kinds.add("shell")
-    app._deliver_background_messages = MagicMock(return_value=True)  # type: ignore[method-assign]
-    app._launch_agent = MagicMock()  # type: ignore[method-assign]
-    app._add_steering_message = MagicMock()  # type: ignore[method-assign]
-
-    app._submit_input("/integrate", input_area)
-    command_tasks = tuple(app._managed_tasks)
-    await asyncio.gather(*command_tasks)
-
-    app._deliver_background_messages.assert_called_once_with()
-    app._launch_agent.assert_not_called()
-    app._add_steering_message.assert_not_called()
-    assert app._background_results_ready is True
-    assert app._pending_bus_check_needed is True
-    assert app._pending_background_wakeup_kinds == set()
-    assert input_area.buffer.text == ""
-    assert any("delivered to the active run" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_active_integrate_command_with_no_results_stays_local() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    input_area = TextArea(text="/integrate", multiline=True)
-    app._set_phase(TUIPhase.THINKING)
-    app._pending_background_wakeup_kinds.add("shell")
-    app._deliver_background_messages = MagicMock(return_value=False)  # type: ignore[method-assign]
-    app._launch_agent = MagicMock()  # type: ignore[method-assign]
-    app._add_steering_message = MagicMock()  # type: ignore[method-assign]
-
-    app._submit_input("/integrate", input_area)
-    await asyncio.gather(*tuple(app._managed_tasks))
-
-    app._launch_agent.assert_not_called()
-    app._add_steering_message.assert_not_called()
-    assert app._background_results_ready is False
-    assert app._pending_background_wakeup_kinds == set()
-    assert any("No background results are ready" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_idle_integrate_command_starts_explicit_integration_turn() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    input_area = TextArea(text="/integrate", multiline=True)
-    app._deliver_background_messages = MagicMock(return_value=True)  # type: ignore[method-assign]
-    app._launch_agent = MagicMock()  # type: ignore[method-assign]
-
-    app._submit_input("/integrate", input_area)
-    command_task = app._foreground_command_task
-    assert command_task is not None
-    await command_task
-
-    app._launch_agent.assert_called_once_with("")
-    assert any("Integrating background results" in line for line in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_tui_app_cleanup_integrate_command_keeps_results_queued() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    app._set_phase(TUIPhase.SAVING)
-    app._background_results_ready = True
-    app._deliver_background_messages = MagicMock(return_value=True)  # type: ignore[method-assign]
-    app._launch_agent = MagicMock()  # type: ignore[method-assign]
-
-    app._integrate_background_results()
-
-    app._deliver_background_messages.assert_not_called()
-    app._launch_agent.assert_not_called()
-    assert app._background_results_ready is True
-    assert any("remain queued" in line for line in app._output_lines)
-
-
-def test_tui_app_user_steering_does_not_count_as_background_result() -> None:
-    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    ctx = TUIContext()
-    ctx.message_bus.subscribe(ctx.agent_id)
-    runtime = MagicMock(ctx=ctx)
-    runtime.env.resources = {}
-    app._runtime = runtime
-    ctx.message_bus.send(BusMessage(content="guidance", source="user", target=ctx.agent_id))
-
-    assert app._deliver_background_messages() is False
-
-    ctx.message_bus.send(BusMessage(content="result", source="subagent-1", target=ctx.agent_id))
-    assert app._deliver_background_messages() is True
-
-
 @pytest.mark.parametrize("phase", [TUIPhase.SAVING, TUIPhase.CANCELLING])
 def test_tui_app_cleanup_phase_takes_priority_over_stale_hitl_state(phase: TUIPhase) -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
@@ -4582,7 +3327,7 @@ async def test_tui_app_saving_rejects_cancel_and_ctrl_c_exit() -> None:
 
     assert agent_task.cancelling() == 0
     assert app.phase == TUIPhase.SAVING
-    assert sum("snapshot is being saved" in line for line in app._output_lines) == 2
+    assert sum("durable commit is in progress" in line for line in app._output_lines) == 2
     event.app.exit.assert_not_called()
 
     agent_task.cancel()
@@ -4729,65 +3474,52 @@ def test_tui_app_status_places_sdk_cost_immediately_after_context() -> None:
     assert " · ctx 25% · cost ~$0.0070" in status
 
 
-@pytest.mark.asyncio
-async def test_tui_app_load_history_replaces_and_restores_session_cost_without_recounting(tmp_path: Path) -> None:
+async def test_parent_and_child_hitl_requests_are_serialized_by_owner() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
-    app._runtime = MagicMock(ctx=TUIContext(), env=None)
-    app._session_usage.add(
-        "old",
-        "old-model",
-        RunUsage(requests=1, input_tokens=1),
-        cost_estimate=CostEstimate(total_amount=Decimal("9"), priced_requests=1),
-    )
-    restored_run_usage = RunUsage(requests=1, input_tokens=10, output_tokens=2)
-    restored_snapshot = UsageSnapshot(
-        run_id="session:target",
-        total_usage=restored_run_usage,
-        total_cost_estimate=CostEstimate(total_amount=Decimal("0.007"), priced_requests=1),
-        agent_usages={
-            "main": UsageAgentTotal(
-                agent_name="main",
-                model_id="multiple",
-                usage=restored_run_usage,
-                cost_estimate=CostEstimate(total_amount=Decimal("0.007"), priced_requests=1),
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    observed: list[str] = []
+
+    async def collect(deferred: DeferredToolRequests) -> DeferredToolResults:
+        tool_name = deferred.calls[0].tool_name
+        observed.append(tool_name)
+        if tool_name == "child_call":
+            first_started.set()
+            await release_first.wait()
+        return DeferredToolResults()
+
+    app._collect_deferred_user_actions = collect  # type: ignore[method-assign]
+    child = DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="child_call",
+                args={},
+                tool_call_id="child-call",
             )
-        },
-        model_usages={"model-a": restored_run_usage},
-        model_cost_estimates={"model-a": CostEstimate(total_amount=Decimal("0.007"), priced_requests=1)},
+        ]
     )
-    load_dir = tmp_path / "target-session"
-    load_dir.mkdir()
-    (load_dir / "message_history.json").write_bytes(b"[]")
-    (load_dir / "context_state.json").write_text(
-        TUIResumableState(session_usage_snapshot=restored_snapshot).model_dump_json()
-    )
-
-    loaded = await app._load_history(str(load_dir), target_session_id="target")
-
-    assert loaded is True
-    assert app._session_usage.estimated_total_cost is not None
-    assert app._session_usage.estimated_total_cost.total_amount == Decimal("0.007")
-    assert app._session_usage.total_requests == 1
-    assert app.runtime.ctx.usage_snapshot_entries == {}
-
-    next_run_usage = RunUsage(requests=1, input_tokens=5, output_tokens=1)
-    app._session_usage.set_run_snapshot(
-        UsageSnapshot(
-            run_id="next-run",
-            total_usage=next_run_usage,
-            agent_usages={
-                "main": UsageAgentTotal(
-                    agent_name="main",
-                    model_id="model-a",
-                    usage=next_run_usage,
-                    cost_estimate=CostEstimate(total_amount=Decimal("0.002"), priced_requests=1),
-                )
-            },
-            model_usages={"model-a": next_run_usage},
-            model_cost_estimates={"model-a": CostEstimate(total_amount=Decimal("0.002"), priced_requests=1)},
-        )
+    parent = DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="parent_call",
+                args={},
+                tool_call_id="parent-call",
+            )
+        ]
     )
 
-    assert app._session_usage.estimated_total_cost is not None
-    assert app._session_usage.estimated_total_cost.total_amount == Decimal("0.009")
-    assert app._session_usage.total_requests == 2
+    child_task = asyncio.create_task(app._request_user_action(child, owner="subagent:child"))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    parent_task = asyncio.create_task(app._request_user_action(parent, owner="main"))
+    await asyncio.sleep(0)
+
+    app._reset_hitl_state(owner="main")
+    assert app._hitl_owner == "subagent:child"
+    assert observed == ["child_call"]
+
+    release_first.set()
+    await child_task
+    await parent_task
+
+    assert observed == ["child_call", "parent_call"]
+    assert app._hitl_owner is None

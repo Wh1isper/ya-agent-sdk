@@ -177,11 +177,10 @@ async def test_environment_none_file_operator_and_shell() -> None:
         await env2.get_context_instructions()
 
 
-async def test_environment_get_toolsets_empty() -> None:
-    """get_toolsets should return empty list by default."""
+async def test_environment_get_capabilities_empty() -> None:
     async with MockEnvironment() as env:
-        toolsets = env.get_toolsets()
-        assert toolsets == []
+        assert env.get_capabilities() == ()
+        assert env.get_agent_contributions() == ()
 
 
 async def test_environment_with_resource_factory_chaining() -> None:
@@ -240,46 +239,43 @@ async def test_environment_shell_before_enter() -> None:
         _ = env.shell
 
 
-async def test_environment_get_toolsets_combines_env_and_resources() -> None:
-    """get_toolsets should combine environment and resource toolsets."""
+async def test_environment_preserves_capability_provenance() -> None:
     from ya_agent_environment.resources import BaseResource
 
-    class ToolsetResource(BaseResource):
-        def __init__(self, toolset: object) -> None:
-            self._toolset = toolset
+    class CapabilityResource(BaseResource):
+        def __init__(self, capability: object) -> None:
+            self._capability = capability
 
         async def close(self) -> None:
             pass
 
-        def get_toolsets(self) -> list:
-            return [self._toolset]
+        def get_capabilities(self) -> tuple[object, ...]:
+            return (self._capability,)
 
-    toolset1 = object()
-    toolset2 = object()
-    env_toolset = object()
+    resource_one = object()
+    resource_two = object()
+    environment_capability = object()
 
-    async def factory1(env: Environment) -> ToolsetResource:
-        return ToolsetResource(toolset1)
+    async def factory1(env: Environment) -> CapabilityResource:
+        return CapabilityResource(resource_one)
 
-    async def factory2(env: Environment) -> ToolsetResource:
-        return ToolsetResource(toolset2)
+    async def factory2(env: Environment) -> CapabilityResource:
+        return CapabilityResource(resource_two)
 
     env = MockEnvironment().with_resource_factory("r1", factory1).with_resource_factory("r2", factory2)
 
     async with env:
-        # Add environment-level toolset
-        env._toolsets.append(env_toolset)
-
-        # Create resources
+        env._capabilities.append(environment_capability)
         await env.resources.get_or_create("r1")
         await env.resources.get_or_create("r2")
 
-        # get_toolsets should combine all
-        toolsets = env.get_toolsets()
-        assert len(toolsets) == 3
-        assert env_toolset in toolsets
-        assert toolset1 in toolsets
-        assert toolset2 in toolsets
+        groups = env.get_agent_contributions()
+
+    assert [(group.source_id, group.capabilities) for group in groups] == [
+        ("environment", (environment_capability,)),
+        ("resource:r1", (resource_one,)),
+        ("resource:r2", (resource_two,)),
+    ]
 
 
 async def test_environment_fork_raises_not_implemented() -> None:
@@ -375,7 +371,7 @@ async def test_environment_cleanup_closes_dependants_before_teardown() -> None:
         async def close(self) -> None:
             events.append("resource")
 
-        def get_toolsets(self) -> list[object]:
+        def get_capabilities(self) -> list[object]:
             return []
 
     from .conftest import MockFileOperator, MockShell
@@ -416,7 +412,7 @@ async def test_environment_setup_failure_uses_same_cleanup_order() -> None:
         async def close(self) -> None:
             events.append("resource")
 
-        def get_toolsets(self) -> list[object]:
+        def get_capabilities(self) -> list[object]:
             return []
 
     class FileOperator(MockFileOperator):

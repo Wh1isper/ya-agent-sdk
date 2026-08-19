@@ -91,7 +91,6 @@ Use this tool when context is getting large and you need to preserve essential i
 before resetting, or when switching focus to a different topic or task.
 The summary will be injected into the new context automatically.
 """
-    auto_inherit = True
     is_context_manage_tool = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str:

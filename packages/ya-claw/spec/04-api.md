@@ -381,6 +381,14 @@ Recommended shape:
 Session control routes to `active_run_id`.
 Run control routes to the addressed run.
 
+Direct session/run/async-child steering succeeds only when the addressed logical run is
+actively accepting input. A queued run, terminal run, or session without an active
+accepting run returns HTTP 409 before any success response. A successful response returns
+the persisted SQL/native receipt fields `input_id`, `input_delivery_key`,
+`input_disposition`, `input_sdk_id`, and `input_enqueue_id`; an equal idempotent retry
+returns the same durable receipt. The unified session submit API is separate and may
+merge input into a queued run rather than claiming direct steering.
+
 ## Event Streaming
 
 Event streaming uses SSE.

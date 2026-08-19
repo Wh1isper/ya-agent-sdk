@@ -199,7 +199,7 @@ class ClawApplication:
             )
             await app.state.runtime_instance_manager.register(metadata={"environment": self.settings.environment})
             logger.info("Runtime instance registered instance_id={}", self.settings.instance_id)
-            recovery_result = await supervisor.startup_recover()
+            recovery_result = await supervisor.startup()
             logger.info("Execution supervisor startup recovery completed result={}", recovery_result)
             schedule_dispatcher = ScheduleDispatcher(
                 settings=self.settings,
@@ -361,7 +361,8 @@ class ClawApplication:
             except Exception as exc:
                 logger.warning("OAuth refresh profile resolution skipped profile={} error={}", profile_name, exc)
                 continue
-            models.add(profile.model)
+            if profile.agent_spec.model is not None:
+                models.add(profile.agent_spec.model)
         try:
             models.update(await profile_resolver.list_enabled_models())
         except Exception as exc:

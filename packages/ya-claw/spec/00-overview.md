@@ -69,7 +69,7 @@ flowchart TB
 
     subgraph SDK[ya-agent-sdk]
         AGENT[create_agent]
-        STREAM[stream_agent]
+        STREAM[AgentExecutionHarness]
         CTX[ClawAgentContext]
         ENV[Environment]
     end

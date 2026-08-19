@@ -142,6 +142,9 @@ class SubagentStartEvent(AgentEvent):
         prompt_preview: First N characters of the prompt sent to subagent.
     """
 
+    execution_id: str = ""
+    mode: str = "foreground"
+    parent_logical_run_id: str | None = None
     agent_id: str = ""
     agent_name: str = ""
     prompt_preview: str = ""
@@ -165,6 +168,9 @@ class SubagentCompleteEvent(AgentEvent):
         duration_seconds: How long the subagent ran.
     """
 
+    execution_id: str = ""
+    mode: str = "foreground"
+    parent_logical_run_id: str | None = None
     agent_id: str = ""
     agent_name: str = ""
     success: bool = True
@@ -194,47 +200,6 @@ class UsageSnapshotEvent(AgentEvent):
 
     snapshot: UsageSnapshot | None = None
     source: str = "model_request_complete"
-
-
-# =============================================================================
-# Message Bus Events
-# =============================================================================
-
-
-@dataclass
-class BusMessageInfo:
-    """Info about a single bus message.
-
-    Attributes:
-        content: Original message content (before template rendering).
-            Can be str for text or Sequence[UserContent] for multimodal.
-        rendered_content: Rendered message content (template already applied).
-            Can be str for text or Sequence[UserContent] for multimodal.
-        source: Who sent the message (e.g., "user", agent_id).
-        target: Who should receive the message (agent_id, or None for broadcast).
-        content_text: Text-only representation of the content for display/logging.
-    """
-
-    content: str | Sequence[UserContent]
-    rendered_content: str | Sequence[UserContent]
-    source: str
-    target: str | None = None
-    content_text: str = ""
-
-
-@dataclass
-class MessageReceivedEvent(AgentEvent):
-    """Emitted when bus messages are received and injected into conversation.
-
-    This event is emitted by the bus_message filter when pending messages
-    are consumed and injected. Consumers can use this to display
-    incoming messages in the UI.
-
-    Attributes:
-        messages: List of received message info.
-    """
-
-    messages: list[BusMessageInfo] = field(default_factory=list)
 
 
 # =============================================================================

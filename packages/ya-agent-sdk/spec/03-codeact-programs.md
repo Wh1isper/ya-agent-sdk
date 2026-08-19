@@ -259,14 +259,17 @@ Code execution tools must never be nested inside CodeAct.
 CodeAct is opt-in at agent construction. Prefer a typed configuration over a boolean because execution budgets and program policy are part of the security boundary.
 
 ```python
+from pydantic_ai.capabilities import Capability, Toolset as ToolsetCapability
 from ya_agent_sdk.agents.main import create_agent
-from ya_agent_sdk.codeact import CodeActConfig
+from ya_agent_sdk.codeact import CodeActCapability, CodeActConfig
 
 runtime = create_agent(
     model,
-    tools=[...],
-    toolsets=[...],
-    codeact=CodeActConfig(),
+    capabilities=[
+        Capability(tools=[...], id="application_tools"),
+        ToolsetCapability(external_toolset, id="external"),
+        CodeActCapability(config=CodeActConfig()),
+    ],
 )
 ```
 
@@ -289,7 +292,7 @@ class CodeActConfig:
 
 Rules:
 
-- `codeact=None` exposes no CodeAct tools. Monty remains an SDK core dependency so installation shape does not vary by runtime configuration.
+- Omitting `CodeActCapability` exposes no CodeAct tools. Monty remains an SDK core dependency so installation shape does not vary by runtime configuration.
 - `CodeActConfig()` enables the standard policy.
 - Hosts may lower budgets.
 - Version 1 relies exclusively on the current Environment `FileOperator` path and authorization policy rather than attempting a backend-neutral lexical root check.
@@ -820,7 +823,7 @@ The initial complete feature is accepted when:
 13. Call-count, admission/concurrency, source/argument/result size, timeout initiation, and cancellation ownership draining are tested.
 14. Raw intermediate arguments and results do not enter message history or persistence through CodeAct metadata.
 15. Typed nested tool failures are distinguished from ordinary string return values.
-16. `codeact=None` exposes no CodeAct tools even though Monty is installed as an SDK core dependency.
+16. Omitting `CodeActCapability` exposes no CodeAct tools even though Monty is installed as an SDK core dependency.
 
 ## Open Questions
 

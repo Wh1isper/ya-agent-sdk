@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic_ai import AgentSpec
 from ya_agent_sdk.environment import ShellSandboxConfig
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.workspace.models import WorkspaceBinding, WorkspaceMountBinding
@@ -27,10 +28,7 @@ def _binding(main: Path, docs: Path) -> WorkspaceBinding:
 def test_resolve_workspace_shell_sandbox_policy_combines_defaults_and_profile(tmp_path: Path) -> None:
     profile = ResolvedProfile(
         name="restricted-profile",
-        model="test-model",
-        model_settings=None,
-        model_config=None,
-        system_prompt="",
+        agent_spec=AgentSpec(model="test-model", name="restricted-profile"),
         shell_sandbox=ShellSandboxConfig(
             enabled=True,
             profile="read_only",

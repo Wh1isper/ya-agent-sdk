@@ -21,7 +21,6 @@ from pydantic_ai import (
     ModelSettings,
     ToolOutput,
     UsageLimits,
-    UserContent,
 )
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
@@ -59,18 +58,14 @@ from ya_agent_sdk.events import (
     CompactFailedEvent,
     CompactStartEvent,
 )
-from ya_agent_sdk.filters import (
-    create_system_prompt_filter,
-    fix_truncated_tool_args,
-)
 from ya_agent_sdk.filters._builders import (
     KEEP_COMPACT,
     KEEP_TAG_KEY,
     build_context_restored_part,
-    build_original_request_parts,
     build_previous_assistant_reference_parts,
-    build_steering_parts,
 )
+from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
+from ya_agent_sdk.filters.tool_args import fix_truncated_tool_args
 from ya_agent_sdk.usage import coerce_run_usage, estimate_model_result_cost
 from ya_agent_sdk.utils import get_latest_request_usage
 
@@ -497,8 +492,7 @@ def _need_compact(ctx: AgentContext, message_history: list[ModelMessage]) -> boo
 
 def _build_compacted_messages(
     summary: str,
-    original_prompt: str | Sequence[UserContent],
-    steering_messages: list[str] | None = None,
+    retained_inputs: Sequence[ModelMessage],
     previous_assistant_reference: str | None = None,
 ) -> list[ModelMessage]:
     """Build compacted message history.
@@ -508,8 +502,7 @@ def _build_compacted_messages(
 
     Args:
         summary: The compacted summary content.
-        original_prompt: The initial user prompt.
-        steering_messages: Additional steering messages from user during execution.
+        retained_inputs: Applied structured logical-run input in product order.
         previous_assistant_reference: Visible assistant response immediately before
             the current user request. Used only to resolve references in the request.
 
@@ -527,19 +520,16 @@ def _build_compacted_messages(
         ),
     ]
 
-    # Build final request parts in interpretation order: restore instructions,
-    # reference anchor, original request, then later user steering.
     final_parts: list[UserPromptPart] = [
         build_context_restored_part(),
         *build_previous_assistant_reference_parts(previous_assistant_reference),
-        *build_original_request_parts(original_prompt),
-        *build_steering_parts(steering_messages),
     ]
 
     return [
         ModelRequest(parts=request_parts),
         ModelResponse(parts=[TextPart(content=summary)], metadata=keep_metadata),
         ModelRequest(parts=final_parts, metadata=keep_metadata),
+        *copy.deepcopy(list(retained_inputs)),
     ]
 
 
@@ -600,6 +590,7 @@ def create_cache_friendly_compact_filter(
                     message_history=message_history,
                     deps=agent_ctx,
                     output_type=str,
+                    model_settings=ModelSettings(tool_choice="none"),
                     usage_limits=UsageLimits(request_limit=1),
                 ) as result:
                     summary_markdown = str(await result.get_output())
@@ -626,8 +617,7 @@ def create_cache_friendly_compact_filter(
 
                 compacted = _build_compacted_messages(
                     summary_markdown,
-                    agent_ctx.user_prompts or CACHE_FRIENDLY_COMPACT_PROMPT,
-                    agent_ctx.steering_messages or None,
+                    agent_ctx.run_input_ledger.applied_user_messages(),
                     agent_ctx.previous_assistant_response_reference,
                 )
 
@@ -678,7 +668,6 @@ def create_cache_friendly_compact_filter(
                 )
             )
 
-            agent_ctx.steering_messages.clear()
             agent_ctx.force_inject_instructions = True
 
             logger.info(f"Compacted history from {len(message_history)} messages to {len(compacted)} messages")
@@ -825,8 +814,7 @@ def create_compact_filter(
                 # is extracted by LLM from conversation history and may be less accurate
                 compacted = _build_compacted_messages(
                     condense_markdown,
-                    agent_ctx.user_prompts or condense_result.original_prompt,
-                    agent_ctx.steering_messages or None,
+                    agent_ctx.run_input_ledger.applied_user_messages(),
                     agent_ctx.previous_assistant_response_reference,
                 )
 
@@ -879,9 +867,6 @@ def create_compact_filter(
                     condense_result=condense_result,
                 )
             )
-
-            # Clear steering_messages after successful compact (content is now in summary)
-            agent_ctx.steering_messages.clear()
 
             # Force downstream filters to inject instructions after context reset
             agent_ctx.force_inject_instructions = True

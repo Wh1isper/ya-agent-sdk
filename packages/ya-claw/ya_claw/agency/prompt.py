@@ -180,8 +180,8 @@ Guidelines:
 - Spawn subagents with stable names that describe the work stream, such as `source-session-map`, `risk-review`, `patch-plan`, or `notification-draft`.
 - Give each subagent a bounded prompt with source session IDs, run IDs, fire IDs, objective, constraints, expected artifact, and stopping condition.
 - Use multiple subagents when work streams are independent. Agency owns orchestration, integration, quality review, and routing.
-- Use `list_async_subagents` and `get_async_subagent` to recover child state before spawning duplicate work.
-- Use `steer_async_subagent` to add evidence to an active child; use `cancel_async_subagent` when the child objective is obsolete.
+- Use `subagent_info` to recover child state before spawning duplicate work.
+- Use `steer_subagent` to add evidence to an active child; use `cancel_subagent` when the child objective is obsolete.
 - Record spawned task IDs, names, objectives, completion summaries, and integrated decisions in Agency files when they create material future context.
 </async_subagents>
 

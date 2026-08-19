@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_ai import RunContext
+from ya_agent_environment import BaseResource
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
@@ -36,7 +37,7 @@ class SelfSessionClient(Protocol):
     async def get_run_trace(self, *, run_id: str, max_item_chars: int, max_total_chars: int) -> dict[str, Any]: ...
 
 
-class ClawSelfClient:
+class ClawSelfClient(BaseResource):
     """HTTP client scoped to the current YA Claw session."""
 
     def __init__(
@@ -56,14 +57,8 @@ class ClawSelfClient:
         self.profile_name = profile_name
         self._timeout_seconds = timeout_seconds
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
-
-    async def setup(self) -> None:
-        return None
-
-    def get_toolsets(self) -> list[Any]:
-        return []
 
     async def list_source_session_turns(
         self,
@@ -162,6 +157,9 @@ class ClawSelfClient:
         prompt: str,
         name: str | None,
         context: dict[str, Any] | None,
+        sdk_owner_scope_id: str,
+        sdk_idempotency_key: str,
+        sdk_intent_fingerprint: str,
     ) -> dict[str, Any]:
         path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks:spawn"
         payload = {
@@ -171,6 +169,9 @@ class ClawSelfClient:
             "context": dict(context or {}),
             "parent_run_id": self.run_id or None,
             "parent_agent_id": "main",
+            "sdk_owner_scope_id": sdk_owner_scope_id,
+            "sdk_idempotency_key": sdk_idempotency_key,
+            "sdk_intent_fingerprint": sdk_intent_fingerprint,
         }
         return await self._send_json(path, method="POST", payload=payload)
 
@@ -193,12 +194,17 @@ class ClawSelfClient:
         name_or_task_id: str,
         prompt: str | None,
         input_parts: list[dict[str, Any]] | None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks/{urllib.parse.quote(name_or_task_id)}:steer"
         return await self._send_json(
             path,
             method="POST",
-            payload={"prompt": prompt, "input_parts": list(input_parts or [])},
+            payload={
+                "prompt": prompt,
+                "input_parts": list(input_parts or []),
+                "idempotency_key": idempotency_key,
+            },
         )
 
     async def cancel_async_subagent(self, *, name_or_task_id: str, reason: str | None) -> dict[str, Any]:

@@ -8,10 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from pydantic_ai import RunContext
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
-from ya_agent_sdk.filters.background_shell import inject_background_results
+from ya_agent_sdk.filters.background_shell import consume_background_results
 from ya_agent_sdk.toolsets.core.shell import ShellStatusTool, ShellTool, ShellWaitTool
 from ya_agent_sdk.toolsets.core.shell.shell import OUTPUT_TRUNCATE_LIMIT
 
@@ -252,8 +251,8 @@ async def test_shell_tool_background_supports_bash_syntax(tmp_path: Path) -> Non
 
 
 @pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")
-async def test_shell_wait_reads_result_after_background_filter_delivery(tmp_path: Path) -> None:
-    """Completion injection should retain stdout and stderr for a later shell_wait call."""
+async def test_shell_wait_reads_result_after_completion_delivery(tmp_path: Path) -> None:
+    """Completion delivery should retain stdout and stderr for a later shell_wait call."""
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
         ctx = await stack.enter_async_context(AgentContext(env=env))
@@ -271,12 +270,10 @@ async def test_shell_wait_reads_result_after_background_filter_delivery(tmp_path
         await process_task
         ctx.shell._refresh_completed_tasks()
 
-        messages = [ModelRequest(parts=[UserPromptPart(content="background process completed")])]
-        await inject_background_results(run_ctx, messages)
-        injected = messages[-1].parts[-1]
-        assert isinstance(injected, UserPromptPart)
-        assert "stdout-value" in injected.content
-        assert "stderr-value" in injected.content
+        completion = await consume_background_results(ctx)
+        assert completion is not None
+        assert "stdout-value" in completion
+        assert "stderr-value" in completion
 
         status = await ShellStatusTool().call(run_ctx)
         assert process_id in status

@@ -86,7 +86,7 @@ These settings apply to local workspace shell execution. Docker workspace provid
 
 `auto` selects `linux_bwrap_seccomp` on Linux, `macos_seatbelt` on macOS, and `windows_restricted_token` on Windows. Linux local shell sandboxing requires `bubblewrap` (`bwrap`) for the default backend. macOS local shell sandboxing uses `/usr/bin/sandbox-exec`. The Windows backend is planned and currently behaves as a guarded path.
 
-Profile-level `security.shell_sandbox` can override profile, backend preference, network policy, environment allowlist, raw host approval, and audit metadata. See [`profiles.md`](profiles.md#shell-sandbox-policy).
+Profile-level `host.model_config_override.security.shell_sandbox` can override profile, backend preference, network policy, environment allowlist, raw host approval, and audit metadata. See [`profiles.md`](profiles.md#shell-sandbox-policy).
 
 ## Schedule and Heartbeat Settings
 

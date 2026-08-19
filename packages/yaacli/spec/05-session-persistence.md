@@ -1,188 +1,288 @@
-# Session Persistence and Restore
+# Session Persistence and Local Execution Coordination
 
 ## Scope
 
-This document defines YAACLI's durable session schema, safe legacy recognition, transactional TUI restore, and headless terminal-event persistence contract.
+YAACLI stores product sessions in one transactional SQLite `SessionStore`. Each user
+turn is a logical run executed by `LocalExecutionCoordinator` through the SDK's
+host-neutral `AgentExecutionHarness`.
 
-## Durable Layout
+The product store is the sole durable source of truth for:
 
-Schema-v2 sessions live under the configured sessions directory:
+- sessions and immutable head revisions;
+- content-addressed runtime descriptors;
+- logical runs, process-owned executions, and stable segment checkpoints;
+- ordered run input;
+- retryable outbox commands;
+- HITL action batches and decisions;
+- canonical message/context/input snapshots;
+- bounded display projections, usage, and terminal outcomes;
+- process-local subagent records and steering input; and
+- ordered session events.
 
-```text
-sessions/<session-id>/
-  metadata.json
-  turns/<turn-id>/
-    metadata.json
-    message_history.json
-    context_state.json       # optional
-    display_messages.json    # optional
+There is no separate workflow-engine store and no replay engine.
+
+## Data Model
+
+```mermaid
+flowchart TB
+    Session[SessionRecord]
+    Revision[RevisionRecord]
+    Descriptor[RuntimeDescriptor]
+    Run[LogicalRunRecord]
+    Execution[ExecutionRecord]
+    Checkpoint[ExecutionCheckpointRecord]
+    Input[InputRecord]
+    Action[ActionBatch and ActionItem]
+    Event[EventRecord]
+    Outbox[OutboxCommand]
+
+    Session -->|head_revision_id| Revision
+    Session -->|active_execution_id| Execution
+    Run --> Session
+    Run --> Descriptor
+    Run --> Execution
+    Execution --> Checkpoint
+    Run --> Input
+    Run --> Action
+    Run --> Revision
+    Session --> Event
+    Outbox --> Execution
 ```
 
-The root metadata contains:
+### Session and revision
 
-- `schema_version = 2`;
-- `session_id` equal to the directory name;
-- `head_turn_id` naming the committed turn;
-- creation and update timestamps; and
-- model, workspace, output, and save-reason metadata when available.
+A session has a stable ID, workspace reference, active/tombstoned status, one committed
+head revision, and at most one active execution. Listing reads bounded metadata only.
 
-A turn is committed by writing its artifacts atomically and updating root metadata to point at it. Retention never follows symbolic links and never treats an escaping turn ID as valid.
+A terminal revision atomically stores canonical Pydantic AI message history,
+`ResumableState`, logical-run input ledger, bounded display projection, usage, terminal
+metadata, and parent revision identity. Publication uses compare-and-swap against the
+run's expected head.
 
-## Artifact Roles
+Revision insertion, head advance, run/execution terminal state, active execution
+release, and ordered terminal event are one transaction. Repeated publication with the
+same terminal identity is idempotent.
 
-- `message_history.json` stores Pydantic AI model messages.
-- `context_state.json` stores `ResumableState` conversation data.
-- `display_messages.json` stores a bounded AGUI-aligned replay list.
-- turn and root `metadata.json` files provide identity, ordering, and summary fields.
+### Runtime descriptor
 
-Context state and display replay are optional for continuation. Missing context or display artifacts load as absent. Invalid or oversized display replay is skipped while valid model history still loads; malformed model history remains fatal.
+Every run references an immutable, content-addressed `RuntimeDescriptor`. It contains
+the native agent spec, complete host behavior envelope, main/child plan manifests,
+full plan fingerprint, and executable version.
 
-## Session Identity and Filesystem Safety
+The executable version hashes participating first-party code and package/native assets,
+critical dependency versions, and Python/compiler/platform metadata. YAACLI has one
+executable identity; it does not maintain workflow/application version aliases.
 
-A recognized schema-v2 session must have:
+Worker startup enters every exact plan required by current configuration or pending
+work. A persisted run executes only when its descriptor ID, full plan fingerprint,
+behavior payload, and executable identity match the registered plan. Falling back to a
+current profile, current child route, or similar-looking plan is forbidden.
 
-- a real, non-symlink session directory;
-- a safe single-segment directory name;
-- regular root metadata plus regular turn `metadata.json` and `message_history.json` identity artifacts;
-- root `session_id` equal to the directory name;
-- a safe `head_turn_id`;
-- a real head-turn directory contained by the session directory; and
-- optional `context_state.json` and `display_messages.json` artifacts that, when present, are regular non-symlink files.
+### Logical run, execution, and checkpoint
 
-Session list, resolve, delete, upgrade, and retention operations reject symbolic-link and path-escape boundaries. Unrecognized non-empty directories are never overwritten by session saves.
+A logical run records session ownership, expected head, descriptor, state,
+cancellation, and pending action identity. An execution records process ownership and
+exact descriptor/executable identity.
 
-## Legacy Recognition
+Run states are `pending`, `running`, `suspended`, `cancelling`, `completed`, `failed`,
+`cancelled`, and `interrupted`.
 
-Legacy sessions stored artifacts at the session root. A directory is eligible for upgrade only when it has a complete, parseable legacy identity:
+`ExecutionCheckpointRecord` stores the latest completed native segment boundary:
+canonical messages, resumable state, input ledger, usage, projection, segment index and
+status, plus deferred requests when suspended. A checkpoint does not advance the
+session head.
 
-1. real non-symlink directory;
-2. regular `metadata.json`;
-3. regular `message_history.json`;
-4. metadata is an object without schema-v2 `schema_version`;
-5. metadata `session_id` is a string exactly equal to the directory name;
-6. message history parses with `ModelMessagesTypeAdapter`;
-7. optional `context_state.json`, when present, parses as `ResumableState`; and
-8. optional `display_messages.json`, when present, parses as validated display events.
+## Application and Coordinator Boundary
 
-A partial, malformed, missing-identity, wrong-identity, symlinked, or schema-v2-looking directory is not a legacy session and must not be modified.
+`SessionApplicationService` depends on `SessionExecutionCoordinator`, whose operations
+are:
 
-Upgrade copies recognized artifacts into a generated turn, writes turn metadata, commits schema-v2 root metadata, and only then removes the known root legacy artifacts.
+- `dispatch_outbox()`;
+- `wait(logical_run_id)`; and
+- `cancel(logical_run_id, reason)`.
 
-## Session Selector
+TUI and headless frontends use the same service. `LocalExecutionWorker` owns entered
+runtime plans and one `LocalExecutionCoordinator`; it is not itself product state.
 
-`/session` without an ID opens a responsive selector backed only by committed session
-metadata. Rows contain bounded input/output previews from metadata; listing does not
-read model history, context state, or display replay artifacts and does not wait for
-artifact-writer locks. Selecting a session then enters the explicit load path, where
-full validation and any recognized legacy migration occur.
+Starting a turn is one product transaction:
 
-## TUI Restore Preparation
+1. validate the current head and active-session state;
+2. persist the exact descriptor;
+3. create logical run and execution identities;
+4. store order-zero structured input;
+5. set the session's active execution; and
+6. enqueue an idempotent `start_execution` command.
 
-`/load <folder>` and `/session <id>` use the same transactional restore pipeline.
+The application then requests outbox dispatch. If delivery fails, the command remains
+retryable. Worker startup releases stale delivery claims, drains available commands,
+and starts a supervised delayed-retry loop.
 
-All fallible preparation happens before the active conversation changes:
+## Segment Execution
 
-1. resolve artifact paths;
-2. parse required model history;
-3. parse optional `ResumableState`;
-4. validate or safely skip display replay;
-5. derive `candidate_ctx = old_ctx.prepare_new_run()`;
-6. reset all conversation-scoped fields on the candidate; and
-7. restore persisted state into the candidate.
+The coordinator creates a fresh `TUIContext` for each segment while reusing the entered
+immutable runtime plan. It restores the expected head for a new turn, or the latest
+segment checkpoint for deferred continuation.
 
-If preparation fails, YAACLI keeps the current runtime context, session ID, history, replay, output, message bus, and background monitor state unchanged.
+It invokes:
 
-The runtime and environment are not rebuilt. The candidate preserves current model/runtime configuration and environment resources while isolating conversation state such as provider session/thread IDs, shell environment, task and note managers, subagent history, goal state, stream queues, and message bus.
+```python
+AgentExecutionHarness.stream_segment(runtime, AgentSegmentRequest(...))
+```
 
-## Background Isolation Boundary
+The harness returns either:
 
-After preparation succeeds, YAACLI establishes the old-session isolation boundary before the first `await`:
+- `completed`, with terminal output; or
+- `suspended`, with exact native `DeferredToolRequests`.
 
-1. `BackgroundMonitor.begin_session_reset()` revokes the inherited shell-session lease, tombstones and cancels old subagent tasks, drops old shell wakeups, and suppresses reset-time shell callbacks;
-2. background usage is drained;
-3. `reset_session_state()` asks the reusable shell backend to terminate every owned foreground and background execution and discard every background output buffer and retained terminal result, then performs the bounded subagent wait;
-4. old subagents and child tasks retain the revoked lease even if they ignore cancellation or outlive the bounded wait, so later shell access is rejected;
-5. late old subagent results remain discarded; and
-6. the monitor, environment, and shell backend remain available for new-session work, but old session work does not.
+After every stable boundary the coordinator persists the checkpoint before terminal
+commit or HITL waiting. Usage limits are cumulative across continuation segments.
 
-Process creation itself is shell-owned and shielded from caller cancellation until it either fails or yields an `ExecutionHandle`; an eventual handle is then registered or terminated before cancellation propagates. Foreground `Shell.execute()` calls stay registered for their full lifetime, so reset can terminate commands already waiting in `communicate()` rather than merely cancelling the calling subagent.
+A runtime plan has one lock because the entered `AgentRuntime` is shared. The lock is
+held only during a native segment. It is released before waiting for actions, so one
+suspended session cannot block another session using the same descriptor.
 
-Non-shell cleanup failures roll forward after the tombstone boundary because old results are already isolated. Cancellation also commits the isolated candidate and is then re-raised, but only after process termination has completed successfully. If an execution handle's kill hook fails, `ShellBackgroundResetError` retains that handle for a later retry and blocks the state switch: `/load` and `/session` keep the active context and identity, while `/new` restores its previous durable session ID. A session transition must never silently commit while process ownership is unresolved.
+Live `StreamEvent` values are sent directly to the frontend event sink. They are
+transient observations, not canonical durability records.
 
-## No-Await Commit
+## Active Input and Terminal Fence
 
-The final state switch is one synchronous no-`await` block:
+Additional user or feature input is committed as ordered `InputRecord` state before a
+wake command is delivered. States are `accepted`, `enqueued`, `applied`, and `rejected`.
 
-1. reset TUI conversation state;
-2. replace `runtime.ctx` with the candidate;
-3. retarget the background monitor to the candidate message bus;
-4. replace model history and display replay;
-5. commit the durable session ID; and
-6. rebuild visible output and return to the idle phase.
+The database row is canonical. `notify_input` is only a wake/correlation command.
+`DurableInboxPumpCapability` drains rows at native graph boundaries and calls native
+`ctx.enqueue()` while the segment is bound. Native enqueue-application events reconcile
+both the product row and `RunInputLedger`.
 
-Observers therefore see either the complete old session or the complete restored session, not a mixed context/history/message-bus combination.
+At terminal boundaries the store closes ingress. Every previously accepted input must
+be applied or rejected with a reason before terminal publication. Late writes to a
+closed, cancelling, terminal, or tombstoned run fail explicitly.
 
-`/load` preserves the current durable session ID. `/session` commits the resolved target session ID in the same block.
+See [04-steering.md](04-steering.md).
 
-`/new` publishes a fresh durable session ID before its first asynchronous cleanup boundary. If Ctrl+C cancels background cleanup after the old conversation is tombstoned and process termination succeeds, cleanup still commits the fresh context and the new ID remains authoritative; a later turn can never publish under the previous session ID. A shell termination failure instead aborts the commit and restores the previous ID. Old shell notifications and terminal buffers are discarded rather than delivered to a fresh message bus.
+## HITL Suspension
 
-## Runtime Policy
+A native `DeferredToolRequests` output becomes one action batch with exact approval and
+external-result items. The run transitions to `suspended` and the coordinator waits on
+a process-local event only after the checkpoint and action state are durable.
 
-Persisted state cannot weaken the current runtime approval policy. `restore_resumable_state_safely()` snapshots current approval lists, applies resumable conversation state transactionally, and reapplies those lists after successful restore.
+Each decision has its own idempotency identity, actor, timestamp, and typed payload. A
+partial batch remains pending. Once all items resolve, `notify_action` wakes the task;
+the coordinator reconstructs matching `DeferredToolResults` and begins the next
+segment from the checkpoint.
 
-A fresh conversation starts from the configured `shell_env` runtime baseline rather than an empty mapping. Session restore overlays its persisted shell environment onto that baseline, so `/new` drops conversation-specific values without disabling process configuration and `/load` preserves both configured and restored values.
+Interactive policy presents actions. Headless policy either waits or records explicit
+denials. An `asyncio.Event` is a wake optimization, never durable truth.
 
-HITL `asyncio.Event` objects and current approval-panel cursors are process-local and are not reconstructed from model history. See `08-hitl.md`.
+## Crash and Restart
 
-## TUI Terminal Events
+YAACLI does not replay an arbitrary in-flight graph segment or completed tool/model
+operation.
 
-The interactive TUI records terminal display events for completed, cancelled, and failed runs. For failed runs it appends `RUN_ERROR` before writing the error-recovery snapshot, so durable replay contains the terminal event. A response that already emitted `RUN_FINISHED` is not reclassified as cancelled if post-response persistence is interrupted. Persistence errors are shown to the user without duplicating or replacing the terminal event.
+Startup reconciliation is explicit:
 
-The prompt-toolkit run loop only restores terminal state. `TUIApp.__aexit__()` owns the single foreground-task, managed-task, OAuth, and runtime cleanup pass, so cancellation deadlines are not paid once in `run()` and again during context exit. Each shutdown stage records its elapsed time when verbose logging is enabled.
+- `pending` runs remain eligible for normal outbox dispatch;
+- `cancelling` runs commit `cancelled`;
+- process-owned `running` or `suspended` runs commit terminal `interrupted`; and
+- interrupted publication uses the latest stable checkpoint when present.
 
-Interactive and headless save callers pass the in-memory model-message count into `save_session_turn()`. The persistence layer retains a compatibility fallback for callers that do not provide it, but normal saves do not reread and fully validate the newly written `message_history.json` merely to populate turn metadata.
+The incomplete active segment is never invoked again. `interrupted` is terminal for the
+old execution. A later user continuation is a new logical run from the published head.
 
-## Headless NDJSON Contract
+Worker shutdown cancels active tasks and commits `interrupted`. Explicit user cancel
+sets cancellation intent first and commits `cancelled`; shutdown and cancellation are
+not conflated.
 
-Headless mode writes protocol events as one JSON object per stdout line and flushes each line. Non-protocol diagnostics are redirected to stderr.
+## Process-Local Subagents
 
-Success ordering is strict:
+YAACLI persists portable child descriptors, records, history, deferred state, usage,
+steering input, completion delivery, and owner scope in the product database. Execution
+itself uses `LocalSubagentDriver` over SDK `InProcessSubagentDriver` and is process-local.
 
-1. build `RUN_FINISHED`;
-2. append it to the bounded replay to be persisted;
-3. save history, state, replay, and output; and
-4. emit `RUN_FINISHED` to stdout only after the save succeeds.
+Consequences:
 
-If saving fails, headless mode emits `RUN_ERROR`, emits no `RUN_FINISHED`, re-raises the failure, and exits non-zero through the CLI. Exception text uses defensive formatting, so a broken exception `__str__` cannot suppress the terminal protocol event or the CLI diagnostic.
+- `SQLiteSubagentExecutionStore.restart_durable` and
+  `LocalSubagentDriver.restart_durable` are both `False`;
+- startup marks `pending`, `running`, or `suspended` child orphans `lost` and rejects
+  unresolved input;
+- it does not recreate or replay child model/tool work;
+- foreground/background calls share one SDK service lifecycle during the process;
+- spawn and steering idempotency are owner scoped;
+- child request usage is cumulative across native deferred continuation;
+- exact descriptors remain available for product inspection and in-process resume;
+- terminal completion enters the canonical parent input path idempotently; and
+- tombstoning an owner closes child inboxes, persists cancellation commands, and fences
+  late model starts, saves, steering, and success commits.
 
-Empty `DeferredToolRequests` payloads are rejected. Auto-denied deferred continuations share one cumulative model-request budget for the full headless invocation rather than resetting the configured limit on every continuation.
+The TUI poller is a session-scoped readiness projection only. Switching sessions does
+not reparent work.
 
-Headless startup resolves one effective model profile: an explicit `--profile` for this invocation, otherwise the persisted startup profile. The same resolved profile drives runtime construction and saved session provenance (`model_profile_id`, label, and model); explicit CLI selection remains non-persistent.
+## Restore, New, and Delete
 
-For `asyncio.CancelledError`, headless mode emits custom `run_cancelled` with reason `cancelled` and re-raises cancellation. `AgentInterrupted` and `KeyboardInterrupt` emit `run_cancelled` with reason `interrupted`. Cancellation does not emit a false success or error terminal event.
+Startup restore and `/session <id>` load the active session and its head revision from
+`SessionStore`, then restore canonical history, validated resumable context, bounded
+display replay, and metadata. Current runtime/environment authority remains in force;
+persisted state cannot weaken current security or approval policy.
 
-## Retention
+`/new` publishes a fresh session identity. It does not reuse the previous head or inbox.
 
-Retention keeps bounded turn and session histories according to configuration. The current session and current head turn are protected while trimming. A turn created by a failed save is removed before the exception escapes and never consumes a retention slot. Ordering uses committed metadata timestamps with filesystem time only as a fallback.
+Deletion writes a tombstone that hides the session, closes active input, requests main
+cancellation, atomically fences every nonterminal child, rejects pending child input,
+enqueues idempotent child cancellation commands, and rejects all later product writes.
+
+## Offline Export and Import
+
+`/dump` exports a user-readable bundle. `/load` validates and imports one completed
+`offline_import` revision through `SessionStore.import_revision()`.
+
+Import advances the head transactionally and schedules no execution command. It is not
+a compatibility loader for removed runtime state.
+
+## Headless Contract
+
+Headless stdout is NDJSON; diagnostics go to stderr. Terminal ordering follows product
+commit:
+
+- success commits before `RUN_FINISHED`;
+- failure commits before `RUN_ERROR`;
+- explicit cancellation commits `run_cancelled`;
+- restart/shutdown loss commits `run_interrupted`; and
+- persistence failure cannot emit false success.
+
+## SQLite Operational Contract
+
+`SQLiteSessionStore` enables foreign keys, WAL mode, `synchronous=FULL`, and a bounded
+busy timeout. Writes use `BEGIN IMMEDIATE`.
+
+Only an empty database may bootstrap the current unified schema. Every nonempty database
+must match the exact marker and normalized table/index definitions. Validation runs
+before write-affecting operational pragmas, so an incompatible database is rejected
+without changing its content or journal mode. Missing constraints, indexes, or marker
+are rejected without runtime stamping or repair. The subagent adapter validates the
+exact child-table subset in the same database.
+
+The default YAACLI 2 product store is `<session_dir>/sessions-v2.sqlite3`. YAACLI does
+not inspect, migrate, or modify the former default `sessions.sqlite3`. Explicit
+`[session] database_path` and `YAACLI_DATABASE_PATH` values remain authoritative and
+use the same strict schema validation; YAACLI never silently redirects an incompatible
+explicit path.
+
+`[session] session_dir` and `database_path` select the product store. There is no second
+execution database setting.
 
 ## Verification Invariants
 
-Tests must cover:
+Tests cover:
 
-- schema-v2 save, head resolution, and retention;
-- symlink and path-escape rejection;
-- valid legacy upgrade;
-- partial, malformed, missing-identity, and wrong-identity legacy rejection without file movement;
-- restore preparation failure preserving the old session;
-- candidate context and message-bus isolation;
-- non-shell cleanup failure and cancellation roll-forward;
-- shell termination failure retaining a retry handle and blocking `/new`, `/load`, and `/session` commits;
-- `/new` cancellation preserving a fresh identity for the next save;
-- old subagents and inherited child tasks losing shell access after reset;
-- old shell readiness and terminal buffers being absent after real `/new` dispatch;
-- `/load` ID preservation and `/session` ID replacement;
-- configured shell environment baseline plus restored session overlays;
-- current approval policy preservation;
-- successful headless replay ending in persisted `RUN_FINISHED`;
-- persistence failure ending in `RUN_ERROR` without `RUN_FINISHED`; and
-- cancellation ending in `run_cancelled` without success/error terminals.
+- reopen-safe sessions, descriptors, checkpoints, and exact schema validation;
+- atomic run/input/outbox creation and delayed retry;
+- exact descriptor dispatch and explicit failure when historical code is unavailable;
+- main TestModel turn, stable checkpoint, terminal revision, and event publication;
+- cumulative request budgets across deferred segments;
+- HITL suspension without holding the shared plan lock;
+- startup `interrupted` publication from the latest checkpoint without model replay;
+- accepted input, action, terminal, and tombstone state transitions;
+- process-local child deferred continuation, usage, persisted steering, owner fencing,
+  exact descriptor retention, and startup orphan-to-`lost` recovery;
+- offline import without execution dispatch; and
+- TUI/headless restoration from identical revision semantics.

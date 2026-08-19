@@ -217,7 +217,7 @@ async def test_view_directory_error(tmp_path: Path) -> None:
 
 async def test_view_image_file(tmp_path: Path) -> None:
     """Should return ToolReturn with BinaryContent for image files."""
-    from ya_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelConfig, ModelFeature
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -227,7 +227,7 @@ async def test_view_image_file(tmp_path: Path) -> None:
         ctx = await stack.enter_async_context(
             AgentContext(
                 env=env,
-                model_cfg=ModelConfig(capabilities={ModelCapability.vision}),
+                model_cfg=ModelConfig(capabilities={ModelFeature.vision}),
             )
         )
         tool = ViewTool()
@@ -324,7 +324,7 @@ async def test_view_image_file(tmp_path: Path) -> None:
 
 async def test_view_compresses_image_to_model_limit(tmp_path: Path) -> None:
     """Should compress inline image content before returning it from view."""
-    from ya_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelConfig, ModelFeature
     from ya_agent_sdk.utils import raw_bytes_limit_for_base64
 
     async with AsyncExitStack() as stack:
@@ -336,7 +336,7 @@ async def test_view_compresses_image_to_model_limit(tmp_path: Path) -> None:
         ctx = await stack.enter_async_context(
             AgentContext(
                 env=env,
-                model_cfg=ModelConfig(max_image_bytes=max_image_bytes, capabilities={ModelCapability.vision}),
+                model_cfg=ModelConfig(max_image_bytes=max_image_bytes, capabilities={ModelFeature.vision}),
             )
         )
         tool = ViewTool()
@@ -359,7 +359,7 @@ async def test_view_compresses_image_to_model_limit(tmp_path: Path) -> None:
 
 async def test_view_resizes_image_that_exceeds_dimension_limit(tmp_path: Path) -> None:
     """Should resize low-byte images before returning inline model content."""
-    from ya_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelConfig, ModelFeature
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -370,7 +370,7 @@ async def test_view_resizes_image_that_exceeds_dimension_limit(tmp_path: Path) -
                 env=env,
                 model_cfg=ModelConfig(
                     max_image_dimension=8000,
-                    capabilities={ModelCapability.vision},
+                    capabilities={ModelFeature.vision},
                 ),
             )
         )
@@ -391,7 +391,7 @@ async def test_view_resizes_image_that_exceeds_dimension_limit(tmp_path: Path) -
 
 async def test_view_reject_large_image_inline(tmp_path: Path) -> None:
     """Should reject oversized images before loading them into memory."""
-    from ya_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelConfig, ModelFeature
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -400,7 +400,7 @@ async def test_view_reject_large_image_inline(tmp_path: Path) -> None:
         ctx = await stack.enter_async_context(
             AgentContext(
                 env=env,
-                model_cfg=ModelConfig(capabilities={ModelCapability.vision}),
+                model_cfg=ModelConfig(capabilities={ModelFeature.vision}),
             )
         )
         tool = ViewTool()
@@ -470,7 +470,7 @@ async def test_view_uses_tool_config_text_limit(tmp_path: Path) -> None:
 
 async def test_view_video_file_with_video_model(tmp_path: Path) -> None:
     """Should return video content when model supports video."""
-    from ya_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelConfig, ModelFeature
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -480,7 +480,7 @@ async def test_view_video_file_with_video_model(tmp_path: Path) -> None:
         ctx = await stack.enter_async_context(
             AgentContext(
                 env=env,
-                model_cfg=ModelConfig(capabilities={ModelCapability.video_understanding}),
+                model_cfg=ModelConfig(capabilities={ModelFeature.video_understanding}),
             )
         )
         tool = ViewTool()
@@ -617,7 +617,7 @@ async def test_view_video_fallback_failure(tmp_path: Path) -> None:
 
 async def test_view_webm_video(tmp_path: Path) -> None:
     """Should handle webm video with correct media type."""
-    from ya_agent_sdk.context import ModelCapability, ModelConfig
+    from ya_agent_sdk.context import ModelConfig, ModelFeature
 
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
@@ -627,7 +627,7 @@ async def test_view_webm_video(tmp_path: Path) -> None:
         ctx = await stack.enter_async_context(
             AgentContext(
                 env=env,
-                model_cfg=ModelConfig(capabilities={ModelCapability.video_understanding}),
+                model_cfg=ModelConfig(capabilities={ModelFeature.video_understanding}),
             )
         )
         tool = ViewTool()

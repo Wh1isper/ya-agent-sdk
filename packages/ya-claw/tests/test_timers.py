@@ -65,9 +65,9 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[..., None]) -> AsyncEngine:
     database_url = f"sqlite+aiosqlite:///{(tmp_path / 'timers.sqlite3').resolve()}"
-    initialize_sqlite_database(database_url)
+    initialize_sqlite_database(database_url, profile_names=("default", "general"))
     engine = create_engine(database_url)
     try:
         yield engine
@@ -633,10 +633,13 @@ async def test_schedule_dispatcher_scan_processes_pending_and_due_fires(
 
 
 def test_timer_api_routes_expose_config_create_trigger_and_fire_history(
-    initialize_sqlite_database: Callable[[str], None],
+    initialize_sqlite_database: Callable[..., None],
 ) -> None:
     settings = get_settings()
-    initialize_sqlite_database(settings.resolved_database_url)
+    initialize_sqlite_database(
+        settings.resolved_database_url,
+        profile_names=("default", "general"),
+    )
 
     with TestClient(create_app()) as client:
         client.app.state.execution_supervisor = None

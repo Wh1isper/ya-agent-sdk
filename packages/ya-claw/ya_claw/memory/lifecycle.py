@@ -20,6 +20,10 @@ from ya_claw.config import ClawSettings
 from ya_claw.context import ClawAgentContext
 from ya_claw.controller.models import DispatchMode, MemoryJobKind, TriggerType
 from ya_claw.controller.session_lifecycle import lock_session_reference
+from ya_claw.execution.profile import (
+    PROFILE_SNAPSHOT_METADATA_KEY,
+    capture_execution_profile_descriptor,
+)
 from ya_claw.execution.state_machine import queue_run
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
@@ -682,6 +686,12 @@ async def _create_memory_run(
     input_text: str,
 ) -> RunRecord:
     sequence_no = await _next_sequence_no(db_session, memory_session.id)
+    if not isinstance(memory_session.profile_name, str) or not memory_session.profile_name.strip():
+        raise ValueError("Memory sessions require an exact execution profile")
+    profile_descriptor = await capture_execution_profile_descriptor(
+        db_session,
+        memory_session.profile_name,
+    )
     run = RunRecord(
         id=uuid4().hex,
         session_id=memory_session.id,
@@ -691,7 +701,10 @@ async def _create_memory_run(
         trigger_type=TriggerType.MEMORY.value,
         profile_name=memory_session.profile_name,
         input_parts=[{"type": "text", "text": input_text}],
-        run_metadata={"memory": memory_metadata},
+        run_metadata={
+            "memory": memory_metadata,
+            PROFILE_SNAPSHOT_METADATA_KEY: profile_descriptor.model_dump(mode="json"),
+        },
     )
     db_session.add(run)
     queue_run(memory_session, run)

@@ -37,7 +37,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import RetryPromptPart, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart
 from ya_agent_sdk.context.agent import StreamEvent
-from ya_agent_sdk.events import MessageReceivedEvent, ModelRequestStartEvent, UsageSnapshotEvent
+from ya_agent_sdk.events import ModelRequestStartEvent, UsageSnapshotEvent
 
 from ya_agent_stream_protocol.agui.events import dump_agui_event
 from ya_agent_stream_protocol.json_types import JsonObject, JsonValue
@@ -119,14 +119,6 @@ class AguiEventAdapter:
                     event_name="usage_snapshot",
                     stream_event=stream_event,
                     payload=_serialize_value(event.snapshot) if event.snapshot is not None else None,
-                )
-            ]
-        if isinstance(event, MessageReceivedEvent):
-            return [
-                self._custom_agent_event(
-                    event_name="message_received",
-                    stream_event=stream_event,
-                    payload={"messages": _serialize_value(event.messages)},
                 )
             ]
         return [

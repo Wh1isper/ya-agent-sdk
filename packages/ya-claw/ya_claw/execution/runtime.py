@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
-from pydantic_ai import DeferredToolRequests
+from pydantic_ai import AgentSpec, DeferredToolRequests, ModelSettings
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.output import StructuredDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
+from ya_agent_sdk.capabilities import (
+    SkillsCapability,
+    ToolProxyCapability,
+)
 from ya_agent_sdk.context import (
+    AgentContext,
     ModelConfig,
     ResumableState,
     SecurityConfig,
@@ -17,14 +24,8 @@ from ya_agent_sdk.context import (
     ToolConfig,
 )
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps, filter_mcp_config
-from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.toolsets.core.content import tools as content_tools
-from ya_agent_sdk.toolsets.core.document import tools as document_tools
-from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
-from ya_agent_sdk.toolsets.core.web import tools as web_tools
-from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillToolset
-from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
+from ya_agent_sdk.subagents import DelegationCapability, SubagentRegistry
+from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME
 from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
 from ya_claw.agency.prompt import AGENCY_SYSTEM_PROMPT
@@ -32,47 +33,18 @@ from ya_claw.config import ClawSettings
 from ya_claw.context import CLAW_INJECTED_CONTEXT_TAGS, ClawAgentContext, ClawWorkspaceBindingSnapshot
 from ya_claw.controller.models import AgencyHandoffKind
 from ya_claw.execution.profile import ResolvedProfile
+from ya_claw.execution.subagents import (
+    ClawSubagentClient,
+    build_claw_delegation_service,
+    build_claw_host_capabilities,
+    build_claw_subagent_plan_resolver,
+    resolve_claw_subagent_plan,
+)
 from ya_claw.mcp import build_profile_mcp_config
 from ya_claw.memory.lifecycle import ClawMemoryExtension
 from ya_claw.memory.prompts import MEMORY_EXTRACT_SYSTEM_PROMPT, MEMORY_SUMMARY_SYSTEM_PROMPT
 from ya_claw.memory.store import WorkspaceMemoryStore
-from ya_claw.toolsets.agency import (
-    GetSourceRunTraceTool,
-    ListAgencyRunsTool,
-    ListSourceSessionTurnsTool,
-    SubmitToSessionTool,
-)
-from ya_claw.toolsets.async_subagent import (
-    CancelAsyncSubagentTool,
-    GetAsyncSubagentTool,
-    ListAsyncSubagentsTool,
-    SpawnDelegateTool,
-    SteerAsyncSubagentTool,
-)
-from ya_claw.toolsets.schedule import (
-    CreateOnceScheduleTool,
-    CreateOnceWorkflowScheduleTool,
-    CreateScheduleTool,
-    CreateWorkflowScheduleTool,
-    DeleteScheduleTool,
-    ListSchedulesTool,
-    TriggerScheduleTool,
-    UpdateScheduleTool,
-)
-from ya_claw.toolsets.session import GetRunTraceTool, ListSessionTurnsTool
-from ya_claw.toolsets.workflow import (
-    ArchiveWorkflowTool,
-    CancelWorkflowRunTool,
-    CreateWorkflowTool,
-    GetWorkflowRunTool,
-    GetWorkflowTool,
-    ListAgentPresetsTool,
-    ListWorkflowRunsTool,
-    ListWorkflowsTool,
-    StartWorkflowTool,
-    SteerWorkflowNodeTool,
-    UpdateWorkflowTool,
-)
+from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY
 from ya_claw.workspace import (
     WorkspaceBinding,
     extract_workspace_sandbox_metadata,
@@ -81,9 +53,6 @@ from ya_claw.workspace import (
     load_heartbeat_guidance,
     load_workspace_guidance,
 )
-
-if TYPE_CHECKING:
-    from pydantic_ai.toolsets import AbstractToolset
 
 
 def _agency_handoff_kind(value: object) -> AgencyHandoffKind:
@@ -120,48 +89,6 @@ and leave the workspace in a useful committed state for the next run.
 Prefer concise, action-oriented execution.
 """.strip()
 
-_BUILTIN_TOOL_REGISTRY: dict[str, list[type[BaseTool]]] = {
-    "content": list(content_tools),
-    "filesystem": list(filesystem_tools),
-    "shell": list(shell_tools),
-    "web": list(web_tools),
-    "document": list(document_tools),
-    "background": [
-        SpawnDelegateTool,
-        ListAsyncSubagentsTool,
-        GetAsyncSubagentTool,
-        SteerAsyncSubagentTool,
-        CancelAsyncSubagentTool,
-    ],
-    "session": [ListSessionTurnsTool, GetRunTraceTool],
-    "agency": [ListSourceSessionTurnsTool, GetSourceRunTraceTool, ListAgencyRunsTool, SubmitToSessionTool],
-    "schedule": [
-        ListSchedulesTool,
-        CreateScheduleTool,
-        CreateOnceScheduleTool,
-        CreateWorkflowScheduleTool,
-        CreateOnceWorkflowScheduleTool,
-        UpdateScheduleTool,
-        DeleteScheduleTool,
-        TriggerScheduleTool,
-    ],
-    "workflow": [
-        ListWorkflowsTool,
-        GetWorkflowTool,
-        CreateWorkflowTool,
-        UpdateWorkflowTool,
-        ArchiveWorkflowTool,
-        StartWorkflowTool,
-        ListWorkflowRunsTool,
-        GetWorkflowRunTool,
-        SteerWorkflowNodeTool,
-        CancelWorkflowRunTool,
-        ListAgentPresetsTool,
-    ],
-}
-_BUILTIN_TOOLSET_ALIASES: dict[str, list[str]] = {
-    "core": ["content", "filesystem", "shell", "background", "session", "schedule", "workflow", "agency"],
-}
 _UNATTENDED_SOURCE_KINDS = frozenset({"schedule", "workflow", "heartbeat", "agency", "agency_handoff"})
 
 
@@ -188,16 +115,15 @@ class ClawRuntimeBuilder:
         dispatch_mode: str,
         source_kind: str | None,
         source_metadata: dict[str, Any] | None,
-        async_subagents_context: str | None = None,
         claw_metadata: dict[str, Any] | None = None,
     ) -> AgentRuntime[ClawAgentContext, Any, Environment]:
-        _ = async_subagents_context
         sandbox_metadata = extract_workspace_sandbox_metadata(binding.metadata) or {}
         is_async_subagent = _is_async_subagent_source(source_metadata)
         effective_source_metadata = dict(source_metadata or {})
-        extra_context_kwargs = {
+        context_kwargs = {
             "session_id": session_id,
             "claw_run_id": run_id,
+            "delegation_scope_id": session_id,
             "provider_session_id": session_id,
             "provider_thread_id": run_id,
             "profile_name": profile.name,
@@ -213,7 +139,7 @@ class ClawRuntimeBuilder:
         }
         shell_env = _normalize_shell_env(effective_source_metadata.get("shell_env"))
         if shell_env:
-            extra_context_kwargs["shell_env"] = shell_env
+            context_kwargs["shell_env"] = shell_env
             if restore_state is not None:
                 restore_state = restore_state.model_copy(
                     update={"shell_env": {**restore_state.shell_env, **shell_env}},
@@ -221,46 +147,69 @@ class ClawRuntimeBuilder:
                 )
         shell_review = self._resolve_shell_review(profile, source_kind=source_kind, source_metadata=source_metadata)
         if shell_review is not None:
-            extra_context_kwargs["security"] = SecurityConfig(shell_review=shell_review)
+            context_kwargs["security"] = SecurityConfig(shell_review=shell_review)
+        approval_tools = self._resolve_need_user_approve_tools(profile, source_kind=source_kind)
+        approval_mcps = self._resolve_need_user_approve_mcps(profile, source_kind=source_kind)
+        context_kwargs.update({
+            "tool_config": ToolConfig(view_relaxed_text_patterns=("memory/**/*.md", "AGENTS.md")),
+            "need_user_approve_tools": sorted(approval_tools),
+            "need_user_approve_mcps": sorted(approval_mcps),
+        })
+        resolved_spec = self._runtime_agent_spec(
+            profile.agent_spec,
+            source_kind=source_kind,
+        )
+        subagent_client = environment.resources.get(CLAW_SELF_CLIENT_KEY)
+        spec = resolved_spec.model_copy(update={"capabilities": []})
+        plan_resolver = build_claw_subagent_plan_resolver()
         return create_agent(
-            model=profile.model,
-            model_settings=cast(Any, profile.model_settings),
-            output_type=[str, DeferredToolRequests],
+            model=resolved_spec.model,
+            spec=spec,
+            custom_capability_types=plan_resolver.catalog.custom_capability_types,
+            capabilities=self._resolve_runtime_capabilities(
+                profile=profile,
+                is_async_subagent=is_async_subagent,
+                approval_tools=approval_tools,
+                approval_mcps=approval_mcps,
+                session_id=session_id,
+                subagent_client=(subagent_client if isinstance(subagent_client, ClawSubagentClient) else None),
+            ),
+            model_settings=cast(ModelSettings | None, spec.model_settings),
+            output_type=self._resolve_output_type(resolved_spec),
             context_type=ClawAgentContext,
             model_cfg=self._build_model_config(profile),
+            context_kwargs=context_kwargs,
             env=environment,
-            tool_config=ToolConfig(view_relaxed_text_patterns=("memory/**/*.md", "AGENTS.md")),
-            extra_context_kwargs=extra_context_kwargs,
             state=restore_state,
-            need_user_approve_tools=self._resolve_need_user_approve_tools(profile, source_kind=source_kind),
-            need_user_approve_mcps=self._resolve_need_user_approve_mcps(profile, source_kind=source_kind),
-            tools=self._filter_builtin_tools(
-                self._resolve_builtin_tools(profile.builtin_toolsets),
-                profile.builtin_tool_allowlist,
-                is_async_subagent=is_async_subagent,
-                source_kind=source_kind,
-            ),
-            toolsets=self._resolve_runtime_toolsets(
-                profile=profile,
-                binding=binding,
-                source_kind=source_kind,
-                is_async_subagent=is_async_subagent,
-            )
-            or None,
-            subagent_configs=[] if is_async_subagent else profile.subagent_configs,
-            include_builtin_subagents=False if is_async_subagent else profile.include_builtin_subagents,
-            unified_subagents=False if is_async_subagent else profile.unified_subagents,
-            system_prompt=self._build_system_prompt(
+            agent_name=resolved_spec.name or profile.name,
+            instructions=self._build_system_prompt(
                 profile=profile,
                 binding=binding,
                 source_kind=source_kind,
                 source_metadata=source_metadata,
             ),
+            retries=None,
+            end_strategy=None,
             lifecycle_extensions=self._resolve_lifecycle_extensions(),
         )
 
     def _build_model_config(self, profile: ResolvedProfile) -> ModelConfig:
         return ModelConfig.model_validate(dict(profile.model_config or {}))
+
+    def _runtime_agent_spec(
+        self,
+        spec: AgentSpec,
+        *,
+        source_kind: str | None,
+    ) -> AgentSpec:
+        if source_kind in {"memory", "agency"}:
+            return spec.model_copy(update={"instructions": None})
+        return spec
+
+    def _resolve_output_type(self, spec: AgentSpec) -> Any:
+        if spec.output_schema is not None:
+            return [StructuredDict(spec.output_schema), DeferredToolRequests]
+        return [str, DeferredToolRequests]
 
     def _resolve_shell_review(
         self,
@@ -301,91 +250,82 @@ class ClawRuntimeBuilder:
             return ShellReviewRiskLevel(self._settings.unattended_shell_review_risk_threshold)
         return review.risk_threshold
 
-    def _resolve_need_user_approve_tools(self, profile: ResolvedProfile, *, source_kind: str | None) -> list[str]:
-        if _is_unattended_source(source_kind):
-            return []
-        return list(profile.need_user_approve_tools)
+    def _resolve_need_user_approve_tools(self, profile: ResolvedProfile, *, source_kind: str | None) -> frozenset[str]:
+        return frozenset() if _is_unattended_source(source_kind) else profile.approval_tools
 
-    def _resolve_need_user_approve_mcps(self, profile: ResolvedProfile, *, source_kind: str | None) -> list[str]:
-        if _is_unattended_source(source_kind):
-            return []
-        return list(profile.need_user_approve_mcps)
+    def _resolve_need_user_approve_mcps(self, profile: ResolvedProfile, *, source_kind: str | None) -> frozenset[str]:
+        return frozenset() if _is_unattended_source(source_kind) else profile.approval_mcps
 
-    def _resolve_builtin_tools(
-        self,
-        toolset_names: list[str],
-    ) -> list[type[BaseTool]]:
-        resolved: list[type[BaseTool]] = []
-        seen: set[str] = set()
-        for name in toolset_names:
-            expanded_names = _BUILTIN_TOOLSET_ALIASES.get(name, [name])
-            for expanded_name in expanded_names:
-                for tool in _BUILTIN_TOOL_REGISTRY.get(expanded_name, []):
-                    tool_name = getattr(tool, "name", tool.__name__)
-                    if tool_name in seen:
-                        continue
-                    seen.add(tool_name)
-                    resolved.append(tool)
-        return resolved
-
-    def _filter_builtin_tools(
-        self,
-        tools: list[type[BaseTool]],
-        allowlist: list[str] | None,
-        *,
-        is_async_subagent: bool = False,
-        source_kind: str | None = None,
-    ) -> list[type[BaseTool]]:
-        selected = tools
-        if allowlist is not None:
-            allowed = set(allowlist)
-            selected = [tool for tool in selected if getattr(tool, "name", tool.__name__) in allowed]
-        if source_kind != "agency":
-            selected = [tool for tool in selected if not getattr(tool, "agency_only", False)]
-        if is_async_subagent:
-            selected = [tool for tool in selected if not getattr(tool, "blocks_async_subagent", False)]
-        return selected
-
-    def _resolve_runtime_toolsets(
+    def _resolve_runtime_capabilities(
         self,
         *,
         profile: ResolvedProfile,
-        binding: WorkspaceBinding,
-        source_kind: str | None = None,
-        is_async_subagent: bool = False,
-    ) -> list[AbstractToolset[Any]]:
-        _ = source_kind
-        toolsets: list[AbstractToolset[Any]] = []
+        is_async_subagent: bool,
+        approval_tools: frozenset[str],
+        approval_mcps: frozenset[str],
+        session_id: str,
+        subagent_client: ClawSubagentClient | None,
+    ) -> tuple[AbstractCapability[AgentContext], ...]:
+        capabilities: list[AbstractCapability[AgentContext]] = []
+        catalog = build_claw_subagent_plan_resolver().catalog
+        for capability_spec in profile.agent_spec.capabilities:
+            try:
+                capability_type = catalog[capability_spec.name]
+            except KeyError as exc:
+                raise ValueError(f"Unsupported Claw profile capability {capability_spec.name!r}") from exc
+            capabilities.append(capability_type(*capability_spec.args, **capability_spec.kwargs))
+        host_capabilities = build_claw_host_capabilities(
+            groups=profile.host_tool_groups,
+            allowlist=profile.host_tool_allowlist,
+            approval_tools=approval_tools,
+            approval_mcps=approval_mcps,
+        )
+        capabilities.extend(host_capabilities)
         if not is_async_subagent:
-            toolsets.append(SkillToolset(toolset_id="skills", extra_dir_names=[SHARED_SKILLS_DIR_NAME]))
+            capabilities.append(SkillsCapability(extra_dir_names=(SHARED_SKILLS_DIR_NAME,)))
+            if profile.subagent_specs:
+                if self._session_factory is None or subagent_client is None:
+                    raise RuntimeError("Claw durable delegation requires the SQL session factory and internal client")
+                registry = SubagentRegistry(tuple(resolve_claw_subagent_plan(spec) for spec in profile.subagent_specs))
+                service = build_claw_delegation_service(
+                    registry=registry,
+                    session_factory=self._session_factory,
+                    parent_session_id=session_id,
+                    client=subagent_client,
+                    settings=self._settings,
+                )
+                capabilities.append(DelegationCapability(registry=registry, service=service))
+        mcp_capability = self._resolve_mcp_capability(profile, approval_mcps=approval_mcps)
+        if mcp_capability is not None:
+            capabilities.append(mcp_capability)
+        return tuple(capabilities)
+
+    def _resolve_mcp_capability(
+        self,
+        profile: ResolvedProfile,
+        *,
+        approval_mcps: frozenset[str],
+    ) -> ToolProxyCapability | None:
         profile_mcp_config = build_profile_mcp_config(profile.mcp_servers)
         if profile_mcp_config is None:
-            return toolsets
-
+            return None
         filtered_config = filter_mcp_config(
             profile_mcp_config,
-            enabled_mcps=profile.enabled_mcps,
-            disabled_mcps=profile.disabled_mcps,
+            enabled_mcps=list(profile.enabled_mcps),
+            disabled_mcps=list(profile.disabled_mcps),
         )
         if not filtered_config.servers:
-            return toolsets
-
-        mcp_servers = build_mcp_servers(filtered_config, need_approval_mcps=profile.need_user_approve_mcps)
+            return None
+        mcp_servers = build_mcp_servers(filtered_config, need_approval_mcps=list(approval_mcps))
         if not mcp_servers:
-            return toolsets
-
-        mcp_descriptions = extract_mcp_descriptions(filtered_config)
-        optional_mcps = extract_optional_mcps(filtered_config)
-        toolsets.append(
-            ToolProxyToolset(
-                toolsets=mcp_servers,
-                namespace_descriptions=mcp_descriptions if mcp_descriptions else None,
-                search_strategy=create_best_strategy(),
-                optional_namespaces=optional_mcps if optional_mcps else None,
-                prefix="mcp",
-            )
+            return None
+        return ToolProxyCapability(
+            toolsets=tuple(mcp_servers),
+            namespace_descriptions=extract_mcp_descriptions(filtered_config),
+            search_strategy=create_best_strategy(),
+            optional_namespaces=frozenset(extract_optional_mcps(filtered_config)),
+            prefix="mcp",
         )
-        return toolsets
 
     def _build_system_prompt(  # noqa: C901
         self,
@@ -401,7 +341,9 @@ class ClawRuntimeBuilder:
         if source_kind == "agency":
             WorkspaceMemoryStore(binding).ensure_agency()
             return self._build_agency_system_prompt(profile=profile, binding=binding, source_metadata=source_metadata)
-        prompt_lines = [profile.system_prompt or _DEFAULT_SYSTEM_PROMPT]
+        prompt_lines: list[str] = []
+        if _profile_instructions(profile) is None:
+            prompt_lines.append(_DEFAULT_SYSTEM_PROMPT)
         prompt_lines.append("Workspace mounts:")
         for mount in binding.mounts:
             access = "writable" if mount.mode == "rw" else "read-only"
@@ -585,6 +527,15 @@ class ClawRuntimeBuilder:
 
     def _resolve_lifecycle_extensions(self) -> list[ClawMemoryExtension]:
         return [ClawMemoryExtension(settings=self._settings, session_factory=self._session_factory)]
+
+
+def _profile_instructions(profile: ResolvedProfile) -> str | None:
+    instructions = profile.agent_spec.instructions
+    if isinstance(instructions, str):
+        return instructions
+    if isinstance(instructions, list):
+        return "\n\n".join(str(item) for item in instructions)
+    return None
 
 
 def _is_unattended_source(source_kind: str | None) -> bool:

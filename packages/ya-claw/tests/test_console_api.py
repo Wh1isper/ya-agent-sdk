@@ -14,7 +14,7 @@ from ya_claw.notifications import NotificationHub
 def clear_claw_settings(
     monkeypatch,
     tmp_path: Path,
-    initialize_sqlite_database: Callable[[str], None],
+    initialize_sqlite_database: Callable[..., None],
 ) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
@@ -52,7 +52,10 @@ def clear_claw_settings(
 
     get_settings.cache_clear()
     settings = get_settings()
-    initialize_sqlite_database(settings.resolved_database_url)
+    initialize_sqlite_database(
+        settings.resolved_database_url,
+        profile_names=("default", "general"),
+    )
     yield
     get_settings.cache_clear()
 
@@ -100,6 +103,7 @@ def test_console_notifications_endpoint_is_present_in_openapi() -> None:
 
 def test_console_notifications_capture_session_run_and_profile_events() -> None:
     with TestClient(create_app()) as client:
+        client.app.state.execution_supervisor = None
         session_response = client.post(
             "/api/v1/sessions",
             headers=_auth_headers(),
@@ -116,8 +120,14 @@ def test_console_notifications_capture_session_run_and_profile_events() -> None:
             "/api/v1/profiles/general",
             headers=_auth_headers(),
             json={
-                "model": "gateway@openai-responses:gpt-5.5",
-                "builtin_toolsets": ["core"],
+                "schema_version": 2,
+                "agent": {
+                    "model": "gateway@openai-responses:gpt-5.5",
+                    "name": "general",
+                    "capabilities": [],
+                },
+                "host": {"tool_groups": ["session"]},
+                "subagents": [],
                 "enabled": True,
             },
         )
@@ -127,7 +137,7 @@ def test_console_notifications_capture_session_run_and_profile_events() -> None:
         event_types = [event.type for event in events]
         assert event_types[0] == "session.created"
         assert event_types[1] == "run.created"
-        profile_event_index = event_types.index("profile.created")
+        profile_event_index = event_types.index("profile.updated")
         assert events[0].payload["session_id"] == session_payload["id"]
         assert events[0].payload["status_reason"] == "run_queued"
         assert events[1].payload["run_id"] == run_payload["id"]
@@ -144,7 +154,14 @@ def test_profile_delete_emits_console_notification() -> None:
             "/api/v1/profiles/custom",
             headers=_auth_headers(),
             json={
-                "model": "gateway@openai-responses:gpt-5.5",
+                "schema_version": 2,
+                "agent": {
+                    "model": "gateway@openai-responses:gpt-5.5",
+                    "name": "custom",
+                    "capabilities": [],
+                },
+                "host": {},
+                "subagents": [],
                 "enabled": True,
             },
         )

@@ -23,57 +23,431 @@ Example:
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
+import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, Literal, cast
 
-from pydantic_ai import DeferredToolRequests, InstructionPart, ModelSettings, RunContext
-from pydantic_ai.output import OutputSpec
-from pydantic_ai.toolsets import ToolsetTool, WrapperToolset
+from pydantic_ai import AgentSpec, DeferredToolRequests, InstructionPart, ModelSettings, RunContext
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import Toolset as NativeToolsetCapability
+from pydantic_ai.toolsets import AbstractToolset, ToolsetTool, WrapperToolset
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
-from ya_agent_sdk.codeact import CodeActConfig
-from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig, ToolConfig
+from ya_agent_sdk.capabilities import (
+    CodeActCapability,
+    DocumentConversionCapability,
+    FilesystemCapability,
+    MediaReadCapability,
+    NoteCapability,
+    RuntimeFoundationCapability,
+    ShellCapability,
+    SkillsCapability,
+    TaskCapability,
+    ThinkingCapability,
+    TodoCapability,
+    ToolApprovalCapability,
+    ToolObservationCapability,
+    ToolProxyCapability,
+    ToolRetryCapability,
+    ToolTimeoutCapability,
+    UserInteractionCapability,
+    WebContentCapability,
+    WebSearchCapability,
+    build_default_capability_catalog,
+)
+from ya_agent_sdk.context import ModelConfig, SecurityConfig, ShellReviewConfig, ToolConfig
 from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
 from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
 from ya_agent_sdk.presets import resolve_model_settings
-from ya_agent_sdk.subagents import SubagentConfig, load_subagents_from_dir
-from ya_agent_sdk.toolsets.core.base import BaseTool
-from ya_agent_sdk.toolsets.core.content import tools as content_tools
-from ya_agent_sdk.toolsets.core.context import tools as context_tools
-from ya_agent_sdk.toolsets.core.document import tools as document_tools
-from ya_agent_sdk.toolsets.core.enhance import tools as enhance_tools
-from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from ya_agent_sdk.toolsets.core.interaction import tools as interaction_tools
-from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
-from ya_agent_sdk.toolsets.core.subagent import tools as subagent_tools
-from ya_agent_sdk.toolsets.core.web import tools as web_tools
+from ya_agent_sdk.subagents import (
+    DelegationCapability,
+    SelfForkPolicy,
+    SubagentDeferredResolver,
+    SubagentExecutionMode,
+    SubagentExecutionService,
+    SubagentPlanDescriptor,
+    SubagentPlanResolver,
+    SubagentRegistry,
+    SubagentSpec,
+)
+from ya_agent_sdk.toolsets.core.base import Toolset
 from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillToolset
-from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
 from ya_agent_sdk.toolsets.tool_search import create_best_strategy
 
-from yaacli.background import DELEGATE_BACKEND_TOOL_NAME
 from yaacli.config import ConfigManager, MCPConfig, SubagentsConfig, YaacliConfig
-from yaacli.environment import TUIEnvironment
-from yaacli.guards import attach_goal_guard
-from yaacli.logging import get_logger
-from yaacli.model_profiles import ResolvedModelProfile, get_startup_model_profile, resolve_profile_model_cfg
-from yaacli.session import TUIContext
-from yaacli.toolsets.background import (
-    AsyncDelegateTool,
-    MonitoredShellTool,
-    SpawnDelegateTool,
-    SteerSubagentTool,
-    WaitSubagentTool,
+from yaacli.durable.capabilities import DurableInboxPumpCapability
+from yaacli.durable.models import (
+    ChildPlanManifest,
+    MainRuntimeManifest,
+    RuntimeSecretRequirement,
 )
-
-if TYPE_CHECKING:
-    from pydantic_ai.toolsets import AbstractToolset
+from yaacli.durable.subagents import (
+    DurableSubagentCompletionDelivery,
+    DurableSubagentInboxCapability,
+    LocalSubagentDriver,
+    SQLiteSubagentExecutionStore,
+)
+from yaacli.environment import TUIEnvironment
+from yaacli.guards import GoalGuardCapability
+from yaacli.logging import get_logger
+from yaacli.model_profiles import (
+    ResolvedModelProfile,
+    get_model_profile,
+    get_startup_model_profile,
+    resolve_profile_model_cfg,
+)
+from yaacli.session import TUIContext
+from yaacli.subagent_config import (
+    YAACLI_MODEL_CFG_METADATA_KEY,
+    load_subagent_specs,
+)
+from yaacli.toolsets.monitored_shell import MonitoredShellTool
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class RuntimeSourceSnapshot:
+    """Immutable file-derived inputs shared by runtime construction and descriptors."""
+
+    system_prompt: str
+    subagent_specs: tuple[SubagentSpec, ...]
+
+    def fingerprint_payload(self) -> dict[str, Any]:
+        return {
+            "system_prompt": self.system_prompt,
+            "subagent_specs": [spec.model_dump(mode="json", by_alias=True) for spec in self.subagent_specs],
+        }
+
+
+_RUNTIME_CONFIG_KEYS = (
+    "general",
+    "subagents",
+    "media",
+    "env",
+    "shell_env",
+    "include_os_env",
+    "security",
+    "tools",
+)
+_SENSITIVE_CONFIG_PATHS = {
+    ("media", "s3", "access_key_id"),
+    ("media", "s3", "secret_access_key"),
+}
+_SENSITIVE_KEY_PARTS = ("api_key", "apikey", "authorization", "cookie", "credential", "password", "secret", "token")
+SecretSource = Literal["config", "mcp", "profile", "environment"]
+
+
+def _value_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _path_value(value: Any, path: tuple[str | int, ...]) -> Any:
+    current = value
+    for part in path:
+        if isinstance(part, int):
+            if not isinstance(current, list):
+                raise KeyError(path)
+            current = current[part]
+        else:
+            if not isinstance(current, dict):
+                raise KeyError(path)
+            current = current[part]
+    return current
+
+
+def _set_path_value(value: Any, path: tuple[str | int, ...], replacement: Any) -> None:
+    if not path:
+        raise ValueError("Runtime secret target path cannot be empty")
+    parent = _path_value(value, path[:-1]) if len(path) > 1 else value
+    final = next(reversed(path))
+    if isinstance(final, int):
+        if not isinstance(parent, list):
+            raise KeyError(path)
+        parent[final] = replacement
+    else:
+        if not isinstance(parent, dict):
+            raise KeyError(path)
+        parent[final] = replacement
+
+
+def _key_is_sensitive(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
+
+
+def _redact_snapshot(
+    value: Any,
+    *,
+    source: SecretSource,
+    target_root: str,
+    force_reference: Callable[[tuple[str | int, ...], Any], bool] | None = None,
+    path: tuple[str | int, ...] = (),
+) -> tuple[Any, list[RuntimeSecretRequirement]]:
+    requirements: list[RuntimeSecretRequirement] = []
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            item_path = (*path, key)
+            should_reference = item is not None and (
+                _key_is_sensitive(key) or (force_reference is not None and force_reference(item_path, item))
+            )
+            if should_reference:
+                redacted[key] = None
+                requirements.append(
+                    RuntimeSecretRequirement(
+                        source=source,
+                        source_path=item_path,
+                        target_path=(target_root, *item_path),
+                        sha256=_value_digest(item),
+                    )
+                )
+                continue
+            redacted_item, nested = _redact_snapshot(
+                item,
+                source=source,
+                target_root=target_root,
+                force_reference=force_reference,
+                path=item_path,
+            )
+            redacted[key] = redacted_item
+            requirements.extend(nested)
+        return redacted, requirements
+    if isinstance(value, list):
+        redacted_items: list[Any] = []
+        for index, item in enumerate(value):
+            item_path = (*path, index)
+            if force_reference is not None and force_reference(item_path, item):
+                redacted_items.append(None)
+                requirements.append(
+                    RuntimeSecretRequirement(
+                        source=source,
+                        source_path=item_path,
+                        target_path=(target_root, *item_path),
+                        sha256=_value_digest(item),
+                    )
+                )
+                continue
+            redacted_item, nested = _redact_snapshot(
+                item,
+                source=source,
+                target_root=target_root,
+                force_reference=force_reference,
+                path=item_path,
+            )
+            redacted_items.append(redacted_item)
+            requirements.extend(nested)
+        return redacted_items, requirements
+    return value, requirements
+
+
+def build_main_runtime_manifest(
+    config: YaacliConfig,
+    mcp_config: MCPConfig | None,
+    *,
+    profile: ResolvedModelProfile | None,
+    sources: RuntimeSourceSnapshot,
+    working_dir: Path,
+    config_dir: Path,
+    subagent_default_mode: SubagentExecutionMode | None,
+    enable_user_input: bool,
+    frontend: Literal["tui", "headless"],
+    hitl_policy: Literal["wait", "deny"],
+) -> MainRuntimeManifest:
+    """Snapshot one exact YAACLI host plan while retaining secrets only by digest."""
+    full_config = config.model_dump(mode="json")
+    runtime_config = {key: copy.deepcopy(full_config[key]) for key in _RUNTIME_CONFIG_KEYS}
+
+    config_snapshot, requirements = _redact_snapshot(
+        runtime_config,
+        source="config",
+        target_root="config",
+        force_reference=lambda path, item: (
+            path in _SENSITIVE_CONFIG_PATHS or (len(path) >= 2 and path[0] in {"env", "shell_env"})
+        ),
+    )
+    for requirement in tuple(requirements):
+        if requirement.source_path and requirement.source_path[0] == "env":
+            requirements.remove(requirement)
+            env_name = requirement.source_path[1]
+            if not isinstance(env_name, str):
+                raise TypeError("Environment variable names must be strings")
+            requirements.append(
+                requirement.model_copy(
+                    update={
+                        "source": "environment",
+                        "source_path": (env_name,),
+                    }
+                )
+            )
+
+    mcp_snapshot: dict[str, Any] | None = None
+    if mcp_config is not None:
+        raw_mcp = mcp_config.model_dump(mode="json")
+
+        def reference_mcp_value(path: tuple[str | int, ...], item: Any) -> bool:
+            return len(path) >= 3 and path[0] == "servers" and path[2] in {"args", "env", "url", "headers"}
+
+        mcp_snapshot, mcp_requirements = _redact_snapshot(
+            raw_mcp,
+            source="mcp",
+            target_root="mcp",
+            force_reference=reference_mcp_value,
+        )
+        requirements.extend(mcp_requirements)
+
+    raw_profile = profile.model_dump(mode="json") if profile is not None else None
+    profile_snapshot: dict[str, Any] | None = None
+    if raw_profile is not None:
+        profile_snapshot, profile_requirements = _redact_snapshot(
+            raw_profile,
+            source="profile",
+            target_root="profile",
+        )
+        requirements.extend(profile_requirements)
+
+    return MainRuntimeManifest(
+        kind="yaacli",
+        config_snapshot=config_snapshot,
+        mcp_snapshot=mcp_snapshot,
+        profile_snapshot=profile_snapshot,
+        system_prompt=sources.system_prompt,
+        subagent_specs=tuple(spec.model_dump(mode="json", by_alias=True) for spec in sources.subagent_specs),
+        workspace_ref=str(working_dir.expanduser().resolve()),
+        config_dir_ref=str(config_dir.expanduser().resolve()),
+        subagent_default_mode=(subagent_default_mode.value if subagent_default_mode is not None else None),
+        enable_user_input=enable_user_input,
+        frontend=frontend,
+        hitl_policy=hitl_policy,
+        request_limit=config.general.max_requests,
+        secret_requirements=tuple(
+            sorted(requirements, key=lambda item: (item.target_path, item.source, item.source_path))
+        ),
+    )
+
+
+def restore_main_runtime_manifest(
+    manifest: MainRuntimeManifest,
+    *,
+    current_config: YaacliConfig,
+    current_mcp_config: MCPConfig | None,
+) -> tuple[
+    YaacliConfig,
+    MCPConfig | None,
+    ResolvedModelProfile | None,
+    RuntimeSourceSnapshot,
+    Path,
+    Path,
+]:
+    """Resolve secret references and validate every authority needed by a retained plan."""
+    if manifest.kind != "yaacli":
+        raise ValueError("Registered runtime manifests cannot be reconstructed after worker restart")
+
+    snapshots: dict[str, Any] = {
+        "config": copy.deepcopy(manifest.config_snapshot),
+        "mcp": copy.deepcopy(manifest.mcp_snapshot),
+        "profile": copy.deepcopy(manifest.profile_snapshot),
+    }
+    persisted_profile = manifest.profile_snapshot
+    current_profile = None
+    if isinstance(persisted_profile, dict):
+        profile_id = persisted_profile.get("id")
+        if isinstance(profile_id, str):
+            current_profile = get_model_profile(current_config, profile_id)
+    current_sources: dict[str, Any] = {
+        "config": current_config.model_dump(mode="json"),
+        "mcp": current_mcp_config.model_dump(mode="json") if current_mcp_config is not None else None,
+        "profile": current_profile.model_dump(mode="json") if current_profile is not None else None,
+        "environment": dict(os.environ),
+    }
+    for requirement in manifest.secret_requirements:
+        source = current_sources[requirement.source]
+        try:
+            resolved = _path_value(source, requirement.source_path)
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError(
+                f"Required runtime secret source {requirement.source}:{requirement.source_path!r} is unavailable"
+            ) from exc
+        if _value_digest(resolved) != requirement.sha256:
+            raise ValueError(f"Required runtime secret source {requirement.source}:{requirement.source_path!r} changed")
+        target_root = requirement.target_path[0]
+        if not isinstance(target_root, str):
+            raise TypeError("Runtime secret target roots must be strings")
+        _set_path_value(snapshots[target_root], requirement.target_path[1:], resolved)
+
+    config = YaacliConfig.model_validate(snapshots["config"])
+    mcp = MCPConfig.model_validate(snapshots["mcp"]) if snapshots["mcp"] is not None else None
+    profile = ResolvedModelProfile.model_validate(snapshots["profile"]) if snapshots["profile"] is not None else None
+    sources = RuntimeSourceSnapshot(
+        system_prompt=manifest.system_prompt,
+        subagent_specs=tuple(SubagentSpec.model_validate(item) for item in manifest.subagent_specs),
+    )
+    workspace = Path(cast(str, manifest.workspace_ref)).expanduser().resolve()
+    config_dir = Path(cast(str, manifest.config_dir_ref)).expanduser().resolve()
+    if not workspace.is_dir():
+        raise ValueError(f"Runtime workspace authority {workspace} is unavailable")
+    if not config_dir.is_dir():
+        raise ValueError(f"Runtime config authority {config_dir} is unavailable")
+    return config, mcp, profile, sources, workspace, config_dir
+
+
+def runtime_child_plan_manifest(runtime: AgentRuntime[Any, Any, Any]) -> ChildPlanManifest:
+    """Read the exact active and retained child plans from an assembled runtime."""
+    for capability in runtime.capabilities:
+        if not isinstance(capability, DelegationCapability):
+            continue
+        active_routes = {plan.spec.route: plan.descriptor_id for plan in capability.registry.list()}
+        descriptors = tuple(plan.to_descriptor() for plan in capability.registry.list_registered())
+        return ChildPlanManifest(
+            active_routes=active_routes,
+            descriptors=descriptors,
+        )
+    return ChildPlanManifest()
+
+
+def compile_runtime_sources(
+    config: YaacliConfig,
+    *,
+    config_dir: Path,
+    include_subagents: bool,
+) -> RuntimeSourceSnapshot:
+    """Read mutable runtime source files exactly once before worker launch."""
+    return RuntimeSourceSnapshot(
+        system_prompt=_load_system_prompt(config),
+        subagent_specs=(_compile_subagent_specs(config.subagents, config_dir=config_dir) if include_subagents else ()),
+    )
+
+
+def build_runtime_agent_spec(
+    config: YaacliConfig,
+    *,
+    profile: ResolvedModelProfile | None,
+    sources: RuntimeSourceSnapshot,
+    agent_name: str = "yaacli_main_v2",
+) -> dict[str, Any]:
+    """Return the normalized main-agent definition used by a durable descriptor."""
+    model = profile.model if profile is not None else config.general.model
+    settings = profile.model_settings if profile is not None else config.general.model_settings
+    model_cfg = profile.model_cfg if profile is not None else config.general.model_cfg
+    profile_instructions = profile.instructions if profile is not None else config.general.instructions
+    instructions = [sources.system_prompt]
+    if isinstance(profile_instructions, str) and profile_instructions.strip():
+        instructions.append(profile_instructions)
+    return {
+        "name": agent_name,
+        "model": model,
+        "model_settings": dict(resolve_model_settings(settings) or {}),
+        "instructions": instructions,
+        "metadata": {YAACLI_MODEL_CFG_METADATA_KEY: resolve_profile_model_cfg(model_cfg).model_dump(mode="json")},
+    }
 
 
 @dataclass
@@ -205,56 +579,177 @@ def _load_system_prompt(config: YaacliConfig) -> str:
     return default_prompt
 
 
-def _load_subagent_configs(
+def _compile_subagent_specs(
     subagents_config: SubagentsConfig,
-    config_dir: Path | None = None,
-) -> list[SubagentConfig]:
-    """Load subagent configs from user config directory.
-
-    Subagents are loaded from ~/.yaacli/subagents/
-    and filtered based on the disabled list in config.
-
-    Args:
-        subagents_config: Subagents configuration with disabled list and overrides.
-        config_dir: Config directory (defaults to ConfigManager.DEFAULT_CONFIG_DIR).
-
-    Returns:
-        List of SubagentConfig objects.
-    """
-    if config_dir is None:
-        config_dir = ConfigManager.DEFAULT_CONFIG_DIR
-
-    subagents_dir = config_dir / "subagents"
-    if not subagents_dir.exists():
-        logger.debug("Subagents directory not found: %s", subagents_dir)
-        return []
-
-    # Load all subagents from directory
-    all_configs = load_subagents_from_dir(subagents_dir)
-    logger.debug("Found %d subagents in %s", len(all_configs), subagents_dir)
-
-    # Filter out disabled subagents
-    disabled_set = set(subagents_config.disabled)
-    enabled_configs: list[SubagentConfig] = []
-
-    for name, cfg in all_configs.items():
-        if name in disabled_set:
-            logger.debug("Subagent disabled: %s", name)
+    *,
+    config_dir: Path,
+) -> tuple[SubagentSpec, ...]:
+    """Load native portable specs and apply explicit config-file overrides."""
+    loaded = load_subagent_specs(config_dir / "subagents")
+    disabled = set(subagents_config.disabled)
+    compiled: list[SubagentSpec] = []
+    for route, spec in sorted(loaded.items()):
+        if route in disabled:
+            continue
+        override = subagents_config.overrides.get(route)
+        if override is None:
+            compiled.append(spec)
             continue
 
-        # Apply overrides if any
-        if name in subagents_config.overrides:
-            override = subagents_config.overrides[name]
-            if override.model is not None:
-                cfg = cfg.model_copy(update={"model": override.model})
-            if override.model_settings is not None:
-                cfg = cfg.model_copy(update={"model_settings": override.model_settings})
-            logger.debug("Applied overrides for subagent: %s", name)
+        agent_payload = spec.agent.model_dump(mode="json", by_alias=True)
+        if override.model is not None:
+            agent_payload["model"] = override.model
+        if override.model_settings is not None:
+            agent_payload["model_settings"] = dict(resolve_model_settings(override.model_settings) or {})
+        if override.model_cfg is not None:
+            metadata = dict(agent_payload.get("metadata") or {})
+            metadata[YAACLI_MODEL_CFG_METADATA_KEY] = resolve_profile_model_cfg(override.model_cfg).model_dump(
+                mode="json"
+            )
+            agent_payload["metadata"] = metadata
+        compiled.append(spec.model_copy(update={"agent": AgentSpec.model_validate(agent_payload)}))
+    logger.info("Loaded %d native subagent specs", len(compiled))
+    return tuple(compiled)
 
-        enabled_configs.append(cfg)
 
-    logger.info("Loaded %d subagents (disabled: %d)", len(enabled_configs), len(disabled_set))
-    return enabled_configs
+def _build_delegation_capability(
+    manifest: ChildPlanManifest,
+    *,
+    default_model: str | None,
+    default_mode: SubagentExecutionMode,
+    host_capabilities: Sequence[AbstractCapability[Any]],
+    durable_database_path: Path,
+    durable_binding_ref: str,
+    request_limit: int,
+    default_model_cfg: ModelConfig,
+    deferred_resolver: SubagentDeferredResolver | None,
+) -> DelegationCapability | None:
+    if not manifest.descriptors:
+        return None
+    catalog = build_default_capability_catalog()
+    resolver = SubagentPlanResolver(
+        catalog,
+        default_model=default_model,
+        host_capabilities=host_capabilities,
+        restart_durable=False,
+    )
+    plans_by_id = {descriptor.descriptor_id: resolver.restore(descriptor) for descriptor in manifest.descriptors}
+    active_plans = tuple(plans_by_id[descriptor_id] for _route, descriptor_id in sorted(manifest.active_routes.items()))
+    store = SQLiteSubagentExecutionStore(durable_database_path)
+    try:
+        registry = SubagentRegistry(active_plans)
+        active_ids = set(manifest.active_routes.values())
+        for descriptor in manifest.descriptors:
+            if descriptor.descriptor_id not in active_ids:
+                registry.register_retained(plans_by_id[descriptor.descriptor_id])
+        driver = LocalSubagentDriver(
+            store=store,
+            request_limit=request_limit,
+            default_model_cfg=default_model_cfg,
+            custom_capability_types=catalog.custom_capability_types,
+            runtime_capabilities=(DurableSubagentInboxCapability(store=store),),
+        )
+        service = SubagentExecutionService(
+            registry,
+            store,
+            driver,
+            completion_delivery=DurableSubagentCompletionDelivery(durable_binding_ref),
+            deferred_resolver=deferred_resolver,
+        )
+        return DelegationCapability(
+            registry=registry,
+            service=service,
+            default_mode=default_mode,
+        )
+    except BaseException:
+        store.close_sync()
+        raise
+
+
+def _self_fork_capability_specs(*, enable_codeact: bool) -> list[dict[str, Any]]:
+    """Return self-fork native feature grants without host-injected policy duplicates."""
+    capability_specs: list[dict[str, Any]] = [
+        {"RuntimeFoundationCapability": {}},
+        {"MediaReadCapability": {}},
+        {"DocumentConversionCapability": {}},
+        {"FilesystemCapability": {}},
+        {"ShellCapability": {}},
+        {"WebSearchCapability": {}},
+        {"WebContentCapability": {}},
+        {"TaskCapability": {}},
+        {"NoteCapability": {}},
+        {"ThinkingCapability": {}},
+        {"TodoCapability": {}},
+    ]
+    if enable_codeact:
+        capability_specs.append({"CodeActCapability": {}})
+    return capability_specs
+
+
+def compile_child_plan_manifest(
+    config: YaacliConfig,
+    *,
+    profile: ResolvedModelProfile | None,
+    sources: RuntimeSourceSnapshot,
+    retained_descriptors: Sequence[SubagentPlanDescriptor] = (),
+) -> ChildPlanManifest:
+    """Compile exact active child plans and every retained referenced plan."""
+    active_model = profile.model if profile is not None else config.general.model
+    active_settings = profile.model_settings if profile is not None else config.general.model_settings
+    active_model_cfg = profile.model_cfg if profile is not None else config.general.model_cfg
+    active_instructions = profile.instructions if profile is not None else config.general.instructions
+    model_settings = cast(ModelSettings | None, resolve_model_settings(active_settings))
+    model_cfg = resolve_profile_model_cfg(active_model_cfg)
+    self_fork_policy = SelfForkPolicy(
+        agent=AgentSpec.from_dict({
+            "name": "self",
+            "description": "Fork the current agent for a bounded parallel task",
+            "model": active_model or None,
+            "model_settings": dict(model_settings or {}),
+            "instructions": "\n\n".join(
+                part.strip() for part in (sources.system_prompt, active_instructions or "") if part.strip()
+            ),
+            "metadata": {YAACLI_MODEL_CFG_METADATA_KEY: model_cfg.model_dump(mode="json")},
+            "capabilities": _self_fork_capability_specs(
+                enable_codeact=config.tools.enable_codeact,
+            ),
+        }),
+        execution_modes=(
+            SubagentExecutionMode.foreground,
+            SubagentExecutionMode.background,
+        ),
+    )
+    host_capabilities: tuple[AbstractCapability[Any], ...] = (
+        ToolApprovalCapability(
+            tools=frozenset(config.tools.need_approval),
+            toolset_ids=frozenset(config.tools.need_approval_mcps),
+        ),
+        ToolObservationCapability(),
+        ToolRetryCapability(),
+        ToolTimeoutCapability(),
+    )
+    resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model=active_model or None,
+        host_capabilities=host_capabilities,
+        restart_durable=False,
+    )
+    active_plans = [resolver.resolve(spec) for spec in sources.subagent_specs]
+    if not any(plan.spec.route == "self" for plan in active_plans):
+        active_plans.append(resolver.resolve_self(self_fork_policy))
+    active_routes = {plan.spec.route: plan.descriptor_id for plan in active_plans}
+    descriptors_by_id = {plan.descriptor_id: plan.to_descriptor() for plan in active_plans}
+    for descriptor in retained_descriptors:
+        descriptors_by_id.setdefault(descriptor.descriptor_id, descriptor)
+    active_ids = {plan.descriptor_id for plan in active_plans}
+    ordered_descriptors = (
+        *(plan.to_descriptor() for plan in active_plans),
+        *(descriptors_by_id[descriptor_id] for descriptor_id in sorted(descriptors_by_id.keys() - active_ids)),
+    )
+    return ChildPlanManifest(
+        active_routes=active_routes,
+        descriptors=ordered_descriptors,
+    )
 
 
 def create_tui_runtime(
@@ -263,280 +758,200 @@ def create_tui_runtime(
     *,
     working_dir: Path | None = None,
     system_prompt: str | None = None,
+    child_plan_manifest: ChildPlanManifest | None = None,
     config_dir: Path | None = None,
     model_profile: ResolvedModelProfile | None = None,
-    enable_async_subagents: bool = True,
-    enable_delegate_subagents: bool = False,
+    subagent_default_mode: SubagentExecutionMode | None = None,
     enable_user_input: bool = False,
     skill_toolset: SkillToolset | None = None,
+    durable_binding_ref: str | None = None,
+    durable_database_path: Path | None = None,
+    subagent_deferred_resolver: SubagentDeferredResolver | None = None,
+    agent_name: str = "yaacli_main_v2",
 ) -> AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment]:
-    """Create AgentRuntime configured for TUI.
-
-    This function wraps the SDK's create_agent() with TUI-specific
-    configuration, integrating:
-    - TUIEnvironment with Shell ABC background process management
-    - TUIContext with SteeringManager
-    - MCP servers from configuration
-    - Steering guard for output validation
-
-    Args:
-        config: YAACLI CLI configuration.
-        mcp_config: MCP server configuration. If None, no MCP servers are added.
-        working_dir: Working directory for the environment. Defaults to cwd.
-        system_prompt: Custom system prompt. If None, uses default.
-        config_dir: Global config directory used for subagents and allowed paths.
-        model_profile: Optional resolved model profile override.
-        enable_async_subagents: Include background subagent tools. When synchronous delegation is disabled, the async tool is exposed as delegate.
-        enable_delegate_subagents: Include the synchronous unified delegate subagent tool. Defaults to False for TUI async-only delegation.
-        enable_user_input: Include the interactive ``ask_user_question`` tool. Disabled by default because hosts must explicitly support deferred user input.
-        skill_toolset: Optional configured skill toolset shared with the host for preloading completions.
-
-    Returns:
-        AgentRuntime configured for TUI usage. Use as async context manager.
-
-    Example:
-        runtime = create_tui_runtime(config, mcp_config)
-        async with runtime:
-            async with stream_agent(runtime, "Hello") as stream:
-                async for event in stream:
-                    print(event)
-    """
-    # Collect toolsets. MCP toolsets are appended after the skill toolset so
-    # proxy mode keeps its two fixed tools at stable positions at the end of
-    # the model's tool list, maximizing prompt cache hit rates.
-    effective_skill_toolset = skill_toolset or SkillToolset(
-        toolset_id="skills",
-        extra_dir_names=[SHARED_SKILLS_DIR_NAME],
-    )
-    toolsets: list[AbstractToolset[Any]] = [effective_skill_toolset]
-
-    # Direct mode exposes native MCP tools to the model. Proxy mode keeps the
-    # model-facing tool list fixed and discovers/invokes MCP tools on demand.
-    if mcp_config:
-        mcp_servers = build_mcp_servers(mcp_config, need_approval_mcps=config.tools.need_approval_mcps)
-        if mcp_servers and config.tools.mcp_mode == "proxy":
-            mcp_descriptions = extract_mcp_descriptions(mcp_config)
-            optional_mcps = extract_optional_mcps(mcp_config)
-            mcp_proxy = ToolProxyToolset(
-                toolsets=mcp_servers,
-                namespace_descriptions=mcp_descriptions if mcp_descriptions else None,
-                search_strategy=create_best_strategy(),
-                optional_namespaces=optional_mcps if optional_mcps else None,
-                prefix="mcp",
-            )
-            toolsets.append(mcp_proxy)
-            logger.info(
-                "Added %d MCP servers via ToolProxyToolset (descriptions: %d, prefix=mcp)",
-                len(mcp_servers),
-                len(mcp_descriptions),
-            )
-        elif mcp_servers:
-            optional_mcps = extract_optional_mcps(mcp_config)
-            unprefixed_mcps = 0
-            for mcp_server in mcp_servers:
-                server_name = mcp_server.id
-                if server_name is None:
-                    logger.warning("Skipping direct MCP toolset without a server name")
-                    continue
-                direct_toolset: AbstractToolset[Any] = mcp_server
-                if server_name in optional_mcps:
-                    direct_toolset = _OptionalMCPToolset(direct_toolset, server_name=server_name)
-
-                server_config = mcp_config.servers.get(server_name)
-                configured_prefix = server_config.prefix if server_config is not None else None
-                tool_prefix = server_name if configured_prefix is None else configured_prefix
-                if tool_prefix:
-                    direct_toolset = direct_toolset.prefixed(tool_prefix)
-                else:
-                    unprefixed_mcps += 1
-                toolsets.append(direct_toolset)
-            logger.info(
-                "Added %d MCP servers as direct toolsets (optional: %d, unprefixed: %d)",
-                len(mcp_servers),
-                len(optional_mcps),
-                unprefixed_mcps,
-            )
-
-    # Environment configuration
-    # Include system temp dir so TUI agents can read/write user-specified temp files.
-    # Include global config dir in allowed_paths so agent can modify configs directly.
-    # Include ~/.agents for shared skills following the Agent Skills open standard.
-    # Order matters for skill priority (later = higher priority):
-    #   system temp < ~/.yaacli < ~/.agents < project dir < project .yaacli
+    """Compile YAACLI configuration into one capability-first runtime plan."""
     global_config_dir = config_dir or ConfigManager.DEFAULT_CONFIG_DIR
-    active_model_profile = model_profile or get_startup_model_profile(config, global_config_dir)
-    active_model = active_model_profile.model if active_model_profile else config.general.model
-    active_model_settings = (
-        active_model_profile.model_settings if active_model_profile else config.general.model_settings
-    )
-    active_model_cfg = active_model_profile.model_cfg if active_model_profile else config.general.model_cfg
-    active_model_instructions = (
-        active_model_profile.instructions if active_model_profile else config.general.instructions
-    )
-
-    # Ensure .gitignore exists in config dir to keep session data out of file tree context
     ConfigManager(config_dir=global_config_dir).ensure_config_dir()
-    shared_agents_dir = Path.home() / ".agents"
-    env_kwargs: dict[str, Any] = {}
-    if working_dir:
-        workspace_dir = working_dir
-    else:
-        workspace_dir = Path.cwd()
-    project_config_dir = workspace_dir / ConfigManager.PROJECT_CONFIG_DIR
-    system_tmp_dir = Path(tempfile.gettempdir())
-    env_kwargs["default_path"] = workspace_dir
-    env_kwargs["allowed_paths"] = [
-        system_tmp_dir,
-        global_config_dir,
-        shared_agents_dir,
-        workspace_dir,
-        project_config_dir,
-    ]
-    env_kwargs["instructions_paths"] = [workspace_dir]
 
-    # Shell environment isolation: configurable via config.toml
-    env_kwargs["include_os_env"] = config.include_os_env
-
-    # Model configuration - resolve from preset name or dict
+    active_profile = model_profile or get_startup_model_profile(config, global_config_dir)
+    active_model = active_profile.model if active_profile else config.general.model
+    active_settings_config = active_profile.model_settings if active_profile else config.general.model_settings
+    active_model_cfg = active_profile.model_cfg if active_profile else config.general.model_cfg
+    active_instructions = active_profile.instructions if active_profile else config.general.instructions
+    model_settings = cast(ModelSettings | None, resolve_model_settings(active_settings_config))
     model_cfg = resolve_profile_model_cfg(active_model_cfg)
-    if active_model_cfg:
-        logger.debug(f"Using model_cfg: {active_model_cfg}")
+    effective_system_prompt = system_prompt if system_prompt is not None else _load_system_prompt(config)
 
-    # Resolve model settings from preset name or dict
-    model_settings = resolve_model_settings(active_model_settings)
-    if model_settings:
-        logger.debug(f"Using model settings: {active_model_settings} -> {model_settings}")
+    workspace_dir = working_dir or Path.cwd()
+    project_config_dir = workspace_dir / ConfigManager.PROJECT_CONFIG_DIR
+    env_kwargs: dict[str, Any] = {
+        "default_path": workspace_dir,
+        "allowed_paths": [
+            Path(tempfile.gettempdir()),
+            global_config_dir,
+            Path.home() / ".agents",
+            workspace_dir,
+            project_config_dir,
+        ],
+        "instructions_paths": [workspace_dir],
+        "include_os_env": config.include_os_env,
+    }
 
-    # Tool configuration - setup media hooks if S3 is configured
     tool_config_kwargs: dict[str, Any] = {}
-
     if config.media.s3.enabled and config.media.s3.bucket:
         try:
             from ya_agent_sdk.media import S3MediaConfig, create_s3_media_hook
 
-            s3_config = S3MediaConfig(
-                bucket=config.media.s3.bucket,
-                region=config.media.s3.region,
-                access_key_id=config.media.s3.access_key_id,
-                secret_access_key=config.media.s3.secret_access_key,
-                endpoint_url=config.media.s3.endpoint_url,
-                prefix=config.media.s3.prefix,
-                url_mode=config.media.s3.url_mode,
-                cdn_base_url=config.media.s3.cdn_base_url,
-                presign_expires_seconds=config.media.s3.presign_expires_seconds,
-                force_path_style=config.media.s3.force_path_style,
+            s3 = config.media.s3
+            media_config = S3MediaConfig(
+                bucket=s3.bucket,
+                region=s3.region,
+                access_key_id=s3.access_key_id,
+                secret_access_key=s3.secret_access_key,
+                endpoint_url=s3.endpoint_url,
+                prefix=s3.prefix,
+                url_mode=s3.url_mode,
+                cdn_base_url=s3.cdn_base_url,
+                presign_expires_seconds=s3.presign_expires_seconds,
+                force_path_style=s3.force_path_style,
             )
-            hook = create_s3_media_hook(s3_config)
-
-            # Bedrock does not support image url, and our image processing is better than vendor
-            # TODO: Maybe we can upload after processing in history_processor?
-            # tool_config_kwargs["image_to_url_hook"] = hook
-
-            # Use url hook for video, prevent too large requests
-            tool_config_kwargs["video_to_url_hook"] = hook
-            logger.info(
-                "S3 media upload enabled: bucket=%s, url_mode=%s",
-                config.media.s3.bucket,
-                config.media.s3.url_mode,
-            )
+            tool_config_kwargs["video_to_url_hook"] = create_s3_media_hook(media_config)
         except ImportError:
-            logger.warning("S3 media upload requires boto3. Install with: pip install ya-agent-sdk[s3]")
+            logger.warning("S3 media upload requires the ya-agent-sdk s3 extra")
 
-    tool_config = ToolConfig(**tool_config_kwargs)
-    if config.tools.need_approval:
-        logger.debug("Tools requiring approval: %s", config.tools.need_approval)
-    if config.tools.need_approval_mcps:
-        logger.debug("MCP servers requiring approval: %s", config.tools.need_approval_mcps)
-
-    # Load subagent configs whenever either visible synchronous delegation or
-    # the async delegate backend is needed.
-    subagent_configs = (
-        _load_subagent_configs(config.subagents, config_dir=global_config_dir)
-        if enable_delegate_subagents or enable_async_subagents
-        else []
-    )
-
-    # Core tools
-    core_tools: list[type[BaseTool]] = [
-        *content_tools,
-        *context_tools,
-        *document_tools,
-        *enhance_tools,
-        *filesystem_tools,
-        *(interaction_tools if enable_user_input else []),
-        *shell_tools,
-        *web_tools,
-    ]
-
-    selected_background_tools: list[type[BaseTool]] = [MonitoredShellTool]
-    if enable_async_subagents:
-        if enable_delegate_subagents:
-            selected_background_tools.extend([SpawnDelegateTool, SteerSubagentTool, WaitSubagentTool])
-        else:
-            selected_background_tools.extend([AsyncDelegateTool, SteerSubagentTool, WaitSubagentTool])
-
-    # Build final tools list
-    all_tools: list[type[BaseTool]] = [
-        *core_tools,
-        *subagent_tools,  # SubagentInfoTool for introspection
-        *selected_background_tools,
-    ]
-
-    # Load system prompt
-    effective_system_prompt = system_prompt or _load_system_prompt(config)
-
-    # Output type - SDK's message-bus completion capability handles pending messages
-    output_type: OutputSpec[str | DeferredToolRequests] = [str, DeferredToolRequests]
-    # Create runtime using SDK factory
-    # Use unified_subagents=True to create single 'delegate' tool for all subagents
-    # Pass profile instructions and config [shell_env] to the runtime context.
-    extra_ctx_kwargs: dict[str, Any] = {"model_profile_instructions": active_model_instructions}
+    context_kwargs: dict[str, Any] = {
+        "tool_config": ToolConfig(**tool_config_kwargs),
+        "durable_binding_ref": durable_binding_ref,
+        "model_profile_instructions": active_instructions,
+        "need_user_approve_tools": list(config.tools.need_approval),
+        "need_user_approve_mcps": list(config.tools.need_approval_mcps),
+    }
     if config.shell_env:
-        extra_ctx_kwargs["shell_env"] = dict(config.shell_env)
+        context_kwargs["shell_env"] = dict(config.shell_env)
     if config.security.shell_review.enabled:
-        extra_ctx_kwargs["security"] = SecurityConfig(
+        context_kwargs["security"] = SecurityConfig(
             shell_review=ShellReviewConfig.model_validate(config.security.shell_review.model_dump())
         )
 
+    capabilities: list[AbstractCapability[Any]] = [
+        RuntimeFoundationCapability(),
+        MediaReadCapability(),
+        DocumentConversionCapability(),
+        FilesystemCapability(),
+        ShellCapability(),
+        WebSearchCapability(),
+        WebContentCapability(),
+        TaskCapability(),
+        NoteCapability(),
+        ThinkingCapability(),
+        TodoCapability(),
+    ]
+    if durable_binding_ref is not None:
+        capabilities.insert(1, DurableInboxPumpCapability())
+    if skill_toolset is None:
+        capabilities.append(SkillsCapability(extra_dir_names=(SHARED_SKILLS_DIR_NAME,)))
+    else:
+        capabilities.append(NativeToolsetCapability(skill_toolset, id="skills"))
+    if enable_user_input:
+        capabilities.append(UserInteractionCapability())
+    capabilities.append(
+        NativeToolsetCapability(
+            Toolset(
+                tools=[MonitoredShellTool],
+                toolset_id="yaacli_background_shell",
+            ),
+            id="yaacli_background_shell",
+        )
+    )
+    if config.tools.enable_codeact:
+        capabilities.append(CodeActCapability())
+
+    if subagent_default_mode is not None:
+        if durable_database_path is None or durable_binding_ref is None or child_plan_manifest is None:
+            raise ValueError(
+                "YAACLI subagents require an exact child manifest, product database, and execution binding"
+            )
+        delegation = _build_delegation_capability(
+            child_plan_manifest,
+            default_model=active_model or None,
+            default_mode=subagent_default_mode,
+            host_capabilities=(
+                ToolApprovalCapability(
+                    tools=frozenset(config.tools.need_approval),
+                    toolset_ids=frozenset(config.tools.need_approval_mcps),
+                ),
+                ToolObservationCapability(),
+                ToolRetryCapability(),
+                ToolTimeoutCapability(),
+            ),
+            durable_database_path=durable_database_path,
+            durable_binding_ref=durable_binding_ref,
+            request_limit=config.general.max_requests,
+            default_model_cfg=model_cfg,
+            deferred_resolver=subagent_deferred_resolver,
+        )
+        if delegation is not None:
+            capabilities.append(delegation)
+
+    if mcp_config is not None:
+        mcp_servers = build_mcp_servers(
+            mcp_config,
+            need_approval_mcps=config.tools.need_approval_mcps,
+        )
+        if mcp_servers and config.tools.mcp_mode == "proxy":
+            capabilities.append(
+                ToolProxyCapability(
+                    toolsets=tuple(mcp_servers),
+                    namespace_descriptions=extract_mcp_descriptions(mcp_config),
+                    search_strategy=create_best_strategy(),
+                    optional_namespaces=frozenset(extract_optional_mcps(mcp_config)),
+                    prefix="mcp",
+                )
+            )
+        else:
+            optional_mcps = extract_optional_mcps(mcp_config)
+            for server in mcp_servers:
+                if server.id is None:
+                    logger.warning("Skipping direct MCP toolset without a stable id")
+                    continue
+                direct: AbstractToolset[Any] = server
+                if server.id in optional_mcps:
+                    direct = _OptionalMCPToolset(direct, server_name=server.id)
+                server_config = mcp_config.servers.get(server.id)
+                prefix = server.id if server_config is None or server_config.prefix is None else server_config.prefix
+                if prefix:
+                    direct = direct.prefixed(prefix)
+                capabilities.append(NativeToolsetCapability(direct, id=f"mcp:{server.id}"))
+
+    capabilities.extend([
+        ToolApprovalCapability(
+            tools=frozenset(config.tools.need_approval),
+            toolset_ids=frozenset(config.tools.need_approval_mcps),
+        ),
+        ToolObservationCapability(),
+        ToolRetryCapability(),
+        ToolTimeoutCapability(),
+        GoalGuardCapability(),
+    ])
+
     runtime = create_agent(
         model=active_model or None,
-        model_settings=cast(ModelSettings, model_settings),
-        output_type=output_type,
+        capabilities=cast(Sequence[AbstractCapability[TUIContext]], capabilities),
+        model_settings=model_settings,
+        output_type=[str, DeferredToolRequests],
         env=TUIEnvironment,
         env_kwargs=env_kwargs,
         context_type=TUIContext,
         model_cfg=model_cfg,
-        tools=all_tools,
-        tool_config=tool_config,
-        toolsets=toolsets if toolsets else None,
-        codeact=CodeActConfig() if config.tools.enable_codeact else None,
+        context_kwargs=context_kwargs,
         system_prompt=effective_system_prompt,
-        need_user_approve_tools=config.tools.need_approval or None,
-        need_user_approve_mcps=config.tools.need_approval_mcps or None,
-        subagent_configs=subagent_configs if subagent_configs else None,
-        unified_subagents=True,
-        unified_subagent_tool_name="delegate" if enable_delegate_subagents else DELEGATE_BACKEND_TOOL_NAME,
-        hide_unified_subagent_tool=not enable_delegate_subagents,
-        extra_context_kwargs=extra_ctx_kwargs,
+        instructions=active_instructions,
         lifecycle_extensions=[GoalContextHandoffExtension()],
+        agent_name=agent_name,
     )
-
-    @runtime.agent.instructions
-    def model_profile_instructions_prompt(run_context: RunContext[TUIContext]) -> str | None:
-        """Return the active profile's static instructions for each model request."""
-        instructions = run_context.deps.model_profile_instructions
-        return instructions if instructions and instructions.strip() else None
-
-    # Attach goal guard for /goal command support
-    attach_goal_guard(runtime.agent)
-
     logger.info(
-        "Created TUI runtime: model=%s, toolsets=%d, codeact=%s, async_subagents=%s, delegate_subagents=%s",
+        "Created capability-first TUI runtime: model=%s capabilities=%d",
         active_model,
-        len(toolsets),
-        config.tools.enable_codeact,
-        enable_async_subagents,
-        enable_delegate_subagents,
+        len(capabilities),
     )
-
     return runtime

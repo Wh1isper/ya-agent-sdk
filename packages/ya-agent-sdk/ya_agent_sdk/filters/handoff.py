@@ -12,10 +12,10 @@ Note:
     See HandoffTool for usage example.
 """
 
+import copy
 from collections.abc import Sequence
 from uuid import uuid4
 
-from pydantic_ai import UserContent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -37,8 +37,6 @@ from ya_agent_sdk.filters._builders import (
     KEEP_HANDOFF,
     KEEP_TAG_KEY,
     build_context_restored_part,
-    build_original_request_parts,
-    build_steering_parts,
 )
 
 logger = get_logger(__name__)
@@ -46,9 +44,7 @@ logger = get_logger(__name__)
 
 def _build_handoff_messages(
     summary: str,
-    original_prompt: str | Sequence[UserContent] | None = None,
-    steering_messages: list[str] | None = None,
-    tool_call_id: str = "handoff-ack",
+    retained_inputs: Sequence[ModelMessage] = (),
 ) -> list[ModelMessage]:
     """Build restored message history after handoff.
 
@@ -63,22 +59,17 @@ def _build_handoff_messages(
 
     Args:
         summary: The handoff summary content.
-        original_prompt: The initial user prompt from the session.
-        steering_messages: Additional steering messages from user during execution.
-        tool_call_id: Deprecated compatibility parameter; ignored.
+        retained_inputs: Applied structured logical-run input in product order.
 
     Returns:
         List of ModelMessage representing the restored history.
     """
-    _ = tool_call_id
     keep_metadata = {KEEP_TAG_KEY: KEEP_HANDOFF}
 
     # Placeholder will be replaced by create_system_prompt_filter downstream.
     request_parts: list[SystemPromptPart | UserPromptPart] = [
         SystemPromptPart(content="Placeholder system prompt"),
-        *build_original_request_parts(original_prompt),
         UserPromptPart(content=summary),
-        *build_steering_parts(steering_messages),
         build_context_restored_part(),
         UserPromptPart(
             content=(
@@ -91,7 +82,10 @@ def _build_handoff_messages(
         ),
     ]
 
-    return [ModelRequest(parts=request_parts, metadata=keep_metadata)]
+    return [
+        ModelRequest(parts=request_parts, metadata=keep_metadata),
+        *copy.deepcopy(list(retained_inputs)),
+    ]
 
 
 async def process_handoff_message(
@@ -153,8 +147,7 @@ async def process_handoff_message(
         # Build restored messages without fabricating assistant/tool-call history.
         result = _build_handoff_messages(
             handoff_content,
-            agent_ctx.user_prompts,
-            agent_ctx.steering_messages or None,
+            agent_ctx.run_input_ledger.applied_user_messages(),
         )
 
         complete_ctx = ContextHandoffCompleteContext(
@@ -182,14 +175,8 @@ async def process_handoff_message(
         logger=logger,
     )
 
-    if agent_ctx.steering_messages:
-        logger.debug("Including %d steering messages in handoff", len(agent_ctx.steering_messages))
-
     # Clear handoff state
     agent_ctx.handoff_message = None
-    # Clear steering_messages after successful handoff (content is now in summary)
-    agent_ctx.steering_messages.clear()
-
     # Force downstream filters to inject instructions after history restoration.
     agent_ctx.force_inject_instructions = True
 

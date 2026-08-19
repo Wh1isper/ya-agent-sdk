@@ -304,22 +304,6 @@ if isinstance(event, NoteEvent):
         print(f"{key}: {value}")
 ```
 
-### Message Bus Events
-
-Emitted when messages are received from the message bus:
-
-| Event                  | Description                    |
-| ---------------------- | ------------------------------ |
-| `MessageReceivedEvent` | Messages injected into context |
-
-```python
-from ya_agent_sdk.events import MessageReceivedEvent
-
-if isinstance(event, MessageReceivedEvent):
-    for msg in event.messages:
-        print(f"Received from {msg.source}: {msg.rendered_content}")
-```
-
 ## Event Correlation
 
 Events can be correlated using `event_id`:

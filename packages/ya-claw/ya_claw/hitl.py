@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from pydantic_ai import DeferredToolRequests
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
@@ -17,7 +18,10 @@ def build_active_interactions(
     run_id: str,
     session_id: str,
 ) -> list[ActiveInteraction]:
-    tool_calls = list(deferred_requests.approvals or [])
+    approval_calls = list(deferred_requests.approvals or [])
+    external_calls = list(deferred_requests.calls or [])
+    tool_calls = [*approval_calls, *external_calls]
+    external_call_ids = {call.tool_call_id for call in external_calls}
     metadata_by_call = deferred_requests.metadata or {}
     total_count = len(tool_calls)
     created_at = datetime.now(UTC)
@@ -26,13 +30,21 @@ def build_active_interactions(
         metadata = dict(metadata_by_call.get(tool_call.tool_call_id) or {})
         interactions.append(
             ActiveInteraction(
-                interaction_id=f"hitl_{run_id}_{index}",
+                interaction_id=f"hitl_{uuid4().hex}",
                 run_id=run_id,
                 session_id=session_id,
                 tool_call_id=tool_call.tool_call_id,
                 tool_name=tool_call.tool_name,
-                kind=_interaction_kind(metadata, tool_call),
-                title=_interaction_title(metadata, tool_call),
+                kind=(
+                    "external_result"
+                    if tool_call.tool_call_id in external_call_ids
+                    else _interaction_kind(metadata, tool_call)
+                ),
+                title=(
+                    f"External result required: {tool_call.tool_name}"
+                    if tool_call.tool_call_id in external_call_ids
+                    else _interaction_title(metadata, tool_call)
+                ),
                 description=_interaction_description(metadata),
                 arguments_preview=_preview_tool_args(tool_call.args),
                 metadata=metadata,

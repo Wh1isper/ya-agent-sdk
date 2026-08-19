@@ -16,9 +16,9 @@ from ya_claw.runtime_state import create_runtime_state
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[..., None]) -> AsyncEngine:
     database_url = f"sqlite+aiosqlite:///{(tmp_path / 'controller.sqlite3').resolve()}"
-    initialize_sqlite_database(database_url)
+    initialize_sqlite_database(database_url, profile_names=("default", "general"))
     engine = create_engine(database_url)
     try:
         yield engine
@@ -275,6 +275,7 @@ async def test_session_controller_create_run_supports_reset_state(
 async def test_run_controller_create_auto_creates_session_and_supports_steer_cancel(
     db_session: AsyncSession,
     settings: ClawSettings,
+    bind_recording_input_ingress: Callable[..., list[list[dict[str, object]]]],
 ) -> None:
     controller = RunController()
     runtime_state = create_runtime_state()
@@ -290,6 +291,7 @@ async def test_run_controller_create_auto_creates_session_and_supports_steer_can
             metadata={"source": "tool"},
         ),
     )
+    batches = bind_recording_input_ingress(runtime_state, run.id)
 
     steer_response = await controller.steer(
         db_session,
@@ -311,7 +313,7 @@ async def test_run_controller_create_auto_creates_session_and_supports_steer_can
     assert steer_response.run_id == run.id
     assert steer_response.accepted is True
     assert handle is not None
-    assert handle.steering_inputs[0][0]["type"] == "text"
+    assert batches[0][0]["type"] == "text"
     assert session_record.active_run_id is None
     assert cancelled.status == "cancelled"
     assert cancelled.termination_reason == "cancel"

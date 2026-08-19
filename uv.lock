@@ -1257,7 +1257,7 @@ name = "importlib-metadata"
 version = "9.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp", marker = "python_full_version < '3.12'" },
+    { name = "zipp" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/01/15bb152d77b21318514a96f43af312635eb2500c96b55398d020c93d86ea/importlib_metadata-9.0.0.tar.gz", hash = "sha256:a4f57ab599e6a2e3016d7595cfd72eb4661a5106e787a95bcc90c7105b831efc", size = 56405, upload-time = "2026-03-20T06:42:56.999Z" }
 wheels = [
@@ -2651,6 +2651,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+spec = [
+    { name = "pydantic-ai-slim", extra = ["spec"] },
+]
 xai = [
     { name = "pydantic-ai-slim", extra = ["xai"] },
 ]
@@ -2702,6 +2705,10 @@ openai = [
 ]
 retries = [
     { name = "tenacity" },
+]
+spec = [
+    { name = "pydantic-handlebars" },
+    { name = "pyyaml" },
 ]
 web = [
     { name = "httpx" },
@@ -2814,6 +2821,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b3/d5/d3aa91f4e8dbae1bc863e02bce282b407f9499c6c40f92cada2be7ce5fc6/pydantic_graph-2.21.0.tar.gz", hash = "sha256:65b65134904cd13a7f153f042c41f65ee79cde1759e2f2291008976b18e73c38", size = 44150, upload-time = "2026-07-30T02:10:46.72Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/19/52/f9d1a615464b550a3335a754d8f554768acdbbaf4163093ef57e81da868b/pydantic_graph-2.21.0-py3-none-any.whl", hash = "sha256:28e68554a6b9df8c9b12cc337d492f4c00156a4d67f041a866af2913c73a2b99", size = 51661, upload-time = "2026-07-30T02:10:40.502Z" },
+]
+
+[[package]]
+name = "pydantic-handlebars"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/96/73/e55a1fe1a8788a5fa82d9209e796f4111e28f2d2fecab7173aa6d80516ad/pydantic_handlebars-0.2.1.tar.gz", hash = "sha256:d4124cfbf7d6e3bded9331a08ccccf6f29f3e3a93665b35b5d6061650aeeb49f", size = 176949, upload-time = "2026-05-25T01:24:38.354Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/11/364bc401f1d8fdb3947079fc43ffdfbfc9132d065981a03a95d2e87440c4/pydantic_handlebars-0.2.1-py3-none-any.whl", hash = "sha256:c713427d6498cf4b66814447d54753a2748f8a8d3a9f00c194192ddb3df61e52", size = 50476, upload-time = "2026-05-25T01:24:37.104Z" },
 ]
 
 [[package]]
@@ -3012,7 +3031,7 @@ name = "pyobjc-framework-cocoa"
 version = "12.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core", marker = "sys_platform != 'win32'" },
+    { name = "pyobjc-core" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/51/34/fbe38a204643aa4e1b91391cdce07a34da565a69171ebcad08de7438a556/pyobjc_framework_cocoa-12.2.1.tar.gz", hash = "sha256:b94b37fe5730e5ae1fb0052912cd174e6ec329b0bfba4a012ae5db1014b5864b", size = 3125751, upload-time = "2026-06-19T16:20:05.159Z" }
 wheels = [
@@ -3533,8 +3552,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography", marker = "sys_platform != 'win32'" },
-    { name = "jeepney", marker = "sys_platform != 'win32'" },
+    { name = "cryptography" },
+    { name = "jeepney" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
@@ -4159,7 +4178,7 @@ dependencies = [
     { name = "pathspec" },
     { name = "pillow" },
     { name = "pydantic" },
-    { name = "pydantic-ai" },
+    { name = "pydantic-ai", extra = ["spec"] },
     { name = "pydantic-monty" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -4175,7 +4194,7 @@ all = [
     { name = "docker" },
     { name = "firecrawl-py" },
     { name = "markitdown", extra = ["docx", "pdf", "pptx", "xls", "xlsx"] },
-    { name = "pydantic-ai", extra = ["xai"] },
+    { name = "pydantic-ai", extra = ["spec", "xai"] },
     { name = "pymupdf" },
     { name = "pymupdf-layout" },
     { name = "pymupdf4llm" },
@@ -4194,7 +4213,7 @@ document = [
     { name = "pymupdf4llm" },
 ]
 examples = [
-    { name = "pydantic-ai" },
+    { name = "pydantic-ai", extra = ["spec"] },
     { name = "python-dotenv" },
 ]
 oauth = [
@@ -4231,7 +4250,7 @@ dev = [
     { name = "inline-snapshot" },
     { name = "markitdown", extra = ["docx", "pdf", "pptx", "xls", "xlsx"] },
     { name = "pre-commit" },
-    { name = "pydantic-ai" },
+    { name = "pydantic-ai", extra = ["spec"] },
     { name = "pymupdf" },
     { name = "pymupdf-layout" },
     { name = "pymupdf4llm" },
@@ -4264,9 +4283,9 @@ requires-dist = [
     { name = "pathspec", specifier = ">=0.12.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pydantic-ai", specifier = ">=2.21.0,<3" },
-    { name = "pydantic-ai", marker = "extra == 'all'", specifier = ">=2.21.0,<3" },
-    { name = "pydantic-ai", marker = "extra == 'examples'", specifier = ">=2.21.0,<3" },
+    { name = "pydantic-ai", extras = ["spec"], specifier = ">=2.21.0,<3" },
+    { name = "pydantic-ai", extras = ["spec"], marker = "extra == 'all'", specifier = ">=2.21.0,<3" },
+    { name = "pydantic-ai", extras = ["spec"], marker = "extra == 'examples'", specifier = ">=2.21.0,<3" },
     { name = "pydantic-ai", extras = ["xai"], marker = "extra == 'all'", specifier = ">=2.21.0,<3" },
     { name = "pydantic-ai", extras = ["xai"], marker = "extra == 'xai'", specifier = ">=2.21.0,<3" },
     { name = "pydantic-monty", specifier = ">=0.0.19" },
@@ -4305,7 +4324,7 @@ dev = [
     { name = "inline-snapshot", specifier = ">=0.20.0" },
     { name = "markitdown", extras = ["docx", "pptx", "xlsx", "xls", "pdf"], specifier = ">=0.1.5" },
     { name = "pre-commit", specifier = ">=2.20.0" },
-    { name = "pydantic-ai", specifier = ">=2.21.0,<3" },
+    { name = "pydantic-ai", extras = ["spec"], specifier = ">=2.21.0,<3" },
     { name = "pymupdf", specifier = ">=1.26.6" },
     { name = "pymupdf-layout", specifier = ">=1.26.6" },
     { name = "pymupdf4llm", specifier = ">=0.2.8" },
@@ -4365,6 +4384,7 @@ dependencies = [
     { name = "lark-oapi" },
     { name = "loguru" },
     { name = "pydantic" },
+    { name = "pydantic-ai", extra = ["spec"] },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "sqlalchemy" },
@@ -4402,6 +4422,7 @@ requires-dist = [
     { name = "lark-oapi", specifier = ">=1.5.5" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "pydantic", specifier = ">=2.12.0" },
+    { name = "pydantic-ai", extras = ["spec"], specifier = ">=2.21.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
@@ -4524,7 +4545,7 @@ dependencies = [
     { name = "click" },
     { name = "pillow" },
     { name = "pydantic" },
-    { name = "pydantic-ai" },
+    { name = "pydantic-ai", extra = ["spec"] },
     { name = "pydantic-settings" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "python-dotenv" },
@@ -4545,7 +4566,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pydantic-ai", specifier = ">=2.21.0,<3" },
+    { name = "pydantic-ai", extras = ["spec"], specifier = ">=2.21.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'", specifier = ">=10.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },

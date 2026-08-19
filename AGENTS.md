@@ -24,6 +24,24 @@ behavioral or architectural change.
 | `packages/ya-claw`                  | Workspace-native single-node runtime web service                            | [README](packages/ya-claw/README.md), [spec index](packages/ya-claw/spec/README.md)           |
 | `packages/ya-agent-platform`        | WIP stateless agent service                                                 | [README](packages/ya-agent-platform/README.md)                                                |
 
+## Runtime Architecture
+
+- `packages/ya-agent-sdk` composes agent behavior only through `capabilities=`; do not
+  reintroduce public `tools=`, `toolsets=`, MessageBus, or generated-subagent
+  compatibility layers.
+- Runtime input uses Pydantic AI native enqueue/deferred mechanisms. Durable hosts own
+  persisted inboxes, execution records, and delivery/application state.
+- Subagents are strict portable `SubagentSpec` documents resolved into explicit plans;
+  YAACLI and YA Claw provide restart-durable execution drivers rather than alternate
+  model-facing delegation APIs.
+- The SDK execution harness owns one stateless native agent segment only. YAACLI and YA
+  Claw compose it with host-owned coordinators and stores; active process-owned work is
+  interrupted rather than replayed after a crash. YA Claw profiles use strict native
+  schema v2; old profile data is handled only by explicit Alembic
+  migration, never by runtime compatibility parsing.
+- User configuration is strict. Preserve an old key only when it normalizes exactly to
+  one current behavior; otherwise remove it from code, templates, specs, and examples.
+
 ## Shared Repository Areas
 
 - `apps/` — frontend applications and user-facing shells

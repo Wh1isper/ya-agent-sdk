@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import pytest
 from pydantic_ai import RunContext
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.events import UsageSnapshotEvent
-from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 
 class UsageBoundaryTool(BaseTool):
@@ -45,7 +46,16 @@ async def test_stream_agent_emits_usage_snapshot_after_node_complete(tmp_path):
 @pytest.mark.asyncio
 async def test_stream_agent_emits_usage_snapshot_after_changed_nodes(tmp_path):
     env = LocalEnvironment(tmp_base_dir=tmp_path)
-    runtime = create_agent(TestModel(call_tools=["tool"]), env=env, tools=[UsageBoundaryTool])
+    runtime = create_agent(
+        TestModel(call_tools=["tool"]),
+        env=env,
+        capabilities=[
+            ToolsetCapability(
+                Toolset(tools=[UsageBoundaryTool], toolset_id="usage_test"),
+                id="usage_test",
+            )
+        ],
+    )
 
     events: list[object] = []
     async with stream_agent(runtime, "hello") as streamer:

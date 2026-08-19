@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic_ai import AgentSpec
 from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_environment import Environment
 from ya_agent_sdk.context import StreamEvent
 from ya_agent_sdk.events import UsageSnapshotEvent
+from ya_agent_sdk.subagents import SubagentDurability, SubagentSpec
 from ya_agent_sdk.usage import CostEstimate, UsageSnapshot
 from ya_claw.config import ClawSettings
+from ya_claw.controller.async_task import AsyncTaskController
 from ya_claw.controller.models import SessionSubmitRequest, TextPart
+from ya_claw.controller.run import RunController
 from ya_claw.controller.session import SessionController
 from ya_claw.controller.store import extract_usage_snapshot_from_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
@@ -32,7 +35,8 @@ from ya_claw.execution.coordinator import (
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.execution.state_machine import interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
-from ya_claw.orm.tables import RunRecord, SessionRecord
+from ya_claw.execution.subagents import resolve_claw_subagent_plan
+from ya_claw.orm.tables import ProfileRecord, RunRecord, SessionAsyncTaskRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
 from ya_claw.workspace import WorkspaceBinding, WorkspaceProvider
 from ya_claw.workspace.models import WorkspaceMountBinding
@@ -67,11 +71,10 @@ class StubWorkspaceProvider(WorkspaceProvider):
 
 class StubProfileResolver:
     async def resolve(self, profile_name: str | None) -> ResolvedProfile:
+        name = profile_name or "general"
         return ResolvedProfile(
-            name=profile_name or "general",
-            model="stub-model",
-            model_settings=None,
-            model_config=None,
+            name=name,
+            agent_spec=AgentSpec(model="test", name=name),
         )
 
 
@@ -91,64 +94,6 @@ class StubEnvironmentFactory:
 class StubRuntimeBuilder:
     def build(self, **_: object) -> object:
         return object()
-
-
-class TerminalGateRuntimeContext:
-    def __init__(self) -> None:
-        self.file_operator = None
-        self.container_id = None
-        self.claw_metadata: dict[str, Any] = {}
-        self.session_id = "session-1"
-        self.claw_run_id = "run-1"
-        self.profile_name = "general"
-        self.restore_from_run_id = None
-        self.dispatch_mode = "async"
-        self.source_kind = "api"
-        self.source_metadata: dict[str, Any] = {}
-        self.workspace_binding = None
-
-    def export_state(self) -> Any:
-        class ExportedState:
-            def model_dump(self, *, mode: str) -> dict[str, Any]:
-                return {
-                    "notes": {},
-                    "tasks": [],
-                    "tool_search_loaded_tools": [],
-                    "tool_search_loaded_namespaces": [],
-                    "subagent_history": {},
-                    "extra_usages": [],
-                    "user_prompts": None,
-                    "steering_messages": [],
-                    "handoff_message": None,
-                    "deferred_tool_metadata": {},
-                    "agent_registry": {},
-                    "need_user_approve_tools": [],
-                    "need_user_approve_mcps": [],
-                    "auto_load_files": [],
-                }
-
-        return ExportedState()
-
-    def send_message(self, message: object) -> None:
-        return None
-
-
-class TerminalGateRuntime:
-    core_toolset = None
-
-    def __init__(self) -> None:
-        self.ctx = TerminalGateRuntimeContext()
-
-    async def __aenter__(self) -> TerminalGateRuntime:
-        return self
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        return None
-
-
-class TerminalGateRuntimeBuilder:
-    def build(self, **_: object) -> TerminalGateRuntime:
-        return TerminalGateRuntime()
 
 
 class StubRunCoordinator(RunCoordinator):
@@ -172,6 +117,11 @@ class StubRunCoordinator(RunCoordinator):
         )
         self.failure = failure
         self.restore_run_ids: list[str | None] = []
+
+    async def _resolve_run_profile(self, db_session, session_record, run_record):
+        if session_record.session_type == "async_task":
+            return await super()._resolve_run_profile(db_session, session_record, run_record)
+        return await self._profile_resolver.resolve(run_record.profile_name)
 
     async def _execute_agent_run(
         self,
@@ -202,17 +152,15 @@ class StubRunCoordinator(RunCoordinator):
         )
         assert run_metadata is not None
         context_state = {
+            "schema_version": 2,
             "notes": {},
-            "tasks": [],
+            "tasks": {},
+            "usage_snapshot_entries": {},
             "tool_search_loaded_tools": [],
             "tool_search_loaded_namespaces": [],
-            "subagent_history": {},
-            "extra_usages": [],
             "user_prompts": None,
-            "steering_messages": [],
             "handoff_message": None,
             "deferred_tool_metadata": {},
-            "agent_registry": {},
             "need_user_approve_tools": [],
             "need_user_approve_mcps": [],
             "auto_load_files": [],
@@ -243,6 +191,7 @@ class StubRunCoordinator(RunCoordinator):
             "version": 4,
         }
         buffers.output_text = f"completed {run_id}"
+        buffers.output_json = {"answer": f"completed {run_id}"}
         if self.failure is not None:
             raise self.failure
 
@@ -257,43 +206,6 @@ class BlockingCommitRunCoordinator(StubRunCoordinator):
         self.entered_gate.set()
         await self.release_gate.wait()
         await super()._commit_successful_run(**kwargs)
-
-
-class DummyRuntimeContext:
-    file_operator = None
-
-
-class DummyRuntime:
-    def __init__(self) -> None:
-        self.ctx = DummyRuntimeContext()
-
-
-class DummyRun:
-    result = None
-
-    def all_messages(self) -> list[Any]:
-        return []
-
-
-class DummyStreamer:
-    run = DummyRun()
-
-    def __aiter__(self) -> DummyStreamer:
-        return self
-
-    async def __anext__(self) -> Any:
-        raise StopAsyncIteration
-
-    def raise_if_exception(self) -> None:
-        return None
-
-    def recoverable_messages(self) -> list[Any]:
-        return []
-
-
-@asynccontextmanager
-async def terminal_gate_stream_agent(*_: Any, **__: Any):
-    yield DummyStreamer()
 
 
 class InterruptingFailureRunCoordinator(StubRunCoordinator):
@@ -351,6 +263,18 @@ async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], 
 async def db_session(db_engine: AsyncEngine) -> AsyncSession:
     session_factory = create_session_factory(db_engine)
     async with session_factory() as session:
+        session.add(
+            ProfileRecord(
+                name="general",
+                agent_spec={"model": "test"},
+                host_config={},
+                subagent_specs=[],
+                enabled=True,
+                source_type="test",
+                source_version="1",
+            )
+        )
+        await session.commit()
         yield session
 
 
@@ -449,6 +373,132 @@ def test_build_user_prompt_returns_only_mapped_user_input(tmp_path: Path, db_eng
 
     mapping.user_prompt = ["hello", "world"]
     assert coordinator._build_user_prompt(mapping) == ["hello", "world"]
+
+
+async def test_async_task_profile_restores_only_server_owned_descriptor(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    plan = resolve_claw_subagent_plan(
+        SubagentSpec(
+            route="explorer",
+            agent=AgentSpec(
+                model="test",
+                name="explorer",
+                instructions="Immutable child instructions.",
+                capabilities=["FilesystemCapability"],
+                metadata={
+                    "claw": {
+                        "model_config_override": {"request_limit": 5},
+                        "tool_groups": ["session"],
+                        "need_user_approve_tools": ["shell_exec"],
+                        "need_user_approve_mcps": ["context7"],
+                        "enabled_mcps": ["context7"],
+                        "disabled_mcps": [],
+                        "mcp_servers": {},
+                        "workspace_backend_hint": "docker",
+                    }
+                },
+            ),
+            durability=SubagentDurability.restart,
+        )
+    )
+    parent_workspace = {
+        "mounts": [
+            {
+                "id": "parent",
+                "host_path": str(settings.resolved_workspace_dir / "parent"),
+                "virtual_path": "/parent-workspace",
+                "mode": "rw",
+            }
+        ],
+        "default_mount_id": "parent",
+        "cwd": "/parent-workspace",
+    }
+    child_workspace = {
+        "mounts": [
+            {
+                "id": "child",
+                "host_path": str(settings.resolved_workspace_dir / "child"),
+                "virtual_path": "/child-workspace",
+                "mode": "rw",
+            }
+        ],
+        "default_mount_id": "child",
+        "cwd": "/child-workspace",
+    }
+    parent = SessionRecord(
+        id="parent",
+        profile_name="mutable-profile",
+        session_metadata={"workspace": parent_workspace},
+    )
+    child = SessionRecord(
+        id="child",
+        parent_session_id=parent.id,
+        profile_name="mutable-profile",
+        session_type="async_task",
+        session_metadata={
+            "async_task": {"task_id": "task-1"},
+            "workspace": child_workspace,
+        },
+        active_run_id="child-run",
+    )
+    run = RunRecord(
+        id="child-run",
+        session_id=child.id,
+        sequence_no=1,
+        status="running",
+        trigger_type="async_task",
+        profile_name="mutable-profile",
+        input_parts=[{"type": "text", "text": "work"}],
+        run_metadata={"async_task": {"task_id": "task-1"}},
+    )
+    task = SessionAsyncTaskRecord(
+        id="task-1",
+        parent_session_id=parent.id,
+        task_session_id=child.id,
+        task_run_id=run.id,
+        subagent_name="explorer",
+        name="explorer",
+        status="running",
+        plan_fingerprint=plan.fingerprint,
+        plan_descriptor_ref=plan.descriptor_id,
+        plan_descriptor=plan.to_descriptor().model_dump(mode="json"),
+    )
+    db_session.add_all([parent, child, run, task])
+    await db_session.commit()
+
+    coordinator = StubRunCoordinator(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+    )
+    resolved = await coordinator._resolve_run_profile(db_session, child, run)
+
+    assert resolved.name == "explorer"
+    assert resolved.agent_spec.instructions == "Immutable child instructions."
+    assert resolved.host_tool_groups == ("session",)
+    assert resolved.host_tool_allowlist is None
+    assert resolved.approval_tools == frozenset({"shell_exec"})
+    assert resolved.approval_mcps == frozenset({"context7"})
+    assert resolved.enabled_mcps == frozenset({"context7"})
+    assert resolved.mcp_servers == {}
+    assert resolved.workspace_backend_hint == "docker"
+    assert resolved.metadata["plan_fingerprint"] == plan.fingerprint
+
+    binding = await coordinator._resolve_workspace_binding(
+        db_session,
+        run,
+        child,
+        resolved,
+    )
+    binding_workspace = binding.metadata["workspace"]
+    assert binding_workspace["mounts"][0]["id"] == "parent"
+    assert binding_workspace["cwd"] == "/parent-workspace"
+    assert binding.backend_hint == "docker"
 
 
 async def test_run_dispatcher_submits_with_profile_model_only(
@@ -632,6 +682,160 @@ async def test_execution_supervisor_skips_claim_when_shutdown_races_with_db_load
     assert runtime_state.get_run_handle("run-1") is None
 
 
+async def test_execution_supervisor_does_not_resurrect_run_cancelled_during_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    session_record = SessionRecord(
+        id="session-claim-cancel",
+        profile_name="general",
+        session_metadata={},
+        head_run_id="run-claim-cancel",
+    )
+    run_record = RunRecord(
+        id="run-claim-cancel",
+        session_id=session_record.id,
+        sequence_no=1,
+        restore_from_run_id=None,
+        status="queued",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[{"type": "text", "text": "hello"}],
+        run_metadata={},
+    )
+    db_session.add(session_record)
+    db_session.add(run_record)
+    await db_session.commit()
+
+    original_load_run_scope = coordinator_module._load_run_scope
+    scope_loaded = asyncio.Event()
+    release_scope = asyncio.Event()
+
+    async def blocking_load_run_scope(
+        db_session_arg: AsyncSession,
+        run_id: str,
+    ) -> tuple[SessionRecord, RunRecord]:
+        result = await original_load_run_scope(db_session_arg, run_id)
+        scope_loaded.set()
+        await release_scope.wait()
+        return result
+
+    monkeypatch.setattr(coordinator_module, "_load_run_scope", blocking_load_run_scope)
+    session_factory = create_session_factory(db_engine)
+    supervisor = ExecutionSupervisor(
+        settings=settings,
+        session_factory=session_factory,
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=StubRuntimeBuilder(),
+    )
+
+    claim_task = asyncio.create_task(supervisor._claim_run(run_record.id))
+    await asyncio.wait_for(scope_loaded.wait(), timeout=1)
+    async with session_factory() as cancel_session:
+        await RunController().cancel(
+            cancel_session,
+            settings,
+            runtime_state,
+            run_record.id,
+        )
+    release_scope.set()
+
+    assert await asyncio.wait_for(claim_task, timeout=1) is False
+    await db_session.refresh(run_record)
+    assert run_record.status == "cancelled"
+    assert run_record.started_at is None
+    assert run_record.claimed_by is None
+    assert runtime_state.get_run_handle(run_record.id) is None
+
+
+async def test_claim_then_cancel_clears_active_run_on_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    session_record = SessionRecord(
+        id="session-claim-then-cancel",
+        profile_name="general",
+        session_metadata={},
+        head_run_id="run-claim-then-cancel",
+    )
+    run_record = RunRecord(
+        id="run-claim-then-cancel",
+        session_id=session_record.id,
+        sequence_no=1,
+        restore_from_run_id=None,
+        status="queued",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[{"type": "text", "text": "hello"}],
+        run_metadata={},
+    )
+    db_session.add_all([session_record, run_record])
+    await db_session.commit()
+
+    original_lock_run_scope = coordinator_module._lock_run_scope
+    claim_locked = asyncio.Event()
+    release_claim = asyncio.Event()
+
+    async def blocking_lock_run_scope(
+        db_session_arg: AsyncSession,
+        *,
+        session_id: str,
+        run_id: str,
+    ) -> tuple[SessionRecord, RunRecord]:
+        result = await original_lock_run_scope(
+            db_session_arg,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        claim_locked.set()
+        await release_claim.wait()
+        return result
+
+    monkeypatch.setattr(coordinator_module, "_lock_run_scope", blocking_lock_run_scope)
+    session_factory = create_session_factory(db_engine)
+    supervisor = ExecutionSupervisor(
+        settings=settings,
+        session_factory=session_factory,
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=StubRuntimeBuilder(),
+    )
+
+    claim_task = asyncio.create_task(supervisor._claim_run(run_record.id))
+    await asyncio.wait_for(claim_locked.wait(), timeout=1)
+
+    async def cancel() -> None:
+        async with session_factory() as cancel_session:
+            await RunController().cancel(
+                cancel_session,
+                settings,
+                runtime_state,
+                run_record.id,
+            )
+
+    cancel_task = asyncio.create_task(cancel())
+    await asyncio.sleep(0.05)
+    release_claim.set()
+    assert await asyncio.wait_for(claim_task, timeout=1) is True
+    await asyncio.wait_for(cancel_task, timeout=1)
+
+    await db_session.refresh(run_record)
+    await db_session.refresh(session_record)
+    assert run_record.status == "cancelled"
+    assert session_record.active_run_id is None
+
+
 async def test_execution_supervisor_claims_queued_run(
     db_session: AsyncSession,
     db_engine: AsyncEngine,
@@ -728,6 +932,7 @@ async def test_run_coordinator_completes_run_and_commits_artifacts(
     message_payload = run_store.read_message("run-1")
     assert refreshed_run.status == "completed"
     assert refreshed_run.output_text == "completed run-1"
+    assert refreshed_run.output_json == {"answer": "completed run-1"}
     assert refreshed_session.head_success_run_id == "run-1"
     assert refreshed_session.active_run_id is None
     assert state_payload is not None
@@ -738,6 +943,59 @@ async def test_run_coordinator_completes_run_and_commits_artifacts(
     assert message_payload[0]["content"] == "completed run-1"
 
     assert runtime_state.get_run_handle("run-1") is None
+
+
+async def test_post_commit_hook_failure_cannot_rewrite_completed_run(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_record = SessionRecord(
+        id="session-post-commit",
+        profile_name="general",
+        session_metadata={},
+    )
+    run_record = RunRecord(
+        id="run-post-commit",
+        session_id=session_record.id,
+        sequence_no=1,
+        status="queued",
+        trigger_type="api",
+        profile_name="general",
+        input_parts=[{"type": "text", "text": "hello"}],
+        run_metadata={},
+    )
+    db_session.add_all([session_record, run_record])
+    mark_run_running(session_record, run_record)
+    await db_session.commit()
+
+    async def fail_terminal_hook(*args: Any, **kwargs: Any) -> None:
+        _ = args, kwargs
+        raise RuntimeError("post-commit projection failed")
+
+    monkeypatch.setattr(
+        AsyncTaskController,
+        "on_run_terminal",
+        fail_terminal_hook,
+    )
+    runtime_state.register_run(session_record.id, run_record.id)
+    coordinator = StubRunCoordinator(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+    )
+
+    await coordinator.execute(run_record.id)
+
+    await db_session.refresh(run_record)
+    await db_session.refresh(session_record)
+    assert run_record.status == "completed"
+    assert run_record.termination_reason == "completed"
+    assert run_record.error_message is None
+    assert session_record.head_success_run_id == run_record.id
 
 
 async def test_run_coordinator_loads_restore_point_from_previous_run(
@@ -786,17 +1044,15 @@ async def test_run_coordinator_loads_restore_point_from_previous_run(
         "run-1",
         {
             "resumable_state": {
+                "schema_version": 2,
                 "notes": {},
-                "tasks": [],
+                "tasks": {},
+                "usage_snapshot_entries": {},
                 "tool_search_loaded_tools": [],
                 "tool_search_loaded_namespaces": [],
-                "subagent_history": {},
-                "extra_usages": [],
                 "user_prompts": None,
-                "steering_messages": [],
                 "handoff_message": None,
                 "deferred_tool_metadata": {},
-                "agent_registry": {},
                 "need_user_approve_tools": [],
                 "need_user_approve_mcps": [],
                 "auto_load_files": [],
@@ -820,67 +1076,6 @@ async def test_run_coordinator_loads_restore_point_from_previous_run(
     assert isinstance(refreshed_run, RunRecord)
     await db_session.refresh(refreshed_run)
     assert refreshed_run.status == "completed"
-
-
-async def test_execute_agent_run_terminal_gate_continues_late_steering(
-    monkeypatch: pytest.MonkeyPatch,
-    db_engine: AsyncEngine,
-    settings: ClawSettings,
-    runtime_state: InMemoryRuntimeState,
-) -> None:
-    runtime_state.register_run("session-1", "run-1")
-    coordinator = RunCoordinator(
-        settings=settings,
-        session_factory=create_session_factory(db_engine),
-        runtime_state=runtime_state,
-        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
-        environment_factory=StubEnvironmentFactory(),
-        profile_resolver=StubProfileResolver(),
-        runtime_builder=TerminalGateRuntimeBuilder(),
-    )
-    buffers = ExecutionBuffers()
-    commit_calls = 0
-    prompts: list[str | list[Any] | None] = []
-
-    async def fake_stream_agent(runtime: object, *args: Any, **kwargs: Any):
-        prompts.append(kwargs.get("user_prompt"))
-        if len(prompts) == 1:
-            await runtime_state.record_steering(
-                "run-1",
-                [TextPart(type="text", text="late steer").model_dump(mode="json")],
-            )
-        async with terminal_gate_stream_agent(runtime, *args, **kwargs) as streamer:
-            yield streamer
-
-    async def fake_commit_successful_run(**_: Any) -> None:
-        nonlocal commit_calls
-        commit_calls += 1
-        buffers.success_committed = True
-        buffers.terminal_event_emitted = True
-        buffers.clear_runtime_handle = True
-
-    monkeypatch.setattr(coordinator_module, "stream_agent", asynccontextmanager(fake_stream_agent))
-    monkeypatch.setattr(coordinator, "_commit_successful_run", fake_commit_successful_run)
-
-    await coordinator._execute_agent_run(
-        run_id="run-1",
-        session_id="session-1",
-        dispatch_mode="async",
-        workspace_binding=StubWorkspaceProvider(settings.resolved_workspace_dir).resolve(),
-        restore_point=None,
-        input_parts=[TextPart(type="text", text="hello")],
-        profile=ResolvedProfile(name="general", model="stub-model", model_settings=None, model_config=None),
-        profile_name="general",
-        trigger_type="api",
-        run_metadata={},
-        buffers=buffers,
-    )
-
-    assert len(prompts) == 2
-    assert prompts[0] is None
-    assert prompts[1] == "late steer"
-    assert commit_calls == 1
-    assert runtime_state.consume_steering_inputs("run-1") == []
 
 
 async def test_run_coordinator_terminal_gate_blocks_submit_until_completion(
@@ -1196,3 +1391,57 @@ def test_cumulative_usage_snapshot_spans_deferred_execution_segments() -> None:
     assert second.total_cost_estimate is not None
     assert second.total_cost_estimate.total_amount == Decimal("0.010")
     assert second.total_cost_estimate.priced_requests == 3
+
+
+async def test_execution_supervisor_periodically_retries_pending_deliveries(
+    monkeypatch: pytest.MonkeyPatch,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    supervisor = ExecutionSupervisor(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=StubRuntimeBuilder(),
+    )
+    recovered = asyncio.Event()
+    attempts = 0
+
+    async def startup_recover() -> dict[str, list[str]]:
+        return {
+            "cancelled_running": [],
+            "recovered_async_tasks": [],
+            "recovered_async_deliveries": [],
+            "submitted_queued": [],
+        }
+
+    async def recover_pending_deliveries() -> list[str]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient delivery failure")
+        recovered.set()
+        return ["delivery-run"]
+
+    monkeypatch.setattr(
+        coordinator_module,
+        "_ASYNC_DELIVERY_RECOVERY_INTERVAL_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(supervisor, "startup_recover", startup_recover)
+    monkeypatch.setattr(
+        supervisor,
+        "recover_pending_async_deliveries",
+        recover_pending_deliveries,
+    )
+
+    await supervisor.startup()
+    await asyncio.wait_for(recovered.wait(), timeout=1)
+    await supervisor.shutdown()
+
+    assert attempts >= 2
+    assert supervisor._delivery_recovery_task is None

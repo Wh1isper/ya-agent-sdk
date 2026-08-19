@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 from ya_agent_sdk.agents.lifecycle import (
     BaseLifecycleExtension,
@@ -14,7 +13,7 @@ from ya_agent_sdk.agents.lifecycle import (
 )
 from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.agents.trim import TrimHistoryOptions, trim_history_for_summary
-from ya_agent_sdk.context import AgentContext, BusMessage
+from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 
 
@@ -51,20 +50,6 @@ class FailingHandoffExtension(BaseLifecycleExtension[AgentContext, LocalEnvironm
         raise RuntimeError("hook failed")
 
 
-class CapturingTestModel(TestModel):
-    last_messages: list[ModelMessage] | None = None
-
-    async def request(self, messages, model_settings, model_request_parameters):
-        self.last_messages = messages
-        return await super().request(messages, model_settings, model_request_parameters)
-
-    @asynccontextmanager
-    async def request_stream(self, messages, model_settings, model_request_parameters, run_context=None):
-        self.last_messages = messages
-        async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as response:
-            yield response
-
-
 @pytest.mark.asyncio
 async def test_stream_agent_runs_lifecycle_extension(tmp_path):
     env = LocalEnvironment(tmp_base_dir=tmp_path)
@@ -97,22 +82,6 @@ async def test_stream_agent_captures_resolved_user_prompt_from_factory(tmp_path)
             pass
 
     assert runtime.ctx.user_prompts == "factory prompt"
-
-
-@pytest.mark.asyncio
-async def test_stream_agent_enters_fresh_context_when_runtime_is_already_entered(tmp_path):
-    env = LocalEnvironment(tmp_base_dir=tmp_path)
-    model = CapturingTestModel(custom_output_text="ok")
-    runtime = create_agent(model, env=env)
-
-    async with runtime:
-        runtime.ctx.send_message(BusMessage(content="steer now", source="user", target="main"))
-        async with stream_agent(runtime, "hello") as streamer:
-            async for _event in streamer:
-                pass
-
-    assert model.last_messages is not None
-    assert any("steer now" in str(message) for message in model.last_messages)
 
 
 def test_trim_history_for_summary_returns_metrics():

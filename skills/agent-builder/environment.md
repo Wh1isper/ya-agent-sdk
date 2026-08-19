@@ -19,7 +19,7 @@ classDiagram
         FileOperator _file_operator
         Shell _shell
         PurePath~None~ _tmp_dir
-        list _toolsets
+        list _capabilities
         _setup()
         _teardown()
         resolve_tmp_path(relative_path)
@@ -64,8 +64,8 @@ registry.set("database", database)  # Must implement Resource protocol (close())
 # Access resources
 database = registry.get_typed("database", DatabasePool)
 
-# Collect toolsets from all resources
-toolsets = registry.get_toolsets()
+# Collect provenance-preserving capability groups from all resources
+groups = registry.get_agent_contributions()
 
 # Cleanup (called automatically by Environment before backend teardown)
 await registry.close_all()
@@ -194,11 +194,15 @@ SandboxEnvironment(
 
 A custom `Shell` implements `_create_process()` and returns an `ExecutionHandle`; it must not override the final `Shell.execute()` boundary. Runtime class creation rejects an `execute()` override with `TypeError`, so migrate legacy backends to `_create_process()` instead of bypassing ownership. The base class keeps foreground and background commands owned across cancellation and session reset, so each handle's `kill` callback must confirm termination or raise for retry.
 
-## Environment Toolsets
+## Environment Capabilities
 
-Environments can provide pydantic-ai toolsets via the `get_toolsets()` method:
+Environments contribute opaque Pydantic AI capabilities after entering. This keeps the
+Environment package independent from Pydantic AI while preserving source provenance:
 
 ```python
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
+
+
 class ContainerEnvironment(Environment):
     async def _setup(self) -> None:
         # ... setup file_operator, shell ...
@@ -208,45 +212,45 @@ class ContainerEnvironment(Environment):
         def get_container_status() -> str:
             return "running"
 
-        self._toolsets = [container_toolset]
+        self._capabilities = [
+            ToolsetCapability(container_toolset, id="container"),
+        ]
 ```
 
-`create_agent` automatically includes `env.get_toolsets()`.
+After Environment setup and resource restoration, `create_agent` collects
+`env.get_agent_contributions()` and validates the resulting capabilities with the
+explicit runtime capabilities. There is no environment toolset aggregation path.
 
-## Resource-Provided Toolsets
+## Resource-Provided Capabilities
 
-Resources can provide their own toolsets via `get_toolsets()`. This enables better encapsulation where a resource owns both its state and the tools that operate on it:
+A resource can own the capabilities that expose its behavior. Wrap a resource-backed
+toolset at that boundary instead of returning a raw toolset:
 
 ```python
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from ya_agent_environment import BaseResource
+
 
 class ProcessManager(BaseResource):
     async def setup(self) -> None:
-        """Async initialization after factory creation."""
         self._processes = {}
 
-    def get_toolsets(self) -> list[Any]:
-        """Return tools for managing processes."""
-        return [ProcessToolset(self)]
+    def get_capabilities(self) -> tuple[object, ...]:
+        return (
+            ToolsetCapability(
+                ProcessToolset(self),
+                id="process_manager",
+            ),
+        )
 
     async def close(self) -> None:
         await self._kill_all_processes()
 ```
 
-Collect toolsets from all resources via `ResourceRegistry.get_toolsets()`:
-
-```python
-async with LocalEnvironment() as env:
-    # Register and create resource
-    env.resources.register_factory("process_manager", create_pm)
-    await env.resources.get_or_create("process_manager")
-
-    # Get toolsets from all resources
-    resource_toolsets = env.resources.get_toolsets()
-
-    # Combine with environment toolsets (includes resource toolsets)
-    all_toolsets = [*core_toolsets, *env.get_toolsets()]
-```
+`ResourceRegistry.get_agent_contributions()` returns one
+`AgentContributionGroup(source_id="resource:<key>", ...)` per contributing resource.
+The SDK consumes these groups after restore; callers do not flatten and pass them back
+to `create_agent()` manually.
 
 ## Resumable Resources
 
@@ -257,7 +261,9 @@ Resources can be exported and restored across process restarts using factories.
 `BaseResource` is a convenience abstract class with async `close()` and default export/restore:
 
 ```python
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from ya_agent_environment import BaseResource
+
 
 class ApiClientSession(BaseResource):
     def __init__(self, client: ApiClient):
@@ -276,9 +282,14 @@ class ApiClientSession(BaseResource):
     async def restore_state(self, state: dict[str, Any]) -> None:
         self._client.cursor = state.get("cursor")
 
-    def get_toolsets(self) -> list[Any]:
-        """Provide tools backed by this API client."""
-        return [ApiClientToolset(self._client)]
+    def get_capabilities(self) -> tuple[object, ...]:
+        """Provide one capability backed by this API client."""
+        return (
+            ToolsetCapability(
+                ApiClientToolset(self._client),
+                id="api_client",
+            ),
+        )
 ```
 
 ### Using Factories

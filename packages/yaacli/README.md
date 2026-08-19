@@ -54,7 +54,7 @@ yaacli -p "Continue" --session <session-id> --profile <profile-id>
 yaacli -p "Run an isolated worker task" --worker
 ```
 
-Headless stdout is an NDJSON event stream. Human-readable diagnostics, fatal details, and resume hints are written to stderr so scripts can parse every stdout line as JSON. A successful headless run always saves its durable session turn, independent of `session.auto_save_history`; a failed or cancelled run emits its terminal event but does not save a recovery snapshot. `--worker` requires `--prompt` and disables synchronous delegate subagents for that run. `--profile` applies only to the current invocation; selecting a profile through `/model` persists it for future launches.
+Headless stdout is an NDJSON event stream. Human-readable diagnostics, fatal details, and resume hints are written to stderr so scripts can parse every stdout line as JSON. Every successful, failed, or cancelled logical run commits a terminal durable revision. `--worker` requires `--prompt` and disables delegate subagents for that run. `--profile` applies only to the current invocation; selecting a profile through `/model` persists it for future launches.
 
 Inspect or delete durable sessions without starting the TUI:
 
@@ -64,17 +64,21 @@ yaacli sessions show <session-id>
 yaacli sessions delete <session-id>
 ```
 
-Session IDs may be supplied by unique prefix. The configured session directory and retention controls live under `[session]` in `config.toml`; see [`spec/05-session-persistence.md`](spec/05-session-persistence.md).
+Session IDs may be supplied by unique prefix. The YAACLI 2 product store defaults to
+`~/.yaacli/sessions/sessions-v2.sqlite3`; the former `sessions.sqlite3` is left untouched
+and is not migrated automatically. An explicit `[session] database_path` or
+`YAACLI_DATABASE_PATH` remains authoritative and is validated strictly. See
+[`spec/05-session-persistence.md`](spec/05-session-persistence.md).
 
 ## TUI Interaction
 
 The output viewport has priority over auxiliary UI. The task pane is hidden when empty, uses one summary row by default, and expands with `F2`. The model selector is an overlay and does not permanently consume output rows.
 
 - Enter submits while idle and sends guidance to the active run while an agent is running.
-- Ordinary text submitted during an active agent run is steering. The status bar shows how many steering messages are still waiting for a model request, without exposing their content. Registered slash commands and `!shell` remain local control syntax: safe busy commands execute and idle-only commands are rejected without clearing the draft. Other slash-prefixed text, including absolute paths such as `/home/user/file`, remains ordinary user input.
+- Ordinary text submitted during an active agent run is durable steering. YAACLI persists it before waking the owning local execution task; the status bar counts accepted/enqueued inputs without exposing their content. Registered slash commands and `!shell` remain local control syntax: safe busy commands execute and idle-only commands are rejected without clearing the draft. Other slash-prefixed text, including absolute paths such as `/home/user/file`, remains ordinary user input.
 - `/cancel` or `Ctrl+C` requests cancellation of cancellable foreground work. Once the TUI enters `SAVING`, persistence is allowed to finish and cannot be cancelled; Ctrl+C does not exit while the save is in progress.
-- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session, terminating and discarding background subagent and shell work owned by the previous session while keeping the runtime environment reusable.
-- Background results never modify or clear the compose area. When the foreground is idle, a deliverable async subagent or monitored-shell notification automatically starts a main-agent turn with a small provenance-aware system reminder; the notification is delivered through the message bus. During an active agent run, `/integrate` can deliver queued notifications to its next model request; otherwise, unread notifications automatically wake the main agent after that run finishes.
+- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session. Tombstoning the previous session atomically closes its main and child input, persists cancellation intent for every nonterminal child, and retries process-local cancellation dispatch; late child success, steering, and completion delivery are fenced while the runtime environment remains reusable.
+- Background results never modify or clear the compose area. A terminal background subagent is projected as session-scoped readiness only; its committed result enters the canonical parent continuation path on the next accepting agent turn and does not automatically wake the model. Monitored-shell notifications are persisted as feature input and may start one idle turn according to shell-monitor policy. There is no `/integrate` command or MessageBus delivery path.
 - `/agents` shows running and recently completed background subagents; `/process` shows active background shell processes.
 - `/attachments` and `/remove-image` inspect or edit images queued for the next turn.
 - `/tool <call-id>` shows the complete retained result for a tool call.

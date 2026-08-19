@@ -40,7 +40,7 @@ instructions = """
 Prefer concise, evidence-based answers.
 """
 
-# Maximum requests per session
+# Cumulative model-request limit for one durable logical run
 max_requests = 1000
 
 [model_profiles.fast]
@@ -96,7 +96,7 @@ user_input_timeout_seconds = 120
 mcp_mode = "direct"
 
 # Tools requiring user approval before execution
-need_approval = ["shell", "write"]
+need_approval = ["shell_exec", "write"]
 ```
 
 Set `enable_codeact = false` to remove both `run_code` and `run_program`. Shell remains a separate execution surface and is not callable from CodeAct.
@@ -106,9 +106,9 @@ Set `enable_user_input = false` when the project should not expose the interacti
 Use `mcp_mode = "direct"` to expose each MCP server's native tools as namespaced `<server>_<tool>` names by default. In `mcp.json`, set a server's `prefix` to a custom string to replace `<server>`, or set `prefix` to `""` to expose native tool names without a prefix. Omit `prefix` or set it to `null` to preserve the server-name default. Use `mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which is useful when many MCP tools would otherwise enlarge or destabilize the model-facing tool list. Servers marked `"required": false` remain optional in both modes.
 
 Common patterns:
-- `[]` - No approval needed (trust all tools)
-- `["shell"]` - Approve shell commands only
-- `["shell", "write", "edit"]` - Approve all code modifications
+- `[]` - No additional static approval requirement
+- `["shell_exec"]` - Approve foreground shell commands
+- `["shell_exec", "write", "edit"]` - Approve shell and code modifications
 
 ### mcp.json
 
@@ -140,62 +140,54 @@ Please help me deploy to production...
 """
 ```
 
-The former custom-command `mode` field is deprecated and ignored; every custom
-command uses the same agent execution semantics. `/init` is provided by
+Every custom command uses the same agent execution semantics. `/init` is provided by
 default, while commands such as `/commit` and `/review` come from configuration.
 
 `instructions` adds a static model-instruction segment only while its profile is active. It applies to every main-agent model request in TUI and headless runs, including restored and compacted histories; `/model` changes it for later requests in the current session.
 
 ## Subagent Configuration
 
-Create markdown files in `~/.yaacli/subagents/`:
+Create strict versioned YAML or JSON `SubagentSpec` files in
+`~/.yaacli/subagents/`:
 
-```markdown
----
-name: my-subagent
-description: Brief description shown when selecting tools
-instruction: |
-  When to use this subagent and what to provide
-tools:
-  - grep
-  - view
-optional_tools:
-  - shell
-model: inherit
----
-
-You are a specialist in [domain].
-
-## Process
-1. Step one
-2. Step two
+```yaml
+schema_version: 1
+route: my-subagent
+agent:
+  name: my-subagent
+  description: Brief description shown in the delegation roster.
+  model: anthropic:claude-sonnet-4-5
+  instructions: |
+    You are a specialist in this domain. Return a bounded, evidence-based result.
+  capabilities:
+    - FilesystemCapability
+    - ShellCapability
+history: isolated
+history_message_limit: 100
+max_depth: 1
+spawn_targets: []
+execution_modes: [foreground, background]
+linkage: child
+durability: process
 ```
 
-### Configuration Fields
+YAACLI uses a process-local child driver, so `durability: restart` is rejected rather
+than silently weakened. An omitted `agent.model` uses the runtime's explicit
+default-model resolver. Do not use
+`inherit`. Child capabilities are explicit serialization names; YAACLI does not derive
+them from tool names or copy the parent's final tool surface.
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | Yes | Unique identifier, becomes the tool name |
-| `description` | Yes | Shown to model when selecting tools |
-| `instruction` | No | Injected into parent's system prompt |
-| `tools` | No | Required tools - ALL must be available |
-| `optional_tools` | No | Optional tools - included if available |
-| `model` | No | `"inherit"` or model name |
-
-### Tool Availability Rules
-
-- **Required tools** (`tools`): Subagent disabled if ANY unavailable
-- **Optional tools** (`optional_tools`): Included only if available
-- **No tools specified**: Inherits all parent tools
+The `[subagents.overrides.<route>]` table may replace `model`, `model_settings`, or
+`model_cfg`. `disabled` removes routes after loading. Markdown front matter, `tools`,
+`optional_tools`, generated delegate definitions, and duplicate routes are rejected.
 
 ### Builtin Presets
 
-| Preset | Purpose | Required Tools |
-|--------|---------|----------------|
-| `debugger` | Root cause analysis | glob, grep, view, ls |
-| `explorer` | Codebase navigation | glob, grep, view, ls |
-| `code-reviewer` | Code quality review | glob, grep, view, ls |
-| `searcher` | Web research | search |
+| Preset | Purpose |
+|--------|---------|
+| `explorer` | Codebase navigation and evidence gathering |
+| `executor` | Independent bounded task execution |
+| `code-reviewer` | Architecture, correctness, security, and maintainability review |
 
 ## Skills Directory
 
@@ -207,12 +199,20 @@ Skills are loaded from (highest priority last):
 
 ## Environment Variables
 
-TUI settings can be overridden via `YAACLI_*` environment variables:
+TUI and durable-session settings can be overridden via `YAACLI_*` environment variables:
 
 - `YAACLI_CODE_THEME`
 - `YAACLI_SHOW_TOKEN_USAGE`
+- `YAACLI_SHOW_ELAPSED_TIME`
 - `YAACLI_SESSION_DIR`
+- `YAACLI_DATABASE_PATH`
+- `YAACLI_AUTO_RESTORE`
+- `YAACLI_OAUTH_REFRESH_ENABLED`
+- `YAACLI_OAUTH_REFRESH_INTERVAL_SECONDS`
+- `YAACLI_OAUTH_REFRESH_FAILURE_RETRY_SECONDS`
+- `YAACLI_OAUTH_REFRESH_ON_STARTUP`
 
 ## Quick Setup
 
-Run `yaacli setup` to initialize global configuration with defaults.
+Run `yaacli`. When `general.model` is empty, the first-run wizard initializes the
+global configuration and built-in assets before starting the TUI.

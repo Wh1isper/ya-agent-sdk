@@ -14,7 +14,15 @@ from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.coordinator import ExecutionSupervisor
 from ya_claw.execution.profile import ResolvedProfile
 from ya_claw.execution.state_machine import complete_run, mark_run_running
-from ya_claw.orm.tables import RunRecord, SessionAsyncTaskRecord, SessionRecord
+from ya_claw.orm.tables import (
+    HitlBatchRecord,
+    HitlDeferredInputRecord,
+    HitlInteractionRecord,
+    ProfileRecord,
+    RunRecord,
+    SessionAsyncTaskRecord,
+    SessionRecord,
+)
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
 from ya_claw.workspace import LocalWorkspaceProvider, WorkspaceBinding
 
@@ -62,6 +70,18 @@ async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], 
 async def db_session(db_engine: AsyncEngine) -> AsyncSession:
     session_factory = create_session_factory(db_engine)
     async with session_factory() as session:
+        session.add(
+            ProfileRecord(
+                name="default",
+                agent_spec={"model": "test"},
+                host_config={},
+                subagent_specs=[],
+                enabled=True,
+                source_type="test",
+                source_version="1",
+            )
+        )
+        await session.commit()
         yield session
 
 
@@ -145,7 +165,10 @@ async def test_supervisor_startup_recovery_cancels_orphan_running_and_submits_qu
         trigger_type="api",
         profile_name="default",
         input_parts=[],
-        run_metadata={},
+        run_metadata={
+            "active_hitl_batch_id": "batch-running",
+            "active_interactions": [{"interaction_id": "interaction-running"}],
+        },
     )
     queued_run = RunRecord(
         id="run-queued",
@@ -157,7 +180,48 @@ async def test_supervisor_startup_recovery_cancels_orphan_running_and_submits_qu
         input_parts=[],
         run_metadata={},
     )
-    db_session.add_all([session_a, session_b, running_run, queued_run])
+    hitl_batch = HitlBatchRecord(
+        id="batch-running",
+        session_id=session_a.id,
+        run_id=running_run.id,
+        status="pending",
+        current_interaction_id="interaction-running",
+        deferred_requests={"approvals": [], "calls": []},
+    )
+    hitl_interaction = HitlInteractionRecord(
+        id="hitl-row-running",
+        batch_id=hitl_batch.id,
+        session_id=session_a.id,
+        run_id=running_run.id,
+        interaction_id="interaction-running",
+        tool_call_id="call-running",
+        kind="tool_approval",
+        sequence_no=1,
+        total_count=1,
+        status="pending",
+        title="Approve",
+    )
+    deferred_input = HitlDeferredInputRecord(
+        id="deferred-running",
+        batch_id=hitl_batch.id,
+        session_id=session_a.id,
+        run_id=running_run.id,
+        adapter="lark",
+        tenant_key="default",
+        external_event_id="event-running",
+        sequence_no=1,
+        input_parts=[{"type": "text", "text": "late"}],
+        status="pending",
+    )
+    db_session.add_all([
+        session_a,
+        session_b,
+        running_run,
+        queued_run,
+        hitl_batch,
+        hitl_interaction,
+        deferred_input,
+    ])
     mark_run_running(session_a, running_run, claimed_by="dead-instance")
     await db_session.commit()
     supervisor = _build_supervisor(settings=settings, db_engine=db_engine, runtime_state=runtime_state)
@@ -166,11 +230,19 @@ async def test_supervisor_startup_recovery_cancels_orphan_running_and_submits_qu
 
     await db_session.refresh(running_run)
     await db_session.refresh(session_a)
+    await db_session.refresh(hitl_batch)
+    await db_session.refresh(hitl_interaction)
+    await db_session.refresh(deferred_input)
     assert result["cancelled_running"] == ["run-running"]
     assert result["submitted_queued"] == ["run-queued"]
     assert running_run.status == "cancelled"
     assert running_run.termination_reason == "interrupt"
     assert running_run.error_message is not None
+    assert "active_hitl_batch_id" not in running_run.run_metadata
+    assert "active_interactions" not in running_run.run_metadata
+    assert hitl_batch.status == "cancelled"
+    assert hitl_interaction.status == "denied"
+    assert deferred_input.status == "discarded"
     assert session_a.active_run_id is None
     assert runtime_state.get_background_task("run-queued") is not None
 
