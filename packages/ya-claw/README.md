@@ -58,7 +58,7 @@ This section is the maintainer index for implementation details that affect code
 
 - `YA_CLAW_API_TOKEN` is required before service startup.
 - `/api/v1/claw/info` exposes service build metadata from `YA_CLAW_SERVICE_VERSION`, `YA_CLAW_SERVICE_COMMIT`, `YA_CLAW_SERVICE_BUILD`, and `YA_CLAW_SERVICE_IMAGE`; Docker builds inject these values for UI display.
-- SQLite is the default durable store at `~/.ya-claw/ya_claw.sqlite3`.
+- SQLite is the default durable store at `~/.ya-claw/ya_claw.sqlite3`; file-backed SQLite engines use WAL and a 30-second busy timeout for the runtime's concurrent readers and writers.
 - `YA_CLAW_DATA_DIR` defaults to `~/.ya-claw/data`.
 - `YA_CLAW_WORKSPACE_DIR` defaults to `~/.ya-claw/data/workspace`.
 - Browser workspace downloads are capped at 100 MiB by default; configure `YA_CLAW_WORKSPACE_DOWNLOAD_MAX_BYTES` to change the enforced per-file limit. The server enforces the cap both before and during streaming.

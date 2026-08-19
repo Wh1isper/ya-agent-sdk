@@ -56,6 +56,7 @@ def clear_claw_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("YA_CLAW_DATA_DIR", str(tmp_path / "runtime-data"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setenv("YA_CLAW_AUTO_SEED_PROFILES", "false")
+    monkeypatch.setenv("YA_CLAW_SCHEDULE_DISPATCH_ENABLED", "false")
     monkeypatch.setenv("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local")
     monkeypatch.setenv("YA_CLAW_BRIDGE_DISPATCH_MODE", "manual")
 
