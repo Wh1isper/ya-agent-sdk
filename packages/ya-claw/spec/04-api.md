@@ -52,7 +52,7 @@ flowchart TB
 | `POST`  | `/api/v1/workflows/{workflow_id}:trigger`                       | create a workflow run                                     |
 | `GET`   | `/api/v1/workflow-runs`                                         | list workflow runs                                        |
 | `GET`   | `/api/v1/workflow-runs/{workflow_run_id}`                       | inspect workflow run, node state, result, and linked runs |
-| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}/events`                | replay and tail workflow events                           |
+| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}/events`                | list/replay workflow events after an optional cursor      |
 | `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/cancel`                | cancel workflow run                                       |
 | `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/nodes/{node_id}/steer` | steer an active node run                                  |
 

@@ -311,7 +311,7 @@ class ClawSelfClient(BaseResource):
             payload={"input_parts": input_parts, "prompt": prompt},
         )
 
-    async def list_agent_presets(self, *, query: str | None) -> dict[str, Any]:
+    async def list_profiles(self, *, query: str | None) -> dict[str, Any]:
         payload = await asyncio.to_thread(self._get_json_sync, "/api/v1/profiles", {})
         profiles = (
             payload if isinstance(payload, list) else payload.get("profiles") if isinstance(payload, dict) else []

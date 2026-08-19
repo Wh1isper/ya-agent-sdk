@@ -260,6 +260,23 @@ async def test_workflow_executor_advances_dag_and_projects_result(
     }
 
 
+async def test_node_retry_count_zero_overrides_workflow_default(
+    db_session: AsyncSession,
+) -> None:
+    record = WorkflowRunRecord(definition_snapshot={"policy": {"retry_count": 2}})
+    node = WorkflowNodeRunRecord(attempt_no=1)
+
+    retried = await WorkflowController()._retry_node_if_available(
+        db_session,
+        record,
+        node,
+        {"retry_count": 0},
+    )
+
+    assert retried is False
+    assert node.attempt_no == 1
+
+
 async def test_workflow_executor_service_dispatch_once(
     db_engine: AsyncEngine,
     settings: ClawSettings,

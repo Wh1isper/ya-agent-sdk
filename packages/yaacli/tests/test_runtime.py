@@ -44,10 +44,14 @@ from yaacli.config import (
     ToolsConfig,
     YaacliConfig,
 )
+from yaacli.durable.models import ChildPlanManifest
+from yaacli.durable.sqlite import SQLiteSessionStore
+from yaacli.durable.subagents import SQLiteSubagentExecutionStore
 from yaacli.model_profiles import ResolvedModelProfile, save_selected_model_profile_id
 from yaacli.runtime import (
     GoalContextHandoffExtension,
     RuntimeSourceSnapshot,
+    _build_delegation_capability,
     _compile_subagent_specs,
     _OptionalMCPToolset,
     _self_fork_capability_specs,
@@ -217,6 +221,56 @@ def test_packaged_subagent_presets_support_yaacli_process_local_driver() -> None
         assert plan.restart_durable is False
 
     assert loaded_names
+
+
+async def test_delegation_builder_persists_active_and_retained_descriptors(
+    tmp_path: Path,
+) -> None:
+    resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        restart_durable=False,
+    )
+    retained = resolver.resolve(
+        SubagentSpec(
+            route="helper",
+            durability=SubagentDurability.process,
+            agent=AgentSpec(name="helper", instructions="retained plan"),
+        )
+    )
+    active = resolver.resolve(
+        SubagentSpec(
+            route="helper",
+            durability=SubagentDurability.process,
+            agent=AgentSpec(name="helper", instructions="active plan"),
+        )
+    )
+    manifest = ChildPlanManifest(
+        active_routes={"helper": active.descriptor_id},
+        descriptors=(retained.to_descriptor(), active.to_descriptor()),
+    )
+    database_path = tmp_path / "descriptors.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    capability = _build_delegation_capability(
+        manifest,
+        default_model="test",
+        default_mode=SubagentExecutionMode.foreground,
+        host_capabilities=(),
+        durable_database_path=database_path,
+        durable_binding_ref="test-binding",
+        request_limit=2,
+        default_model_cfg=TUIContext().model_cfg,
+        deferred_resolver=None,
+    )
+    assert capability is not None
+    store = capability.service.store
+    assert isinstance(store, SQLiteSubagentExecutionStore)
+    try:
+        assert store.get_descriptor(active.descriptor_id) == active.to_descriptor()
+        assert store.get_descriptor(retained.descriptor_id) == retained.to_descriptor()
+    finally:
+        await capability.service.close()
+        product_store.close()
 
 
 def test_native_subagent_model_cfg_override_is_explicit(

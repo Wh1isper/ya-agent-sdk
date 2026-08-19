@@ -281,18 +281,34 @@ class LocalExecutionCoordinator:
             await asyncio.gather(*active, return_exceptions=True)
 
     async def _cancel_subagent_execution(self, execution_id: str, owner_scope_id: str) -> None:
+        record = None
         for plan in self.runtime_registry.list():
             for capability in plan.runtime.capabilities:
                 if not isinstance(capability, DelegationCapability):
                     continue
                 try:
-                    await capability.service.cancel(
-                        execution_id,
-                        caller_scope_id=owner_scope_id,
-                    )
+                    record = await capability.service.admin_get(execution_id)
                 except KeyError:
                     continue
+                break
+            if record is not None:
+                break
+        if record is None:
+            raise KeyError(execution_id)
+        if record.owner_scope_id != owner_scope_id:
+            raise PermissionError(f"Subagent execution {execution_id!r} is not owned by scope {owner_scope_id!r}")
+        descriptor_id = record.parent_runtime_descriptor_id
+        if descriptor_id is None:
+            raise RuntimePlanUnavailableError(f"Subagent execution {execution_id!r} has no owning runtime descriptor")
+        owner_plan = self.runtime_registry.get(descriptor_id)
+        for capability in owner_plan.runtime.capabilities:
+            if isinstance(capability, DelegationCapability):
+                await capability.service.cancel(
+                    execution_id,
+                    caller_scope_id=owner_scope_id,
+                )
                 return
+        raise RuntimePlanUnavailableError(f"Runtime descriptor {descriptor_id!r} does not own a delegation service")
 
     async def _execute(self, execution_id: str) -> dict[str, Any]:
         execution = self.store.get_execution(execution_id)
@@ -492,7 +508,7 @@ class LocalExecutionCoordinator:
         context.note_manager = NoteManager()
         context.active_run_registry = ActiveRunRegistry()
         context.agent_stream_info = {}
-        context.auto_load_files = []
+        context.files_to_inspect = []
         context.tool_proxy = ToolProxyState()
         context.durable_logical_run_id = run.logical_run_id
         context.delegation_scope_id = run.session_id

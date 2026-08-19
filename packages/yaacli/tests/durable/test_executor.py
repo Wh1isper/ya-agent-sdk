@@ -5,7 +5,9 @@ import sqlite3
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from types import SimpleNamespace
+from typing import Any, Literal, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaacli.durable.sqlite as durable_sqlite
@@ -16,11 +18,13 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.subagents import DelegationCapability, SubagentRegistry
 from yaacli.durable.application import SessionApplicationService, build_runtime_descriptor
 from yaacli.durable.capabilities import DurableInboxPumpCapability
 from yaacli.durable.executor import (
     LocalExecutionCoordinator,
     LocalExecutionWorker,
+    RegisteredRuntimePlan,
     RuntimePlanRegistry,
     RuntimePlanUnavailableError,
 )
@@ -376,6 +380,66 @@ async def test_worker_dispatches_persisted_and_new_runs_to_exact_runtime_descrip
     finally:
         await worker.close()
         store.close()
+
+
+async def test_subagent_cancel_routes_to_owning_runtime_descriptor(tmp_path: Path) -> None:
+    lookup_descriptor = build_runtime_descriptor(
+        agent_spec={"name": "lookup", "model": "test"},
+        host_envelope={"runtime": "lookup"},
+    )
+    owner_descriptor = build_runtime_descriptor(
+        agent_spec={"name": "owner", "model": "test"},
+        host_envelope={"runtime": "owner"},
+    )
+    record = SimpleNamespace(
+        execution_id="child-execution",
+        owner_scope_id="session",
+        parent_runtime_descriptor_id=owner_descriptor.descriptor_id,
+    )
+    lookup_service = MagicMock()
+    lookup_service.admin_get = AsyncMock(return_value=record)
+    lookup_service.cancel = AsyncMock()
+    owner_service = MagicMock()
+    owner_service.admin_get = AsyncMock(return_value=record)
+    owner_service.cancel = AsyncMock()
+    lookup_runtime = cast(
+        Any,
+        SimpleNamespace(capabilities=(DelegationCapability(registry=SubagentRegistry(), service=lookup_service),)),
+    )
+    owner_runtime = cast(
+        Any,
+        SimpleNamespace(capabilities=(DelegationCapability(registry=SubagentRegistry(), service=owner_service),)),
+    )
+    registry = RuntimePlanRegistry(lookup_descriptor.descriptor_id)
+    registry.register(
+        RegisteredRuntimePlan(
+            descriptor=lookup_descriptor,
+            runtime=lookup_runtime,
+            binding_ref="lookup",
+            binding_context=TUIContext(),
+        )
+    )
+    registry.register(
+        RegisteredRuntimePlan(
+            descriptor=owner_descriptor,
+            runtime=owner_runtime,
+            binding_ref="owner",
+            binding_context=TUIContext(),
+        )
+    )
+    coordinator = LocalExecutionCoordinator(
+        store=MagicMock(),
+        runtime_registry=registry,
+    )
+
+    await coordinator._cancel_subagent_execution(record.execution_id, record.owner_scope_id)
+
+    lookup_service.admin_get.assert_awaited_once_with(record.execution_id)
+    lookup_service.cancel.assert_not_awaited()
+    owner_service.cancel.assert_awaited_once_with(
+        record.execution_id,
+        caller_scope_id=record.owner_scope_id,
+    )
 
 
 async def test_worker_fails_closed_when_historical_runtime_cannot_be_rebuilt(

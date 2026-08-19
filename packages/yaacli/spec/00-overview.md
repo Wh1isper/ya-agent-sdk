@@ -6,7 +6,7 @@
 | -------------------------------------------- | ------------------------------------------------- |
 | [01-event-system.md](./01-event-system.md)   | Event system and multi-agent display architecture |
 | [02-configuration.md](./02-configuration.md) | Configuration via environment variables           |
-| [03-tui-environment.md](./03-tui-environment.md) | TUI Environment with process management       |
+| [03-tui-environment.md](./03-tui-environment.md) | TUI Environment, system-temp policy, and shell-monitor resource |
 | [04-steering.md](./04-steering.md)           | Durable input admission and native Pydantic AI steering |
 | [05-session-persistence.md](./05-session-persistence.md) | SQLite SessionStore, local execution coordination, revisions, and recovery |
 | [06-ui-layout.md](./06-ui-layout.md)         | TUI layout and user experience design             |
@@ -112,6 +112,9 @@ attaches to that execution and supports:
 - durable human-in-the-loop suspension and audited continuation;
 - steer-now and queue-after-current-work input persisted before acknowledgement;
 - durable subagent inspection, steering, cancellation, and completion; and
-- session reattachment and logical-run recovery after process restart.
+- session reattachment and terminal/interrupted logical-run recovery after process restart.
 
-MessageBus and process-local subagent ownership do not exist in the 2.0 target.
+Active main work is committed as `interrupted` from its latest stable checkpoint; it is
+not replayed. Active process-local child work is marked `lost`, while its exact record,
+history, and descriptor remain inspectable. MessageBus and generated-subagent
+compatibility layers do not exist in the 2.0 runtime.

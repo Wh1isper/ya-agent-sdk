@@ -86,6 +86,18 @@ auto_restore = false
 max_pending_attachments = 8
 max_pending_attachment_bytes = 20971520
 
+[media.s3]
+enabled = false
+bucket = ""
+region = "us-east-1"
+url_mode = "presign"
+presign_expires_seconds = 3600
+force_path_style = false
+
+[notifications]
+bell_on_turn_complete = true
+bell_on_user_action_required = true
+
 [oauth_refresh]
 enabled = true
 interval_seconds = 1800
@@ -136,9 +148,8 @@ effect without rebuilding prior history.
 including every native deferred-tool continuation segment. A later user turn starts a
 new logical run and receives a fresh budget.
 
-`general.max_loop_iterations` is accepted as a compatibility input only when
-`max_goal_iterations` is absent. The normalized runtime field is
-`max_goal_iterations`.
+Removed `general.max_loop_iterations` input is rejected. `/goal` uses only the strict
+`max_goal_iterations` field.
 
 ### Native subagent documents
 
@@ -176,6 +187,18 @@ specifications.
 The display section independently bounds lines, blocks, UTF-8 bytes, raw stream
 render bytes, and prompt-history entries. `code_theme` accepts `auto`, `dark`,
 or `light`.
+
+### Media upload and terminal notifications
+
+`media.s3.enabled` activates S3 media upload. `bucket` is then required by runtime
+construction. `region` defaults to `us-east-1`; omitted credentials use the AWS default
+credential chain. `endpoint_url` and `force_path_style` support compatible stores.
+`prefix` scopes object keys. `url_mode="presign"` uses
+`presign_expires_seconds`; `url_mode="cdn"` requires `cdn_base_url`.
+
+`notifications.bell_on_turn_complete` rings after a successful interactive turn.
+`notifications.bell_on_user_action_required` rings when an interactive turn enters a
+user-action boundary. Both default to true and affect only terminal presentation.
 
 ### Durable session storage
 
@@ -361,7 +384,8 @@ CLI.
 ## Verification
 
 Configuration behavior is covered by `tests/test_config.py`,
-`tests/test_model_profiles.py`, `tests/test_cli.py`, `tests/test_cli_headless.py`,
-and `tests/test_sessions_cli.py`. The environment examples and packaged
+`tests/test_model_profiles.py`, `tests/test_cli_setup.py`,
+`tests/test_config_persistence_policy.py`, `tests/test_cli_headless.py`, and
+`tests/test_sessions_cli.py`. The environment examples and packaged
 configuration templates must remain aligned whenever an override or setting is
 added.

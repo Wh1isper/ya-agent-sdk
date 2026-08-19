@@ -105,12 +105,14 @@ The phase labels are:
 - `Shell`;
 - `Command`;
 - `Saving`;
-- `Cancelling`;
-- `Background ready`.
+- `Cancelling`.
+
+Background readiness is a session-scoped projection shown in status/output while one of
+the nine foreground phases remains authoritative. It is not a `TUIPhase`.
 
 The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain `accepted` or `enqueued`. It reads the count from `SessionStore`, exposes no content, and maintains no second local queue. The count disappears after native enqueue application or explicit terminal rejection. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
 
-`TUIStateMachine` enforces `VALID_TRANSITIONS`: an invalid transition returns `False`, leaves the authoritative phase unchanged, and is logged by the TUI boundary. The transition table includes all ten phase origins and the valid background-ready exit from every live agent phase.
+`TUIStateMachine` enforces `VALID_TRANSITIONS`: an invalid transition returns `False`, leaves the authoritative phase unchanged, and is logged by the TUI boundary. The transition table includes all nine phase origins. Background-result readiness does not participate in foreground phase transitions.
 
 ## Compose Area
 
@@ -131,7 +133,7 @@ The compose area is three rows on small terminals and five rows otherwise. It su
 | Active agent phase | Ordinary text, including unrecognized slash-prefixed text, is immediate steering; busy-safe slash commands execute locally |
 | Awaiting approval | Explicit decisions/results resolve HITL; ordinary non-decision text steers; control syntax remains local |
 | Command/Shell/Saving/Cancelling | Ordinary and idle-only control drafts are preserved; busy-safe commands retain local semantics |
-| Background result ready | Shows session-scoped readiness only; the next accepting agent turn receives canonical durable completion input |
+| Any phase with background result ready | Shows session-scoped readiness only; the next accepting agent boundary receives canonical durable completion input |
 
 Registered `/command` tokens and the `!` namespace are classified before prompt, steering, or HITL-result parsing. While idle, one or more consecutive leading `/skill-name` tokens that match the effective skill catalog create an explicit skill-selection prompt; the remaining text is the task. For slash tokens that are not known commands, YAACLI synchronously reserves foreground ownership and snapshots the submitted attachments, refreshes `AgentContext.available_skills`, and only then classifies the submitted text, so runtime skill additions, removals, and overrides cannot race dispatch. Attachments added during that refresh remain queued for the next prompt. Existing built-in and configured commands take precedence when the first token conflicts with a skill name. If no command or skill matches, the complete slash-prefixed text is ordinary user input, allowing prompts such as `/home/user/file is the input`. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before routing; if the user deleted the chip, the binary is dropped before dispatch.
 

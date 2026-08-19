@@ -85,9 +85,17 @@ def test_subagent_store_rejects_same_columns_without_constraints(tmp_path: Path)
     assert malformed_schema != durable_sqlite._SCHEMA
     with sqlite3.connect(database_path) as connection:
         connection.executescript(malformed_schema)
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    original_bytes = database_path.read_bytes()
 
     with pytest.raises(RuntimeError, match="definition mismatch for table:subagent_executions"):
         SQLiteSubagentExecutionStore(database_path)
+
+    assert database_path.read_bytes() == original_bytes
+    assert not database_path.with_name(f"{database_path.name}-wal").exists()
+    assert not database_path.with_name(f"{database_path.name}-shm").exists()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
 
 
 def test_subagent_store_rejects_pre_v2_unscoped_schema(tmp_path: Path) -> None:

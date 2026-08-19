@@ -51,7 +51,7 @@ Every deployment needs:
 - Docker CLI on `PATH` plus Docker Engine API access for the YA Claw service process when backend is `docker`; the official service image bundles the CLI, but custom images and host installs must provide it
 - `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` when the service runs in Docker and uses Docker shell execution
 - model/provider credentials available in the YA Claw service process
-- seeded or pre-created AgentProfile rows
+- seeded or pre-created execution profile rows
 
 ## Default Runtime Values
 
@@ -93,7 +93,7 @@ Every deployment needs:
 | Docker workspace provider | [`references/workspace-provider/docker.md`](references/workspace-provider/docker.md)     | You configure Docker Engine access, path mapping, workspace mounts, and container reuse                         |
 | Host service              | [`references/systemd.md`](references/systemd.md)                                         | You run YA Claw as a supervised host service                                                                    |
 | Database                  | [`references/database.md`](references/database.md)                                       | You choose SQLite or PostgreSQL, migrate, backup, or restore storage                                            |
-| Profiles                  | [`references/profiles.md`](references/profiles.md)                                       | You seed profiles, manage AgentProfile configuration, tune shell review, or configure shell sandbox policy      |
+| Profiles                  | [`references/profiles.md`](references/profiles.md)                                       | You seed profiles, manage execution profile configuration, tune shell review, or configure shell sandbox policy |
 | Bridge overview           | [`references/bridge/overview.md`](references/bridge/overview.md)                         | You configure bridge dispatch, adapter enablement, and event-to-run routing                                     |
 | Lark bridge               | [`references/bridge/lark.md`](references/bridge/lark.md)                                 | You connect Lark/Feishu events to YA Claw                                                                       |
 | Bridge operations         | [`references/bridge/operations.md`](references/bridge/operations.md)                     | You verify embedded bridge startup, Lark ingress, dedupe, profiles, and workspace replies                       |

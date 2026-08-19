@@ -1527,7 +1527,7 @@ def test_subagent_context_owns_independent_resumable_state() -> None:
         subject="Parent task",
         description="Must remain parent-owned",
     )
-    parent.auto_load_files.append("parent.md")
+    parent.files_to_inspect.append("parent.md")
 
     child = parent.create_subagent_context("worker", "child")
     child.note_manager.set("scope", "child")
@@ -1535,19 +1535,19 @@ def test_subagent_context_owns_independent_resumable_state() -> None:
         subject="Child task",
         description="Must remain child-owned",
     )
-    child.auto_load_files.append("child.md")
+    child.files_to_inspect.append("child.md")
 
     assert child.note_manager is not parent.note_manager
     assert child.task_manager is not parent.task_manager
-    assert child.auto_load_files is not parent.auto_load_files
+    assert child.files_to_inspect is not parent.files_to_inspect
     assert child.env is parent.env
     assert child.active_run_registry is parent.active_run_registry
     assert parent.note_manager.get("scope") == "session-a"
     assert len(parent.task_manager.list_all()) == 1
-    assert parent.auto_load_files == ["parent.md"]
+    assert parent.files_to_inspect == ["parent.md"]
 
     restored = parent.create_subagent_context("worker", "restored")
     child.export_state(include_usage_ledger=True).restore(restored)
     assert restored.note_manager.get("scope") == "child"
     assert len(restored.task_manager.list_all()) == 2
-    assert restored.auto_load_files == ["parent.md", "child.md"]
+    assert restored.files_to_inspect == ["parent.md", "child.md"]

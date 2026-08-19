@@ -70,7 +70,7 @@ Bridge-created sessions and runs use `TriggerType.BRIDGE`. Runs created from bri
 
 Bridge conversations resolve a profile when the first session is created. For Lark, `YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE` overrides the service default profile. When it is empty, YA Claw uses `YA_CLAW_DEFAULT_PROFILE`, which defaults to `default`.
 
-Seed or pre-create the selected AgentProfile before enabling bridge traffic. See [`../profiles.md`](../profiles.md).
+Seed or pre-create the selected execution profile before enabling bridge traffic. See [`../profiles.md`](../profiles.md).
 
 ## HITL and Deferred Bridge Input
 

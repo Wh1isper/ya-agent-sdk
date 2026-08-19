@@ -153,17 +153,11 @@ Shell protocol and does not duplicate process ownership logic in the monitor.
 
 ## Verification
 
-Tests cover:
+YAACLI's focused monitor tests cover unread-output readiness, completion superseding
+output readiness, reset/reuse, and bounded reminder formatting. Environment entry and
+basic background-shell lifecycle have separate YAACLI integration tests.
 
-- start, duplicate-start rejection, close, and callback failures;
-- active-process and short-lived-buffer completion detection;
-- stdout/stderr readiness, deduplication, drain, and re-notification;
-- stale buffer suppression and removed-buffer cleanup;
-- tool availability, environment merging, start failure, and start events;
-- durable active-run submission and idle wake behavior;
-- no compose-buffer mutation;
-- session reset termination, buffer removal, and notification isolation;
-- cancellation during process creation without lost handles;
-- revoked-generation rejection for late child access;
-- retryable kill-hook failures blocking session commit; and
-- reusable Shell/monitor behavior after successful reset.
+Process creation, stream draining, process-group cleanup, revoked generations, and
+retryable reset failures are owned and verified by `ya-agent-environment`. Durable
+active/idle notification routing is verified with the TUI application tests rather than
+attributing command-delivery behavior to `ShellMonitor` itself.

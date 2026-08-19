@@ -45,7 +45,7 @@ Shows session lineage, latest state, workspace/sandbox state, continuation entry
 
 ### Workflows
 
-Shows workflow definitions, workflow-specific schedule bindings, run history, live DAG state, node-linked sessions/runs, output previews, agent preset selection, and manual trigger controls. Workflows is the primary product column for durable orchestration.
+Shows workflow definitions, workflow-specific schedule bindings, run history, live DAG state, node-linked sessions/runs, output previews, execution profile selection, and manual trigger controls. Workflows is the primary product column for durable orchestration.
 
 The workflow console should use a three-pane shape:
 
@@ -116,8 +116,8 @@ The web shell uses these API layers:
 - `/api/v1/sessions/{session_id}/workspace` and sandbox lifecycle routes for selected-session workspace display and Docker sandbox control
 - `/api/v1/sessions` and nested run routes for chat creation, continuation, lineage, turns, and committed replay
 - `/api/v1/runs/{run_id}/events` and `/api/v1/sessions/{session_id}/events` for detailed AGUI-aligned live output
-- `/api/v1/profiles` for AgentProfile management and workflow node preset selection
-- `/api/v1/workflows` and `/api/v1/workflow-runs` for workflow definition management, triggering, live events, node steering, and run history
+- `/api/v1/profiles` for execution profile management and workflow node profile selection
+- `/api/v1/workflows` and `/api/v1/workflow-runs` for workflow definition management, triggering, event polling, node steering, and run history
 - `/api/v1/schedules` for schedule CRUD, manual trigger, and fire history
 - `/api/v1/heartbeat/*` for effective heartbeat config, status, and fire history
 

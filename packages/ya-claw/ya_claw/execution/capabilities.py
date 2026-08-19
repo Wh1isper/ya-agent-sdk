@@ -36,7 +36,7 @@ from ya_claw.toolsets.workflow import (
     CreateWorkflowTool,
     GetWorkflowRunTool,
     GetWorkflowTool,
-    ListAgentPresetsTool,
+    ListProfilesTool,
     ListWorkflowRunsTool,
     ListWorkflowsTool,
     StartWorkflowTool,
@@ -68,7 +68,7 @@ _HOST_TOOL_REGISTRY: dict[str, tuple[type[BaseTool], ...]] = {
         GetWorkflowRunTool,
         SteerWorkflowNodeTool,
         CancelWorkflowRunTool,
-        ListAgentPresetsTool,
+        ListProfilesTool,
     ),
 }
 

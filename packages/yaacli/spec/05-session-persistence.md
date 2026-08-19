@@ -209,7 +209,8 @@ Consequences:
 - foreground/background calls share one SDK service lifecycle during the process;
 - spawn and steering idempotency are owner scoped;
 - child request usage is cumulative across native deferred continuation;
-- exact descriptors remain available for product inspection and in-process resume;
+- every active or retained child descriptor is persisted before its delegation service is exposed;
+- an exact child descriptor is retained while any execution record references it; the current retention policy keeps those execution records, so startup can restore every referenced descriptor;
 - terminal completion enters the canonical parent input path idempotently; and
 - tombstoning an owner closes child inboxes, persists cancellation commands, and fences
   late model starts, saves, steering, and success commits.

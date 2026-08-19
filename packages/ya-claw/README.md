@@ -94,7 +94,7 @@ This section is the maintainer index for implementation details that affect code
 
 - Active handles, live events, schedule dispatch, and bridge transports stay in the runtime process; relational rows remain the authority for runs, async tasks, input, and completion delivery.
 - Built-in run orchestration lives in `ya_claw/execution/coordinator.py`; it retains SQL scheduling, workspace, HITL, memory, and delivery ownership while composing the SDK `AgentExecutionHarness` for each native segment.
-- New ordinary runs and new child spawns resolve model/runtime behavior from the selected `AgentProfile`. Existing or resumed async-child executions restore the exact immutable descriptor persisted with their SQL execution record; profile drift, reseeding, or route deletion cannot redefine them.
+- New ordinary runs and new child spawns resolve model/runtime behavior from the selected execution profile. Existing or resumed async-child executions restore the exact immutable descriptor persisted with their SQL execution record; profile drift, reseeding, or route deletion cannot redefine them.
 - `YA_CLAW_DEFAULT_PROFILE` defaults to `default`.
 - Runtime instance heartbeat lives in `runtime_instances`.
 - Run records carry claim ownership through `claimed_by` and `claimed_at`.
@@ -177,7 +177,7 @@ YA Claw loads `YA_CLAW_*` settings from `packages/ya-claw/.env` and the process 
 YA Claw startup also exports provider variables such as `GATEWAY_API_KEY` and `GATEWAY_BASE_URL` from `packages/ya-claw/.env` into the process environment.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) for shared SDK and tool environment variables when you want the same keys outside YA Claw startup.
 Set `YA_CLAW_PROFILE_SEED_FILE` plus `YA_CLAW_AUTO_SEED_PROFILES=true` when you want packaged profiles to seed into the database on startup. Seeded profiles use create/update semantics: every startup refreshes matching database profiles from the YAML file, including subagent configuration, while profiles absent from the YAML file remain in the database.
-Runs auto-dispatch through the built-in coordinator. New ordinary runs and child spawns resolve model/runtime behavior from `AgentProfile` rows; existing or resumed async children use their exact persisted immutable descriptor instead. The default profile name is `default`.
+Runs auto-dispatch through the built-in coordinator. New ordinary runs and child spawns resolve model/runtime behavior from execution profile rows; existing or resumed async children use their exact persisted immutable descriptor instead. The default profile name is `default`.
 
 Profile, MCP, and coordinator settings:
 

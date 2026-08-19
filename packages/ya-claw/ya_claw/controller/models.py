@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai import AgentSpec
 from ya_agent_sdk.subagents import SubagentSpec
 from ya_agent_sdk.usage import UsageSnapshot
@@ -494,7 +494,9 @@ class AgencyClearResponse(BaseModel):
 
 
 class AgencySourceSessionSubmitRequest(BaseModel):
-    session_id: str = Field(validation_alias=AliasChoices("session_id", "source_session_id"))
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
     prompt: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     handoff_kind: AgencyHandoffKind

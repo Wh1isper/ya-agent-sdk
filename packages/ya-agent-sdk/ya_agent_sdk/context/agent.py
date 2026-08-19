@@ -1006,7 +1006,7 @@ class ResumableState(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     """Security-related runtime configuration."""
 
-    auto_load_files: list[str] = Field(default_factory=list)
+    files_to_inspect: list[str] = Field(default_factory=list)
     """File paths to mention for on-demand inspection on the next request."""
 
     tasks: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -1048,7 +1048,7 @@ class ResumableState(BaseModel):
         # Security is a runtime policy supplied by the current profile/config.
         # Keep the freshly constructed context security instead of restoring
         # stale or default policy from persisted conversation state.
-        ctx.auto_load_files = list(self.auto_load_files)
+        ctx.files_to_inspect = list(self.files_to_inspect)
         # Restore task_manager from serialized tasks (always reset to avoid stale state)
         ctx.task_manager = TaskManager.from_exported(self.tasks) if self.tasks else TaskManager()
         ctx.note_manager = NoteManager.from_exported(self.notes) if self.notes else NoteManager()
@@ -1260,7 +1260,7 @@ class AgentContext(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     """Security-related runtime configuration."""
 
-    auto_load_files: list[str] = Field(default_factory=list)
+    files_to_inspect: list[str] = Field(default_factory=list)
     """File paths to mention for on-demand inspection on the next request."""
 
     task_manager: TaskManager = Field(default_factory=TaskManager)
@@ -1817,7 +1817,7 @@ class AgentContext(BaseModel):
             "shell_env": dict(self.shell_env),
             "usage_snapshot_entries": {},
             "deferred_tool_metadata": {},
-            "auto_load_files": list(self.auto_load_files),
+            "files_to_inspect": list(self.files_to_inspect),
             "task_manager": TaskManager.from_exported(self.task_manager.export_tasks()),
             "note_manager": NoteManager.from_exported(self.note_manager.export_notes()),
             "tool_proxy": self.tool_proxy.model_copy(deep=True),
@@ -2037,7 +2037,7 @@ class AgentContext(BaseModel):
             need_user_approve_tools=list(self.need_user_approve_tools),
             need_user_approve_mcps=list(self.need_user_approve_mcps),
             security=self.security.model_copy(deep=True),
-            auto_load_files=list(self.auto_load_files),
+            files_to_inspect=list(self.files_to_inspect),
             tasks=self.task_manager.export_tasks(),
             notes=self.note_manager.export_notes(),
             tool_proxy=self.tool_proxy.model_copy(deep=True),

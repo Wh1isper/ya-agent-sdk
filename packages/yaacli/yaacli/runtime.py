@@ -642,6 +642,8 @@ def _build_delegation_capability(
         for descriptor in manifest.descriptors:
             if descriptor.descriptor_id not in active_ids:
                 registry.register_retained(plans_by_id[descriptor.descriptor_id])
+        for plan in registry.list_registered():
+            store.put_descriptor(plan)
         driver = LocalSubagentDriver(
             store=store,
             request_limit=request_limit,

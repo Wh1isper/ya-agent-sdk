@@ -1249,7 +1249,7 @@ def _initial_child_state(
     state.previous_assistant_response_reference = None
     state.handoff_message = None
     state.deferred_tool_metadata = {}
-    state.auto_load_files = []
+    state.files_to_inspect = []
     state.tool_proxy = ToolProxyState()
     return cast(dict[str, Any], to_jsonable_python(state))
 

@@ -50,9 +50,10 @@ plane.
 - workspace backend hint
 - profile source audit metadata
 
-Legacy Claw configuration fields remain accepted at the profile/configuration boundary
-when they still express the same behavior. `ProfileResolver` normalizes them once into
-the native spec and host policy. Runtime code does not retain a legacy execution path.
+Runtime, API, and seed parsing accept only schema-v2 native `AgentSpec`, host policy,
+and subagent structures. The one conversion of persisted pre-v2 profile rows is owned
+exclusively by its Alembic revision; `ProfileResolver` does not provide a compatibility
+parser.
 
 ## Runtime Assembly Flow
 

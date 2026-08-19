@@ -182,7 +182,7 @@ Safe mode behavior:
 
 - Deletes old `run-store/{run_id}` directories for prunable runs
 - Keeps `sessions` and `runs` database rows
-- Keeps `input_parts`, status, trigger type, metadata, `output_text`, and `output_summary`
+- Keeps `input_parts`, status, trigger type, metadata, and `output_text`
 - Protects each session's latest runs, `head_run_id`, `head_success_run_id`, `active_run_id`, active runs, and direct restore sources
 - Deletes orphan `run-store/*` directories that have no matching `RunRecord.id`
 

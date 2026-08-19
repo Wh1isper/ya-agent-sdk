@@ -15,9 +15,9 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models import ModelRequestContext
 
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.filters.auto_load_files import _build_file_inspection_prompt
 from ya_agent_sdk.filters.capability import filter_by_capability
 from ya_agent_sdk.filters.environment_instructions import create_environment_instructions_filter
+from ya_agent_sdk.filters.file_inspection import build_file_inspection_prompt
 from ya_agent_sdk.filters.image import (
     compress_large_images,
     drop_extra_images,
@@ -95,7 +95,7 @@ class FileInspectionCapability(AbstractCapability[AgentContext]):
         request_context: ModelRequestContext,
         handler: ModelHandler,
     ) -> Any:
-        pending = tuple(ctx.deps.auto_load_files)
+        pending = tuple(ctx.deps.files_to_inspect)
         if not pending:
             return await handler(request_context)
 
@@ -109,15 +109,15 @@ class FileInspectionCapability(AbstractCapability[AgentContext]):
 
         last_request.parts = [
             *last_request.parts,
-            UserPromptPart(content=_build_file_inspection_prompt(list(pending))),
+            UserPromptPart(content=build_file_inspection_prompt(list(pending))),
         ]
         response = await handler(copy_request_context(request_context, messages=messages))
 
-        remaining = list(ctx.deps.auto_load_files)
+        remaining = list(ctx.deps.files_to_inspect)
         for path in pending:
             with suppress(ValueError):
                 remaining.remove(path)
-        ctx.deps.auto_load_files = remaining
+        ctx.deps.files_to_inspect = remaining
         return response
 
 

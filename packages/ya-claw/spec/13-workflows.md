@@ -2,16 +2,16 @@
 
 YA Claw owns workflow execution as a durable orchestration layer. Agents supervise and control workflows through Claw APIs and built-in Claw tools.
 
-A workflow is a first-class Claw resource. It can be created by users, APIs, or agents; triggered from the Web UI, schedules, bridges, or agent tools; and tracked through Claw's relational store, runtime state, event streams, and run/session history.
+A workflow is a first-class Claw resource. Users, APIs, and agents can create it; the Web UI, schedules, bridges, and agent tools can trigger it; and Claw tracks it through relational workflow records, linked session/run state, notifications, and event history.
 
 ## Design Goals
 
 - Make workflows a Claw-managed orchestration resource with durable definitions, runs, node state, and event history.
-- Let agents discover, start, inspect, steer, cancel, and repair workflows through a built-in workflow toolset.
+- Let agents discover, start, inspect, steer, and cancel workflows through a built-in workflow toolset.
 - Let the Web UI expose a dedicated Workflows column for workflow definition management, workflow-specific schedule bindings, manual triggering, live execution status, and run history.
 - Use execution profiles as the workflow node runtime preset. The default preset is `Self`, which resolves to the supervising session profile.
 - Reuse Claw's session/run execution model for node work, including queued runs, steering, profile resolution, workspace binding, sandbox policy, and event delivery.
-- Feed workflow progress and node run events back into the supervising conversation when a workflow is started by an agent.
+- Preserve supervising session/run provenance so agents and operators can query the related workflow later.
 - Keep `ya-agent-sdk` focused on agent execution primitives while Claw owns workflow orchestration, state, APIs, and product behavior.
 
 ## Non-Goals
@@ -38,7 +38,7 @@ flowchart TB
         WFRUN[Workflow runs]
         WFEXEC[WorkflowExecutor]
         WFSTATE[Workflow state store]
-        EVENTS[Workflow event stream]
+        EVENTS[Workflow event records]
         TOOLSET[Built-in workflow tools]
     end
 
@@ -70,11 +70,18 @@ flowchart TB
     SUP --> EVENTS
     WFEXEC --> WFSTATE
     WFEXEC --> EVENTS
-    EVENTS --> AGENT
-    EVENTS --> WEB
+    AGENT --> EVENTS
+    WEB --> EVENTS
 ```
 
 The workflow executor is a Claw service component. It plans node readiness, starts node runs through the existing session/run controllers, observes terminal state, records outputs, and advances the graph.
+
+The relational workflow and linked run rows are authoritative. The executor performs a
+bounded SQL polling tick over `queued`, `running`, and `waiting` workflow runs; it does
+not subscribe to a live run-event bus. `workflow_dispatch_enabled` enables the loop,
+`workflow_tick_seconds` defaults to 5 seconds, and `workflow_max_runs_per_tick` defaults
+to 20. After each committed tick, `NotificationHub` publishes a compact
+`workflow.run.updated` projection for responsive clients.
 
 ## Resource Model
 
@@ -82,9 +89,9 @@ The workflow executor is a Claw service component. It plans node readiness, star
 
 A workflow definition describes the reusable plan.
 
-Suggested table: `workflow_definitions`
+Authoritative table: `workflow_definitions`
 
-Suggested fields:
+Current fields:
 
 - `id`
 - `name`
@@ -106,15 +113,15 @@ Suggested fields:
 - `updated_at`
 - `archived_at`
 
-The `definition` column stores a JSON-compatible workflow document. YAML import/export is a Web UI and API convenience. The relational row is the authoritative definition record.
+The `definition` column stores a JSON workflow document. The structured Web UI builder and advanced JSON editor both write this document through the API. The relational row is authoritative.
 
 ### Workflow Run
 
 A workflow run is one execution attempt for a definition.
 
-Suggested table: `workflow_runs`
+Authoritative table: `workflow_runs`
 
-Suggested fields:
+Current fields:
 
 - `id`
 - `workflow_id`
@@ -141,9 +148,9 @@ Suggested fields:
 
 A workflow node run maps a node execution to Claw sessions and runs.
 
-Suggested table: `workflow_node_runs`
+Authoritative table: `workflow_node_runs`
 
-Suggested fields:
+Current fields:
 
 - `id`
 - `workflow_run_id`
@@ -167,9 +174,9 @@ Each node can use an existing workflow-private session, a fresh isolated session
 
 ### Workflow Event
 
-Suggested table: `workflow_events`
+Authoritative table: `workflow_events`
 
-Suggested fields:
+Current fields:
 
 - `id`
 - `workflow_run_id`
@@ -179,9 +186,9 @@ Suggested fields:
 - `payload`
 - `created_at`
 
-Events provide replayable workflow status for Web UI, API clients, and supervising agents. Node run events are projected into workflow events with compact payloads and links to original run traces.
+Events provide replayable workflow status for Web UI, API clients, and supervising agents. Node run state changes are projected into workflow events with compact payloads and links to original run traces. The HTTP endpoint returns one JSON page after an optional `after_event_id`; live tailing requires client cursor polling.
 
-## Workflows Console Plan
+## Workflows Console
 
 The first-party web console presents workflow orchestration from a dedicated Workflows column. This column is the operator home for workflow definitions, workflow detail, workflow runs, and workflow-specific schedule bindings.
 
@@ -201,7 +208,7 @@ flowchart LR
 
 Workflow schedules are schedule records with `execution_mode="workflow"`. The Workflows console owns their create/edit/pause/resume/delete affordances so workflow recurrence is configured beside the workflow definition and run history. The Schedules console focuses on timed agent prompt schedules. Both surfaces can link to the same schedule fire records for audit and debugging.
 
-A workflow detail page should show:
+A workflow detail page shows:
 
 - definition summary: name, status, scope, tags, description, owner, version, updated time
 - editable definition document, input schema, argument hints, and metadata
@@ -253,7 +260,7 @@ Workflow list APIs and tools support filters for practical narrowing:
 - `only_current_session`
 - `include_archived`
 
-Agent workflow tools should default to a practical view:
+Agent workflow tools default to a practical view:
 
 - global active workflows
 - workflows created by the current session
@@ -288,7 +295,7 @@ Node execution still uses the resolved profile's normal runtime boundaries: enab
 
 ## Definition Format
 
-A definition can be edited as YAML and stored as JSON.
+A definition is edited and stored as JSON. The equivalent structure is shown in YAML below only for readability; the API and Web UI do not provide YAML import/export.
 
 ```yaml
 schema: ya-claw.workflow.v1
@@ -310,7 +317,7 @@ inputs:
 
 policy:
   max_concurrency: 3
-  on_node_failure: fail_workflow
+  retry_count: 1
 
 nodes:
   landscape:
@@ -339,48 +346,43 @@ result:
 
 ### Top-Level Fields
 
-| Field           | Purpose                                           |
-| --------------- | ------------------------------------------------- |
-| `schema`        | Workflow document schema, `ya-claw.workflow.v1`   |
-| `name`          | Human-readable workflow name                      |
-| `version`       | Definition version stored with each run           |
-| `description`   | Catalog and run summary text                      |
-| `when_to_use`   | Agent-facing discovery hint                       |
-| `argument_hint` | Input shape hint for agents and UI forms          |
-| `tags`          | Search, grouping, and policy metadata             |
-| `inputs`        | JSON Schema for run inputs                        |
-| `policy`        | Concurrency, retry, timeout, and failure behavior |
-| `nodes`         | DAG node map                                      |
-| `result`        | Result projection rules                           |
+| Field           | Purpose                                         |
+| --------------- | ----------------------------------------------- |
+| `schema`        | Workflow document schema, `ya-claw.workflow.v1` |
+| `name`          | Human-readable workflow name                    |
+| `version`       | Definition version stored with each run         |
+| `description`   | Catalog and run summary text                    |
+| `when_to_use`   | Agent-facing discovery hint                     |
+| `argument_hint` | Input shape hint for agents and UI forms        |
+| `tags`          | Search, grouping, and policy metadata           |
+| `inputs`        | JSON Schema for run inputs                      |
+| `policy`        | Concurrency and default retry behavior          |
+| `nodes`         | DAG node map                                    |
+| `result`        | Result projection rules                         |
 
 ### Node Fields
 
-| Field             | Default                 | Purpose                                              |
-| ----------------- | ----------------------- | ---------------------------------------------------- |
-| `profile`         | `Self`                  | Execution profile used for this node                 |
-| `needs`           | `[]`                    | Parent nodes that must complete first                |
-| `mode`            | `isolate`               | Session/run mode for node execution                  |
-| `prompt`          | required                | Template rendered from inputs and dependency outputs |
-| `input_parts`     | generated from `prompt` | Structured input override                            |
-| `retry_count`     | workflow policy         | Retry attempts for this node                         |
-| `timeout_seconds` | workflow policy         | Node timeout                                         |
-| `output_schema`   | empty                   | Optional JSON output schema                          |
-| `metadata`        | empty                   | Node labels and UI hints                             |
+| Field         | Default                 | Purpose                                              |
+| ------------- | ----------------------- | ---------------------------------------------------- |
+| `profile`     | `Self`                  | Execution profile used for this node                 |
+| `needs`       | `[]`                    | Parent nodes that must complete first                |
+| `mode`        | `isolate`               | Session/run mode for node execution                  |
+| `prompt`      | required                | Template rendered from inputs and dependency outputs |
+| `input_parts` | generated from `prompt` | Structured input override                            |
+| `retry_count` | workflow policy         | Retry attempts for this node                         |
+| `metadata`    | empty                   | Node labels and UI hints                             |
 
-## Agent Preset Resolution
+## Execution Profile Resolution
 
-Workflow nodes use Claw execution profiles as agent presets.
+Workflow nodes use Claw execution profiles directly.
 
 Reserved profile value:
 
 - `Self`: resolve to the profile of the supervising session/run when the workflow is agent-triggered; resolve to the workflow run `profile_name` when the workflow is Web/API-triggered.
 
-Named profile values resolve through `ProfileResolver` in the same way as ordinary runs. Profile listing is exposed to agents through the workflow toolset so an agent can choose a suitable preset for a node or definition.
+Named profile values resolve through `ProfileResolver` in the same way as ordinary runs. Profile listing is exposed to agents through the workflow toolset so an agent can choose a suitable execution profile for a node or definition.
 
-Suggested profile tools:
-
-- `list_agent_presets(query: str | None = None)`
-- `get_agent_preset(name: str)`
+The current profile tool is `list_profiles(query: str | None = None)`. Detailed profile lookup remains available through the profile API rather than a second workflow-specific name.
 
 ## Execution Semantics
 
@@ -393,12 +395,12 @@ Workflow run lifecycle:
 05. Build the DAG and mark root nodes `ready`.
 06. Start ready nodes up to `policy.max_concurrency`.
 07. For each node, resolve `profile`, render prompt/input parts, and create or steer a Claw session/run.
-08. Observe node run events until terminal state.
+08. On each executor tick, refresh linked node run rows from the relational run records and detect terminal state.
 09. Store node output and emit workflow events.
 10. Mark dependent nodes `ready` when their dependencies complete.
 11. Project the workflow result when terminal criteria are met.
 12. Mark the workflow run `completed`, `failed`, or `cancelled`.
-13. Send completion events to Web UI, API streams, and supervising conversations.
+13. Persist completion events, publish a notification update, and leave them available to Web UI/API cursor polling and later agent tool queries.
 
 ### Node Execution Modes
 
@@ -413,28 +415,17 @@ The v1 default is `isolate`, which gives each node a clean durable history and s
 
 ### Supervision Semantics
 
-Agent-triggered workflows are supervised by the session/run that called the workflow tool. The workflow executor emits compact events back to that conversation:
+Agent-triggered workflows record the session/run that called the workflow tool. This provenance supports current-session filters and links workflow runs back to their supervising conversation. Workflow progress is persisted in `workflow_events` and exposed through run detail and cursor polling. `NotificationHub` publishes compact UI invalidation projections after committed updates.
 
-- workflow accepted
-- workflow started
-- node queued
-- node running
-- node output available
-- node failed
-- workflow waiting
-- workflow completed
-- workflow failed
-- workflow cancelled
-
-Delivery uses the same session event stream and steering path used by schedules and Agency. When the supervising run is active, workflow events steer compact progress messages into the run. When it is idle, events remain queryable through the workflow API and can be surfaced by the Web UI or by later agent tool calls.
+Workflow events do not steer or wake the supervising agent run. An agent observes progress by calling the workflow tools again; an operator observes it through the Web UI or API.
 
 ## Built-in Workflow Toolset
 
 Claw injects a built-in workflow toolset into agent profiles that enable workflow management. This toolset gives a conversation visibility into workflow definitions and active workflow runs, similar to the way the schedule toolset exposes timer resources.
 
-The supervising agent can use the workflow tools to create definitions, inspect workflows through filters, start a workflow, watch state, steer active nodes, cancel runs, and repair failed work. Profile tools are included so the agent can choose `Self` or another execution preset for workflow nodes.
+The supervising agent can use the workflow tools to create definitions, inspect workflows through filters, start a workflow, watch state, steer active nodes, and cancel runs. Profile listing is included so the agent can choose `Self` or another execution profile for workflow nodes.
 
-Suggested tools:
+Current tools:
 
 ```python
 async def list_workflows(
@@ -465,31 +456,31 @@ async def list_workflow_runs(
 async def get_workflow_run(workflow_run_id: str) -> WorkflowRunDetail: ...
 async def steer_workflow_node(workflow_run_id: str, node_id: str, input_parts: list[dict]) -> WorkflowRunDetail: ...
 async def cancel_workflow_run(workflow_run_id: str) -> WorkflowRunDetail: ...
-async def list_agent_presets(query: str | None = None) -> list[AgentPresetCard]: ...
+async def list_profiles(query: str | None = None) -> list[ProfileCard]: ...
 ```
 
 Tool responses return compact cards by default and include IDs for API/Web UI deep links. Detailed views include definition metadata, scope, active run status, node status, linked session IDs, linked run IDs, trace links, event cursors, and output previews.
 
-Tool guidance should encourage `only_current_session=True` when the agent is looking for workflows related to the current conversation, and broader filters when the agent is searching reusable global workflows.
+Tool guidance encourages `only_current_session=True` when the agent is looking for workflows related to the current conversation, and broader filters when the agent is searching reusable global workflows.
 
 ## HTTP API Surface
 
-Workflow APIs live under `/api/v1/workflows`. Bearer-authenticated clients can manage workflow definitions and runs. Agent calls use the built-in workflow toolset, which routes through the same controller APIs with session/profile context for default filtering and provenance. HTTP list endpoints should accept the same filter names as the tool facade.
+Workflow APIs live under `/api/v1/workflows`. Bearer-authenticated clients can manage workflow definitions and runs. Agent calls use the built-in workflow toolset, which routes through internal agent endpoints with session/profile context for default filtering and provenance. HTTP list endpoints accept the corresponding filter names exposed by the tool facade.
 
-| Method  | Path                                                            | Purpose                                        |
-| ------- | --------------------------------------------------------------- | ---------------------------------------------- |
-| `GET`   | `/api/v1/workflows`                                             | list workflow definitions                      |
-| `POST`  | `/api/v1/workflows`                                             | create workflow definition                     |
-| `GET`   | `/api/v1/workflows/{workflow_id}`                               | inspect workflow definition                    |
-| `PATCH` | `/api/v1/workflows/{workflow_id}`                               | update workflow definition metadata or body    |
-| `POST`  | `/api/v1/workflows/{workflow_id}:archive`                       | archive workflow definition                    |
-| `POST`  | `/api/v1/workflows/{workflow_id}:trigger`                       | create a workflow run                          |
-| `GET`   | `/api/v1/workflow-runs`                                         | list workflow runs                             |
-| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}`                       | inspect workflow run, nodes, and result        |
-| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}/events`                | replay and tail workflow events                |
-| `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/cancel`                | cancel workflow run                            |
-| `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/nodes/{node_id}/steer` | steer an active node run                       |
-| `GET`   | `/api/v1/profiles`                                              | list agent presets for workflow node selection |
+| Method  | Path                                                            | Purpose                                              |
+| ------- | --------------------------------------------------------------- | ---------------------------------------------------- |
+| `GET`   | `/api/v1/workflows`                                             | list workflow definitions                            |
+| `POST`  | `/api/v1/workflows`                                             | create workflow definition                           |
+| `GET`   | `/api/v1/workflows/{workflow_id}`                               | inspect workflow definition                          |
+| `PATCH` | `/api/v1/workflows/{workflow_id}`                               | update workflow definition metadata or body          |
+| `POST`  | `/api/v1/workflows/{workflow_id}:archive`                       | archive workflow definition                          |
+| `POST`  | `/api/v1/workflows/{workflow_id}:trigger`                       | create a workflow run                                |
+| `GET`   | `/api/v1/workflow-runs`                                         | list workflow runs                                   |
+| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}`                       | inspect workflow run, nodes, and result              |
+| `GET`   | `/api/v1/workflow-runs/{workflow_run_id}/events`                | list/replay workflow events after an optional cursor |
+| `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/cancel`                | cancel workflow run                                  |
+| `POST`  | `/api/v1/workflow-runs/{workflow_run_id}/nodes/{node_id}/steer` | steer an active node run                             |
+| `GET`   | `/api/v1/profiles`                                              | list execution profiles for workflow node selection  |
 
 Trigger request:
 
@@ -503,20 +494,20 @@ Trigger request:
 }
 ```
 
-Trigger response returns the queued `workflow_run` record immediately. Clients follow `/events` for live progress.
+Trigger response returns the queued `workflow_run` record immediately. Clients poll `/events?after_event_id=...` and advance the returned cursor for progress.
 
 ## Web UI Behavior
 
 The Web UI adds a Workflows section with:
 
 - workflow definition list, search, tags, scope, owner/session filters, status, and last run state
-- workflow editor with YAML and structured form modes
+- workflow editor with a structured builder and advanced JSON mode
 - input schema preview and manual trigger form
 - definition version and archive controls
 - run history with status, trigger kind, supervisor session, and result preview
-- live workflow run view with DAG visualization, node statuses, linked sessions/runs, event stream, and output previews
-- node action controls for steer, retry, cancel, and open linked run trace
-- agent preset picker backed by `/api/v1/profiles`
+- workflow run view with DAG visualization, node statuses, linked sessions/runs, polled event history, and output previews
+- node steering, run cancellation, and linked session/run navigation
+- execution profile override fields for workflow and node selection
 
 Workflow runs can also appear in session detail when they are supervised by that session.
 
@@ -536,7 +527,7 @@ A schedule fire creates a workflow run with `trigger_kind="schedule"`. Bridge-tr
 
 Workflow events are compact orchestration events. Node-level run traces stay in the original Claw run store.
 
-Suggested event types:
+Persisted event types include:
 
 - `workflow_queued`
 - `workflow_started`
@@ -563,25 +554,29 @@ Each event includes:
 - JSON-compatible `payload`
 - `created_at`
 
-## Implementation Plan
+## Implemented Surface
 
-1. Add workflow ORM records and migrations: definitions, runs, node runs, events.
-2. Add `WorkflowController` for CRUD, trigger, cancel, list, inspect, and event replay.
-3. Add `WorkflowExecutor` as an in-process service component wired through app lifespan.
-4. Add workflow event projection from Claw run events and terminal run commits.
-5. Add built-in workflow toolset and inject it through profile-configured built-in toolsets.
-6. Add Web UI Workflows section and session-linked workflow panels.
-7. Add schedule workflow execution mode.
-8. Add tests for definition validation, DAG scheduling, profile resolution, agent tool calls, API routes, event replay, and cancellation.
+The 2.0 runtime includes:
 
-## Open Decisions
+1. workflow ORM records and migrations for definitions, runs, node runs, and events;
+2. `WorkflowController` CRUD, trigger, cancel, list, inspect, steer, and cursor replay;
+3. an in-process, bounded-polling `WorkflowExecutor` wired through app lifespan;
+4. workflow event persistence and compact notification publication;
+5. a profile-enabled built-in workflow tool group;
+6. the Web UI Workflows console and session-linked views;
+7. schedule workflow execution mode; and
+8. focused controller, executor, API, tool, schedule, and UI tests.
 
-| Topic                            | Preferred v1 direction                                      |
-| -------------------------------- | ----------------------------------------------------------- |
-| Default node mode                | `isolate`                                                   |
-| Default node profile             | `Self`                                                      |
-| Workflow definition storage      | relational JSON body plus YAML import/export                |
-| Supervising conversation updates | compact workflow events with links to node runs             |
-| Result storage                   | `workflow_runs.result` with node output references          |
-| Retry behavior                   | node-level retry before workflow failure                    |
-| Recursive workflow control       | allowed through agent tool policy and profile configuration |
+A server-side SSE workflow-event tail, event-driven executor wake-up, manual node retry/repair endpoint, and automatic supervisor-run steering are not part of this contract. Configured `retry_count` is applied by the polling executor before terminal workflow failure.
+
+## Current Contract
+
+| Topic                            | Behavior                                                 |
+| -------------------------------- | -------------------------------------------------------- |
+| Default node mode                | `isolate`                                                |
+| Default node profile             | `Self`                                                   |
+| Workflow definition storage      | relational JSON document                                 |
+| Supervising conversation linkage | persisted session/run provenance and query filters       |
+| Result storage                   | `workflow_runs.result` with node output references       |
+| Retry behavior                   | configured node retries before workflow failure          |
+| Recursive workflow control       | governed by the selected execution profile's tool policy |

@@ -70,7 +70,12 @@ async def test_subagent_completion_projection_is_pending_only_and_session_scoped
     session_store.get_run.side_effect = lambda run_id: SimpleNamespace(
         session_id="session-a" if run_id == "run-a" else "session-b"
     )
+    delivery_service = MagicMock()
+    delivery_service.deliver_pending = AsyncMock()
+    runtime_context = SimpleNamespace(delegation_scope_id="existing-scope")
     app._subagent_execution_store = execution_store
+    app._subagent_execution_service = delivery_service
+    app._runtime = SimpleNamespace(ctx=runtime_context)  # type: ignore[assignment]
     app._durable_store = session_store
     app._append_system_output = MagicMock()  # type: ignore[method-assign]
 
@@ -79,6 +84,8 @@ async def test_subagent_completion_projection_is_pending_only_and_session_scoped
 
     app._append_system_output.assert_called_once()
     assert "exec-a" in app._append_system_output.call_args.args[0]
+    delivery_service.deliver_pending.assert_not_awaited()
+    assert runtime_context.delegation_scope_id == "existing-scope"
 
     app._session_id = "session-b"
     await app._refresh_subagent_completion_projection()

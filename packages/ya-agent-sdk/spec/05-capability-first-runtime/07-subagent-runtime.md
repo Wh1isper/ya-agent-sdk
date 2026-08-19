@@ -43,7 +43,7 @@ adapter in the 2.0 runtime.
 - Preserve targeted steering and every accepted child-run user input through native
   recovery, compact, handoff, and durable suspension.
 - Keep final main-agent-only enforcement at the execution boundary.
-- Let YAACLI recover active children after process restart.
+- Let YAACLI retain exact child records and descriptors while marking process-local restart orphans `lost`.
 - Let YA Claw retain its durable SQL child-session model while deleting resolver and
   transport duplication.
 - Remove ID naming conventions and private SDK attribute access from product behavior.
@@ -417,7 +417,7 @@ Each child execution has:
 
 Sharing a typed durable store does not mean sharing a mutable `AgentContext`. A child
 cannot mutate parent run-local fields by object aliasing. Task, note, input-ledger,
-auto-load, Tool Proxy, deferred, and usage state are independent snapshots persisted
+file-inspection, Tool Proxy, deferred, and usage state are independent snapshots persisted
 with the child execution. Environment and routing authorities are shared only as
 explicit host services and are rebound after restore; they are never recovered from the
 currently visible TUI session.
@@ -538,7 +538,7 @@ Its contract is intentionally truthful:
 - completed child histories may be exported through SDK resumable state;
 - active coroutine/task state is not serializable;
 - process loss rejects or loses active in-memory executions; and
-- restart durability requires a host driver such as YAACLI or YA Claw.
+- restart durability requires a durable host scheduler such as YA Claw; YAACLI's local child driver is process-bound.
 
 `DelegationCapability` depends only on the public registry and execution service. The
 in-process implementation does not expose hidden generated-tool methods for hosts to
@@ -713,8 +713,9 @@ empty-list inheritance are not interpreted at runtime.
 
 ### YAACLI
 
-- process termination and restart resumes one child workflow and handle from its
-  immutable descriptor even after the mutable source profile/registry changes;
+- process termination preserves exact child records, histories, and descriptors, while
+  startup marks pending/running/suspended process-local executions `lost` without
+  replaying model or tool work;
 - session switching cannot route old-child completion to the new session;
 - TUI monitor loss does not lose active child state or result;
 - foreground durable wait and background completion are replay-idempotent; and

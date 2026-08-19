@@ -308,8 +308,9 @@ Each feature family is migrated bottom-up:
   one native `AgentSpec` core and YA envelope without duplicating native fields.
 - Repeated spawn, completion, wake, steer, and cancel commands have one product effect.
 - Parent and child never share mutable run-local context.
-- YAACLI resumes active child workflows after restart; both Claw foreground and
-  background calls retain SQL session-backed durability.
+- YAACLI preserves exact child audit state and marks active process-local restart
+  orphans `lost`; both Claw foreground and background calls retain SQL session-backed
+  restart durability.
 - Claw recovers a child from its immutable plan descriptor after the mutable source
   profile or registry changes or is deleted.
 - Native structured output and stop-the-world deferred output compose without override,

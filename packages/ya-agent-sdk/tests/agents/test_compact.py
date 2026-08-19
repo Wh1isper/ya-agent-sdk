@@ -1391,7 +1391,7 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
     assert compact_deps.model_cfg == agent_context.model_cfg
 
     assert len(compacted) == 3
-    assert agent_context.auto_load_files == []
+    assert agent_context.files_to_inspect == []
     assert agent_context.force_inject_instructions is True
     snapshot = agent_context.build_usage_snapshot()
     compact_entries = [entry for entry in snapshot.entries if entry.agent_id == "compact"]

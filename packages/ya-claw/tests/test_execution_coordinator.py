@@ -171,7 +171,7 @@ class StubRunCoordinator(RunCoordinator):
             "deferred_tool_metadata": {},
             "need_user_approve_tools": [],
             "need_user_approve_mcps": [],
-            "auto_load_files": [],
+            "files_to_inspect": [],
         }
         buffers.latest_message_payload = {
             "events": [{"role": "assistant", "content": f"completed {run_id}"}],
@@ -1234,7 +1234,7 @@ async def test_run_coordinator_loads_restore_point_from_previous_run(
                 "deferred_tool_metadata": {},
                 "need_user_approve_tools": [],
                 "need_user_approve_mcps": [],
-                "auto_load_files": [],
+                "files_to_inspect": [],
             }
         },
     )

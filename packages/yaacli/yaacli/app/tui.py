@@ -2845,9 +2845,6 @@ class TUIApp:
         session_store = self._durable_store
         if execution_store is None or session_store is None:
             return
-        if self._subagent_execution_service is not None and self._runtime is not None:
-            self._runtime.ctx.delegation_scope_id = self._session_id
-            await self._subagent_execution_service.deliver_pending(self._runtime.ctx)
         records = await execution_store.list(owner_scope_id=self._session_id)
         for record in records:
             if record.execution_id in self._projected_subagent_completion_ids:
@@ -5368,7 +5365,7 @@ class TUIApp:
         ctx.tool_id_wrapper.clear()
         ctx.agent_stream_queues = {}
         ctx.agent_stream_info = {}
-        ctx.auto_load_files = []
+        ctx.files_to_inspect = []
         ctx.task_manager = TaskManager()
         ctx.note_manager = NoteManager()
         ctx.tool_proxy.loaded_tools = []
@@ -5439,16 +5436,9 @@ class TUIApp:
             raise RuntimeError("Durable store is not initialized")
         store = SQLiteSubagentExecutionStore(self.config_manager.get_session_database_path())
         try:
-            all_records = await store.list()
+            records = list(await store.list(owner_scope_id=self._session_id))
         finally:
             await store.close()
-        records = []
-        for record in all_records:
-            if record.parent_logical_run_id is None:
-                continue
-            parent_run = self._durable_store.get_run(record.parent_logical_run_id)
-            if parent_run is not None and parent_run.session_id == self._session_id:
-                records.append(record)
         if not records:
             self._append_system_output("No durable subagent executions for this session.")
             return

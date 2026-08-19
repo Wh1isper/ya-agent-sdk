@@ -94,10 +94,15 @@ def test_general_config_with_dict_settings() -> None:
     assert config.model_settings["max_tokens"] == 8192
 
 
-def test_general_config_accepts_former_loop_iteration_setting() -> None:
-    """Test migration from the former /loop iteration config key."""
-    config = GeneralConfig.model_validate({"max_loop_iterations": 7})
-    assert config.max_goal_iterations == 7
+def test_general_config_rejects_removed_loop_iteration_setting() -> None:
+    """Removed config keys must fail instead of selecting a different behavior."""
+    with pytest.raises(ValidationError, match="max_loop_iterations"):
+        GeneralConfig.model_validate({"max_loop_iterations": 7})
+
+
+def test_enabled_s3_media_requires_bucket() -> None:
+    with pytest.raises(ValidationError, match=r"media\.s3\.bucket"):
+        YaacliConfig.model_validate({"media": {"s3": {"enabled": True}}})
 
 
 def test_notification_config() -> None:

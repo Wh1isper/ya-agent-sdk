@@ -82,10 +82,10 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
         )
         self._connection.row_factory = sqlite3.Row
         try:
+            self._initialize_or_validate_schema()
             self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.execute("PRAGMA foreign_keys=ON")
-            self._initialize_or_validate_schema()
         except BaseException:
             self._connection.close()
             raise
@@ -841,7 +841,7 @@ class LocalSubagentDriver:
         child_ctx.durable_logical_run_id = record.child_logical_run_id
         child_ctx.model_profile_instructions = None
         child_ctx.shell_env = {}
-        child_ctx.auto_load_files = []
+        child_ctx.files_to_inspect = []
         child_ctx.goal_task = None
         child_ctx.goal_iteration = 0
         child_ctx.goal_needs_post_restore_audit = False

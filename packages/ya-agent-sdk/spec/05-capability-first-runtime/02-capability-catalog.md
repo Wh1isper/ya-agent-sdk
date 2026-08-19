@@ -193,7 +193,7 @@ once for tools and instructions together.
 | `process_handoff_message` | `HandoffCapability` | handoff transition |
 | cache-friendly compact filters | `ContextCompactionCapability` | lifecycle reduction |
 | `cold_start_trim` | `ColdStartCapability` | lifecycle reduction |
-| `process_auto_load_files` | `FileInspectionCapability` | exactly-once `wrap_model_request` reminder, cleared after a successful handler response |
+| removed `process_auto_load_files` processor | `FileInspectionCapability` | one-shot `wrap_model_request` reminder, cleared after a successful handler response |
 | `create_environment_instructions_filter` | `EnvironmentContextCapability` | request-only `wrap_model_request` decoration |
 | `inject_runtime_instructions` | `RuntimeContextCapability` | request-only `wrap_model_request` decoration |
 | `inject_background_results` | `ShellCapability` | canonical exactly-once completion enqueue plus transient status |

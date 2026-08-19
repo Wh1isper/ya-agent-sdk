@@ -135,7 +135,7 @@ async def test_process_handoff_empty_history(tmp_path: Path) -> None:
 
 
 async def test_process_handoff_last_message_has_user_prompt(tmp_path: Path) -> None:
-    """Last message should have UserPromptPart for auto_load_files compatibility."""
+    """Last message should have UserPromptPart for files_to_inspect compatibility."""
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,

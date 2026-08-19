@@ -342,9 +342,9 @@ native ready-node tie-breaking applies.
 
 ## 8. File Inspection
 
-The existing `auto_load_files` behavior is a path reminder, not automatic content
-loading. The target name is `FileInspectionCapability`, and resumable state uses a
-matching pending-file-inspection field.
+`files_to_inspect` is a path reminder, not automatic content loading. The owning
+request wrapper is `FileInspectionCapability`, and resumable state uses the same
+`files_to_inspect` field.
 
 The capability:
 

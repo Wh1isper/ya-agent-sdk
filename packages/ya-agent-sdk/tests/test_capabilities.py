@@ -13,6 +13,7 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import FileInspectionCapability
 from ya_agent_sdk.environment.local import LocalEnvironment
 
 
@@ -142,3 +143,49 @@ async def test_process_history_capability_supported(env) -> None:
         and any(isinstance(part, UserPromptPart) and part.content == "capability-marker" for part in message.parts)
         for message in model.last_messages
     )
+
+
+async def test_file_inspection_capability_injects_paths_once_without_loading_contents(env) -> None:
+    model = CapturingTestModel(custom_output_text="ok")
+    runtime = create_agent(
+        model,
+        env=env,
+        capabilities=[FileInspectionCapability()],
+        defer_model_check=True,
+    )
+    runtime.ctx.files_to_inspect = ['src/<unsafe>&"file.py']
+
+    async with runtime:
+        await runtime.agent.run("Continue", deps=runtime.ctx)
+
+    assert model.last_messages is not None
+    reminders = [
+        part.content
+        for message in model.last_messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str) and "<files-to-inspect" in part.content
+    ]
+    assert len(reminders) == 1
+    assert 'path="src/&lt;unsafe&gt;&amp;&quot;file.py"' in reminders[0]
+    assert runtime.ctx.files_to_inspect == []
+
+
+async def test_file_inspection_capability_retains_paths_when_request_fails(env) -> None:
+    class FailingModel(TestModel):
+        async def request(self, messages, model_settings, model_request_parameters):
+            raise RuntimeError("model request failed")
+
+    runtime = create_agent(
+        FailingModel(),
+        env=env,
+        capabilities=[FileInspectionCapability()],
+        defer_model_check=True,
+    )
+    runtime.ctx.files_to_inspect = ["src/main.py"]
+
+    async with runtime:
+        with pytest.raises(RuntimeError, match="model request failed"):
+            await runtime.agent.run("Continue", deps=runtime.ctx)
+
+    assert runtime.ctx.files_to_inspect == ["src/main.py"]

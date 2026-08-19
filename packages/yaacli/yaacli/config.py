@@ -89,18 +89,6 @@ class GeneralConfig(_StrictConfigModel):
     system_prompt_file: str = ""
     """Path to custom system prompt file. Empty uses built-in default."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_loop_config(cls, data: object) -> object:
-        """Accept the former /loop iteration setting for existing configs."""
-        if not isinstance(data, dict) or "max_loop_iterations" not in data:
-            return data
-        migrated = dict(data)
-        if "max_goal_iterations" not in migrated:
-            migrated["max_goal_iterations"] = migrated["max_loop_iterations"]
-        migrated.pop("max_loop_iterations")
-        return migrated
-
     @property
     def is_configured(self) -> bool:
         """Check if model is configured."""
@@ -298,6 +286,13 @@ class S3Config(_StrictConfigModel):
 
     force_path_style: bool = False
     """Use path-style URLs. Required for some S3-compatible services (MinIO, Ceph, etc.)."""
+
+    @model_validator(mode="after")
+    def validate_enabled_bucket(self) -> Self:
+        """Require an upload destination whenever S3 media upload is enabled."""
+        if self.enabled and not self.bucket.strip():
+            raise ValueError("media.s3.bucket is required when media.s3.enabled is true")
+        return self
 
 
 class MediaConfig(_StrictConfigModel):

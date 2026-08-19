@@ -61,25 +61,25 @@ def _text(value: str) -> TextPart:
     return TextPart(type="text", text=value)
 
 
-def test_agency_source_session_submit_request_accepts_session_id_aliases_and_requires_kind() -> None:
+def test_agency_source_session_submit_request_requires_canonical_session_id_and_kind() -> None:
     from ya_claw.controller.models import AgencyHandoffKind, AgencySourceSessionSubmitRequest
 
-    modern = AgencySourceSessionSubmitRequest(
+    request = AgencySourceSessionSubmitRequest(
         session_id="session-1",
         prompt="hello",
         handoff_kind=AgencyHandoffKind.REMINDER,
     )
-    legacy = AgencySourceSessionSubmitRequest(
-        source_session_id="session-2",
-        prompt="hello",
-        handoff_kind=AgencyHandoffKind.EXCHANGE,
-    )
 
-    assert modern.session_id == "session-1"
-    assert legacy.session_id == "session-2"
-    assert modern.handoff_kind == AgencyHandoffKind.REMINDER
-    assert legacy.handoff_kind == AgencyHandoffKind.EXCHANGE
-    assert modern.handoff_tags == ["agency-reminder"]
+    assert request.session_id == "session-1"
+    assert request.handoff_kind == AgencyHandoffKind.REMINDER
+    assert request.handoff_tags == ["agency-reminder"]
+    with pytest.raises(ValidationError):
+        AgencySourceSessionSubmitRequest(
+            session_id="session-1",
+            source_session_id="session-2",
+            prompt="hello",
+            handoff_kind=AgencyHandoffKind.EXCHANGE,
+        )
     assert (
         AgencySourceSessionSubmitRequest(
             session_id="session-4",
