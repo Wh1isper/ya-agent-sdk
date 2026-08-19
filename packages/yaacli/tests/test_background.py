@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from ya_agent_sdk.environment.local import LocalShell
 from yaacli.shell_monitor import ShellMonitor, ShellNotification
+
+
+def _python_command(source: str) -> str:
+    args = [sys.executable, "-c", source]
+    return subprocess.list2cmdline(args) if sys.platform == "win32" else shlex.join(args)
 
 
 async def _wait_for_notification(
@@ -32,8 +40,9 @@ async def test_shell_monitor_reports_unread_output(tmp_path: Path) -> None:
     callbacks: list[ShellNotification] = []
     monitor.set_notification_callback(callbacks.append)
     monitor.start(shell, poll_interval=0.01)
+    command = _python_command("import time; print('ready', flush=True); time.sleep(1)")
     try:
-        process_id = await shell.start("echo ready; sleep 1")
+        process_id = await shell.start(command)
         monitor.register(process_id)
 
         notification = await _wait_for_notification(
@@ -43,7 +52,7 @@ async def test_shell_monitor_reports_unread_output(tmp_path: Path) -> None:
         )
 
         assert notification.process_id == process_id
-        assert notification.command == "echo ready; sleep 1"
+        assert notification.command == command
         assert "shell_wait" in notification.prompt()
         assert callbacks[-1] == notification
         assert not hasattr(monitor, "_bus")
@@ -61,7 +70,7 @@ async def test_shell_monitor_completion_supersedes_output_notification(tmp_path:
     monitor = ShellMonitor()
     monitor.start(shell, poll_interval=0.01)
     try:
-        process_id = await shell.start("printf done")
+        process_id = await shell.start(_python_command("print('done')"))
         monitor.register(process_id)
 
         notification = await _wait_for_notification(
@@ -88,7 +97,7 @@ async def test_shell_monitor_reset_terminates_and_discards_session_processes(
     monitor = ShellMonitor()
     monitor.start(shell, poll_interval=0.01)
     try:
-        process_id = await shell.start("sleep 30")
+        process_id = await shell.start(_python_command("import time; time.sleep(30)"))
         monitor.register(process_id)
 
         await monitor.reset_session_state()
@@ -98,7 +107,7 @@ async def test_shell_monitor_reset_terminates_and_discards_session_processes(
         with pytest.raises(KeyError):
             await shell.wait_process(process_id, timeout=0)
 
-        next_process = await shell.start("printf reusable")
+        next_process = await shell.start(_python_command("print('reusable')"))
         stdout, _stderr, running, exit_code = await shell.wait_process(
             next_process,
             timeout=1,
