@@ -82,6 +82,7 @@ Recommended starting points:
 - Copy [`packages/ya-agent-sdk/.env.example`](packages/ya-agent-sdk/.env.example) to `packages/ya-agent-sdk/.env` when developing the SDK or configuring SDK/tool variables for workspace apps
 - Copy [`packages/yaacli/.env.example`](packages/yaacli/.env.example) to `packages/yaacli/.env` or your current working directory `.env` when developing YAACLI
 - Run examples from [`examples/`](examples/) for end-to-end usage patterns
+- Use [`examples/capability_plugin/`](examples/capability_plugin/) to learn how to package, discover, select, and execute an installable custom capability
 
 ### OAuth-backed Codex
 

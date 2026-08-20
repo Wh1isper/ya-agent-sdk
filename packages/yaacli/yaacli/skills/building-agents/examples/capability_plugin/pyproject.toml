@@ -1,0 +1,17 @@
+[project]
+name = "ya-agent-sdk-capability-plugin-example"
+version = "0.1.0"
+description = "Installable custom capability example for ya-agent-sdk"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = ["pydantic-ai>=2.21.0,<3"]
+
+[project.entry-points."ya_agent_sdk.capabilities"]
+"example.text_metrics" = "example_capability_plugin:TextMetricsCapability"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/example_capability_plugin"]

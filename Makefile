@@ -117,6 +117,12 @@ docker-run-platform: ## Run the YA Agent Platform Docker image
 	@echo "Running ya-agent-platform Docker image"
 	@docker run --rm ya-agent-platform:dev
 
+.PHONY: capability-plugin-smoke
+capability-plugin-smoke: ## Run the installable capability plugin example
+	@echo "Running installable capability plugin example"
+	@uv run --frozen --with-editable ./examples/capability_plugin \
+		python ./examples/capability_plugin/run.py
+
 .PHONY: check
 check: ## Run code quality tools for all active packages
 	@echo "Checking lock file consistency with pyproject.toml"
@@ -127,6 +133,7 @@ check: ## Run code quality tools for all active packages
 	@./scripts/check-skills-sync.sh
 	@echo "Checking release skill zip build"
 	@python scripts/build-skill-zips.py --check
+	@$(MAKE) capability-plugin-smoke
 	@echo "Running web lint"
 	@$(MAKE) web-lint
 	@echo "Running web build"

@@ -211,6 +211,9 @@ inject one `DelegationCapability` backed by a store and driver. See
   persistence, named delegation, and self fork.
 - `../../examples/deepresearch.py`: autonomous capability-first research agent with
   structured output.
+- `../../examples/capability_plugin/`: installable custom capability package with
+  metadata-only discovery, explicit catalog selection, `AgentSpec` reconstruction, and
+  a credential-free smoke run.
 
 After editing this canonical skill, run `scripts/sync-skills.sh` to update YAACLI's
 bundled copy.
