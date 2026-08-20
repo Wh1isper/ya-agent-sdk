@@ -207,6 +207,9 @@ inject one `DelegationCapability` backed by a store and driver. See
 
 ## Runnable Examples
 
+The paths below point to repository sources. Installed and bundled skill artifacts carry
+the same files under `./examples/`.
+
 - `../../examples/general.py`: capability composition, streaming, typed HITL,
   persistence, named delegation, and self fork.
 - `../../examples/deepresearch.py`: autonomous capability-first research agent with

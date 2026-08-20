@@ -29,21 +29,23 @@ uv run --frozen --with-editable ./examples/capability_plugin \
 
 The command installs this example distribution into an ephemeral uv environment layered
 on the repository environment. It does not add the example to the monorepo workspace or
-to the repository lockfile. The example uses no model credentials and performs no network I/O
-once its Python dependencies are available.
+to the repository lockfile. `--frozen` protects the repository lockfile; uv may still
+resolve or download the editable plugin's dependencies when they are not cached. The
+example uses no model credentials and performs no network I/O after installation.
 
 Expected output has this shape:
 
 ```text
 Discovered metadata: example.text_metrics -> example_capability_plugin:TextMetricsCapability
 Selected plugin: entry-point:ya-agent-sdk-capability-plugin-example@0.1.0:...
-Agent result: {"text_metrics":{"characters":1,"words":1,"lines":1}}
+Agent result: {"text_metrics":{"characters":1,"words":1,"lines":1,"max_characters":5000,"truncated":false}}
 ```
 
 `TestModel` generates deterministic placeholder tool arguments, so the counts are for
-that generated argument rather than the sentence in the prompt. The important behavior
-is that the tool was reconstructed from `AgentSpec` and invoked after entry-point
-selection.
+that generated argument rather than the sentence in the prompt. The reported
+`max_characters` value proves that the serialized capability configuration reached the
+tool instance. The important behavior is that the tool was reconstructed from
+`AgentSpec` and invoked after entry-point selection.
 
 ## Package layout
 

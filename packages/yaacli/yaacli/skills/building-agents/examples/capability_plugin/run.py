@@ -11,7 +11,7 @@ from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import build_default_capability_catalog, discover_capability_types
 
 ENTRY_POINT_NAME = "example.text_metrics"
-PLUGIN_MODULE = "example_capability_plugin.capability"
+PLUGIN_MODULES = ("example_capability_plugin", "example_capability_plugin.capability")
 
 
 async def run() -> None:
@@ -20,8 +20,9 @@ async def run() -> None:
     ]
     if len(references) != 1:
         raise RuntimeError(f"Expected one {ENTRY_POINT_NAME!r} entry point, found {len(references)}")
-    if PLUGIN_MODULE in sys.modules:
-        raise RuntimeError("Metadata discovery imported the plugin module")
+    imported_plugin_modules = [module_name for module_name in PLUGIN_MODULES if module_name in sys.modules]
+    if imported_plugin_modules:
+        raise RuntimeError(f"Metadata discovery imported plugin modules: {imported_plugin_modules!r}")
 
     reference = references[0]
     print(f"Discovered metadata: {reference.entry_point_name} -> {reference.import_target}")
