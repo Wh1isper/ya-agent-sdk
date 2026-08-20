@@ -145,6 +145,41 @@ process-local adapters; active executions do not survive process loss.
 
 ## Portable Definition
 
+### Host file adapters
+
+`SubagentSpec` is the portable runtime boundary, not a requirement that every human
+configuration file use the native YAML/JSON shape. A host may accept a concise Markdown
+subagent definition with YAML frontmatter and normalize it into `SubagentSpec` before
+catalog resolution, fingerprinting, or persistence.
+
+Keep that adapter at the trusted host configuration boundary. It must materialize an
+explicit `AgentSpec`, capability list, model settings, and delegation policy. It must
+not restore `SubagentConfig`, generated delegate classes, ambient parent-tool copying,
+or alternate execution semantics. Persist only the normalized plan/descriptor so a
+restart never depends on reparsing mutable Markdown.
+
+YAACLI supports this generic input form under `~/.yaacli/subagents/*.md`:
+
+```markdown
+---
+name: explorer
+description: Inspect an unfamiliar codebase.
+instruction: Use this agent for focused codebase exploration.
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+tools: [glob, grep, ls, view]
+---
+
+Return concise findings with exact file paths and unresolved questions.
+```
+
+The host combines `description` and optional `instruction` for the parent-facing roster,
+uses the body as child instructions, resolves `inherit` against the active root
+configuration, and converts tool names into a visibility policy over an explicit child
+capability plan. Native `SubagentSpec` YAML/JSON remains the right input when users need custom capability
+serialization names, nesting, durability, or complete delegation policy.
+
 ### `SubagentSpec`
 
 | Field                   | Meaning                                                                     |

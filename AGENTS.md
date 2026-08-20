@@ -31,9 +31,11 @@ behavioral or architectural change.
   compatibility layers.
 - Runtime input uses Pydantic AI native enqueue/deferred mechanisms. Durable hosts own
   persisted inboxes, execution records, and delivery/application state.
-- Subagents are strict portable `SubagentSpec` documents resolved into explicit plans;
-  YAACLI and YA Claw provide restart-durable execution drivers rather than alternate
-  model-facing delegation APIs.
+- Subagents execute and persist as strict portable `SubagentSpec` documents resolved
+  into explicit plans. Trusted hosts may normalize human-facing Markdown definitions
+  into that boundary before resolution; they must not restore implicit inheritance or
+  alternate delegation runtimes. YAACLI and YA Claw provide restart-durable execution
+  drivers rather than alternate model-facing delegation APIs.
 - The SDK execution harness owns one stateless native agent segment only. YAACLI and YA
   Claw compose it with host-owned coordinators and stores; active process-owned work is
   interrupted rather than replayed after a crash. YA Claw profiles use strict native

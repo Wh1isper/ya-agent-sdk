@@ -147,8 +147,38 @@ default, while commands such as `/commit` and `/review` come from configuration.
 
 ## Subagent Configuration
 
-Create strict versioned YAML or JSON `SubagentSpec` files in
-`~/.yaacli/subagents/`:
+YAACLI accepts generic Markdown definitions and strict versioned `SubagentSpec` YAML or
+JSON documents in `~/.yaacli/subagents/`.
+
+Use Markdown for the common concise format:
+
+```markdown
+---
+name: my-subagent
+description: Brief description shown in the delegation roster.
+instruction: Use this agent for bounded specialist work.
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+tools: [glob, grep, ls, view]
+optional_tools: [shell_exec]
+---
+
+You are a specialist in this domain. Return a bounded, evidence-based result.
+```
+
+`name` and `description` are required. `instruction`, `tools`, `optional_tools`,
+`model`, `model_settings`, and `model_cfg` are optional. Tool fields accept lists or
+comma-separated strings. `description` plus optional `instruction` form the
+parent-facing roster entry, while the body becomes the child's instructions. Markdown
+is normalized into the current capability-first `SubagentSpec`; it does not restore old
+delegate classes or clone live parent tools. Tool names form a visibility allowlist over
+an explicit YAACLI child capability plan; both fields add names to the allowlist but do
+not create missing tools or gate route registration. A same-basename native allow/deny
+policy can only be narrowed, never broadened. Omitted or `inherit` model fields use the
+active root configuration.
+
+Use native YAML/JSON when exact capabilities or delegation policy are required:
 
 ```yaml
 schema_version: 1
@@ -171,15 +201,18 @@ linkage: child
 durability: process
 ```
 
-YAACLI uses a process-local child driver, so `durability: restart` is rejected rather
-than silently weakened. An omitted `agent.model` uses the runtime's explicit
-default-model resolver. Do not use
-`inherit`. Child capabilities are explicit serialization names; YAACLI does not derive
-them from tool names or copy the parent's final tool surface.
+YAACLI uses a process-local child driver, so native `durability: restart` is rejected
+rather than silently weakened. An omitted native `agent.model` uses the runtime's
+explicit default-model resolver. Native child capabilities are explicit serialization
+names; YAACLI does not derive them from tool names or copy the parent's final tool
+surface.
 
-The `[subagents.overrides.<route>]` table may replace `model`, `model_settings`, or
-`model_cfg`. `disabled` removes routes after loading. Markdown front matter, `tools`,
-`optional_tools`, generated delegate definitions, and duplicate routes are rejected.
+If matching `name.md` and `name.yaml`/`name.yml`/`name.json` files coexist, Markdown
+controls identity, prompts, and model configuration while retaining the native file's
+capabilities and delegation policy. This handles presets copied during an earlier
+upgrade. Other duplicate routes are rejected. The `[subagents.overrides.<route>]` table
+may replace `model`, `model_settings`, or `model_cfg` after normalization; `disabled`
+removes routes after loading.
 
 ### Builtin Presets
 

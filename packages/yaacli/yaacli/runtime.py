@@ -107,8 +107,11 @@ from yaacli.model_profiles import (
 )
 from yaacli.session import TUIContext
 from yaacli.subagent_config import (
+    YAACLI_INHERIT_MODEL_CFG_METADATA_KEY,
+    YAACLI_INHERIT_MODEL_SETTINGS_METADATA_KEY,
     YAACLI_MODEL_CFG_METADATA_KEY,
     load_subagent_specs,
+    materialize_subagent_model_configuration,
 )
 from yaacli.toolsets.monitored_shell import MonitoredShellTool
 
@@ -591,7 +594,7 @@ def _compile_subagent_specs(
     *,
     config_dir: Path,
 ) -> tuple[SubagentSpec, ...]:
-    """Load native portable specs and apply explicit config-file overrides."""
+    """Load portable specs from supported files and apply explicit overrides."""
     loaded = load_subagent_specs(config_dir / "subagents")
     disabled = set(subagents_config.disabled)
     compiled: list[SubagentSpec] = []
@@ -608,14 +611,18 @@ def _compile_subagent_specs(
             agent_payload["model"] = override.model
         if override.model_settings is not None:
             agent_payload["model_settings"] = dict(resolve_model_settings(override.model_settings) or {})
+            metadata = dict(agent_payload.get("metadata") or {})
+            metadata.pop(YAACLI_INHERIT_MODEL_SETTINGS_METADATA_KEY, None)
+            agent_payload["metadata"] = metadata or None
         if override.model_cfg is not None:
             metadata = dict(agent_payload.get("metadata") or {})
+            metadata.pop(YAACLI_INHERIT_MODEL_CFG_METADATA_KEY, None)
             metadata[YAACLI_MODEL_CFG_METADATA_KEY] = resolve_profile_model_cfg(override.model_cfg).model_dump(
                 mode="json"
             )
             agent_payload["metadata"] = metadata
         compiled.append(spec.model_copy(update={"agent": AgentSpec.model_validate(agent_payload)}))
-    logger.info("Loaded %d native subagent specs", len(compiled))
+    logger.info("Loaded %d subagent specs", len(compiled))
     return tuple(compiled)
 
 
@@ -746,7 +753,15 @@ def compile_child_plan_manifest(
         host_capabilities=host_capabilities,
         restart_durable=False,
     )
-    active_plans = [resolver.resolve(spec) for spec in sources.subagent_specs]
+    child_specs = tuple(
+        materialize_subagent_model_configuration(
+            spec,
+            inherited_model_settings=dict(model_settings) if model_settings is not None else None,
+            inherited_model_cfg=model_cfg,
+        )
+        for spec in sources.subagent_specs
+    )
+    active_plans = [resolver.resolve(spec) for spec in child_specs]
     if not any(plan.spec.route == "self" for plan in active_plans):
         active_plans.append(resolver.resolve_self(self_fork_policy))
     active_routes = {plan.spec.route: plan.descriptor_id for plan in active_plans}

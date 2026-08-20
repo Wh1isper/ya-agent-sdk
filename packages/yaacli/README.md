@@ -38,6 +38,40 @@ Update with uv:
 uv tool upgrade yaacli
 ```
 
+## Subagent Configuration
+
+YAACLI accepts both generic Markdown definitions and native versioned `SubagentSpec`
+YAML/JSON documents under `~/.yaacli/subagents/`.
+
+```markdown
+---
+name: code-reviewer
+description: Review a bounded change and report evidence-based findings.
+instruction: Use this agent after meaningful implementation or refactoring.
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+tools: [glob, grep, ls, view]
+---
+
+You are a senior code reviewer. Prioritize architecture, correctness, security, and
+critical-path behavior.
+```
+
+Markdown is normalized into the current portable `SubagentSpec`; it does not activate a
+legacy runtime. The frontmatter `description` plus optional `instruction` form the
+parent-facing delegation roster entry; the Markdown body becomes the child's native
+instructions. Omitted or `inherit` model fields use the active root model, settings, and
+context configuration. Tool lists become a final visibility allowlist over YAACLI's
+explicit child capability plan rather than copying live parent or MCP tools.
+
+A same-basename Markdown file is authoritative over a native preset already copied by
+an earlier upgrade, while retaining that preset's explicit capabilities and delegation
+policy. Other duplicate routes remain errors. New setup runs do not copy
+`code-reviewer.yaml` when `code-reviewer.md` already exists. Use native YAML/JSON when exact
+capability grants, plugin types, nesting, or full delegation policy are required. See
+[`spec/02-configuration.md`](spec/02-configuration.md) for both schemas.
+
 ## Capability Plugins
 
 YAACLI optionally loads the SDK's strict plugin manifest from the fixed global path

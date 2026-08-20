@@ -28,7 +28,7 @@ wizard and creates missing global assets without overwriting existing ones.
 | Tool policy | `~/.yaacli/tools.toml` | `.yaacli/tools.toml` | Project file replaces the global file as a whole |
 | MCP configuration | `~/.yaacli/mcp.json` | `.yaacli/mcp.json` | Project file replaces the global file as a whole |
 | Capability plugins | `~/.yaacli/plugins.toml` | None | Optional fixed global manifest loaded once at startup |
-| Subagents | `~/.yaacli/subagents/*.{yaml,yml,json}` | None | Strict versioned `SubagentSpec` documents loaded by the runtime |
+| Subagents | `~/.yaacli/subagents/*.{md,yaml,yml,json}` | None | Generic Markdown definitions or strict versioned `SubagentSpec` documents |
 | Skills | `~/.yaacli/skills/` | `.yaacli/skills/` | Project skills have higher routing priority |
 | Local state | `~/.yaacli/state.json` | None | Stores selected model-profile state |
 | Saved sessions | `~/.yaacli/sessions/` by default | Configurable | Controlled by `session.session_dir` |
@@ -154,9 +154,12 @@ new logical run and receives a fresh budget.
 Removed `general.max_loop_iterations` input is rejected. `/goal` uses only the strict
 `max_goal_iterations` field.
 
-### Native subagent documents
+### Subagent documents
 
-Each file in `~/.yaacli/subagents/` is one strict YAML or JSON `SubagentSpec`:
+YAACLI accepts two configuration inputs under `~/.yaacli/subagents/`. Both compile to
+the same portable `SubagentSpec` and current capability-first child runtime.
+
+A native YAML or JSON document exposes the complete strict contract:
 
 ```yaml
 schema_version: 1
@@ -174,16 +177,57 @@ linkage: child
 durability: process
 ```
 
-YAACLI child execution is process-local, so configured specs must use `process`.
-A `restart` requirement is rejected rather than silently weakened. An omitted child
-model uses the runtime's explicit resolver default. The
-`[subagents.overrides.<route>]` table may replace `model`, `model_settings`, or
-`model_cfg` without changing the source document. The literal value `inherit`, Markdown
-front matter, tool-name lists, and generated delegate definitions are rejected.
+The generic Markdown format keeps YAML frontmatter concise and uses the Markdown body
+for child instructions:
 
-Packaged native presets are copied only when their target files do not exist. Project
-configuration does not inject a second subagent directory or silently merge child
-specifications.
+```markdown
+---
+name: explorer
+description: Inspect an unfamiliar codebase.
+instruction: Use this agent for focused local codebase exploration.
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+tools: [glob, grep, ls, view]
+optional_tools: [shell_exec]
+---
+
+You are a codebase exploration specialist. Return concise findings with file paths.
+```
+
+`name` and `description` are required. `instruction`, `tools`, `optional_tools`,
+`model`, `model_settings`, and `model_cfg` are optional. `tools` and `optional_tools`
+accept either YAML lists or comma-separated strings. The loader combines `description`
+and optional `instruction` into the parent-facing native description, while the body
+becomes `AgentSpec.instructions`. `inherit` or an omitted model field uses the active
+root default. A model-settings or model-config mapping/preset is resolved at the same
+trusted configuration boundary used by native overrides. Every inherited value is
+materialized before child plan fingerprinting, so retained descriptors never depend on
+the active profile at restore time.
+
+Markdown is an input adapter, not the removed 1.x execution architecture. YAACLI
+materializes an explicit built-in capability plan, and a `tools`/`optional_tools` list
+adds a final `ToolVisibilityCapability` allowlist over that plan. Both fields contribute
+to that allowlist; they neither create missing tools nor gate route registration. When
+a same-basename native policy already has an allowlist or deny list, Markdown can only
+narrow it: existing denies remain and allowlists are intersected. The adapter does not
+copy the parent's live capability instances or ambient MCP tool surface. Native
+documents remain
+the format for exact capability grants, child policy, custom plugin types, nesting, or
+host requirements.
+
+When `name.md` and `name.yaml`/`name.yml`/`name.json` coexist, Markdown is authoritative
+for identity, prompts, and model configuration while retaining the same-basename native
+document's explicit capabilities and delegation policy. This preserves user Markdown
+when an upgrade has already copied a native preset. Other duplicate routes remain a
+configuration error. Future setup runs do not copy a native preset when any supported
+same-basename definition already exists.
+
+YAACLI child execution is process-local, so native configured specs must use `process`.
+A `restart` requirement is rejected rather than silently weakened. The
+`[subagents.overrides.<route>]` table may replace `model`, `model_settings`, or
+`model_cfg` after either source format is normalized. Project configuration does not
+inject a second subagent directory or silently merge child specifications.
 
 ### Capability plugins
 

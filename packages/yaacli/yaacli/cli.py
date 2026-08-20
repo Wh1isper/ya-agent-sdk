@@ -30,6 +30,7 @@ from yaacli.durable.models import SessionSummary
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.errors import safe_exception_str
 from yaacli.logging import LOG_FILE_NAME, configure_logging, get_logger
+from yaacli.subagent_config import has_subagent_definition
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
@@ -216,14 +217,14 @@ def run_setup_wizard(config_manager: ConfigManager) -> bool:
     else:
         click.echo(f"Skipped: {mcp_path} (already exists)")
 
-    # Copy builtin subagents from ya_agent_sdk (only missing files - never overwrite)
+    # Copy builtin subagents only when no supported same-basename definition exists.
     subagents_dir.mkdir(parents=True, exist_ok=True)
     sdk_presets = resources.files("ya_agent_sdk.subagents.presets")
     copied_subagents = []
     for item in sdk_presets.iterdir():
         if item.name.endswith((".yaml", ".yml", ".json")):
             target_path = subagents_dir / item.name
-            if not target_path.exists():
+            if not has_subagent_definition(subagents_dir, Path(item.name).stem):
                 with resources.as_file(item) as src:
                     shutil.copy(src, target_path)
                 copied_subagents.append(item.name)
@@ -440,7 +441,7 @@ def ensure_builtin_assets(config_manager: ConfigManager) -> None:
     # Ensure config directory exists
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure subagents directory and copy missing presets
+    # Ensure subagents directory and copy presets with absent basenames.
     subagents_dir = config_dir / "subagents"
     subagents_dir.mkdir(exist_ok=True)
     try:
@@ -448,7 +449,7 @@ def ensure_builtin_assets(config_manager: ConfigManager) -> None:
         for item in sdk_presets.iterdir():
             if item.name.endswith((".yaml", ".yml", ".json")):
                 target_path = subagents_dir / item.name
-                if not target_path.exists():
+                if not has_subagent_definition(subagents_dir, Path(item.name).stem):
                     with resources.as_file(item) as src:
                         shutil.copy(src, target_path)
                     logger.debug(f"Copied builtin subagent: {item.name}")

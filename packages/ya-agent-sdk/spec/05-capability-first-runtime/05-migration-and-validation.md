@@ -15,7 +15,9 @@ The cutover rules are:
 1. `create_agent()` accepts only the new capability composition surface.
 2. Declarative main and child agents use native Pydantic AI `AgentSpec`; portable
    children add a thin YA `SubagentSpec` envelope. No runtime accepts `SubagentConfig`,
-   duplicate agent fields, tool lists, or implicit inheritance.
+   duplicate agent fields, tool lists, or implicit inheritance. A trusted host may
+   accept concise Markdown or tool-name source syntax only as a configuration adapter
+   that materializes an explicit `SubagentSpec` before resolution and persistence.
 3. `AgentContext` exposes `get_capabilities()` and no history-specific contribution
    hook.
 4. Environment/resource providers expose provenance-grouped capabilities only.

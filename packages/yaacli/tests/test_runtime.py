@@ -291,6 +291,119 @@ arguments = { label = "root" }
     assert "test.host_plugin" not in self_capability_names
 
 
+def test_markdown_subagent_inherits_active_model_settings_before_plan_snapshot(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        """---
+name: helper
+description: Markdown helper
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+---
+
+Return a bounded result.
+""",
+        encoding="utf-8",
+    )
+    config = YaacliConfig(
+        general=GeneralConfig(
+            model="openai-chat:gpt-4",
+            model_settings={"temperature": 0.4, "max_tokens": 4096},
+            model_cfg={"context_window": 100_000},
+        )
+    )
+
+    sources = compile_runtime_sources(config, config_dir=config_dir, include_subagents=True)
+    manifest = compile_child_plan_manifest(config, profile=None, sources=sources)
+    helper = next(descriptor for descriptor in manifest.descriptors if descriptor.spec.route == "helper")
+
+    assert helper.normalized_agent_spec.model == "openai-chat:gpt-4"
+    assert helper.normalized_agent_spec.model_settings == {"temperature": 0.4, "max_tokens": 4096}
+    assert helper.normalized_agent_spec.metadata is not None
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 100_000
+    assert "yaacli_inherit_model_settings" not in helper.normalized_agent_spec.metadata
+    assert "yaacli_inherit_model_cfg" not in helper.normalized_agent_spec.metadata
+
+
+def test_markdown_subagent_route_overrides_replace_inherited_model_configuration(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        """---
+name: helper
+description: Markdown helper
+model_settings: inherit
+model_cfg: inherit
+---
+
+Return a bounded result.
+""",
+        encoding="utf-8",
+    )
+    config = YaacliConfig(
+        general=GeneralConfig(
+            model="openai-chat:gpt-4",
+            model_settings={"temperature": 0.9},
+            model_cfg={"context_window": 100_000},
+        ),
+        subagents=SubagentsConfig(
+            overrides={
+                "helper": SubagentOverride(
+                    model_settings={"temperature": 0.1},
+                    model_cfg={"context_window": 300_000},
+                )
+            }
+        ),
+    )
+
+    sources = compile_runtime_sources(config, config_dir=config_dir, include_subagents=True)
+    manifest = compile_child_plan_manifest(config, profile=None, sources=sources)
+    helper = next(descriptor for descriptor in manifest.descriptors if descriptor.spec.route == "helper")
+
+    assert helper.normalized_agent_spec.model_settings == {"temperature": 0.1}
+    assert helper.normalized_agent_spec.metadata is not None
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 300_000
+    assert "yaacli_inherit_model_settings" not in helper.normalized_agent_spec.metadata
+    assert "yaacli_inherit_model_cfg" not in helper.normalized_agent_spec.metadata
+
+
+def test_markdown_inherited_model_cfg_participates_in_descriptor_identity(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        """---
+name: helper
+description: Markdown helper
+model_cfg: inherit
+---
+
+Return a bounded result.
+""",
+        encoding="utf-8",
+    )
+    first_config = YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4", model_cfg={"context_window": 100_000}))
+    second_config = YaacliConfig(
+        general=GeneralConfig(model="openai-chat:gpt-4", model_cfg={"context_window": 200_000})
+    )
+    sources = compile_runtime_sources(first_config, config_dir=config_dir, include_subagents=True)
+
+    first_manifest = compile_child_plan_manifest(first_config, profile=None, sources=sources)
+    second_manifest = compile_child_plan_manifest(second_config, profile=None, sources=sources)
+    first = next(descriptor for descriptor in first_manifest.descriptors if descriptor.spec.route == "helper")
+    second = next(descriptor for descriptor in second_manifest.descriptors if descriptor.spec.route == "helper")
+
+    assert first.normalized_agent_spec.metadata is not None
+    assert second.normalized_agent_spec.metadata is not None
+    assert first.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 100_000
+    assert second.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 200_000
+    assert first.descriptor_id != second.descriptor_id
+
+
 def test_packaged_subagent_presets_support_yaacli_process_local_driver() -> None:
     resolver = SubagentPlanResolver(
         build_default_capability_catalog(),
