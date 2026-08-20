@@ -6,9 +6,10 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import StreamEvent
-from ya_agent_sdk.events import SubagentStartEvent
+from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
+from ya_agent_stream_protocol.sdk import AguiEventAdapter
 from yaacli.app import TUIApp
-from yaacli.app.tui import PendingAttachment
+from yaacli.app.tui import YAACLI_AGUI_ADAPTER_CONFIG, PendingAttachment
 from yaacli.config import CommandDefinition
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason
 from yaacli.session import TUIContext
@@ -174,8 +175,43 @@ def test_tui_display_subagent_tool_chunk_updates_progress_line() -> None:
     ])
 
     assert len(app._output_lines) == 1
+    assert "worker-subagent-1" in app._output_lines[0]
     assert "shell" in app._output_lines[0]
     assert app._subagent_states["subagent-1"]["tool_names"] == ["shell"]
+
+
+def test_tui_suppresses_background_subagent_inline_progress_by_explicit_mode() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    app._display_adapter = AguiEventAdapter(
+        session_id="session",
+        run_id="run",
+        config=YAACLI_AGUI_ADAPTER_CONFIG,
+    )
+    start = SubagentStartEvent(
+        event_id="worker-bg-a7b9",
+        execution_id="worker-bg-a7b9",
+        mode="background",
+        agent_id="worker-bg-a7b9",
+        agent_name="worker",
+    )
+    app._handle_execution_stream_event(StreamEvent(agent_id="worker-bg-a7b9", agent_name="worker", event=start))
+
+    assert app._output_lines == []
+    assert app._display_replay.snapshot() == []
+    assert app._background_subagent_ids == {"worker-bg-a7b9"}
+
+    complete = SubagentCompleteEvent(
+        event_id="worker-bg-a7b9",
+        execution_id="worker-bg-a7b9",
+        mode="background",
+        agent_id="worker-bg-a7b9",
+        agent_name="worker",
+    )
+    app._handle_execution_stream_event(StreamEvent(agent_id="worker-bg-a7b9", agent_name="worker", event=complete))
+
+    assert app._output_lines == []
+    assert app._display_replay.snapshot() == []
+    assert app._background_subagent_ids == set()
 
 
 def test_tui_append_user_input_renders_once_and_records_replay_event() -> None:

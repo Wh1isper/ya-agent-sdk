@@ -297,7 +297,13 @@ class ClawRuntimeBuilder:
                     settings=self._settings,
                     capability_catalog=self._capability_catalog,
                 )
-                capabilities.append(DelegationCapability(registry=registry, service=service))
+                capabilities.append(
+                    DelegationCapability(
+                        registry=registry,
+                        service=service,
+                        allow_mode_override=True,
+                    )
+                )
         mcp_capability = self._resolve_mcp_capability(profile, approval_mcps=approval_mcps)
         if mcp_capability is not None:
             capabilities.append(mcp_capability)

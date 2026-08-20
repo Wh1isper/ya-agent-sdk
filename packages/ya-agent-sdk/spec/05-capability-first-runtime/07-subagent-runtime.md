@@ -7,8 +7,10 @@ YAACLI, and YA Claw use the same definition, resolution, registry, execution-ser
 lifecycle, steering, and completion contracts. They do not share one persistence or
 scheduling engine:
 
-- the standalone SDK provides an in-process driver and in-memory execution store;
-- YAACLI binds the contract to its SQLite product records and process-local
+- the standalone SDK provides an inline foreground execution host, in-process driver,
+  and in-memory execution store;
+- YAACLI replaces the execution host with its processor-owned fully asynchronous task
+  host and binds the contract to SQLite product records plus process-local
   `LocalSubagentDriver`; restart orphans become `lost`;
 - YA Claw binds it to existing SQL sessions, runs, async-task records, and execution
   supervisor.
@@ -27,11 +29,14 @@ execution plan after Environment and context contributions are available.
 
 Foreground delegate, background delegate, named resume, and self fork are operations of
 one `SubagentExecutionService`. They are not separate generated-tool implementations.
+The service delegates coroutine ownership to a typed `SubagentExecutionHost`: the SDK
+default executes foreground work inline, while YAACLI and durable hosts replace that
+adapter with their own asynchronous scheduling policy.
 
 This is a breaking replacement for `SubagentConfig`, `Toolset.with_subagents()`, hidden
-delegate backends, private roster introspection, YAACLI's process-local background task
-ownership, and Claw's duplicate child-profile resolver. There is no compatibility
-adapter in the 2.0 runtime.
+delegate backends, private roster introspection, and Claw's duplicate child-profile
+resolver. YAACLI retains host-owned process-local background task scheduling behind the
+portable execution-host contract. There is no compatibility adapter in the 2.0 runtime.
 
 ## 2. Goals
 
@@ -46,7 +51,9 @@ adapter in the 2.0 runtime.
 - Let YAACLI retain exact child records and descriptors while marking process-local restart orphans `lost`.
 - Let YA Claw retain its durable SQL child-session model while deleting resolver and
   transport duplication.
-- Remove ID naming conventions and private SDK attribute access from product behavior.
+- Keep logical-run and durable correlation UUIDs internal while exposing short,
+  route-prefixed execution handles suitable for model-facing resume and UI display.
+- Remove private SDK attribute access from product behavior.
 
 ## 3. Non-Goals
 
@@ -321,16 +328,22 @@ Every model-facing execution operation is authorized by one stable
 `delegation_scope_id`: the root logical-run ID for an SDK runtime and the session ID for
 a durable host. Spawn idempotency is unique within that scope, children inherit the
 scope, and `get`, `list`, `wait`, `steer`, `cancel`, `resume`, deferred continuation,
-and completion recovery cannot observe records owned by another scope. Privileged host
-inspection is a separate admin API and is never exposed through model tools.
+and completion recovery cannot observe records owned by another scope. `wait` authorizes
+the record before touching a host task, so a guessed foreign handle cannot become a
+timing oracle. Privileged host inspection is a separate admin API and is never exposed
+through model tools.
 
 ### 9.1 Foreground and background
 
 Foreground `delegate` is:
 
 ```text
-spawn(mode=foreground) -> wait(handle) -> return child result
+spawn(mode=foreground) -> inline child operation -> return or raise in the caller task
 ```
+
+The standalone SDK's default `InlineSubagentExecutionHost` supports foreground only.
+Cancellation and exceptions remain attached to the calling tool. A host that needs
+background mode must inject an execution host that explicitly supports it.
 
 Background `delegate` is:
 
@@ -339,8 +352,11 @@ spawn(mode=background) -> return handle immediately
 ```
 
 Both create the same execution record, child logical run, history, input routing,
-usage ownership, cancellation semantics, and lifecycle events. They differ only in
-whether the calling tool waits.
+usage ownership, cancellation semantics, and lifecycle events. They differ in coroutine
+ownership and whether the calling tool waits. Host mode is fixed by default and omitted
+from the model-facing `delegate` schema; construction rejects any visible route that
+does not allow that fixed mode. An application exposes mode override only when it
+intentionally supports both semantics.
 
 Multiple foreground delegates requested in one parent model step may execute
 concurrently when the selected driver supports it, but the parent still receives their
@@ -365,17 +381,34 @@ A `SubagentExecutionRecord` includes:
 - correlated parent completion-input identity plus completion-delivery state; and
 - creation, update, and terminal timestamps.
 
-IDs are opaque identities. UI behavior never depends on an ID containing `-bg-` or any
-other naming convention.
+Public execution handles are short, route-prefixed identifiers:
+`<route>-<short-id>` for inline executions and `<route>-bg-<short-id>` for hosted
+background executions. The model receives and reuses that handle for resume, wait,
+steer, and cancel; it never writes an internal UUID. Explicit `mode` remains canonical
+record data, so policy and UI suppression never infer behavior from the `-bg-` marker.
+Logical-run IDs, operation identities, and durable correlations remain opaque internal
+values. Model-facing inspection projects only operational status/result fields, and
+steering returns the public execution handle plus disposition; neither surface exposes
+child logical-run, inbox-input, enqueue, idempotency, or resumable-state identities.
 
-## 10. Driver and Store Boundary
+## 10. Execution Host, Driver, and Store Boundary
 
-The execution service delegates scheduling and persistence through typed driver/store
-contracts.
+The execution service delegates coroutine ownership, execution, and persistence through
+typed execution-host, driver, and store contracts.
 
-### 10.1 Driver
+### 10.1 Execution host
 
-A driver starts, resumes, signals, cancels, and observes child execution. It binds the
+`SubagentExecutionHost` owns scheduling only. `InlineSubagentExecutionHost` directly
+awaits the foreground operation in the caller task. Hosts such as YAACLI inject a task
+host that starts background work, waits, cancels, and closes it under the host lifecycle.
+The service retains lifecycle and record semantics but does not force all hosts through
+an SDK-owned detached `asyncio.Task`. Host completion failures remain waitable until
+observed, and service close first stops new spawn admission, waits for admitted records
+to register with the host, then closes tasks and storage.
+
+### 10.2 Driver
+
+A driver admits, resumes, signals, cancels, and observes child execution. It binds the
 resolved child plan and logical-run router and respects host scheduling constraints. An
 ordinary SDK/Claw driver may create the child `AgentRuntime` directly from that plan; the
 YAACLI local driver selects an exact persisted plan and composes host inbox capabilities.
@@ -390,7 +423,7 @@ a failure or cancellation before that point reports `rejected`. Failure after ad
 remains `applied` and cannot be downgraded, because model execution failure does not
 erase accepted canonical history.
 
-### 10.2 Store
+### 10.3 Store
 
 A store commits execution records, immutable plan descriptors/references, child
 history/state references, usage, terminal results, completion-delivery state, and
@@ -400,7 +433,10 @@ spawn, steer, cancellation, or completion.
 
 The SDK does not require every host store to implement the same database schema. It
 requires the lifecycle, owner-scope authorization, and scope-local idempotency semantics
-exposed by the typed contract. `SubagentExecutionRecord` schema version 3 is a hard
+exposed by the typed contract. Public handles are store-unique: a store reports a typed
+execution-ID conflict atomically at create, and the service retries handle allocation
+without conflating that collision with an idempotency replay. `SubagentExecutionRecord`
+schema version 3 is a hard
 cutover; a durable host rejects records or tables without owner scope, independent child
 state, steering inbox, and parent-delivery correlation instead of guessing or silently
 migrating them at runtime.
@@ -554,9 +590,16 @@ YAACLI uses the durable session architecture in
 - the SQLite product database owns owner-scoped child records, independent resumable
   state, history, steering inbox,
   actions, cumulative usage, deferred segment state, results, and completion delivery;
-- foreground delegate spawns idempotently and waits through workflow-safe child
-  completion communication;
-- background delegate commits the child record before returning its handle;
+- the interactive TUI fixes model-facing `delegate` to background mode, omits the mode
+  argument, and commits the child record before immediately returning a
+  `<route>-bg-<short-id>` handle;
+- the one-shot headless frontend fixes the same tool to foreground and waits for its
+  `<route>-<short-id>` execution before shutdown;
+- in both frontends, the processor-owned execution host, rather than the SDK inline
+  adapter, owns the child task and supports bounded wait/cancel/close;
+- detached background children do not publish detailed model/tool streams into an
+  abandoned turn-local queue; lifecycle and readiness are projected before AGUI replay
+  persistence by explicit record mode;
 - targeted steering enters the child's durable inbox and workflow, never a
   process-local MessageBus; and
 - child completion reaches the parent through its durable router/continuation inbox;
@@ -565,10 +608,11 @@ YAACLI uses the durable session architecture in
 - all child inspection, continuation, and delivery recovery is scoped to the owning
   session.
 
-The current `BackgroundMonitor` no longer owns active subagent tasks, result payloads,
-usage publication, or delivery markers. A TUI monitor may attach to execution records
-and events as a projection, but killing or replacing that monitor does not kill or lose
-the durable child.
+The removed combined shell/subagent `BackgroundMonitor` no longer owns active subagent
+records, result payloads, usage publication, or delivery markers. YAACLI's dedicated
+processor execution host owns process-local tasks; SQLite remains record and delivery
+truth. A TUI monitor may attach to execution records and events as a projection, but
+presentation does not replace either task ownership or canonical state.
 
 Switching TUI sessions detaches presentation from old-session children. It does not
 reparent them or allow late results into the new session. Explicit cancel/delete policy
@@ -597,8 +641,11 @@ never rely on a mutable profile name for recovery or filter a parent tool surfac
 
 The Claw driver maps both foreground and background executions to child session/run
 records. Foreground is `spawn + durable wait` over the same SQL-backed child record;
-background returns the handle. The supervisor must provide deadlock-free nested
-capacity. A short-lived in-process helper, if ever offered, is a separately named,
+background returns the handle. SDK-authenticated spawn preserves that public handle
+byte-for-byte instead of applying Claw's human-name normalization, rejects handles beyond
+the SQL boundary's length, and treats a conflicting name as a retryable typed allocation
+collision. The supervisor must provide deadlock-free nested capacity. A short-lived
+in-process helper, if ever offered, is a separately named,
 explicitly non-durable API with different records and guarantees and is not a driver
 choice behind portable delegation.
 
@@ -652,8 +699,9 @@ The 2.0 cutover proceeds as one coherent replacement:
 1. migrate builtin/custom subagent definitions to native `AgentSpec` plus the portable
    YA envelope; and
 1. delete `SubagentConfig`, `Toolset.with_subagents()`, individual generated delegate
-   implementations, hidden backend attributes, MessageBus delivery, process-local
-   YAACLI ownership, copied Claw resolution, and ID-based UI inference.
+   implementations, hidden backend attributes, MessageBus delivery, copied Claw
+   resolution, and mode inference from IDs; retain YAACLI process-local ownership only
+   through the typed execution-host adapter.
 
 Old markdown definitions are migrated offline to the versioned 2.0 schema or rejected
 with diagnostics. Old unscoped durable execution tables are likewise rejected with an
@@ -684,7 +732,8 @@ empty-list inheritance are not interpreted at runtime.
 
 ### Service and lifecycle
 
-- foreground is spawn plus wait over the same record used by background;
+- standalone foreground executes inline in the caller task over the same portable record
+  model used by hosted background execution;
 - repeated spawn with one idempotency key creates one child within an owner scope while
   the same key in another scope remains independent;
 - every model-facing operation and pending-delivery recovery is owner-scoped;

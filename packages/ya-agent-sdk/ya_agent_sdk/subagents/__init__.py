@@ -6,15 +6,21 @@ from ya_agent_sdk.subagents.resolver import (
     validate_resolved_subagent_plan_integrity,
 )
 from ya_agent_sdk.subagents.service import (
+    AsyncioSubagentExecutionHost,
+    InlineSubagentExecutionHost,
     InMemorySubagentExecutionStore,
     InProcessSubagentDriver,
     RetainedSubagentPlanProvider,
     SubagentCompletionDelivery,
     SubagentDeferredResolver,
     SubagentDriver,
+    SubagentExecutionHost,
+    SubagentExecutionIdConflict,
+    SubagentExecutionIdFactory,
     SubagentExecutionService,
     SubagentExecutionStore,
     SubagentRegistry,
+    create_subagent_execution_id,
     resolve_subagent_output_type,
 )
 from ya_agent_sdk.subagents.spec import (
@@ -40,10 +46,12 @@ from ya_agent_sdk.subagents.spec import (
 
 __all__ = [
     "AgentTemplateContext",
+    "AsyncioSubagentExecutionHost",
     "CustomCapabilityAudit",
     "DelegationCapability",
     "InMemorySubagentExecutionStore",
     "InProcessSubagentDriver",
+    "InlineSubagentExecutionHost",
     "ResolvedSubagentPlan",
     "RetainedSubagentPlanProvider",
     "SelfForkPolicy",
@@ -53,6 +61,9 @@ __all__ = [
     "SubagentDriver",
     "SubagentDriverOutcome",
     "SubagentDurability",
+    "SubagentExecutionHost",
+    "SubagentExecutionIdConflict",
+    "SubagentExecutionIdFactory",
     "SubagentExecutionMode",
     "SubagentExecutionRecord",
     "SubagentExecutionService",
@@ -68,6 +79,7 @@ __all__ = [
     "SubagentSpec",
     "clone_resolved_subagent_plan",
     "clone_subagent_descriptor",
+    "create_subagent_execution_id",
     "resolve_subagent_output_type",
     "validate_resolved_subagent_plan_integrity",
 ]

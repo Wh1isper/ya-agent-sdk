@@ -1963,7 +1963,7 @@ class AgentContext(BaseModel):
         await self.emit_usage_snapshot_event(source=source)
 
     async def emit_event(self, event: AgentStreamEvent) -> None:
-        """Emit a custom event to the sideband stream queue.
+        """Emit a custom event to this context's sideband stream queue.
 
         Events are placed in the agent_stream_queues under the current run_id,
         allowing consumers to receive custom notifications alongside pydantic-ai
@@ -1981,9 +1981,34 @@ class AgentContext(BaseModel):
 
             await ctx.emit_event(CompactStartEvent(event_id="abc123", message_count=50))
         """
+        info = self.agent_stream_info.get(self._agent_id)
+        await self.emit_agent_event(
+            self._agent_id,
+            info.agent_name if info is not None else self._agent_id,
+            event,
+            parent_agent_id=info.parent_agent_id if info is not None else None,
+        )
+
+    async def emit_agent_event(
+        self,
+        agent_id: str,
+        agent_name: str,
+        event: AgentStreamEvent,
+        *,
+        parent_agent_id: str | None = None,
+    ) -> None:
+        """Emit an event with explicit child attribution from a host lifecycle boundary."""
         if not self._stream_queue_enabled:
             return
-        await self.agent_stream_queues[self._agent_id].put(event)
+        self.agent_stream_info.setdefault(
+            agent_id,
+            AgentInfo(
+                agent_id=agent_id,
+                agent_name=agent_name,
+                parent_agent_id=parent_agent_id,
+            ),
+        )
+        await self.agent_stream_queues[agent_id].put(event)
 
     async def __aenter__(self):
         """Enter the context and start timing.

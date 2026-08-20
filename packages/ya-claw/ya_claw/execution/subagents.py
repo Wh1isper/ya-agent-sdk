@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import urllib.error
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from fastapi import HTTPException
 from pydantic_ai import AgentSpec
 from pydantic_ai.capabilities import AbstractCapability
 from sqlalchemy import select
@@ -24,9 +26,11 @@ from ya_agent_sdk.capabilities import (
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.inputs import EnqueueReceipt, InputDisposition, InputOrigin
 from ya_agent_sdk.subagents import (
+    AsyncioSubagentExecutionHost,
     ResolvedSubagentPlan,
     SubagentDeliveryState,
     SubagentDriverOutcome,
+    SubagentExecutionIdConflict,
     SubagentExecutionMode,
     SubagentExecutionRecord,
     SubagentExecutionState,
@@ -200,6 +204,8 @@ class ClawSubagentExecutionStore:
         record: SubagentExecutionRecord,
     ) -> SubagentExecutionRecord:
         self._require_owner_scope(record)
+        if len(record.execution_id) > 255:
+            raise ValueError("Claw subagent execution handles cannot exceed 255 characters")
         existing = await self.get_by_idempotency_key(
             record.idempotency_key,
             owner_scope_id=record.owner_scope_id,
@@ -216,14 +222,10 @@ class ClawSubagentExecutionStore:
         if record.resumed_from is not None:
             context["_sdk_resumed_from"] = record.resumed_from
         intent_fingerprint = _spawn_intent_fingerprint(record)
-        await self._client.spawn_delegate(
-            subagent_name=record.route,
-            prompt=_prompt_text(record.prompt),
-            name=record.execution_id,
+        response_name = await self._spawn_record(
+            record,
             context=context,
-            sdk_owner_scope_id=record.owner_scope_id,
-            sdk_idempotency_key=record.idempotency_key,
-            sdk_intent_fingerprint=intent_fingerprint,
+            intent_fingerprint=intent_fingerprint,
         )
         created = await self.get_by_idempotency_key(
             record.idempotency_key,
@@ -231,7 +233,44 @@ class ClawSubagentExecutionStore:
         )
         if created is None:
             raise RuntimeError("Committed Claw subagent task is unavailable after spawn")
+        if response_name != created.execution_id:
+            raise RuntimeError(f"Claw changed SDK execution handle {created.execution_id!r} to {response_name!r}")
         return await self.save(created)
+
+    async def _spawn_record(
+        self,
+        record: SubagentExecutionRecord,
+        *,
+        context: dict[str, Any],
+        intent_fingerprint: str,
+    ) -> str:
+        try:
+            response = await self._client.spawn_delegate(
+                subagent_name=record.route,
+                prompt=_prompt_text(record.prompt),
+                name=record.execution_id,
+                context=context,
+                sdk_owner_scope_id=record.owner_scope_id,
+                sdk_idempotency_key=record.idempotency_key,
+                sdk_intent_fingerprint=intent_fingerprint,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 409 and "execution handle" in str(exc.detail):
+                raise SubagentExecutionIdConflict(
+                    f"Claw subagent execution {record.execution_id!r} already exists"
+                ) from exc
+            raise
+        except RuntimeError as exc:
+            if _http_error_status(exc) == 409 and "execution handle" in str(exc):
+                raise SubagentExecutionIdConflict(
+                    f"Claw subagent execution {record.execution_id!r} already exists"
+                ) from exc
+            raise
+        response_task = response.get("task")
+        response_name = response_task.get("name") if isinstance(response_task, dict) else None
+        if not isinstance(response_name, str) or not response_name:
+            raise RuntimeError("Claw subagent spawn response has no execution handle")
+        return response_name
 
     async def save(
         self,
@@ -597,6 +636,7 @@ def build_claw_delegation_service(
             parent_session_id=parent_session_id,
         ),
         retained_plan_provider=store,
+        execution_host=AsyncioSubagentExecutionHost(),
     )
 
 
@@ -605,6 +645,16 @@ def _task_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(task, dict):
         raise TypeError("Claw durable subagent response has no task payload")
     return task
+
+
+def _http_error_status(exc: BaseException) -> int | None:
+    """Recover an HTTP status from the synchronous self-client exception chain."""
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, urllib.error.HTTPError):
+            return current.code
+        current = current.__cause__
+    return None
 
 
 def _prompt_text(prompt: Any) -> str:

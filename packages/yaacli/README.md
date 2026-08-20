@@ -41,7 +41,12 @@ uv tool upgrade yaacli
 ## Subagent Configuration
 
 YAACLI accepts both generic Markdown definitions and native versioned `SubagentSpec`
-YAML/JSON documents under `~/.yaacli/subagents/`.
+YAML/JSON documents under `~/.yaacli/subagents/`. In the interactive TUI, the visible
+`delegate` tool is processor-hosted and fully asynchronous: it immediately returns a
+readable `<subagent-name>-bg-<short-id>` handle. Resume, wait, steering, and cancellation
+reuse that handle; internal durable UUIDs are not model-facing. The one-shot headless
+frontend fixes the same processor-hosted tool to foreground mode and returns the child
+result before shutdown.
 
 ```markdown
 ---

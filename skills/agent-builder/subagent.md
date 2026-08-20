@@ -74,10 +74,7 @@ resolver = SubagentPlanResolver(catalog, default_model=model)
 researcher = resolver.resolve(
     SubagentSpec(
         route="researcher",
-        execution_modes=(
-            SubagentExecutionMode.foreground,
-            SubagentExecutionMode.background,
-        ),
+        execution_modes=(SubagentExecutionMode.foreground,),
         agent=AgentSpec.from_dict(
             {
                 "name": "researcher",
@@ -114,10 +111,7 @@ self_plan = resolver.resolve_self(
             }
         ),
         history_message_limit=50,
-        execution_modes=(
-            SubagentExecutionMode.foreground,
-            SubagentExecutionMode.background,
-        ),
+        execution_modes=(SubagentExecutionMode.foreground,),
     )
 )
 
@@ -289,14 +283,21 @@ One `DelegationCapability` exposes:
 | ----------------- | ------------------------------------------------------------------------------------ |
 | `delegate`        | Spawn a route or resume `agent_id`; foreground waits and background returns a handle |
 | `subagent_info`   | List plans/executions or inspect one execution                                       |
-| `wait_subagent`   | Bounded wait for a background execution                                              |
+| `wait_subagent`   | Bounded wait for one execution or one-shot fan-in across current executions          |
 | `steer_subagent`  | Send targeted native logical-run input                                               |
 | `cancel_subagent` | Request idempotent cancellation                                                      |
 
-Foreground is `spawn + wait` over the same execution record used by background. Mode is
-explicit data and is never inferred from an ID string.
+The SDK default executes foreground delegation inline in the calling tool task. A host
+must explicitly inject a `SubagentExecutionHost` that supports background mode before it
+can expose asynchronous delegation. Mode is fixed by the host by default; construction
+rejects visible routes that do not allow that mode. Mode remains explicit record data
+and is never inferred from an ID string.
 
 Every model-facing operation is authorized by `AgentContext.delegation_scope_id`.
+Model inspection returns an operational projection rather than the full durable record,
+and steering returns only the execution handle plus disposition. Internal logical-run,
+inbox, enqueue, idempotency, and resumable-state identities remain host-only.
+
 Standalone roots default it to their stable root run ID; durable hosts use a stable
 session/root scope. Delegate, resume, and steering calls derive replay-stable operation
 keys from the parent logical run, native `tool_call_id`, operation, and target/resumed
@@ -349,10 +350,12 @@ substitute for canonical model input and never imply an automatic model wake.
 
 ## Host Drivers
 
-- **Standalone SDK:** `InMemorySubagentExecutionStore` plus
-  `InProcessSubagentDriver`; no restart guarantee.
-- **YAACLI:** SQLite product records plus `LocalSubagentDriver`; execution is process-local,
-  persisted steering/result state is inspectable, and restart orphans become `lost`.
+- **Standalone SDK:** `InlineSubagentExecutionHost`,
+  `InMemorySubagentExecutionStore`, and `InProcessSubagentDriver`; foreground only and no
+  restart guarantee.
+- **YAACLI:** processor-owned asynchronous execution host, SQLite product records, and
+  `LocalSubagentDriver`; execution is process-local, persisted steering/result state is
+  inspectable, and restart orphans become `lost`.
 - **YA Claw:** SQL child sessions/runs plus its execution supervisor and durable outbox.
 
 Driver and store `restart_durable` declarations must agree. A plan requiring
@@ -366,7 +369,8 @@ Driver and store `restart_durable` declarations must agree. A plan requiring
 4. Prefer `foreground` for results needed immediately; use `background` only when
    independent progress has value.
 5. Use idempotency keys for retried spawn operations.
-6. Resume by execution ID and its exact retained descriptor, never by a mutable route.
+6. Resume with the returned short route-prefixed execution handle and its exact retained
+   descriptor; internal logical-run UUIDs are never model-facing.
 7. Keep parent planning, integration, and user-facing synthesis in the parent.
 8. Treat lifecycle events as observations; stores and canonical input own truth.
 9. Use a restart-durable host driver whenever process loss must not lose work.
@@ -383,6 +387,10 @@ Driver and store `restart_durable` declarations must agree. A plan requiring
 | `SubagentRegistry`               | Public immutable plan registry                                              |
 | `DelegationCapability`           | Model-facing tools and roster instructions                                  |
 | `SubagentExecutionService`       | Spawn, deferred continuation, resume, steer, cancel, wait, inspect, deliver |
+| `SubagentExecutionHost`          | Host-selectable inline or asynchronous coroutine ownership                  |
+| `SubagentExecutionIdConflict`    | Typed store signal used to retry a colliding public handle                  |
+| `InlineSubagentExecutionHost`    | SDK default foreground execution in the calling task                        |
+| `AsyncioSubagentExecutionHost`   | Explicit process-local async task host for applications                     |
 | `SubagentDeferredResolver`       | Optional host-authorized child HITL continuation boundary                   |
 | `SubagentExecutionStore`         | Host-neutral execution-record persistence protocol                          |
 | `SubagentDriver`                 | Host-neutral resolved-plan execution protocol                               |

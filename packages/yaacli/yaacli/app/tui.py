@@ -192,6 +192,7 @@ from yaacli.runtime import (
 )
 from yaacli.session import TUIContext, TUIResumableState
 from yaacli.shell_monitor import SHELL_MONITOR_KEY, ShellMonitor, ShellNotification
+from yaacli.streaming.subagent_tracker import format_subagent_display_id
 from yaacli.theme import (
     ResolvedTheme,
     ThemePreference,
@@ -639,6 +640,7 @@ class TUIApp:
 
     # Subagent state tracking: agent_id -> {"line_index": int, "tool_names": list[str]}
     _subagent_states: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _background_subagent_ids: set[str] = field(default_factory=set, init=False)
 
     # Persistent task pane
     _max_visible_tasks: int = field(default=5, init=False)
@@ -1057,12 +1059,7 @@ class TUIApp:
         active_descriptor = self._runtime_descriptors_by_profile[active_profile_key]
 
         async def event_sink(event: StreamEvent) -> None:
-            if self._display_adapter is not None:
-                display_events = self._display_adapter.adapt_stream_event(event)
-                self._handle_and_record_display_events(display_events)
-                self._handle_stream_event(event, render_display=False)
-            else:
-                self._handle_stream_event(event)
+            self._handle_execution_stream_event(event)
 
         def runtime_factory(
             descriptor: RuntimeDescriptor,
@@ -3133,6 +3130,7 @@ class TUIApp:
         self._tool_messages.clear()
         self._printed_tool_calls.clear()
         self._subagent_states.clear()
+        self._background_subagent_ids.clear()
         self._event_renderer.clear()
         cancelled = False
         reported_error = False
@@ -3707,10 +3705,11 @@ class TUIApp:
         """Handle subagent start event - create progress line."""
         agent_id = event.agent_id
         agent_name = event.agent_name
+        display_id = format_subagent_display_id(agent_id, agent_name)
 
         # Create progress line
         text = Text()
-        text.append(f"[{agent_id}] ", style="cyan")
+        text.append(f"[{display_id}] ", style="cyan")
         text.append("Running...", style="dim")
         rendered = self._renderer.render(text, width=self._get_terminal_width())
 
@@ -3721,6 +3720,7 @@ class TUIApp:
             "tool_names": [],
             "tool_count": 0,
             "agent_name": agent_name,
+            "display_id": display_id,
         }
         self._throttled_invalidate()
 
@@ -3731,14 +3731,15 @@ class TUIApp:
         if agent_id not in self._subagent_states:
             # Start event was missed, just show completion
             text = Text()
+            display_id = format_subagent_display_id(agent_id, event.agent_name)
             if event.success:
-                text.append(f"[{agent_id}] ", style="cyan")
+                text.append(f"[{display_id}] ", style="cyan")
                 text.append("Done ", style="bold green")
                 text.append(f"({event.duration_seconds:.1f}s)", style="dim")
                 if event.request_count > 0:
                     text.append(f" | {event.request_count} reqs", style="dim")
             else:
-                text.append(f"[{agent_id}] ", style="cyan")
+                text.append(f"[{display_id}] ", style="cyan")
                 text.append("Failed ", style="bold red")
                 text.append(f"({event.duration_seconds:.1f}s)", style="dim")
                 if event.error:
@@ -3749,11 +3750,14 @@ class TUIApp:
 
         state = self._subagent_states[agent_id]
         line_index = state["line_index"]
+        display_id = state.get("display_id")
+        if not isinstance(display_id, str):
+            display_id = format_subagent_display_id(agent_id, event.agent_name)
 
         # Build summary line
         text = Text()
         if event.success:
-            text.append(f"[{agent_id}] ", style="cyan")
+            text.append(f"[{display_id}] ", style="cyan")
             text.append("Done ", style="bold green")
             text.append(f"({event.duration_seconds:.1f}s)", style="dim")
             if event.request_count > 0:
@@ -3765,7 +3769,7 @@ class TUIApp:
                     preview += "..."
                 text.append(f' | "{preview}"', style="dim italic")
         else:
-            text.append(f"[{agent_id}] ", style="cyan")
+            text.append(f"[{display_id}] ", style="cyan")
             text.append("Failed ", style="bold red")
             text.append(f"({event.duration_seconds:.1f}s)", style="dim")
             if event.error:
@@ -3795,10 +3799,17 @@ class TUIApp:
         line_index = state["line_index"]
         tool_names = state["tool_names"]
         tool_count = state.get("tool_count", len(tool_names))
+        display_id = state.get("display_id")
+        if not isinstance(display_id, str):
+            agent_name = state.get("agent_name")
+            display_id = format_subagent_display_id(
+                agent_id,
+                agent_name if isinstance(agent_name, str) else "subagent",
+            )
 
         # Build progress line
         text = Text()
-        text.append(f"[{agent_id}] ", style="cyan")
+        text.append(f"[{display_id}] ", style="cyan")
         text.append("Running... ", style="dim")
 
         if tool_names:
@@ -3821,6 +3832,23 @@ class TUIApp:
         if updated:
             self._throttled_invalidate()
 
+    def _handle_execution_stream_event(self, event: StreamEvent) -> None:
+        """Apply mode policy before adapting or persisting one execution event."""
+        message_event = event.event
+        if isinstance(message_event, SubagentStartEvent | SubagentCompleteEvent) and (
+            message_event.mode == SubagentExecutionMode.background.value
+        ):
+            self._handle_stream_event(event)
+            return
+        if event.agent_id in self._background_subagent_ids:
+            return
+        if self._display_adapter is not None:
+            display_events = self._display_adapter.adapt_stream_event(event)
+            self._handle_and_record_display_events(display_events)
+            self._handle_stream_event(event, render_display=False)
+            return
+        self._handle_stream_event(event)
+
     def _handle_stream_event(self, event: StreamEvent, *, render_display: bool = True) -> None:
         """Handle non-display state updates from agent execution."""
         message_event = event.event
@@ -3828,11 +3856,20 @@ class TUIApp:
 
         # Handle durable subagent lifecycle events before ordinary stream parts.
         if isinstance(message_event, SubagentStartEvent):
+            if message_event.mode == SubagentExecutionMode.background.value:
+                self._background_subagent_ids.add(message_event.agent_id)
+                return
             self._handle_subagent_start(message_event)
             return
 
         if isinstance(message_event, SubagentCompleteEvent):
+            if message_event.mode == SubagentExecutionMode.background.value:
+                self._background_subagent_ids.discard(message_event.agent_id)
+                return
             self._handle_subagent_complete(message_event)
+            return
+
+        if agent_id in self._background_subagent_ids:
             return
 
         # For subagent events (not main), only track tool calls silently
@@ -5396,6 +5433,7 @@ class TUIApp:
         self._printed_tool_calls.clear()
         self._tool_messages.clear()
         self._subagent_states.clear()
+        self._background_subagent_ids.clear()
         self._display_replay.clear()
         self._event_renderer.clear()
         self._reset_pending_attachments()

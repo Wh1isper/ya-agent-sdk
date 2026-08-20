@@ -36,7 +36,12 @@ from ya_agent_sdk.inputs import (
     InputDisposition,
     InputOrigin,
 )
-from ya_agent_sdk.subagents import InProcessSubagentDriver, SubagentExecutionStore
+from ya_agent_sdk.subagents import (
+    AsyncioSubagentExecutionHost,
+    InProcessSubagentDriver,
+    SubagentExecutionIdConflict,
+    SubagentExecutionStore,
+)
 from ya_agent_sdk.subagents.spec import (
     ResolvedSubagentPlan,
     SubagentDriverOutcome,
@@ -301,6 +306,17 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
                     ),
                 )
                 self._connection.execute("COMMIT")
+            except sqlite3.IntegrityError as exc:
+                self._connection.execute("ROLLBACK")
+                collision = self._connection.execute(
+                    "SELECT 1 FROM subagent_executions WHERE execution_id = ?",
+                    (record.execution_id,),
+                ).fetchone()
+                if collision is not None:
+                    raise SubagentExecutionIdConflict(
+                        f"Subagent execution {record.execution_id!r} already exists"
+                    ) from exc
+                raise
             except BaseException:
                 self._connection.execute("ROLLBACK")
                 raise
@@ -795,6 +811,10 @@ class DurableSubagentInboxCapability(AbstractCapability[TUIContext]):
                     InputState.applied,
                 )
                 return
+
+
+class LocalProcessorSubagentExecutionHost(AsyncioSubagentExecutionHost):
+    """Own fully asynchronous child tasks at the YAACLI processor boundary."""
 
 
 class LocalSubagentDriver:

@@ -93,6 +93,7 @@ from yaacli.durable.models import (
 from yaacli.durable.subagents import (
     DurableSubagentCompletionDelivery,
     DurableSubagentInboxCapability,
+    LocalProcessorSubagentExecutionHost,
     LocalSubagentDriver,
     SQLiteSubagentExecutionStore,
 )
@@ -672,6 +673,7 @@ def _build_delegation_capability(
             driver,
             completion_delivery=DurableSubagentCompletionDelivery(durable_binding_ref),
             deferred_resolver=deferred_resolver,
+            execution_host=LocalProcessorSubagentExecutionHost(),
         )
         return DelegationCapability(
             registry=registry,

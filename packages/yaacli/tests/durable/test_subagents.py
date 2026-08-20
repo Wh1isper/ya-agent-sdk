@@ -35,6 +35,7 @@ from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.durable.store import TombstonedSessionError
 from yaacli.durable.subagents import (
     DurableSubagentInboxCapability,
+    LocalProcessorSubagentExecutionHost,
     LocalSubagentDriver,
     SQLiteSubagentExecutionStore,
 )
@@ -156,6 +157,7 @@ async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_u
             custom_capability_types=catalog.custom_capability_types,
             runtime_capabilities=(DurableSubagentInboxCapability(store=store),),
         ),
+        execution_host=LocalProcessorSubagentExecutionHost(),
     )
     parent_ctx = TUIContext(run_input_ledger=RunInputLedger(logical_run_id="parent-run"))
     parent_ctx.delegation_scope_id = "session"

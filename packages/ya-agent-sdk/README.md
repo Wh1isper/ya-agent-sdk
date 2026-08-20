@@ -188,6 +188,19 @@ runtime = create_agent(
 
 `BaseTool` `ModelRetry` signals propagate unchanged into Pydantic AI. `ToolRetryCapability` is a distinct host-execution retry boundary, while HTTP/WebSocket request retries and `stream_agent()` recovery are transport/execution recovery mechanisms. None of those consumes the model-correction budget. Native steering is accepted through the active logical-run router and `AgentRun.enqueue()`; it is not a retry prompt.
 
+## Portable Subagents
+
+`SubagentExecutionService` separates portable records and lifecycle semantics from host
+coroutine ownership. The standalone SDK defaults to `InlineSubagentExecutionHost`, so
+`delegate` is foreground-only, runs in the calling tool task, and propagates cancellation
+and failures normally. Applications that intentionally support background work inject a
+`SubagentExecutionHost` such as `AsyncioSubagentExecutionHost` or their own durable
+scheduler. Model-facing execution handles are short and route-prefixed; internal logical
+run and correlation UUIDs remain private.
+
+See [the portable subagent specification](spec/05-capability-first-runtime/07-subagent-runtime.md)
+and [the agent-builder guide](../../skills/agent-builder/subagent.md).
+
 ## Structured Clarifying Questions
 
 The optional `ask_user_question` tool uses Pydantic AI deferred-tool control flow to request one to four structured questions with suggested options, multi-select support, and free-text answers.

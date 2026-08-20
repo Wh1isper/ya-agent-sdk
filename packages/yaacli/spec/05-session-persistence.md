@@ -197,16 +197,27 @@ not conflated.
 
 YAACLI persists portable child descriptors, records, history, deferred state, usage,
 steering input, completion delivery, and owner scope in the product database. Execution
-itself uses `LocalSubagentDriver` over SDK `InProcessSubagentDriver` and is process-local.
+itself uses processor-owned `LocalProcessorSubagentExecutionHost` with
+`LocalSubagentDriver` over SDK `InProcessSubagentDriver` and is process-local.
 
 Consequences:
 
 - `SQLiteSubagentExecutionStore.restart_durable` and
   `LocalSubagentDriver.restart_durable` are both `False`;
+- the interactive TUI's model-facing `delegate` schema fixes mode to background, while
+  the processor host owns detached task lifetime, wait, cancellation, and shutdown;
+- the one-shot headless frontend fixes `delegate` to foreground and waits for that same
+  processor-hosted task before shutdown; either frontend rejects a visible route that
+  does not allow its fixed mode during runtime construction;
 - startup marks `pending`, `running`, or `suspended` child orphans `lost` and rejects
   unresolved input;
 - it does not recreate or replay child model/tool work;
-- foreground/background calls share one SDK service lifecycle during the process;
+- SDK inline and YAACLI hosted execution share one portable service lifecycle, but
+  YAACLI does not use the SDK inline execution host;
+- public child handles are `<route>-bg-<short-id>` in the interactive TUI and
+  `<route>-<short-id>` for headless foreground execution; they are reused directly for
+  resume, wait, steer, and cancel, while model-facing inspection/steering projections
+  keep internal logical-run/correlation IDs private;
 - spawn and steering idempotency are owner scoped;
 - child request usage is cumulative across native deferred continuation;
 - every active or retained child descriptor is persisted before its delegation service is exposed;

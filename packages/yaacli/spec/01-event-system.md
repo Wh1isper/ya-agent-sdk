@@ -89,11 +89,16 @@ history replacement.
 
 ### Foreground subagents
 
-`SubagentStartEvent` and `SubagentCompleteEvent` carry `execution_id`, mode, parent
-logical-run attribution, agent identity, and bounded progress/result fields. The TUI
-uses them to maintain an in-place progress block and silently counts child tool calls.
-The canonical child result remains in `SubagentExecutionService` and its execution
-store.
+`SubagentStartEvent` and `SubagentCompleteEvent` carry `execution_id`, explicit mode,
+parent logical-run attribution, agent identity, and bounded progress/result fields.
+Lifecycle events and detailed child events use the same child-attributed stream envelope.
+For foreground children, the TUI maintains an in-place progress block using the readable
+`<route>-<short-id>` handle and silently counts child tool calls. Background lifecycle
+and detail events are suppressed by explicit mode before AGUI adaptation or replay
+persistence; detached children also disable detailed turn-local stream publication at
+the source. Readiness comes from durable records, not from parsing an ID. The canonical
+child result remains in
+`SubagentExecutionService` and its execution store.
 
 ## Durable Product Projections
 
@@ -141,9 +146,10 @@ turn, pending approval, or completed child disappear.
 
 `TUIApp._handle_stream_event()` applies these rules:
 
-1. project subagent lifecycle before ordinary stream parts;
-2. attribute child tool calls to the active child progress block and suppress child
-   transcript noise;
+1. project foreground subagent lifecycle before ordinary stream parts and suppress
+   background lifecycle/detail events by explicit mode;
+2. attribute foreground child tool calls to the active readable progress block and
+   suppress child transcript noise;
 3. replace run usage snapshots rather than accumulating duplicate snapshots;
 4. let AGUI own display content when AGUI replay is active;
 5. render main-agent text, thinking, tools, compact, handoff, task/note/file, and goal

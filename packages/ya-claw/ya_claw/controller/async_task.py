@@ -160,6 +160,7 @@ class AsyncTaskController:
             parent_session_id=parent_session_id,
             subagent_name=request.subagent_name,
             requested_name=request.name,
+            preserve_requested_name=sdk_request,
         )
         existing = await self._load_task_by_name(
             db_session,
@@ -196,18 +197,11 @@ class AsyncTaskController:
                 )
             except IntegrityError:
                 await db_session.rollback()
-                existing = (
-                    await self._load_task_by_sdk_idempotency(
-                        db_session,
-                        owner_scope_id=parent_session_id,
-                        idempotency_key=request.sdk_idempotency_key,
-                    )
-                    if sdk_request
-                    else await self._load_task_by_name(
-                        db_session,
-                        parent_session_id=parent_session_id,
-                        name=name,
-                    )
+                existing = await self._load_spawn_integrity_conflict(
+                    db_session,
+                    parent_session_id=parent_session_id,
+                    request=request,
+                    name=name,
                 )
                 if not isinstance(existing, SessionAsyncTaskRecord):
                     raise
@@ -216,6 +210,11 @@ class AsyncTaskController:
                 return AsyncTaskResponse(task=detail)
 
         if sdk_request:
+            if existing.sdk_idempotency_key != request.sdk_idempotency_key:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"SDK subagent execution handle '{name}' already exists.",
+                )
             return await self._sdk_replay_response(
                 db_session,
                 settings,
@@ -252,6 +251,28 @@ class AsyncTaskController:
         )
         detail.delivery = "resumed"
         return AsyncTaskResponse(task=detail)
+
+    async def _load_spawn_integrity_conflict(
+        self,
+        db_session: AsyncSession,
+        *,
+        parent_session_id: str,
+        request: AsyncTaskSpawnRequest,
+        name: str,
+    ) -> SessionAsyncTaskRecord | None:
+        if request.sdk_idempotency_key is not None:
+            existing = await self._load_task_by_sdk_idempotency(
+                db_session,
+                owner_scope_id=parent_session_id,
+                idempotency_key=request.sdk_idempotency_key,
+            )
+            if existing is not None:
+                return existing
+        return await self._load_task_by_name(
+            db_session,
+            parent_session_id=parent_session_id,
+            name=name,
+        )
 
     async def list_tasks(
         self,
@@ -1227,7 +1248,17 @@ class AsyncTaskController:
         parent_session_id: str,
         subagent_name: str,
         requested_name: str | None,
+        preserve_requested_name: bool,
     ) -> str:
+        if preserve_requested_name:
+            if not isinstance(requested_name, str) or not requested_name:
+                raise HTTPException(status_code=422, detail="SDK subagent execution handle is required.")
+            if len(requested_name) > 255:
+                raise HTTPException(
+                    status_code=422,
+                    detail="SDK subagent execution handle cannot exceed 255 characters.",
+                )
+            return requested_name
         if isinstance(requested_name, str) and requested_name.strip():
             return _normalize_name(requested_name)
         base = _normalize_name(subagent_name)

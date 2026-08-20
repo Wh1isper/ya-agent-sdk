@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.inputs import EnqueueReceipt, InputDisposition, LogicalRunInputRouter, RunInputLedger
 from ya_agent_sdk.subagents import (
+    AsyncioSubagentExecutionHost,
     SubagentDeliveryState,
     SubagentDurability,
     SubagentExecutionMode,
@@ -330,6 +331,7 @@ def _service(
             parent_session_id="parent-session",
         ),
         retained_plan_provider=store,
+        execution_host=AsyncioSubagentExecutionHost(),
     )
 
 
@@ -339,6 +341,41 @@ def _parent_context() -> AgentContext:
         delegation_scope_id="parent-session",
         run_input_ledger=RunInputLedger(logical_run_id="parent-logical-run"),
     )
+
+
+async def test_sdk_service_preserves_public_handle_case_and_punctuation(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    await _create_parent(session_factory)
+    spec = SubagentSpec(
+        route="Worker/a",
+        agent=AgentSpec(model="test", name="Worker/a", capabilities=[]),
+        execution_modes=(SubagentExecutionMode.foreground,),
+        durability=SubagentDurability.restart,
+    )
+    profile = _Profile()
+    profile.subagent_specs = (spec,)
+    client = _ControllerClient(
+        session_factory=session_factory,
+        settings=settings,
+        runtime_state=create_runtime_state(),
+        profile_resolver=_ProfileResolver(profile),
+    )
+    service = _service(session_factory, client, settings, active_specs=(spec,))
+
+    handle = await service.spawn(
+        "Worker/a",
+        "preserve identity",
+        _parent_context(),
+        idempotency_key="preserve-handle",
+    )
+    task = await client.task(handle.execution_id)
+
+    assert handle.execution_id.startswith("Worker/a-")
+    assert task.name == handle.execution_id
+    await service.close()
 
 
 async def test_sdk_service_foreground_is_idempotent_and_resumes_child_session(

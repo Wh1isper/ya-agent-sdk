@@ -51,7 +51,7 @@ from yaacli.config import (
 )
 from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.sqlite import SQLiteSessionStore
-from yaacli.durable.subagents import SQLiteSubagentExecutionStore
+from yaacli.durable.subagents import LocalProcessorSubagentExecutionHost, SQLiteSubagentExecutionStore
 from yaacli.model_profiles import ResolvedModelProfile, save_selected_model_profile_id
 from yaacli.runtime import (
     GoalContextHandoffExtension,
@@ -467,6 +467,8 @@ async def test_delegation_builder_persists_active_and_retained_descriptors(
     assert capability is not None
     store = capability.service.store
     assert isinstance(store, SQLiteSubagentExecutionStore)
+    assert isinstance(capability.service.execution_host, LocalProcessorSubagentExecutionHost)
+    assert capability.allow_mode_override is False
     try:
         assert store.get_descriptor(active.descriptor_id) == active.to_descriptor()
         assert store.get_descriptor(retained.descriptor_id) == retained.to_descriptor()
