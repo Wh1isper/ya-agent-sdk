@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic_ai.capabilities import AbstractCapability
 from ya_claw.app import create_app
 from ya_claw.config import get_settings
+
+
+@dataclass
+class _AppPluginCapability(AbstractCapability[Any]):
+    result_limit: int = 10
+
+    @classmethod
+    def get_serialization_name(cls) -> str:
+        return "test.app_plugin"
+
+
+class _AppPluginEntryPoint:
+    name = "test.app_plugin"
+    value = "test_app:_AppPluginCapability"
+    dist = SimpleNamespace(name="test-app-plugin", version="1.0.0")
+
+    def load(self) -> object:
+        return _AppPluginCapability
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +39,7 @@ def clear_claw_settings(monkeypatch, tmp_path: Path) -> None:
         "YA_CLAW_WEB_DIST_DIR",
         "YA_CLAW_WORKSPACE_DIR",
         "YA_CLAW_AUTO_SEED_PROFILES",
+        "YA_CLAW_CAPABILITY_PLUGIN_MANIFEST",
         "YA_CLAW_SCHEDULE_DISPATCH_ENABLED",
         "YA_CLAW_HEARTBEAT_ENABLED",
         "YA_CLAW_AGENCY_ENABLED",
@@ -49,6 +72,62 @@ def test_create_app_requires_api_token(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="YA_CLAW_API_TOKEN"):
         create_app()
+
+
+def test_create_app_rejects_invalid_explicit_plugin_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "plugins.toml"
+    manifest_path.write_text("schema_version = 2\n", encoding="utf-8")
+    monkeypatch.setenv("YA_CLAW_CAPABILITY_PLUGIN_MANIFEST", str(manifest_path))
+    get_settings.cache_clear()
+
+    with pytest.raises(ValueError, match="Invalid capability plugin manifest"):
+        create_app()
+
+
+def test_create_app_rejects_plugin_grant_argument_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "plugins.toml"
+    manifest_path.write_text(
+        """\
+schema_version = 1
+entry_points = ["test.app_plugin"]
+
+[[capabilities]]
+name = "test.app_plugin"
+arguments = { unexpected = true }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ya_agent_sdk.capabilities.catalog.importlib.metadata.entry_points",
+        lambda **_kwargs: [_AppPluginEntryPoint()],
+    )
+    monkeypatch.setenv("YA_CLAW_CAPABILITY_PLUGIN_MANIFEST", str(manifest_path))
+    get_settings.cache_clear()
+
+    with pytest.raises(ValueError, match=r"grant 0.*invalid arguments.*unexpected"):
+        create_app()
+
+
+def test_create_app_without_plugin_manifest_does_not_scan_entry_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_scan(**_kwargs: object) -> object:
+        raise AssertionError("an omitted manifest must not scan installed entry points")
+
+    monkeypatch.setattr(
+        "ya_agent_sdk.capabilities.catalog.importlib.metadata.entry_points",
+        reject_scan,
+    )
+
+    app = create_app()
+
+    assert app.state.capability_plugins.manifest.entry_points == ()
 
 
 def test_healthz() -> None:

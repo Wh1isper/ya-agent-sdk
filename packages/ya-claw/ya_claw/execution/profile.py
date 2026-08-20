@@ -11,12 +11,20 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic_ai import AgentSpec
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from ya_agent_sdk.agents import validate_agent_spec_capabilities
+from ya_agent_sdk.capabilities import (
+    CapabilityCatalog,
+    ResolvedCapabilityPlugins,
+    SkillsCapability,
+)
 from ya_agent_sdk.context import ShellReviewConfig, ShellReviewRiskLevel
 from ya_agent_sdk.environment import ShellSandboxConfig
 from ya_agent_sdk.presets import resolve_model_cfg
 from ya_agent_sdk.subagents import ResolvedSubagentPlan, SubagentSpec
 
 from ya_claw.config import ClawSettings
+from ya_claw.context import ClawAgentContext
+from ya_claw.execution.subagents import build_claw_host_capabilities
 from ya_claw.mcp import normalize_profile_mcp_servers
 from ya_claw.orm.tables import ProfileRecord
 from ya_claw.profile_spec import (
@@ -90,15 +98,36 @@ class ResolvedProfile:
 async def capture_execution_profile_descriptor(
     db_session: AsyncSession,
     profile_name: str,
+    *,
+    capability_plugins: ResolvedCapabilityPlugins | None = None,
 ) -> ExecutionProfileDescriptor:
     """Capture one enabled profile in the run-admission transaction."""
     record = await db_session.get(ProfileRecord, profile_name)
     if not isinstance(record, ProfileRecord) or not record.enabled:
         raise ValueError(f"Execution profile {profile_name!r} could not be resolved at run admission")
+    agent_spec = AgentSpec.model_validate(record.agent_spec)
+    if capability_plugins is not None:
+        agent_spec = capability_plugins.apply_to_root_agent_spec(agent_spec)
+    host = ClawProfileHostConfig.model_validate(record.host_config)
+    if capability_plugins is not None:
+        validate_agent_spec_capabilities(
+            agent_spec,
+            deps_type=ClawAgentContext,
+            custom_capability_types=capability_plugins.custom_capability_types,
+            capabilities=(
+                *build_claw_host_capabilities(
+                    groups=host.tool_groups,
+                    approval_tools=frozenset(host.need_user_approve_tools),
+                    approval_mcps=frozenset(host.need_user_approve_mcps),
+                ),
+                SkillsCapability(),
+            ),
+            error_context=f"execution profile {record.name!r} capability plan",
+        )
     core: dict[str, Any] = {
         "schema_version": _PROFILE_SNAPSHOT_SCHEMA_VERSION,
         "name": record.name,
-        "agent_spec": dict(record.agent_spec),
+        "agent_spec": agent_spec.model_dump(mode="json"),
         "host_config": dict(record.host_config),
         "subagent_specs": tuple(dict(item) for item in record.subagent_specs or []),
         "source_type": record.source_type,
@@ -186,9 +215,17 @@ class ProfileResolver:
         *,
         settings: ClawSettings,
         session_factory: async_sessionmaker[AsyncSession],
+        capability_plugins: ResolvedCapabilityPlugins | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
+        self._capability_plugins = (
+            capability_plugins if capability_plugins is not None else settings.resolved_capability_plugins
+        )
+
+    @property
+    def capability_catalog(self) -> CapabilityCatalog:
+        return self._capability_plugins.catalog
 
     async def resolve(self, profile_name: str | None) -> ResolvedProfile:
         resolved_name = profile_name or self._settings.default_profile
@@ -267,7 +304,7 @@ class ProfileResolver:
         return None
 
     def _resolved_from_record(self, record: ProfileRecord) -> ResolvedProfile:
-        agent_spec = AgentSpec.model_validate(record.agent_spec)
+        agent_spec = self._capability_plugins.apply_to_root_agent_spec(AgentSpec.model_validate(record.agent_spec))
         host = ClawProfileHostConfig.model_validate(record.host_config)
         model_config = _resolve_model_config(host)
         subagent_specs = tuple(SubagentSpec.model_validate(item) for item in record.subagent_specs or [])

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from pydantic_ai.capabilities import AbstractCapability
 from sqlalchemy.ext.asyncio import AsyncEngine
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
@@ -15,6 +19,28 @@ from ya_claw.execution.profile import (
 )
 from ya_claw.execution.subagents import resolve_claw_subagent_plan
 from ya_claw.orm.tables import ProfileRecord
+
+
+@dataclass
+class ProfilePluginCapability(AbstractCapability[Any]):
+    label: str = "default"
+
+    def __post_init__(self) -> None:
+        if self.label == "invalid":
+            raise ValueError("plugin label is invalid")
+
+    @classmethod
+    def get_serialization_name(cls) -> str:
+        return "test.profile_plugin"
+
+
+class ProfilePluginEntryPoint:
+    name = "test.profile_plugin"
+    value = "tests.profile_plugin:ProfilePluginCapability"
+    dist = SimpleNamespace(name="test-profile-plugin", version="1.0")
+
+    def load(self) -> object:
+        return ProfilePluginCapability
 
 
 @pytest.fixture
@@ -147,6 +173,138 @@ async def test_profile_resolver_seeds_native_profile_documents(
         assert record.host_config["tool_groups"] == ["session", "workflow"]
         assert record.subagent_specs[0]["route"] == "explorer"
         assert record.source_checksum is not None
+
+
+async def test_profile_resolver_applies_plugin_root_grants_only_to_root_descriptors(
+    tmp_path: Path,
+    db_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_file = tmp_path / "profiles.yaml"
+    seed_file.write_text(_native_seed(), encoding="utf-8")
+    manifest_path = tmp_path / "plugins.toml"
+    manifest_path.write_text(
+        """\
+schema_version = 1
+entry_points = ["test.profile_plugin"]
+
+[[capabilities]]
+name = "test.profile_plugin"
+arguments = { label = "root" }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ya_agent_sdk.capabilities.catalog.importlib.metadata.entry_points",
+        lambda **kwargs: [ProfilePluginEntryPoint()],
+    )
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        profile_seed_file=seed_file,
+        capability_plugin_manifest=manifest_path,
+        _env_file=None,
+    )
+    session_factory = create_session_factory(db_engine)
+    resolver = ProfileResolver(settings=settings, session_factory=session_factory)
+    await resolver.seed_profiles()
+
+    resolved = await resolver.resolve("default")
+    async with session_factory() as db_session:
+        descriptor = await capture_execution_profile_descriptor(
+            db_session,
+            "default",
+            capability_plugins=settings.resolved_capability_plugins,
+        )
+
+    assert [item.name for item in resolved.agent_spec.capabilities][-1] == "test.profile_plugin"
+    assert [item.name for item in resolved.subagent_specs[0].agent.capabilities] == ["FilesystemCapability"]
+    descriptor_capabilities = descriptor.agent_spec["capabilities"]
+    assert isinstance(descriptor_capabilities, list)
+    assert descriptor_capabilities[-1]["name"] == "test.profile_plugin"
+    assert resolver.capability_catalog is settings.resolved_capability_plugins.catalog
+
+
+async def test_profile_descriptor_rejects_invalid_plugin_factory_before_persistence(
+    tmp_path: Path,
+    db_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_file = tmp_path / "profiles.yaml"
+    seed_file.write_text(_native_seed(), encoding="utf-8")
+    manifest_path = tmp_path / "plugins.toml"
+    manifest_path.write_text(
+        """\
+schema_version = 1
+entry_points = ["test.profile_plugin"]
+
+[[capabilities]]
+name = "test.profile_plugin"
+arguments = { label = "invalid" }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ya_agent_sdk.capabilities.catalog.importlib.metadata.entry_points",
+        lambda **_kwargs: [ProfilePluginEntryPoint()],
+    )
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        data_dir=tmp_path / "runtime-data",
+        workspace_dir=tmp_path / "workspace",
+        profile_seed_file=seed_file,
+        capability_plugin_manifest=manifest_path,
+        _env_file=None,
+    )
+    session_factory = create_session_factory(db_engine)
+    resolver = ProfileResolver(settings=settings, session_factory=session_factory)
+    await resolver.seed_profiles()
+
+    async with session_factory() as db_session:
+        with pytest.raises(
+            ValueError,
+            match=r"Invalid execution profile 'default' capability plan.*plugin label is invalid",
+        ):
+            await capture_execution_profile_descriptor(
+                db_session,
+                "default",
+                capability_plugins=settings.resolved_capability_plugins,
+            )
+
+
+async def test_profile_descriptor_validates_builtin_plan_with_empty_plugin_snapshot(
+    tmp_path: Path,
+    db_engine: AsyncEngine,
+) -> None:
+    seed_file = tmp_path / "profiles.yaml"
+    seed_file.write_text(_native_seed(), encoding="utf-8")
+    settings = _settings(tmp_path, seed_file)
+    session_factory = create_session_factory(db_engine)
+    resolver = ProfileResolver(settings=settings, session_factory=session_factory)
+    await resolver.seed_profiles()
+
+    async with session_factory() as db_session:
+        record = await db_session.get(ProfileRecord, "default")
+        assert isinstance(record, ProfileRecord)
+        record.agent_spec = {
+            **record.agent_spec,
+            "capabilities": [
+                {
+                    "name": "FilesystemCapability",
+                    "arguments": {"definitely_invalid": 1},
+                }
+            ],
+        }
+        with pytest.raises(
+            ValueError,
+            match=r"Invalid execution profile 'default' capability plan.*definitely_invalid",
+        ):
+            await capture_execution_profile_descriptor(
+                db_session,
+                "default",
+                capability_plugins=settings.resolved_capability_plugins,
+            )
 
 
 async def test_execution_profile_descriptor_is_exact_after_catalog_mutation(

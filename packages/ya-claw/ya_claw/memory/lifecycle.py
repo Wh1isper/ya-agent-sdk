@@ -480,6 +480,7 @@ class MemoryLifecycle:
             db_session,
             memory_session,
             request,
+            settings=self._settings,
             memory_metadata=_request_metadata(request, memory_session_id=memory_session.id),
             input_text=await _build_memory_prompt(db_session, request),
         )
@@ -750,6 +751,7 @@ async def _create_memory_run(
     memory_session: SessionRecord,
     request: MemoryRunRequest,
     *,
+    settings: ClawSettings,
     memory_metadata: dict[str, Any],
     input_text: str,
 ) -> RunRecord:
@@ -759,6 +761,7 @@ async def _create_memory_run(
     profile_descriptor = await capture_execution_profile_descriptor(
         db_session,
         memory_session.profile_name,
+        capability_plugins=settings.resolved_capability_plugins,
     )
     run = RunRecord(
         id=uuid4().hex,

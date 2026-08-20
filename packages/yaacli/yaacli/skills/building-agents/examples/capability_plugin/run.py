@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 from pydantic_ai import AgentSpec
 from pydantic_ai.models.test import TestModel
 from ya_agent_sdk.agents.main import create_agent
-from ya_agent_sdk.capabilities import build_default_capability_catalog, discover_capability_types
+from ya_agent_sdk.capabilities import discover_capability_types, load_capability_plugins
 
 ENTRY_POINT_NAME = "example.text_metrics"
+MANIFEST_PATH = Path(__file__).with_name("plugins.toml")
 PLUGIN_MODULES = ("example_capability_plugin", "example_capability_plugin.capability")
 
 
@@ -27,24 +29,15 @@ async def run() -> None:
     reference = references[0]
     print(f"Discovered metadata: {reference.entry_point_name} -> {reference.import_target}")
 
-    catalog = build_default_capability_catalog(selected_entry_points=[ENTRY_POINT_NAME])
-    provenance = catalog.provenance(ENTRY_POINT_NAME)
+    plugins = load_capability_plugins(MANIFEST_PATH)
+    provenance = plugins.catalog.provenance(ENTRY_POINT_NAME)
     print(f"Selected plugin: {provenance.display_name}")
 
-    spec = AgentSpec.from_dict({
-        "name": "capability-plugin-example",
-        "capabilities": [
-            {
-                ENTRY_POINT_NAME: {
-                    "max_characters": 5_000,
-                }
-            }
-        ],
-    })
+    spec = plugins.apply_to_root_agent_spec(AgentSpec.from_dict({"name": "capability-plugin-example"}))
     runtime = create_agent(
         TestModel(call_tools=["text_metrics"]),
         spec=spec,
-        custom_capability_types=catalog.custom_capability_types,
+        custom_capability_types=plugins.custom_capability_types,
     )
 
     async with runtime:

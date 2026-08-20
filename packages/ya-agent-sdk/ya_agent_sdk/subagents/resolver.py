@@ -13,7 +13,7 @@ from pathlib import Path
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
-from pydantic_ai import Agent, AgentSpec, TemplateStr
+from pydantic_ai import AgentSpec, TemplateStr
 from pydantic_ai._spec import CapabilitySpec
 from pydantic_ai.capabilities import (
     CAPABILITY_TYPES,
@@ -21,9 +21,8 @@ from pydantic_ai.capabilities import (
     CombinedCapability,
     WrapperCapability,
 )
-from pydantic_ai.exceptions import UserError
-from pydantic_ai.models.test import TestModel
 
+from ya_agent_sdk.agents.validation import validate_agent_spec_capabilities
 from ya_agent_sdk.capabilities import CapabilityCatalog, SupportsDeferredOutput
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.subagents.spec import (
@@ -291,16 +290,13 @@ class SubagentPlanResolver:
 
     def _validate_native_plan(self, spec: AgentSpec) -> None:
         """Use the public native constructor as the ordering/dependency validator."""
-        try:
-            Agent.from_spec(
-                spec,
-                deps_type=AgentContext,
-                custom_capability_types=self.catalog.custom_capability_types,
-                model=TestModel(call_tools=[]),
-                capabilities=self.host_capabilities,
-            )
-        except UserError as exc:
-            raise ValueError(f"Invalid subagent capability plan: {exc}") from exc
+        validate_agent_spec_capabilities(
+            spec,
+            deps_type=AgentContext,
+            custom_capability_types=self.catalog.custom_capability_types,
+            capabilities=self.host_capabilities,
+            error_context="subagent capability plan",
+        )
 
 
 def _coerce_template_context(

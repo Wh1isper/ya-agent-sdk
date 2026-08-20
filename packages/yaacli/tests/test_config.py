@@ -160,6 +160,46 @@ def test_load_defaults(config_manager: ConfigManager, clean_env: None) -> None:
     assert config_manager.loaded_sources == []
 
 
+def test_capability_plugin_config_uses_fixed_global_path(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    temp_project_dir: Path,
+) -> None:
+    project_config_dir = temp_project_dir / ConfigManager.PROJECT_CONFIG_DIR
+    project_config_dir.mkdir()
+    (project_config_dir / ConfigManager.PLUGIN_MANIFEST_NAME).write_text("not valid TOML", encoding="utf-8")
+
+    plugins = config_manager.load_capability_plugin_config()
+
+    assert config_manager.capability_plugin_manifest_path == temp_config_dir / "plugins.toml"
+    assert plugins.manifest.entry_points == ()
+    assert plugins.root_agent_spec.capabilities == []
+
+
+def test_capability_plugin_config_loads_and_validates_global_manifest(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+) -> None:
+    manifest_path = temp_config_dir / ConfigManager.PLUGIN_MANIFEST_NAME
+    manifest_path.write_text("schema_version = 1\n", encoding="utf-8")
+
+    plugins = config_manager.load_capability_plugin_config()
+
+    assert plugins.manifest.schema_version == 1
+    assert plugins.root_agent_spec.capabilities == []
+
+
+def test_capability_plugin_config_rejects_invalid_global_manifest(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+) -> None:
+    manifest_path = temp_config_dir / ConfigManager.PLUGIN_MANIFEST_NAME
+    manifest_path.write_text("schema_version = 2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version"):
+        config_manager.load_capability_plugin_config()
+
+
 def test_default_session_database_path_uses_v2_store_without_touching_legacy(
     config_manager: ConfigManager,
     temp_config_dir: Path,

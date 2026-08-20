@@ -9,6 +9,8 @@ Pydantic models in `yaacli.config`. Configuration is split by responsibility:
   process-environment, and security settings;
 - `tools.toml` contains interactive tool availability, MCP exposure mode, and tool/MCP approval policy;
 - `mcp.json` contains MCP server definitions;
+- global `plugins.toml` explicitly selects installed capability entry points and grants
+  configured instances to the root agent;
 - `.env` files provide supported `YAACLI_*` overrides and provider or SDK
   environment variables;
 - `state.json` stores local UI selection state such as the last model profile.
@@ -25,6 +27,7 @@ wizard and creates missing global assets without overwriting existing ones.
 | Main configuration | `~/.yaacli/config.toml` | `.yaacli/config.toml` | Project file replaces the global file as a whole |
 | Tool policy | `~/.yaacli/tools.toml` | `.yaacli/tools.toml` | Project file replaces the global file as a whole |
 | MCP configuration | `~/.yaacli/mcp.json` | `.yaacli/mcp.json` | Project file replaces the global file as a whole |
+| Capability plugins | `~/.yaacli/plugins.toml` | None | Optional fixed global manifest loaded once at startup |
 | Subagents | `~/.yaacli/subagents/*.{yaml,yml,json}` | None | Strict versioned `SubagentSpec` documents loaded by the runtime |
 | Skills | `~/.yaacli/skills/` | `.yaacli/skills/` | Project skills have higher routing priority |
 | Local state | `~/.yaacli/state.json` | None | Stores selected model-profile state |
@@ -181,6 +184,46 @@ front matter, tool-name lists, and generated delegate definitions are rejected.
 Packaged native presets are copied only when their target files do not exist. Project
 configuration does not inject a second subagent directory or silently merge child
 specifications.
+
+### Capability plugins
+
+A plugin distribution must be installed into the same Python environment as YAACLI. For
+an isolated uv tool installation:
+
+```bash
+uv tool install 'yaacli[rs]' --with acme-agent-plugin
+```
+
+The optional fixed global manifest uses the SDK schema directly:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+`entry_points` is an ordered, unique exact-name selection. It controls which installed
+entry-point targets may be imported and added to YAACLI's immutable capability catalog.
+`capabilities` is an ordered root-only grant list; each grant must reference a selected
+name. A selected but ungranted type may be declared in a native child `AgentSpec`.
+Installation alone does not select or grant anything.
+
+YAACLI does not create `plugins.toml`, consider a project-local file, auto-install
+packages, or scan all installed entry points. A missing global file produces the empty
+SDK catalog snapshot. If the file exists, invalid TOML, unsupported schema, unknown
+fields, duplicate or missing entry points, import failures, and catalog collisions are
+fatal. Arguments must be JSON-compatible finite non-secret configuration; secret-like
+keys are rejected recursively. Live authority and credentials belong in typed runtime
+dependencies or host APIs, not durable specs.
+
+The TUI and headless frontend each load the file exactly once at bootstrap. The same
+snapshot is captured by profile, named-child, self-fork, retained-plan, historical, and
+restored runtime factories. Manifest grants are applied only to the main root agent;
+named children and self forks receive only their own explicit native grants. Restart
+YAACLI after changing the file or installed distribution.
 
 ### Display retention
 
@@ -361,7 +404,9 @@ Normal `yaacli` startup performs the operational setup:
 4. if `general.model` is empty, run the interactive setup wizard;
 5. create missing `config.toml`, `mcp.json`, native YAML subagent presets, and
    built-in skills without overwriting existing files;
-6. reload configuration and apply `[env]` values.
+6. reload configuration and apply `[env]` values; and
+7. load the optional global capability plugin manifest once before compiling runtime
+   profiles and plans.
 
 Configuration is edited through the TOML/JSON files. The implemented top-level
 CLI exposes runtime options and saved-session commands:

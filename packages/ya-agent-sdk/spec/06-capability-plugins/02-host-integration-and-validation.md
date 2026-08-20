@@ -4,11 +4,13 @@
 
 The SDK owns:
 
+- strict parsing of the versioned plugin TOML manifest;
 - entry-point metadata discovery and selected-name loading;
 - explicit class validation;
 - serialization-name and native/custom collision checks;
 - deterministic catalog construction and provenance;
-- the Pydantic AI `custom_capability_types` bridge; and
+- the Pydantic AI `custom_capability_types` bridge;
+- a shared native static-plan validator built on public `Agent.from_spec()`; and
 - catalog-aware main and subagent plan resolution.
 
 A host owns:
@@ -20,9 +22,9 @@ A host owns:
 - restart, executable-code retention, and migration policy for durable work.
 
 YAACLI and YA Claw consume SDK APIs. They do not call `importlib.metadata`, maintain a
-parallel custom-type registry, or reconstruct provenance themselves. This specification
-does not prescribe a new host configuration file or environment variable: each host
-uses its existing trusted bootstrap/configuration boundary.
+parallel custom-type registry, reconstruct provenance, or parse their own plugin file
+format. The SDK defines the manifest schema; each host chooses one trusted path and its
+own missing-file policy through the existing bootstrap/configuration boundary.
 
 ## 2. Boot and Resolution
 
@@ -37,20 +39,28 @@ sequenceDiagram
     SDK->>Metadata: discover metadata
     SDK->>SDK: load selected classes and validate catalog
     SDK-->>Host: immutable CapabilityCatalog
+    Host->>SDK: validate final static AgentSpec + catalog + fresh host capabilities
+    SDK->>Pydantic: throwaway native Agent.from_spec construction
     Host->>Host: enter Environment and bind dependencies
     Host->>SDK: AgentSpec + catalog + host policy
     SDK->>Pydantic: custom_capability_types
     Pydantic-->>Host: constructed agent plan
 ```
 
-A standalone application may use direct imports, selected installed names, or all names
-returned by metadata-only discovery. `create_agent()` does not implicitly load installed
-extensions.
+A standalone application may use direct imports, selected installed names, all names
+returned by metadata-only discovery, or `load_capability_plugins()` with the strict SDK
+manifest. `create_agent()` does not implicitly load installed extensions.
 
-YAACLI and YA Claw build one process catalog before declarative plan resolution. Their
-profiles, sessions, requests, and imported bundles may reference only serialization
-names present in that catalog; these mutable inputs cannot introduce Python import
-targets. Catalog availability still does not add an omitted capability to an agent.
+YAACLI and YA Claw load one manifest and build one process catalog before declarative
+plan resolution. YA Claw root admission and SDK portable-child resolution call
+`validate_agent_spec_capabilities()` before a static plan is fingerprinted or persisted;
+runtime entry repeats native construction with final dynamic contributions. Other
+durable applications should use the same boundary. Their profiles, sessions, requests,
+and imported bundles may reference
+only serialization names present in that catalog; these mutable inputs cannot introduce
+Python import targets. Catalog availability still does not add an omitted capability to
+an agent. Manifest `capabilities` are appended only to the root native `AgentSpec`;
+named children and self forks do not inherit them.
 
 Environment and context contributions are resolved later. They provide root capability
 instances and typed dependencies but do not add classes to the static catalog.
@@ -109,21 +119,24 @@ deployments must retain compatible code or handle affected executions through th
 durable runtime's ordinary migration, cancellation, or recovery policy. Those deployment decisions are outside this plugin
 contract.
 
-## 5. Migration
+## 5. Delivered Integration
 
-Implementation should proceed in one narrow SDK-first slice:
+The SDK-first slice provides:
 
-1. add metadata-only discovery for `ya_agent_sdk.capabilities`;
-2. add catalog construction from explicit classes and selected entry-point names;
-3. validate Pydantic AI classes, serialization names, collisions, and deterministic
+1. metadata-only discovery for `ya_agent_sdk.capabilities`;
+2. catalog construction from explicit classes and selected entry-point names;
+3. validation of Pydantic AI classes, serialization names, collisions, and deterministic
    catalog ordering without treating it as runtime behavior order;
-4. expose one `custom_capability_types` tuple to schema generation and construction;
-5. derive the main-agent bridge tuple from the catalog and pass the catalog itself to
-   subagent resolution; and
-6. remove any duplicated discovery or custom-registry logic from YAACLI and YA Claw.
+4. one strict versioned TOML manifest for entry-point selection and root grants;
+5. one `custom_capability_types` tuple for schema generation and construction; and
+6. one immutable catalog snapshot consumed by YAACLI and YA Claw across root, child,
+   retained-plan, and restored runtime paths; and
+7. one native static-plan validation helper shared by root admission and portable child
+   resolution.
 
-Focused discovery tests verify entry-point metadata and selected loading without a
-separate plugin framework.
+YAACLI and YA Claw contain no duplicated entry-point scanner or plugin registry. Focused
+SDK and host tests cover manifest validation, selected loading, native construction,
+root-only grants, child isolation, and stable snapshot reuse.
 
 ## 6. Validation Matrix
 
@@ -159,6 +172,16 @@ separate plugin framework.
 - nested specs fail clearly when a required custom type is absent; and
 - two independently constructed catalogs can coexist without global mutation.
 
+### File configuration
+
+- the strict schema accepts only version 1, exact selected names, and normalized ordered
+  root grants;
+- unknown fields, duplicate selections, unselected grants, non-finite values, and
+  secret-like nested argument keys fail closed;
+- an empty selection performs no entry-point scan;
+- the resolved root spec is isolated from later nested caller mutation; and
+- manifest/catalog mismatch is rejected before runtime construction.
+
 ### Composition and hosts
 
 - catalog availability does not grant an omitted type;
@@ -183,4 +206,5 @@ separate plugin framework.
 | host implementations diverge | SDK owns discovery, validation, catalog construction, and the Pydantic bridge |
 | persisted metadata is mistaken for code | descriptors record provenance only and fail when compatible code is absent |
 | serializable is mistaken for durable | durable host validation remains independent and fail closed |
+| durable arguments contain credentials | recursive secret-like key rejection and typed runtime dependency guidance |
 | imported code is mistaken for sandboxed | explicit process-authority trust boundary |

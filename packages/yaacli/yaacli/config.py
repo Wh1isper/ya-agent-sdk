@@ -16,7 +16,11 @@ Configuration files are loaded with project-level priority (no merging):
    - Global: ~/.yaacli/mcp.json
    - Project: .yaacli/mcp.json (overrides global entirely)
 
-4. **Environment variables** (YAACLI_*):
+4. **plugins.toml** (trusted in-process capability plugins):
+   - Global only: ~/.yaacli/plugins.toml
+   - Uses the strict YA Agent SDK manifest without project overrides
+
+5. **Environment variables** (YAACLI_*):
    - TUI configuration overrides only (merged on top of config.toml)
    - Does not affect model settings
 """
@@ -30,6 +34,12 @@ from typing import Any, Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from ya_agent_sdk.capabilities import (
+    CapabilityPluginManifest,
+    ResolvedCapabilityPlugins,
+    load_capability_plugins,
+    resolve_capability_plugins,
+)
 from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig, load_mcp_config_file
 
 from yaacli.theme import ThemePreference
@@ -442,6 +452,7 @@ class ConfigManager:
 
     DEFAULT_CONFIG_DIR = Path.home() / ".yaacli"
     DEFAULT_SESSION_DATABASE_NAME = "sessions-v2.sqlite3"
+    PLUGIN_MANIFEST_NAME = "plugins.toml"
     PROJECT_CONFIG_DIR = ".yaacli"
 
     def __init__(
@@ -604,6 +615,19 @@ class ConfigManager:
         if global_mcp.exists():
             return global_mcp
         return None
+
+    @property
+    def capability_plugin_manifest_path(self) -> Path:
+        """Return the fixed global capability plugin manifest path."""
+        return self._config_dir / self.PLUGIN_MANIFEST_NAME
+
+    def load_capability_plugin_config(self) -> ResolvedCapabilityPlugins:
+        """Load the global plugin manifest or return one empty SDK catalog snapshot."""
+        manifest_path = self.capability_plugin_manifest_path
+        try:
+            return load_capability_plugins(manifest_path)
+        except FileNotFoundError:
+            return resolve_capability_plugins(CapabilityPluginManifest(schema_version=1))
 
     # Entries to exclude from file tree context in ~/.yaacli/
     _TREEIGNORE_DIRS = frozenset({"sessions", "message_history", "worktrees"})

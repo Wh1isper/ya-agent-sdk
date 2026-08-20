@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic_ai import AgentSpec, DeferredToolRequests
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import create_engine as create_sync_engine
 from ya_agent_sdk.agents.main import stream_agent
-from ya_agent_sdk.capabilities import FilesystemCapability, ShellCapability, SkillsCapability
+from ya_agent_sdk.capabilities import (
+    CapabilityCatalog,
+    FilesystemCapability,
+    ShellCapability,
+    SkillsCapability,
+    build_default_capability_catalog,
+)
 from ya_agent_sdk.environment import VirtualMount
 from ya_agent_sdk.subagents import (
     DelegationCapability,
@@ -24,6 +32,15 @@ from ya_claw.orm.base import Base
 from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY
 from ya_claw.workspace import MappedLocalEnvironment, WorkspaceBinding
 from ya_claw.workspace.models import WorkspaceMountBinding
+
+
+@dataclass
+class _RuntimePluginCapability(AbstractCapability[Any]):
+    label: str = "default"
+
+    @classmethod
+    def get_serialization_name(cls) -> str:
+        return "test.runtime_plugin"
 
 
 def _settings(tmp_path: Path) -> ClawSettings:
@@ -119,6 +136,7 @@ def _build_runtime(
     *,
     source_kind: str = "api",
     source_metadata: dict[str, object] | None = None,
+    capability_catalog: CapabilityCatalog | None = None,
 ):
     host_path = tmp_path / "workspace"
     binding = _binding(host_path)
@@ -130,6 +148,7 @@ def _build_runtime(
     runtime = ClawRuntimeBuilder(
         settings=_settings(tmp_path),
         session_factory=session_factory,
+        capability_catalog=capability_catalog,
     ).build(
         profile=profile,
         binding=binding,
@@ -160,14 +179,41 @@ async def test_runtime_builder_streams_with_test_model_and_native_agent_spec(tmp
         output = streamer.run.result.output
         exported_state = runtime.ctx.export_state()
         resolved_capability_types = {type(capability) for capability in runtime.capabilities}
+        root_capability_types = {type(capability) for capability in runtime.agent.root_capability.capabilities}
 
     assert output == "success (no tool calls)"
     assert seen_events
-    assert FilesystemCapability in resolved_capability_types
+    assert FilesystemCapability in root_capability_types
     assert SkillsCapability in resolved_capability_types
     assert runtime.ctx.session_id == "session-1"
     assert runtime.ctx.claw_run_id == "run-1"
     assert exported_state is not None
+
+
+async def test_runtime_builder_instantiates_configured_plugin_once(tmp_path: Path) -> None:
+    catalog = build_default_capability_catalog(explicit_types=[_RuntimePluginCapability])
+    runtime, _ = _build_runtime(
+        tmp_path,
+        _profile(
+            capabilities=[
+                {
+                    "name": "test.runtime_plugin",
+                    "arguments": {"label": "persisted-root"},
+                }
+            ]
+        ),
+        capability_catalog=catalog,
+    )
+
+    async with runtime:
+        configured = [
+            capability
+            for capability in runtime.agent.root_capability.capabilities
+            if isinstance(capability, _RuntimePluginCapability)
+        ]
+
+    assert len(configured) == 1
+    assert configured[0].label == "persisted-root"
 
 
 async def test_runtime_builder_preserves_native_output_and_execution_contract(tmp_path: Path) -> None:
@@ -242,9 +288,10 @@ async def test_runtime_builder_resolves_feature_and_claw_capabilities(tmp_path: 
 
     async with runtime:
         capability_types = {type(capability) for capability in runtime.capabilities}
+        root_capability_types = {type(capability) for capability in runtime.agent.root_capability.capabilities}
 
-    assert FilesystemCapability in capability_types
-    assert ShellCapability in capability_types
+    assert FilesystemCapability in root_capability_types
+    assert ShellCapability in root_capability_types
     assert ClawToolsCapability in capability_types
 
 

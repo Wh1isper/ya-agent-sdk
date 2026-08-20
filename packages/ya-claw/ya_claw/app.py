@@ -62,6 +62,7 @@ class ClawApplication:
         configure_claw_logging(self.settings.log_level)
         logger.info("Creating YA Claw FastAPI app log_level={}", self.settings.log_level)
         self.settings.require_api_token()
+        capability_plugins = self.settings.resolved_capability_plugins
 
         app = FastAPI(
             title=self.settings.app_name,
@@ -70,6 +71,8 @@ class ClawApplication:
             lifespan=self.lifespan,
         )
         app.state.settings = self.settings
+        app.state.capability_plugins = capability_plugins
+        app.state.capability_catalog = capability_plugins.catalog
         app.state.db_engine = None
         app.state.db_session_factory = None
         app.state.runtime_state = None
@@ -167,6 +170,7 @@ class ClawApplication:
             app.state.profile_resolver = ProfileResolver(
                 settings=self.settings,
                 session_factory=app.state.db_session_factory,
+                capability_plugins=app.state.capability_plugins,
             )
             if self.settings.auto_seed_profiles:
                 seeded_profiles = await app.state.profile_resolver.seed_profiles()
@@ -174,6 +178,7 @@ class ClawApplication:
             app.state.runtime_builder = ClawRuntimeBuilder(
                 settings=self.settings,
                 session_factory=app.state.db_session_factory,
+                capability_catalog=app.state.capability_catalog,
             )
 
         if (

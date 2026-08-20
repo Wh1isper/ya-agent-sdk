@@ -13,6 +13,7 @@ from typing import Any, TextIO, cast
 
 from pydantic import JsonValue
 from pydantic_ai import (
+    AgentSpec,
     DeferredToolRequests,
     DeferredToolResults,
     ToolDenied,
@@ -211,6 +212,8 @@ async def _run_headless_prompt(
         model_profile_id,
     )
     mcp_config = config_manager.load_mcp_config()
+    capability_plugins = config_manager.load_capability_plugin_config()
+    capability_catalog = capability_plugins.catalog
     sources = compile_runtime_sources(
         config,
         config_dir=config_manager.config_dir,
@@ -232,6 +235,7 @@ async def _run_headless_prompt(
             profile=effective_profile,
             sources=sources,
             retained_descriptors=retained_child_descriptors,
+            capability_catalog=capability_catalog,
         )
         if subagent_mode is not None
         else None
@@ -252,7 +256,7 @@ async def _run_headless_prompt(
         agent_spec=build_runtime_agent_spec(
             config,
             profile=effective_profile,
-            sources=sources,
+            capability_plugins=capability_plugins,
         ),
         main_plan_manifest=main_manifest,
         child_plan_manifest=child_manifest,
@@ -313,6 +317,8 @@ async def _run_headless_prompt(
             durable_binding_ref=binding_ref,
             durable_database_path=database_path,
             subagent_deferred_resolver=child_deferred_resolver,
+            agent_spec=AgentSpec.model_validate(descriptor.agent_spec),
+            capability_catalog=capability_catalog,
             agent_name="yaacli_main_v2",
         )
 

@@ -1503,7 +1503,10 @@ class RunCoordinator:
             raise ValueError("Async task descriptor identity does not match the task record")
         if descriptor.fingerprint != task_record.plan_fingerprint:
             raise ValueError("Async task descriptor fingerprint does not match the task record")
-        plan = restore_claw_subagent_plan(descriptor)
+        plan = restore_claw_subagent_plan(
+            descriptor,
+            capability_catalog=self._settings.resolved_capability_plugins.catalog,
+        )
         return resolved_profile_from_subagent_plan(plan)
 
     async def _resolve_workspace_binding(

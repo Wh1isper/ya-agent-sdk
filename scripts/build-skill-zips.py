@@ -27,7 +27,12 @@ SKILL_PACKAGES = [
 ]
 
 REQUIRED_ARCHIVE_MEMBERS = {
-    "SKILL.zip": (Path("ya-agent-sdk/examples/capability_plugin/README.md"),),
+    "SKILL.zip": (
+        Path("ya-agent-sdk/plugins.md"),
+        Path("ya-agent-sdk/examples/capability_plugin/README.md"),
+        Path("ya-agent-sdk/examples/capability_plugin/plugins.toml"),
+    ),
+    "YA_CLAW_DEPLOY_SKILL.zip": (Path("ya-claw-deploy/references/plugins.md"),),
 }
 IGNORED_TREE_NAMES = {".venv", "__pycache__"}
 

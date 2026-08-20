@@ -9,6 +9,10 @@ from ya_agent_sdk.capabilities.catalog import (
     build_capability_catalog,
     discover_capability_types,
 )
+from ya_agent_sdk.capabilities.defaults import (
+    BUILTIN_CAPABILITY_TYPES,
+    build_default_capability_catalog,
+)
 from ya_agent_sdk.capabilities.features import (
     DocumentConversionCapability,
     FilesystemCapability,
@@ -39,6 +43,15 @@ from ya_agent_sdk.capabilities.foundation import (
     ToolArgumentRepairCapability,
     ToolIdCompatibilityCapability,
 )
+from ya_agent_sdk.capabilities.plugins import (
+    CAPABILITY_PLUGIN_SCHEMA_VERSION,
+    CapabilityPluginGrant,
+    CapabilityPluginManifest,
+    ResolvedCapabilityPlugins,
+    load_capability_plugin_manifest,
+    load_capability_plugins,
+    resolve_capability_plugins,
+)
 from ya_agent_sdk.capabilities.presets import RuntimeFoundationCapability
 from ya_agent_sdk.capabilities.tool_policy import (
     ToolApprovalCapability,
@@ -49,58 +62,13 @@ from ya_agent_sdk.capabilities.tool_policy import (
 )
 from ya_agent_sdk.codeact import CodeActCapability
 
-BUILTIN_CAPABILITY_TYPES = (
-    CodeActCapability,
-    ColdStartCapability,
-    ContextCompactionCapability,
-    DeferredTerminalCapability,
-    DocumentConversionCapability,
-    EnvironmentContextCapability,
-    FileInspectionCapability,
-    FilesystemCapability,
-    HandoffCapability,
-    MediaCompatibilityCapability,
-    MediaReadCapability,
-    NoteCapability,
-    OverallRetryBudget,
-    ReasoningCompatibilityCapability,
-    RuntimeContextCapability,
-    RuntimeFoundationCapability,
-    ShellCapability,
-    SkillsCapability,
-    TaskCapability,
-    ThinkingCapability,
-    TodoCapability,
-    ToolApprovalCapability,
-    ToolArgumentRepairCapability,
-    ToolIdCompatibilityCapability,
-    ToolObservationCapability,
-    ToolRetryCapability,
-    ToolTimeoutCapability,
-    ToolVisibilityCapability,
-    UserInteractionCapability,
-    WebContentCapability,
-    WebSearchCapability,
-)
-
-
-def build_default_capability_catalog(
-    *,
-    explicit_types=(),
-    selected_entry_points=(),
-) -> CapabilityCatalog:
-    """Build the SDK catalog with all built-in serializable capability types."""
-    return build_capability_catalog(
-        sdk_types=BUILTIN_CAPABILITY_TYPES,
-        explicit_types=explicit_types,
-        selected_entry_points=selected_entry_points,
-    )
-
-
 __all__ = [
     "BUILTIN_CAPABILITY_TYPES",
+    "CAPABILITY_PLUGIN_SCHEMA_VERSION",
     "ENTRY_POINT_GROUP",
     "CapabilityCatalog",
+    "CapabilityPluginGrant",
+    "CapabilityPluginManifest",
     "CapabilityRegistration",
     "CapabilityTypeProvenance",
     "CapabilityTypeReference",
@@ -118,6 +86,7 @@ __all__ = [
     "NoteCapability",
     "OverallRetryBudget",
     "ReasoningCompatibilityCapability",
+    "ResolvedCapabilityPlugins",
     "RuntimeContextCapability",
     "RuntimeFoundationCapability",
     "ShellCapability",
@@ -140,4 +109,7 @@ __all__ = [
     "build_capability_catalog",
     "build_default_capability_catalog",
     "discover_capability_types",
+    "load_capability_plugin_manifest",
+    "load_capability_plugins",
+    "resolve_capability_plugins",
 ]

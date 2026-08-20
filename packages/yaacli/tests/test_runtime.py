@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
 from pydantic_ai import AgentSpec
+from pydantic_ai.capabilities import AbstractCapability, CombinedCapability
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
@@ -35,6 +39,7 @@ from ya_agent_sdk.subagents import (
     SubagentSpec,
 )
 from yaacli.config import (
+    ConfigManager,
     GeneralConfig,
     MCPConfig,
     MCPServerConfig,
@@ -57,6 +62,7 @@ from yaacli.runtime import (
     _self_fork_capability_specs,
     build_main_runtime_manifest,
     build_runtime_agent_spec,
+    compile_child_plan_manifest,
     compile_runtime_sources,
     create_tui_runtime,
     restore_main_runtime_manifest,
@@ -69,7 +75,31 @@ def _config() -> YaacliConfig:
     return YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4"))
 
 
-def _write_subagent_spec(directory: Path, *, route: str = "helper") -> None:
+@dataclass
+class HostPluginCapability(AbstractCapability[Any]):
+    label: str = "default"
+
+    @classmethod
+    def get_serialization_name(cls) -> str:
+        return "test.host_plugin"
+
+
+class HostPluginEntryPoint:
+    name = "test.host_plugin"
+    value = "tests.host_plugin:HostPluginCapability"
+    dist = SimpleNamespace(name="test-host-plugin", version="1.0")
+
+    def load(self) -> object:
+        return HostPluginCapability
+
+
+def _write_subagent_spec(
+    directory: Path,
+    *,
+    route: str = "helper",
+    capabilities: list[object] | None = None,
+    durability: str = "restart",
+) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": 1,
@@ -78,10 +108,10 @@ def _write_subagent_spec(directory: Path, *, route: str = "helper") -> None:
             "name": route,
             "description": "Helper",
             "instructions": "Help.",
-            "capabilities": [],
+            "capabilities": capabilities or [],
         },
         "execution_modes": ["foreground", "background"],
-        "durability": "restart",
+        "durability": durability,
     }
     (directory / f"{route}.yaml").write_text(
         yaml.safe_dump(payload, sort_keys=False),
@@ -200,6 +230,65 @@ async def test_runtime_codeact_and_user_input_are_explicit_capabilities(
     async with runtime:
         assert any(isinstance(item, CodeActCapability) for item in runtime.capabilities)
         assert any(isinstance(item, UserInteractionCapability) for item in runtime.capabilities)
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_one_plugin_catalog_for_root_and_explicit_children(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / ConfigManager.PLUGIN_MANIFEST_NAME).write_text(
+        """\
+schema_version = 1
+entry_points = ["test.host_plugin"]
+
+[[capabilities]]
+name = "test.host_plugin"
+arguments = { label = "root" }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ya_agent_sdk.capabilities.catalog.importlib.metadata.entry_points",
+        lambda **kwargs: [HostPluginEntryPoint()],
+    )
+    config = _config()
+    plugins = ConfigManager(config_dir=config_dir, project_dir=tmp_path).load_capability_plugin_config()
+    _write_subagent_spec(
+        config_dir / "subagents",
+        capabilities=[{"name": "test.host_plugin", "arguments": {"label": "child"}}],
+        durability="process",
+    )
+    sources = compile_runtime_sources(config, config_dir=config_dir, include_subagents=True)
+    child_manifest = compile_child_plan_manifest(
+        config,
+        profile=None,
+        sources=sources,
+        capability_catalog=plugins.catalog,
+    )
+    descriptors_by_route = {descriptor.spec.route: descriptor for descriptor in child_manifest.descriptors}
+    child_capability_names = [item.name for item in descriptors_by_route["helper"].normalized_agent_spec.capabilities]
+    self_capability_names = [item.name for item in descriptors_by_route["self"].normalized_agent_spec.capabilities]
+    agent_spec = AgentSpec.model_validate(build_runtime_agent_spec(config, profile=None, capability_plugins=plugins))
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        config_dir=config_dir,
+        agent_spec=agent_spec,
+        capability_catalog=plugins.catalog,
+    )
+
+    async with runtime:
+        root_capability = runtime.agent.root_capability
+
+    assert isinstance(root_capability, CombinedCapability)
+    root_plugins = [item for item in root_capability.capabilities if isinstance(item, HostPluginCapability)]
+    assert len(root_plugins) == 1
+    assert root_plugins[0].label == "root"
+    assert "test.host_plugin" in child_capability_names
+    assert "test.host_plugin" not in self_capability_names
 
 
 def test_packaged_subagent_presets_support_yaacli_process_local_driver() -> None:
@@ -487,7 +576,6 @@ def test_runtime_source_snapshot_freezes_prompt_and_subagent_definitions(
     first_agent_spec = build_runtime_agent_spec(
         config,
         profile=None,
-        sources=first,
     )
 
     prompt_path.write_text("prompt two", encoding="utf-8")
@@ -500,7 +588,7 @@ def test_runtime_source_snapshot_freezes_prompt_and_subagent_definitions(
 
     assert first.system_prompt == "prompt one"
     assert [spec.route for spec in first.subagent_specs] == ["helper"]
-    assert first_agent_spec["instructions"] == ["prompt one"]
+    assert first_agent_spec["instructions"] == []
     assert first.fingerprint_payload() != second.fingerprint_payload()
 
 

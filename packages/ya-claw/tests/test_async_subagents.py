@@ -620,6 +620,7 @@ async def test_unapplied_completion_run_is_retargeted(
 
 async def test_running_source_delivery_is_enqueued_not_applied(
     db_session: AsyncSession,
+    settings: ClawSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     controller = AsyncTaskController()
@@ -641,6 +642,7 @@ async def test_running_source_delivery_is_enqueued_not_applied(
 
     resolution = await controller._create_wake_run(
         db_session,
+        settings=settings,
         parent_session=parent_session,
         delivery_id="delivery-running",
         wake_part=CommandPart(

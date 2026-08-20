@@ -1,16 +1,18 @@
 # 01 - Configuration, Profiles, and Workspace Assembly
 
-YA Claw resolves each run from three configuration layers:
+YA Claw resolves each run from four explicit configuration inputs:
 
-- environment variables for service infrastructure and bootstrap defaults
-- storage-backed profiles for durable runtime behavior
-- request-level inputs for transient run selection and execution
+- environment variables for service infrastructure and bootstrap defaults;
+- one optional process-wide SDK capability plugin manifest;
+- storage-backed profiles for durable runtime behavior; and
+- request-level inputs for transient run selection and execution.
 
 ## Configuration Layers
 
 ```mermaid
 flowchart TB
     ENV[Environment Variables] --> RES[Profile and Runtime Resolver]
+    PLUGINS[SDK Plugin Manifest and Catalog Snapshot] --> RES
     STORE[Profiles in SQLite / PostgreSQL] --> RES
     REQ[Run Request] --> RES
     RES --> RUNCFG[Resolved Run Configuration]
@@ -45,6 +47,7 @@ flowchart TB
 | `YA_CLAW_DEFAULT_PROFILE`                              | bootstrap profile name used when a request omits `profile_name`             |
 | `YA_CLAW_PROFILE_SEED_FILE`                            | optional YAML seed file for profiles                                        |
 | `YA_CLAW_AUTO_SEED_PROFILES`                           | create or refresh matching seeded profiles from YAML on startup             |
+| `YA_CLAW_CAPABILITY_PLUGIN_MANIFEST`                   | optional explicit SDK plugin manifest path loaded once before app startup   |
 | `YA_CLAW_WORKSPACE_PROVIDER_BACKEND`                   | bootstrap workspace backend hint for local development or fallback          |
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE`              | Docker image for Docker-backed environment construction                     |
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` | Docker daemon-visible host workspace path for service-in-Docker deployments |
@@ -72,6 +75,39 @@ LLM provider keys and tool API keys stay in environment variables and follow `ya
 
 Environment variables own infrastructure concerns and bootstrap defaults.
 Profiles own reusable execution behavior.
+
+### Capability Plugin Manifest
+
+`YA_CLAW_CAPABILITY_PLUGIN_MANIFEST` names one administrator-controlled file using the
+SDK schema:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+Plugin distributions are installed into the YA Claw service Python environment.
+`entry_points` selects the exact installed types imported into the process catalog;
+`capabilities` is the ordered root-only grant list. Omission of the environment setting
+means no external types. If a path is configured, a missing file, invalid manifest,
+entry-point import failure, or catalog collision fails before routes or execution
+lifecycles start. YA Claw performs no package installation, project-local discovery,
+ambient load-all, fallback, or hot reload.
+
+The manifest contains durable declarative arguments and recursively rejects secret-like
+keys. It is not a credential file. The settings object resolves and caches one immutable
+SDK `ResolvedCapabilityPlugins` snapshot, and application creation forces that load
+before exposing the service. Profile admission appends manifest grants only to the root
+native `AgentSpec`, before descriptor fingerprinting and persistence. Named children and
+self forks do not inherit those grants; a child can use a selected type only by naming it
+in its own native spec. Profile resolution, async spawn/resume, retained plan restore,
+memory execution, coordinator recovery, and runtime construction all receive the same
+catalog snapshot. A service restart is the adoption boundary for manifest or package
+changes.
 
 ## Execution Profile
 
@@ -136,8 +172,10 @@ its route. Unknown fields are rejected by API, seed, and runtime resolution.
 ### Capability and Host-tool Boundaries
 
 Portable features are granted by serialization name in `AgentSpec.capabilities` and
-resolved through the immutable SDK `CapabilityCatalog`. Claw does not accept Python
-import targets or infer capabilities from tool names.
+resolved through the immutable SDK `CapabilityCatalog`. Claw profiles do not accept
+Python import targets or infer capabilities from tool names. External types enter the
+catalog only through the explicit process plugin manifest; profile edits cannot load
+code.
 
 Claw's host-only `tool_groups` are limited to:
 

@@ -1,0 +1,6 @@
+schema_version = 1
+entry_points = ["example.text_metrics"]
+
+[[capabilities]]
+name = "example.text_metrics"
+arguments = { max_characters = 5000 }

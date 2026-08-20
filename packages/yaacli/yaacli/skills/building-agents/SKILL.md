@@ -14,6 +14,8 @@ subagent APIs.
 
 - Construct an unentered runtime with `create_agent()`.
 - Put every agent behavior in the ordered `capabilities=` list.
+- Validate durable static specs with `validate_agent_spec_capabilities()` before
+  fingerprinting or persistence; runtime entry still validates dynamic contributions.
 - Enter `AgentRuntime` before accessing `runtime.agent` or resolved capabilities.
 - Use `stream_agent()` for SDK lifecycle events, native steering, and recovery.
 - Persist both Pydantic AI message history and `runtime.ctx.export_state()`.
@@ -27,6 +29,7 @@ Read the focused references before changing the corresponding subsystem:
 - Sessions: [`./context.md`](./context.md)
 - Streaming and events: [`./streaming.md`](./streaming.md), [`./events.md`](./events.md)
 - Capability-owned tools and policies: [`./toolset.md`](./toolset.md)
+- Installable capability plugins and application loading: [`./plugins.md`](./plugins.md)
 - Structured deferred input: [`./user-input.md`](./user-input.md)
 - Portable subagents: [`./subagent.md`](./subagent.md)
 - Environment authority: [`./environment.md`](./environment.md),
@@ -173,6 +176,10 @@ inject one `DelegationCapability` backed by a store and driver. See
 ## Public Boundary Checklist
 
 - `capabilities=` is the sole public composition plane.
+- Plugin entry points only add explicitly selected types to one immutable catalog;
+  they never grant behavior or load ambiently.
+- A plugin manifest may append root grants, but named children and self forks receive
+  only their own explicit native grants.
 - `AgentSpec` owns model, settings, instructions, output schema, and serialized
   capability definitions.
 - `SubagentSpec` adds only delegation policy.
@@ -194,6 +201,7 @@ inject one `DelegationCapability` backed by a store and driver. See
 | Streaming and hooks  | [`./streaming.md`](./streaming.md)                     | Streamed UX, recovery, or lifecycle extensions             |
 | Events               | [`./events.md`](./events.md)                           | Consuming SDK or feature lifecycle events                  |
 | Tools and policies   | [`./toolset.md`](./toolset.md)                         | Writing BaseTool adapters or execution-policy capabilities |
+| Capability plugins   | [`./plugins.md`](./plugins.md)                         | Packaging plugins or adding file-based loading to a host   |
 | Structured input     | [`./user-input.md`](./user-input.md)                   | Approval or external deferred continuation                 |
 | Native Tool Search   | [`./tool-search.md`](./tool-search.md)                 | Deferred native capabilities and large tool libraries      |
 | Subagents            | [`./subagent.md`](./subagent.md)                       | Child specs, resolution, services, stores, or drivers      |

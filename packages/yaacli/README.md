@@ -17,6 +17,13 @@ uv tool install 'yaacli[rs]'
 yaacli
 ```
 
+Install a trusted capability plugin into the same isolated tool environment with
+`--with`:
+
+```bash
+uv tool install 'yaacli[rs]' --with acme-agent-plugin
+```
+
 `[rs]` installs the native Rust filesystem search binding. The equivalent extra-dependency form is:
 
 ```bash
@@ -30,6 +37,43 @@ Update with uv:
 ```bash
 uv tool upgrade yaacli
 ```
+
+## Capability Plugins
+
+YAACLI optionally loads the SDK's strict plugin manifest from the fixed global path
+`~/.yaacli/plugins.toml`:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+Package installation and authorization are separate. The distribution must be installed
+in YAACLI's own Python environment; `entry_points` then selects the exact installed
+types YAACLI may import, and `capabilities` grants ordered instances to the main root
+agent. YAACLI never scans or loads every installed entry point.
+
+The file is global-only because selected Python code executes with YAACLI process
+authority. A project `.yaacli/plugins.toml` is ignored. A missing global file means no
+external plugins; invalid TOML, unknown fields, missing or duplicate entry points,
+import failures, grant argument signature mismatches, and catalog collisions stop
+startup. Manifest arguments are durable non-secret configuration, so secret-like keys
+such as API keys, tokens, passwords, or credentials are rejected recursively. This
+name-based guard cannot detect a secret stored under a neutral key; keep every secret
+value outside the manifest.
+
+Selected types are available to native subagent documents, but root grants do not
+implicitly enter named children or self forks. A child must declare the selected
+serialization name in its own `agent.capabilities`. TUI and headless startup each load
+one catalog snapshot and reuse it for current, historical, child, and restored runtime
+construction. Restart YAACLI after changing the manifest or installed distribution.
+
+See the SDK [file configuration contract](../ya-agent-sdk/spec/06-capability-plugins/03-file-configuration.md)
+and the [installable example](../../examples/capability_plugin/).
 
 Install with pip:
 

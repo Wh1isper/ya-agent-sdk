@@ -11,8 +11,10 @@ imports pass the same class directly. The SDK validates both paths and returns o
 immutable `CapabilityCatalog` containing custom capability classes and lightweight
 source provenance.
 
-There is no YA plugin descriptor, provider identity layer, lifecycle hook, global
-registry, durability manifest, or plugin-specific rollout protocol.
+There is no parallel plugin runtime, provider identity layer, lifecycle hook, global
+registry, durability manifest, or plugin-specific rollout protocol. The SDK also
+provides one strict host-neutral TOML manifest that maps explicit entry-point selection
+to native root-agent capability grants.
 
 ## 2. Core Contract
 
@@ -41,8 +43,9 @@ catalog = build_default_capability_catalog(explicit_types=[SearchCapability])
 
 The SDK owns metadata discovery, selected entry-point loading, class validation,
 serialization-name collision checks, deterministic registration ordering, provenance,
-and the `custom_capability_types` tuple passed to Pydantic AI. YAACLI, YA Claw, and other hosts
-only choose which installed names or explicit classes to supply.
+the versioned plugin manifest, and the `custom_capability_types` tuple passed to
+Pydantic AI. YAACLI, YA Claw, and other hosts choose a trusted manifest path and retain
+one resolved catalog snapshot for their process lifetime.
 
 Catalog availability is not an agent grant. A capability instance enters an agent only
 through `capabilities=` or a native `AgentSpec.capabilities` entry.
@@ -76,6 +79,7 @@ through `capabilities=` or a native `AgentSpec.capabilities` entry.
 | --- | --- |
 | [01-contract-and-discovery.md](01-contract-and-discovery.md) | entry-point and direct-import contracts, validation, catalog shape, provenance, and Pydantic AI integration |
 | [02-host-integration-and-validation.md](02-host-integration-and-validation.md) | SDK/YAACLI/Claw ownership, portable plans, durability boundary, migration, and tests |
+| [03-file-configuration.md](03-file-configuration.md) | strict TOML schema, loading API, root grants, process lifetime, and trust policy |
 
 ## 5. Scope
 
@@ -85,7 +89,7 @@ It does not define:
 - capability instances or runtime behavior composition;
 - package installation, dependency resolution, sandboxing, or hot unload;
 - a generic plugin, callback, hook, model, store, UI, or Environment extension system;
-- host-specific plugin configuration files or environment variables;
+- the host-specific choice of manifest path or missing-file policy;
 - durable operation metadata or adapters; or
 - compatibility and deployment policy for retained executable code.
 

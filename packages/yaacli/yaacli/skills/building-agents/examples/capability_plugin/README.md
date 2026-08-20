@@ -4,17 +4,19 @@ This example is a complete, installable Python distribution that contributes one
 custom Pydantic AI capability to YA Agent SDK through package entry-point metadata.
 It demonstrates the packaging boundary that an inline capability class cannot show.
 
-The plugin itself depends only on Pydantic AI. `run.py` acts as the host: it discovers
-installed metadata, explicitly selects the capability type, builds an immutable catalog,
-parses an `AgentSpec`, and executes the contributed tool with `TestModel`.
+The plugin itself depends only on Pydantic AI. `run.py` acts as the host: it verifies
+metadata-only discovery, loads the SDK-owned `plugins.toml`, builds one immutable
+catalog, applies the configured root grant to an `AgentSpec`, and executes the
+contributed tool with `TestModel`.
 
 ```mermaid
 flowchart LR
     Package[Installed Python package] --> Metadata[Entry-point metadata]
     Metadata --> Discovery[Metadata-only discovery]
-    Discovery --> Selection[Explicit host selection]
+    Manifest[Versioned plugins.toml] --> Selection[Explicit selection and root grants]
+    Discovery --> Selection
     Selection --> Catalog[Immutable capability catalog]
-    Catalog --> Spec[AgentSpec construction]
+    Catalog --> Spec[Root AgentSpec construction]
     Spec --> Runtime[Capability-first agent runtime]
 ```
 
@@ -52,6 +54,7 @@ tool instance. The important behavior is that the tool was reconstructed from
 ```text
 capability_plugin/
 ├── README.md
+├── plugins.toml
 ├── pyproject.toml
 ├── run.py
 └── src/
@@ -78,49 +81,43 @@ def get_serialization_name(cls) -> str:
 One entry point maps to one `AbstractCapability` dataclass. A distribution may expose
 multiple capability types by declaring multiple entry points.
 
-## Host-side selection
+## Host-side configuration
 
-Installation only makes metadata discoverable. It does not import the plugin or grant it
-to an agent. The host must select the installed type explicitly:
+Installation only makes metadata discoverable. It does not import or grant the plugin.
+This example uses the SDK's strict, versioned `plugins.toml` contract:
 
-```python
-references = discover_capability_types()  # Reads metadata without importing targets.
+```toml
+schema_version = 1
+entry_points = ["example.text_metrics"]
 
-catalog = build_default_capability_catalog(
-    selected_entry_points=["example.text_metrics"],
-)
+[[capabilities]]
+name = "example.text_metrics"
+arguments = { max_characters = 5000 }
 ```
 
-The selected catalog types are then supplied when a declarative agent is constructed:
+`entry_points` selects the exact installed types that the host may import.
+`capabilities` appends configured instances to the root agent. The host loads the file
+once and uses the same resolved snapshot for spec construction and runtime creation:
 
 ```python
-spec = AgentSpec.from_dict(
-    {
-        "capabilities": [
-            {
-                "example.text_metrics": {
-                    "max_characters": 5_000,
-                }
-            }
-        ]
-    }
+plugins = load_capability_plugins(Path("plugins.toml"))
+spec = plugins.apply_to_root_agent_spec(
+    AgentSpec.from_dict({"name": "capability-plugin-example"})
 )
 
 runtime = create_agent(
     model,
     spec=spec,
-    custom_capability_types=catalog.custom_capability_types,
+    custom_capability_types=plugins.custom_capability_types,
 )
 ```
 
-Applications that already import a capability class can bypass package discovery while
-using the same catalog validation:
-
-```python
-catalog = build_default_capability_catalog(
-    explicit_types=[TextMetricsCapability],
-)
-```
+A selected but ungranted type remains available for an explicitly configured named
+child. Root grants never implicitly enter named children or self forks. Applications
+that already import a capability class can pass it through
+`resolve_capability_plugins(..., explicit_types=[TextMetricsCapability])` or
+`build_default_capability_catalog(explicit_types=[TextMetricsCapability])`; direct
+imports extend the catalog but do not satisfy manifest entry-point selection.
 
 ## Extension boundaries
 
@@ -130,9 +127,13 @@ credentials, host services, and durable execution state outside the catalog and 
 them through typed runtime dependencies.
 
 Entry-point loading imports trusted Python code into the host process; it is not a
-sandbox. Hosts should therefore use an explicit allowlist such as
-`selected_entry_points`, never ambiently load every installed plugin.
+sandbox. Hosts must install only trusted distributions, use exact manifest selections,
+and never ambiently load every installed plugin. Manifest arguments are durable,
+non-secret configuration: secret-like keys, invalid TOML, unknown fields, missing
+entry points, import failures, and collisions fail closed.
 
-YAACLI and YA Claw do not currently expose user configuration for selecting external
-entry points. This example targets standalone SDK hosts and shows the contract those
-durable hosts can adopt later without changing the plugin package.
+YAACLI loads this same format from the optional fixed path
+`~/.yaacli/plugins.toml`. YA Claw loads it from the optional explicit
+`YA_CLAW_CAPABILITY_PLUGIN_MANIFEST` path. In both cases, install the distribution into
+the application's own Python environment and restart the process after changing the
+package or manifest.

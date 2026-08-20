@@ -41,11 +41,13 @@ from pydantic_ai.toolsets import AbstractToolset, ToolsetTool, WrapperToolset
 from ya_agent_sdk.agents.lifecycle import BaseLifecycleExtension, ContextHandoffCompleteContext, ContextHandoffSource
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.capabilities import (
+    CapabilityCatalog,
     CodeActCapability,
     DocumentConversionCapability,
     FilesystemCapability,
     MediaReadCapability,
     NoteCapability,
+    ResolvedCapabilityPlugins,
     RuntimeFoundationCapability,
     ShellCapability,
     SkillsCapability,
@@ -430,7 +432,7 @@ def build_runtime_agent_spec(
     config: YaacliConfig,
     *,
     profile: ResolvedModelProfile | None,
-    sources: RuntimeSourceSnapshot,
+    capability_plugins: ResolvedCapabilityPlugins | None = None,
     agent_name: str = "yaacli_main_v2",
 ) -> dict[str, Any]:
     """Return the normalized main-agent definition used by a durable descriptor."""
@@ -438,15 +440,20 @@ def build_runtime_agent_spec(
     settings = profile.model_settings if profile is not None else config.general.model_settings
     model_cfg = profile.model_cfg if profile is not None else config.general.model_cfg
     profile_instructions = profile.instructions if profile is not None else config.general.instructions
-    instructions = [sources.system_prompt]
-    if isinstance(profile_instructions, str) and profile_instructions.strip():
-        instructions.append(profile_instructions)
+    capabilities = (
+        capability_plugins.root_agent_spec.model_dump(mode="json")["capabilities"]
+        if capability_plugins is not None
+        else []
+    )
     return {
         "name": agent_name,
         "model": model,
         "model_settings": dict(resolve_model_settings(settings) or {}),
-        "instructions": instructions,
+        "instructions": [profile_instructions]
+        if isinstance(profile_instructions, str) and profile_instructions.strip()
+        else [],
         "metadata": {YAACLI_MODEL_CFG_METADATA_KEY: resolve_profile_model_cfg(model_cfg).model_dump(mode="json")},
+        "capabilities": capabilities,
     }
 
 
@@ -623,10 +630,11 @@ def _build_delegation_capability(
     request_limit: int,
     default_model_cfg: ModelConfig,
     deferred_resolver: SubagentDeferredResolver | None,
+    capability_catalog: CapabilityCatalog | None = None,
 ) -> DelegationCapability | None:
     if not manifest.descriptors:
         return None
-    catalog = build_default_capability_catalog()
+    catalog = capability_catalog if capability_catalog is not None else build_default_capability_catalog()
     resolver = SubagentPlanResolver(
         catalog,
         default_model=default_model,
@@ -694,6 +702,7 @@ def compile_child_plan_manifest(
     profile: ResolvedModelProfile | None,
     sources: RuntimeSourceSnapshot,
     retained_descriptors: Sequence[SubagentPlanDescriptor] = (),
+    capability_catalog: CapabilityCatalog | None = None,
 ) -> ChildPlanManifest:
     """Compile exact active child plans and every retained referenced plan."""
     active_model = profile.model if profile is not None else config.general.model
@@ -730,8 +739,9 @@ def compile_child_plan_manifest(
         ToolRetryCapability(),
         ToolTimeoutCapability(),
     )
+    catalog = capability_catalog if capability_catalog is not None else build_default_capability_catalog()
     resolver = SubagentPlanResolver(
-        build_default_capability_catalog(),
+        catalog,
         default_model=active_model or None,
         host_capabilities=host_capabilities,
         restart_durable=False,
@@ -769,6 +779,8 @@ def create_tui_runtime(
     durable_binding_ref: str | None = None,
     durable_database_path: Path | None = None,
     subagent_deferred_resolver: SubagentDeferredResolver | None = None,
+    agent_spec: AgentSpec | None = None,
+    capability_catalog: CapabilityCatalog | None = None,
     agent_name: str = "yaacli_main_v2",
 ) -> AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment]:
     """Compile YAACLI configuration into one capability-first runtime plan."""
@@ -783,6 +795,10 @@ def create_tui_runtime(
     model_settings = cast(ModelSettings | None, resolve_model_settings(active_settings_config))
     model_cfg = resolve_profile_model_cfg(active_model_cfg)
     effective_system_prompt = system_prompt if system_prompt is not None else _load_system_prompt(config)
+    effective_catalog = capability_catalog if capability_catalog is not None else build_default_capability_catalog()
+    effective_agent_spec = agent_spec or AgentSpec.model_validate(
+        build_runtime_agent_spec(config, profile=active_profile, agent_name=agent_name)
+    )
 
     workspace_dir = working_dir or Path.cwd()
     project_config_dir = workspace_dir / ConfigManager.PROJECT_CONFIG_DIR
@@ -891,6 +907,7 @@ def create_tui_runtime(
             request_limit=config.general.max_requests,
             default_model_cfg=model_cfg,
             deferred_resolver=subagent_deferred_resolver,
+            capability_catalog=effective_catalog,
         )
         if delegation is not None:
             capabilities.append(delegation)
@@ -938,6 +955,8 @@ def create_tui_runtime(
 
     runtime = create_agent(
         model=active_model or None,
+        spec=effective_agent_spec,
+        custom_capability_types=effective_catalog.custom_capability_types,
         capabilities=cast(Sequence[AbstractCapability[TUIContext]], capabilities),
         model_settings=model_settings,
         output_type=[str, DeferredToolRequests],
@@ -947,7 +966,6 @@ def create_tui_runtime(
         model_cfg=model_cfg,
         context_kwargs=context_kwargs,
         system_prompt=effective_system_prompt,
-        instructions=active_instructions,
         lifecycle_extensions=[GoalContextHandoffExtension()],
         agent_name=agent_name,
     )

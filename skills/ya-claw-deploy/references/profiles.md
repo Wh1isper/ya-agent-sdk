@@ -121,12 +121,21 @@ Rules:
 - `agent.name`, when present, equals the profile name.
 - Every child `agent.name` equals its `route`.
 - Native behavior grants live in `agent.capabilities`.
+- External serialization names are valid only when selected by the process plugin
+  manifest; profiles cannot import Python targets.
 - Claw host groups are limited to `session`, `schedule`, `workflow`, and `agency`.
 - Filesystem, shell, media, web, document conversion, code execution, skills, and
   delegation are capabilities, not host groups.
-- Child behavior is explicit. There is no parent inheritance compiler, Markdown
-  front matter, required/optional tool list, or automatic capability copy.
+- Child behavior is explicit. Root grants from the process plugin manifest are not
+  inherited; a child must declare a selected external name in its own capabilities.
+  There is no parent inheritance compiler, Markdown front matter, required/optional
+  tool list, or automatic capability copy.
 - Unknown fields are rejected.
+
+Plugin selection and package installation are deployment configuration, not profile
+fields. See [`plugins.md`](plugins.md). A profile descriptor persists only its native
+capability grants; YA Claw uses the same startup catalog snapshot for admission,
+children, and restoration.
 
 ## Subscription-backed Codex Profiles
 

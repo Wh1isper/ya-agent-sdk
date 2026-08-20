@@ -14,6 +14,7 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from ya_agent_sdk.capabilities import CapabilityCatalog
 from ya_agent_sdk.subagents import (
     ResolvedSubagentPlan,
     SubagentInputState,
@@ -171,6 +172,7 @@ class AsyncTaskController:
                 parent_session=parent_session,
                 request=request,
                 profile_resolver=profile_resolver,
+                settings=settings,
             )
             wake_policy = "record_only" if request.context.get("mode") == "foreground" else str(request.wake_policy)
             try:
@@ -508,7 +510,7 @@ class AsyncTaskController:
             or record.delivery_status == "applied"
         ):
             return
-        action = await self._wake_parent(db_session, task_id=task_id)
+        action = await self._wake_parent(db_session, settings=settings, task_id=task_id)
         await db_session.commit()
         if action is None:
             return
@@ -686,6 +688,7 @@ class AsyncTaskController:
                 dispatch_mode=DispatchMode.ASYNC,
             ),
             trusted_metadata=True,
+            capability_plugins=settings.resolved_capability_plugins,
         )
         record.task_run_id = run_record.id
         if record.sdk_owner_scope_id is not None:
@@ -712,7 +715,10 @@ class AsyncTaskController:
         context: dict[str, Any],
         wake_policy: str,
     ) -> AsyncTaskDetail:
-        self._restore_task_plan(task_record)
+        self._restore_task_plan(
+            task_record,
+            capability_catalog=settings.resolved_capability_plugins.catalog,
+        )
         child_session = await db_session.get(
             SessionRecord,
             task_record.task_session_id,
@@ -737,6 +743,7 @@ class AsyncTaskController:
                 dispatch_mode=DispatchMode.ASYNC,
             ),
             trusted_metadata=True,
+            capability_plugins=settings.resolved_capability_plugins,
         )
         task_record.parent_run_id = parent_run_id
         task_record.task_run_id = run_record.id
@@ -763,6 +770,7 @@ class AsyncTaskController:
         self,
         db_session: AsyncSession,
         *,
+        settings: ClawSettings,
         task_id: str,
     ) -> _WakeAction | None:
         snapshot = await db_session.get(
@@ -831,6 +839,7 @@ class AsyncTaskController:
                 parent_session=parent_session,
                 delivery_id=delivery_id,
                 wake_part=wake_part,
+                settings=settings,
             )
         stored = await self._store_wake_resolution(
             db_session,
@@ -947,6 +956,7 @@ class AsyncTaskController:
         parent_session: SessionRecord,
         delivery_id: str,
         wake_part: CommandPart,
+        settings: ClawSettings,
     ) -> _WakeResolution:
         if isinstance(parent_session.active_run_id, str):
             parent_run = await lock_run_record(db_session, parent_session.active_run_id)
@@ -968,6 +978,7 @@ class AsyncTaskController:
             parent_session=parent_session,
             delivery_id=delivery_id,
             wake_part=wake_part,
+            settings=settings,
         )
 
     async def _create_wake_run(
@@ -977,6 +988,7 @@ class AsyncTaskController:
         parent_session: SessionRecord,
         delivery_id: str,
         wake_part: CommandPart,
+        settings: ClawSettings,
     ) -> _WakeResolution:
         try:
             async with db_session.begin_nested():
@@ -993,6 +1005,7 @@ class AsyncTaskController:
                     ),
                     trusted_metadata=True,
                     source_delivery_id=delivery_id,
+                    capability_plugins=settings.resolved_capability_plugins,
                 )
         except IntegrityError:
             existing_result = await db_session.execute(
@@ -1020,6 +1033,7 @@ class AsyncTaskController:
                 parent_session=parent_session,
                 delivery_id=delivery_id,
                 wake_part=wake_part,
+                settings=settings,
             )
         return _WakeResolution(
             run_record.id,
@@ -1235,6 +1249,7 @@ class AsyncTaskController:
         parent_session: SessionRecord,
         request: AsyncTaskSpawnRequest,
         profile_resolver: ProfileResolverProtocol | None,
+        settings: ClawSettings,
     ) -> tuple[ResolvedSubagentPlan, SessionAsyncTaskRecord | None]:
         resumed_from = request.context.get("_sdk_resumed_from")
         resume_task = (
@@ -1258,7 +1273,10 @@ class AsyncTaskController:
                     status_code=409,
                     detail=f"Prior subagent execution {resumed_from!r} is not terminal.",
                 )
-            plan = self._restore_task_plan(resume_task)
+            plan = self._restore_task_plan(
+                resume_task,
+                capability_catalog=settings.resolved_capability_plugins.catalog,
+            )
             if plan.spec.route != request.subagent_name:
                 raise HTTPException(
                     status_code=409,
@@ -1269,6 +1287,7 @@ class AsyncTaskController:
                 profile_resolver,
                 profile_name=parent_session.profile_name,
                 subagent_name=request.subagent_name,
+                capability_catalog=settings.resolved_capability_plugins.catalog,
             )
         advertised_fingerprint = request.context.get("plan_fingerprint")
         if isinstance(advertised_fingerprint, str) and advertised_fingerprint != plan.fingerprint:
@@ -1287,18 +1306,24 @@ class AsyncTaskController:
         *,
         profile_name: str | None,
         subagent_name: str,
+        capability_catalog: CapabilityCatalog,
     ) -> ResolvedSubagentPlan:
         if profile_resolver is None:
             raise RuntimeError("Profile resolver is required for durable subagent resolution")
         profile = await profile_resolver.resolve(profile_name)
         for spec in profile.subagent_specs:
             if isinstance(spec, SubagentSpec) and spec.route == subagent_name:
-                return resolve_claw_subagent_plan(spec)
+                return resolve_claw_subagent_plan(
+                    spec,
+                    capability_catalog=capability_catalog,
+                )
         raise HTTPException(status_code=404, detail=f"Subagent '{subagent_name}' is not configured for this profile.")
 
     def _restore_task_plan(
         self,
         task_record: SessionAsyncTaskRecord,
+        *,
+        capability_catalog: CapabilityCatalog,
     ) -> ResolvedSubagentPlan:
         if not isinstance(task_record.plan_descriptor, dict):
             raise HTTPException(
@@ -1315,7 +1340,10 @@ class AsyncTaskController:
         if descriptor.spec.route != task_record.subagent_name:
             raise HTTPException(status_code=409, detail="Async subagent descriptor route is inconsistent.")
         try:
-            return restore_claw_subagent_plan(descriptor)
+            return restore_claw_subagent_plan(
+                descriptor,
+                capability_catalog=capability_catalog,
+            )
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=409,

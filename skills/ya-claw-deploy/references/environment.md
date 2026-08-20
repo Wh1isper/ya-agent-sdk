@@ -12,6 +12,10 @@ YA Claw loads settings from process environment and `.env` files. `YA_CLAW_*` va
 | `YA_CLAW_WORKSPACE_PROVIDER_BACKEND` | Workspace backend: `docker` or `local`                                     |
 | `YA_CLAW_DEFAULT_PROFILE`            | Profile name used when requests omit `profile_name`; defaults to `default` |
 
+When plugins are enabled, `YA_CLAW_CAPABILITY_PLUGIN_MANIFEST` must point to an
+administrator-controlled service-visible file, and every selected distribution must be
+installed in the service Python environment.
+
 ## Core Service Settings
 
 | Variable                  | Default                                  | Purpose                                                             |
@@ -39,11 +43,17 @@ YA Claw loads settings from process environment and `.env` files. `YA_CLAW_*` va
 
 ## Profile and Execution Settings
 
-| Variable                     | Purpose                                                                       |
-| ---------------------------- | ----------------------------------------------------------------------------- |
-| `YA_CLAW_DEFAULT_PROFILE`    | Default profile name; defaults to `default`                                   |
-| `YA_CLAW_PROFILE_SEED_FILE`  | YAML seed file path, commonly `packages/ya-claw/profiles.yaml` in development |
-| `YA_CLAW_AUTO_SEED_PROFILES` | Upsert seeded profiles on startup                                             |
+| Variable                             | Purpose                                                                             |
+| ------------------------------------ | ----------------------------------------------------------------------------------- |
+| `YA_CLAW_DEFAULT_PROFILE`            | Default profile name; defaults to `default`                                         |
+| `YA_CLAW_PROFILE_SEED_FILE`          | YAML seed file path, commonly `packages/ya-claw/profiles.yaml` in development       |
+| `YA_CLAW_AUTO_SEED_PROFILES`         | Upsert seeded profiles on startup                                                   |
+| `YA_CLAW_CAPABILITY_PLUGIN_MANIFEST` | Optional strict SDK plugin manifest; explicit missing or invalid paths fail startup |
+
+YA Claw resolves the plugin manifest once at startup. Omission disables external
+plugins. The file contains type selections and durable root grants, never credentials.
+See [`plugins.md`](plugins.md) for installation, trust, child semantics, and Docker
+packaging.
 
 ## Allocator Tuning
 
@@ -209,6 +219,8 @@ YA_CLAW_SHELL_SANDBOX_NETWORK=full
 YA_CLAW_SHELL_SANDBOX_ALLOW_RAW_HOST=false
 YA_CLAW_PROFILE_SEED_FILE=/etc/ya-claw/profiles.yaml
 YA_CLAW_AUTO_SEED_PROFILES=true
+# Enable only after installing every selected distribution in the service environment.
+YA_CLAW_CAPABILITY_PLUGIN_MANIFEST=/etc/ya-claw/plugins.toml
 YA_CLAW_SCHEDULE_DISPATCH_ENABLED=true
 YA_CLAW_HEARTBEAT_ENABLED=false
 YA_CLAW_HEARTBEAT_INTERVAL_SECONDS=300

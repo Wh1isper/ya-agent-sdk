@@ -13,6 +13,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_sdk.capabilities import (
+    CapabilityCatalog,
     RuntimeFoundationCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
@@ -62,11 +63,14 @@ def build_claw_host_capabilities(
 
 def build_claw_subagent_plan_resolver(
     spec: AgentSpec | None = None,
+    *,
+    capability_catalog: CapabilityCatalog | None = None,
 ) -> SubagentPlanResolver:
     """Build one resolver whose injected grants exactly match child execution."""
     groups, allowlist, approval_tools, approval_mcps = _child_host_policy(spec)
+    catalog = capability_catalog if capability_catalog is not None else build_default_capability_catalog()
     return SubagentPlanResolver(
-        build_default_capability_catalog(),
+        catalog,
         host_capabilities=build_claw_host_capabilities(
             groups=groups,
             allowlist=allowlist,
@@ -77,16 +81,28 @@ def build_claw_subagent_plan_resolver(
     )
 
 
-def resolve_claw_subagent_plan(spec: SubagentSpec) -> ResolvedSubagentPlan:
+def resolve_claw_subagent_plan(
+    spec: SubagentSpec,
+    *,
+    capability_catalog: CapabilityCatalog | None = None,
+) -> ResolvedSubagentPlan:
     """Resolve a child against the exact Claw grants it will execute with."""
-    return build_claw_subagent_plan_resolver(spec.agent).resolve(spec)
+    return build_claw_subagent_plan_resolver(
+        spec.agent,
+        capability_catalog=capability_catalog,
+    ).resolve(spec)
 
 
 def restore_claw_subagent_plan(
     descriptor: SubagentPlanDescriptor,
+    *,
+    capability_catalog: CapabilityCatalog | None = None,
 ) -> ResolvedSubagentPlan:
     """Restore a descriptor against grants derived only from its immutable spec."""
-    return build_claw_subagent_plan_resolver(descriptor.normalized_agent_spec).restore(descriptor)
+    return build_claw_subagent_plan_resolver(
+        descriptor.normalized_agent_spec,
+        capability_catalog=capability_catalog,
+    ).restore(descriptor)
 
 
 @runtime_checkable
@@ -140,10 +156,14 @@ class ClawSubagentExecutionStore:
         session_factory: async_sessionmaker[AsyncSession],
         parent_session_id: str,
         client: ClawSubagentClient,
+        capability_catalog: CapabilityCatalog | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._parent_session_id = parent_session_id
         self._client = client
+        self._capability_catalog = (
+            capability_catalog if capability_catalog is not None else build_default_capability_catalog()
+        )
 
     async def close(self) -> None:
         """The application owns the SQL engine and internal HTTP client."""
@@ -170,7 +190,10 @@ class ClawSubagentExecutionStore:
             or descriptor.spec.route != task.subagent_name
         ):
             raise RuntimeError(f"Subagent plan identity is invalid for execution {record.execution_id!r}")
-        return restore_claw_subagent_plan(descriptor)
+        return restore_claw_subagent_plan(
+            descriptor,
+            capability_catalog=self._capability_catalog,
+        )
 
     async def create(
         self,
@@ -553,6 +576,7 @@ def build_claw_delegation_service(
     parent_session_id: str,
     client: ClawSubagentClient,
     settings: Any,
+    capability_catalog: CapabilityCatalog | None = None,
 ) -> Any:
     """Construct the SDK service over Claw's durable SQL/run adapters."""
     from ya_agent_sdk.subagents import SubagentExecutionService
@@ -561,6 +585,7 @@ def build_claw_delegation_service(
         session_factory=session_factory,
         parent_session_id=parent_session_id,
         client=client,
+        capability_catalog=capability_catalog,
     )
     driver = ClawSubagentDriver(client=client, data_settings=settings)
     return SubagentExecutionService(

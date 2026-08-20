@@ -17,6 +17,7 @@ Yet Another Agent SDK for building AI agents with [Pydantic AI](https://ai.pydan
 - Fully typed SDK validated with pyright
 - Resumable context state plus canonical Pydantic AI message history
 - Native `AgentSpec` profiles and portable subagent execution services
+- Strict versioned TOML configuration for explicitly selected capability plugins
 - Stateless `AgentExecutionHarness` for host-coordinated completed or suspended native segments
 - Native Tool Search, Tool Proxy, skills, MCP, and CodeAct capability integrations
 - Human-in-the-loop approval and structured deferred interaction
@@ -110,6 +111,65 @@ async with stream_agent(runtime, "Hello") as streamer:
 `create_agent()` returns an unentered `AgentRuntime`. `capabilities=` is the sole public behavior-composition surface; the Pydantic AI Agent is built only after the Environment and context have entered and all contribution groups are available. `RuntimeFoundationCapability` is explicit and is not injected by `create_agent()`.
 
 When stream recovery is enabled, delegated subagents and self forks inherit the root run's effective recovery policy. Each child retries transient provider or network stream failures against its own transport budget and resumes from its own recovered history. Successful child-local recovery does not consume the root agent's execution recovery budget; only an exhausted child failure propagates to the root tool-call path.
+
+## Capability Plugins
+
+Applications can select installed third-party capability types and grant configured
+instances to their root agent with one SDK-owned manifest:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+Load the manifest once at trusted process bootstrap, then retain the same catalog
+snapshot in every root, child, and restored runtime factory:
+
+```python
+from pydantic_ai import AgentSpec
+from ya_agent_sdk.agents import validate_agent_spec_capabilities
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import load_capability_plugins
+from ya_agent_sdk.context import AgentContext
+
+plugins = load_capability_plugins("/etc/my-agent/plugins.toml")
+root_spec = plugins.apply_to_root_agent_spec(
+    AgentSpec.from_dict({"name": "my-agent"})
+)
+validate_agent_spec_capabilities(
+    root_spec,
+    deps_type=AgentContext,
+    custom_capability_types=plugins.custom_capability_types,
+)
+
+runtime = create_agent(
+    "anthropic:claude-sonnet-4-5",
+    spec=root_spec,
+    custom_capability_types=plugins.custom_capability_types,
+)
+```
+
+`validate_agent_spec_capabilities()` constructs a throwaway native agent with a
+no-network test model, so plugin `from_spec()` values and the supplied static capability
+ordering can fail before durable admission. Runtime entry still validates dynamic
+Environment, context, and resource contributions.
+
+The application still owns package installation, the trusted manifest path, missing-file
+policy, and host dependencies. The SDK performs no ambient loading, installation,
+upgrade, sandboxing, or hot reload. Manifest root grants do not enter named children or
+self forks; a selected type is available to a child only when that child's native
+`AgentSpec` explicitly grants it. Manifest arguments are durable non-secret
+configuration, and secret-like keys fail validation recursively. This name-based
+validation cannot recognize a secret placed under a neutral key, so every secret value
+must still remain outside the manifest.
+
+See the [file configuration specification](spec/06-capability-plugins/03-file-configuration.md),
+the [application integration guide](../../skills/agent-builder/plugins.md), and the
+[runnable installable plugin example](../../examples/capability_plugin/).
 
 ## Retry Boundaries
 

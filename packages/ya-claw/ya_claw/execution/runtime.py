@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_environment import Environment
 from ya_agent_sdk.agents.main import AgentRuntime, create_agent
 from ya_agent_sdk.capabilities import (
+    CapabilityCatalog,
     SkillsCapability,
     ToolProxyCapability,
 )
@@ -37,7 +38,6 @@ from ya_claw.execution.subagents import (
     ClawSubagentClient,
     build_claw_delegation_service,
     build_claw_host_capabilities,
-    build_claw_subagent_plan_resolver,
     resolve_claw_subagent_plan,
 )
 from ya_claw.mcp import build_profile_mcp_config
@@ -98,9 +98,13 @@ class ClawRuntimeBuilder:
         *,
         settings: ClawSettings,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        capability_catalog: CapabilityCatalog | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
+        self._capability_catalog = (
+            capability_catalog if capability_catalog is not None else settings.resolved_capability_plugins.catalog
+        )
 
     def build(
         self,
@@ -160,11 +164,9 @@ class ClawRuntimeBuilder:
             source_kind=source_kind,
         )
         subagent_client = environment.resources.get(CLAW_SELF_CLIENT_KEY)
-        spec = resolved_spec.model_copy(update={"capabilities": []})
-        plan_resolver = build_claw_subagent_plan_resolver()
         return create_agent(
-            spec=spec,
-            custom_capability_types=plan_resolver.catalog.custom_capability_types,
+            spec=resolved_spec,
+            custom_capability_types=self._capability_catalog.custom_capability_types,
             capabilities=self._resolve_runtime_capabilities(
                 profile=profile,
                 is_async_subagent=is_async_subagent,
@@ -173,7 +175,7 @@ class ClawRuntimeBuilder:
                 session_id=session_id,
                 subagent_client=(subagent_client if isinstance(subagent_client, ClawSubagentClient) else None),
             ),
-            model_settings=cast(ModelSettings | None, spec.model_settings),
+            model_settings=cast(ModelSettings | None, resolved_spec.model_settings),
             output_type=self._resolve_output_type(resolved_spec),
             context_type=ClawAgentContext,
             model_cfg=self._build_model_config(profile),
@@ -266,13 +268,6 @@ class ClawRuntimeBuilder:
         subagent_client: ClawSubagentClient | None,
     ) -> tuple[AbstractCapability[AgentContext], ...]:
         capabilities: list[AbstractCapability[AgentContext]] = []
-        catalog = build_claw_subagent_plan_resolver().catalog
-        for capability_spec in profile.agent_spec.capabilities:
-            try:
-                capability_type = catalog[capability_spec.name]
-            except KeyError as exc:
-                raise ValueError(f"Unsupported Claw profile capability {capability_spec.name!r}") from exc
-            capabilities.append(capability_type(*capability_spec.args, **capability_spec.kwargs))
         host_capabilities = build_claw_host_capabilities(
             groups=profile.host_tool_groups,
             allowlist=profile.host_tool_allowlist,
@@ -285,13 +280,22 @@ class ClawRuntimeBuilder:
             if profile.subagent_specs:
                 if self._session_factory is None or subagent_client is None:
                     raise RuntimeError("Claw durable delegation requires the SQL session factory and internal client")
-                registry = SubagentRegistry(tuple(resolve_claw_subagent_plan(spec) for spec in profile.subagent_specs))
+                registry = SubagentRegistry(
+                    tuple(
+                        resolve_claw_subagent_plan(
+                            spec,
+                            capability_catalog=self._capability_catalog,
+                        )
+                        for spec in profile.subagent_specs
+                    )
+                )
                 service = build_claw_delegation_service(
                     registry=registry,
                     session_factory=self._session_factory,
                     parent_session_id=session_id,
                     client=subagent_client,
                     settings=self._settings,
+                    capability_catalog=self._capability_catalog,
                 )
                 capabilities.append(DelegationCapability(registry=registry, service=service))
         mcp_capability = self._resolve_mcp_capability(profile, approval_mcps=approval_mcps)

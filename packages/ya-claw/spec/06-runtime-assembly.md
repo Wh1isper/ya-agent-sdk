@@ -7,24 +7,32 @@ plane.
 
 ## Assembly Invariants
 
-1. A normal run resolves one enabled profile into an immutable `ResolvedProfile`.
-2. An async child run does not resolve the mutable current profile. It joins the
-   server-owned task/session/run linkage, validates the persisted
-   `SubagentPlanDescriptor`, and derives a child profile from that descriptor only.
-3. External run metadata cannot create child authority. `async_task` and
-   `async_task_wake` are stripped at the external run boundary.
-4. Workspace and sandbox authority comes from `WorkspaceProvider` and `Environment`,
-   not from capabilities.
-5. `capabilities=` is the sole runtime behavior-composition input to the SDK.
-6. A run record is committed before a runtime handle or queued event is published.
-7. SQL run input rows are committed before native enqueue; process-local ingress is not
-   a persistence boundary.
-8. Input admission, native delivery, application correlation, and every terminal run
-   transition serialize on the same database `runs` row. A process-local lock is only
-   an optimization.
-9. A committed `completed` status is irreversible. Notification, event projection,
-   async delivery, memory, or agency post-commit failures are retried or logged without
-   rewriting the run to `failed`.
+01. A normal run resolves one enabled profile into an immutable `ResolvedProfile`.
+02. An async child run does not resolve the mutable current profile. It joins the
+    server-owned task/session/run linkage, validates the persisted
+    `SubagentPlanDescriptor`, and derives a child profile from that descriptor only.
+03. External run metadata cannot create child authority. `async_task` and
+    `async_task_wake` are stripped at the external run boundary.
+04. Workspace and sandbox authority comes from `WorkspaceProvider` and `Environment`,
+    not from capabilities.
+05. Native `AgentSpec.capabilities` plus explicit host `capabilities=` are the sole
+    runtime behavior-composition inputs to the SDK.
+06. One process-wide capability plugin catalog snapshot is used by admission, root and
+    child plan resolution, retained-plan restoration, and runtime construction.
+07. Manifest grants are applied only to root profile specs before descriptor capture;
+    named children and self forks receive only their own explicit grants.
+08. Root descriptor admission performs a throwaway native static-plan construction with
+    `ClawAgentContext`, the process custom-type tuple, and fresh base host capabilities
+    before fingerprinting or persistence.
+09. A run record is committed before a runtime handle or queued event is published.
+10. SQL run input rows are committed before native enqueue; process-local ingress is not
+    a persistence boundary.
+11. Input admission, native delivery, application correlation, and every terminal run
+    transition serialize on the same database `runs` row. A process-local lock is only
+    an optimization.
+12. A committed `completed` status is irreversible. Notification, event projection,
+    async delivery, memory, or agency post-commit failures are retried or logged without
+    rewriting the run to `failed`.
 
 ## ResolvedProfile
 
@@ -64,6 +72,7 @@ sequenceDiagram
     participant COORD as RunCoordinator
     participant DESC as Descriptor validator
     participant PROF as Profile descriptor resolver
+    participant CAT as Process plugin catalog
     participant WP as WorkspaceProvider
     participant EF as EnvironmentFactory
     participant RB as ClawRuntimeBuilder
@@ -80,22 +89,36 @@ sequenceDiagram
         COORD->>PROF: validate full descriptor fingerprint
         PROF-->>COORD: immutable ResolvedProfile
     end
+    COORD->>CAT: reuse startup snapshot for spec and child validation
     COORD->>SQL: load relational parent workspace authority for async child
     COORD->>WP: resolve authoritative session/run workspace metadata
     WP-->>COORD: WorkspaceBinding
     COORD->>EF: build(binding, profile host policy)
     EF-->>COORD: Environment
-    COORD->>RB: build(spec, host policy, binding, environment, restore state)
-    RB->>SDK: create_agent(spec=..., capabilities=..., context_kwargs=...)
+    COORD->>RB: build(spec, host policy, catalog, binding, environment, restore state)
+    RB->>SDK: create_agent(spec=..., custom_capability_types=..., capabilities=...)
     SDK-->>COORD: AgentRuntime
 ```
 
-For normal runs, `profile_name` selects behavior only at admission. The accepted run owns a content-addressed descriptor copied from the native profile row in that transaction. Runtime never re-resolves the current catalog entry, and descriptor validation fails closed on missing or modified content. Memory runs use the same admission helper; async child runs retain their separate `SubagentPlanDescriptor` boundary.
+For normal runs, `profile_name` selects behavior only at admission. After manifest root
+grants are appended, admission calls the SDK's shared
+`validate_agent_spec_capabilities()` helper. It uses public `Agent.from_spec()` with a
+no-network test model, `ClawAgentContext`, and fresh static host capabilities, so plugin
+factory values, templates, and combined native ordering fail before fingerprinting and
+persistence. Runtime entry remains authoritative for Environment/resource contributions,
+durable delegation services, and other dynamic lifecycle state.
+
+The accepted run owns a content-addressed descriptor copied from the native profile row
+in that transaction. Runtime never re-resolves the current catalog entry, and descriptor
+validation fails closed on missing or modified content. Memory runs use the same
+admission helper; async child runs retain their separate `SubagentPlanDescriptor`
+boundary and the same SDK validator through `SubagentPlanResolver`.
 
 ## Native AgentSpec Preservation
 
-`ClawRuntimeBuilder` uses the SDK capability catalog to construct each serialized
-profile capability. There is no Claw-maintained name-to-type switch. Claw host
+`ClawRuntimeBuilder` passes the native resolved `AgentSpec` directly to Pydantic AI with
+the process snapshot's exact `custom_capability_types` tuple. There is no
+Claw-maintained name-to-type switch or manual plugin instantiation. Claw host
 capabilities are added explicitly and separately:
 
 - runtime foundation;
@@ -113,9 +136,10 @@ native and host-injected set together, so singleton collisions fail before persi
 Runtime consumes the same host-capability constructor; it does not independently append
 a second policy set after descriptor validation.
 
-The already-constructed capability leaves are removed from the copy passed to
-`Agent.from_spec` so they are not instantiated twice. All other native fields remain in
-the spec and are interpreted by Pydantic AI.
+Native declarative capability entries remain in the spec and are instantiated exactly
+once by Pydantic AI. Programmatic Claw host capabilities remain outside the spec. Native
+singleton and ordering validation therefore sees one combined construction without a
+Claw-specific clearing or reconstruction pass.
 
 Native instructions stay native. Claw workspace, source-kind, memory, schedule,
 heartbeat, workflow, and agency guidance is appended as additional instructions rather

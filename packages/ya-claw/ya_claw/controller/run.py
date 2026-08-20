@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from ya_agent_sdk.capabilities import ResolvedCapabilityPlugins
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from ya_claw.config import ClawSettings
@@ -72,12 +73,17 @@ async def _metadata_with_execution_profile_snapshot(
     session_record: SessionRecord,
     profile_name: str | None,
     run_metadata: dict[str, Any],
+    capability_plugins: ResolvedCapabilityPlugins | None,
 ) -> dict[str, Any]:
     if session_record.session_type == "async_task":
         return run_metadata
     if not isinstance(profile_name, str) or not profile_name.strip():
         raise ValueError("A resolvable execution profile is required at run admission")
-    descriptor = await capture_execution_profile_descriptor(db_session, profile_name)
+    descriptor = await capture_execution_profile_descriptor(
+        db_session,
+        profile_name,
+        capability_plugins=capability_plugins,
+    )
     return {
         **run_metadata,
         PROFILE_SNAPSHOT_METADATA_KEY: descriptor.model_dump(mode="json"),
@@ -100,6 +106,7 @@ class RunController:
             db_session,
             request,
             default_profile_name=settings.default_profile,
+            capability_plugins=settings.resolved_capability_plugins,
         )
         await db_session.commit()
         await db_session.refresh(run_record)
@@ -119,6 +126,7 @@ class RunController:
         trusted_metadata: bool = False,
         source_delivery_id: str | None = None,
         default_profile_name: str | None = None,
+        capability_plugins: ResolvedCapabilityPlugins | None = None,
     ) -> RunRecord:
         session_id = request.session_id
         if session_id is None:
@@ -198,6 +206,7 @@ class RunController:
             session_record=session_record,
             profile_name=effective_profile_name,
             run_metadata=run_metadata,
+            capability_plugins=capability_plugins,
         )
 
         sequence_no = await self._next_sequence_no(db_session, session_id)

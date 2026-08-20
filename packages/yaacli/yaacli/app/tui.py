@@ -53,6 +53,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Box, Frame, TextArea
 from pydantic import BaseModel, JsonValue, TypeAdapter
 from pydantic_ai import (
+    AgentSpec,
     BinaryContent,
     DeferredToolRequests,
     DeferredToolResults,
@@ -993,6 +994,8 @@ class TUIApp:
         """Build runtime resources under the lifecycle cleanup boundary."""
         logger.debug("Resolved terminal theme: %s (%s)", self._theme.variant, self._theme.source)
         mcp_config = self.config_manager.load_mcp_config()
+        capability_plugins = self.config_manager.load_capability_plugin_config()
+        capability_catalog = capability_plugins.catalog
         self._active_model_profile = get_startup_model_profile(self.config, self.config_manager.config_dir)
         sources = compile_runtime_sources(
             self.config,
@@ -1018,6 +1021,7 @@ class TUIApp:
                 profile=profile,
                 sources=sources,
                 retained_descriptors=retained_child_descriptors,
+                capability_catalog=capability_catalog,
             )
             main_manifest = build_main_runtime_manifest(
                 self.config,
@@ -1035,7 +1039,7 @@ class TUIApp:
                 agent_spec=build_runtime_agent_spec(
                     self.config,
                     profile=profile,
-                    sources=sources,
+                    capability_plugins=capability_plugins,
                 ),
                 main_plan_manifest=main_manifest,
                 child_plan_manifest=child_manifest,
@@ -1097,6 +1101,8 @@ class TUIApp:
                 durable_binding_ref=binding_ref,
                 durable_database_path=database_path,
                 subagent_deferred_resolver=_TUISubagentDeferredResolver(self),
+                agent_spec=AgentSpec.model_validate(descriptor.agent_spec),
+                capability_catalog=capability_catalog,
                 agent_name="yaacli_main_v2",
             )
 
