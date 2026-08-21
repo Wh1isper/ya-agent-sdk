@@ -51,7 +51,6 @@ from ya_agent_sdk.capabilities import (
     ToolApprovalCapability,
     ToolObservationCapability,
     ToolProxyCapability,
-    ToolRetryCapability,
     ToolTimeoutCapability,
     UserInteractionCapability,
     WebContentCapability,
@@ -464,7 +463,6 @@ def compile_child_plan_manifest(
             toolset_ids=frozenset(config.tools.need_approval_mcps),
         ),
         ToolObservationCapability(),
-        ToolRetryCapability(),
         ToolTimeoutCapability(),
     )
     catalog = capability_catalog if capability_catalog is not None else build_default_capability_catalog()
@@ -624,7 +622,6 @@ def create_tui_runtime(
                     toolset_ids=frozenset(config.tools.need_approval_mcps),
                 ),
                 ToolObservationCapability(),
-                ToolRetryCapability(),
                 ToolTimeoutCapability(),
             ),
             durable_database_path=durable_database_path,
@@ -673,7 +670,6 @@ def create_tui_runtime(
             toolset_ids=frozenset(config.tools.need_approval_mcps),
         ),
         ToolObservationCapability(),
-        ToolRetryCapability(),
         ToolTimeoutCapability(),
         GoalGuardCapability(),
     ])

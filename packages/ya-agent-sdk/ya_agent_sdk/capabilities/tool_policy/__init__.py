@@ -3,7 +3,6 @@
 from .policy import (
     ToolApprovalCapability,
     ToolObservationCapability,
-    ToolRetryCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
 )
@@ -11,7 +10,6 @@ from .policy import (
 __all__ = [
     "ToolApprovalCapability",
     "ToolObservationCapability",
-    "ToolRetryCapability",
     "ToolTimeoutCapability",
     "ToolVisibilityCapability",
 ]

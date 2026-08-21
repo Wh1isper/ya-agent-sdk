@@ -79,7 +79,6 @@ from ya_agent_sdk.capabilities import (
     ShellCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
-    ToolRetryCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
 )
@@ -93,7 +92,6 @@ runtime = create_agent(
         ToolVisibilityCapability(),
         ToolApprovalCapability(tools=frozenset({"shell_exec"})),
         ToolObservationCapability(),
-        ToolRetryCapability(),
         ToolTimeoutCapability(),
     ],
 )

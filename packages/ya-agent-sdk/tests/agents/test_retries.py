@@ -7,7 +7,7 @@ from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import ModelRetry, RunContext, UnexpectedModelBehavior
+from pydantic_ai import AgentSpec, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from pydantic_ai.messages import (
     ModelMessage,
@@ -19,11 +19,56 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
 from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import OverallRetryBudget
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
+
+
+async def test_create_agent_defaults_native_retry_budgets_to_context_config(tmp_path: Path) -> None:
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+    runtime = create_agent(
+        TestModel(),
+        env=env,
+        context_kwargs={"retry_config": {"tools": 7, "output": 6, "toolset": 5, "tool_proxy": 5}},
+    )
+
+    async with runtime:
+        assert runtime.agent._max_tool_retries == 7
+        assert runtime.agent._max_output_retries == 6
+
+
+async def test_create_agent_preserves_spec_retry_budgets(tmp_path: Path) -> None:
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+    runtime = create_agent(
+        TestModel(),
+        spec=AgentSpec(retries={"tools": 2, "output": 3}),
+        env=env,
+    )
+
+    async with runtime:
+        assert runtime.agent._max_tool_retries == 2
+        assert runtime.agent._max_output_retries == 3
+
+
+async def test_create_agent_explicit_retry_budgets_override_spec(tmp_path: Path) -> None:
+    env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+    runtime = create_agent(
+        TestModel(),
+        spec=AgentSpec(retries={"tools": 2, "output": 3}),
+        retries={"tools": 4, "output": 1},
+        env=env,
+    )
+
+    async with runtime:
+        assert runtime.agent._max_tool_retries == 4
+        assert runtime.agent._max_output_retries == 1
+
+
+def test_overall_retry_budget_defaults_to_five() -> None:
+    assert OverallRetryBudget().max_retries == 5
 
 
 class RetryAfterSuccessTool(BaseTool):

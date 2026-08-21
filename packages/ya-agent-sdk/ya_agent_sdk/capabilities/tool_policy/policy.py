@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import os
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from pydantic_ai import ApprovalRequired, CallDeferred, ModelRetry, RunContext
+from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.capabilities import (
     AbstractCapability,
     CapabilityOrdering,
@@ -22,6 +24,22 @@ from ya_agent_sdk.capabilities.foundation.deferred import SupportsDeferredOutput
 from ya_agent_sdk.context import AgentContext
 
 logger = get_logger(__name__)
+
+_DEFAULT_TOOL_TIMEOUT_SECONDS = 600.0
+_TOOL_TIMEOUT_ENV_VAR = "YA_AGENT_TOOL_TIMEOUT_SECONDS"
+
+
+def _default_tool_timeout_seconds() -> float:
+    value = os.getenv(_TOOL_TIMEOUT_ENV_VAR)
+    if value is None or not value.strip():
+        return _DEFAULT_TOOL_TIMEOUT_SECONDS
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise ValueError(f"{_TOOL_TIMEOUT_ENV_VAR} must be a positive finite number") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{_TOOL_TIMEOUT_ENV_VAR} must be a positive finite number")
+    return timeout
 
 
 @dataclass(kw_only=True)
@@ -93,12 +111,12 @@ class ToolApprovalCapability(SupportsDeferredOutput, AbstractCapability[AgentCon
 class ToolTimeoutCapability(AbstractCapability[AgentContext]):
     """Bound one validated function-tool execution attempt."""
 
-    timeout: float = 120.0
+    timeout: float = field(default_factory=_default_tool_timeout_seconds)
     id: str | None = "tool_timeout"
 
     def __post_init__(self) -> None:
-        if self.timeout <= 0:
-            raise ValueError("timeout must be positive")
+        if not math.isfinite(self.timeout) or self.timeout <= 0:
+            raise ValueError("timeout must be a positive finite number")
 
     async def wrap_tool_execute(
         self,
@@ -109,49 +127,19 @@ class ToolTimeoutCapability(AbstractCapability[AgentContext]):
         args: ValidatedToolArgs,
         handler: WrapToolExecuteHandler,
     ) -> Any:
-        timeout = tool_def.timeout or self.timeout
-        async with asyncio.timeout(timeout):
-            return await handler(args)
-
-
-@dataclass(kw_only=True)
-class ToolRetryCapability(AbstractCapability[AgentContext]):
-    """Retry transient non-native execution failures without swallowing control flow."""
-
-    max_attempts: int = 1
-    id: str | None = "tool_retry"
-
-    def __post_init__(self) -> None:
-        if self.max_attempts <= 0:
-            raise ValueError("max_attempts must be positive")
-
-    def get_ordering(self) -> CapabilityOrdering:
-        return CapabilityOrdering(wraps=(ToolTimeoutCapability,))
-
-    async def wrap_tool_execute(
-        self,
-        ctx: RunContext[AgentContext],
-        *,
-        call: ToolCallPart,
-        tool_def: ToolDefinition,
-        args: ValidatedToolArgs,
-        handler: WrapToolExecuteHandler,
-    ) -> Any:
-        for attempt in range(1, self.max_attempts + 1):
-            try:
+        timeout = min(tool_def.timeout, self.timeout) if tool_def.timeout is not None else self.timeout
+        timeout_scope = asyncio.timeout(timeout)
+        try:
+            async with timeout_scope:
                 return await handler(args)
-            except (ApprovalRequired, CallDeferred, ModelRetry):
+        except TimeoutError as exc:
+            if not timeout_scope.expired():
                 raise
-            except (OSError, TimeoutError):
-                if attempt >= self.max_attempts:
-                    raise
-                logger.warning(
-                    "Retrying transient tool execution tool=%s attempt=%d/%d",
-                    tool_def.name,
-                    attempt + 1,
-                    self.max_attempts,
-                )
-        raise AssertionError("unreachable")
+            raise ModelRetry(
+                f"Tool {tool_def.name!r} exceeded the execution timeout of {timeout:g} seconds. "
+                "The call was cancelled and may have produced partial side effects. Inspect current state "
+                "before retrying, or continue with another approach."
+            ) from exc
 
 
 @dataclass(kw_only=True)
@@ -161,7 +149,7 @@ class ToolObservationCapability(AbstractCapability[AgentContext]):
     id: str | None = "tool_observation"
 
     def get_ordering(self) -> CapabilityOrdering:
-        return CapabilityOrdering(wraps=(ToolRetryCapability, ToolTimeoutCapability))
+        return CapabilityOrdering(wraps=(ToolTimeoutCapability,))
 
     async def wrap_tool_execute(
         self,

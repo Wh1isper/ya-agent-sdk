@@ -179,9 +179,8 @@ final assembled Pydantic AI function-tool surface through independently useful l
 - `ToolApprovalCapability` for approval and deferred-call policy;
 - `ToolTimeoutCapability` for execution deadlines;
 - `ToolVisibilityCapability` for final host allow/deny, dynamic availability, and
-  main-agent-only enforcement;
-- `ToolObservationCapability` for host pre/post observation hooks; and
-- `ToolRetryCapability` for non-native execution retry accounting.
+  main-agent-only enforcement; and
+- `ToolObservationCapability` for host pre/post observation hooks.
 
 CodeAct eligibility remains trusted tool metadata consumed by `CodeActCapability`; it
 is not a policy capability by itself. Hosts select the independently useful policy
@@ -190,11 +189,11 @@ capabilities do not depend on a monolithic SDK `Toolset` for policy.
 
 The leaves use native capability hooks rather than a five-deep wrapper-toolset stack.
 Visibility filters the prepared definitions and rechecks the validated execution
-boundary; approval projects native approval requirements; observation, retry, and
-timeout use tool-execution hooks. Provider-native model tools remain under their native
-provider contract. Observation wraps one logical validated call, retry
-wraps its attempts, and timeout bounds each attempt. Only that three-leaf execution
-nesting needs `CapabilityOrdering` edges.
+boundary; approval projects native approval requirements; observation and timeout use
+tool-execution hooks. Provider-native model tools remain under their native provider
+contract. Observation wraps one logical validated call and timeout bounds the attempt.
+Only that two-leaf execution nesting needs a `CapabilityOrdering` edge. Timeout expiry
+raises native `ModelRetry`, so Pydantic AI owns retry accounting and model correction.
 
 Claw profile entries and explicit child capability lists define the coherent feature
 surface. `ToolVisibilityCapability` is final enforcement for dynamic host restrictions;

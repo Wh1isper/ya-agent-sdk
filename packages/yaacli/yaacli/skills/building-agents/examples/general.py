@@ -52,7 +52,6 @@ from ya_agent_sdk.capabilities import (
     TaskCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
-    ToolRetryCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
     UserInteractionCapability,
@@ -225,7 +224,6 @@ def build_delegation_capability() -> DelegationCapability:
         {"WebContentCapability": {}},
         {"NoteCapability": {}},
         {"ToolObservationCapability": {}},
-        {"ToolRetryCapability": {}},
         {"ToolTimeoutCapability": {}},
     ]
     researcher = resolver.resolve(
@@ -303,7 +301,6 @@ async def main() -> None:
             ToolVisibilityCapability(),
             ToolApprovalCapability(tools=frozenset({"shell_exec"})),
             ToolObservationCapability(),
-            ToolRetryCapability(),
             ToolTimeoutCapability(),
         ],
         model_cfg=ModelConfig(

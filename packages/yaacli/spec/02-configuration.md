@@ -439,8 +439,9 @@ YAACLI_OAUTH_REFRESH_ON_STARTUP
 
 Provider, OAuth, search, and SDK variables can also be placed in `.env`; they
 are consumed by their owning packages rather than mapped into `YaacliConfig`.
-The repository examples are `packages/yaacli/.env.example` and
-`yaacli/templates/env.example`.
+`YA_AGENT_TOOL_TIMEOUT_SECONDS` sets the generic tool-execution ceiling and defaults
+to 600 seconds; tool-owned shorter deadlines still apply. The repository examples are
+`packages/yaacli/.env.example` and `yaacli/templates/env.example`.
 
 ## Initialization and Operations
 

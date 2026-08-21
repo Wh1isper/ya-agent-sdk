@@ -44,17 +44,25 @@ See [Host-Owned Durable Sessions and Agent Segment Execution](05-capability-firs
 ## Model-Correction and Tool-Execution Budgets
 
 Native Pydantic AI tool/output correction limits are configured through
-`create_agent(retries=...)`.
+`create_agent(retries=...)`. When omitted, the active `AgentContext.retry_config`
+supplies five for both tools and output. Explicit `create_agent()` values override an
+`AgentSpec`; otherwise an explicit spec retry policy overrides the context default.
 
 `OverallRetryBudget` is an explicit capability that counts retry prompts cumulatively
-within one native run. It defaults to three when included through
+within one native run. It defaults to five when included through
 `RuntimeFoundationCapability`; hosts that compose foundation leaves directly must add
 or deliberately omit it themselves.
 
-`ToolRetryCapability` is a separate host-execution wrapper for configured transient
-exceptions. `ToolTimeoutCapability` bounds one validated execution attempt. Neither
-consumes the native model-correction budget. The SDK adapter-local Tool Proxy retry
-setting remains scoped to that implementation adapter.
+`ToolTimeoutCapability` bounds one validated execution attempt with a generic
+600-second ceiling by default. `YA_AGENT_TOOL_TIMEOUT_SECONDS` changes the default for
+newly constructed capability instances, explicit `timeout=` remains instance-local,
+and a tool definition may only shorten the effective deadline. Tools own stricter
+operation-specific timeout behavior. Generic ceiling expiry raises native `ModelRetry`
+with the tool name, effective deadline, cancellation state, and partial-side-effect
+warning. Pydantic AI accounts for it against the per-tool retry budget and returns the
+correction prompt to the model rather than blindly replaying the same call. The SDK
+adapter-local Toolset and Tool Proxy retry settings remain scoped to those adapters and
+also default to five through `RetryConfig`.
 
 `ModelRetry`, `ApprovalRequired`, and `CallDeferred` are Pydantic AI control flow and
 must propagate unchanged through SDK adapters and policy wrappers.
@@ -73,7 +81,7 @@ execution recovery:
 - accumulated usage survives recovered attempts.
 
 Per-call `stream_agent()` values override `ModelConfig` defaults. Transport and stream
-recovery do not consume model-correction or host-tool retry budgets.
+recovery do not consume model-correction budgets.
 
 SDK main and in-process child stream drivers use hook-aware graph advancement so
 Pydantic AI node lifecycle and pending-message behavior are preserved. A host must not

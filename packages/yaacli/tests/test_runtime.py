@@ -27,7 +27,6 @@ from ya_agent_sdk.capabilities import (
     ThinkingCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
-    ToolRetryCapability,
     ToolTimeoutCapability,
     UserInteractionCapability,
     build_default_capability_catalog,
@@ -549,7 +548,6 @@ def test_self_fork_native_grants_compose_with_host_policy_capabilities() -> None
         "TodoCapability",
         "ToolApprovalCapability",
         "ToolObservationCapability",
-        "ToolRetryCapability",
         "ToolTimeoutCapability",
     })
 
@@ -559,7 +557,6 @@ def test_self_fork_native_grants_compose_with_host_policy_capabilities() -> None
         host_capabilities=(
             ToolApprovalCapability(),
             ToolObservationCapability(),
-            ToolRetryCapability(),
             ToolTimeoutCapability(),
         ),
     )
@@ -574,7 +571,7 @@ def test_self_fork_native_grants_compose_with_host_policy_capabilities() -> None
     )
 
     assert plan.spec.route == "self"
-    assert len(plan.injected_policy_ids) == 4
+    assert len(plan.injected_policy_ids) == 3
 
 
 def test_runtime_defaults_to_no_process_local_subagents(tmp_path: Path) -> None:

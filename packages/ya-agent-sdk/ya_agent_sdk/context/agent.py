@@ -913,10 +913,10 @@ class StreamRecoveryPolicy(BaseModel):
 class RetryConfig(BaseModel):
     """SDK-wide model-correction retry limits.
 
-    The configuration is attached to :class:`AgentContext`, so SDK toolsets can
-    resolve the same effective policy at run time and subagent contexts inherit
-    it automatically. Explicit legacy retry arguments and toolset-local
-    ``max_retries`` values remain higher-priority compatibility overrides.
+    The configuration is attached to :class:`AgentContext`, so ``create_agent``
+    and SDK toolsets resolve the same effective policy at run time and subagent
+    contexts inherit it automatically. Explicit agent/spec retry settings and
+    toolset-local ``max_retries`` values take precedence.
     """
 
     model_config = {"extra": "forbid"}

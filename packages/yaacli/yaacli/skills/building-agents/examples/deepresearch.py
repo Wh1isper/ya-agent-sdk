@@ -62,7 +62,6 @@ from ya_agent_sdk.capabilities import (
     ShellCapability,
     TaskCapability,
     ToolObservationCapability,
-    ToolRetryCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
     WebContentCapability,
@@ -313,7 +312,6 @@ async def main() -> None:
             NoteCapability(),
             ToolVisibilityCapability(),
             ToolObservationCapability(),
-            ToolRetryCapability(),
             ToolTimeoutCapability(),
         ],
         model_cfg=ModelConfig(context_window=200_000, capabilities={ModelFeature.vision}),
@@ -329,7 +327,7 @@ async def main() -> None:
                 "(3) comprehensive report written to report.md with citations. "
                 "Provide a brief summary of key findings and the report file path."
             ),
-            max_retries=3,
+            max_retries=5,
         ),
     )
 

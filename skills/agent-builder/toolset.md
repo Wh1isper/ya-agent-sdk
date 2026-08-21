@@ -138,8 +138,7 @@ The SDK provides independent policy leaves:
 | --------------------------- | ------------------------------------------------------ |
 | `ToolVisibilityCapability`  | Final allow/deny and main-agent-only enforcement       |
 | `ToolApprovalCapability`    | Marks configured native tool definitions as unapproved |
-| `ToolObservationCapability` | Observes one logical call around retries/timeouts      |
-| `ToolRetryCapability`       | Retries configured transient execution failures        |
+| `ToolObservationCapability` | Observes one logical call around timeout execution     |
 | `ToolTimeoutCapability`     | Bounds one validated execution attempt                 |
 
 Compose them explicitly and in semantic order:
@@ -148,7 +147,6 @@ Compose them explicitly and in semantic order:
 from ya_agent_sdk.capabilities import (
     ToolApprovalCapability,
     ToolObservationCapability,
-    ToolRetryCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
 )
@@ -157,13 +155,19 @@ policies = [
     ToolVisibilityCapability(deny=frozenset({"dangerous_tool"})),
     ToolApprovalCapability(tools=frozenset({"shell_exec", "write"})),
     ToolObservationCapability(),
-    ToolRetryCapability(max_attempts=2),
-    ToolTimeoutCapability(timeout=60),
+    ToolTimeoutCapability(),
 ]
 ```
 
 Pydantic AI resolves the ordering declarations. Duplicate singleton capabilities fail
-runtime entry instead of silently selecting one.
+runtime entry instead of silently selecting one. The generic timeout ceiling defaults
+to 600 seconds and can be changed with `YA_AGENT_TOOL_TIMEOUT_SECONDS` or an explicit
+`ToolTimeoutCapability(timeout=...)`. A tool definition may shorten that ceiling;
+operation-specific short deadlines should remain owned and reported by the tool. If
+the generic ceiling expires, the capability raises `ModelRetry` with the tool name,
+effective deadline, cancellation state, and partial-side-effect warning. Pydantic AI
+accounts for the correction against its native per-tool retry budget; it does not
+blindly replay the same potentially side-effecting call.
 
 ### Control-flow exceptions
 
@@ -176,14 +180,15 @@ retry them as ordinary transient exceptions.
 Keep the failure domains separate:
 
 - `create_agent(retries=...)` configures native Pydantic AI tool/output correction
-  limits;
+  limits; when omitted, SDK `RetryConfig` supplies five for both;
 - `OverallRetryBudget(max_retries=...)` is the explicit cumulative run-wide
   correction ceiling and is included by `RuntimeFoundationCapability` with a default
-  of three;
-- `ToolRetryCapability(max_attempts=...)` retries transient host execution failures;
+  of five;
+- SDK toolset and tool-proxy adapters inherit their limits from `RetryConfig`, also
+  defaulting to five; and
 - `stream_agent()` recovery settings cover interrupted graph/model transport attempts.
 
-Transport recovery and host execution retries do not consume model-correction budgets.
+Transport and stream recovery do not consume model-correction budgets.
 
 ```python
 from ya_agent_sdk.agents.main import create_agent
@@ -192,7 +197,7 @@ from ya_agent_sdk.capabilities import OverallRetryBudget
 runtime = create_agent(
     "openai-chat:gpt-4o",
     retries={"tools": 5, "output": 5},
-    capabilities=[OverallRetryBudget(max_retries=3)],
+    capabilities=[OverallRetryBudget(max_retries=5)],
 )
 ```
 

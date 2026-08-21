@@ -17,7 +17,7 @@ from .history import ColdStartCapability, ContextCompactionCapability, HandoffCa
 class OverallRetryBudget(AbstractCapability[Any]):
     """Limit model-correction retries cumulatively within one native run."""
 
-    max_retries: int = 3
+    max_retries: int = 5
     retries_used: int = 0
     id: str | None = "overall_retry_budget"
 
