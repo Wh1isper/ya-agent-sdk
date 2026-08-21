@@ -1484,6 +1484,14 @@ class TUIApp:
         width = self._get_terminal_width()
         for event in events:
             event_type = str(event.get("type", ""))
+            if event_type == "RUN_STARTED":
+                # Tool render state is derived from one run's replay events. Reset it
+                # at run boundaries so canonical replay can reconstruct every call,
+                # including providers that reuse tool call IDs across turns.
+                self._tool_messages.clear()
+                self._printed_tool_calls.clear()
+                self._event_renderer.clear()
+                continue
             if is_subagent_event(event, agent_id_field="yaacliAgentId"):
                 if event_type == "TOOL_CALL_CHUNK":
                     tool_name = str(event.get("toolCallName") or event.get("tool_call_name") or "")
@@ -1667,6 +1675,11 @@ class TUIApp:
         """Rebuild visible output from compacted display-layer events."""
         self._reset_output_blocks()
         self._projected_steering_keys.clear()
+        # The transcript was cleared, so live tool state must not suppress the
+        # corresponding canonical replay events as already rendered.
+        self._tool_messages.clear()
+        self._printed_tool_calls.clear()
+        self._event_renderer.clear()
         self._streaming_text = ""
         self._streaming_text_buffer = None
         self._streaming_line_index = None
@@ -2245,6 +2258,11 @@ class TUIApp:
         except Exception as exc:
             self._append_error_output(exc)
             return False
+
+        # Durable acceptance is the user-visible receive boundary. Record the
+        # ordinary user-input projection only after persistence succeeds; the
+        # later EnqueuedMessagesEvent records the distinct injection boundary.
+        self._append_user_input(message)
 
         async def dispatch() -> None:
             try:
@@ -4228,7 +4246,13 @@ class TUIApp:
         logical_run_id = self._active_logical_run_id
         if store is None or logical_run_id is None:
             return
-        for item in store.list_inputs(logical_run_id, states=(InputState.applied,)):
+        # The native event is the application confirmation. Product state may
+        # still be enqueued until the durable capability's next reconciliation
+        # hook, so correlate both sides of that narrow projection window.
+        for item in store.list_inputs(
+            logical_run_id,
+            states=(InputState.enqueued, InputState.applied),
+        ):
             projection_key = _steering_projection_key(self._session_id, item.input_id)
             if (
                 item.order_index <= 0
@@ -4513,7 +4537,6 @@ class TUIApp:
                         self._detach_pending_attachment_placeholders()
                         input_area.buffer.reset()
                         self._add_prompt_history(guidance)
-                        self._append_system_output("Guidance sent to the active run.")
                 elif self._pending_attachments:
                     self._append_system_output(
                         "Images remain attached for the next agent turn; binary input cannot steer an active run."

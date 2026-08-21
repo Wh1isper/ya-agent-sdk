@@ -110,6 +110,37 @@ def test_tui_display_tool_result_uses_agui_timestamps_for_duration() -> None:
     assert abs(app._event_renderer.tracker.tool_calls["tool-1"].duration() - 1.5) < 0.01
 
 
+def test_tui_terminal_replay_reconstructs_tools_after_live_render() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    events = [
+        {"type": "RUN_STARTED", "runId": "run-1"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "tool-1",
+            "toolCallName": "shell",
+            "delta": '{"command":"printf done"}',
+            "timestamp": 1_000,
+        },
+        {
+            "type": "TOOL_CALL_RESULT",
+            "toolCallId": "tool-1",
+            "content": "done",
+            "timestamp": 2_500,
+        },
+    ]
+    app._handle_and_record_display_events(events)
+    live_output = list(app._output_lines)
+    replay = app._display_replay.snapshot()
+
+    app._restore_output_from_display_events(replay)
+
+    assert app._output_lines == live_output
+    assert sum("Calling:" in line and "shell" in line for line in app._output_lines) == 1
+    assert sum("Complete:" in line and "shell" in line for line in app._output_lines) == 1
+    assert app._tool_messages["tool-1"].content == "done"
+    assert "tool-1" in app._printed_tool_calls
+
+
 def test_tui_display_empty_reasoning_start_does_not_render_blank_block() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
 
@@ -218,7 +249,7 @@ def test_tui_suppresses_background_subagent_inline_progress_by_explicit_mode() -
     assert app._background_subagent_ids == set()
 
 
-def test_tui_projects_applied_user_steering_to_display_replay() -> None:
+def test_tui_projects_native_applied_steering_before_product_state_reconciliation() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
     app._active_logical_run_id = "run-1"
     app._display_adapter = AguiEventAdapter(
@@ -237,7 +268,7 @@ def test_tui_projects_applied_user_steering_to_display_replay() -> None:
             origin="user",
             priority=InputPriority.asap,
             content=["follow up\n" + "x" * 200],
-            state=InputState.applied,
+            state=InputState.enqueued,
             native_enqueue_id="enqueue-1",
             created_at=now,
             updated_at=now,
@@ -271,7 +302,10 @@ def test_tui_projects_applied_user_steering_to_display_replay() -> None:
     serialized_replay = json.dumps(app._display_replay.snapshot())
     assert "input-2" not in serialized_replay
     assert "enqueue-1" not in serialized_replay
-    store.list_inputs.assert_called_once_with("run-1", states=(InputState.applied,))
+    store.list_inputs.assert_called_once_with(
+        "run-1",
+        states=(InputState.enqueued, InputState.applied),
+    )
 
 
 def test_tui_replays_applied_steering_custom_event() -> None:

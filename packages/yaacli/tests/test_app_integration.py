@@ -3163,7 +3163,7 @@ async def test_tui_app_running_input_is_immediate_steering_without_queue(phase: 
     assert input_area.buffer.text == ""
     assert app._agent_task is None
     assert not hasattr(app, "_queued_prompts")
-    assert any("Guidance sent to the active run" in line for line in app._output_lines)
+    assert app._output_lines == []
 
 
 def test_tui_app_steering_acceptance_failure_retains_editor() -> None:

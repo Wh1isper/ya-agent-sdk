@@ -5,9 +5,13 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from prompt_toolkit.widgets import TextArea
+from pydantic_ai import Tool
+from pydantic_ai.capabilities import Toolset as NativeToolsetCapability
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
 from yaacli.app.state import TUIPhase
 from yaacli.app.tui import TUIApp
@@ -312,3 +316,112 @@ session_dir = "{session_dir}"
         assert app.phase is TUIPhase.IDLE
         assert app.runtime.ctx.goal_active is False
         assert any("[Goal] Stopped after an error at iteration 4" in line for line in app._output_lines)
+
+
+async def test_tui_terminal_replay_preserves_steering_pair_and_interleaved_tool_call(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        """
+[general]
+model = "test"
+
+[session]
+auto_restore = false
+session_dir = "{session_dir}"
+""".format(session_dir=(tmp_path / "sessions").as_posix()),
+        encoding="utf-8",
+    )
+    manager = ConfigManager(config_dir=config_dir)
+    config = manager.load()
+    model_started = asyncio.Event()
+    release_model = asyncio.Event()
+    final_messages: list[ModelMessage] = []
+    model_calls = 0
+    toolset = FunctionToolset[TUIContext](id="visible-tool")
+
+    async def show_value(value: str) -> str:
+        return f"visible tool result: {value}"
+
+    toolset.add_tool(Tool(show_value))
+
+    async def stream_response(
+        messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            model_started.set()
+            await release_model.wait()
+            yield {
+                0: DeltaToolCall(
+                    name="show_value",
+                    json_args='{"value":"kept"}',
+                    tool_call_id="visible-tool-call",
+                )
+            }
+            return
+        final_messages.extend(messages)
+        yield "completed with visible tool history"
+
+    def minimal_runtime_factory(*args: Any, **kwargs: Any):
+        del args
+        binding_ref = kwargs["durable_binding_ref"]
+        return create_agent(
+            FunctionModel(stream_function=stream_response),
+            capabilities=[
+                NativeToolsetCapability(toolset, id="visible-tool"),
+                DurableInboxPumpCapability(),
+            ],
+            context_type=TUIContext,
+            context_kwargs={"durable_binding_ref": binding_ref},
+            env=TUIEnvironment,
+            env_kwargs={"allowed_paths": [tmp_path], "default_path": tmp_path},
+            agent_name="yaacli_main_v2",
+        )
+
+    monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
+    app = TUIApp(config, manager, working_dir=tmp_path)
+
+    async with app:
+        assert await app._restore_startup_session() is False
+        assert app._launch_agent("run one visible tool") is True
+        task = app._agent_task
+        assert task is not None
+        await asyncio.wait_for(model_started.wait(), timeout=5)
+        logical_run_id = app._active_logical_run_id
+        assert logical_run_id is not None
+
+        input_area = TextArea(text="keep the tool visible", multiline=True)
+        app._submit_input(input_area.text, input_area)
+
+        assert input_area.buffer.text == ""
+        assert sum(line.endswith("keep the tool visible") for line in app._output_lines) == 1
+        release_model.set()
+        await asyncio.wait_for(task, timeout=5)
+
+        assert model_calls == 2
+        assert "keep the tool visible" in str(final_messages)
+        assert app._durable_store is not None
+        revision = app._durable_store.get_revision_for_run(logical_run_id)
+        assert revision is not None
+        assert revision.terminal["status"] == "completed"
+        replay = revision.display_projection
+        assert sum(event.get("type") == "CUSTOM" and event.get("name") == "yaacli.user_input" for event in replay) == 1
+        assert (
+            sum(event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_applied" for event in replay)
+            == 1
+        )
+        assert sum(event.get("type") == "TOOL_CALL_CHUNK" for event in replay) == 1
+        assert sum(event.get("type") == "TOOL_CALL_RESULT" for event in replay) == 1
+
+        output = "\n".join(app._output_lines)
+        assert sum(line.endswith("keep the tool visible") for line in app._output_lines) == 1
+        assert output.count("Guidance injected") == 1
+        assert sum("Calling:" in line and "show_value" in line for line in app._output_lines) == 1
+        assert sum("Complete:" in line and "show_value" in line for line in app._output_lines) == 1
+        assert "visible tool result: kept" in output

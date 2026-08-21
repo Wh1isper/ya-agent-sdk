@@ -91,10 +91,13 @@ ended.
 | `rejected` | Terminal fence or policy rejected unapplied input with a reason |
 
 The status bar counts non-initial user inputs in `accepted` or `enqueued`. It never
-renders their content and does not maintain another queue. When native application is
-confirmed, the transcript emits one bounded, single-line `Guidance injected` display
-projection. Replay stores only sanitized previews plus a derived projection digest; raw
-durable input IDs and native enqueue IDs remain private.
+renders their content and does not maintain another queue. After durable acceptance,
+the transcript records the guidance as an ordinary replayable `user_input` projection;
+this is the visible receive boundary and does not claim that the model has seen it.
+When native application is confirmed, the transcript emits one bounded, single-line
+`Guidance injected` display projection. Together these form the receive/application
+event pair. Replay stores only user-visible content, sanitized applied previews, and a
+derived projection digest; raw durable input IDs and native enqueue IDs remain private.
 
 ## Input Routing
 
