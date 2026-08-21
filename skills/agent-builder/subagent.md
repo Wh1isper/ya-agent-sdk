@@ -171,8 +171,17 @@ Return concise findings with exact file paths and unresolved questions.
 The host combines `description` and optional `instruction` for the parent-facing roster,
 uses the body as child instructions, resolves `inherit` against the active root
 configuration, and converts tool names into a visibility policy over an explicit child
-capability plan. Native `SubagentSpec` YAML/JSON remains the right input when users need custom capability
-serialization names, nesting, durability, or complete delegation policy.
+capability plan. For generic definitions, YAACLI materializes its current standard safe
+child template at this trusted boundary to preserve the common inherited-tool behavior
+without copying live parent capabilities. Configuration-dependent reconstructable
+features may enter that template; ambient MCP, arbitrary plugin grants, delegation, and
+host-only capabilities do not.
+
+When generic Markdown and a native document have the same basename, YAACLI treats the
+Markdown as the complete definition and ignores the native sidecar. It never combines a
+current generic definition with a historical native capability snapshot. Native
+`SubagentSpec` YAML/JSON remains the right standalone input when users need custom
+capability serialization names, nesting, durability, or complete delegation policy.
 
 ### `SubagentSpec`
 

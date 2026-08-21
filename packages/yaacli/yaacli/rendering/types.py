@@ -45,8 +45,6 @@ class ToolCallInfo(BaseModel):
     SPECIAL_TOOLS: frozenset[str] = frozenset({
         "edit",
         "thinking",
-        "to_do_read",
-        "to_do_write",
         "multi_edit",
     })
 

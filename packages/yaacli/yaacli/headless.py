@@ -39,7 +39,6 @@ from yaacli.durable.application import (
 from yaacli.durable.executor import LocalExecutionWorker
 from yaacli.durable.models import RuntimeDescriptor
 from yaacli.durable.sqlite import SQLiteSessionStore
-from yaacli.durable.subagents import SQLiteSubagentExecutionStore
 from yaacli.errors import safe_exception_str
 from yaacli.logging import get_logger
 from yaacli.model_profiles import (
@@ -222,19 +221,12 @@ async def _run_headless_prompt(
     child_deferred_resolver = _DenySubagentDeferredResolver()
     sink = HeadlessEventSink(ndjson_stream)
     database_path = config_manager.get_session_database_path()
-    with SQLiteSessionStore(database_path):
-        child_store = SQLiteSubagentExecutionStore(database_path)
-        try:
-            retained_child_descriptors = child_store.list_referenced_descriptors()
-        finally:
-            child_store.close_sync()
     subagent_mode = None if worker else SubagentExecutionMode.foreground
     child_manifest = (
         compile_child_plan_manifest(
             config,
             profile=effective_profile,
             sources=sources,
-            retained_descriptors=retained_child_descriptors,
             capability_catalog=capability_catalog,
         )
         if subagent_mode is not None

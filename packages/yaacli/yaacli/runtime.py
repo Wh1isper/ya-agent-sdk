@@ -52,8 +52,6 @@ from ya_agent_sdk.capabilities import (
     ShellCapability,
     SkillsCapability,
     TaskCapability,
-    ThinkingCapability,
-    TodoCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
     ToolProxyCapability,
@@ -74,7 +72,6 @@ from ya_agent_sdk.subagents import (
     SubagentDeferredResolver,
     SubagentExecutionMode,
     SubagentExecutionService,
-    SubagentPlanDescriptor,
     SubagentPlanResolver,
     SubagentRegistry,
     SubagentSpec,
@@ -95,6 +92,7 @@ from yaacli.durable.subagents import (
     DurableSubagentInboxCapability,
     LocalProcessorSubagentExecutionHost,
     LocalSubagentDriver,
+    SQLiteRetainedSubagentPlanProvider,
     SQLiteSubagentExecutionStore,
 )
 from yaacli.environment import TUIEnvironment
@@ -406,15 +404,14 @@ def restore_main_runtime_manifest(
 
 
 def runtime_child_plan_manifest(runtime: AgentRuntime[Any, Any, Any]) -> ChildPlanManifest:
-    """Read the exact active and retained child plans from an assembled runtime."""
+    """Read the exact active child plans from an assembled runtime."""
     for capability in runtime.capabilities:
         if not isinstance(capability, DelegationCapability):
             continue
-        active_routes = {plan.spec.route: plan.descriptor_id for plan in capability.registry.list()}
-        descriptors = tuple(plan.to_descriptor() for plan in capability.registry.list_registered())
+        active_plans = capability.registry.list()
         return ChildPlanManifest(
-            active_routes=active_routes,
-            descriptors=descriptors,
+            active_routes={plan.spec.route: plan.descriptor_id for plan in active_plans},
+            descriptors=tuple(plan.to_descriptor() for plan in active_plans),
         )
     return ChildPlanManifest()
 
@@ -428,7 +425,15 @@ def compile_runtime_sources(
     """Read mutable runtime source files exactly once before worker launch."""
     return RuntimeSourceSnapshot(
         system_prompt=_load_system_prompt(config),
-        subagent_specs=(_compile_subagent_specs(config.subagents, config_dir=config_dir) if include_subagents else ()),
+        subagent_specs=(
+            _compile_subagent_specs(
+                config.subagents,
+                config_dir=config_dir,
+                enable_codeact=config.tools.enable_codeact,
+            )
+            if include_subagents
+            else ()
+        ),
     )
 
 
@@ -594,9 +599,13 @@ def _compile_subagent_specs(
     subagents_config: SubagentsConfig,
     *,
     config_dir: Path,
+    enable_codeact: bool,
 ) -> tuple[SubagentSpec, ...]:
     """Load portable specs from supported files and apply explicit overrides."""
-    loaded = load_subagent_specs(config_dir / "subagents")
+    loaded = load_subagent_specs(
+        config_dir / "subagents",
+        markdown_capabilities=_standard_child_capability_specs(enable_codeact=enable_codeact),
+    )
     disabled = set(subagents_config.disabled)
     compiled: list[SubagentSpec] = []
     for route, spec in sorted(loaded.items()):
@@ -649,16 +658,15 @@ def _build_delegation_capability(
         host_capabilities=host_capabilities,
         restart_durable=False,
     )
-    plans_by_id = {descriptor.descriptor_id: resolver.restore(descriptor) for descriptor in manifest.descriptors}
-    active_plans = tuple(plans_by_id[descriptor_id] for _route, descriptor_id in sorted(manifest.active_routes.items()))
+    descriptors_by_id = {descriptor.descriptor_id: descriptor for descriptor in manifest.descriptors}
+    active_plans = tuple(
+        resolver.restore(descriptors_by_id[descriptor_id])
+        for _route, descriptor_id in sorted(manifest.active_routes.items())
+    )
     store = SQLiteSubagentExecutionStore(durable_database_path)
     try:
         registry = SubagentRegistry(active_plans)
-        active_ids = set(manifest.active_routes.values())
-        for descriptor in manifest.descriptors:
-            if descriptor.descriptor_id not in active_ids:
-                registry.register_retained(plans_by_id[descriptor.descriptor_id])
-        for plan in registry.list_registered():
+        for plan in active_plans:
             store.put_descriptor(plan)
         driver = LocalSubagentDriver(
             store=store,
@@ -673,6 +681,7 @@ def _build_delegation_capability(
             driver,
             completion_delivery=DurableSubagentCompletionDelivery(durable_binding_ref),
             deferred_resolver=deferred_resolver,
+            retained_plan_provider=SQLiteRetainedSubagentPlanProvider(store, resolver),
             execution_host=LocalProcessorSubagentExecutionHost(),
         )
         return DelegationCapability(
@@ -685,8 +694,8 @@ def _build_delegation_capability(
         raise
 
 
-def _self_fork_capability_specs(*, enable_codeact: bool) -> list[dict[str, Any]]:
-    """Return self-fork native feature grants without host-injected policy duplicates."""
+def _standard_child_capability_specs(*, enable_codeact: bool) -> list[dict[str, Any]]:
+    """Materialize YAACLI's standard safe child feature grants."""
     capability_specs: list[dict[str, Any]] = [
         {"RuntimeFoundationCapability": {}},
         {"MediaReadCapability": {}},
@@ -697,8 +706,6 @@ def _self_fork_capability_specs(*, enable_codeact: bool) -> list[dict[str, Any]]
         {"WebContentCapability": {}},
         {"TaskCapability": {}},
         {"NoteCapability": {}},
-        {"ThinkingCapability": {}},
-        {"TodoCapability": {}},
     ]
     if enable_codeact:
         capability_specs.append({"CodeActCapability": {}})
@@ -710,10 +717,9 @@ def compile_child_plan_manifest(
     *,
     profile: ResolvedModelProfile | None,
     sources: RuntimeSourceSnapshot,
-    retained_descriptors: Sequence[SubagentPlanDescriptor] = (),
     capability_catalog: CapabilityCatalog | None = None,
 ) -> ChildPlanManifest:
-    """Compile exact active child plans and every retained referenced plan."""
+    """Compile the exact active child plans required by a new root runtime."""
     active_model = profile.model if profile is not None else config.general.model
     active_settings = profile.model_settings if profile is not None else config.general.model_settings
     active_model_cfg = profile.model_cfg if profile is not None else config.general.model_cfg
@@ -730,7 +736,7 @@ def compile_child_plan_manifest(
                 part.strip() for part in (sources.system_prompt, active_instructions or "") if part.strip()
             ),
             "metadata": {YAACLI_MODEL_CFG_METADATA_KEY: model_cfg.model_dump(mode="json")},
-            "capabilities": _self_fork_capability_specs(
+            "capabilities": _standard_child_capability_specs(
                 enable_codeact=config.tools.enable_codeact,
             ),
         }),
@@ -766,18 +772,9 @@ def compile_child_plan_manifest(
     active_plans = [resolver.resolve(spec) for spec in child_specs]
     if not any(plan.spec.route == "self" for plan in active_plans):
         active_plans.append(resolver.resolve_self(self_fork_policy))
-    active_routes = {plan.spec.route: plan.descriptor_id for plan in active_plans}
-    descriptors_by_id = {plan.descriptor_id: plan.to_descriptor() for plan in active_plans}
-    for descriptor in retained_descriptors:
-        descriptors_by_id.setdefault(descriptor.descriptor_id, descriptor)
-    active_ids = {plan.descriptor_id for plan in active_plans}
-    ordered_descriptors = (
-        *(plan.to_descriptor() for plan in active_plans),
-        *(descriptors_by_id[descriptor_id] for descriptor_id in sorted(descriptors_by_id.keys() - active_ids)),
-    )
     return ChildPlanManifest(
-        active_routes=active_routes,
-        descriptors=ordered_descriptors,
+        active_routes={plan.spec.route: plan.descriptor_id for plan in active_plans},
+        descriptors=tuple(plan.to_descriptor() for plan in active_plans),
     )
 
 
@@ -878,8 +875,6 @@ def create_tui_runtime(
         WebContentCapability(),
         TaskCapability(),
         NoteCapability(),
-        ThinkingCapability(),
-        TodoCapability(),
     ]
     if durable_binding_ref is not None:
         capabilities.insert(1, DurableInboxPumpCapability())

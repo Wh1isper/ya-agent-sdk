@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import httpx2
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import (
@@ -424,12 +425,12 @@ async def test_stream_transport_resume_budget_exhausts_independently(tmp_path: P
     async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
         nonlocal calls
         calls += 1
-        raise httpx.RemoteProtocolError("incomplete chunked read")
+        raise httpx2.RemoteProtocolError("incomplete chunked read")
         yield  # pragma: no cover
 
     runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
 
-    with pytest.raises(httpx.RemoteProtocolError, match="incomplete chunked read"):
+    with pytest.raises(httpx2.RemoteProtocolError, match="incomplete chunked read"):
         async with stream_agent(
             runtime,
             "start task",
@@ -512,11 +513,11 @@ async def test_stream_event_hook_transport_error_uses_execution_budget(tmp_path:
         yield "model event"
 
     async def failing_event_hook(_event_ctx: Any) -> None:
-        raise httpx.RemoteProtocolError("telemetry endpoint disconnected")
+        raise httpx2.RemoteProtocolError("telemetry endpoint disconnected")
 
     runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
 
-    with pytest.raises(httpx.RemoteProtocolError, match="telemetry endpoint disconnected"):
+    with pytest.raises(httpx2.RemoteProtocolError, match="telemetry endpoint disconnected"):
         async with stream_agent(
             runtime,
             "start task",

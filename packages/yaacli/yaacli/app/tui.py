@@ -1017,11 +1017,6 @@ class TUIApp:
         self._runtime_sources = sources
         database_path = self.config_manager.get_session_database_path()
         self._durable_store = SQLiteSessionStore(database_path)
-        child_store = SQLiteSubagentExecutionStore(database_path)
-        try:
-            retained_child_descriptors = child_store.list_referenced_descriptors()
-        finally:
-            child_store.close_sync()
 
         configured_profiles = build_model_profiles(self.config)
         runtime_profiles: list[ResolvedModelProfile | None] = [*configured_profiles] or [None]
@@ -1032,7 +1027,6 @@ class TUIApp:
                 self.config,
                 profile=profile,
                 sources=sources,
-                retained_descriptors=retained_child_descriptors,
                 capability_catalog=capability_catalog,
             )
             main_manifest = build_main_runtime_manifest(

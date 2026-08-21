@@ -123,7 +123,7 @@ Each feature family is migrated bottom-up:
 - shell tools, logical-stream background completion, and request-only process status;
 - web search/content and web preset;
 - document conversion and media reading;
-- task, note, optional todo, thinking, and user interaction;
+- task, note, thinking, and user interaction;
 - handoff and request-envelope file inspection;
 - Skills, manager-backed Tool Proxy, MCP, CodeAct, and delegation;
 - native Pydantic AI Tool Search adoption;

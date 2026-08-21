@@ -12,11 +12,9 @@ from ya_agent_sdk.toolsets.core.enhance.task import (
     TaskUpdateTool,
 )
 from ya_agent_sdk.toolsets.core.enhance.thinking import ThinkingTool
-from ya_agent_sdk.toolsets.core.enhance.todo import TodoItem, TodoReadTool, TodoWriteTool
 
 thinking_tools: list[type[BaseTool]] = [ThinkingTool]
 note_tools: list[type[BaseTool]] = [NoteTool, NoteGetTool]
-todo_tools: list[type[BaseTool]] = [TodoReadTool, TodoWriteTool]
 task_tools: list[type[BaseTool]] = [
     TaskCreateTool,
     TaskGetTool,
@@ -26,8 +24,6 @@ task_tools: list[type[BaseTool]] = [
 
 tools: list[type[BaseTool]] = [
     # ThinkingTool,  # Disable by default via interleaved thinking
-    # TodoReadTool,
-    # TodoWriteTool, # Prefer task tools over individual todo tools
     TaskCreateTool,
     TaskGetTool,
     TaskUpdateTool,
@@ -44,9 +40,6 @@ __all__ = [
     "TaskListTool",
     "TaskUpdateTool",
     "ThinkingTool",
-    "TodoItem",
-    "TodoReadTool",
-    "TodoWriteTool",
     "note_tools",
     "tools",
 ]

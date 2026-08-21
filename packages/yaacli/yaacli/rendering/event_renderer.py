@@ -130,15 +130,11 @@ class EventRenderer:
     ) -> str:
         """Render completed tool call.
 
-        Special tools (edit, thinking, to_do) use Panel format.
+        Special tools (edit and thinking) use Panel format.
         Normal tools use inline Text format for cleaner display.
         """
         render_width = width or 120
-        if tool_message.name in {
-            "thinking",
-            "to_do_read",
-            "to_do_write",
-        }:
+        if tool_message.name == "thinking":
             panel = tool_message.to_special_panel(code_theme=self._code_theme)
             return self._renderer.render(panel, width=render_width)
         else:

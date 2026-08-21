@@ -13,7 +13,7 @@ from pydantic_ai.providers import Provider, infer_provider
 
 from ya_agent_sdk.agents.models.gateway import infer_model as infer_gateway_model
 from ya_agent_sdk.agents.models.gateway import normalize_legacy_provider_alias
-from ya_agent_sdk.agents.models.utils import create_async_http_client
+from ya_agent_sdk.agents.models.utils import create_owned_httpx2_provider
 
 __all__ = ["Model", "infer_model"]
 
@@ -24,29 +24,35 @@ _OPENAI_PROVIDER_ERROR = (
 )
 
 _OPENAI_RESPONSES_WEBSOCKET_PREFIXES = ("openai-responses-rs:", "openai-responses-ws:")
-_HTTPX_RETRY_PROVIDER_NAMES = frozenset({
-    "alibaba",
-    "anthropic",
-    "azure",
-    "cerebras",
-    "deepseek",
-    "fireworks",
-    "github",
-    "google",
-    "google-cloud",
-    "heroku",
-    "litellm",
-    "moonshotai",
-    "nebius",
-    "ollama",
-    "openai-chat",
-    "openai-responses",
-    "openrouter",
-    "ovhcloud",
-    "sambanova",
-    "together",
-    "vercel",
-}) | frozenset(get_args(OpenAIChatCompatibleProvider.__value__))
+_HTTPX_RETRY_PROVIDER_NAMES = (
+    frozenset({
+        "alibaba",
+        "anthropic",
+        "azure",
+        "cerebras",
+        "deepseek",
+        "fireworks",
+        "google",
+        "google-cloud",
+        "heroku",
+        "litellm",
+        "moonshotai",
+        "nebius",
+        "ollama",
+        "openai-chat",
+        "openai-responses",
+        "openrouter",
+        "ovhcloud",
+        "sambanova",
+        "together",
+        "vercel",
+    })
+    | frozenset(get_args(OpenAIChatCompatibleProvider.__value__))
+) - {
+    # GitHubProvider still requires legacy HTTPX in Pydantic AI 2.33.0 and
+    # rejects an HTTPX2 replacement when its provider context is re-entered.
+    "github"
+}
 
 
 def _raise_for_ambiguous_openai_provider(model: str) -> None:
@@ -106,16 +112,17 @@ def _retrying_provider_factory_for_model(model: str) -> Callable[[str], Provider
 
 
 def _infer_retrying_provider(provider_name: str) -> Provider[Any]:
-    provider_kwargs: dict[str, Any] = {"http_client": create_async_http_client()}
     if provider_name == "google-cloud":
-        return _build_google_cloud_provider(provider_kwargs)
+        from pydantic_ai.providers.google_cloud import GoogleCloudProvider
+
+        return create_owned_httpx2_provider(lambda http_client: GoogleCloudProvider(http_client=http_client))
 
     from pydantic_ai.providers import infer_provider_class
 
-    return infer_provider_class(provider_name)(**provider_kwargs)
+    provider_class = infer_provider_class(provider_name)
 
+    def build_provider(http_client: Any) -> Provider[Any]:
+        provider_kwargs: dict[str, Any] = {"http_client": http_client}
+        return provider_class(**provider_kwargs)
 
-def _build_google_cloud_provider(provider_kwargs: dict[str, Any]) -> Provider[Any]:
-    from pydantic_ai.providers.google_cloud import GoogleCloudProvider
-
-    return GoogleCloudProvider(**provider_kwargs)
+    return create_owned_httpx2_provider(build_provider)

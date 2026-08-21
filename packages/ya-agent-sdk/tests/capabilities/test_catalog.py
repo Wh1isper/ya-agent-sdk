@@ -9,6 +9,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from ya_agent_sdk.capabilities import (
     CapabilityTypeProvenance,
     build_capability_catalog,
+    build_default_capability_catalog,
     discover_capability_types,
 )
 
@@ -46,6 +47,14 @@ class InvalidSchemaCapability(AbstractCapability[Any]):
     @classmethod
     def from_spec(cls, value: MissingSchemaType) -> InvalidSchemaCapability:  # type: ignore[name-defined]  # noqa: F821
         return cls()
+
+
+def test_default_catalog_exposes_tasks_without_the_removed_todo_capability() -> None:
+    catalog = build_default_capability_catalog()
+
+    assert "TaskCapability" in catalog
+    assert "ThinkingCapability" in catalog
+    assert "TodoCapability" not in catalog
 
 
 class FakeEntryPoint:

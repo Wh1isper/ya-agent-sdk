@@ -15,7 +15,6 @@ from yaacli.rendering.tool_panels import (
     create_default_panel,
     create_edit_panel,
     create_thinking_panel,
-    create_todo_panel,
     format_args_for_display,
     format_output_for_display,
     generate_unified_diff,
@@ -100,10 +99,8 @@ class ToolMessage(BaseModel):
         return format_output_for_display(self.content, max_lines, max_line_length)
 
     def to_special_panel(self, code_theme: str = "monokai") -> Panel:
-        """Create special panel for to_do, thinking, and edit tools."""
-        if self.name in ["to_do_read", "to_do_write"]:
-            return create_todo_panel(self.name, self.content)
-        elif self.name == "thinking":
+        """Create a special panel for thinking and edit tools."""
+        if self.name == "thinking":
             return create_thinking_panel(self.args, code_theme)
         elif self.name in ["edit", "multi_edit"]:
             return create_edit_panel(self.name, self.args, self.content, code_theme)

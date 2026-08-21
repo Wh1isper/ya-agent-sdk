@@ -1,5 +1,6 @@
 """Tests for gateway model inference helpers."""
 
+import httpx2
 import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from ya_agent_sdk.agents.models.gateway import (
@@ -98,6 +99,65 @@ def test_infer_gateway_rejects_openai_provider_aliases(provider_prefix: str, mon
 
     with pytest.raises(ValueError, match=r"openai-chat.*openai-responses"):
         infer_model("gateway", f"{provider_prefix}:gpt-4o")
+
+
+def test_infer_gateway_anthropic_uses_httpx2_client(monkeypatch) -> None:
+    """Anthropic 1.x gateways must receive an HTTPX2 client."""
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
+
+    model = infer_model("gateway", "anthropic:claude-sonnet-4")
+
+    assert isinstance(model.provider.client._client, httpx2.AsyncClient)
+
+
+@pytest.mark.asyncio
+async def test_infer_gateway_anthropic_preserves_bearer_auth_and_client_lifecycle(monkeypatch) -> None:
+    """Anthropic gateways keep bearer-only auth and own SDK-created HTTPX2 clients."""
+    seen_headers: list[httpx2.Headers] = []
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        seen_headers.append(request.headers)
+        return httpx2.Response(
+            200,
+            request=request,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "model": "claude-sonnet-4",
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    def create_http_client(**_kwargs) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+
+    monkeypatch.setattr("ya_agent_sdk.agents.models.gateway.create_async_http_client", create_http_client)
+    monkeypatch.setenv("GATEWAY_API_KEY", "test-key")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://example.com/v1")
+    model = infer_model("gateway", "anthropic:claude-sonnet-4")
+    first_client = model.provider.client._client
+
+    async with model:
+        await model.provider.client.messages.create(
+            model="claude-sonnet-4",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+    assert seen_headers[0]["Authorization"] == "Bearer test-key"
+    assert "x-api-key" not in seen_headers[0]
+    assert first_client.is_closed is True
+
+    async with model:
+        second_client = model.provider.client._client
+        assert second_client is not first_client
+        assert second_client.is_closed is False
+    assert second_client.is_closed is True
 
 
 def test_infer_gateway_uses_google_provider_for_google(monkeypatch) -> None:

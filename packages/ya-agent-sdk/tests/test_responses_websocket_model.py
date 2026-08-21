@@ -5,6 +5,7 @@ import json
 from contextlib import asynccontextmanager
 
 import httpx
+import httpx2
 import pytest
 from openai import AsyncOpenAI
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
@@ -16,11 +17,38 @@ from ya_agent_sdk.agents.models.websocket import (
     DEFAULT_WEBSOCKET_BETA,
     DEFAULT_WEBSOCKET_MAX_SIZE,
     WebsocketResponsesModel,
+    _is_retryable_websocket_request_error,
     _WebsocketResponseStream,
     build_openai_responses_websocket_model,
+    is_recoverable_websocket_error,
     responses_websocket_url,
 )
 from ya_agent_sdk.presets import OPENAI_RESPONSES_PRO
+
+
+@pytest.mark.parametrize("error_type", [httpx.RemoteProtocolError, httpx2.RemoteProtocolError])
+def test_websocket_retry_classification_supports_both_httpx_families(error_type) -> None:
+    error = error_type("incomplete response body")
+
+    assert is_recoverable_websocket_error(error) is True
+    assert _is_retryable_websocket_request_error(error, ModelRequestRetryOptions()) is True
+
+
+@pytest.mark.asyncio
+async def test_websocket_model_owned_httpx2_client_closes_and_recreates(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    model = build_openai_responses_websocket_model("gpt-5")
+    first_client = model.provider.client._client
+
+    async with model:
+        assert first_client.is_closed is False
+    assert first_client.is_closed is True
+
+    async with model:
+        second_client = model.provider.client._client
+        assert second_client is not first_client
+        assert second_client.is_closed is False
+    assert second_client.is_closed is True
 
 
 def test_responses_websocket_url() -> None:
@@ -33,15 +61,15 @@ def test_responses_websocket_url() -> None:
 async def test_openai_responses_pro_preset_reaches_http_request_body() -> None:
     captured_body: dict[str, object] = {}
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
         captured_body.update(json.loads(request.content))
-        return httpx.Response(
+        return httpx2.Response(
             400,
             request=request,
             json={"error": {"message": "stop after capture", "type": "test_error"}},
         )
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as http_client:
         client = AsyncOpenAI(api_key="test-key", http_client=http_client)
         model = OpenAIResponsesModel(
             "gpt-5.6",
@@ -62,15 +90,15 @@ async def test_openai_responses_pro_preset_reaches_http_request_body() -> None:
 async def test_openai_responses_pro_preset_omits_mode_for_unsupported_http_model() -> None:
     captured_body: dict[str, object] = {}
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx2.Request) -> httpx2.Response:
         captured_body.update(json.loads(request.content))
-        return httpx.Response(
+        return httpx2.Response(
             400,
             request=request,
             json={"error": {"message": "stop after capture", "type": "test_error"}},
         )
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as http_client:
         client = AsyncOpenAI(api_key="test-key", http_client=http_client)
         model = OpenAIResponsesModel(
             "gpt-5.5",

@@ -116,18 +116,6 @@ class ThinkingCapability(AbstractCapability[AgentContext]):
 
 
 @dataclass(kw_only=True)
-class TodoCapability(AbstractCapability[AgentContext]):
-    """Own the lightweight todo workflow."""
-
-    id: str | None = "todo"
-
-    def get_toolset(self) -> AbstractToolset[AgentContext]:
-        from ya_agent_sdk.toolsets.core.enhance import todo_tools
-
-        return _adapter(todo_tools, self.id or "todo")
-
-
-@dataclass(kw_only=True)
 class UserInteractionCapability(SupportsDeferredOutput, AbstractCapability[AgentContext]):
     """Own structured deferred user questions."""
 

@@ -90,7 +90,6 @@ filesystem or network scans do not run independently from multiple prompt paths.
 | `TaskCapability` | create/get/list/update task tools and task workflow guidance | context-owned `TaskManager` |
 | `NoteCapability` | note read/write/delete tools and note guidance | context-owned `NoteManager` |
 | `ThinkingCapability` | optional explicit thinking tool | no durable state |
-| `TodoCapability` | optional todo read/write workflow distinct from dependency-aware tasks | context-owned todo store when enabled |
 | `UserInteractionCapability` | `ask_user_question`, deferred interaction guidance, main-agent-only enforcement | host resolves Pydantic AI deferred calls |
 | `HandoffCapability` | handoff tool, history transition, applied run-input restoration, file-inspection transfer, guidance | resumable handoff state and `RunInputLedger` |
 | `DelegationCapability` | model-facing spawn/resume/steer/cancel/wait/list operations and registry-backed roster guidance | public `SubagentRegistry` and `SubagentExecutionService`; shared `ActiveRunRegistry`; host driver/store |

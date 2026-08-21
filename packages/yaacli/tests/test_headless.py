@@ -7,12 +7,24 @@ from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
+from pydantic_ai import AgentSpec
 from pydantic_ai.models.test import TestModel
 from ya_agent_sdk.agents.main import create_agent
-from ya_agent_sdk.subagents import SubagentExecutionMode
+from ya_agent_sdk.capabilities import build_default_capability_catalog
+from ya_agent_sdk.subagents import (
+    SubagentDurability,
+    SubagentExecutionMode,
+    SubagentExecutionRecord,
+    SubagentExecutionState,
+    SubagentInputState,
+    SubagentPlanResolver,
+    SubagentSpec,
+)
 from yaacli.config import ConfigManager
 from yaacli.durable.capabilities import DurableInboxPumpCapability
+from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.sqlite import SQLiteSessionStore
+from yaacli.durable.subagents import SQLiteSubagentExecutionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.errors import safe_exception_str
 from yaacli.headless import HeadlessEventSink, _run_headless_prompt
@@ -34,6 +46,47 @@ session_dir = "{session_dir}"
         encoding="utf-8",
     )
     return ConfigManager(config_dir=config_dir)
+
+
+async def _seed_terminal_child_descriptor(manager: ConfigManager, tmp_path: Path) -> str:
+    resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        restart_durable=False,
+    )
+    plan = resolver.resolve(
+        SubagentSpec(
+            route="legacy-helper",
+            durability=SubagentDurability.process,
+            agent=AgentSpec(name="legacy-helper", instructions="historical plan"),
+        )
+    )
+    database_path = manager.get_session_database_path()
+    product_store = SQLiteSessionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="legacy-owner")
+    child_store = SQLiteSubagentExecutionStore(database_path)
+    child_store.put_descriptor(plan)
+    await child_store.create(
+        SubagentExecutionRecord(
+            root_execution_id="legacy-execution",
+            execution_id="legacy-execution",
+            owner_scope_id="legacy-owner",
+            idempotency_key="legacy-execution",
+            descriptor_id=plan.descriptor_id,
+            plan_fingerprint=plan.fingerprint,
+            route=plan.spec.route,
+            mode=SubagentExecutionMode.background,
+            state=SubagentExecutionState.succeeded,
+            input_state=SubagentInputState.applied,
+            parent_agent_id="main",
+            parent_logical_run_id="parent-run",
+            prompt="historical work",
+            output="done",
+        )
+    )
+    child_store.close_sync()
+    product_store.close()
+    return plan.descriptor_id
 
 
 def _minimal_runtime_factory(tmp_path: Path, calls: list[dict[str, object]]):
@@ -98,6 +151,7 @@ async def test_headless_testmodel_turn_commits_before_terminal_event(
 ) -> None:
     manager = _manager(tmp_path)
     config = manager.load()
+    retained_descriptor_id = await _seed_terminal_child_descriptor(manager, tmp_path)
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         "yaacli.headless.create_tui_runtime",
@@ -126,8 +180,16 @@ async def test_headless_testmodel_turn_commits_before_terminal_event(
     assert result.output_text == "durable headless answer"
     assert calls[0]["subagent_default_mode"] is SubagentExecutionMode.foreground
     assert isinstance(calls[0]["system_prompt"], str)
-    assert calls[0]["child_plan_manifest"] is not None
+    child_manifest = calls[0]["child_plan_manifest"]
+    assert isinstance(child_manifest, ChildPlanManifest)
+    assert retained_descriptor_id not in {descriptor.descriptor_id for descriptor in child_manifest.descriptors}
     assert calls[0]["subagent_deferred_resolver"] is not None
+
+    retained_store = SQLiteSubagentExecutionStore(manager.get_session_database_path())
+    try:
+        assert retained_store.get_descriptor(retained_descriptor_id) is not None
+    finally:
+        retained_store.close_sync()
 
     store = SQLiteSessionStore(manager.get_session_database_path())
     try:

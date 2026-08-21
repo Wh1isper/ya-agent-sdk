@@ -128,7 +128,7 @@ preview = true
 
 [tool.deptry]
 ignore = ["DEP001", "DEP002"]
-per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["ya-agent-sdk"], DEP003 = ["anthropic", "yaacli", "botocore"], DEP004 = ["pytest"] }
+per_rule_ignores = { DEP002 = ["ya-agent-sdk"], DEP003 = ["yaacli", "botocore"], DEP004 = ["pytest"] }
 
 [tool.coverage.report]
 skip_empty = true

@@ -54,7 +54,14 @@ session_dir = "{session_dir}"
             agent_name="yaacli_main_v2",
         )
 
+    def reject_historical_descriptor_scan(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("TUI startup must not eagerly scan historical child descriptors")
+
     monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
+    monkeypatch.setattr(
+        "yaacli.app.tui.SQLiteSubagentExecutionStore.list_referenced_descriptors",
+        reject_historical_descriptor_scan,
+    )
     app = TUIApp(config, manager, working_dir=tmp_path)
 
     async with app:

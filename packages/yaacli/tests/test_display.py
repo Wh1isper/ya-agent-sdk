@@ -110,8 +110,6 @@ def test_tool_call_info_is_special_tool():
     special_tools = [
         "edit",
         "thinking",
-        "to_do_read",
-        "to_do_write",
         "multi_edit",
     ]
     # Task tools are no longer special -- rendering is event-driven

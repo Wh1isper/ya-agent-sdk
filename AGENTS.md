@@ -36,6 +36,10 @@ behavioral or architectural change.
   into that boundary before resolution; they must not restore implicit inheritance or
   alternate delegation runtimes. YAACLI and YA Claw provide restart-durable execution
   drivers rather than alternate model-facing delegation APIs.
+- YAACLI generic Markdown subagents materialize the current host-owned standard child
+  capability template before plan resolution. A same-basename native document is ignored,
+  never merged; exact native capability or delegation policy requires a standalone native
+  YAML/JSON definition.
 - The SDK execution harness owns one stateless native agent segment only. YAACLI and YA
   Claw compose it with host-owned coordinators and stores; active process-owned work is
   interrupted rather than replayed after a crash. YA Claw profiles use strict native

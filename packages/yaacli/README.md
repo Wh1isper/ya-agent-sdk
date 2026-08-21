@@ -67,14 +67,17 @@ Markdown is normalized into the current portable `SubagentSpec`; it does not act
 legacy runtime. The frontmatter `description` plus optional `instruction` form the
 parent-facing delegation roster entry; the Markdown body becomes the child's native
 instructions. Omitted or `inherit` model fields use the active root model, settings, and
-context configuration. Tool lists become a final visibility allowlist over YAACLI's
-explicit child capability plan rather than copying live parent or MCP tools.
+context configuration. YAACLI materializes its current standard child capability
+template for the common inherited-tool behavior, then turns any tool list into a final
+visibility allowlist. It does not copy live parent, MCP, plugin, delegation, or
+main-agent-only capabilities.
 
-A same-basename Markdown file is authoritative over a native preset already copied by
-an earlier upgrade, while retaining that preset's explicit capabilities and delegation
-policy. Other duplicate routes remain errors. New setup runs do not copy
-`code-reviewer.yaml` when `code-reviewer.md` already exists. Use native YAML/JSON when exact
-capability grants, plugin types, nesting, or full delegation policy are required. See
+A same-basename Markdown file is the complete authoritative definition. Any native
+preset copied by an earlier upgrade is ignored rather than merged, so a stale capability
+snapshot cannot override the current standard child template. Other duplicate routes
+remain errors. New setup runs do not copy `code-reviewer.yaml` when
+`code-reviewer.md` already exists. Use native YAML/JSON by itself when exact capability
+grants, plugin types, nesting, or full delegation policy are required. See
 [`spec/02-configuration.md`](spec/02-configuration.md) for both schemas.
 
 ## Capability Plugins

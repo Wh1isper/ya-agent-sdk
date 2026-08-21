@@ -41,10 +41,6 @@ agent:
     arguments: {}
   - name: NoteCapability
     arguments: {}
-  - name: ThinkingCapability
-    arguments: {}
-  - name: TodoCapability
-    arguments: {}
   - name: CodeActCapability
     arguments: {}
 history: isolated

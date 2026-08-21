@@ -205,23 +205,27 @@ trusted configuration boundary used by native overrides. Every inherited value i
 materialized before child plan fingerprinting, so retained descriptors never depend on
 the active profile at restore time.
 
-Markdown is an input adapter, not the removed 1.x execution architecture. YAACLI
-materializes an explicit built-in capability plan, and a `tools`/`optional_tools` list
-adds a final `ToolVisibilityCapability` allowlist over that plan. Both fields contribute
-to that allowlist; they neither create missing tools nor gate route registration. When
-a same-basename native policy already has an allowlist or deny list, Markdown can only
-narrow it: existing denies remain and allowlists are intersected. The adapter does not
-copy the parent's live capability instances or ambient MCP tool surface. Native
-documents remain
-the format for exact capability grants, child policy, custom plugin types, nesting, or
-host requirements.
+Markdown is an input adapter, not the removed 1.x execution architecture. For the
+common inherited-tool behavior, YAACLI supplies its current standard safe child
+capability template at the trusted normalization boundary. The template follows
+configuration-dependent built-ins such as CodeAct, while excluding ambient MCP,
+third-party root grants, delegation, host-only tools, and live capability instances.
+The adapter materializes that template into the child's `AgentSpec` before resolution
+and fingerprinting; there is no runtime tool inheritance.
 
-When `name.md` and `name.yaml`/`name.yml`/`name.json` coexist, Markdown is authoritative
-for identity, prompts, and model configuration while retaining the same-basename native
-document's explicit capabilities and delegation policy. This preserves user Markdown
-when an upgrade has already copied a native preset. Other duplicate routes remain a
-configuration error. Future setup runs do not copy a native preset when any supported
-same-basename definition already exists.
+A `tools`/`optional_tools` list adds a final `ToolVisibilityCapability` allowlist over
+the materialized template. Both fields contribute to that allowlist; they neither
+create missing tools nor gate route registration. Native documents remain the format
+for exact capability grants, child policy, custom plugin types, nesting, or host
+requirements.
+
+When `name.md` and `name.yaml`/`name.yml`/`name.json` coexist, Markdown is the complete
+authoritative definition and the same-basename native document is not parsed or merged.
+This makes stale native presets copied during an earlier upgrade inert instead of
+letting their historical capability snapshot override current generic semantics. Other
+duplicate routes remain a configuration error. Future setup runs do not copy a native
+preset when any supported same-basename definition already exists. To use exact native
+policy for a route, keep only its YAML/JSON definition.
 
 YAACLI child execution is process-local, so native configured specs must use `process`.
 A `restart` requirement is rejected rather than silently weakened. The

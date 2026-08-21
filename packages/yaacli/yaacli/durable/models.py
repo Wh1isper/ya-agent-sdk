@@ -221,7 +221,7 @@ class ActionBatch(BaseModel):
 
 
 class ChildPlanManifest(BaseModel):
-    """Exact active and retained child plans registered by one worker."""
+    """Exact active child plans required to reconstruct one root runtime."""
 
     model_config = ConfigDict(frozen=True)
 

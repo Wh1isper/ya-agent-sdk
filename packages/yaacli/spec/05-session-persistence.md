@@ -240,8 +240,9 @@ Consequences:
 - cancelling a suspended child commits terminal `cancelled` state and rejects unresolved
   input, while repeated cancellation of any terminal child returns the same record;
 - child request usage is cumulative across native deferred continuation;
-- every active or retained child descriptor is persisted before its delegation service is exposed;
-- an exact child descriptor is retained while any execution record references it; the current retention policy keeps those execution records, so startup can restore every referenced descriptor;
+- every active child descriptor is persisted before its delegation service is exposed;
+- an exact historical child descriptor remains in SQLite while an execution record references it, but it is not embedded into a new root runtime descriptor or eagerly reconstructed at startup;
+- resume and nested authorization load a historical descriptor lazily through the retained-plan provider, revalidate its exact identity, and fail that operation explicitly when compatible executable capability code is unavailable without blocking current runtime startup;
 - terminal completion enters the canonical parent input path idempotently; and
 - tombstoning an owner closes child inboxes, persists cancellation commands, and fences
   late model starts, saves, steering, and success commits.
@@ -315,6 +316,7 @@ Tests cover:
 - startup `interrupted` publication from the latest checkpoint without model replay;
 - accepted input, action, terminal, and tombstone state transitions;
 - process-local child deferred continuation, usage, persisted steering, owner fencing,
-  exact descriptor retention, and startup orphan-to-`lost` recovery;
+  exact descriptor retention, lazy historical-plan restoration, incompatible-history
+  startup isolation, and startup orphan-to-`lost` recovery;
 - offline import without execution dispatch; and
 - TUI/headless restoration from identical revision semantics.

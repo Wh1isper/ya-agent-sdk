@@ -4,10 +4,17 @@ import json
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
 
-import httpx
+import httpx2
 from pydantic_ai.models import get_user_agent
 from ya_agent_sdk.agents.models.websocket import DEFAULT_WEBSOCKET_BETA
 from ya_oauth.types import OAuthAccount, OAuthTokenSource, TokenSnapshot
+
+_OAUTH_MANAGED_HEADERS = (
+    "authorization",
+    "chatgpt-account-id",
+    "x-openai-fedramp",
+    "originator",
+)
 
 _RESERVED_EXTRA_HEADERS = {
     "authorization",
@@ -27,10 +34,8 @@ CODEX_RESPONSE_TOKEN_LIMIT_FIELDS = frozenset({
 })
 
 
-class OAuthBearerAuth(httpx.Auth):
-    """httpx auth flow that attaches OAuth bearer headers and refreshes once on 401."""
-
-    requires_response_body = True
+class OAuthBearerAuth(httpx2.Auth):
+    """httpx2 auth flow that attaches OAuth bearer headers and refreshes once on 401."""
 
     def __init__(
         self, token_source: OAuthTokenSource, *, provider_name: str, extra_headers: dict[str, str] | None = None
@@ -39,24 +44,33 @@ class OAuthBearerAuth(httpx.Auth):
         self.provider_name = provider_name
         self.extra_headers = _safe_extra_headers(extra_headers)
 
-    async def async_auth_flow(self, request: httpx.Request) -> AsyncGenerator[httpx.Request, httpx.Response]:
+    async def async_auth_flow(self, request: httpx2.Request) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+        # Buffer once so Codex payload normalization and a possible 401 replay see
+        # the same complete, replayable request body even for async input streams.
+        await request.aread()
         snapshot = await self.token_source.get_token()
         self._prepare_request(request)
         self._apply_headers(request, snapshot)
         response = yield request
         if response.status_code != 401:
             return
+
+        # Release the rejected response before token refresh performs I/O.
+        await response.aread()
+        await response.aclose()
         refreshed = await self.token_source.refresh_token()
         retry = _clone_request(request)
         self._prepare_request(retry)
         self._apply_headers(retry, refreshed)
         yield retry
 
-    def _prepare_request(self, request: httpx.Request) -> None:
+    def _prepare_request(self, request: httpx2.Request) -> None:
         if self.provider_name == "codex":
             _ensure_codex_responses_instructions(request)
 
-    def _apply_headers(self, request: httpx.Request, snapshot: TokenSnapshot) -> None:
+    def _apply_headers(self, request: httpx2.Request, snapshot: TokenSnapshot) -> None:
+        for header_name in _OAUTH_MANAGED_HEADERS:
+            request.headers.pop(header_name, None)
         request.headers.update(
             build_oauth_headers(snapshot, provider_name=self.provider_name, extra_headers=self.extra_headers)
         )
@@ -116,14 +130,14 @@ def _safe_extra_headers(extra_headers: Mapping[str, str] | None) -> dict[str, st
     return safe_headers
 
 
-def _ensure_codex_responses_instructions(request: httpx.Request) -> None:
+def _ensure_codex_responses_instructions(request: httpx2.Request) -> None:
     """Align Codex Responses API request body requirements."""
     if request.method.upper() != "POST" or request.url.path.rstrip("/") != "/backend-api/codex/responses":
         return
 
     try:
         body = json.loads(request.content or b"{}")
-    except (json.JSONDecodeError, httpx.RequestNotRead):
+    except (json.JSONDecodeError, httpx2.RequestNotRead):
         return
     if not isinstance(body, dict):
         return
@@ -144,15 +158,16 @@ def normalize_codex_http_payload(body: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _replace_json_body(request: httpx.Request, body: dict[str, Any]) -> None:
+def _replace_json_body(request: httpx2.Request, body: dict[str, Any]) -> None:
     content = json.dumps(body, separators=(",", ":")).encode()
-    request.stream = httpx.ByteStream(content)
+    request.stream = httpx2.ByteStream(content)
     request._content = content
+    request.headers.pop("Transfer-Encoding", None)
     request.headers["Content-Length"] = str(len(content))
 
 
-def _clone_request(request: httpx.Request) -> httpx.Request:
-    return httpx.Request(
+def _clone_request(request: httpx2.Request) -> httpx2.Request:
+    return httpx2.Request(
         method=request.method,
         url=request.url,
         headers=request.headers.copy(),

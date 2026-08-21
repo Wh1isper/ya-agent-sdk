@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,20 +23,6 @@ _SUBAGENT_CONFIG_SUFFIXES = frozenset({*_SUBAGENT_SPEC_SUFFIXES, ".md"})
 _MARKDOWN_FRONTMATTER_PATTERN = re.compile(
     r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)(.*)\Z",
     re.DOTALL,
-)
-_MARKDOWN_DEFAULT_CAPABILITY_NAMES = (
-    "RuntimeFoundationCapability",
-    "MediaReadCapability",
-    "DocumentConversionCapability",
-    "FilesystemCapability",
-    "ShellCapability",
-    "WebSearchCapability",
-    "WebContentCapability",
-    "TaskCapability",
-    "NoteCapability",
-    "ThinkingCapability",
-    "TodoCapability",
-    "CodeActCapability",
 )
 
 
@@ -88,40 +75,37 @@ class _MarkdownSubagentFrontmatter(BaseModel):
         return normalized
 
 
-def load_subagent_specs(directory: Path) -> dict[str, SubagentSpec]:
-    """Load native documents and generic Markdown definitions into portable specs."""
+def load_subagent_specs(
+    directory: Path,
+    *,
+    markdown_capabilities: Sequence[dict[str, Any]],
+) -> dict[str, SubagentSpec]:
+    """Normalize native documents and generic Markdown definitions into portable specs."""
     specs: dict[str, SubagentSpec] = {}
     sources: dict[str, Path] = {}
-    native_by_stem: dict[str, tuple[Path, SubagentSpec]] = {}
     if not directory.is_dir():
         return specs
 
+    markdown_paths = sorted(directory.glob("*.md"))
+    markdown_stems = {path.stem for path in markdown_paths}
+    native_by_stem: dict[str, Path] = {}
     native_paths = sorted(
-        path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in _SUBAGENT_SPEC_SUFFIXES
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in _SUBAGENT_SPEC_SUFFIXES and path.stem not in markdown_stems
     )
     for path in native_paths:
-        if path.stem in native_by_stem:
-            previous_path, _previous_spec = native_by_stem[path.stem]
+        previous_path = native_by_stem.get(path.stem)
+        if previous_path is not None:
             raise ValueError(
                 f"Duplicate subagent basename {path.stem!r} in {previous_path.name} and {path.name} under {directory}"
             )
         spec = _load_native_subagent_spec(path)
         _add_subagent_spec(specs, sources, spec, path, directory=directory)
-        native_by_stem[path.stem] = (path, spec)
+        native_by_stem[path.stem] = path
 
-    markdown_specs: list[tuple[Path, SubagentSpec, tuple[Path, SubagentSpec] | None]] = []
-    for path in sorted(directory.glob("*.md")):
-        native_entry = native_by_stem.get(path.stem)
-        base_spec = native_entry[1] if native_entry is not None else None
-        markdown_specs.append((path, _load_markdown_subagent_spec(path, base_spec=base_spec), native_entry))
-
-    for _path, _spec, native_entry in markdown_specs:
-        if native_entry is None:
-            continue
-        native_route = native_entry[1].route
-        specs.pop(native_route)
-        sources.pop(native_route)
-    for path, spec, _native_entry in markdown_specs:
+    for path in markdown_paths:
+        spec = _load_markdown_subagent_spec(path, capabilities=markdown_capabilities)
         _add_subagent_spec(specs, sources, spec, path, directory=directory)
     return specs
 
@@ -179,10 +163,14 @@ def _load_native_subagent_spec(path: Path) -> SubagentSpec:
         raise ValueError(f"Invalid subagent spec {path}: {exc}") from exc
 
 
-def _load_markdown_subagent_spec(path: Path, *, base_spec: SubagentSpec | None) -> SubagentSpec:
+def _load_markdown_subagent_spec(
+    path: Path,
+    *,
+    capabilities: Sequence[dict[str, Any]],
+) -> SubagentSpec:
     try:
         frontmatter, body = _parse_markdown_subagent(path.read_text(encoding="utf-8"))
-        return _markdown_to_subagent_spec(frontmatter, body, base_spec=base_spec)
+        return _markdown_to_subagent_spec(frontmatter, body, capabilities=capabilities)
     except Exception as exc:
         raise ValueError(f"Invalid Markdown subagent {path}: {exc}") from exc
 
@@ -201,25 +189,14 @@ def _markdown_to_subagent_spec(
     frontmatter: _MarkdownSubagentFrontmatter,
     body: str,
     *,
-    base_spec: SubagentSpec | None,
+    capabilities: Sequence[dict[str, Any]],
 ) -> SubagentSpec:
-    effective_base_spec = base_spec
-    base_agent_payload = (
-        effective_base_spec.agent.model_dump(mode="python", by_alias=True) if effective_base_spec is not None else {}
-    )
-    capabilities = (
-        list(base_agent_payload.get("capabilities") or [])
-        if effective_base_spec is not None
-        else _default_markdown_capabilities()
-    )
+    materialized_capabilities = copy.deepcopy(list(capabilities))
     visible_tools = _visible_markdown_tools(frontmatter)
     if visible_tools is not None:
-        capabilities = _narrow_capability_visibility(capabilities, visible_tools)
+        materialized_capabilities = _narrow_capability_visibility(materialized_capabilities, visible_tools)
 
-    metadata = dict(base_agent_payload.get("metadata") or {})
-    metadata.pop(YAACLI_MODEL_CFG_METADATA_KEY, None)
-    metadata.pop(YAACLI_INHERIT_MODEL_SETTINGS_METADATA_KEY, None)
-    metadata.pop(YAACLI_INHERIT_MODEL_CFG_METADATA_KEY, None)
+    metadata: dict[str, Any] = {}
     inherit_model_cfg = frontmatter.model_cfg in (None, "inherit")
     model_cfg = None if inherit_model_cfg else resolve_model_cfg(frontmatter.model_cfg)
     if inherit_model_cfg:
@@ -235,21 +212,15 @@ def _markdown_to_subagent_spec(
     roster_description = "\n\n".join(
         part for part in (frontmatter.description, frontmatter.instruction) if part is not None and part.strip()
     )
-    base_agent_payload.update({
+    agent_spec = AgentSpec.from_dict({
         "name": frontmatter.name,
         "description": roster_description,
         "instructions": body or None,
         "model": model,
         "model_settings": resolve_model_settings(model_settings_input),
         "metadata": metadata or None,
-        "capabilities": capabilities,
+        "capabilities": materialized_capabilities,
     })
-    agent_spec = AgentSpec.model_validate(base_agent_payload)
-
-    if effective_base_spec is not None:
-        base_payload = effective_base_spec.model_dump(mode="python")
-        base_payload.update({"route": frontmatter.name, "agent": agent_spec})
-        return SubagentSpec.model_validate(base_payload)
     return SubagentSpec(
         route=frontmatter.name,
         agent=agent_spec,
@@ -258,10 +229,6 @@ def _markdown_to_subagent_spec(
             SubagentExecutionMode.background,
         ),
     )
-
-
-def _default_markdown_capabilities() -> list[dict[str, Any]]:
-    return [{"name": name, "arguments": {}} for name in _MARKDOWN_DEFAULT_CAPABILITY_NAMES]
 
 
 def _visible_markdown_tools(frontmatter: _MarkdownSubagentFrontmatter) -> list[str] | None:

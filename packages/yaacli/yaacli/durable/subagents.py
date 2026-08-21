@@ -42,6 +42,7 @@ from ya_agent_sdk.subagents import (
     InProcessSubagentDriver,
     SubagentExecutionIdConflict,
     SubagentExecutionStore,
+    SubagentPlanResolver,
 )
 from ya_agent_sdk.subagents.spec import (
     ResolvedSubagentPlan,
@@ -69,6 +70,23 @@ from yaacli.subagent_config import model_cfg_from_agent_spec
 
 _DEFERRED_RESULTS = TypeAdapter(DeferredToolResults)
 _USER_CONTENT = TypeAdapter(list[UserContent])
+
+
+@dataclass(frozen=True, slots=True)
+class SQLiteRetainedSubagentPlanProvider:
+    """Lazily restore an exact historical child plan from product storage."""
+
+    store: SQLiteSubagentExecutionStore
+    resolver: SubagentPlanResolver
+
+    async def load_retained_plan(
+        self,
+        record: SubagentExecutionRecord,
+    ) -> ResolvedSubagentPlan | None:
+        descriptor = self.store.get_descriptor(record.descriptor_id)
+        if descriptor is None:
+            return None
+        return self.resolver.restore(descriptor)
 
 
 class SQLiteSubagentExecutionStore(SubagentExecutionStore):

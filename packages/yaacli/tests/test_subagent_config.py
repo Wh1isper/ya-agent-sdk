@@ -8,7 +8,8 @@ import pytest
 import yaml
 from ya_agent_sdk.capabilities import build_default_capability_catalog
 from ya_agent_sdk.context import ModelConfig
-from ya_agent_sdk.subagents import SubagentPlanResolver
+from ya_agent_sdk.subagents import SubagentPlanResolver, SubagentSpec
+from yaacli.runtime import _standard_child_capability_specs
 from yaacli.subagent_config import (
     has_subagent_definition,
     load_subagent_specs,
@@ -35,6 +36,13 @@ def _payload(route: str) -> dict[str, object]:
     }
 
 
+def _load_specs(directory: Path, *, enable_codeact: bool = True) -> dict[str, SubagentSpec]:
+    return load_subagent_specs(
+        directory,
+        markdown_capabilities=_standard_child_capability_specs(enable_codeact=enable_codeact),
+    )
+
+
 def _markdown(
     *,
     name: str = "helper",
@@ -57,7 +65,7 @@ def test_loads_versioned_native_subagent_spec(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    specs = load_subagent_specs(tmp_path)
+    specs = _load_specs(tmp_path)
 
     assert tuple(specs) == ("helper",)
     spec = specs["helper"]
@@ -75,7 +83,7 @@ def test_loads_generic_markdown_as_portable_subagent_spec(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    specs = load_subagent_specs(tmp_path)
+    specs = _load_specs(tmp_path)
 
     spec = specs["helper"]
     assert spec.agent.name == "helper"
@@ -97,8 +105,6 @@ def test_loads_generic_markdown_as_portable_subagent_spec(tmp_path: Path) -> Non
         "WebContentCapability",
         "TaskCapability",
         "NoteCapability",
-        "ThinkingCapability",
-        "TodoCapability",
         "CodeActCapability",
     ]
     assert [mode.value for mode in spec.execution_modes] == ["foreground", "background"]
@@ -134,7 +140,7 @@ def test_markdown_resolves_model_configuration_and_tool_visibility(tmp_path: Pat
         encoding="utf-8",
     )
 
-    spec = load_subagent_specs(tmp_path)["helper"]
+    spec = _load_specs(tmp_path)["helper"]
 
     assert spec.agent.model == "openai-chat:gpt-4o"
     assert spec.agent.model_settings == {"temperature": 0.25}
@@ -151,9 +157,18 @@ def test_markdown_resolves_model_configuration_and_tool_visibility(tmp_path: Pat
     assert plan.spec.route == "helper"
 
 
-def test_markdown_overlays_same_basename_native_policy_and_capabilities(tmp_path: Path) -> None:
+def test_markdown_ignores_same_basename_native_capability_snapshot(tmp_path: Path) -> None:
+    payload = _payload("helper")
+    agent = payload["agent"]
+    assert isinstance(agent, dict)
+    capabilities = agent["capabilities"]
+    assert isinstance(capabilities, list)
+    capabilities.extend([
+        {"name": "ThinkingCapability", "arguments": {}},
+        {"name": "TodoCapability", "arguments": {}},
+    ])
     (tmp_path / "helper.yaml").write_text(
-        yaml.safe_dump(_payload("helper"), sort_keys=False),
+        yaml.safe_dump(payload, sort_keys=False),
         encoding="utf-8",
     )
     (tmp_path / "helper.md").write_text(
@@ -161,34 +176,33 @@ def test_markdown_overlays_same_basename_native_policy_and_capabilities(tmp_path
         encoding="utf-8",
     )
 
-    spec = load_subagent_specs(tmp_path)["helper"]
+    spec = _load_specs(tmp_path)["helper"]
+    capability_names = [item.name for item in spec.agent.capabilities]
 
     assert spec.agent.description == ("Generic Markdown helper\n\nUse this helper for bounded work.")
     assert spec.agent.model is None
-    assert [item.name for item in spec.agent.capabilities] == [
-        "RuntimeFoundationCapability",
-        "FilesystemCapability",
-    ]
-    assert spec.durability.value == "restart"
+    assert "TaskCapability" in capability_names
+    assert "ThinkingCapability" not in capability_names
+    assert "TodoCapability" not in capability_names
+    assert spec.durability.value == "process"
+    plan = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+    ).resolve(spec)
+    assert plan.spec.route == "helper"
 
 
-def test_markdown_preserves_explicitly_empty_native_capability_baseline(tmp_path: Path) -> None:
-    payload = _payload("helper")
-    agent = payload["agent"]
-    assert isinstance(agent, dict)
-    agent["capabilities"] = []
-    (tmp_path / "helper.yaml").write_text(
-        yaml.safe_dump(payload, sort_keys=False),
-        encoding="utf-8",
-    )
+def test_markdown_ignores_malformed_same_basename_native_document(tmp_path: Path) -> None:
+    (tmp_path / "helper.yaml").write_text("agent: [", encoding="utf-8")
     (tmp_path / "helper.md").write_text(_markdown(), encoding="utf-8")
 
-    spec = load_subagent_specs(tmp_path)["helper"]
+    spec = _load_specs(tmp_path)["helper"]
 
-    assert spec.agent.capabilities == []
+    assert spec.agent.name == "helper"
+    assert spec.durability.value == "process"
 
 
-def test_markdown_tool_list_only_narrows_native_visibility_policy(tmp_path: Path) -> None:
+def test_markdown_tool_list_narrows_standard_capabilities_not_native_sidecar(tmp_path: Path) -> None:
     payload = _payload("helper")
     agent = payload["agent"]
     assert isinstance(agent, dict)
@@ -210,13 +224,19 @@ def test_markdown_tool_list_only_narrows_native_visibility_policy(tmp_path: Path
         encoding="utf-8",
     )
 
-    spec = load_subagent_specs(tmp_path)["helper"]
+    spec = _load_specs(tmp_path)["helper"]
 
     visibility = next(item for item in spec.agent.capabilities if item.name == "ToolVisibilityCapability")
-    assert visibility.arguments == {
-        "allow": ["view"],
-        "deny": ["shell_exec"],
-    }
+    assert visibility.arguments == {"allow": ["view", "shell_exec"]}
+
+
+def test_markdown_standard_capabilities_follow_codeact_setting(tmp_path: Path) -> None:
+    (tmp_path / "helper.md").write_text(_markdown(), encoding="utf-8")
+
+    spec = _load_specs(tmp_path, enable_codeact=False)["helper"]
+
+    assert "TaskCapability" in {item.name for item in spec.agent.capabilities}
+    assert "CodeActCapability" not in {item.name for item in spec.agent.capabilities}
 
 
 def test_same_basename_markdown_can_replace_native_route_identity(tmp_path: Path) -> None:
@@ -229,16 +249,13 @@ def test_same_basename_markdown_can_replace_native_route_identity(tmp_path: Path
         encoding="utf-8",
     )
 
-    specs = load_subagent_specs(tmp_path)
+    specs = _load_specs(tmp_path)
 
     assert tuple(specs) == ("renamed",)
     spec = specs["renamed"]
     assert spec.agent.name == "renamed"
-    assert [item.name for item in spec.agent.capabilities] == [
-        "RuntimeFoundationCapability",
-        "FilesystemCapability",
-    ]
-    assert spec.durability.value == "restart"
+    assert "TaskCapability" in {item.name for item in spec.agent.capabilities}
+    assert spec.durability.value == "process"
 
 
 def test_same_basename_route_renames_validate_final_precedence_set(tmp_path: Path) -> None:
@@ -253,18 +270,18 @@ def test_same_basename_route_renames_validate_final_precedence_set(tmp_path: Pat
     (tmp_path / "a.md").write_text(_markdown(name="target"), encoding="utf-8")
     (tmp_path / "b.md").write_text(_markdown(name="renamed-b"), encoding="utf-8")
 
-    specs = load_subagent_specs(tmp_path)
+    specs = _load_specs(tmp_path)
 
     assert tuple(specs) == ("target", "renamed-b")
-    assert specs["target"].durability.value == "restart"
-    assert specs["renamed-b"].durability.value == "restart"
+    assert specs["target"].durability.value == "process"
+    assert specs["renamed-b"].durability.value == "process"
 
 
 def test_rejects_invalid_markdown_subagent_configuration(tmp_path: Path) -> None:
     (tmp_path / "helper.md").write_text("No frontmatter", encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"Invalid Markdown subagent.*expected YAML frontmatter"):
-        load_subagent_specs(tmp_path)
+        _load_specs(tmp_path)
 
 
 def test_rejects_unknown_markdown_frontmatter_fields(tmp_path: Path) -> None:
@@ -274,7 +291,7 @@ def test_rejects_unknown_markdown_frontmatter_fields(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match=r"(?s)Invalid Markdown subagent.*extra_forbidden"):
-        load_subagent_specs(tmp_path)
+        _load_specs(tmp_path)
 
 
 def test_rejects_old_tool_fields_in_native_document(tmp_path: Path) -> None:
@@ -286,7 +303,7 @@ def test_rejects_old_tool_fields_in_native_document(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="extra_forbidden"):
-        load_subagent_specs(tmp_path)
+        _load_specs(tmp_path)
 
 
 def test_rejects_duplicate_routes_across_native_documents(tmp_path: Path) -> None:
@@ -297,7 +314,7 @@ def test_rejects_duplicate_routes_across_native_documents(tmp_path: Path) -> Non
         )
 
     with pytest.raises(ValueError, match="Duplicate subagent route"):
-        load_subagent_specs(tmp_path)
+        _load_specs(tmp_path)
 
 
 def test_rejects_ambiguous_native_documents_with_same_basename(tmp_path: Path) -> None:
@@ -311,7 +328,7 @@ def test_rejects_ambiguous_native_documents_with_same_basename(tmp_path: Path) -
     )
 
     with pytest.raises(ValueError, match=r"Duplicate subagent basename.*helper.json.*helper.yaml"):
-        load_subagent_specs(tmp_path)
+        _load_specs(tmp_path)
 
 
 def test_rejects_duplicate_route_from_different_markdown_basename(tmp_path: Path) -> None:
@@ -322,7 +339,7 @@ def test_rejects_duplicate_route_from_different_markdown_basename(tmp_path: Path
     (tmp_path / "two.md").write_text(_markdown(), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"Duplicate subagent route.*one.yaml.*two.md"):
-        load_subagent_specs(tmp_path)
+        _load_specs(tmp_path)
 
 
 def test_detects_any_supported_subagent_definition_format(tmp_path: Path) -> None:

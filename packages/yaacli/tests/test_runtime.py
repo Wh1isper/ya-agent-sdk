@@ -23,6 +23,8 @@ from ya_agent_sdk.agents.lifecycle import (
 )
 from ya_agent_sdk.capabilities import (
     CodeActCapability,
+    TaskCapability,
+    ThinkingCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
     ToolRetryCapability,
@@ -35,6 +37,7 @@ from ya_agent_sdk.subagents import (
     SelfForkPolicy,
     SubagentDurability,
     SubagentExecutionMode,
+    SubagentExecutionRecord,
     SubagentPlanResolver,
     SubagentSpec,
 )
@@ -59,13 +62,14 @@ from yaacli.runtime import (
     _build_delegation_capability,
     _compile_subagent_specs,
     _OptionalMCPToolset,
-    _self_fork_capability_specs,
+    _standard_child_capability_specs,
     build_main_runtime_manifest,
     build_runtime_agent_spec,
     compile_child_plan_manifest,
     compile_runtime_sources,
     create_tui_runtime,
     restore_main_runtime_manifest,
+    runtime_child_plan_manifest,
 )
 from yaacli.session import TUIContext
 from yaacli.subagent_config import model_cfg_from_agent_spec
@@ -229,7 +233,9 @@ async def test_runtime_codeact_and_user_input_are_explicit_capabilities(
 
     async with runtime:
         assert any(isinstance(item, CodeActCapability) for item in runtime.capabilities)
+        assert any(isinstance(item, TaskCapability) for item in runtime.capabilities)
         assert any(isinstance(item, UserInteractionCapability) for item in runtime.capabilities)
+        assert not any(isinstance(item, ThinkingCapability) for item in runtime.capabilities)
 
 
 @pytest.mark.asyncio
@@ -425,8 +431,9 @@ def test_packaged_subagent_presets_support_yaacli_process_local_driver() -> None
     assert loaded_names
 
 
-async def test_delegation_builder_persists_active_and_retained_descriptors(
+async def test_delegation_builder_isolates_unavailable_retained_descriptor_until_use(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resolver = SubagentPlanResolver(
         build_default_capability_catalog(),
@@ -453,6 +460,18 @@ async def test_delegation_builder_persists_active_and_retained_descriptors(
     )
     database_path = tmp_path / "descriptors.sqlite3"
     product_store = SQLiteSessionStore(database_path)
+    retained_store = SQLiteSubagentExecutionStore(database_path)
+    retained_store.put_descriptor(retained)
+    retained_store.close_sync()
+
+    original_restore = SubagentPlanResolver.restore
+
+    def restore_available_plan(self: SubagentPlanResolver, descriptor: Any) -> Any:
+        if descriptor.descriptor_id == retained.descriptor_id:
+            raise ValueError("historical capability unavailable")
+        return original_restore(self, descriptor)
+
+    monkeypatch.setattr(SubagentPlanResolver, "restore", restore_available_plan)
     capability = _build_delegation_capability(
         manifest,
         default_model="test",
@@ -472,6 +491,34 @@ async def test_delegation_builder_persists_active_and_retained_descriptors(
     try:
         assert store.get_descriptor(active.descriptor_id) == active.to_descriptor()
         assert store.get_descriptor(retained.descriptor_id) == retained.to_descriptor()
+        with pytest.raises(KeyError, match="Unknown subagent descriptor"):
+            capability.registry.get_descriptor(retained.descriptor_id)
+
+        provider = capability.service.retained_plan_provider
+        assert provider is not None
+        record = SubagentExecutionRecord(
+            root_execution_id="legacy-execution",
+            execution_id="legacy-execution",
+            owner_scope_id="session",
+            idempotency_key="legacy-execution",
+            descriptor_id=retained.descriptor_id,
+            plan_fingerprint=retained.fingerprint,
+            route=retained.spec.route,
+            mode=SubagentExecutionMode.foreground,
+            parent_agent_id="main",
+            parent_logical_run_id="parent-run",
+            prompt="resume legacy work",
+        )
+        with pytest.raises(ValueError, match="historical capability unavailable"):
+            await provider.load_retained_plan(record)
+
+        monkeypatch.setattr(SubagentPlanResolver, "restore", original_restore)
+        restored = await provider.load_retained_plan(record)
+        assert restored is not None
+        capability.registry.register_retained(restored)
+        exported = runtime_child_plan_manifest(MagicMock(capabilities=(capability,)))
+        assert exported.active_routes == {"helper": active.descriptor_id}
+        assert exported.descriptors == (active.to_descriptor(),)
     finally:
         await capability.service.close()
         product_store.close()
@@ -487,6 +534,7 @@ def test_native_subagent_model_cfg_override_is_explicit(
     specs = _compile_subagent_specs(
         SubagentsConfig(overrides={"helper": SubagentOverride(model_cfg={"context_window": 1_000_000})}),
         config_dir=config_dir,
+        enable_codeact=True,
     )
 
     assert len(specs) == 1
@@ -496,9 +544,12 @@ def test_native_subagent_model_cfg_override_is_explicit(
 
 
 def test_self_fork_native_grants_compose_with_host_policy_capabilities() -> None:
-    capability_specs = _self_fork_capability_specs(enable_codeact=True)
+    capability_specs = _standard_child_capability_specs(enable_codeact=True)
     capability_names = {next(iter(item)) for item in capability_specs}
+    assert "TaskCapability" in capability_names
     assert capability_names.isdisjoint({
+        "ThinkingCapability",
+        "TodoCapability",
         "ToolApprovalCapability",
         "ToolObservationCapability",
         "ToolRetryCapability",

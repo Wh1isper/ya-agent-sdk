@@ -20,7 +20,11 @@ gates.
 Generic OpenAI Responses WebSocket transport remains in `ya-agent-sdk` as
 `WebsocketResponsesModel`. This package adds only Codex-specific authentication,
 headers, token refresh, and payload normalization, and refreshes once on HTTP 401
-through the configured token source before retrying.
+through the configured token source before retrying. Its OpenAI client, OAuth auth
+flow, and retry transport all use HTTPX2; callers must not inject a legacy
+`httpx.AsyncClient`. The SDK-created client closes with the model context and is
+recreated on re-entry. OAuth authentication buffers the request body once so Codex
+payload normalization and a possible 401 replay operate on identical bytes.
 
 ## Proactive refresh
 
