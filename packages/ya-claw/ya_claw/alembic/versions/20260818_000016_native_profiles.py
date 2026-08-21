@@ -11,6 +11,8 @@ from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
+from pydantic_core import to_jsonable_python
+from sqlalchemy.engine import Connection
 from sqlalchemy.sql.elements import ColumnClause
 from ya_agent_sdk.presets import resolve_model_cfg, resolve_model_settings
 
@@ -38,6 +40,11 @@ _CORE_GROUPS = (
     "agency",
 )
 _HOST_GROUPS = frozenset({"session", "schedule", "workflow", "agency"})
+_NEW_COLUMNS: dict[str, sa.JSON] = {
+    "agent_spec": sa.JSON(),
+    "host_config": sa.JSON(),
+    "subagent_specs": sa.JSON(),
+}
 _OLD_COLUMNS = (
     "model",
     "model_settings_preset",
@@ -59,11 +66,22 @@ _OLD_COLUMNS = (
 
 
 def upgrade() -> None:
-    op.add_column("profiles", sa.Column("agent_spec", sa.JSON(), nullable=True))
-    op.add_column("profiles", sa.Column("host_config", sa.JSON(), nullable=True))
-    op.add_column("profiles", sa.Column("subagent_specs", sa.JSON(), nullable=True))
-
     bind = op.get_bind()
+    existing_columns = _profile_columns(bind)
+    old_columns = set(_OLD_COLUMNS)
+    if old_columns.isdisjoint(existing_columns):
+        _validate_completed_native_schema(bind, existing_columns)
+        return
+    missing_old_columns = sorted(old_columns - existing_columns.keys())
+    if missing_old_columns:
+        raise RuntimeError(
+            "Cannot resume native profile migration from an incomplete legacy schema; "
+            f"missing columns: {', '.join(missing_old_columns)}"
+        )
+    for name, column_type in _NEW_COLUMNS.items():
+        if name not in existing_columns:
+            op.add_column("profiles", sa.Column(name, column_type, nullable=True))
+
     profiles = sa.table(
         "profiles",
         sa.column("name", sa.String()),
@@ -80,9 +98,9 @@ def upgrade() -> None:
             .update()
             .where(profiles.c.name == row["name"])
             .values(
-                agent_spec=agent_spec,
-                host_config=host_config,
-                subagent_specs=subagent_specs,
+                agent_spec=_json_mapping(agent_spec),
+                host_config=_json_mapping(host_config),
+                subagent_specs=[_json_mapping(item) for item in subagent_specs],
             )
         )
 
@@ -164,6 +182,47 @@ def downgrade() -> None:
         batch_op.drop_column("subagent_specs")
         batch_op.drop_column("host_config")
         batch_op.drop_column("agent_spec")
+
+
+def _profile_columns(bind: Connection) -> dict[str, dict[str, Any]]:
+    return {str(column["name"]): dict(column) for column in sa.inspect(bind).get_columns("profiles")}
+
+
+def _validate_completed_native_schema(bind: Connection, columns: dict[str, dict[str, Any]]) -> None:
+    missing = sorted(set(_NEW_COLUMNS) - columns.keys())
+    if missing:
+        raise RuntimeError(
+            "Cannot resume native profile migration because the legacy profile columns "
+            f"are gone and native columns are missing: {', '.join(missing)}"
+        )
+    nullable = sorted(name for name in _NEW_COLUMNS if columns[name].get("nullable") is not False)
+    if nullable:
+        raise RuntimeError(
+            "Cannot resume native profile migration because the legacy profile columns "
+            f"are gone and native columns are still nullable: {', '.join(nullable)}"
+        )
+    invalid_types = sorted(name for name in _NEW_COLUMNS if not isinstance(columns[name].get("type"), sa.JSON))
+    if invalid_types:
+        raise RuntimeError(
+            "Cannot resume native profile migration because native columns do not use "
+            f"the expected JSON type: {', '.join(invalid_types)}"
+        )
+    profiles = sa.table(
+        "profiles",
+        *(sa.column(name, sa.JSON()) for name in _NEW_COLUMNS),
+    )
+    contains_null = bind.execute(
+        sa.select(sa.exists().where(sa.or_(*(profiles.c[name].is_(None) for name in _NEW_COLUMNS))))
+    ).scalar_one()
+    if contains_null:
+        raise RuntimeError("Cannot resume native profile migration because native profile data contains NULL")
+
+
+def _json_mapping(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = to_jsonable_python(value)
+    if not isinstance(normalized, dict):
+        raise TypeError("Expected profile migration output to be a JSON object")
+    return normalized
 
 
 def _legacy_profile_columns() -> tuple[ColumnClause[Any], ...]:
