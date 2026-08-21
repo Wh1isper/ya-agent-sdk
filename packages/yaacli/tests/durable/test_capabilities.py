@@ -89,7 +89,7 @@ async def test_durable_inbox_reuses_router_enqueue_once_per_native_attempt(tmp_p
             "native-attempt-2",
         ]
 
-        capability._mark_applied(deps, "enqueue-1")
+        capability.reconcile_applied_enqueue(deps, "enqueue-1")
         assert store.list_inputs(run.logical_run_id)[1].state is InputState.applied
 
         accepted_before_hook = store.accept_input(

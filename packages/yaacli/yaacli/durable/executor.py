@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import JsonValue, TypeAdapter
-from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied, UsageLimits, UserContent
+from pydantic_ai import (
+    DeferredToolRequests,
+    DeferredToolResults,
+    EnqueuedMessagesEvent,
+    ToolDenied,
+    UsageLimits,
+    UserContent,
+)
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, RetryPromptPart, UserPromptPart
 from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
@@ -24,6 +31,7 @@ from ya_agent_sdk.inputs import ActiveRunRegistry, InputDisposition, InputOrigin
 from ya_agent_sdk.subagents import DelegationCapability
 
 from yaacli.durable.bindings import runtime_bindings
+from yaacli.durable.capabilities import DurableInboxPumpCapability
 from yaacli.durable.models import (
     ActionBatch,
     ActionState,
@@ -49,6 +57,11 @@ RuntimeFactory = Callable[
 ExecutionEventSink = Callable[[StreamEvent], Awaitable[None]]
 DisplayProjectionProvider = Callable[[], Sequence[JsonValue]]
 HeadlessHITLPolicy = Literal["wait", "deny"]
+
+_DURABLE_DISPLAY_EVENT_NAMES = frozenset({
+    "yaacli.steering_accepted",
+    "yaacli.steering_applied",
+})
 
 logger = logging.getLogger(__name__)
 
@@ -389,6 +402,14 @@ class LocalExecutionCoordinator:
                     try:
                         async with self.execution_harness.stream_segment(plan.runtime, request) as segment:
                             async for event in segment:
+                                if isinstance(event.event, EnqueuedMessagesEvent):
+                                    # Native enqueue confirmation can precede the
+                                    # capability's next node hook. Reconcile before
+                                    # host projection and terminal failure fencing.
+                                    DurableInboxPumpCapability.reconcile_applied_enqueue(
+                                        plan.runtime.ctx,
+                                        event.event.enqueue_id,
+                                    )
                                 if self.event_sink is not None:
                                     await self.event_sink(event)
                             segment.raise_if_exception()
@@ -746,18 +767,29 @@ class LocalExecutionCoordinator:
     def _stable_payload(self, run: LogicalRunRecord) -> RevisionPayload:
         checkpoint = self.store.get_execution_checkpoint(run.execution_id)
         if checkpoint is not None:
-            return checkpoint.payload
-        if run.expected_head_revision_id is None:
-            return RevisionPayload()
-        revision = self.store.get_revision(run.expected_head_revision_id)
-        if revision is None:
-            raise RuntimeError(f"Expected revision {run.expected_head_revision_id!r} is unavailable")
-        return RevisionPayload(
-            message_history=revision.message_history,
-            resumable_state=revision.resumable_state,
-            input_ledger=revision.input_ledger,
-            display_projection=revision.display_projection,
-            usage=revision.usage,
+            payload = checkpoint.payload
+        elif run.expected_head_revision_id is None:
+            payload = RevisionPayload()
+        else:
+            revision = self.store.get_revision(run.expected_head_revision_id)
+            if revision is None:
+                raise RuntimeError(f"Expected revision {run.expected_head_revision_id!r} is unavailable")
+            payload = RevisionPayload(
+                message_history=revision.message_history,
+                resumable_state=revision.resumable_state,
+                input_ledger=revision.input_ledger,
+                display_projection=revision.display_projection,
+                usage=revision.usage,
+            )
+        if self.display_projection_provider is None:
+            return payload
+        return payload.model_copy(
+            update={
+                "display_projection": _merge_durable_display_projection(
+                    payload.display_projection,
+                    self.display_projection_provider(),
+                )
+            }
         )
 
     def _revision_payload(
@@ -941,6 +973,35 @@ class LocalExecutionWorker:
         for plan in reversed(self.runtime_registry.list()):
             await plan.runtime.__aexit__(None, None, None)
             runtime_bindings.unregister(plan.binding_ref, plan.binding_context)
+
+
+def _merge_durable_display_projection(
+    stable: Sequence[JsonValue],
+    live: Sequence[JsonValue],
+) -> list[JsonValue]:
+    """Merge only durable-input UI facts into a stable terminal projection."""
+    merged = list(stable)
+    identities = {identity for event in merged if (identity := _durable_display_event_identity(event)) is not None}
+    for event in live:
+        identity = _durable_display_event_identity(event)
+        if identity is None or identity in identities:
+            continue
+        merged.append(event)
+        identities.add(identity)
+    return merged
+
+
+def _durable_display_event_identity(event: JsonValue) -> tuple[str, str] | None:
+    if not isinstance(event, dict) or event.get("type") != "CUSTOM":
+        return None
+    name = event.get("name")
+    value = event.get("value")
+    if not isinstance(name, str) or name not in _DURABLE_DISPLAY_EVENT_NAMES or not isinstance(value, dict):
+        return None
+    projection_key = value.get("projection_key")
+    if not isinstance(projection_key, str) or not projection_key:
+        return None
+    return name, projection_key
 
 
 def _terminal_event_type(status: LogicalRunStatus) -> str:

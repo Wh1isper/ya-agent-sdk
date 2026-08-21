@@ -634,6 +634,7 @@ class TUIApp:
         default_factory=lambda: BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG), init=False
     )
     _display_adapter: AguiEventAdapter | None = field(default=None, init=False)
+    _projected_steering_receipt_keys: set[str] = field(default_factory=set, init=False, repr=False)
     _projected_steering_keys: set[str] = field(default_factory=set, init=False, repr=False)
 
     # Session
@@ -1630,6 +1631,25 @@ class TUIApp:
                     )
                     self._printed_tool_calls.add(tool_call_id)
                 continue
+            if event_type == "CUSTOM" and event.get("name") == "yaacli.steering_accepted":
+                value = event.get("value")
+                if isinstance(value, dict):
+                    projection_key = value.get("projection_key")
+                    text = value.get("text")
+                    if (
+                        isinstance(projection_key, str)
+                        and projection_key not in self._projected_steering_receipt_keys
+                        and isinstance(text, str)
+                        and text
+                    ):
+                        self._projected_steering_receipt_keys.add(projection_key)
+                        from rich.text import Text as RichText
+
+                        user_text = RichText()
+                        user_text.append("> ", style="bold green")
+                        user_text.append(text)
+                        self._append_block(self._renderer.render(user_text, width=width).rstrip("\n"))
+                continue
             if event_type == "CUSTOM" and event.get("name") == "yaacli.steering_applied":
                 value = event.get("value")
                 if isinstance(value, dict):
@@ -1674,6 +1694,7 @@ class TUIApp:
     def _restore_output_from_display_events(self, events: Sequence[dict[str, Any]]) -> None:
         """Rebuild visible output from compacted display-layer events."""
         self._reset_output_blocks()
+        self._projected_steering_receipt_keys.clear()
         self._projected_steering_keys.clear()
         # The transcript was cleared, so live tool state must not suppress the
         # corresponding canonical replay events as already rendered.
@@ -2250,7 +2271,7 @@ class TUIApp:
 
         service = self._session_service
         try:
-            service.accept_input(
+            record = service.accept_input(
                 self._active_logical_run_id,
                 [message],
                 origin="user",
@@ -2259,10 +2280,16 @@ class TUIApp:
             self._append_error_output(exc)
             return False
 
-        # Durable acceptance is the user-visible receive boundary. Record the
-        # ordinary user-input projection only after persistence succeeds; the
-        # later EnqueuedMessagesEvent records the distinct injection boundary.
-        self._append_user_input(message)
+        # Durable acceptance is the user-visible receive boundary. Record it
+        # only after persistence succeeds; EnqueuedMessagesEvent later records
+        # the distinct injection boundary with the same stable projection key.
+        self._record_display_system_event(
+            "steering_accepted",
+            {
+                "projection_key": _steering_projection_key(self._session_id, record.input_id),
+                "text": message,
+            },
+        )
 
         async def dispatch() -> None:
             try:
@@ -2270,7 +2297,7 @@ class TUIApp:
             except Exception:
                 logger.exception("Durable steering dispatch failed; the accepted input remains pending")
 
-        logger.debug("Durable steering accepted: %s", message[:50])
+        logger.debug("Durable steering accepted (chars=%d)", len(message))
         self._track_managed_task(asyncio.create_task(dispatch()))
         return True
 
@@ -5618,6 +5645,7 @@ class TUIApp:
         self._tool_messages.clear()
         self._subagent_states.clear()
         self._background_subagent_ids.clear()
+        self._projected_steering_receipt_keys.clear()
         self._projected_steering_keys.clear()
         self._display_replay.clear()
         self._event_renderer.clear()

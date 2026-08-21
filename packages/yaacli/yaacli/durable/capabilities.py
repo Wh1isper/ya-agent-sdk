@@ -126,11 +126,12 @@ class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
     ) -> AsyncIterator[Any]:
         async for event in stream:
             if isinstance(event, EnqueuedMessagesEvent):
-                self._mark_applied(ctx.deps, event.enqueue_id)
+                self.reconcile_applied_enqueue(ctx.deps, event.enqueue_id)
             yield event
 
     @staticmethod
-    def _mark_applied(deps: TUIContext, enqueue_id: str) -> None:
+    def reconcile_applied_enqueue(deps: TUIContext, enqueue_id: str) -> None:
+        """Apply one native enqueue confirmation to ledger and product state."""
         deps.run_input_ledger.mark_applied_by_enqueue_id(enqueue_id)
         DurableInboxPumpCapability._sync_applied_inputs(deps)
 

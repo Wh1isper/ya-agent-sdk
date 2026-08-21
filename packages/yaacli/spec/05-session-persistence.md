@@ -154,11 +154,16 @@ The database row is canonical. `notify_input` is only a wake/correlation command
 `ctx.enqueue()` while the segment is bound. One product input is enqueued at most once
 per native segment attempt; an unresolved row may be retried once in a later attempt.
 Native enqueue-application events reconcile both the product row and `RunInputLedger`
-through the recorded attempt ledger rather than a mutable latest-ID race.
+through the recorded attempt ledger rather than a mutable latest-ID race. The execution
+coordinator performs this reconciliation before host display projection and before a
+later model failure can fence unresolved input.
 
 At terminal boundaries the store closes ingress. Every previously accepted input must
-be applied or rejected with a reason before terminal publication. Late writes to a
-closed, cancelling, terminal, or tombstoned run fail explicitly.
+be applied or rejected with a reason before terminal publication. Failure, cancellation,
+and interruption retain only stable checkpoint projection plus the identity-keyed
+`steering_accepted` and `steering_applied` durable UI facts; uncommitted model text,
+reasoning, and tool events remain excluded. Late writes to a closed, cancelling,
+terminal, or tombstoned run fail explicitly.
 
 See [04-steering.md](04-steering.md).
 

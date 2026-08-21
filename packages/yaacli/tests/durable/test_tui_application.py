@@ -135,6 +135,11 @@ session_dir = "{session_dir}"
         assert app._durable_store is not None
         app.runtime.ctx.goal_task = "cancelled goal"
         app.runtime.ctx.goal_iteration = 2
+        steering_text = "remember this cancelled guidance"
+        input_area = TextArea(text=steering_text, multiline=True)
+        app._submit_input(input_area.text, input_area)
+        assert input_area.buffer.text == ""
+        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
 
         app._cancel_foreground()
         assert app.phase is TUIPhase.CANCELLING
@@ -147,6 +152,16 @@ session_dir = "{session_dir}"
             "status": "cancelled",
             "reason": "user_interrupted",
         }
+        assert (
+            sum(
+                event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_accepted"
+                for event in revision.display_projection
+            )
+            == 1
+        )
+        assert not any(event.get("name") == "yaacli.steering_applied" for event in revision.display_projection)
+        assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "rejected"
+        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
         assert any("Cancelled · durable cancellation recorded" in line for line in app._output_lines)
         assert not any("[ERROR]" in line or "RuntimeError" in line for line in app._output_lines)
         cancellation_events = [
@@ -237,7 +252,7 @@ session_dir = "{session_dir}"
         assert any("[Goal] Stopped after an error at iteration 3" in line for line in app._output_lines)
 
 
-async def test_tui_failed_run_restores_empty_canonical_revision(
+async def test_tui_failed_run_restores_only_durable_projection(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
@@ -296,6 +311,11 @@ session_dir = "{session_dir}"
         app.runtime.ctx.note_manager.set("transient", "not committed")
         app.runtime.ctx.goal_task = "failed goal"
         app.runtime.ctx.goal_iteration = 4
+        steering_text = "remember this failed guidance"
+        input_area = TextArea(text=steering_text, multiline=True)
+        app._submit_input(input_area.text, input_area)
+        assert input_area.buffer.text == ""
+        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
 
         release_failure.set()
         await asyncio.wait_for(task, timeout=5)
@@ -305,10 +325,23 @@ session_dir = "{session_dir}"
         assert revision.terminal["status"] == "failed"
         assert revision.terminal["error"] == "model exploded"
         assert revision.resumable_state == {}
-        assert revision.display_projection == []
+        assert (
+            sum(
+                event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_accepted"
+                for event in revision.display_projection
+            )
+            == 1
+        )
+        assert not any(event.get("name") == "yaacli.steering_applied" for event in revision.display_projection)
+        assert not any(
+            event.get("type") in {"RUN_STARTED", "TEXT_MESSAGE_CHUNK"} for event in revision.display_projection
+        )
+        assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "rejected"
         replay = app._display_replay.snapshot()
         assert sum(event.get("type") == "RUN_ERROR" for event in replay) == 1
         assert not any(event.get("type") in {"RUN_STARTED", "TEXT_MESSAGE_CHUNK"} for event in replay)
+        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
+        assert not any("uncommitted partial output" in line for line in app._output_lines)
         assert app.runtime.ctx.note_manager.get("transient") is None
         assert any("Agent run ended with status failed: model exploded" in line for line in app._output_lines)
         assert app._last_snapshot_saved is True
@@ -316,6 +349,120 @@ session_dir = "{session_dir}"
         assert app.phase is TUIPhase.IDLE
         assert app.runtime.ctx.goal_active is False
         assert any("[Goal] Stopped after an error at iteration 4" in line for line in app._output_lines)
+
+
+async def test_tui_failed_run_preserves_native_applied_steering_pair(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        """
+[general]
+model = "test"
+
+[session]
+auto_restore = false
+session_dir = "{session_dir}"
+""".format(session_dir=(tmp_path / "sessions").as_posix()),
+        encoding="utf-8",
+    )
+    manager = ConfigManager(config_dir=config_dir)
+    config = manager.load()
+    first_model_started = asyncio.Event()
+    release_first_model = asyncio.Event()
+    second_model_started = asyncio.Event()
+    release_second_failure = asyncio.Event()
+    model_calls = 0
+
+    async def stream_response(
+        _messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str]:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            first_model_started.set()
+            await release_first_model.wait()
+            yield "uncommitted output before injected failure"
+            return
+        second_model_started.set()
+        yield "uncommitted second output"
+        await release_second_failure.wait()
+        raise RuntimeError("model failed after steering injection")
+
+    def minimal_runtime_factory(*args: Any, **kwargs: Any):
+        del args
+        binding_ref = kwargs["durable_binding_ref"]
+        return create_agent(
+            FunctionModel(stream_function=stream_response),
+            capabilities=[DurableInboxPumpCapability()],
+            context_type=TUIContext,
+            context_kwargs={"durable_binding_ref": binding_ref},
+            env=TUIEnvironment,
+            env_kwargs={"allowed_paths": [tmp_path], "default_path": tmp_path},
+            agent_name="yaacli_main_v2",
+        )
+
+    monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
+    app = TUIApp(config, manager, working_dir=tmp_path)
+
+    async with app:
+        assert await app._restore_startup_session() is False
+        assert app._launch_agent("fail after applying guidance") is True
+        task = app._agent_task
+        assert task is not None
+        await asyncio.wait_for(first_model_started.wait(), timeout=5)
+        logical_run_id = app._active_logical_run_id
+        assert logical_run_id is not None
+        assert app._durable_store is not None
+
+        steering_text = "apply this before failing"
+        input_area = TextArea(text=steering_text, multiline=True)
+        app._submit_input(input_area.text, input_area)
+        assert input_area.buffer.text == ""
+        release_first_model.set()
+        await asyncio.wait_for(second_model_started.wait(), timeout=5)
+        for _ in range(100):
+            if any(event.get("name") == "yaacli.steering_applied" for event in app._display_replay.snapshot()):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("Native steering application was not projected")
+        assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "applied"
+        release_second_failure.set()
+        await asyncio.wait_for(task, timeout=5)
+
+        assert model_calls == 2
+        revision = app._durable_store.get_revision_for_run(logical_run_id)
+        assert revision is not None
+        assert revision.terminal["status"] == "failed"
+        assert revision.terminal["error"] == "model failed after steering injection"
+        assert (
+            sum(
+                event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_accepted"
+                for event in revision.display_projection
+            )
+            == 1
+        )
+        assert (
+            sum(
+                event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_applied"
+                for event in revision.display_projection
+            )
+            == 1
+        )
+        assert not any(
+            event.get("type") in {"RUN_STARTED", "TEXT_MESSAGE_CHUNK"} for event in revision.display_projection
+        )
+        assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "applied"
+
+        output = "\n".join(app._output_lines)
+        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
+        assert output.count("Guidance injected") == 1
+        assert "uncommitted output before injected failure" not in output
+        assert "model failed after steering injection" in output
 
 
 async def test_tui_terminal_replay_preserves_steering_pair_and_interleaved_tool_call(
@@ -411,7 +558,10 @@ session_dir = "{session_dir}"
         assert revision is not None
         assert revision.terminal["status"] == "completed"
         replay = revision.display_projection
-        assert sum(event.get("type") == "CUSTOM" and event.get("name") == "yaacli.user_input" for event in replay) == 1
+        assert (
+            sum(event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_accepted" for event in replay)
+            == 1
+        )
         assert (
             sum(event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_applied" for event in replay)
             == 1

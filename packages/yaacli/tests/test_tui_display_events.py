@@ -127,6 +127,20 @@ def test_tui_terminal_replay_reconstructs_tools_after_live_render() -> None:
             "content": "done",
             "timestamp": 2_500,
         },
+        {"type": "RUN_STARTED", "runId": "run-2"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "tool-1",
+            "toolCallName": "shell",
+            "delta": '{"command":"printf second"}',
+            "timestamp": 3_000,
+        },
+        {
+            "type": "TOOL_CALL_RESULT",
+            "toolCallId": "tool-1",
+            "content": "second",
+            "timestamp": 4_000,
+        },
     ]
     app._handle_and_record_display_events(events)
     live_output = list(app._output_lines)
@@ -135,9 +149,9 @@ def test_tui_terminal_replay_reconstructs_tools_after_live_render() -> None:
     app._restore_output_from_display_events(replay)
 
     assert app._output_lines == live_output
-    assert sum("Calling:" in line and "shell" in line for line in app._output_lines) == 1
-    assert sum("Complete:" in line and "shell" in line for line in app._output_lines) == 1
-    assert app._tool_messages["tool-1"].content == "done"
+    assert sum("Calling:" in line and "shell" in line for line in app._output_lines) == 2
+    assert sum("Complete:" in line and "shell" in line for line in app._output_lines) == 2
+    assert app._tool_messages["tool-1"].content == "second"
     assert "tool-1" in app._printed_tool_calls
 
 
