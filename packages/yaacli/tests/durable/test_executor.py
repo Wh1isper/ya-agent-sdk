@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.subagents import DelegationCapability, SubagentRegistry
+from yaacli.display_replay import DisplayReplayLimits
 from yaacli.durable.application import SessionApplicationService, build_runtime_descriptor
 from yaacli.durable.capabilities import DurableInboxPumpCapability
 from yaacli.durable.executor import (
@@ -38,6 +40,7 @@ from yaacli.durable.models import (
     RuntimeDescriptor,
     StartRunRequest,
 )
+from yaacli.durable.projections import steering_projection_key
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.session import TUIContext
@@ -888,6 +891,104 @@ async def test_startup_marks_active_execution_interrupted_from_latest_checkpoint
         )
         assert persisted_steering.state is expected_final_state
         assert store.list_nonterminal_descriptors() == ()
+    finally:
+        await worker.close()
+        store.close()
+
+
+async def test_startup_recovery_bounds_reconstructed_steering_projection(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    descriptor = build_runtime_descriptor(
+        agent_spec={"name": "yaacli_main_v2", "model": "test"},
+        main_plan_manifest=_manifest(),
+    )
+    session = store.create_session(str(tmp_path), session_id="bounded-recovery-session")
+    run = store.start_run(
+        StartRunRequest(
+            session_id=session.session_id,
+            idempotency_key="bounded-recovery-turn",
+            descriptor=descriptor,
+            initial_content=["start"],
+            plan_fingerprint=descriptor.plan_fingerprint,
+            executable_version=descriptor.executable_version,
+        )
+    )
+    store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+    steering_records = []
+    for index in range(140):
+        steering = store.accept_input(
+            run.logical_run_id,
+            [f"restart steering {index}: " + ("x" * 20_000)],
+            idempotency_key=f"bounded-restart-steering-{index}",
+            priority=InputPriority.asap,
+            wake_execution=False,
+        )
+        store.transition_input(
+            steering.input_id,
+            InputState.accepted,
+            InputState.enqueued,
+            native_enqueue_id=f"bounded-restart-enqueue-{index}",
+        )
+        steering_records.append(
+            store.transition_input(
+                steering.input_id,
+                InputState.enqueued,
+                InputState.applied,
+            )
+        )
+
+    worker = await LocalExecutionWorker.create(
+        store=store,
+        state_path=tmp_path / "coordinator.state",
+        active_descriptor=descriptor,
+        runtime_factory=_runtime_factory(
+            tmp_path,
+            lambda _descriptor: TestModel(custom_output_text="must not replay"),
+        ),
+    )
+    try:
+        revision = store.get_revision_for_run(run.logical_run_id)
+        assert revision is not None
+        limits = DisplayReplayLimits().normalized()
+        projection_size = sum(
+            len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            for event in revision.display_projection
+        )
+        assert len(revision.display_projection) <= limits.max_events
+        assert projection_size <= limits.max_bytes
+        assert len(revision.display_projection) < len(steering_records) * 2
+
+        event_positions: dict[tuple[str, str], int] = {}
+        for position, event in enumerate(revision.display_projection):
+            assert isinstance(event, dict)
+            name = event.get("name")
+            value = event.get("value")
+            if not isinstance(name, str) or not isinstance(value, dict):
+                continue
+            projection_key = value.get("projection_key")
+            if isinstance(projection_key, str):
+                event_positions[(name, projection_key)] = position
+            if name == "yaacli.steering_accepted":
+                text = value.get("text")
+                assert isinstance(text, str)
+                assert len(text) <= limits.max_event_payload_chars
+
+        accepted_keys = {
+            projection_key for name, projection_key in event_positions if name == "yaacli.steering_accepted"
+        }
+        applied_keys = {projection_key for name, projection_key in event_positions if name == "yaacli.steering_applied"}
+        assert applied_keys <= accepted_keys
+        for projection_key in applied_keys:
+            assert (
+                event_positions[("yaacli.steering_accepted", projection_key)]
+                < event_positions[("yaacli.steering_applied", projection_key)]
+            )
+
+        latest = steering_records[-1]
+        latest_key = steering_projection_key(session.session_id, latest.input_id)
+        assert latest_key in applied_keys
     finally:
         await worker.close()
         store.close()

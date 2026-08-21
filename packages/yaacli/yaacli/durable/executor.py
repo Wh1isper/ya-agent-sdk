@@ -30,6 +30,7 @@ from ya_agent_sdk.execution import AgentExecutionHarness, AgentSegmentRequest, A
 from ya_agent_sdk.inputs import ActiveRunRegistry, InputDisposition, InputOrigin, RunInputLedger
 from ya_agent_sdk.subagents import DelegationCapability
 
+from yaacli.display_replay import BoundedDisplayReplay
 from yaacli.durable.bindings import runtime_bindings
 from yaacli.durable.capabilities import DurableInboxPumpCapability
 from yaacli.durable.models import (
@@ -44,7 +45,12 @@ from yaacli.durable.models import (
     RuntimeDescriptor,
     utc_now,
 )
-from yaacli.durable.projections import DURABLE_STEERING_EVENT_NAMES, durable_steering_display_events
+from yaacli.durable.projections import (
+    DURABLE_STEERING_EVENT_NAMES,
+    STEERING_ACCEPTED_EVENT_NAME,
+    STEERING_APPLIED_EVENT_NAME,
+    durable_steering_display_events,
+)
 from yaacli.durable.restoration import restore_resumable_state_safely
 from yaacli.durable.store import SessionStore
 from yaacli.environment import TUIEnvironment
@@ -808,13 +814,13 @@ class LocalExecutionCoordinator:
         run: LogicalRunRecord,
         projection: Sequence[JsonValue],
     ) -> list[JsonValue]:
-        return _merge_durable_display_projection(
-            projection,
-            durable_steering_display_events(
-                run.session_id,
-                self.store.list_inputs(run.logical_run_id),
-            ),
+        durable_events = durable_steering_display_events(
+            run.session_id,
+            self.store.list_inputs(run.logical_run_id),
         )
+        merged = _merge_durable_display_projection(projection, durable_events)
+        bounded = _bound_display_projection(merged)
+        return _drop_orphaned_current_applied_events(bounded, durable_events)
 
     def _revision_payload(
         self,
@@ -995,6 +1001,39 @@ class LocalExecutionWorker:
         for plan in reversed(self.runtime_registry.list()):
             await plan.runtime.__aexit__(None, None, None)
             runtime_bindings.unregister(plan.binding_ref, plan.binding_context)
+
+
+def _bound_display_projection(events: Sequence[JsonValue]) -> list[JsonValue]:
+    replay = BoundedDisplayReplay()
+    replay.extend_snapshot([dict(event) for event in events if isinstance(event, dict)])
+    return cast(list[JsonValue], replay.snapshot())
+
+
+def _drop_orphaned_current_applied_events(
+    bounded: Sequence[JsonValue],
+    durable_events: Sequence[JsonValue],
+) -> list[JsonValue]:
+    current_keys = {
+        identity[1] for event in durable_events if (identity := _durable_display_event_identity(event)) is not None
+    }
+    retained_accepted_keys = {
+        identity[1]
+        for event in bounded
+        if (identity := _durable_display_event_identity(event)) is not None
+        and identity[0] == STEERING_ACCEPTED_EVENT_NAME
+    }
+    retained: list[JsonValue] = []
+    for event in bounded:
+        identity = _durable_display_event_identity(event)
+        if (
+            identity is not None
+            and identity[0] == STEERING_APPLIED_EVENT_NAME
+            and identity[1] in current_keys
+            and identity[1] not in retained_accepted_keys
+        ):
+            continue
+        retained.append(event)
+    return retained
 
 
 def _merge_durable_display_projection(

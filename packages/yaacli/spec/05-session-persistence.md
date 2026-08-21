@@ -164,8 +164,10 @@ and interruption retain only stable checkpoint projection plus the identity-keye
 `steering_accepted` and `steering_applied` durable UI facts; uncommitted model text,
 reasoning, and tool events remain excluded. These facts are deterministically rebuilt
 from run-scoped durable input rows before terminal commit, so process-restart recovery
-does not depend on restoring the previous frontend replay first. Late writes to a
-closed, cancelling, terminal, or tombstoned run fail explicitly.
+does not depend on restoring the previous frontend replay first. The merged terminal
+projection passes through the same per-event, event-count, run-count, and byte budgets
+as live display replay; retained applied facts never outlive their accepted receipt.
+Late writes to a closed, cancelling, terminal, or tombstoned run fail explicitly.
 
 See [04-steering.md](04-steering.md).
 
