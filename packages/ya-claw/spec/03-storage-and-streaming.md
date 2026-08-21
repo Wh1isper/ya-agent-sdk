@@ -86,6 +86,7 @@ The filesystem does not need a session-first directory structure.
 ## `state.json`
 
 Each committed run may write one `state.json` file. A suspended native segment also writes its stable state checkpoint before any durable HITL batch becomes externally visible.
+YA Claw upgrades its unversioned pre-2.0 SDK context state at the restore boundary before strict v2 validation. The upgrade preserves main-session state with direct equivalents and discards legacy parent-owned subagent history and registry data, which have no valid representation in the 2.0 subagent execution store. Versioned state is never compatibility-normalized.
 
 It should include:
 
