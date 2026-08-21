@@ -116,6 +116,96 @@ async def test_turn_runs_through_local_coordinator_and_commits_revision(tmp_path
         store.close()
 
 
+async def test_active_feature_input_is_applied_once_across_tool_nodes(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    marker = "unique-background-shell-completion"
+    first_model_started = asyncio.Event()
+    release_first_model = asyncio.Event()
+    final_messages: list[ModelMessage] = []
+    model_calls = 0
+    toolset = FunctionToolset[TUIContext](id="steps")
+
+    async def step(value: str) -> str:
+        return value
+
+    toolset.add_tool(Tool(step))
+
+    async def stream_response(
+        messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            first_model_started.set()
+            await release_first_model.wait()
+        if model_calls <= 2:
+            yield {
+                0: DeltaToolCall(
+                    name="step",
+                    json_args=f'{{"value":"step-{model_calls}"}}',
+                    tool_call_id=f"step-{model_calls}",
+                )
+            }
+            return
+        final_messages.extend(messages)
+        yield "completed after feature input"
+
+    descriptor = build_runtime_descriptor(
+        agent_spec={"name": "yaacli_main_v2", "model": "function"},
+        main_plan_manifest=_manifest(),
+    )
+
+    def runtime_factory(_descriptor: RuntimeDescriptor, binding_ref: str):
+        return create_agent(
+            FunctionModel(stream_function=stream_response),
+            capabilities=[
+                NativeToolsetCapability(toolset, id="steps"),
+                DurableInboxPumpCapability(),
+            ],
+            context_type=TUIContext,
+            context_kwargs={"durable_binding_ref": binding_ref},
+            env=TUIEnvironment,
+            env_kwargs={"allowed_paths": [tmp_path], "default_path": tmp_path},
+            agent_name="yaacli_main_v2",
+        )
+
+    worker = await LocalExecutionWorker.create(
+        store=store,
+        state_path=tmp_path / "coordinator.state",
+        active_descriptor=descriptor,
+        runtime_factory=runtime_factory,
+    )
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="feature-session")
+        run = await service.start_turn(
+            session.session_id,
+            ["start tool sequence"],
+            descriptor=descriptor,
+            idempotency_key="feature-turn",
+        )
+        await asyncio.wait_for(first_model_started.wait(), timeout=5)
+        accepted = service.accept_input(
+            run.logical_run_id,
+            [marker],
+            idempotency_key="shell-completion",
+            origin="feature",
+        )
+        release_first_model.set()
+
+        await asyncio.wait_for(service.wait(run.logical_run_id), timeout=5)
+        persisted = store.list_inputs(run.logical_run_id)
+
+        assert model_calls == 3
+        assert str(final_messages).count(marker) == 1
+        assert next(item for item in persisted if item.input_id == accepted.input_id).state is InputState.applied
+    finally:
+        release_first_model.set()
+        await worker.close()
+        store.close()
+
+
 async def test_run_turn_retries_transient_initial_dispatch_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

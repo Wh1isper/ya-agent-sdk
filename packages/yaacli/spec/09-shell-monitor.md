@@ -112,8 +112,10 @@ and submits them through `SessionApplicationService`:
 - idle TUI: start one normal durable turn according to shell wake policy.
 
 Persistence precedes workflow notification. Native application is tracked by the same
-accepted/enqueued/applied/rejected input state machine as user steering. Monitor
-acknowledgement never claims that the model observed content.
+accepted/enqueued/applied/rejected input state machine as user steering. The durable
+inbox enqueues one readiness record at most once per native segment attempt, so repeated
+graph nodes cannot replay a stale reminder after `shell_wait` consumes the retained
+result. Monitor acknowledgement never claims that the model observed content.
 
 Concurrent routing is coalesced by one TUI delivery task. Notifications that become
 stale during delivery are safely omitted on the next revalidation.

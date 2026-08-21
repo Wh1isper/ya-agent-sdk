@@ -151,8 +151,10 @@ wake command is delivered. States are `accepted`, `enqueued`, `applied`, and `re
 
 The database row is canonical. `notify_input` is only a wake/correlation command.
 `DurableInboxPumpCapability` drains rows at native graph boundaries and calls native
-`ctx.enqueue()` while the segment is bound. Native enqueue-application events reconcile
-both the product row and `RunInputLedger`.
+`ctx.enqueue()` while the segment is bound. One product input is enqueued at most once
+per native segment attempt; an unresolved row may be retried once in a later attempt.
+Native enqueue-application events reconcile both the product row and `RunInputLedger`
+through the recorded attempt ledger rather than a mutable latest-ID race.
 
 At terminal boundaries the store closes ingress. Every previously accepted input must
 be applied or rejected with a reason before terminal publication. Late writes to a
@@ -191,7 +193,8 @@ old execution. A later user continuation is a new logical run from the published
 
 Worker shutdown cancels active tasks and commits `interrupted`. Explicit user cancel
 sets cancellation intent first and commits `cancelled`; shutdown and cancellation are
-not conflated.
+not conflated. The TUI treats the resulting `cancelled` revision as a normal user-visible
+terminal outcome, emits `run_cancelled`, and does not project it as `RUN_ERROR`.
 
 ## Process-Local Subagents
 

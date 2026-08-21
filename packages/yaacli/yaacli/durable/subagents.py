@@ -777,8 +777,6 @@ class DurableSubagentInboxCapability(AbstractCapability[TUIContext]):
         pending: tuple[InputRecord, ...],
     ) -> None:
         for item in pending:
-            if ctx.deps.run_input_ledger.find(item.input_id) is not None:
-                continue
             content = _USER_CONTENT.validate_python(item.content)
             prompt_content: str | list[UserContent]
             prompt_content = content[0] if len(content) == 1 and isinstance(content[0], str) else content
@@ -788,12 +786,17 @@ class DurableSubagentInboxCapability(AbstractCapability[TUIContext]):
                 priority=item.priority.value,
                 input_id=item.input_id,
             )
+            native_attempt_id = ctx.run_id or ctx.deps.run_id
+            if ledger_record.disposition in (InputDisposition.applied, InputDisposition.rejected) or any(
+                attempt.native_attempt_id == native_attempt_id for attempt in ledger_record.enqueue_attempts
+            ):
+                continue
             enqueue_id = ctx.enqueue(*content, priority=item.priority.value)
             if enqueue_id is None:  # pragma: no cover - non-empty store invariant
                 continue
             ctx.deps.run_input_ledger.mark_enqueued(
                 ledger_record.input_id,
-                native_attempt_id=ctx.run_id or ctx.deps.run_id,
+                native_attempt_id=native_attempt_id,
                 enqueue_id=enqueue_id,
             )
             self.store.transition_input(

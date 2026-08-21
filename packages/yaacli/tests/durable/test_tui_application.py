@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from ya_agent_sdk.agents.main import create_agent
 from yaacli.app.tui import TUIApp
@@ -67,3 +71,78 @@ session_dir = "{session_dir}"
         session = app._durable_store.get_session(app.session_id)
         assert session is not None
         assert session.head_revision_id is not None
+
+
+async def test_tui_durable_cancel_is_a_normal_terminal_result(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        """
+[general]
+model = "test"
+
+[session]
+auto_restore = false
+session_dir = "{session_dir}"
+""".format(session_dir=(tmp_path / "sessions").as_posix()),
+        encoding="utf-8",
+    )
+    manager = ConfigManager(config_dir=config_dir)
+    config = manager.load()
+    model_started = asyncio.Event()
+
+    async def blocked_response(
+        _messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str]:
+        model_started.set()
+        await asyncio.Event().wait()
+        yield "unreachable"
+
+    def minimal_runtime_factory(*args: Any, **kwargs: Any):
+        del args
+        binding_ref = kwargs["durable_binding_ref"]
+        return create_agent(
+            FunctionModel(stream_function=blocked_response),
+            capabilities=[DurableInboxPumpCapability()],
+            context_type=TUIContext,
+            context_kwargs={"durable_binding_ref": binding_ref},
+            env=TUIEnvironment,
+            env_kwargs={"allowed_paths": [tmp_path], "default_path": tmp_path},
+            agent_name="yaacli_main_v2",
+        )
+
+    monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
+    app = TUIApp(config, manager, working_dir=tmp_path)
+
+    async with app:
+        assert await app._restore_startup_session() is False
+        assert app._launch_agent("cancel this durable turn") is True
+        task = app._agent_task
+        assert task is not None
+        await asyncio.wait_for(model_started.wait(), timeout=5)
+        logical_run_id = app._active_logical_run_id
+        assert logical_run_id is not None
+        assert app._session_service is not None
+        assert app._durable_store is not None
+        assert app._execution_worker is not None
+
+        app._session_service.accept_cancel(logical_run_id, reason="user_interrupted")
+        cancelling = app._durable_store.get_run(logical_run_id)
+        assert cancelling is not None
+        await app._execution_worker.coordinator._commit_cancelled(cancelling)
+        await asyncio.wait_for(task, timeout=5)
+
+        revision = app._durable_store.get_revision_for_run(logical_run_id)
+        assert revision is not None
+        assert revision.terminal == {
+            "status": "cancelled",
+            "reason": "user_interrupted",
+        }
+        assert any("Cancelled · durable cancellation recorded" in line for line in app._output_lines)
+        assert not any("[ERROR]" in line or "RuntimeError" in line for line in app._output_lines)
+        assert app._last_snapshot_saved is True
+        assert app._active_logical_run_id is None

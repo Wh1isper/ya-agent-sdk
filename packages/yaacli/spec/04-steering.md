@@ -68,12 +68,16 @@ input identity; the payload remains in `SessionStore`.
 - validates stored content as Pydantic AI `UserContent`;
 - records the input in `RunInputLedger`;
 - uses the persisted `asap` or `when_idle` priority;
-- records the native enqueue ID; and
-- marks application only after matching `EnqueuedMessagesEvent`.
+- calls native enqueue at most once for each input in one native segment attempt;
+- permits one fresh enqueue when an unresolved input crosses into a new native attempt;
+- records every native enqueue attempt; and
+- marks the product row applied when any recorded attempt emits `EnqueuedMessagesEvent`.
 
 At a terminal graph boundary it closes ingress and reconciles every remaining record.
-Accepted input is therefore applied or explicitly rejected; it is never silently
-cleared because a foreground task ended.
+Repeated graph nodes in one attempt cannot duplicate the same input or replace the
+receipt identity before its application event arrives. Accepted input is therefore
+applied or explicitly rejected; it is never silently cleared because a foreground task
+ended.
 
 ## Input States
 

@@ -3227,6 +3227,18 @@ class TUIApp:
                 )
             self._restore_revision(revision)
             status = str(revision.terminal.get("status", ""))
+            if status == LogicalRunStatus.cancelled.value:
+                cancelled = True
+                reason = revision.terminal.get("reason")
+                if not isinstance(reason, str) or not reason:
+                    reason = "cancelled"
+                if self._display_adapter is not None and not run_finished:
+                    self._handle_and_record_display_events([
+                        self._display_adapter.build_run_custom_event("run_cancelled", {"reason": reason})
+                    ])
+                self._append_output("[Cancelled · durable cancellation recorded]")
+                self._last_snapshot_saved = True
+                return
             if status != LogicalRunStatus.completed.value:
                 error = revision.terminal.get("error")
                 raise RuntimeError(str(error or f"Agent run ended with status {status}"))
