@@ -838,6 +838,7 @@ async def test_cancel_terminalizes_suspended_execution_idempotently() -> None:
         prompt="work",
         deferred={},
     )
+    record.started_at = record.created_at.replace(tzinfo=None)
     await store.create(record)
     service = SubagentExecutionService(
         SubagentRegistry([plan]),
@@ -846,14 +847,20 @@ async def test_cancel_terminalizes_suspended_execution_idempotently() -> None:
         execution_host=AsyncioSubagentExecutionHost(),
     )
 
-    first = await service.cancel("child", caller_scope_id="session")
+    parent = AgentContext(delegation_scope_id="session")
+    object.__setattr__(parent, "_stream_queue_enabled", True)
+
+    first = await service.cancel("child", caller_scope_id="session", parent_ctx=parent)
     second = await service.cancel("child", caller_scope_id="session")
+    complete_event = parent.agent_stream_queues["child"].get_nowait()
     await service.close()
 
     assert first.state is SubagentExecutionState.cancelled
     assert first.input_state is SubagentInputState.rejected
     assert first.completed_at is not None
     assert second.completed_at == first.completed_at
+    assert isinstance(complete_event, SubagentCompleteEvent)
+    assert complete_event.duration_seconds >= 0
 
 
 async def test_suspended_cancel_linearizes_before_continuation_and_emits_complete_once() -> None:

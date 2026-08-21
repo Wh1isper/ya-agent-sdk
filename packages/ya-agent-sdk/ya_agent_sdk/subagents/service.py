@@ -1403,8 +1403,9 @@ class SubagentExecutionService:
     ) -> None:
         duration = 0.0
         if record.started_at is not None:
-            end = record.completed_at or datetime.now(UTC)
-            duration = (end - record.started_at).total_seconds()
+            started_at = _as_utc(record.started_at)
+            end = _as_utc(record.completed_at or datetime.now(UTC))
+            duration = (end - started_at).total_seconds()
         requests = record.usage.get("requests", 0)
         await parent_ctx.emit_agent_event(
             record.execution_id,
@@ -1538,6 +1539,12 @@ def _rejected_steering_receipt(
         input_id=idempotency_key or str(uuid4()),
         disposition=InputDisposition.rejected,
     )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _prompt_preview(prompt: str | list[UserContent]) -> str:
