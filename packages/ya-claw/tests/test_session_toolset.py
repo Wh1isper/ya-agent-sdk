@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 import urllib.request
 from typing import Any
 
+import pytest
 from ya_agent_environment import BaseResource, Environment
 from ya_agent_sdk.context import AgentContext
 from ya_claw.toolsets.session import (
     CLAW_SELF_CLIENT_KEY,
+    ClawSelfApiError,
     ClawSelfClient,
     GetRunTraceTool,
     ListSessionTurnsTool,
@@ -222,3 +226,36 @@ def test_claw_self_client_builds_session_scoped_authorized_requests(monkeypatch)
     assert seen["url"] == "http://127.0.0.1:9042/api/v1/sessions/session-1/turns?limit=2"
     assert seen["authorization"] == "Bearer secret-token"
     assert seen["timeout"] == 3.0
+
+
+def test_claw_self_client_preserves_structured_http_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = json.dumps({
+        "detail": {
+            "code": "run_input_closed",
+            "message": "Run is terminal.",
+        }
+    }).encode("utf-8")
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> None:
+        _ = request, timeout
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:9042/api/v1/runs/run-1/steer",
+            code=409,
+            msg="Conflict",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = ClawSelfClient(
+        base_url="http://127.0.0.1:9042/",
+        api_token="secret-token",  # noqa: S106
+        session_id="session-1",
+    )
+
+    with pytest.raises(ClawSelfApiError) as exc_info:
+        client._send_json_sync("/api/v1/runs/run-1/steer", "POST", {"input_parts": []})
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "run_input_closed"
+    assert exc_info.value.detail == "Run is terminal."

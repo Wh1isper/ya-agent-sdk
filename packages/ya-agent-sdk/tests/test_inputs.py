@@ -8,6 +8,7 @@ from ya_agent_sdk.inputs import (
     ActiveRunRegistry,
     InputDisposition,
     InputOrigin,
+    LogicalInputClosedError,
     LogicalRunInputRouter,
     RunInputLedger,
 )
@@ -93,6 +94,19 @@ async def test_router_rejects_stable_input_identity_reuse_with_different_payload
 
     with pytest.raises(ValueError, match="reused with different content"):
         await router.enqueue("second", input_id="sql-input-1")
+
+
+async def test_router_closed_admission_is_typed_but_existing_identity_remains_idempotent() -> None:
+    router = LogicalRunInputRouter(RunInputLedger(logical_run_id="logical-1"))
+    first = await router.enqueue("first", input_id="sql-input-1")
+    router.close(reason="finished")
+
+    repeated = await router.enqueue("first", input_id="sql-input-1")
+    assert repeated.input_id == first.input_id
+    assert repeated.disposition is InputDisposition.rejected
+
+    with pytest.raises(LogicalInputClosedError, match="input is closed"):
+        await router.enqueue("second", input_id="sql-input-2")
 
 
 async def test_router_rebinds_unapplied_input_once_per_native_attempt() -> None:

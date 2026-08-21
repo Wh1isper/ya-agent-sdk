@@ -334,10 +334,14 @@ class ModelRequestCompleteEvent(AgentEvent):
     Attributes:
         loop_index: Current loop iteration number.
         duration_seconds: Time spent waiting for model response.
+        context_tokens: Tokens reported for the completed model request.
+        context_window_size: Configured model context-window size.
     """
 
     loop_index: int = 0
     duration_seconds: float = 0.0
+    context_tokens: int = 0
+    context_window_size: int = 0
 
 
 # =============================================================================

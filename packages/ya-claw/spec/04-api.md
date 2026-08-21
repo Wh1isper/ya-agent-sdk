@@ -382,12 +382,22 @@ Session control routes to `active_run_id`.
 Run control routes to the addressed run.
 
 Direct session/run/async-child steering succeeds only when the addressed logical run is
-actively accepting input. A queued run, terminal run, or session without an active
-accepting run returns HTTP 409 before any success response. A successful response returns
-the persisted SQL/native receipt fields `input_id`, `input_delivery_key`,
-`input_disposition`, `input_sdk_id`, and `input_enqueue_id`; an equal idempotent retry
-returns the same durable receipt. The unified session submit API is separate and may
-merge input into a queued run rather than claiming direct steering.
+actively accepting input. A queued run or session without an active accepting run
+returns HTTP 409 with detail code `run_input_closed`. Under the authoritative run lock,
+a terminal run first resolves an explicit idempotency key: an equal prior request returns
+its existing durable identity and final disposition, conflicting content remains a 409
+error, and only a previously unseen request returns `run_input_closed`. A terminal async
+subagent handle always performs that replay against its own `task_run_id`, even when the
+shared child session has since resumed onto a newer active run. SDK model-facing subagent
+steering translates only that structured closure code into a normal `rejected` receipt;
+unrelated 409 responses remain errors. A successful response returns the
+persisted SQL/native receipt fields `input_id`, `input_delivery_key`,
+`input_disposition`, `input_sdk_id`, and `input_enqueue_id`. Admission and public
+accepted/enqueued events are emitted only for real SQL state transitions, not receipt
+replay. The common durable delivery path emits the enqueued event whether ingress was
+available during the steering request or bound later by the coordinator. The unified
+session submit API is separate and may merge input into a queued run rather than claiming
+direct steering.
 
 ## Event Streaming
 

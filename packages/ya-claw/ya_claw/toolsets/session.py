@@ -22,6 +22,16 @@ CLAW_SELF_CLIENT_KEY = "claw_self_client"
 _DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
 
 
+class ClawSelfApiError(RuntimeError):
+    """Structured failure returned by the authenticated YA Claw self API."""
+
+    def __init__(self, *, status_code: int, code: str | None, detail: str) -> None:
+        super().__init__(f"YA Claw self API request failed with status {status_code}: {detail}")
+        self.status_code = status_code
+        self.code = code
+        self.detail = detail
+
+
 @runtime_checkable
 class SelfSessionClient(Protocol):
     session_id: str
@@ -352,8 +362,8 @@ class ClawSelfClient(BaseResource):
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = _decode_error_detail(exc)
-            raise RuntimeError(f"YA Claw self API request failed with status {exc.code}: {detail}") from exc
+            code, detail = _decode_error_detail(exc)
+            raise ClawSelfApiError(status_code=exc.code, code=code, detail=detail) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"YA Claw self API request failed: {exc.reason}") from exc
 
@@ -373,8 +383,8 @@ class ClawSelfClient(BaseResource):
                 raw_body = response.read().decode("utf-8")
                 return json.loads(raw_body) if raw_body else {}
         except urllib.error.HTTPError as exc:
-            detail = _decode_error_detail(exc)
-            raise RuntimeError(f"YA Claw self API request failed with status {exc.code}: {detail}") from exc
+            code, detail = _decode_error_detail(exc)
+            raise ClawSelfApiError(status_code=exc.code, code=code, detail=detail) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"YA Claw self API request failed: {exc.reason}") from exc
 
@@ -592,18 +602,25 @@ def _dump_json(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _decode_error_detail(exc: urllib.error.HTTPError) -> str:
+def _decode_error_detail(exc: urllib.error.HTTPError) -> tuple[str | None, str]:
     try:
         raw_body = exc.read().decode("utf-8", errors="replace")
     except Exception:
-        return exc.reason
+        return None, str(exc.reason)
     if raw_body == "":
-        return exc.reason
+        return None, str(exc.reason)
     try:
         payload = json.loads(raw_body)
     except json.JSONDecodeError:
-        return raw_body[:500]
+        return None, raw_body[:500]
     detail = payload.get("detail") if isinstance(payload, dict) else None
     if isinstance(detail, str):
-        return detail[:500]
-    return raw_body[:500]
+        return None, detail[:500]
+    if isinstance(detail, dict):
+        code = detail.get("code")
+        message = detail.get("message")
+        return (
+            code if isinstance(code, str) else None,
+            message[:500] if isinstance(message, str) else json.dumps(detail, ensure_ascii=False)[:500],
+        )
+    return None, raw_body[:500]

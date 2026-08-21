@@ -122,6 +122,11 @@ Recommended shape:
 
 Related run and session metadata live in the run record and `state.json`.
 Checkpoint metadata belongs in store-side bookkeeping rather than the replay list payload.
+Public replay uses canonical `ya_agent.*` snake-case lifecycle names. Explicit projections
+exclude parent/child logical-run IDs, durable input/delivery IDs, native enqueue IDs,
+idempotency keys, full injected messages, internal SDK event IDs, and resumable state.
+Subagent events retain only their public execution handle and bounded previews;
+`ya_agent.enqueued_messages` exposes only `message_count`.
 
 ### Deferred Segment and HITL Durability
 

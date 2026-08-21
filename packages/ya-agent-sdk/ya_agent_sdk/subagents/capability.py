@@ -311,6 +311,7 @@ class DelegationCapability(AbstractCapability[AgentContext]):
             record = await self.service.cancel(
                 execution_id,
                 caller_scope_id=_caller_scope(ctx),
+                parent_ctx=ctx.deps,
             )
             return _model_record_json(record)
 

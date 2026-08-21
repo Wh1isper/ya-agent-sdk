@@ -189,10 +189,15 @@ On process shutdown, YA Claw stops ingress sources first, then waits for already
 2. stop schedule dispatcher
 3. stop workflow executor ingress
 4. stop embedded bridge adapters
-5. stop accepting new execution supervisor submissions
-6. wait for active execution supervisor run tasks to complete
+5. close the single app-owned execution-supervisor submission gateway
+6. wait for every run task admitted before that fence to complete
 7. mark the runtime instance stopped
 8. close runtime state, notification hub, and database engine
+
+Every per-run coordinator receives that same app-owned gateway; it never constructs a
+temporary supervisor. Consequently completion or lifecycle processing that tries to
+submit a continuation after step 5 is rejected by the shared admission fence and cannot
+escape the shutdown task snapshot.
 
 `YA_CLAW_SHUTDOWN_TIMEOUT_SECONDS` maps to Uvicorn graceful shutdown timeout. Leave it unset for an unlimited application shutdown wait, and configure orchestrator stop windows such as Docker Compose `stop_grace_period` or systemd `TimeoutStopSec` to cover the longest expected run.
 
@@ -263,6 +268,11 @@ The Web UI should follow an AGUI-aligned split:
 - committed conversation history comes from `message.json` in the run store
 - state restore views read `state.json` from the run store
 - schedule and heartbeat history comes from relational fire records linked to sessions and runs
+- timeline reducers consume canonical events such as `ya_agent.task`,
+  `ya_agent.subagent_start`, `ya_agent.subagent_complete`, `ya_agent.file_change`,
+  `ya_agent.note`, and `ya_agent.model_request_complete`
+- steering status comes from `ya_claw.input_accepted`, `ya_claw.input_enqueued`, and
+  `ya_claw.input_applied`; the removed MessageBus event names are not compatibility inputs
 
 ## Operational Principle
 

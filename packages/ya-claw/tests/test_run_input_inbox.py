@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_agent_sdk.inputs import EnqueueReceipt, InputDisposition
@@ -135,7 +136,7 @@ async def test_external_run_metadata_cannot_forge_server_async_task_linkage(
     assert run_record.run_metadata["execution_profile_snapshot"]["name"] == "default"
 
 
-async def test_steer_is_durable_before_live_ingress_is_available(
+async def test_delayed_steer_delivery_emits_enqueued_transition_once(
     db_session: AsyncSession,
     settings: ClawSettings,
 ) -> None:
@@ -158,6 +159,33 @@ async def test_steer_is_durable_before_live_ingress_is_available(
     assert inbox.delivery_key == "client-message-1"
     assert inbox.status == "accepted"
     assert inbox.attempt_count == 0
+
+    async def ingress(
+        input_id: str,
+        input_parts: list[dict[str, Any]],
+    ) -> EnqueueReceipt:
+        _ = input_parts
+        return EnqueueReceipt(
+            logical_run_id="logical-1",
+            input_id=input_id,
+            disposition=InputDisposition.enqueued,
+            enqueue_id="delayed-enqueue",
+        )
+
+    runtime_state.bind_input_ingress(run_record.id, ingress)
+    delivered = await deliver_accepted_run_inputs(db_session, runtime_state, run_record.id)
+    repeated = await deliver_accepted_run_inputs(db_session, runtime_state, run_record.id)
+    await db_session.refresh(inbox)
+    event_names = [
+        event.get("name") for event in runtime_state.get_replay_events(run_record.id) if event.get("type") == "CUSTOM"
+    ]
+
+    assert len(delivered) == 1
+    assert repeated == []
+    assert inbox.status == "enqueued"
+    assert inbox.enqueue_id == "delayed-enqueue"
+    assert event_names.count("ya_claw.input_accepted") == 1
+    assert event_names.count("ya_claw.input_enqueued") == 1
 
 
 async def test_run_termination_rejects_open_input_atomically(
@@ -221,6 +249,11 @@ async def test_steer_idempotency_delivers_once_and_native_event_marks_applied(
     assert count == 1
     assert len(delivered) == 1
     assert inbox.status == "enqueued"
+    event_names = [
+        event.get("name") for event in runtime_state.get_replay_events(run_record.id) if event.get("type") == "CUSTOM"
+    ]
+    assert event_names.count("ya_claw.input_accepted") == 1
+    assert event_names.count("ya_claw.input_enqueued") == 1
 
     await mark_run_input_applied(
         db_session,
@@ -233,6 +266,66 @@ async def test_steer_idempotency_delivers_once_and_native_event_marks_applied(
     assert inbox.status == "applied"
     assert inbox.enqueue_id == "native-enqueue-after-rebind"
     assert inbox.applied_at is not None
+    first_applied_at = inbox.applied_at
+
+    duplicate = await mark_run_input_applied(
+        db_session,
+        run_id=run_record.id,
+        sdk_input_id="sdk-input-1",
+        enqueue_id="duplicate-native-enqueue",
+    )
+    await db_session.refresh(inbox)
+
+    assert duplicate is None
+    assert inbox.applied_at == first_applied_at
+    assert inbox.enqueue_id == "native-enqueue-after-rebind"
+
+    replay = await controller.steer(db_session, runtime_state, run_record.id, request)
+    event_names = [
+        event.get("name") for event in runtime_state.get_replay_events(run_record.id) if event.get("type") == "CUSTOM"
+    ]
+    assert replay.input_disposition == "applied"
+    assert event_names.count("ya_claw.input_accepted") == 1
+    assert event_names.count("ya_claw.input_enqueued") == 1
+
+
+async def test_direct_steer_rejects_queued_run_without_creating_inbox_row(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    runtime_state = create_runtime_state()
+    session_record = SessionRecord(id="queued-session", profile_name="default")
+    db_session.add(session_record)
+    await db_session.commit()
+    controller = RunController()
+    created = await controller.create(
+        db_session,
+        settings,
+        runtime_state,
+        RunCreateRequest(
+            session_id=session_record.id,
+            input_parts=[TextPart(type="text", text="start")],
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await controller.steer(
+            db_session,
+            runtime_state,
+            created.id,
+            SteerRequest(
+                input_parts=[TextPart(type="text", text="too early")],
+                idempotency_key="queued-input",
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail["code"] == "run_input_closed"
+    count = (
+        await db_session.execute(select(func.count()).where(RunInputInboxRecord.run_id == created.id))
+    ).scalar_one()
+    assert count == 0
 
 
 async def test_delivery_rejects_permanent_mapping_error_and_continues_fifo(
@@ -393,3 +486,93 @@ async def test_steer_rejects_idempotency_key_reuse_with_different_content(
                 idempotency_key="same-key",
             ),
         )
+
+
+async def test_terminal_run_replays_rejected_input_identity(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    controller, runtime_state, run_record = await _active_run(db_session, settings)
+    request = SteerRequest(
+        input_parts=[TextPart(type="text", text="pending input")],
+        idempotency_key="rejected-terminal-key",
+    )
+    first = await controller.steer(db_session, runtime_state, run_record.id, request)
+    assert first.input_disposition == "accepted"
+    await controller.cancel(db_session, settings, runtime_state, run_record.id)
+
+    replay = await controller.steer(db_session, runtime_state, run_record.id, request)
+
+    assert replay.input_id == first.input_id
+    assert replay.input_delivery_key == first.input_delivery_key
+    assert replay.input_disposition == "rejected"
+    assert replay.input_sdk_id is None
+    assert replay.input_enqueue_id is None
+
+
+async def test_terminal_run_replays_existing_input_before_rejecting_new_delivery(
+    db_session: AsyncSession,
+    settings: ClawSettings,
+) -> None:
+    controller, runtime_state, run_record = await _active_run(db_session, settings)
+
+    async def ingress(
+        input_id: str,
+        input_parts: list[dict[str, Any]],
+    ) -> EnqueueReceipt:
+        _ = input_parts
+        return EnqueueReceipt(
+            logical_run_id="logical-1",
+            input_id="sdk-input-1",
+            disposition=InputDisposition.enqueued,
+            enqueue_id="native-enqueue-1",
+        )
+
+    runtime_state.bind_input_ingress(run_record.id, ingress)
+    request = SteerRequest(
+        input_parts=[TextPart(type="text", text="stable input")],
+        idempotency_key="stable-terminal-key",
+    )
+    first = await controller.steer(db_session, runtime_state, run_record.id, request)
+    applied = await mark_run_input_applied(
+        db_session,
+        run_id=run_record.id,
+        sdk_input_id="sdk-input-1",
+        enqueue_id="native-enqueue-1",
+    )
+    assert applied is not None
+    await controller.cancel(db_session, settings, runtime_state, run_record.id)
+
+    replay = await controller.steer(db_session, runtime_state, run_record.id, request)
+
+    assert replay.input_id == first.input_id
+    assert replay.input_delivery_key == "stable-terminal-key"
+    assert replay.input_sdk_id == "sdk-input-1"
+    assert replay.input_enqueue_id == "native-enqueue-1"
+    assert replay.input_disposition == "applied"
+
+    with pytest.raises(HTTPException, match="different content") as conflict:
+        await controller.steer(
+            db_session,
+            runtime_state,
+            run_record.id,
+            SteerRequest(
+                input_parts=[TextPart(type="text", text="changed input")],
+                idempotency_key="stable-terminal-key",
+            ),
+        )
+    assert conflict.value.status_code == 409
+
+    with pytest.raises(HTTPException) as closed:
+        await controller.steer(
+            db_session,
+            runtime_state,
+            run_record.id,
+            SteerRequest(
+                input_parts=[TextPart(type="text", text="new input")],
+                idempotency_key="new-terminal-key",
+            ),
+        )
+    assert closed.value.status_code == 409
+    assert isinstance(closed.value.detail, dict)
+    assert closed.value.detail["code"] == "run_input_closed"

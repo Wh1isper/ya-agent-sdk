@@ -43,8 +43,10 @@ from ya_agent_sdk.subagents import (
 
 from ya_claw.controller.store import read_run_state_blob_if_exists
 from ya_claw.execution.capabilities import ClawToolsCapability
+from ya_claw.execution.input_inbox import RUN_INPUT_CLOSED_CODE
 from ya_claw.orm.tables import RunInputInboxRecord, RunRecord, SessionAsyncTaskRecord
 from ya_claw.profile_spec import ClawProfileHostConfig
+from ya_claw.toolsets.session import ClawSelfApiError
 
 
 def build_claw_host_capabilities(
@@ -285,6 +287,9 @@ class ClawSubagentExecutionStore:
             )
             if task is None:
                 raise KeyError(record.execution_id)
+            current = self._record_from_task(task)
+            if current is not None and current.terminal and record.state is not current.state:
+                return await self._synchronize(db_session, task, current)
             synchronized = await self._synchronize(db_session, task, record)
             metadata = dict(task.task_metadata or {})
             metadata[self._RECORD_KEY] = synchronized.model_dump(mode="json")
@@ -422,7 +427,10 @@ class ClawSubagentExecutionStore:
             run = await db_session.get(RunRecord, run_id) if isinstance(run_id, str) else None
             if isinstance(run, RunRecord):
                 synchronized.output = run.output_json if run.output_json is not None else run.output_text
-        if synchronized.mode is SubagentExecutionMode.background:
+        if (
+            synchronized.mode is SubagentExecutionMode.background
+            and synchronized.delivery_state is not SubagentDeliveryState.not_required
+        ):
             if task.delivery_status == "applied":
                 synchronized.delivery_state = SubagentDeliveryState.delivered
             elif synchronized.terminal:
@@ -572,12 +580,29 @@ class ClawSubagentDriver:
         del origin
         prompt = "\n".join(str(item) for item in content)
         key = idempotency_key or f"subagent-steer:{record.execution_id}:{uuid4()}"
-        payload = await self._client.steer_async_subagent(
-            name_or_task_id=record.execution_id,
-            prompt=prompt,
-            input_parts=None,
-            idempotency_key=key,
-        )
+        try:
+            payload = await self._client.steer_async_subagent(
+                name_or_task_id=record.execution_id,
+                prompt=prompt,
+                input_parts=None,
+                idempotency_key=key,
+            )
+        except HTTPException as exc:
+            if not _is_run_input_closed_conflict(exc):
+                raise
+            return EnqueueReceipt(
+                logical_run_id=record.child_logical_run_id,
+                input_id=key,
+                disposition=InputDisposition.rejected,
+            )
+        except RuntimeError as exc:
+            if not _is_run_input_closed_conflict(exc):
+                raise
+            return EnqueueReceipt(
+                logical_run_id=record.child_logical_run_id,
+                input_id=key,
+                disposition=InputDisposition.rejected,
+            )
         task = _task_payload(payload)
         input_id = task.get("input_id")
         disposition = task.get("input_disposition")
@@ -649,12 +674,22 @@ def _task_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _http_error_status(exc: BaseException) -> int | None:
     """Recover an HTTP status from the synchronous self-client exception chain."""
+    if isinstance(exc, ClawSelfApiError):
+        return exc.status_code
     current: BaseException | None = exc
     while current is not None:
         if isinstance(current, urllib.error.HTTPError):
             return current.code
         current = current.__cause__
     return None
+
+
+def _is_run_input_closed_conflict(exc: HTTPException | RuntimeError) -> bool:
+    if isinstance(exc, HTTPException):
+        return (
+            exc.status_code == 409 and isinstance(exc.detail, dict) and exc.detail.get("code") == RUN_INPUT_CLOSED_CODE
+        )
+    return isinstance(exc, ClawSelfApiError) and exc.status_code == 409 and exc.code == RUN_INPUT_CLOSED_CODE
 
 
 def _prompt_text(prompt: Any) -> str:

@@ -44,15 +44,15 @@ flowchart TB
 
 ### Event Types
 
-| Event                         | When Emitted                    | Key Fields                              |
-| ----------------------------- | ------------------------------- | --------------------------------------- |
-| `AgentExecutionStartEvent`    | Agent execution begins          | `user_prompt`, `message_history_count`  |
-| `ModelRequestStartEvent`      | Model request starts (thinking) | `loop_index`, `message_count`           |
-| `ModelRequestCompleteEvent`   | Model response received         | `loop_index`, `duration_seconds`        |
-| `ToolCallsStartEvent`         | Tool execution starts           | `loop_index`                            |
-| `ToolCallsCompleteEvent`      | Tool execution completes        | `loop_index`, `duration_seconds`        |
-| `AgentExecutionCompleteEvent` | Agent execution completes       | `total_loops`, `total_duration_seconds` |
-| `AgentExecutionFailedEvent`   | Agent execution fails           | `error`, `error_type`, `total_loops`    |
+| Event                         | When Emitted                    | Key Fields                                                                |
+| ----------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
+| `AgentExecutionStartEvent`    | Agent execution begins          | `user_prompt`, `message_history_count`                                    |
+| `ModelRequestStartEvent`      | Model request starts (thinking) | `loop_index`, `message_count`                                             |
+| `ModelRequestCompleteEvent`   | Model response received         | `loop_index`, `duration_seconds`, `context_tokens`, `context_window_size` |
+| `ToolCallsStartEvent`         | Tool execution starts           | `loop_index`                                                              |
+| `ToolCallsCompleteEvent`      | Tool execution completes        | `loop_index`, `duration_seconds`                                          |
+| `AgentExecutionCompleteEvent` | Agent execution completes       | `total_loops`, `total_duration_seconds`                                   |
+| `AgentExecutionFailedEvent`   | Agent execution fails           | `error`, `error_type`, `total_loops`                                      |
 
 ### Loop Index
 

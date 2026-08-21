@@ -18,6 +18,7 @@ from ya_agent_sdk.capabilities import CapabilityCatalog
 from ya_agent_sdk.subagents import (
     ResolvedSubagentPlan,
     SubagentInputState,
+    SubagentLinkagePolicy,
     SubagentPlanDescriptor,
     SubagentSpec,
 )
@@ -48,6 +49,7 @@ from ya_claw.controller.run import RunController
 from ya_claw.controller.session_lifecycle import lock_session_reference
 from ya_claw.controller.store import read_run_message_blob_if_exists, read_run_state_blob_if_exists
 from ya_claw.execution.input_inbox import (
+    RUN_INPUT_CLOSED_CODE,
     accept_run_input,
     deliver_accepted_run_inputs,
     lock_run_record,
@@ -175,7 +177,12 @@ class AsyncTaskController:
                 profile_resolver=profile_resolver,
                 settings=settings,
             )
-            wake_policy = "record_only" if request.context.get("mode") == "foreground" else str(request.wake_policy)
+            wake_policy = (
+                "record_only"
+                if request.context.get("mode") == "foreground"
+                or subagent_plan.spec.linkage is SubagentLinkagePolicy.detached
+                else str(request.wake_policy)
+            )
             try:
                 detail = await self._create_task(
                     db_session,
@@ -323,23 +330,27 @@ class AsyncTaskController:
         record = await self._load_task(db_session, parent_session_id=parent_session_id, task_id_or_name=task_id_or_name)
         await self._refresh_task_status(db_session, record)
         if record.status == AsyncTaskStatus.QUEUED.value:
+            message = f"Async subagent '{record.name}' is queued and is not accepting steering input."
             raise HTTPException(
                 status_code=409,
-                detail=f"Async subagent '{record.name}' is queued and is not accepting steering input.",
+                detail={"code": RUN_INPUT_CLOSED_CODE, "message": message},
             )
-        if record.status in _TERMINAL_STATUSES:
+        if record.status in _TERMINAL_STATUSES and request.idempotency_key is None:
+            message = f"Async subagent '{record.name}' is {record.status} and is not accepting steering input."
             raise HTTPException(
                 status_code=409,
-                detail=f"Async subagent '{record.name}' is {record.status} and is not accepting steering input.",
+                detail={"code": RUN_INPUT_CLOSED_CODE, "message": message},
             )
         run_id = record.task_run_id
-        child_session = await db_session.get(SessionRecord, record.task_session_id)
-        if isinstance(child_session, SessionRecord) and isinstance(child_session.active_run_id, str):
-            run_id = child_session.active_run_id
+        if record.status not in _TERMINAL_STATUSES:
+            child_session = await db_session.get(SessionRecord, record.task_session_id)
+            if isinstance(child_session, SessionRecord) and isinstance(child_session.active_run_id, str):
+                run_id = child_session.active_run_id
         if not isinstance(run_id, str):
+            message = f"Async subagent '{record.name}' has no active child run and is not accepting steering input."
             raise HTTPException(
                 status_code=409,
-                detail=f"Async subagent '{record.name}' has no active child run and is not accepting steering input.",
+                detail={"code": RUN_INPUT_CLOSED_CODE, "message": message},
             )
 
         input_parts = list(request.input_parts)
@@ -736,10 +747,12 @@ class AsyncTaskController:
         context: dict[str, Any],
         wake_policy: str,
     ) -> AsyncTaskDetail:
-        self._restore_task_plan(
+        subagent_plan = self._restore_task_plan(
             task_record,
             capability_catalog=settings.resolved_capability_plugins.catalog,
         )
+        if subagent_plan.spec.linkage is SubagentLinkagePolicy.detached:
+            wake_policy = "record_only"
         child_session = await db_session.get(
             SessionRecord,
             task_record.task_session_id,

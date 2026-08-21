@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from pydantic_ai import AgentSpec
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -20,6 +21,7 @@ from ya_agent_sdk.subagents import (
     SubagentExecutionService,
     SubagentExecutionState,
     SubagentInputState,
+    SubagentLinkagePolicy,
     SubagentRegistry,
     SubagentSpec,
 )
@@ -29,7 +31,10 @@ from ya_claw.controller.models import (
     AsyncTaskCancelRequest,
     AsyncTaskSpawnRequest,
     AsyncTaskSteerRequest,
+    RunCreateRequest,
+    TextPart,
 )
+from ya_claw.controller.run import RunController
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.state_machine import complete_run, fail_run, mark_run_running
 from ya_claw.execution.subagents import (
@@ -46,6 +51,7 @@ from ya_claw.orm.tables import (
     SessionRecord,
 )
 from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
+from ya_claw.toolsets.session import ClawSelfApiError
 
 
 class _Profile:
@@ -376,6 +382,245 @@ async def test_sdk_service_preserves_public_handle_case_and_punctuation(
     assert handle.execution_id.startswith("Worker/a-")
     assert task.name == handle.execution_id
     await service.close()
+
+
+async def test_sdk_steering_reports_terminal_closure_as_rejected(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    await _create_parent(session_factory)
+    client = _ControllerClient(
+        session_factory=session_factory,
+        settings=settings,
+        runtime_state=create_runtime_state(),
+    )
+    service = _service(session_factory, client, settings)
+    try:
+        handle = await service.spawn(
+            "worker",
+            "finish before steering",
+            _parent_context(),
+            idempotency_key="terminal-child",
+        )
+        await client.mark_running(handle.execution_id)
+        await client.complete(handle.execution_id, "done")
+
+        receipt = await service.steer(
+            handle.execution_id,
+            "too late",
+            caller_scope_id="parent-session",
+            idempotency_key="terminal-steer",
+        )
+
+        assert receipt.disposition is InputDisposition.rejected
+        assert receipt.input_id == "terminal-steer"
+    finally:
+        await service.close()
+
+
+async def test_sdk_steering_replays_applied_input_after_terminal_transition(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    await _create_parent(session_factory)
+    runtime_state = create_runtime_state()
+    client = _ControllerClient(
+        session_factory=session_factory,
+        settings=settings,
+        runtime_state=runtime_state,
+    )
+    service = _service(session_factory, client, settings)
+    try:
+        handle = await service.spawn(
+            "worker",
+            "apply steering before completion",
+            _parent_context(),
+            idempotency_key="terminal-replay-child",
+        )
+        task = await client.mark_running(handle.execution_id)
+        assert isinstance(task.task_run_id, str)
+
+        async def ingress(
+            input_id: str,
+            input_parts: list[dict[str, Any]],
+        ) -> EnqueueReceipt:
+            _ = input_id, input_parts
+            return EnqueueReceipt(
+                logical_run_id="child-logical-run",
+                input_id="durable-sdk-input",
+                disposition=InputDisposition.applied,
+                enqueue_id="durable-native-enqueue",
+            )
+
+        runtime_state.bind_input_ingress(task.task_run_id, ingress)
+        first = await service.steer(
+            handle.execution_id,
+            "stable steering payload",
+            caller_scope_id="parent-session",
+            idempotency_key="terminal-replay-input",
+        )
+        await client.complete(handle.execution_id, "done")
+        resumed = await service.resume(
+            handle.execution_id,
+            "continue on a new run",
+            _parent_context(),
+            idempotency_key="terminal-replay-resume",
+        )
+        resumed_task = await client.mark_running(resumed.execution_id)
+        assert isinstance(resumed_task.task_run_id, str)
+        assert resumed_task.task_run_id != task.task_run_id
+        resumed_deliveries: list[str] = []
+
+        async def resumed_ingress(
+            input_id: str,
+            input_parts: list[dict[str, Any]],
+        ) -> EnqueueReceipt:
+            _ = input_parts
+            resumed_deliveries.append(input_id)
+            return EnqueueReceipt(
+                logical_run_id="resumed-logical-run",
+                input_id="wrong-resumed-sdk-input",
+                disposition=InputDisposition.applied,
+                enqueue_id="wrong-resumed-native-enqueue",
+            )
+
+        runtime_state.bind_input_ingress(resumed_task.task_run_id, resumed_ingress)
+        replay = await service.steer(
+            handle.execution_id,
+            "stable steering payload",
+            caller_scope_id="parent-session",
+            idempotency_key="terminal-replay-input",
+        )
+
+        assert replay == first
+        assert replay.input_id == "durable-sdk-input"
+        assert replay.enqueue_id == "durable-native-enqueue"
+        assert replay.disposition is InputDisposition.applied
+        async with session_factory() as db_session:
+            rows = list(
+                (
+                    await db_session.execute(
+                        select(RunInputInboxRecord).where(
+                            RunInputInboxRecord.delivery_key == "terminal-replay-input",
+                        )
+                    )
+                ).scalars()
+            )
+        assert resumed_deliveries == []
+        assert len(rows) == 1
+        assert rows[0].run_id == task.task_run_id
+        assert rows[0].status == "applied"
+    finally:
+        await service.close()
+
+
+async def test_sdk_steering_classifies_only_structured_self_api_closure(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    await _create_parent(session_factory)
+
+    class StructuredErrorClient(_ControllerClient):
+        def __init__(self, *, error_code: str, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.error_code = error_code
+
+        async def steer_async_subagent(self, **kwargs: Any) -> dict[str, Any]:
+            _ = kwargs
+            raise ClawSelfApiError(
+                status_code=409,
+                code=self.error_code,
+                detail="message mentions run_input_closed",
+            )
+
+    closure_client = StructuredErrorClient(
+        error_code="run_input_closed",
+        session_factory=session_factory,
+        settings=settings,
+        runtime_state=create_runtime_state(),
+    )
+    closure_service = _service(session_factory, closure_client, settings)
+    handle = await closure_service.spawn(
+        "worker",
+        "closure classification",
+        _parent_context(),
+        idempotency_key="structured-closure-child",
+    )
+    receipt = await closure_service.steer(
+        handle.execution_id,
+        "late input",
+        caller_scope_id="parent-session",
+        idempotency_key="structured-closure-input",
+    )
+    assert receipt.disposition is InputDisposition.rejected
+    await closure_service.close()
+
+    unrelated_client = StructuredErrorClient(
+        error_code="idempotency_conflict",
+        session_factory=session_factory,
+        settings=settings,
+        runtime_state=create_runtime_state(),
+    )
+    unrelated_service = _service(session_factory, unrelated_client, settings)
+    unrelated = await unrelated_service.spawn(
+        "worker",
+        "unrelated classification",
+        _parent_context(),
+        idempotency_key="structured-unrelated-child",
+    )
+    with pytest.raises(ClawSelfApiError) as exc_info:
+        await unrelated_service.steer(
+            unrelated.execution_id,
+            "input",
+            caller_scope_id="parent-session",
+            idempotency_key="structured-unrelated-input",
+        )
+    assert exc_info.value.code == "idempotency_conflict"
+    await unrelated_service.close()
+
+
+async def test_sdk_steering_does_not_hide_idempotency_conflicts(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    await _create_parent(session_factory)
+    client = _ControllerClient(
+        session_factory=session_factory,
+        settings=settings,
+        runtime_state=create_runtime_state(),
+    )
+    service = _service(session_factory, client, settings)
+    try:
+        handle = await service.spawn(
+            "worker",
+            "keep running",
+            _parent_context(),
+            idempotency_key="active-child",
+        )
+        await client.mark_running(handle.execution_id)
+        first = await service.steer(
+            handle.execution_id,
+            "first steering payload",
+            caller_scope_id="parent-session",
+            idempotency_key="stable-steer",
+        )
+        assert first.disposition is InputDisposition.accepted
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.steer(
+                handle.execution_id,
+                "different steering payload",
+                caller_scope_id="parent-session",
+                idempotency_key="stable-steer",
+            )
+        assert exc_info.value.status_code == 409
+        assert "different content" in str(exc_info.value.detail)
+    finally:
+        await service.close()
 
 
 async def test_sdk_service_foreground_is_idempotent_and_resumes_child_session(
@@ -814,6 +1059,108 @@ async def test_sdk_service_forwards_steering_and_cancellation(
     persisted = await client.task(handle.execution_id)
     assert persisted.status == "cancelled"
     await service.close()
+
+
+async def test_detached_background_completion_does_not_wake_interrupted_parent(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session_factory = create_session_factory(db_engine)
+    await _create_parent(session_factory)
+    runtime_state = create_runtime_state()
+    detached_spec = SubagentSpec(
+        route="worker",
+        agent=AgentSpec(
+            model="test",
+            name="worker",
+            description="Detached test worker",
+            capabilities=[],
+        ),
+        execution_modes=(SubagentExecutionMode.background,),
+        linkage=SubagentLinkagePolicy.detached,
+        durability=SubagentDurability.restart,
+    )
+    profile = _Profile()
+    profile.subagent_specs = (detached_spec,)
+    client = _ControllerClient(
+        session_factory=session_factory,
+        settings=settings,
+        runtime_state=runtime_state,
+        profile_resolver=_ProfileResolver(profile),
+    )
+    service = _service(
+        session_factory,
+        client,
+        settings,
+        active_specs=(detached_spec,),
+    )
+    parent_run_id: str
+    async with session_factory() as db_session:
+        parent_run = await RunController().create(
+            db_session,
+            settings,
+            runtime_state,
+            RunCreateRequest(
+                session_id="parent-session",
+                profile_name="general",
+                input_parts=[TextPart(type="text", text="parent work")],
+            ),
+        )
+        parent_session = await db_session.get(SessionRecord, "parent-session")
+        parent_record = await db_session.get(RunRecord, parent_run.id)
+        assert isinstance(parent_session, SessionRecord)
+        assert isinstance(parent_record, RunRecord)
+        mark_run_running(parent_session, parent_record, claimed_by="adapter-test")
+        await db_session.commit()
+        parent_run_id = parent_record.id
+
+    try:
+        handle = await service.spawn(
+            "worker",
+            "finish independently",
+            _parent_context(),
+            mode=SubagentExecutionMode.background,
+            idempotency_key="detached-child",
+        )
+        await client.mark_running(handle.execution_id)
+        async with session_factory() as db_session:
+            await RunController().interrupt(
+                db_session,
+                settings,
+                runtime_state,
+                parent_run_id,
+            )
+
+        completed_task = await client.complete(handle.execution_id, "detached result")
+        completed = await service.wait(
+            handle.execution_id,
+            caller_scope_id="parent-session",
+            timeout=2,
+        )
+
+        assert completed_task.wake_policy == "record_only"
+        assert completed_task.delivery_id is None
+        assert completed_task.delivery_run_id is None
+        assert completed.delivery_state is SubagentDeliveryState.not_required
+        async with session_factory() as db_session:
+            parent_run_count = (
+                await db_session.execute(
+                    select(func.count(RunRecord.id)).where(
+                        RunRecord.session_id == "parent-session",
+                    )
+                )
+            ).scalar_one()
+            parent_inbox_count = (
+                await db_session.execute(
+                    select(func.count(RunInputInboxRecord.id)).where(
+                        RunInputInboxRecord.run_id == parent_run_id,
+                    )
+                )
+            ).scalar_one()
+        assert parent_run_count == 1
+        assert parent_inbox_count == 0
+    finally:
+        await service.close()
 
 
 async def test_sdk_service_recovers_background_work_after_restart(

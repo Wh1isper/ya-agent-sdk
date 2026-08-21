@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import TypeAdapter
@@ -813,6 +813,155 @@ async def test_initial_input_stays_applied_when_cancelled_after_graph_admission(
 
     assert record.state is SubagentExecutionState.cancelled
     assert record.input_state is SubagentInputState.applied
+
+
+async def test_cancel_terminalizes_suspended_execution_idempotently() -> None:
+    plan = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+    ).resolve(SubagentSpec(route="worker", agent=AgentSpec()))
+    store = InMemorySubagentExecutionStore()
+    record = SubagentExecutionRecord(
+        execution_id="child",
+        root_execution_id="child",
+        owner_scope_id="session",
+        idempotency_key="spawn-once",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.suspended,
+        input_state=SubagentInputState.accepted,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        child_logical_run_id="child-run",
+        prompt="work",
+        deferred={},
+    )
+    await store.create(record)
+    service = SubagentExecutionService(
+        SubagentRegistry([plan]),
+        store,
+        InProcessSubagentDriver(model_resolver=lambda _name: TestModel(call_tools=[])),
+        execution_host=AsyncioSubagentExecutionHost(),
+    )
+
+    first = await service.cancel("child", caller_scope_id="session")
+    second = await service.cancel("child", caller_scope_id="session")
+    await service.close()
+
+    assert first.state is SubagentExecutionState.cancelled
+    assert first.input_state is SubagentInputState.rejected
+    assert first.completed_at is not None
+    assert second.completed_at == first.completed_at
+
+
+async def test_suspended_cancel_linearizes_before_continuation_and_emits_complete_once() -> None:
+    class BlockingCancelDriver(InProcessSubagentDriver):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.cancel_started = asyncio.Event()
+            self.release_cancel = asyncio.Event()
+
+        async def cancel(self, record: SubagentExecutionRecord) -> None:
+            _ = record
+            self.cancel_started.set()
+            await self.release_cancel.wait()
+
+    DeferredApprovalCapability.effects = []
+    catalog = build_default_capability_catalog()
+    plan = SubagentPlanResolver(
+        catalog,
+        host_capabilities=(DeferredApprovalCapability(),),
+    ).resolve(SubagentSpec(route="worker", agent=AgentSpec(model="test")))
+    driver = BlockingCancelDriver(
+        custom_capability_types=catalog.custom_capability_types,
+        model_resolver=lambda _name: TestModel(
+            call_tools=["guarded_effect"],
+            custom_output_text="continued",
+        ),
+    )
+    service = SubagentExecutionService(
+        SubagentRegistry([plan]),
+        InMemorySubagentExecutionStore(),
+        driver,
+    )
+    parent = AgentContext(delegation_scope_id="session")
+    object.__setattr__(parent, "_stream_queue_enabled", True)
+    handle = await service.spawn("worker", "use the guarded effect", parent)
+    suspended = await service.get(handle.execution_id, caller_scope_id="session")
+    assert suspended.state is SubagentExecutionState.suspended
+    assert suspended.deferred is not None
+    requests = TypeAdapter(DeferredToolRequests).validate_python(suspended.deferred)
+    results = DeferredToolResults(approvals={requests.approvals[0].tool_call_id: ToolDenied(message="Denied")})
+
+    cancel_task = asyncio.create_task(
+        service.cancel(
+            handle.execution_id,
+            caller_scope_id="session",
+        )
+    )
+    await asyncio.wait_for(driver.cancel_started.wait(), timeout=1)
+    continuation_task = asyncio.create_task(service.continue_deferred(handle.execution_id, results, parent))
+    await asyncio.sleep(0)
+    assert continuation_task.done() is False
+
+    driver.release_cancel.set()
+    cancelled = await asyncio.wait_for(cancel_task, timeout=1)
+    with pytest.raises(ValueError, match="no suspended deferred request"):
+        await continuation_task
+    repeated = await service.cancel(
+        handle.execution_id,
+        caller_scope_id="session",
+        parent_ctx=parent,
+    )
+    final = await service.get(handle.execution_id, caller_scope_id="session")
+    queue = parent.agent_stream_queues[handle.execution_id]
+    lifecycle_events = []
+    while not queue.empty():
+        lifecycle_events.append(queue.get_nowait())
+    await service.close()
+
+    assert cancelled.state is SubagentExecutionState.cancelled
+    assert repeated.completed_at == cancelled.completed_at
+    assert final.state is SubagentExecutionState.cancelled
+    assert final.input_state is SubagentInputState.applied
+    assert [
+        type(event) for event in lifecycle_events if isinstance(event, SubagentStartEvent | SubagentCompleteEvent)
+    ] == [SubagentStartEvent, SubagentCompleteEvent]
+
+
+async def test_terminal_store_state_rejects_late_nonterminal_overwrite() -> None:
+    store = InMemorySubagentExecutionStore()
+    record = SubagentExecutionRecord(
+        execution_id="child",
+        root_execution_id="child",
+        owner_scope_id="session",
+        idempotency_key="spawn-once",
+        descriptor_id="worker:fingerprint",
+        plan_fingerprint="fingerprint",
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.suspended,
+        input_state=SubagentInputState.applied,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        child_logical_run_id="child-run",
+        prompt="work",
+        deferred={},
+    )
+    await store.create(record)
+    stale = record.model_copy(deep=True)
+    record.state = SubagentExecutionState.cancelled
+    record.completed_at = record.created_at
+    committed = await store.save(record)
+    stale.state = SubagentExecutionState.pending
+
+    late = await store.save(stale)
+
+    assert committed.state is SubagentExecutionState.cancelled
+    assert late.state is SubagentExecutionState.cancelled
+    assert (await store.get("child")).state is SubagentExecutionState.cancelled  # type: ignore[union-attr]
 
 
 async def test_async_host_close_marks_active_process_local_execution_lost() -> None:

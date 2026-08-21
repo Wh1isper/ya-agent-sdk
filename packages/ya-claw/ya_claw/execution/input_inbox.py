@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -10,12 +12,25 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from ya_agent_sdk.inputs import EnqueueReceipt, InputDisposition
+from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from ya_claw.orm.tables import RunInputInboxRecord, RunRecord, SessionAsyncTaskRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 
+RUN_INPUT_CLOSED_CODE = "run_input_closed"
 _OPEN_INPUT_STATUSES = ("accepted", "enqueued")
 _ACTIVE_RUN_STATUSES = ("queued", "running")
+_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="ya_claw")
+
+
+class RunInputClosedError(RuntimeError):
+    """The authoritative run state closed before input admission."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunInputAdmission:
+    record: RunInputInboxRecord
+    created: bool
 
 
 async def lock_run_record(
@@ -33,20 +48,18 @@ async def lock_run_record(
     return record if isinstance(record, RunRecord) else None
 
 
-async def accept_run_input(
+async def admit_run_input(
     db_session: AsyncSession,
     run_record: RunRecord,
     input_parts: list[dict[str, Any]],
     *,
     delivery_key: str | None = None,
     origin: str = "user",
-) -> RunInputInboxRecord:
-    """Insert one idempotent input before any process-local delivery attempt."""
+) -> RunInputAdmission:
+    """Insert one idempotent input and report whether this call created it."""
     locked_run = await lock_run_record(db_session, run_record.id)
     if locked_run is None:
-        raise RuntimeError(f"Run {run_record.id!r} no longer exists")
-    if locked_run.status not in _ACTIVE_RUN_STATUSES:
-        raise RuntimeError(f"Run {run_record.id!r} is not active")
+        raise RunInputClosedError(f"Run {run_record.id!r} no longer exists")
     normalized_key = delivery_key.strip() if isinstance(delivery_key, str) else ""
     input_id = uuid4().hex
     if not normalized_key:
@@ -63,7 +76,9 @@ async def accept_run_input(
     if isinstance(existing, RunInputInboxRecord):
         if existing.input_parts != input_parts or existing.origin != origin:
             raise ValueError(f"Run input delivery key {normalized_key!r} was reused with different content")
-        return existing
+        return RunInputAdmission(record=existing, created=False)
+    if locked_run.status not in _ACTIVE_RUN_STATUSES:
+        raise RunInputClosedError(f"Run {run_record.id!r} is not active")
 
     record = RunInputInboxRecord(
         id=input_id,
@@ -91,8 +106,27 @@ async def accept_run_input(
             raise
         if concurrent.input_parts != input_parts or concurrent.origin != origin:
             raise ValueError(f"Run input delivery key {normalized_key!r} was reused with different content") from None
-        return concurrent
-    return record
+        return RunInputAdmission(record=concurrent, created=False)
+    return RunInputAdmission(record=record, created=True)
+
+
+async def accept_run_input(
+    db_session: AsyncSession,
+    run_record: RunRecord,
+    input_parts: list[dict[str, Any]],
+    *,
+    delivery_key: str | None = None,
+    origin: str = "user",
+) -> RunInputInboxRecord:
+    """Insert one idempotent input before any process-local delivery attempt."""
+    admission = await admit_run_input(
+        db_session,
+        run_record,
+        input_parts,
+        delivery_key=delivery_key,
+        origin=origin,
+    )
+    return admission.record
 
 
 async def deliver_accepted_run_inputs(
@@ -159,8 +193,36 @@ async def deliver_accepted_run_inputs(
                 record.status = "accepted"
             record.updated_at = datetime.now(UTC)
             delivered.append(record)
+        enqueued = [record for record in delivered if record.status == "enqueued"]
         await db_session.commit()
+        await _publish_enqueued_run_input_events(
+            runtime_state,
+            run_record=run_record,
+            records=enqueued,
+        )
         return delivered
+
+
+async def _publish_enqueued_run_input_events(
+    runtime_state: InMemoryRuntimeState,
+    *,
+    run_record: RunRecord,
+    records: list[RunInputInboxRecord],
+) -> None:
+    if not records:
+        return
+    agui_adapter = AguiEventAdapter(
+        session_id=run_record.session_id,
+        run_id=run_record.id,
+        config=_AGUI_ADAPTER_CONFIG,
+    )
+    event = agui_adapter.build_run_custom_event(
+        "input_enqueued",
+        {"disposition": InputDisposition.enqueued.value},
+    )
+    for _ in records:
+        with suppress(KeyError):
+            await runtime_state.append_run_event(run_record.id, event)
 
 
 async def mark_run_input_applied(
@@ -193,7 +255,10 @@ async def mark_run_input_applied(
     if not isinstance(record, RunInputInboxRecord):
         await db_session.commit()
         return None
-    if run_record.status not in _ACTIVE_RUN_STATUSES and record.status != "applied":
+    if record.status == "applied":
+        await db_session.commit()
+        return None
+    if run_record.status not in _ACTIVE_RUN_STATUSES:
         record.status = "rejected"
         record.error_message = f"Run is already terminal with status {run_record.status}."
         record.updated_at = datetime.now(UTC)

@@ -513,15 +513,30 @@ owner-loop/driver information, accepting state, and an ownership-safe unregister
 1. reports accepted, native-enqueued, applied, or rejected state accurately.
 
 A driver cannot acknowledge application merely because it accepted a notification.
-YAACLI uses the workflow-owned graph-boundary drain and terminal fence defined in the
-durable-session spec; Claw uses its active router plus persistent continuation inbox.
-Both retain durable inbox records across suspension or process loss.
-The in-process SDK driver rejects unresolved input on terminal cleanup and does not
-claim restart persistence.
+When a host provides `SubagentSteeringDriver`, its durable inbox is the authoritative
+admission boundary even if an in-process child router is also active; this prevents a
+live fast path from bypassing persistence. YAACLI uses the workflow-owned graph-boundary
+drain and terminal fence defined in the durable-session spec; Claw uses its active
+router plus persistent continuation inbox. Both retain durable inbox records across
+suspension or process loss. A suspended durable execution may accept input for its next
+continuation segment, and each input identity is enqueued at most once per native
+attempt.
 
-Cancellation is idempotent and status-aware. It closes ingress, requests driver
+Admission and terminal closure are linearized at the authoritative router/inbox. If
+closure wins, `steer` returns a normal rejected receipt instead of raising a tool error.
+An equal idempotent retry preserves the existing input identity and final disposition.
+Unknown handles, owner-scope violations, malformed content, and idempotency-key reuse
+with different content remain errors. The in-process SDK driver rejects unresolved input
+on terminal cleanup and does not claim restart persistence.
+
+Cancellation is idempotent and status-aware. Continuation admission and cancellation
+serialize per execution, while stores preserve terminal lifecycle state against stale
+non-terminal or different-terminal saves. It closes ingress, requests driver
 cancellation, reconciles running tools/resources, records terminal state, and ensures a
-late result cannot be delivered as successful completion.
+late result cannot be delivered as successful completion. Cancelling a suspended
+execution terminalizes it as `cancelled`, rejects input that can no longer be applied,
+emits one canonical completion event, and performs any required completion delivery;
+repeated cancellation of any terminal record returns that record unchanged.
 
 ## 13. Completion and Wake Delivery
 
@@ -529,7 +544,7 @@ A terminal child result is committed to the execution store before parent delive
 The result includes status, bounded summary, full-result reference where retained,
 child history reference, usage, and error metadata.
 
-Background completion uses a durable delivery record and outbox:
+Child-linked background completion uses a durable delivery record and outbox:
 
 1. commit child terminal state and one completion envelope;
 1. if the parent logical run is active, submit the envelope to its router;
@@ -542,7 +557,8 @@ Background completion uses a durable delivery record and outbox:
 
 Delivery is idempotent by child execution/result identity. A typed host lifecycle event
 may notify the UI immediately, but it cannot replace the canonical completion envelope
-when the model must observe the result.
+when the model must observe the result. Detached background execution commits terminal
+state with delivery `not_required`; it never injects completion into or wakes the parent.
 
 Foreground completion remains the normal delegate tool return. The same committed
 terminal result backs both the return and later inspection.

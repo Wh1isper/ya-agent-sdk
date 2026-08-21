@@ -582,6 +582,58 @@ async def test_execution_supervisor_shutdown_waits_for_active_tasks(
     assert task.done() is True
 
 
+async def test_execution_supervisor_shutdown_fence_rejects_nested_run_submission(
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+    runtime_state: InMemoryRuntimeState,
+) -> None:
+    supervisor = ExecutionSupervisor(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=StubRuntimeBuilder(),
+    )
+    coordinator = RunCoordinator(
+        settings=settings,
+        session_factory=create_session_factory(db_engine),
+        runtime_state=runtime_state,
+        workspace_provider=StubWorkspaceProvider(settings.resolved_workspace_dir),
+        environment_factory=StubEnvironmentFactory(),
+        profile_resolver=StubProfileResolver(),
+        runtime_builder=StubRuntimeBuilder(),
+        submit_run=supervisor.submit_run,
+    )
+    attempt_submission = asyncio.Event()
+    submission_attempted = asyncio.Event()
+    release = asyncio.Event()
+    nested_submission: bool | None = None
+
+    async def active_run() -> None:
+        nonlocal nested_submission
+        await attempt_submission.wait()
+        nested_submission = coordinator._submit_background_run("run-late")
+        submission_attempted.set()
+        await release.wait()
+
+    active_task = asyncio.create_task(active_run())
+    runtime_state.register_background_task("run-active", active_task)
+    shutdown_task = asyncio.create_task(supervisor.shutdown())
+    await asyncio.sleep(0)
+    assert shutdown_task.done() is False
+
+    attempt_submission.set()
+    await asyncio.wait_for(submission_attempted.wait(), timeout=1)
+
+    assert nested_submission is False
+    assert runtime_state.get_background_task("run-late") is None
+    release.set()
+    await shutdown_task
+    assert runtime_state.background_tasks == {}
+
+
 async def test_execution_supervisor_shutdown_cancels_tasks_after_timeout(
     db_engine: AsyncEngine,
     settings: ClawSettings,

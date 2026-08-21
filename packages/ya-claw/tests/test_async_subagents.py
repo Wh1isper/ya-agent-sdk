@@ -298,7 +298,7 @@ async def test_async_task_steer_rejects_queued_and_terminal_children_without_per
     fail_run(child_session, run, finished_at=datetime.now(UTC))
     await db_session.commit()
 
-    with pytest.raises(HTTPException, match="failed and is not accepting") as terminal_error:
+    with pytest.raises(HTTPException) as terminal_error:
         await controller.steer_task(
             db_session,
             settings,
@@ -308,6 +308,8 @@ async def test_async_task_steer_rejects_queued_and_terminal_children_without_per
             request=AsyncTaskSteerRequest(prompt="too late", idempotency_key="terminal-input"),
         )
     assert terminal_error.value.status_code == 409
+    assert isinstance(terminal_error.value.detail, dict)
+    assert terminal_error.value.detail["code"] == "run_input_closed"
     count = (await db_session.execute(select(func.count(RunInputInboxRecord.id)))).scalar_one()
     assert count == 0
 

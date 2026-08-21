@@ -300,7 +300,14 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
                         record.owner_scope_id,
                         record.idempotency_key,
                         payload,
-                        1,
+                        int(
+                            record.state
+                            in {
+                                SubagentExecutionState.pending,
+                                SubagentExecutionState.running,
+                                SubagentExecutionState.suspended,
+                            }
+                        ),
                         now,
                         now,
                     ),
@@ -338,6 +345,10 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
                 ).fetchone()
                 if row is None:
                     raise KeyError(record.execution_id)
+                current = SubagentExecutionRecord.model_validate_json(row["record_json"])
+                if current.terminal and record.state is not current.state:
+                    self._connection.execute("COMMIT")
+                    return current.model_copy(deep=True)
                 fenced = SessionStatus(row["owner_status"]) is not SessionStatus.active or bool(row["cancel_requested"])
                 if fenced and record.state is not SubagentExecutionState.cancelled:
                     raise TombstonedSessionError(f"Owner session {record.owner_scope_id!r} fenced a late child commit")
@@ -347,6 +358,7 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
                     in {
                         SubagentExecutionState.pending,
                         SubagentExecutionState.running,
+                        SubagentExecutionState.suspended,
                     }
                 )
                 self._connection.execute(
@@ -459,6 +471,7 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
                 if not bool(execution_row["input_open"]) or execution.state not in {
                     SubagentExecutionState.pending,
                     SubagentExecutionState.running,
+                    SubagentExecutionState.suspended,
                 }:
                     raise InvalidTransitionError(f"Subagent execution {execution_id!r} is not accepting input")
                 order_index = cast(
@@ -744,6 +757,7 @@ class DurableSubagentInboxCapability(AbstractCapability[TUIContext]):
     ) -> Any:
         del node
         execution_id = ctx.deps.agent_id
+        self._sync_applied_inputs(ctx.deps)
         if isinstance(result, End) and isinstance(result.data.output, DeferredToolRequests):
             return result
         pending = (
@@ -763,6 +777,8 @@ class DurableSubagentInboxCapability(AbstractCapability[TUIContext]):
         pending: tuple[InputRecord, ...],
     ) -> None:
         for item in pending:
+            if ctx.deps.run_input_ledger.find(item.input_id) is not None:
+                continue
             content = _USER_CONTENT.validate_python(item.content)
             prompt_content: str | list[UserContent]
             prompt_content = content[0] if len(content) == 1 and isinstance(content[0], str) else content
@@ -800,17 +816,20 @@ class DurableSubagentInboxCapability(AbstractCapability[TUIContext]):
 
     def _mark_applied(self, deps: TUIContext, enqueue_id: str) -> None:
         deps.run_input_ledger.mark_applied_by_enqueue_id(enqueue_id)
+        self._sync_applied_inputs(deps)
+
+    def _sync_applied_inputs(self, deps: TUIContext) -> None:
         for item in self.store.list_inputs(
             deps.agent_id,
             states=(InputState.enqueued,),
         ):
-            if item.native_enqueue_id == enqueue_id:
+            ledger_record = deps.run_input_ledger.find(item.input_id)
+            if ledger_record is not None and ledger_record.disposition is InputDisposition.applied:
                 self.store.transition_input(
                     item.input_id,
                     InputState.enqueued,
                     InputState.applied,
                 )
-                return
 
 
 class LocalProcessorSubagentExecutionHost(AsyncioSubagentExecutionHost):
@@ -888,12 +907,20 @@ class LocalSubagentDriver:
         origin: InputOrigin,
         idempotency_key: str | None,
     ) -> EnqueueReceipt:
-        accepted = self.store.accept_input(
-            record.execution_id,
-            content,
-            idempotency_key=idempotency_key or str(uuid4()),
-            origin=origin,
-        )
+        input_key = idempotency_key or str(uuid4())
+        try:
+            accepted = self.store.accept_input(
+                record.execution_id,
+                content,
+                idempotency_key=input_key,
+                origin=origin,
+            )
+        except (InvalidTransitionError, TombstonedSessionError):
+            return EnqueueReceipt(
+                logical_run_id=record.child_logical_run_id,
+                input_id=input_key,
+                disposition=InputDisposition.rejected,
+            )
         return EnqueueReceipt(
             logical_run_id=record.child_logical_run_id,
             input_id=accepted.input_id,

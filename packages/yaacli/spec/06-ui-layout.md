@@ -110,7 +110,7 @@ The phase labels are:
 Background readiness is a session-scoped projection shown in status/output while one of
 the nine foreground phases remains authoritative. It is not a `TUIPhase`.
 
-The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain `accepted` or `enqueued`. It reads the count from `SessionStore`, exposes no content, and maintains no second local queue. The count disappears after native enqueue application or explicit terminal rejection. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
+The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain `accepted` or `enqueued`. It reads the count from `SessionStore`, exposes no content, and maintains no second local queue. The count disappears after native enqueue application or explicit terminal rejection. Each newly applied user steering input also produces one replayable `Guidance injected` block with at most eight sanitized single-line previews of 100 characters each. Its replay identity is a derived digest, never a durable input or native enqueue ID. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
 
 `TUIStateMachine` enforces `VALID_TRANSITIONS`: an invalid transition returns `False`, leaves the authoritative phase unchanged, and is logged by the TUI boundary. The transition table includes all nine phase origins. Background-result readiness does not participate in foreground phase transitions.
 

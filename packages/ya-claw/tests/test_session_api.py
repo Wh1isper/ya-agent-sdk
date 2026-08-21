@@ -16,6 +16,7 @@ from ya_claw.app import create_app
 from ya_claw.config import get_settings
 from ya_claw.controller.store import with_usage_snapshot_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
+from ya_claw.execution.state_machine import mark_run_running
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 
 
@@ -60,6 +61,25 @@ def clear_claw_settings(
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
+
+
+def _mark_run_running(session_id: str, run_id: str) -> None:
+    async def _run() -> None:
+        settings = get_settings()
+        engine = create_engine(settings.resolved_database_url)
+        session_factory = create_session_factory(engine)
+        try:
+            async with session_factory() as db_session:
+                session_record = await db_session.get(SessionRecord, session_id)
+                run_record = await db_session.get(RunRecord, run_id)
+                assert isinstance(session_record, SessionRecord)
+                assert isinstance(run_record, RunRecord)
+                mark_run_running(session_record, run_record, claimed_by="api-test")
+                await db_session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
 
 
 def _mark_run_completed(session_id: str, run_id: str, *, output_text: str | None = None) -> None:
@@ -140,6 +160,15 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events(
         )
         assert session_steer_response.status_code == 409
 
+        queued_steer_response = client.post(
+            f"/api/v1/runs/{first_run_payload['id']}/steer",
+            headers=_auth_headers(),
+            json={"input_parts": [{"type": "text", "text": "too early"}]},
+        )
+        assert queued_steer_response.status_code == 409
+        assert queued_steer_response.json()["detail"]["code"] == "run_input_closed"
+
+        _mark_run_running(session_payload["id"], first_run_payload["id"])
         steer_response = client.post(
             f"/api/v1/runs/{first_run_payload['id']}/steer",
             headers=_auth_headers(),

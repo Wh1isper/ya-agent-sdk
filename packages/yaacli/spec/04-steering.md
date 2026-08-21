@@ -11,7 +11,11 @@ There is no MessageBus, process-local steering buffer, steering prefix, or defer
 next-prompt queue.
 
 The built-in `steer_subagent` tool is a separate targeted child-input operation.
-Compose-area input always targets the active main logical run.
+Compose-area input always targets the active main logical run. Targeted child admission
+uses the same accepted/enqueued/applied/rejected receipt contract: a suspended child may
+persist input for its next continuation, while a terminal-close race returns `rejected`
+instead of failing the parent run. Unknown handles, owner-scope violations, malformed
+content, and conflicting idempotency reuse remain errors.
 
 ## Input Contract
 
@@ -81,7 +85,10 @@ cleared because a foreground task ended.
 | `rejected` | Terminal fence or policy rejected unapplied input with a reason |
 
 The status bar counts non-initial user inputs in `accepted` or `enqueued`. It never
-renders their content and does not maintain another queue.
+renders their content and does not maintain another queue. When native application is
+confirmed, the transcript emits one bounded, single-line `Guidance injected` display
+projection. Replay stores only sanitized previews plus a derived projection digest; raw
+durable input IDs and native enqueue IDs remain private.
 
 ## Input Routing
 

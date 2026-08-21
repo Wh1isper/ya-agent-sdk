@@ -219,6 +219,11 @@ Consequences:
   resume, wait, steer, and cancel, while model-facing inspection/steering projections
   keep internal logical-run/correlation IDs private;
 - spawn and steering idempotency are owner scoped;
+- suspended children keep their durable inbox open for the next continuation segment,
+  each input identity is enqueued at most once per native attempt, and terminal admission
+  races return a rejected receipt rather than a tool failure;
+- cancelling a suspended child commits terminal `cancelled` state and rejects unresolved
+  input, while repeated cancellation of any terminal child returns the same record;
 - child request usage is cumulative across native deferred continuation;
 - every active or retained child descriptor is persisted before its delegation service is exposed;
 - an exact child descriptor is retained while any execution record references it; the current retention policy keeps those execution records, so startup can restore every referenced descriptor;

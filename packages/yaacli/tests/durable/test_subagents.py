@@ -14,10 +14,12 @@ from pydantic import TypeAdapter
 from pydantic_ai import Agent, AgentSpec, DeferredToolRequests, DeferredToolResults, Tool, ToolDenied
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models import Model
+from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.capabilities import SupportsDeferredOutput, build_default_capability_catalog
-from ya_agent_sdk.inputs import InputOrigin, RunInputLedger
+from ya_agent_sdk.inputs import InputDisposition, InputOrigin, RunInputLedger
 from ya_agent_sdk.subagents import (
     SubagentDeliveryState,
     SubagentDurability,
@@ -159,7 +161,34 @@ async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_u
         ),
         execution_host=LocalProcessorSubagentExecutionHost(),
     )
-    parent_ctx = TUIContext(run_input_ledger=RunInputLedger(logical_run_id="parent-run"))
+    model_call_count = 0
+
+    async def child_model(
+        _messages: list[ModelMessage],
+        _info: FunctionAgentInfo,
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        nonlocal model_call_count
+        model_call_count += 1
+        if model_call_count == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="guarded_effect",
+                    json_args='{"value":"deferred"}',
+                    tool_call_id="approval-call",
+                )
+            }
+        else:
+            yield "done"
+
+    deterministic_model = FunctionModel(stream_function=child_model)
+
+    def model_wrapper(_model: Model, _agent_name: str, _metadata: dict[str, object]) -> Model:
+        return deterministic_model
+
+    parent_ctx = TUIContext(
+        run_input_ledger=RunInputLedger(logical_run_id="parent-run"),
+        model_wrapper=model_wrapper,
+    )
     parent_ctx.delegation_scope_id = "session"
     parent_ctx.note_manager.set("scope", "parent-a")
     ApprovalCapability.effects = []
@@ -175,6 +204,17 @@ async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_u
         assert suspended.state is SubagentExecutionState.suspended, suspended.error
         assert suspended.deferred is not None
         assert suspended.resumable_state["notes"] == {"scope": "parent-a"}
+
+        steering = await service.steer(
+            handle.execution_id,
+            "apply after continuation",
+            caller_scope_id="session",
+            idempotency_key="suspended-steer",
+        )
+        assert steering.disposition is InputDisposition.accepted
+        persisted_inputs = store.list_inputs(handle.execution_id)
+        assert len(persisted_inputs) == 1
+        assert persisted_inputs[0].content == ["apply after continuation"]
 
         parent_ctx.note_manager.set("scope", "parent-b")
         requests = TypeAdapter(DeferredToolRequests).validate_python(suspended.deferred)
@@ -193,6 +233,7 @@ async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_u
         assert record.usage["requests"] == 2
         assert record.resumable_state["notes"] == {"scope": "parent-a"}
         assert parent_ctx.note_manager.get("scope") == "parent-b"
+        assert store.list_inputs(handle.execution_id)[0].state is InputState.applied
         assert store.get_descriptor(record.descriptor_id) is not None
         assert ApprovalCapability.effects == []
 
@@ -257,6 +298,69 @@ async def test_local_subagent_steering_is_persisted_before_graph_application(
     assert len(inputs) == 1
     assert inputs[0].content == ["steer once"]
     assert inputs[0].state is InputState.accepted
+
+    await store.save(
+        record.model_copy(
+            update={
+                "state": SubagentExecutionState.succeeded,
+                "completed_at": datetime.now(UTC),
+            }
+        )
+    )
+    terminal_retry = await driver.steer(
+        record,
+        "steer once",
+        origin=InputOrigin.user,
+        idempotency_key="stable-steer-call",
+    )
+    assert terminal_retry.input_id == first.input_id
+    assert terminal_retry.disposition is InputDisposition.rejected
+    assert store.list_inputs(record.execution_id)[0].state is InputState.rejected
+    await store.close()
+    product_store.close()
+
+
+async def test_local_subagent_steering_returns_rejected_when_input_closes_during_race(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "steering-race.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="session")
+    store = SQLiteSubagentExecutionStore(database_path)
+    record = SubagentExecutionRecord(
+        execution_id="child-running",
+        root_execution_id="child-running",
+        owner_scope_id="session",
+        idempotency_key="child-running",
+        descriptor_id="descriptor",
+        plan_fingerprint="fingerprint",
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.running,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        child_logical_run_id="child-run",
+        prompt="initial",
+    )
+    await store.create(record)
+    assert store.close_and_list_inputs(record.execution_id) == ()
+    driver = LocalSubagentDriver(
+        store=store,
+        request_limit=2,
+        default_model_cfg=TUIContext().model_cfg,
+    )
+
+    receipt = await driver.steer(
+        record,
+        "too late",
+        origin=InputOrigin.user,
+        idempotency_key="stable-steer-call",
+    )
+
+    assert receipt.disposition is InputDisposition.rejected
+    assert receipt.logical_run_id == "child-run"
+    assert receipt.input_id == "stable-steer-call"
+    assert store.list_inputs(record.execution_id) == ()
     await store.close()
     product_store.close()
 

@@ -22,6 +22,7 @@ import asyncio
 import codecs
 import contextlib
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -57,6 +58,7 @@ from pydantic_ai import (
     BinaryContent,
     DeferredToolRequests,
     DeferredToolResults,
+    EnqueuedMessagesEvent,
     ToolDenied,
     UserContent,
 )
@@ -101,6 +103,7 @@ from ya_agent_sdk.events import (
     HandoffCompleteEvent,
     HandoffFailedEvent,
     HandoffStartEvent,
+    ModelRequestCompleteEvent,
     ModelRequestStartEvent,
     NamespaceStatus,
     NamespaceStatusEvent,
@@ -156,6 +159,7 @@ from yaacli.durable.application import (
 from yaacli.durable.executor import LocalExecutionWorker
 from yaacli.durable.models import (
     ActionBatch,
+    InputState,
     LogicalRunRecord,
     LogicalRunStatus,
     RevisionPayload,
@@ -226,6 +230,8 @@ _DEFAULT_MAX_PENDING_ATTACHMENTS = 8
 _DEFAULT_MAX_PENDING_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _MAX_RETAINED_TOOL_RESULT_CHARS = 64 * 1024
 _MAX_RETAINED_TOOL_ARG_CHARS = 64 * 1024
+_MAX_STEERING_PREVIEW_CHARS = 100
+_MAX_STEERING_PREVIEW_MESSAGES = 8
 _SESSION_SELECTOR_MAX_VISIBLE = 8
 _SESSION_SELECTOR_MAX_WIDTH = 110
 _SESSION_SELECTOR_MIN_WIDTH = 24
@@ -382,6 +388,22 @@ def _single_line_session_preview(value: str | None) -> str | None:
     printable = "".join(character if character.isprintable() else " " for character in value)
     normalized = " ".join(printable.split())
     return normalized or None
+
+
+def _single_line_steering_preview(value: str) -> str:
+    """Build a bounded display-only preview of applied steering input."""
+    normalized = _single_line_session_preview(value) or ""
+    if len(normalized) <= _MAX_STEERING_PREVIEW_CHARS:
+        return normalized
+    suffix = "..."
+    return f"{normalized[: _MAX_STEERING_PREVIEW_CHARS - len(suffix)].rstrip()}{suffix}"
+
+
+def _steering_projection_key(session_id: str, input_id: str) -> str:
+    """Derive a replay-stable display identity without exposing a durable input ID."""
+    key = hashlib.sha256(session_id.encode()).digest()
+    digest = hashlib.blake2b(input_id.encode(), key=key, digest_size=16).hexdigest()
+    return f"steering-{digest}"
 
 
 def _truncate_display_text(value: str, max_width: int) -> str:
@@ -612,6 +634,7 @@ class TUIApp:
         default_factory=lambda: BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG), init=False
     )
     _display_adapter: AguiEventAdapter | None = field(default=None, init=False)
+    _projected_steering_keys: set[str] = field(default_factory=set, init=False, repr=False)
 
     # Session
     _session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12], init=False)
@@ -1599,6 +1622,26 @@ class TUIApp:
                     )
                     self._printed_tool_calls.add(tool_call_id)
                 continue
+            if event_type == "CUSTOM" and event.get("name") == "yaacli.steering_applied":
+                value = event.get("value")
+                if isinstance(value, dict):
+                    projection_key = value.get("projection_key")
+                    messages = value.get("messages")
+                    if (
+                        isinstance(projection_key, str)
+                        and projection_key not in self._projected_steering_keys
+                        and isinstance(messages, list)
+                    ):
+                        previews = [
+                            _single_line_steering_preview(message)
+                            for message in messages[:_MAX_STEERING_PREVIEW_MESSAGES]
+                            if isinstance(message, str)
+                        ]
+                        previews = [preview for preview in previews if preview]
+                        if previews:
+                            self._projected_steering_keys.add(projection_key)
+                            self._append_block(self._event_renderer.render_steering_injected(previews).rstrip("\n"))
+                continue
             if event_type == "CUSTOM" and event.get("name") == "yaacli.user_input":
                 value = event.get("value")
                 if isinstance(value, dict):
@@ -1623,6 +1666,7 @@ class TUIApp:
     def _restore_output_from_display_events(self, events: Sequence[dict[str, Any]]) -> None:
         """Rebuild visible output from compacted display-layer events."""
         self._reset_output_blocks()
+        self._projected_steering_keys.clear()
         self._streaming_text = ""
         self._streaming_text_buffer = None
         self._streaming_line_index = None
@@ -3835,6 +3879,8 @@ class TUIApp:
     def _handle_execution_stream_event(self, event: StreamEvent) -> None:
         """Apply mode policy before adapting or persisting one execution event."""
         message_event = event.event
+        if event.agent_id == "main" and isinstance(message_event, EnqueuedMessagesEvent):
+            self._project_applied_steering(message_event)
         if isinstance(message_event, SubagentStartEvent | SubagentCompleteEvent) and (
             message_event.mode == SubagentExecutionMode.background.value
         ):
@@ -3889,6 +3935,13 @@ class TUIApp:
                     state["tool_count"] = int(state.get("tool_count", 0)) + 1
                     self._update_subagent_progress_line(agent_id)
             # Ignore all other subagent events (text streaming, tool results, etc.)
+            return
+
+        if isinstance(message_event, ModelRequestCompleteEvent):
+            if message_event.context_tokens > 0:
+                self._current_context_tokens = message_event.context_tokens
+            if message_event.context_window_size > 0:
+                self._context_window_size = message_event.context_window_size
             return
 
         if isinstance(message_event, UsageSnapshotEvent):
@@ -4087,6 +4140,33 @@ class TUIApp:
             self._set_phase(TUIPhase.TOOL_CALLING)
 
         self._throttled_invalidate()
+
+    def _project_applied_steering(self, event: EnqueuedMessagesEvent) -> None:
+        """Project one applied durable user input into the replayable TUI stream."""
+        store = self._durable_store
+        logical_run_id = self._active_logical_run_id
+        if store is None or logical_run_id is None:
+            return
+        for item in store.list_inputs(logical_run_id, states=(InputState.applied,)):
+            projection_key = _steering_projection_key(self._session_id, item.input_id)
+            if (
+                item.order_index <= 0
+                or item.origin != "user"
+                or item.native_enqueue_id != event.enqueue_id
+                or projection_key in self._projected_steering_keys
+            ):
+                continue
+            previews = [
+                _single_line_steering_preview(content)
+                for content in item.content[:_MAX_STEERING_PREVIEW_MESSAGES]
+                if isinstance(content, str)
+            ]
+            if previews:
+                self._record_display_system_event(
+                    "steering_applied",
+                    {"projection_key": projection_key, "messages": previews},
+                )
+            return
 
     async def _paste_clipboard_image(self, input_area: TextArea | None = None) -> None:
         """Attach an image from the system clipboard when available."""
@@ -5434,6 +5514,7 @@ class TUIApp:
         self._tool_messages.clear()
         self._subagent_states.clear()
         self._background_subagent_ids.clear()
+        self._projected_steering_keys.clear()
         self._display_replay.clear()
         self._event_renderer.clear()
         self._reset_pending_attachments()

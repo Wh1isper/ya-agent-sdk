@@ -95,7 +95,7 @@ from ya_agent_sdk.events import (
 )
 from ya_agent_sdk.inputs import EnqueueReceipt, InputOrigin, LogicalRunInputRouter
 from ya_agent_sdk.usage import CostEstimate, coerce_run_usage, estimate_latest_model_message_cost
-from ya_agent_sdk.utils import AgentDepsT, EnvT
+from ya_agent_sdk.utils import AgentDepsT, EnvT, get_latest_request_usage
 
 if TYPE_CHECKING:
     pass
@@ -1382,11 +1382,14 @@ async def stream_agent(  # noqa: C901
             source="main_model_request_cost",
         )
 
+        latest_request_usage = get_latest_request_usage(run.all_messages())
         await emit_lifecycle_event(
             ModelRequestCompleteEvent(
                 event_id=ctx.run_id,
                 loop_index=current_loop,
                 duration_seconds=time.perf_counter() - node_start_time,
+                context_tokens=(latest_request_usage.total_tokens if latest_request_usage is not None else 0),
+                context_window_size=ctx.model_cfg.context_window or 0,
             )
         )
         snapshot = ctx.build_usage_snapshot()

@@ -13,7 +13,7 @@ Both foreground and background delegation use the durable SQL child-session/run 
 - Make async subagents durable across parent run completion, service restarts, and UI refreshes.
 - Use the existing Claw session/run execution path for async subagent work.
 - Let any session spawn, resume, query, steer, and manage named child subagent sessions.
-- Deliver async completion back to the parent session through the same steer-or-run wake-up path used by agency fires.
+- Deliver child-linked async completion back to the parent session through the same steer-or-run wake-up path used by agency fires; detached work records its result without waking the parent.
 - Expose current-session async subagent state to the agent through tools and injected context.
 - Preserve subagent semantics: native Pydantic AI `AgentSpec` core, thin YA target envelope, stable name, prompt, history, explicit capability policy, plan fingerprint, and resume.
 - Keep parent and child continuity separate while preserving auditable linkage.
@@ -191,7 +191,7 @@ Claw's store and driver perform the following host work:
 4. Persist the complete SDK record in task metadata, the immutable plan descriptor in
    dedicated task columns, and `sdk_input_state="applied"` in the same commit that creates
    the canonical child run/input, before publishing the run.
-5. Use `wake_policy="record_only"` for foreground and `steer_or_run` for background.
+5. Use `wake_policy="record_only"` for foreground or detached plans and `steer_or_run` only for child-linked background plans.
 6. Poll durable task/run state through the driver; process restart does not change the
    record identity or execution mode.
 7. For resume, address the prior SDK execution explicitly, reuse its child session, and
@@ -389,7 +389,10 @@ Completion wake input:
 Wake behavior:
 
 - SQL task/run/inbox state and the post-run awake processor are the sole owner of
-  completion routing and delivery disposition.
+  completion routing and delivery disposition for `steer_or_run` tasks.
+- Detached plans always persist `wake_policy="record_only"`; terminal synchronization
+  preserves SDK `delivery_state="not_required"`, creates no delivery identity or parent
+  inbox row, and never starts a parent continuation, including after parent interruption.
 - A running parent receives one canonical completion envelope through its logical-run router.
 - A temporarily unbound active parent retains the envelope as `accepted` until ingress rebind.
 - An idle parent receives one queued continuation run with `restore_from_run_id=head_success_run_id`; a failed/cancelled head is never restored.
@@ -413,8 +416,9 @@ background and foreground execution to its session/run driver; foreground is the
 spawn-plus-wait contract, and the supervisor must provide deadlock-free nested capacity.
 `ClawSubagentCompletionDelivery` is a read-only adapter over canonical SQL task/run/inbox
 state. It prevents the generic SDK service from also enqueueing through a live parent
-router, and it reports `delivered` only when SQL observes canonical application. There
-is no second SDK-owned completion envelope or fallback delivery path.
+router, reports `delivered` only when SQL observes canonical application, and leaves
+`not_required` unchanged for detached records. There is no second SDK-owned completion
+envelope or fallback delivery path.
 
 A Claw self-call client may remain an adapter behind that service. The model sees task
 IDs, names, session IDs, run IDs, statuses, and summaries, while API tokens, base URLs,

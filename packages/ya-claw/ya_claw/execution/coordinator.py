@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ from ya_agent_sdk.context import ResumableState, StreamEvent
 from ya_agent_sdk.environment import SandboxEnvironment
 from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent, UsageSnapshotEvent
 from ya_agent_sdk.execution import AgentExecutionHarness, AgentSegment, AgentSegmentRequest
-from ya_agent_sdk.inputs import InputOrigin
+from ya_agent_sdk.inputs import InputDisposition, InputOrigin
 from ya_agent_sdk.interactions import (
     DeferredApprovalResolution,
     DeferredCallResolution,
@@ -450,6 +451,7 @@ class ExecutionSupervisor:
                 run_store=self._run_store,
                 notification_hub=self._notification_hub,
                 execution_harness=self._execution_harness,
+                submit_run=self.submit_run,
             )
             await coordinator.execute(run_id)
         finally:
@@ -525,6 +527,7 @@ class RunCoordinator:
         run_store: RunStore | None = None,
         notification_hub: NotificationHub | None = None,
         execution_harness: AgentExecutionHarness | None = None,
+        submit_run: Callable[[str], bool] | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
@@ -536,6 +539,7 @@ class RunCoordinator:
         self._notification_hub = notification_hub
         self._execution_harness = execution_harness or AgentExecutionHarness()
         self._run_store = run_store or RunStore(settings)
+        self._submit_run = submit_run
         self._hitl_controller = HitlController()
 
     def _completed_run_projector(self) -> CompletedRunProjector:
@@ -1078,11 +1082,19 @@ class RunCoordinator:
                                         effective_stream_event.event,
                                         EnqueuedMessagesEvent,
                                     ):
-                                        await self._mark_run_input_applied(
+                                        input_applied = await self._mark_run_input_applied(
                                             run_id,
                                             effective_stream_event.event,
                                             runtime=runtime,
                                         )
+                                        if input_applied:
+                                            await self._runtime_state.append_run_event(
+                                                run_id,
+                                                agui_adapter.build_run_custom_event(
+                                                    "input_applied",
+                                                    {"disposition": InputDisposition.applied.value},
+                                                ),
+                                            )
                                     if isinstance(
                                         effective_stream_event.event,
                                         ModelRequestStartEvent,
@@ -1428,16 +1440,17 @@ class RunCoordinator:
         event: EnqueuedMessagesEvent,
         *,
         runtime: AgentRuntime[ClawAgentContext, Any, Environment],
-    ) -> None:
+    ) -> bool:
         router = runtime.ctx.input_router
         sdk_input_id = router.observe_event(event) if router is not None else None
         async with self._session_factory() as db_session:
-            await mark_run_input_applied(
+            record = await mark_run_input_applied(
                 db_session,
                 run_id=run_id,
                 sdk_input_id=sdk_input_id,
                 enqueue_id=event.enqueue_id,
             )
+        return record is not None
 
     async def _mark_source_delivery_applied(self, run_id: str) -> None:
         """Persist that a continuation command reached a native model request."""
@@ -1921,17 +1934,10 @@ class RunCoordinator:
         return value[:4000]
 
     def _submit_background_run(self, run_id: str) -> bool:
-        supervisor = ExecutionSupervisor(
-            settings=self._settings,
-            session_factory=self._session_factory,
-            runtime_state=self._runtime_state,
-            workspace_provider=self._workspace_provider,
-            environment_factory=self._environment_factory,
-            profile_resolver=self._profile_resolver,
-            runtime_builder=self._runtime_builder,
-            notification_hub=self._notification_hub,
-        )
-        return supervisor.submit_run(run_id)
+        if self._submit_run is None:
+            logger.info("Run submission skipped run_id={} reason=no_submission_gateway", run_id)
+            return False
+        return self._submit_run(run_id)
 
     def _submit_memory_run(self, run_id: str) -> bool:
         return self._submit_background_run(run_id)

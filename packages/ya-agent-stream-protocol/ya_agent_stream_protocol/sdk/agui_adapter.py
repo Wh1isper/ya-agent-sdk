@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +24,7 @@ from ag_ui.core.events import (
 )
 from pydantic import BaseModel
 from pydantic_ai import (
+    EnqueuedMessagesEvent,
     FinalResultEvent,
     FunctionToolResultEvent,
     OutputToolResultEvent,
@@ -37,7 +37,33 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import RetryPromptPart, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart
 from ya_agent_sdk.context.agent import StreamEvent
-from ya_agent_sdk.events import ModelRequestStartEvent, UsageSnapshotEvent
+from ya_agent_sdk.events import (
+    AgentEvent,
+    AgentExecutionCompleteEvent,
+    AgentExecutionFailedEvent,
+    AgentExecutionResumeEvent,
+    AgentExecutionStartEvent,
+    BackgroundShellCompleteEvent,
+    BackgroundShellKilledEvent,
+    BackgroundShellStartEvent,
+    CompactCompleteEvent,
+    CompactFailedEvent,
+    CompactStartEvent,
+    FileChangeEvent,
+    HandoffCompleteEvent,
+    HandoffFailedEvent,
+    HandoffStartEvent,
+    ModelRequestCompleteEvent,
+    ModelRequestStartEvent,
+    NamespaceStatusEvent,
+    NoteEvent,
+    SubagentCompleteEvent,
+    SubagentStartEvent,
+    TaskEvent,
+    ToolCallsCompleteEvent,
+    ToolCallsStartEvent,
+    UsageSnapshotEvent,
+)
 
 from ya_agent_stream_protocol.agui.events import dump_agui_event
 from ya_agent_stream_protocol.json_types import JsonObject, JsonValue
@@ -105,29 +131,95 @@ class AguiEventAdapter:
             return self._with_stream_metadata(stream_event, self._adapt_part_end(stream_event, cursor))
         if isinstance(event, FunctionToolResultEvent | OutputToolResultEvent):
             return self._with_stream_metadata(stream_event, self._adapt_function_tool_result(stream_event))
-        if isinstance(event, FinalResultEvent):
-            return [
-                self._custom_agent_event(
-                    event_name="final_result",
-                    stream_event=stream_event,
-                    payload={"tool_name": event.tool_name, "tool_call_id": event.tool_call_id},
-                )
-            ]
-        if isinstance(event, UsageSnapshotEvent):
-            return [
-                self._custom_agent_event(
-                    event_name="usage_snapshot",
-                    stream_event=stream_event,
-                    payload=_serialize_value(event.snapshot) if event.snapshot is not None else None,
-                )
-            ]
-        return [
-            self._custom_agent_event(
-                event_name=_camel_to_snake(type(event).__name__),
+        explicit_custom_event = self._adapt_explicit_custom_event(stream_event)
+        if explicit_custom_event is not None:
+            return [explicit_custom_event]
+        return []
+
+    def _adapt_explicit_custom_event(self, stream_event: StreamEvent) -> JsonObject | None:
+        event = stream_event.event
+        if isinstance(event, ModelRequestStartEvent):
+            return self._custom_agent_event(
+                event_name="model_request_start",
                 stream_event=stream_event,
-                payload=_serialize_value(event),
+                payload={"loop_index": event.loop_index, "message_count": event.message_count},
             )
-        ]
+        if isinstance(event, ModelRequestCompleteEvent):
+            return self._custom_agent_event(
+                event_name="model_request_complete",
+                stream_event=stream_event,
+                payload={
+                    "loop_index": event.loop_index,
+                    "duration_seconds": event.duration_seconds,
+                    "context_tokens": event.context_tokens,
+                    "context_window_size": event.context_window_size,
+                },
+            )
+        if isinstance(event, FinalResultEvent):
+            return self._custom_agent_event(
+                event_name="final_result",
+                stream_event=stream_event,
+                payload={"tool_name": event.tool_name, "tool_call_id": event.tool_call_id},
+            )
+        if isinstance(event, UsageSnapshotEvent):
+            snapshot = event.snapshot
+            return self._custom_agent_event(
+                event_name="usage_snapshot",
+                stream_event=stream_event,
+                payload=(
+                    {
+                        "run_id": self._run_id,
+                        "total_usage": _serialize_value(snapshot.total_usage),
+                        "total_cost_estimate": _serialize_value(snapshot.total_cost_estimate),
+                        "model_cost_estimates": _serialize_value(snapshot.model_cost_estimates),
+                    }
+                    if snapshot is not None
+                    else None
+                ),
+            )
+        if isinstance(event, SubagentStartEvent):
+            return self._custom_agent_event(
+                event_name="subagent_start",
+                stream_event=stream_event,
+                payload={
+                    "execution_id": event.execution_id,
+                    "mode": event.mode,
+                    "agent_id": event.agent_id,
+                    "agent_name": event.agent_name,
+                    "prompt_preview": _bounded_text(event.prompt_preview, 200),
+                },
+            )
+        if isinstance(event, SubagentCompleteEvent):
+            return self._custom_agent_event(
+                event_name="subagent_complete",
+                stream_event=stream_event,
+                payload={
+                    "execution_id": event.execution_id,
+                    "mode": event.mode,
+                    "agent_id": event.agent_id,
+                    "agent_name": event.agent_name,
+                    "success": event.success,
+                    "request_count": event.request_count,
+                    "result_preview": _bounded_text(event.result_preview, 200),
+                    "error": _bounded_text(event.error, 1_000),
+                    "duration_seconds": event.duration_seconds,
+                },
+            )
+        if isinstance(event, EnqueuedMessagesEvent):
+            return self._custom_agent_event(
+                event_name="enqueued_messages",
+                stream_event=stream_event,
+                payload={"message_count": len(event.messages)},
+            )
+        projection = _public_agent_event_projection(event)
+        if projection is None:
+            return None
+        event_name, payload = projection
+        return self._custom_agent_event(
+            event_name=event_name,
+            stream_event=stream_event,
+            payload=payload,
+        )
 
     def _adapt_part_start(self, stream_event: StreamEvent, cursor: AgentCursor) -> list[JsonObject]:
         event = cast(PartStartEvent, stream_event.event)
@@ -185,10 +277,8 @@ class AguiEventAdapter:
         if isinstance(part, ToolReturnPart):
             return [self._tool_result_event(part)]
         if isinstance(part, RetryPromptPart):
-            return [
-                self._custom_agent_event("retry_prompt_part", stream_event=stream_event, payload=_serialize_value(part))
-            ]
-        return [self._custom_agent_event("part_start", stream_event=stream_event, payload=_serialize_value(event))]
+            return [self._retry_prompt_event(stream_event, part)]
+        return []
 
     def _adapt_part_delta(self, stream_event: StreamEvent, cursor: AgentCursor) -> list[JsonObject]:
         event = cast(PartDeltaEvent, stream_event.event)
@@ -239,7 +329,7 @@ class AguiEventAdapter:
                     )
                 )
             ]
-        return [self._custom_agent_event("part_delta", stream_event=stream_event, payload=_serialize_value(event))]
+        return []
 
     def _adapt_part_end(self, stream_event: StreamEvent, cursor: AgentCursor) -> list[JsonObject]:
         event = cast(PartEndEvent, stream_event.event)
@@ -297,10 +387,8 @@ class AguiEventAdapter:
         if isinstance(part, ToolReturnPart):
             return [self._tool_result_event(part)]
         if isinstance(part, RetryPromptPart):
-            return [
-                self._custom_agent_event("retry_prompt_part", stream_event=stream_event, payload=_serialize_value(part))
-            ]
-        return [self._custom_agent_event("part_end", stream_event=stream_event, payload=_serialize_value(event))]
+            return [self._retry_prompt_event(stream_event, part)]
+        return []
 
     def _adapt_function_tool_result(self, stream_event: StreamEvent) -> list[JsonObject]:
         event = cast(FunctionToolResultEvent | OutputToolResultEvent, stream_event.event)
@@ -309,16 +397,18 @@ class AguiEventAdapter:
         if isinstance(part, ToolReturnPart):
             return [self._tool_result_event(part, content=content)]
         if isinstance(part, RetryPromptPart):
-            return [
-                self._custom_agent_event(
-                    "retry_prompt_part",
-                    stream_event=stream_event,
-                    payload={"part": _serialize_value(part), "content": _serialize_value(content)},
-                )
-            ]
-        return [
-            self._custom_agent_event("function_tool_result", stream_event=stream_event, payload=_serialize_value(event))
-        ]
+            return [self._retry_prompt_event(stream_event, part)]
+        return []
+
+    def _retry_prompt_event(self, stream_event: StreamEvent, part: RetryPromptPart) -> JsonObject:
+        return self._custom_agent_event(
+            "retry_prompt_part",
+            stream_event=stream_event,
+            payload={
+                "tool_name": part.tool_name,
+                "tool_call_id": part.tool_call_id,
+            },
+        )
 
     def _tool_result_event(self, part: ToolReturnPart, *, content: object = None) -> JsonObject:
         tool_call_id = part.tool_call_id
@@ -403,6 +493,112 @@ class AguiEventAdapter:
         )
 
 
+def _public_agent_event_projection(event: object) -> tuple[str, JsonValue] | None:  # noqa: C901
+    if isinstance(event, CompactStartEvent):
+        return "compact_start", {"message_count": event.message_count}
+    if isinstance(event, CompactCompleteEvent):
+        return "compact_complete", {
+            "original_message_count": event.original_message_count,
+            "compacted_message_count": event.compacted_message_count,
+        }
+    if isinstance(event, CompactFailedEvent):
+        return "compact_failed", {
+            "error": _bounded_text(event.error, 1_000),
+            "message_count": event.message_count,
+        }
+    if isinstance(event, HandoffStartEvent):
+        return "handoff_start", {"message_count": event.message_count}
+    if isinstance(event, HandoffCompleteEvent):
+        return "handoff_complete", {"original_message_count": event.original_message_count}
+    if isinstance(event, HandoffFailedEvent):
+        return "handoff_failed", {
+            "error": _bounded_text(event.error, 1_000),
+            "message_count": event.message_count,
+        }
+    if isinstance(event, AgentExecutionStartEvent):
+        return "agent_execution_start", {
+            "message_history_count": event.message_history_count,
+            "attempt_index": event.attempt_index,
+            "is_resume_attempt": event.is_resume_attempt,
+        }
+    if isinstance(event, AgentExecutionCompleteEvent):
+        return "agent_execution_complete", {
+            "total_loops": event.total_loops,
+            "total_duration_seconds": event.total_duration_seconds,
+            "final_message_count": event.final_message_count,
+            "attempt_index": event.attempt_index,
+        }
+    if isinstance(event, AgentExecutionFailedEvent):
+        return "agent_execution_failed", {
+            "error": _bounded_text(event.error, 1_000),
+            "error_type": event.error_type,
+            "total_loops": event.total_loops,
+            "total_duration_seconds": event.total_duration_seconds,
+            "attempt_index": event.attempt_index,
+            "recoverable": event.recoverable,
+        }
+    if isinstance(event, AgentExecutionResumeEvent):
+        return "agent_execution_resume", {
+            "attempt_index": event.attempt_index,
+            "previous_attempt_index": event.previous_attempt_index,
+            "error": _bounded_text(event.error, 1_000),
+            "error_type": event.error_type,
+            "message_history_count": event.message_history_count,
+        }
+    if isinstance(event, ToolCallsStartEvent):
+        return "tool_calls_start", {"loop_index": event.loop_index}
+    if isinstance(event, ToolCallsCompleteEvent):
+        return "tool_calls_complete", {
+            "loop_index": event.loop_index,
+            "duration_seconds": event.duration_seconds,
+        }
+    if isinstance(event, NamespaceStatusEvent):
+        return "namespace_status", {
+            "namespace_status": {key: value.value for key, value in event.namespace_status.items()}
+        }
+    if isinstance(event, FileChangeEvent):
+        return "file_change", {
+            "tool_name": event.tool_name,
+            "changes": [
+                {
+                    "path": change.path,
+                    "action": change.action.value,
+                    "destination": change.destination,
+                }
+                for change in event.changes
+            ],
+        }
+    if isinstance(event, TaskEvent):
+        return "task", {
+            "tasks": [
+                {
+                    "id": task.id,
+                    "subject": task.subject,
+                    "status": task.status,
+                    "active_form": task.active_form,
+                    "owner": task.owner,
+                    "blocked_by": list(task.blocked_by),
+                    "blocks": list(task.blocks),
+                }
+                for task in event.tasks
+            ]
+        }
+    if isinstance(event, NoteEvent):
+        return "note", {"entries": dict(event.entries)}
+    if isinstance(event, BackgroundShellStartEvent):
+        return "background_shell_start", {"process_id": event.process_id}
+    if isinstance(event, BackgroundShellCompleteEvent):
+        return "background_shell_complete", {
+            "process_id": event.process_id,
+            "exit_code": event.exit_code,
+        }
+    if isinstance(event, BackgroundShellKilledEvent):
+        return "background_shell_killed", {"process_id": event.process_id}
+    if isinstance(event, AgentEvent):
+        return None
+    return None
+
+
 def _stringify_tool_call_args(value: object) -> str | None:
     if value is None:
         return None
@@ -417,9 +613,11 @@ def _stringify_tool_result(value: object) -> str:
     return json.dumps(_serialize_value(value), ensure_ascii=False)
 
 
-def _camel_to_snake(value: str) -> str:
-    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
-    return snake.removesuffix("_event")
+def _bounded_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    suffix = "..."
+    return f"{value[: max_chars - len(suffix)]}{suffix}"
 
 
 def _serialize_value(value: object) -> JsonValue:

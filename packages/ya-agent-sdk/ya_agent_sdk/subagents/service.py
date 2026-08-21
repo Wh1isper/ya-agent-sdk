@@ -39,6 +39,7 @@ from ya_agent_sdk.inputs import (
     EnqueueReceipt,
     InputDisposition,
     InputOrigin,
+    LogicalInputClosedError,
     LogicalRunInputRouter,
     RunInputLedger,
 )
@@ -201,8 +202,11 @@ class InMemorySubagentExecutionStore:
         record: SubagentExecutionRecord,
     ) -> SubagentExecutionRecord:
         async with self._lock:
-            if record.execution_id not in self._records:
+            current = self._records.get(record.execution_id)
+            if current is None:
                 raise KeyError(record.execution_id)
+            if current.terminal and record.state is not current.state:
+                return current.model_copy(deep=True)
             stored = record.model_copy(deep=True)
             self._records[record.execution_id] = stored
             self._idempotency[(record.owner_scope_id, record.idempotency_key)] = record.execution_id
@@ -272,7 +276,7 @@ class SubagentSteeringDriver(Protocol):
         *content: Any,
         origin: InputOrigin,
         idempotency_key: str | None,
-    ) -> Any: ...
+    ) -> EnqueueReceipt: ...
 
 
 @runtime_checkable
@@ -715,8 +719,10 @@ class SubagentExecutionService:
         self.deferred_resolver = deferred_resolver
         self.retained_plan_provider = retained_plan_provider
         self._active_run_registries: dict[str, Any] = {}
+        self._parent_contexts: dict[str, AgentContext] = {}
         self._task_lock = asyncio.Lock()
         self._execution_id_lock = asyncio.Lock()
+        self._execution_locks: dict[str, asyncio.Lock] = {}
         self._reserved_execution_ids: set[str] = set()
         self._delivery_locks: dict[str, asyncio.Lock] = {}
         self._lifecycle_condition = asyncio.Condition()
@@ -918,18 +924,19 @@ class SubagentExecutionService:
     ) -> SubagentHandle:
         """Persist host decisions and continue the same suspended execution."""
         owner_scope_id = _scope_id(parent_ctx)
-        record = await self._required_record(
-            execution_id,
-            owner_scope_id=owner_scope_id,
-        )
-        if record.state is not SubagentExecutionState.suspended or record.deferred is None:
-            raise ValueError(f"Subagent execution {execution_id!r} has no suspended deferred request")
-        saved = await self._accept_deferred_results(record, results)
-        await self._schedule_execution(
-            await self._plan_for_record(saved),
-            saved,
-            parent_ctx,
-        )
+        lock = self._execution_locks.setdefault(execution_id, asyncio.Lock())
+        async with lock:
+            record = await self._required_record(
+                execution_id,
+                owner_scope_id=owner_scope_id,
+            )
+            if record.state is not SubagentExecutionState.suspended or record.deferred is None:
+                raise ValueError(f"Subagent execution {execution_id!r} has no suspended deferred request")
+            saved = await self._accept_deferred_results_unlocked(record, results)
+            if saved.state is not SubagentExecutionState.pending:
+                raise ValueError(f"Subagent execution {execution_id!r} no longer accepts deferred results")
+            plan = await self._plan_for_record(saved)
+        await self._schedule_execution(plan, saved, parent_ctx)
         return _handle(saved)
 
     async def steer(
@@ -939,22 +946,12 @@ class SubagentExecutionService:
         caller_scope_id: str,
         origin: InputOrigin = InputOrigin.user,
         idempotency_key: str | None = None,
-    ) -> Any:
+    ) -> EnqueueReceipt:
         """Target structured input at one currently accepting child run."""
         record = await self._required_record(
             execution_id,
             owner_scope_id=caller_scope_id,
         )
-        async with self._task_lock:
-            active_registry = self._active_run_registries.get(execution_id)
-        if active_registry is not None:
-            router = active_registry.get(record.child_logical_run_id)
-            if router is not None:
-                return await router.enqueue(
-                    *content,
-                    origin=origin,
-                    input_id=idempotency_key,
-                )
         if isinstance(self.driver, SubagentSteeringDriver):
             return await self.driver.steer(
                 record,
@@ -962,25 +959,63 @@ class SubagentExecutionService:
                 origin=origin,
                 idempotency_key=idempotency_key,
             )
-        raise RuntimeError(f"Subagent execution {execution_id!r} is not accepting input")
+        if record.state not in {
+            SubagentExecutionState.pending,
+            SubagentExecutionState.running,
+        }:
+            return _rejected_steering_receipt(record, idempotency_key)
+        async with self._task_lock:
+            active_registry = self._active_run_registries.get(execution_id)
+        if active_registry is not None:
+            router = active_registry.get(record.child_logical_run_id)
+            if router is not None:
+                try:
+                    return await router.enqueue(
+                        *content,
+                        origin=origin,
+                        input_id=idempotency_key,
+                    )
+                except LogicalInputClosedError:
+                    return _rejected_steering_receipt(record, idempotency_key)
+        return _rejected_steering_receipt(record, idempotency_key)
 
     async def cancel(
         self,
         execution_id: str,
         *,
         caller_scope_id: str,
+        parent_ctx: AgentContext | None = None,
     ) -> SubagentExecutionRecord:
         """Cancel one active execution owned by the caller scope."""
-        record = await self._required_record(
-            execution_id,
-            owner_scope_id=caller_scope_id,
-        )
-        await self.driver.cancel(record)
-        await self.execution_host.cancel(execution_id)
-        return await self._required_record(
-            execution_id,
-            owner_scope_id=caller_scope_id,
-        )
+        lock = self._execution_locks.setdefault(execution_id, asyncio.Lock())
+        manually_terminalized = False
+        async with lock:
+            record = await self._required_record(
+                execution_id,
+                owner_scope_id=caller_scope_id,
+            )
+            if record.terminal:
+                return record
+            await self.driver.cancel(record)
+            await self.execution_host.cancel(execution_id)
+            current = await self._required_record(
+                execution_id,
+                owner_scope_id=caller_scope_id,
+            )
+            if not current.terminal:
+                current.state = SubagentExecutionState.cancelled
+                if current.input_state is SubagentInputState.accepted:
+                    current.input_state = SubagentInputState.rejected
+                current.error = "Subagent execution was cancelled"
+                current.completed_at = datetime.now(UTC)
+                current = await self.store.save(current)
+                manually_terminalized = current.state is SubagentExecutionState.cancelled
+            event_ctx = parent_ctx or self._parent_contexts.get(execution_id)
+            if manually_terminalized and event_ctx is not None:
+                await self._emit_complete(event_ctx, current)
+                if current.delivery_state is SubagentDeliveryState.pending:
+                    await self.deliver_pending(event_ctx)
+            return current
 
     async def wait(
         self,
@@ -1154,6 +1189,7 @@ class SubagentExecutionService:
                     record.error = "Process-local subagent execution ended with its host process"
                     record.completed_at = datetime.now(UTC)
                     await self.store.save(record)
+        self._parent_contexts.clear()
         await self.store.close()
 
     async def _begin_admission(self) -> None:
@@ -1174,7 +1210,17 @@ class SubagentExecutionService:
         record: SubagentExecutionRecord,
         parent_ctx: AgentContext,
     ) -> None:
+        current = await self.store.get(
+            record.execution_id,
+            owner_scope_id=record.owner_scope_id,
+        )
+        if current is None:
+            raise KeyError(record.execution_id)
+        if current.terminal or current.state is SubagentExecutionState.suspended:
+            return
+        record = current
         async with self._task_lock:
+            self._parent_contexts[record.execution_id] = parent_ctx
             if record.execution_id in self._active_run_registries:
                 return
             self._active_run_registries[record.execution_id] = parent_ctx.active_run_registry
@@ -1232,7 +1278,7 @@ class SubagentExecutionService:
                 record.input_state = SubagentInputState.rejected
             record.error = "Subagent execution was cancelled"
             record.completed_at = datetime.now(UTC)
-            await self.store.save(record)
+            record = await self.store.save(record)
             await self._emit_complete(parent_ctx, record)
             raise
         except BaseException as exc:
@@ -1241,7 +1287,7 @@ class SubagentExecutionService:
                 record.input_state = SubagentInputState.rejected
             record.error = str(exc) or repr(exc)
             record.completed_at = datetime.now(UTC)
-            await self.store.save(record)
+            record = await self.store.save(record)
             await self._emit_complete(parent_ctx, record)
             return
 
@@ -1267,10 +1313,12 @@ class SubagentExecutionService:
                     record.model_copy(deep=True),
                     requests,
                 )
-                await self._accept_deferred_results(record, results)
+                record = await self._accept_deferred_results(record, results)
 
             record.state = SubagentExecutionState.running
-            await self.store.save(record)
+            saved_running = await self.store.save(record)
+            if saved_running.terminal:
+                return False
             outcome = await self.driver.run(plan, record, parent_ctx)
             _apply_driver_input_state(record, outcome)
             record.state = outcome.state
@@ -1283,13 +1331,28 @@ class SubagentExecutionService:
             record.resumable_state = outcome.resumable_state
             if outcome.state is not SubagentExecutionState.suspended:
                 record.completed_at = datetime.now(UTC)
-            await self.store.save(record)
+            record = await self.store.save(record)
+            if record.state is not outcome.state:
+                return False
             if outcome.state is not SubagentExecutionState.suspended:
                 return True
             if self.deferred_resolver is None:
                 return False
 
     async def _accept_deferred_results(
+        self,
+        record: SubagentExecutionRecord,
+        results: DeferredToolResults,
+    ) -> SubagentExecutionRecord:
+        lock = self._execution_locks.setdefault(record.execution_id, asyncio.Lock())
+        async with lock:
+            current = await self._required_record(
+                record.execution_id,
+                owner_scope_id=record.owner_scope_id,
+            )
+            return await self._accept_deferred_results_unlocked(current, results)
+
+    async def _accept_deferred_results_unlocked(
         self,
         record: SubagentExecutionRecord,
         results: DeferredToolResults,
@@ -1309,8 +1372,7 @@ class SubagentExecutionService:
         record.state = SubagentExecutionState.pending
         record.error = None
         record.completed_at = None
-        await self.store.save(record)
-        return record
+        return await self.store.save(record)
 
     async def _plan_for_record(
         self,
@@ -1464,6 +1526,17 @@ def _handle(record: SubagentExecutionRecord) -> SubagentHandle:
         execution_id=record.execution_id,
         route=record.route,
         mode=record.mode,
+    )
+
+
+def _rejected_steering_receipt(
+    record: SubagentExecutionRecord,
+    idempotency_key: str | None,
+) -> EnqueueReceipt:
+    return EnqueueReceipt(
+        logical_run_id=record.child_logical_run_id,
+        input_id=idempotency_key or str(uuid4()),
+        disposition=InputDisposition.rejected,
     )
 
 

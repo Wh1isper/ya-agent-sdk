@@ -179,6 +179,10 @@ def _message_identity(messages: Sequence[ModelMessage]) -> bytes:
     ).encode()
 
 
+class LogicalInputClosedError(RuntimeError):
+    """The logical input router closed before admission could be linearized."""
+
+
 @dataclass(frozen=True, slots=True)
 class EnqueueReceipt:
     logical_run_id: str
@@ -234,8 +238,6 @@ class LogicalRunInputRouter:
         if pending is None:
             raise ValueError("Logical input cannot be empty")
         with self._lock:
-            if self._closed:
-                raise RuntimeError("Logical run input is closed")
             existing = self.ledger.find(input_id) if input_id is not None else None
             if existing is not None:
                 record = self.ledger.accept(
@@ -245,6 +247,8 @@ class LogicalRunInputRouter:
                     input_id=input_id,
                 )
                 return self._receipt(record)
+            if self._closed:
+                raise LogicalInputClosedError("Logical run input is closed")
             self._check_capacity(pending.messages)
             record = self.ledger.accept(
                 pending.messages,

@@ -332,8 +332,16 @@ boundary. A post-admission model failure remains `applied` and cannot be downgra
 
 Targeted steering is accepted only while the child execution is accepting input. A
 durable host persists it in the child's owner-scoped inbox before acknowledging it,
-drains it at native graph boundaries, and reports accepted/enqueued/applied/rejected
-truthfully. The standalone adapter rejects input when no active router exists.
+drains each identity once per native attempt at graph boundaries, and reports
+accepted/enqueued/applied/rejected truthfully. A suspended durable child may accept input
+for its next continuation segment. Admission is linearized by the authoritative
+router/inbox: if terminal closure wins the race, steering returns `rejected` rather than
+failing the parent run. Unknown handles, owner-scope violations, malformed content, and
+idempotency-key reuse with different content remain errors. The standalone adapter
+returns `rejected` when no active router exists.
+
+Cancellation is idempotent for terminal records. Cancelling a suspended execution
+terminalizes it as `cancelled` and rejects any input that can no longer be applied.
 
 Every running child context carries its exact immutable plan descriptor. A nested spawn
 checks the `spawn_targets` from that descriptor, never from the route's mutable active

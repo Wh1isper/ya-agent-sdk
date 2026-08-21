@@ -11,6 +11,7 @@ from ya_claw.controller.models import RunCreateRequest, SessionCreateRequest, Se
 from ya_claw.controller.run import RunController
 from ya_claw.controller.session import SessionController
 from ya_claw.db.engine import create_engine, create_session_factory
+from ya_claw.execution.state_machine import mark_run_running
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import create_runtime_state
 
@@ -292,6 +293,12 @@ async def test_run_controller_create_auto_creates_session_and_supports_steer_can
         ),
     )
     batches = bind_recording_input_ingress(runtime_state, run.id)
+    session_record = await db_session.get(SessionRecord, run.session_id)
+    run_record = await db_session.get(RunRecord, run.id)
+    assert isinstance(session_record, SessionRecord)
+    assert isinstance(run_record, RunRecord)
+    mark_run_running(session_record, run_record, claimed_by="controller-test")
+    await db_session.commit()
 
     steer_response = await controller.steer(
         db_session,

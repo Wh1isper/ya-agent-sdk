@@ -48,7 +48,9 @@ from ya_claw.controller.store import (
     run_blob_path,
 )
 from ya_claw.execution.input_inbox import (
-    accept_run_input,
+    RUN_INPUT_CLOSED_CODE,
+    RunInputClosedError,
+    admit_run_input,
     deliver_accepted_run_inputs,
     lock_run_record,
     reject_open_run_inputs,
@@ -421,19 +423,28 @@ class RunController:
         run_record = await db_session.get(RunRecord, run_id)
         if not isinstance(run_record, RunRecord):
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' was not found.")
-        if run_record.status not in _ACTIVE_RUN_STATUSES:
-            raise HTTPException(status_code=409, detail=f"Run '{run_id}' is not active.")
+        if run_record.status == RunStatus.QUEUED:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": RUN_INPUT_CLOSED_CODE, "message": f"Run '{run_id}' is not accepting input."},
+            )
         if not request.input_parts:
             raise HTTPException(status_code=422, detail="input_parts must not be empty for steer requests.")
 
         input_payload = [part.model_dump(mode="json") for part in request.input_parts]
         try:
-            input_record = await accept_run_input(
+            admission = await admit_run_input(
                 db_session,
                 run_record,
                 input_payload,
                 delivery_key=request.idempotency_key,
             )
+            input_record = admission.record
+        except RunInputClosedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": RUN_INPUT_CLOSED_CODE, "message": str(exc)},
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         await db_session.commit()
@@ -447,30 +458,16 @@ class RunController:
         payload = {
             "run_id": run_id,
             "session_id": run_record.session_id,
-            "input_id": input_record.id,
-            "delivery_key": input_record.delivery_key,
             "disposition": input_record.status,
         }
-        with suppress(KeyError):
-            await runtime_state.append_run_event(
-                run_id,
-                agui_adapter.build_run_custom_event("input_accepted", payload),
-            )
-        await deliver_accepted_run_inputs(db_session, runtime_state, run_id)
-        await db_session.refresh(input_record)
-        if input_record.status == "enqueued" and isinstance(input_record.enqueue_id, str):
+        if admission.created:
             with suppress(KeyError):
                 await runtime_state.append_run_event(
                     run_id,
-                    agui_adapter.build_run_custom_event(
-                        "input_enqueued",
-                        {
-                            **payload,
-                            "sdk_input_id": input_record.sdk_input_id,
-                            "enqueue_id": input_record.enqueue_id,
-                        },
-                    ),
+                    agui_adapter.build_run_custom_event("input_accepted", payload),
                 )
+        await deliver_accepted_run_inputs(db_session, runtime_state, run_id)
+        await db_session.refresh(input_record)
 
         return ControlResponse(
             session_id=run_record.session_id,

@@ -210,10 +210,13 @@ logical-run ledger owns unresolved native attempts after acceptance. On
 before consuming the next stream event.
 
 Input admission/delivery and terminal transitions first acquire a no-op database update
-lock on the owning run. Therefore terminal rejection cannot miss a concurrently accepted
-row, and delivery cannot overwrite a committed rejection with stale `enqueued` state.
-Permanent mapping/validation/type/I/O errors reject only their row and FIFO delivery
-continues; unavailable ingress leaves the current and later rows accepted.
+lock on the owning run. Under that lock, explicit idempotency lookup precedes the terminal
+admission check, so an equal retry returns its existing final receipt while a new key is
+rejected. Therefore terminal rejection cannot miss a concurrently accepted row, and
+delivery cannot overwrite a committed rejection with stale `enqueued` state. Permanent
+mapping/validation/type/I/O errors reject only their row and FIFO delivery continues;
+unavailable ingress leaves the current and later rows accepted. Public accepted and
+enqueued events are emitted only when the corresponding SQL transition is new.
 
 This division avoids all three failure modes:
 
