@@ -46,10 +46,12 @@ async def test_router_buffers_before_bind_and_correlates_application() -> None:
 
     assert receipt.disposition is InputDisposition.accepted
     assert receipt.enqueue_id is None
+    assert router.current_native_attempt_id is None
 
     await router.bind(run, native_attempt_id="attempt-1")  # type: ignore[arg-type]
 
     record = ledger.get(receipt.input_id)
+    assert router.current_native_attempt_id == "attempt-1"
     assert record.disposition is InputDisposition.enqueued
     assert record.latest_enqueue_id == "enqueue-1"
     assert run.calls[0][1] == "when_idle"
@@ -128,6 +130,8 @@ async def test_router_rebinds_unapplied_input_once_per_native_attempt() -> None:
         "attempt-1",
         "attempt-2",
     ]
+    router.unbind(native_attempt_id="attempt-2")
+    assert router.current_native_attempt_id is None
 
 
 async def test_router_enforces_one_pending_budget() -> None:

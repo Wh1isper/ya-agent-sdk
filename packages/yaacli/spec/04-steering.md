@@ -68,6 +68,8 @@ input identity; the payload remains in `SessionStore`.
 - validates stored content as Pydantic AI `UserContent`;
 - records the input in `RunInputLedger`;
 - uses the persisted `asap` or `when_idle` priority;
+- shares the router's current native-attempt identity instead of deriving one from
+  Pydantic AI run metadata;
 - calls native enqueue at most once for each input in one native segment attempt;
 - permits one fresh enqueue when an unresolved input crosses into a new native attempt;
 - records every native enqueue attempt; and

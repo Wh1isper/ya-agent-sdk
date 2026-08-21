@@ -3171,6 +3171,7 @@ class TUIApp:
         self._set_phase(TUIPhase.THINKING)
         self._last_session_input = session_input if session_input is not None else user_input
         self._last_session_output = None
+        self._last_snapshot_saved = None
         self._tool_messages.clear()
         self._printed_tool_calls.clear()
         self._subagent_states.clear()
@@ -3178,7 +3179,6 @@ class TUIApp:
         self._event_renderer.clear()
         cancelled = False
         reported_error = False
-        run_finished = False
         run_id = uuid.uuid4().hex[:12]
         self._display_adapter = AguiEventAdapter(
             session_id=self._session_id,
@@ -3220,72 +3220,51 @@ class TUIApp:
                     continue
                 await asyncio.sleep(0.05)
             await wait_task
-            revision = self._durable_store.get_revision_for_run(logical_run.logical_run_id)
-            if revision is None:
-                raise RuntimeError(
-                    f"Logical run {logical_run.logical_run_id!r} terminated without publishing a revision"
-                )
-            self._restore_revision(revision)
-            status = str(revision.terminal.get("status", ""))
-            if status == LogicalRunStatus.cancelled.value:
-                cancelled = True
-                reason = revision.terminal.get("reason")
-                if not isinstance(reason, str) or not reason:
-                    reason = "cancelled"
-                if self._display_adapter is not None and not run_finished:
-                    self._handle_and_record_display_events([
-                        self._display_adapter.build_run_custom_event("run_cancelled", {"reason": reason})
-                    ])
-                self._append_output("[Cancelled · durable cancellation recorded]")
-                self._last_snapshot_saved = True
-                return
-            if status != LogicalRunStatus.completed.value:
-                error = revision.terminal.get("error")
-                raise RuntimeError(str(error or f"Agent run ended with status {status}"))
-            output_value = revision.terminal.get("output")
-            if not isinstance(output_value, str):
-                raise TypeError("Agent completed without a final text result.")
-            self._last_session_output = output_value
-            self._handle_and_record_display_events([
-                self._display_adapter.build_run_finished_event(result={"output_text": output_value})
-            ])
-            run_finished = True
-            self._last_snapshot_saved = True
-            self._notify_turn_complete()
+            revision = self._require_run_revision(logical_run.logical_run_id)
+            status = self._project_terminal_revision(revision)
+            cancelled = status is LogicalRunStatus.cancelled
         except asyncio.CancelledError:
-            cancelled = True
             logical_run_id = self._active_logical_run_id
-            if logical_run_id is not None:
-                cancel_task = asyncio.create_task(
-                    self._session_service.cancel(logical_run_id, reason="user_interrupted")
+            if logical_run_id is None:
+                raise
+            try:
+                revision = await self._settle_run_revision_after_cancellation(
+                    logical_run_id,
+                    wait_task=wait_task,
                 )
-                with contextlib.suppress(Exception, asyncio.CancelledError):
-                    await asyncio.shield(cancel_task)
-            if self._display_adapter is not None and not run_finished:
-                self._handle_and_record_display_events([
-                    self._display_adapter.build_run_custom_event("run_cancelled", {"reason": "user_interrupted"})
-                ])
-            self._append_output("[Cancelled · durable cancellation recorded]")
+                status = self._project_terminal_revision(revision)
+                cancelled = status is LogicalRunStatus.cancelled
+            except Exception as exc:
+                if _is_benign_contextvar_cleanup_error(exc):
+                    logger.debug(
+                        "Suppressed benign ContextVar cleanup error in agent run: %s",
+                        _safe_exception_str(exc),
+                    )
+                else:
+                    reported_error = True
+                    self._report_durable_run_error(exc)
         except Exception as exc:
-            if _is_benign_contextvar_cleanup_error(exc):
+            logical_run_id = self._active_logical_run_id
+            revision = (
+                self._durable_store.get_revision_for_run(logical_run_id)
+                if self._durable_store is not None and logical_run_id is not None
+                else None
+            )
+            if revision is not None:
+                try:
+                    status = self._project_terminal_revision(revision)
+                    cancelled = status is LogicalRunStatus.cancelled
+                except Exception as terminal_exc:
+                    reported_error = True
+                    self._report_durable_run_error(terminal_exc)
+            elif _is_benign_contextvar_cleanup_error(exc):
                 logger.debug(
                     "Suppressed benign ContextVar cleanup error in agent run: %s",
                     _safe_exception_str(exc),
                 )
             else:
                 reported_error = True
-                self._finalize_streaming_text()
-                self._finalize_streaming_thinking()
-                if self._display_adapter is not None:
-                    self._handle_and_record_display_events([
-                        self._display_adapter.build_run_error_event(
-                            message=_safe_exception_str(exc),
-                            code=type(exc).__name__,
-                        )
-                    ])
-                self._last_snapshot_saved = self.has_session_data
-                self._append_error_output(exc, saved=self._last_snapshot_saved)
-                logger.exception("Durable agent execution failed")
+                self._report_durable_run_error(exc)
         finally:
             if wait_task is not None and not wait_task.done():
                 wait_task.cancel()
@@ -3311,6 +3290,98 @@ class TUIApp:
             self._set_phase(TUIPhase.IDLE)
             self._display_adapter = None
 
+    def _require_run_revision(self, logical_run_id: str) -> RevisionRecord:
+        if self._durable_store is None:
+            raise RuntimeError("Durable store is not initialized")
+        revision = self._durable_store.get_revision_for_run(logical_run_id)
+        if revision is None:
+            raise RuntimeError(f"Logical run {logical_run_id!r} terminated without publishing a revision")
+        return revision
+
+    async def _settle_run_revision_after_cancellation(
+        self,
+        logical_run_id: str,
+        *,
+        wait_task: asyncio.Task[Any] | None,
+    ) -> RevisionRecord:
+        """Wait through task cancellation until durable terminal truth is committed."""
+        if self._session_service is None:
+            raise RuntimeError("Durable session service is not initialized")
+        settlement_task = wait_task
+        while True:
+            if settlement_task is None or settlement_task.cancelled():
+                settlement_task = asyncio.create_task(
+                    self._session_service.wait(logical_run_id),
+                    name=f"yaacli-settle:{logical_run_id}",
+                )
+            try:
+                await asyncio.shield(settlement_task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                if self._durable_store is None or self._durable_store.get_revision_for_run(logical_run_id) is None:
+                    raise
+            break
+        return self._require_run_revision(logical_run_id)
+
+    def _project_terminal_revision(self, revision: RevisionRecord) -> LogicalRunStatus:
+        """Restore and project one canonical durable terminal revision."""
+        self._restore_revision(revision)
+        self._restore_output_from_display_events(self._display_replay.snapshot())
+        self._last_snapshot_saved = True
+        status_value = revision.terminal.get("status")
+        try:
+            status = LogicalRunStatus(status_value)
+        except ValueError as exc:
+            raise RuntimeError(f"Agent run published unknown terminal status {status_value!r}") from exc
+
+        if status is LogicalRunStatus.cancelled:
+            reason = revision.terminal.get("reason")
+            if not isinstance(reason, str) or not reason:
+                reason = "cancelled"
+            if self._display_adapter is not None:
+                self._handle_and_record_display_events([
+                    self._display_adapter.build_run_custom_event("run_cancelled", {"reason": reason})
+                ])
+            self._append_output("[Cancelled · durable cancellation recorded]")
+            return status
+
+        if status is not LogicalRunStatus.completed:
+            detail = revision.terminal.get("error") or revision.terminal.get("reason")
+            message = f"Agent run ended with status {status.value}"
+            if isinstance(detail, str) and detail:
+                message = f"{message}: {detail}"
+            raise RuntimeError(message)
+
+        output_value = revision.terminal.get("output")
+        if not isinstance(output_value, str):
+            raise TypeError("Agent completed without a final text result.")
+        self._last_session_output = output_value
+        if self._display_adapter is not None:
+            self._handle_and_record_display_events([
+                self._display_adapter.build_run_finished_event(result={"output_text": output_value})
+            ])
+        self._notify_turn_complete()
+        return status
+
+    def _report_durable_run_error(self, exc: Exception) -> None:
+        self._finalize_streaming_text()
+        self._finalize_streaming_thinking()
+        if self._display_adapter is not None:
+            self._handle_and_record_display_events([
+                self._display_adapter.build_run_error_event(
+                    message=_safe_exception_str(exc),
+                    code=type(exc).__name__,
+                )
+            ])
+        if self._last_snapshot_saved is not True:
+            self._last_snapshot_saved = self.has_session_data
+        self._append_error_output(exc, saved=self._last_snapshot_saved)
+        logger.error(
+            "Durable agent execution failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
     def _build_runtime_descriptor(
         self,
         runtime: AgentRuntime[TUIContext, Any, TUIEnvironment],
@@ -3334,14 +3405,12 @@ class TUIApp:
         self._message_history = ModelMessagesTypeAdapter.validate_python(revision.message_history)
         latest_usage = get_latest_request_usage(self._message_history)
         self._current_context_tokens = latest_usage.total_tokens if latest_usage is not None else 0
-        if revision.resumable_state:
-            state = TUIResumableState.model_validate(revision.resumable_state)
-            restore_resumable_state_safely(state, self.runtime.ctx)
-        if revision.display_projection:
-            display_events = validate_display_events(revision.display_projection)
-            replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
-            replay.extend_snapshot(display_events)
-            self._display_replay = replay
+        state = TUIResumableState.model_validate(revision.resumable_state)
+        restore_resumable_state_safely(state, self.runtime.ctx)
+        display_events = validate_display_events(revision.display_projection)
+        replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
+        replay.extend_snapshot(display_events)
+        self._display_replay = replay
 
     async def _resolve_durable_action_batch(self, batch: ActionBatch) -> None:
         session_service = self._session_service

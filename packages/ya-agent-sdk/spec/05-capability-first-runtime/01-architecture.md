@@ -283,8 +283,10 @@ own handle.
 replacement and deferred continuation segments. Each `AgentStreamer` binds its current
 native run to that router. The router binds accepted user inputs from `RunInputLedger`
 to attempt enqueue IDs, writes delivery state back to the ledger, and buffers other
-canonical producers while no segment is bound. A capability instance may register the
-current native run into these services, but does not own them.
+canonical producers while no segment is bound. Its `current_native_attempt_id` is the
+single identity shared with host capabilities at graph boundaries; those capabilities
+must not derive a competing attempt identity from Pydantic AI run metadata. A capability
+instance may register the current native run into these services, but does not own them.
 
 ## 8. Subagent Composition
 

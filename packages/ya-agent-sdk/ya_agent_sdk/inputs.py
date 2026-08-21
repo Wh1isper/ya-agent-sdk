@@ -227,6 +227,12 @@ class LogicalRunInputRouter:
         with self._lock:
             return not self._closed
 
+    @property
+    def current_native_attempt_id(self) -> str | None:
+        """Return the identity shared by the active native run binding."""
+        with self._lock:
+            return self._binding.native_attempt_id if self._binding is not None else None
+
     async def enqueue(
         self,
         *content: EnqueueContent,

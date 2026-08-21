@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import MagicMock
 
 import pytest
 import yaacli.durable.sqlite as durable_sqlite
@@ -19,7 +20,7 @@ from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.capabilities import SupportsDeferredOutput, build_default_capability_catalog
-from ya_agent_sdk.inputs import InputDisposition, InputOrigin, RunInputLedger
+from ya_agent_sdk.inputs import InputDisposition, InputOrigin, LogicalRunInputRouter, RunInputLedger
 from ya_agent_sdk.subagents import (
     SubagentDeliveryState,
     SubagentDurability,
@@ -625,6 +626,84 @@ async def test_subagent_store_fails_when_referenced_descriptor_is_missing(tmp_pa
 
     with pytest.raises(RuntimeError, match="missing descriptor"):
         store.list_referenced_descriptors()
+    await store.close()
+    product_store.close()
+
+
+async def test_child_inbox_reuses_router_enqueue_on_new_native_attempt(tmp_path: Path) -> None:
+    database_path = tmp_path / "child-inbox-attempt.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="session")
+    store = SQLiteSubagentExecutionStore(database_path)
+    record = SubagentExecutionRecord(
+        execution_id="child-running",
+        root_execution_id="child-running",
+        owner_scope_id="session",
+        idempotency_key="child-running",
+        descriptor_id="descriptor",
+        plan_fingerprint="fingerprint",
+        route="worker",
+        mode=SubagentExecutionMode.foreground,
+        state=SubagentExecutionState.running,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="initial",
+    )
+    await store.create(record)
+    accepted = store.accept_input(
+        record.execution_id,
+        ["steer once"],
+        idempotency_key="stable-steer-call",
+        origin=InputOrigin.user,
+    )
+    context = TUIContext(run_input_ledger=RunInputLedger(logical_run_id=record.child_logical_run_id))
+    context._agent_id = record.execution_id
+    ctx = MagicMock()
+    ctx.deps = context
+    ctx.run_id = "native-run-1"
+    ctx.enqueue.side_effect = ["enqueue-1", "unexpected-duplicate"]
+    capability = DurableSubagentInboxCapability(store=store)
+
+    capability._enqueue_pending(ctx, (accepted,))
+    persisted = store.list_inputs(record.execution_id)[0]
+    ledger_record = context.run_input_ledger.get(accepted.input_id)
+
+    router = LogicalRunInputRouter(context.run_input_ledger)
+    context.input_router = router
+    native_run = MagicMock()
+    native_run.enqueue.side_effect = ["enqueue-2", "enqueue-3"]
+    await router.bind(native_run, native_attempt_id="native-attempt-2")
+
+    ctx.run_id = "different-pydantic-run-id"
+    capability._enqueue_pending(ctx, (persisted,))
+    persisted = store.list_inputs(record.execution_id)[0]
+
+    assert ctx.enqueue.call_count == 1
+    native_run.enqueue.assert_called_once()
+    assert persisted.native_enqueue_id == "enqueue-2"
+    assert [attempt.native_attempt_id for attempt in ledger_record.enqueue_attempts] == [
+        "native-run-1",
+        "native-attempt-2",
+    ]
+
+    capability._mark_applied(context, "enqueue-1")
+    assert store.list_inputs(record.execution_id)[0].state is InputState.applied
+
+    accepted_before_hook = store.accept_input(
+        record.execution_id,
+        ["applied before capability hook"],
+        idempotency_key="applied-before-hook",
+        origin=InputOrigin.feature,
+    )
+    receipt = await router.enqueue(
+        "applied before capability hook",
+        input_id=accepted_before_hook.input_id,
+        origin=InputOrigin.feature,
+    )
+    assert receipt.enqueue_id == "enqueue-3"
+    context.run_input_ledger.mark_applied_by_enqueue_id("enqueue-3")
+    capability._sync_applied_inputs(context)
+    assert store.list_inputs(record.execution_id)[1].state is InputState.applied
     await store.close()
     product_store.close()
 

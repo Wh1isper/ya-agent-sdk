@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from ya_agent_sdk.inputs import InputDisposition
+from ya_agent_sdk.inputs import InputDisposition, InputOrigin, LogicalRunInputRouter
 from yaacli.durable.application import build_runtime_descriptor
 from yaacli.durable.bindings import runtime_bindings
 from yaacli.durable.capabilities import DurableInboxPumpCapability
@@ -16,7 +16,7 @@ from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.session import TUIContext
 
 
-def test_durable_inbox_enqueues_each_input_once_per_native_run(tmp_path: Path) -> None:
+async def test_durable_inbox_reuses_router_enqueue_once_per_native_attempt(tmp_path: Path) -> None:
     store = SQLiteSessionStore(tmp_path / "product.sqlite3")
     descriptor = build_runtime_descriptor(
         agent_spec={"name": "yaacli_main_v2", "model": "test"},
@@ -53,7 +53,7 @@ def test_durable_inbox_enqueues_each_input_once_per_native_run(tmp_path: Path) -
     ctx = MagicMock()
     ctx.deps = deps
     ctx.run_id = "native-run-1"
-    ctx.enqueue.side_effect = ["enqueue-1", "enqueue-2"]
+    ctx.enqueue.side_effect = ["enqueue-1", "unexpected-duplicate"]
     capability = DurableInboxPumpCapability()
     runtime_bindings.register(binding_ref, deps, store)
     try:
@@ -72,15 +72,42 @@ def test_durable_inbox_enqueues_each_input_once_per_native_run(tmp_path: Path) -
         assert ledger_record.disposition is InputDisposition.enqueued
         assert len(ledger_record.enqueue_attempts) == 1
 
-        ctx.run_id = "native-run-2"
+        router = LogicalRunInputRouter(deps.run_input_ledger)
+        deps.input_router = router
+        native_run = MagicMock()
+        native_run.enqueue.side_effect = ["enqueue-2", "enqueue-3"]
+        await router.bind(native_run, native_attempt_id="native-attempt-2")
+
+        ctx.run_id = "different-pydantic-run-id"
         capability._enqueue_pending(ctx, (persisted,))
         persisted = store.list_inputs(run.logical_run_id)[1]
-        assert ctx.enqueue.call_count == 2
+        assert ctx.enqueue.call_count == 1
+        native_run.enqueue.assert_called_once()
         assert persisted.native_enqueue_id == "enqueue-2"
-        assert len(ledger_record.enqueue_attempts) == 2
+        assert [attempt.native_attempt_id for attempt in ledger_record.enqueue_attempts] == [
+            "native-run-1",
+            "native-attempt-2",
+        ]
 
         capability._mark_applied(deps, "enqueue-1")
         assert store.list_inputs(run.logical_run_id)[1].state is InputState.applied
+
+        accepted_before_hook = store.accept_input(
+            run.logical_run_id,
+            ["applied before capability hook"],
+            idempotency_key="applied-before-hook",
+            priority=InputPriority.asap,
+            origin="feature",
+        )
+        receipt = await router.enqueue(
+            "applied before capability hook",
+            input_id=accepted_before_hook.input_id,
+            origin=InputOrigin.feature,
+        )
+        assert receipt.enqueue_id == "enqueue-3"
+        deps.run_input_ledger.mark_applied_by_enqueue_id("enqueue-3")
+        capability._sync_applied_inputs(deps)
+        assert store.list_inputs(run.logical_run_id)[2].state is InputState.applied
     finally:
         runtime_bindings.unregister(binding_ref, deps)
         store.close()

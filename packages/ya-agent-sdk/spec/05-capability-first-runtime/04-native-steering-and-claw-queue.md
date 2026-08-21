@@ -111,7 +111,10 @@ One `LogicalRunInputRouter` lives for the full logical run. It spans every
 The router accepts typed canonical envelopes from user and feature producers. User
 envelopes reference `RunInputLedger`; shell/subagent completion envelopes carry their
 producer correlation ID. The router tracks priority/FIFO sequence, current and
-superseded attempt enqueue IDs, and the assembled `ModelRequest` metadata.
+superseded attempt enqueue IDs, and the assembled `ModelRequest` metadata. While bound,
+`current_native_attempt_id` is the authoritative identity for both router retries and
+capability-driven graph-boundary drains, preventing two enqueue calls for one input in
+the same attempt.
 
 Attempt lifecycle:
 

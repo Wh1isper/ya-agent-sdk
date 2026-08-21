@@ -11,7 +11,7 @@ from pydantic_ai import DeferredToolRequests, EnqueuedMessagesEvent, RunContext,
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_graph import End
-from ya_agent_sdk.inputs import InputDisposition, InputOrigin
+from ya_agent_sdk.inputs import InputDisposition, InputOrigin, LogicalRunInputRouter
 
 from yaacli.durable.bindings import runtime_bindings
 from yaacli.durable.models import InputRecord, InputState
@@ -72,10 +72,29 @@ class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
                 priority=item.priority.value,
                 input_id=item.input_id,
             )
-            native_attempt_id = ctx.run_id or deps.run_id
-            if ledger_record.disposition in (InputDisposition.applied, InputDisposition.rejected) or any(
-                attempt.native_attempt_id == native_attempt_id for attempt in ledger_record.enqueue_attempts
-            ):
+            if ledger_record.disposition is InputDisposition.applied:
+                store.transition_input(item.input_id, item.state, InputState.applied)
+                continue
+            if ledger_record.disposition is InputDisposition.rejected:
+                continue
+            native_attempt_id = self._current_native_attempt_id(ctx)
+            if native_attempt_id is None:
+                continue
+            current_attempt = next(
+                (
+                    attempt
+                    for attempt in ledger_record.enqueue_attempts
+                    if attempt.native_attempt_id == native_attempt_id
+                ),
+                None,
+            )
+            if current_attempt is not None:
+                store.transition_input(
+                    item.input_id,
+                    item.state,
+                    InputState.enqueued,
+                    native_enqueue_id=current_attempt.enqueue_id,
+                )
                 continue
             enqueue_id = ctx.enqueue(*content, priority=item.priority.value)
             if enqueue_id is None:  # pragma: no cover - non-empty store invariant
@@ -91,6 +110,13 @@ class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
                 InputState.enqueued,
                 native_enqueue_id=enqueue_id,
             )
+
+    @staticmethod
+    def _current_native_attempt_id(ctx: RunContext[TUIContext]) -> str | None:
+        router = ctx.deps.input_router
+        if isinstance(router, LogicalRunInputRouter):
+            return router.current_native_attempt_id
+        return ctx.run_id or ctx.deps.run_id
 
     async def wrap_run_event_stream(
         self,
@@ -117,12 +143,12 @@ class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
         store = runtime_bindings.get(binding_ref).store
         for item in store.list_inputs(
             logical_run_id,
-            states=(InputState.enqueued,),
+            states=(InputState.accepted, InputState.enqueued),
         ):
             ledger_record = deps.run_input_ledger.find(item.input_id)
             if ledger_record is not None and ledger_record.disposition is InputDisposition.applied:
                 store.transition_input(
                     item.input_id,
-                    InputState.enqueued,
+                    item.state,
                     InputState.applied,
                 )

@@ -193,8 +193,11 @@ old execution. A later user continuation is a new logical run from the published
 
 Worker shutdown cancels active tasks and commits `interrupted`. Explicit user cancel
 sets cancellation intent first and commits `cancelled`; shutdown and cancellation are
-not conflated. The TUI treats the resulting `cancelled` revision as a normal user-visible
-terminal outcome, emits `run_cancelled`, and does not project it as `RUN_ERROR`.
+not conflated. Even if the foreground waiter itself receives `CancelledError`, it waits
+through shielded durable settlement and projects the committed revision as canonical
+truth. The TUI emits `run_cancelled` only for a `cancelled` revision; `interrupted` and
+`failed` retain their error semantics. Every terminal revision restores the durable
+snapshot before phase and goal cleanup.
 
 ## Process-Local Subagents
 
