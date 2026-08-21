@@ -54,10 +54,7 @@ def durable_steering_display_events(
         events.append(
             _custom_event(
                 STEERING_ACCEPTED_EVENT_NAME,
-                {
-                    "projection_key": projection_key,
-                    "text": "\n".join(messages),
-                },
+                {"projection_key": projection_key},
             )
         )
         if item.state is not InputState.applied:

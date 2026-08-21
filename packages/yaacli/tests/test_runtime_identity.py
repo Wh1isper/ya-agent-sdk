@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from yaacli.durable.application import build_runtime_descriptor
 from yaacli.runtime_identity import (
     _CRITICAL_DISTRIBUTIONS,
     _FIRST_PARTY_MODULES,
@@ -48,13 +47,3 @@ def test_runtime_identity_declares_complete_first_party_and_critical_dependency_
     executable_version = runtime_executable_version()
     assert executable_version.startswith("yaacli-runtime-v2-sha256:")
     assert len(executable_version.rsplit(":", 1)[1]) == 64
-
-
-def test_runtime_descriptor_uses_exact_executable_identity() -> None:
-    descriptor = build_runtime_descriptor(
-        agent_spec={"name": "main", "model": "test"},
-        executable_version="test-build",
-    )
-
-    assert descriptor.executable_version == "test-build"
-    assert descriptor.behavior_payload()["executable_version"] == "test-build"

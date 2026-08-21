@@ -66,6 +66,7 @@ session_dir = "{session_dir}"
 
     async with app:
         assert await app._restore_startup_session() is False
+        app._append_block("historical tool output before completed run")
         assert app._launch_agent("hello durable tui") is True
         task = app._agent_task
         assert task is not None
@@ -79,6 +80,7 @@ session_dir = "{session_dir}"
             "output": "durable tui answer",
         }, app._output_lines
         assert app._last_session_output == "durable tui answer"
+        assert any("historical tool output before completed run" in line for line in app._output_lines)
         assert app._durable_store is not None
         session = app._durable_store.get_session(app.session_id)
         assert session is not None
@@ -132,6 +134,7 @@ session_dir = "{session_dir}"
 
     async with app:
         assert await app._restore_startup_session() is False
+        app._append_block("historical tool output before cancelled run")
         assert app._launch_agent("cancel this durable turn") is True
         task = app._agent_task
         assert task is not None
@@ -146,7 +149,7 @@ session_dir = "{session_dir}"
         input_area = TextArea(text=steering_text, multiline=True)
         app._submit_input(input_area.text, input_area)
         assert input_area.buffer.text == ""
-        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
+        assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
 
         app._cancel_foreground()
         assert app.phase is TUIPhase.CANCELLING
@@ -167,8 +170,13 @@ session_dir = "{session_dir}"
             == 1
         )
         assert not any(event.get("name") == "yaacli.steering_applied" for event in revision.display_projection)
-        assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "rejected"
-        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
+        persisted_steering = app._durable_store.list_inputs(logical_run_id)[1]
+        assert persisted_steering.state.value == "rejected"
+        assert persisted_steering.content == [steering_text]
+        assert steering_text not in str(revision.display_projection)
+        assert steering_text not in str(app._display_replay.snapshot())
+        assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
+        assert any("historical tool output before cancelled run" in line for line in app._output_lines)
         assert any("Cancelled · durable cancellation recorded" in line for line in app._output_lines)
         assert not any("[ERROR]" in line or "RuntimeError" in line for line in app._output_lines)
         cancellation_events = [
@@ -308,6 +316,7 @@ session_dir = "{session_dir}"
 
     async with app:
         assert await app._restore_startup_session() is False
+        app._append_block("historical tool output before failed run")
         assert app._launch_agent("fail this durable turn") is True
         task = app._agent_task
         assert task is not None
@@ -322,7 +331,7 @@ session_dir = "{session_dir}"
         input_area = TextArea(text=steering_text, multiline=True)
         app._submit_input(input_area.text, input_area)
         assert input_area.buffer.text == ""
-        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
+        assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
 
         release_failure.set()
         await asyncio.wait_for(task, timeout=5)
@@ -347,7 +356,8 @@ session_dir = "{session_dir}"
         replay = app._display_replay.snapshot()
         assert sum(event.get("type") == "RUN_ERROR" for event in replay) == 1
         assert not any(event.get("type") in {"RUN_STARTED", "TEXT_MESSAGE_CHUNK"} for event in replay)
-        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
+        assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
+        assert any("historical tool output before failed run" in line for line in app._output_lines)
         assert not any("uncommitted partial output" in line for line in app._output_lines)
         assert app.runtime.ctx.note_manager.get("transient") is None
         assert any("Agent run ended with status failed: model exploded" in line for line in app._output_lines)
@@ -356,6 +366,100 @@ session_dir = "{session_dir}"
         assert app.phase is TUIPhase.IDLE
         assert app.runtime.ctx.goal_active is False
         assert any("[Goal] Stopped after an error at iteration 4" in line for line in app._output_lines)
+
+
+async def test_tui_failed_run_keeps_observed_tool_history(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        """
+[general]
+model = "test"
+
+[session]
+auto_restore = false
+session_dir = "{session_dir}"
+""".format(session_dir=(tmp_path / "sessions").as_posix()),
+        encoding="utf-8",
+    )
+    manager = ConfigManager(config_dir=config_dir)
+    config = manager.load()
+    partial_streamed = asyncio.Event()
+    release_failure = asyncio.Event()
+    model_calls = 0
+    toolset = FunctionToolset[TUIContext](id="observed-tool")
+
+    async def show_value(value: str) -> str:
+        return f"observed tool result: {value}"
+
+    toolset.add_tool(Tool(show_value))
+
+    async def stream_response(
+        _messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="show_value",
+                    json_args='{"value":"kept after failure"}',
+                    tool_call_id="observed-tool-call",
+                )
+            }
+            return
+        yield "uncommitted output after tool"
+        partial_streamed.set()
+        await release_failure.wait()
+        raise RuntimeError("model failed after visible tool")
+
+    def minimal_runtime_factory(*args: Any, **kwargs: Any):
+        del args
+        binding_ref = kwargs["durable_binding_ref"]
+        return create_agent(
+            FunctionModel(stream_function=stream_response),
+            capabilities=[
+                NativeToolsetCapability(toolset, id="observed-tool"),
+                DurableInboxPumpCapability(),
+            ],
+            context_type=TUIContext,
+            context_kwargs={"durable_binding_ref": binding_ref},
+            env=TUIEnvironment,
+            env_kwargs={"allowed_paths": [tmp_path], "default_path": tmp_path},
+            agent_name="yaacli_main_v2",
+        )
+
+    monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
+    app = TUIApp(config, manager, working_dir=tmp_path)
+
+    async with app:
+        assert await app._restore_startup_session() is False
+        assert app._launch_agent("use a tool and then fail") is True
+        task = app._agent_task
+        assert task is not None
+        await asyncio.wait_for(partial_streamed.wait(), timeout=5)
+        logical_run_id = app._active_logical_run_id
+        assert logical_run_id is not None
+        assert any("observed tool result: kept after failure" in line for line in app._output_lines)
+
+        release_failure.set()
+        await asyncio.wait_for(task, timeout=5)
+
+        assert app._durable_store is not None
+        revision = app._durable_store.get_revision_for_run(logical_run_id)
+        assert revision is not None
+        assert revision.terminal["status"] == "failed"
+        assert not any(str(event.get("type", "")).startswith("TOOL_CALL_") for event in revision.display_projection)
+        output = "\n".join(app._output_lines)
+        assert "Calling:" in output
+        assert "Complete:" in output
+        assert "observed tool result: kept after failure" in output
+        assert "uncommitted output after tool" not in output
+        assert "model failed after visible tool" in output
 
 
 async def test_tui_failed_run_preserves_native_applied_steering_pair(
@@ -466,7 +570,7 @@ session_dir = "{session_dir}"
         assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "applied"
 
         output = "\n".join(app._output_lines)
-        assert sum(line.endswith(steering_text) for line in app._output_lines) == 1
+        assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
         assert output.count("Guidance injected") == 1
         assert "uncommitted output before injected failure" not in output
         assert "model failed after steering injection" in output
@@ -554,7 +658,7 @@ session_dir = "{session_dir}"
         app._submit_input(input_area.text, input_area)
 
         assert input_area.buffer.text == ""
-        assert sum(line.endswith("keep the tool visible") for line in app._output_lines) == 1
+        assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
         release_model.set()
         await asyncio.wait_for(task, timeout=5)
 
@@ -577,7 +681,7 @@ session_dir = "{session_dir}"
         assert sum(event.get("type") == "TOOL_CALL_RESULT" for event in replay) == 1
 
         output = "\n".join(app._output_lines)
-        assert sum(line.endswith("keep the tool visible") for line in app._output_lines) == 1
+        assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
         assert output.count("Guidance injected") == 1
         assert sum("Calling:" in line and "show_value" in line for line in app._output_lines) == 1
         assert sum("Complete:" in line and "show_value" in line for line in app._output_lines) == 1

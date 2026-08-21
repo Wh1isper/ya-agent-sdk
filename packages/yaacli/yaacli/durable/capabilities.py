@@ -19,6 +19,27 @@ from yaacli.session import TUIContext
 
 _USER_CONTENT = TypeAdapter(list[UserContent])
 
+_STEERING_TEMPLATE = """<steering>
+{content}
+</steering>
+
+<system-reminder>
+The user has provided additional guidance during task execution.
+Review the <steering> content carefully, consider how it affects your current approach,
+and adjust your work accordingly while continuing toward the goal.
+</system-reminder>"""
+
+
+def _model_content(item: InputRecord) -> list[UserContent]:
+    """Build native enqueue content while preserving active-run steering semantics."""
+    content = _USER_CONTENT.validate_python(item.content)
+    if item.origin != "user" or item.order_index <= 0:
+        return content
+    if len(content) != 1 or not isinstance(content[0], str):
+        raise ValueError("Active-run user steering must contain exactly one text item")
+    rendered = _STEERING_TEMPLATE.format(content=content[0])
+    return [f'<bus-message source="user">\n{rendered}\n</bus-message>']
+
 
 @dataclass(kw_only=True)
 class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
@@ -63,9 +84,11 @@ class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
             return
         store = runtime_bindings.get(deps.durable_binding_ref).store
         for item in pending:
-            content = _USER_CONTENT.validate_python(item.content)
+            model_content = _model_content(item)
             prompt_content: str | list[UserContent]
-            prompt_content = content[0] if len(content) == 1 and isinstance(content[0], str) else content
+            prompt_content = (
+                model_content[0] if len(model_content) == 1 and isinstance(model_content[0], str) else model_content
+            )
             ledger_record = deps.run_input_ledger.accept(
                 [ModelRequest(parts=[UserPromptPart(content=prompt_content)])],
                 origin=(InputOrigin.user if item.origin == "user" else InputOrigin.feature),
@@ -96,7 +119,7 @@ class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
                     native_enqueue_id=current_attempt.enqueue_id,
                 )
                 continue
-            enqueue_id = ctx.enqueue(*content, priority=item.priority.value)
+            enqueue_id = ctx.enqueue(*model_content, priority=item.priority.value)
             if enqueue_id is None:  # pragma: no cover - non-empty store invariant
                 continue
             deps.run_input_ledger.mark_enqueued(

@@ -7,8 +7,11 @@ steering. YAACLI first persists it in the product `SessionStore`, then wakes the
 local execution task. The host capability drains the durable inbox at native Pydantic AI
 graph boundaries and calls `RunContext.enqueue(priority="asap")`.
 
-There is no MessageBus, process-local steering buffer, steering prefix, or deferred
-next-prompt queue.
+There is no MessageBus, process-local steering buffer, configurable steering prefix,
+or deferred next-prompt queue. Before native enqueue, active-run user text is formatted
+with the established `<steering>` guidance and system-reminder envelope so the model can
+distinguish course correction from a new ordinary prompt. This formatting is a pure
+host-boundary transformation; persisted content remains the original text.
 
 The built-in `steer_subagent` tool is a separate targeted child-input operation.
 Compose-area input always targets the active main logical run. Targeted child admission
@@ -66,7 +69,9 @@ input identity; the payload remains in `SessionStore`.
 
 - drains only records for the current logical run;
 - validates stored content as Pydantic AI `UserContent`;
-- records the input in `RunInputLedger`;
+- formats non-initial user text as model-facing steering guidance while leaving feature
+  input and persisted content unchanged;
+- records that same model-facing input in `RunInputLedger`;
 - uses the persisted `asap` or `when_idle` priority;
 - shares the router's current native-attempt identity instead of deriving one from
   Pydantic AI run metadata;
@@ -91,10 +96,11 @@ ended.
 | `rejected` | Terminal fence or policy rejected unapplied input with a reason |
 
 The status bar counts non-initial user inputs in `accepted` or `enqueued`. It never
-renders their content and does not maintain another queue. After durable acceptance,
-the transcript records the guidance as a replayable `steering_accepted` user-input
-projection; this is the visible receive boundary and does not claim that the model has
-seen it.
+renders their content and does not maintain another queue. After durable acceptance, the transcript records a replayable
+`Guidance sent to the active run.` receipt; it is deliberately not rendered with the
+`> ...` ordinary-input treatment. The receipt stores only its derived projection key,
+not the raw guidance, which remains in the durable input row. This is the visible
+receive boundary and does not claim that the model has seen the guidance.
 When native application is confirmed, the transcript emits one bounded, single-line
 `Guidance injected` display projection. Together these form the receive/application
 event pair. Replay stores only user-visible content, sanitized applied previews, and a
@@ -114,7 +120,7 @@ Routing order is intentional:
 8. while idle, dispatch a command, explicit skill invocation, shell command, or new
    durable turn.
 
-Busy-safe commands are `/cancel`, `/agents`, `/process`, `/cost`, `/perf`, `/help`,
+Busy-safe commands are `/cancel`, `/agents`, `/process`, `/cost`, `/help`,
 `/attachments`, `/paste-image`, `/remove-image`, and `/tool`. `/integrate` is not a 2.0
 command; canonical feature/subagent delivery is owned by durable input records.
 

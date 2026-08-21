@@ -151,11 +151,8 @@ from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display import EventRenderer, RichRenderer, ToolMessage
 from yaacli.display_replay import BoundedDisplayReplay
-from yaacli.durable.application import (
-    SessionApplicationService,
-    build_runtime_descriptor,
-)
-from yaacli.durable.executor import LocalExecutionWorker
+from yaacli.durable.application import SessionApplicationService
+from yaacli.durable.executor import LocalExecutionWorker, LocalRuntimeSpec
 from yaacli.durable.models import (
     ActionBatch,
     InputState,
@@ -163,7 +160,6 @@ from yaacli.durable.models import (
     LogicalRunStatus,
     RevisionPayload,
     RevisionRecord,
-    RuntimeDescriptor,
     SessionRecord,
     SessionSummary,
 )
@@ -187,16 +183,13 @@ from yaacli.model_profiles import (
     get_startup_model_profile,
     save_selected_model_profile_id,
 )
-from yaacli.perf import perf_log_report, perf_report, perf_timer
 from yaacli.rendering.transcript import BlockId, BoundedTextAccumulator, TranscriptLimits, TranscriptStore
 from yaacli.runtime import (
     RuntimeSourceSnapshot,
-    build_main_runtime_manifest,
     build_runtime_agent_spec,
     compile_child_plan_manifest,
     compile_runtime_sources,
     create_tui_runtime,
-    restore_main_runtime_manifest,
 )
 from yaacli.session import TUIContext, TUIResumableState
 from yaacli.shell_monitor import SHELL_MONITOR_KEY, ShellMonitor, ShellNotification
@@ -381,6 +374,16 @@ def _bounded_tool_args(value: str | dict[str, Any] | None) -> str | dict[str, An
 
 def _positive_int_config(value: object, default: int) -> int:
     return value if isinstance(value, int) and value > 0 else default
+
+
+def _safe_stream_preview(value: str) -> str:
+    """Return untrusted streaming text without terminal control sequences."""
+    return "".join(character if character in {"\n", "\t"} or character.isprintable() else "�" for character in value)
+
+
+def _safe_thinking_preview(value: str) -> str:
+    """Format a lightweight reasoning preview without invoking Rich."""
+    return "\n".join(f"> {line}" for line in _safe_stream_preview(value).split("\n"))
 
 
 def _single_line_session_preview(value: str | None) -> str | None:
@@ -581,11 +584,6 @@ class TUIApp:
     )
     _skill_toolset: SkillToolset | None = field(default=None, init=False, repr=False)
     _skill_toolsets: dict[str, SkillToolset] = field(default_factory=dict, init=False, repr=False)
-    _runtime_descriptors_by_profile: dict[str, RuntimeDescriptor] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-    )
     _runtime_sources: RuntimeSourceSnapshot | None = field(default=None, init=False, repr=False)
     _runtime_behavior_base: str = field(default="", init=False, repr=False)
     _oauth_refresh_supervisor: OAuthRefreshSupervisor | None = field(default=None, init=False, repr=False)
@@ -593,6 +591,10 @@ class TUIApp:
     _execution_worker: LocalExecutionWorker | None = field(default=None, init=False, repr=False)
     _session_service: SessionApplicationService | None = field(default=None, init=False, repr=False)
     _active_logical_run_id: str | None = field(default=None, init=False)
+    _active_display_run_id: str | None = field(default=None, init=False)
+    _capture_active_run_blocks: bool = field(default=False, init=False, repr=False)
+    _active_run_block_ids: set[BlockId] = field(default_factory=set, init=False, repr=False)
+    _active_run_tool_block_ids: set[BlockId] = field(default_factory=set, init=False, repr=False)
 
     # UI components
     _app: Application[None] | None = field(default=None, init=False, repr=False)
@@ -622,6 +624,7 @@ class TUIApp:
     _display_adapter: AguiEventAdapter | None = field(default=None, init=False)
     _projected_steering_receipt_keys: set[str] = field(default_factory=set, init=False, repr=False)
     _projected_steering_keys: set[str] = field(default_factory=set, init=False, repr=False)
+    _pending_steering_count: int = field(default=0, init=False)
 
     # Session
     _session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12], init=False)
@@ -630,6 +633,7 @@ class TUIApp:
     _session_selector_open: bool = field(default=False, init=False)
     _session_selector_entries: list[SessionSummary] = field(default_factory=list, init=False)
     _session_selector_index: int = field(default=0, init=False)
+    _session_completion_ids_cache: tuple[str, ...] | None = field(default=None, init=False, repr=False)
 
     # Agent execution
     _agent_task: asyncio.Task[None] | None = field(default=None, init=False)
@@ -712,7 +716,9 @@ class TUIApp:
 
     # UI refresh throttling
     _last_invalidate_time: float = field(default=0.0, init=False)
-    _invalidate_interval: float = field(default=1 / 15, init=False)  # Terminal-friendly 15fps redraw cadence
+    _invalidate_interval: float = field(
+        default=1 / 24, init=False
+    )  # Background UI updates; input redraws remain immediate
     _pending_invalidate_handle: asyncio.TimerHandle | None = field(default=None, init=False, repr=False)
 
     # Terminal resize coalescing
@@ -722,7 +728,7 @@ class TUIApp:
 
     # Streaming render throttle (separate from UI invalidation)
     _last_stream_render_time: float = field(default=0.0, init=False)
-    _stream_render_interval: float = field(default=1 / 15, init=False)  # Base Markdown preview cadence
+    _stream_render_interval: float = field(default=1 / 24, init=False)  # Lightweight live preview cadence
     _pending_stream_render_handle: asyncio.TimerHandle | None = field(default=None, init=False, repr=False)
     _pending_stream_render_deadline: float | None = field(default=None, init=False, repr=False)
     _pending_stream_render_callback: Callable[[], None] | None = field(default=None, init=False, repr=False)
@@ -1020,100 +1026,76 @@ class TUIApp:
 
         configured_profiles = build_model_profiles(self.config)
         runtime_profiles: list[ResolvedModelProfile | None] = [*configured_profiles] or [None]
-        descriptors: list[RuntimeDescriptor] = []
-        self._runtime_descriptors_by_profile.clear()
+        runtime_specs: list[LocalRuntimeSpec] = []
+        self._skill_toolsets.clear()
         for profile in runtime_profiles:
+            runtime_id = profile.id if profile is not None else "default"
             child_manifest = compile_child_plan_manifest(
                 self.config,
                 profile=profile,
                 sources=sources,
                 capability_catalog=capability_catalog,
             )
-            main_manifest = build_main_runtime_manifest(
-                self.config,
-                mcp_config,
-                profile=profile,
-                sources=sources,
-                working_dir=self.working_dir,
-                config_dir=self.config_manager.config_dir,
-                subagent_default_mode=SubagentExecutionMode.background,
-                enable_user_input=self.config.tools.enable_user_input,
-                frontend="tui",
-                hitl_policy="wait",
-            )
-            descriptor = build_runtime_descriptor(
-                agent_spec=build_runtime_agent_spec(
+            agent_spec = AgentSpec.model_validate(
+                build_runtime_agent_spec(
                     self.config,
                     profile=profile,
                     capability_plugins=capability_plugins,
-                ),
-                main_plan_manifest=main_manifest,
-                child_plan_manifest=child_manifest,
-                host_envelope={
-                    "schema_version": 3,
-                    "workspace_ref": main_manifest.workspace_ref,
-                    "model_profile_id": profile.id if profile is not None else None,
-                    "frontend": "tui",
-                },
+                )
             )
-            descriptors.append(descriptor)
-            self._runtime_descriptors_by_profile[profile.id if profile is not None else "default"] = descriptor
 
-        active_profile_key = self._active_model_profile.id if self._active_model_profile is not None else "default"
-        active_descriptor = self._runtime_descriptors_by_profile[active_profile_key]
+            def build_runtime(
+                binding_ref: str,
+                *,
+                runtime_id: str = runtime_id,
+                runtime_profile: ResolvedModelProfile | None = profile,
+                runtime_child_manifest=child_manifest,
+                runtime_agent_spec: AgentSpec = agent_spec,
+            ) -> AgentRuntime[TUIContext, Any, TUIEnvironment]:
+                skill_toolset = SkillToolset(
+                    toolset_id="skills",
+                    extra_dir_names=[SHARED_SKILLS_DIR_NAME],
+                )
+                self._skill_toolsets[runtime_id] = skill_toolset
+                return create_tui_runtime(
+                    config=self.config,
+                    mcp_config=mcp_config,
+                    working_dir=self.working_dir,
+                    system_prompt=sources.system_prompt,
+                    child_plan_manifest=runtime_child_manifest,
+                    config_dir=self.config_manager.config_dir,
+                    model_profile=runtime_profile,
+                    subagent_default_mode=SubagentExecutionMode.background,
+                    enable_user_input=self.config.tools.enable_user_input,
+                    skill_toolset=skill_toolset,
+                    durable_binding_ref=binding_ref,
+                    durable_database_path=database_path,
+                    subagent_deferred_resolver=_TUISubagentDeferredResolver(self),
+                    agent_spec=runtime_agent_spec,
+                    capability_catalog=capability_catalog,
+                    agent_name="yaacli_main_v2",
+                )
+
+            runtime_specs.append(
+                LocalRuntimeSpec(
+                    runtime_id=runtime_id,
+                    build=build_runtime,
+                    request_limit=self.config.general.max_requests,
+                    hitl_policy="wait",
+                )
+            )
+
+        active_runtime_id = self._active_model_profile.id if self._active_model_profile is not None else "default"
 
         async def event_sink(event: StreamEvent) -> None:
             self._handle_execution_stream_event(event)
-
-        def runtime_factory(
-            descriptor: RuntimeDescriptor,
-            binding_ref: str,
-        ) -> AgentRuntime[TUIContext, Any, TUIEnvironment]:
-            (
-                runtime_config,
-                runtime_mcp,
-                runtime_profile,
-                runtime_sources,
-                runtime_workspace,
-                runtime_config_dir,
-            ) = restore_main_runtime_manifest(
-                descriptor.main_plan_manifest,
-                current_config=self.config,
-                current_mcp_config=mcp_config,
-            )
-            mode_value = descriptor.main_plan_manifest.subagent_default_mode
-            mode = SubagentExecutionMode(mode_value) if mode_value is not None else None
-            skill_toolset = SkillToolset(
-                toolset_id="skills",
-                extra_dir_names=[SHARED_SKILLS_DIR_NAME],
-            )
-            self._skill_toolsets[descriptor.descriptor_id] = skill_toolset
-            return create_tui_runtime(
-                config=runtime_config,
-                mcp_config=runtime_mcp,
-                working_dir=runtime_workspace,
-                system_prompt=runtime_sources.system_prompt,
-                child_plan_manifest=descriptor.child_plan_manifest,
-                config_dir=runtime_config_dir,
-                model_profile=runtime_profile,
-                subagent_default_mode=mode,
-                enable_user_input=descriptor.main_plan_manifest.enable_user_input,
-                skill_toolset=skill_toolset,
-                durable_binding_ref=binding_ref,
-                durable_database_path=database_path,
-                subagent_deferred_resolver=_TUISubagentDeferredResolver(self),
-                agent_spec=AgentSpec.model_validate(descriptor.agent_spec),
-                capability_catalog=capability_catalog,
-                agent_name="yaacli_main_v2",
-            )
 
         try:
             self._execution_worker = await LocalExecutionWorker.create(
                 store=self._durable_store,
                 state_path=database_path,
-                active_descriptor=active_descriptor,
-                available_descriptors=descriptors,
-                runtime_factory=runtime_factory,
+                active_runtime_id=active_runtime_id,
+                runtime_specs=runtime_specs,
                 event_sink=event_sink,
                 display_projection_provider=lambda: cast(list[JsonValue], self._display_replay.snapshot()),
             )
@@ -1125,7 +1107,7 @@ class TUIApp:
             AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment],
             self._execution_worker.runtime,
         )
-        self._skill_toolset = self._skill_toolsets[active_descriptor.descriptor_id]
+        self._skill_toolset = self._skill_toolsets[active_runtime_id]
         self._subagent_execution_store = SQLiteSubagentExecutionStore(database_path)
         for capability in self._runtime.capabilities:
             if isinstance(capability, DelegationCapability):
@@ -1263,7 +1245,6 @@ class TUIApp:
                 self._durable_store.close()
                 self._durable_store = None
             self._session_service = None
-            perf_log_report()
 
         self._show_shutdown_status("shutdown complete")
         if len(errors) == 1:
@@ -1389,6 +1370,8 @@ class TUIApp:
         """Append through the single bounded transcript entry point."""
         self._transcript.configure(self._transcript_limits())
         block_id = self._transcript.append(content)
+        if self._capture_active_run_blocks:
+            self._active_run_block_ids.add(block_id)
         self._sync_transcript_state()
         self._output_generation += 1
         return block_id
@@ -1445,7 +1428,12 @@ class TUIApp:
             for event in events
         ):
             self._set_phase(TUIPhase.STREAMING_OUTPUT)
-        self._handle_display_events(events)
+        previous_capture = self._capture_active_run_blocks
+        self._capture_active_run_blocks = previous_capture or self._active_display_run_id is not None
+        try:
+            self._handle_display_events(events)
+        finally:
+            self._capture_active_run_blocks = previous_capture
 
     def _reset_output_blocks(self) -> None:
         """Clear rendered output blocks and viewport bookkeeping."""
@@ -1546,9 +1534,11 @@ class TUIApp:
                         str(tool_name),
                         start_time=_agui_event_timestamp_seconds(event),
                     )
-                    self._append_block(
+                    block_id = self._append_block(
                         self._event_renderer.render_tool_call_start(str(tool_name), tool_call_id).rstrip()
                     )
+                    if self._capture_active_run_blocks:
+                        self._active_run_tool_block_ids.add(block_id)
                 continue
             if event_type == "TOOL_CALL_CHUNK":
                 agent_id = str(event.get("yaacliAgentId") or "main")
@@ -1571,9 +1561,11 @@ class TUIApp:
                         display_args,
                         start_time=_agui_event_timestamp_seconds(event),
                     )
-                    self._append_block(
+                    block_id = self._append_block(
                         self._event_renderer.render_tool_call_start(str(tool_name), tool_call_id).rstrip()
                     )
+                    if self._capture_active_run_blocks:
+                        self._active_run_tool_block_ids.add(block_id)
                 elif tool_call_id and tool_call_id in self._tool_messages:
                     existing_tool_msg = self._tool_messages[tool_call_id]
                     if not existing_tool_msg.args:
@@ -1602,33 +1594,24 @@ class TUIApp:
                     duration = 0.0
                     if tool_call_id in self._event_renderer.tracker.tool_calls:
                         duration = self._event_renderer.tracker.tool_calls[tool_call_id].duration()
-                    self._append_block(
+                    block_id = self._append_block(
                         self._event_renderer.render_tool_call_complete(
                             tool_msg,
                             duration=duration,
                             width=width,
                         ).rstrip()
                     )
+                    if self._capture_active_run_blocks:
+                        self._active_run_tool_block_ids.add(block_id)
                     self._printed_tool_calls.add(tool_call_id)
                 continue
             if event_type == "CUSTOM" and event.get("name") == "yaacli.steering_accepted":
                 value = event.get("value")
                 if isinstance(value, dict):
                     projection_key = value.get("projection_key")
-                    text = value.get("text")
-                    if (
-                        isinstance(projection_key, str)
-                        and projection_key not in self._projected_steering_receipt_keys
-                        and isinstance(text, str)
-                        and text
-                    ):
+                    if isinstance(projection_key, str) and projection_key not in self._projected_steering_receipt_keys:
                         self._projected_steering_receipt_keys.add(projection_key)
-                        from rich.text import Text as RichText
-
-                        user_text = RichText()
-                        user_text.append("> ", style="bold green")
-                        user_text.append(text)
-                        self._append_block(self._renderer.render(user_text, width=width).rstrip("\n"))
+                        self._append_system_output("Guidance sent to the active run.")
                 continue
             if event_type == "CUSTOM" and event.get("name") == "yaacli.steering_applied":
                 value = event.get("value")
@@ -1736,21 +1719,20 @@ class TUIApp:
         making this O(viewport) instead of O(total_content).
         Critical for performance since prompt_toolkit calls this on every redraw.
         """
-        with perf_timer("get_output_text"):
-            if not self._output_lines:
-                return ANSI("")
+        if not self._output_lines:
+            return ANSI("")
 
-            vh = self._get_viewport_height()
-            width = self._get_terminal_width()
-            self._observe_terminal_size(width, self._get_terminal_height())
-            cache_key = (self._scroll_offset, vh, width, self._output_generation)
-            if cache_key == self._viewport_cache_key and self._output_ansi_cache is not None:
-                return self._output_ansi_cache
-
-            visible = self._get_visible_text(self._scroll_offset, self._scroll_offset + vh)
-            self._output_ansi_cache = ANSI(visible)
-            self._viewport_cache_key = cache_key
+        vh = self._get_viewport_height()
+        width = self._get_terminal_width()
+        self._observe_terminal_size(width, self._get_terminal_height())
+        cache_key = (self._scroll_offset, vh, width, self._output_generation)
+        if cache_key == self._viewport_cache_key and self._output_ansi_cache is not None:
             return self._output_ansi_cache
+
+        visible = self._get_visible_text(self._scroll_offset, self._scroll_offset + vh)
+        self._output_ansi_cache = ANSI(visible)
+        self._viewport_cache_key = cache_key
+        return self._output_ansi_cache
 
     def _get_visible_text(self, start_line: int, end_line: int) -> str:
         """Extract a visible line range from the indexed transcript."""
@@ -1811,7 +1793,7 @@ class TUIApp:
         self._pending_stream_render_callback = None
 
     def _effective_stream_render_interval(self) -> float:
-        """Reduce expensive full-Markdown preview frequency as input grows."""
+        """Reduce full-buffer preview frequency as retained output grows."""
         retained_bytes = max(
             self._streaming_text_buffer.retained_bytes if self._streaming_text_buffer is not None else 0,
             self._streaming_thinking_buffer.retained_bytes if self._streaming_thinking_buffer is not None else 0,
@@ -1860,26 +1842,38 @@ class TUIApp:
         self._pending_stream_render_callback = None
         render()
 
-    def _render_streaming_text_preview(self) -> None:
-        """Render every text delta accumulated through the current frame."""
-        if self._streaming_text_buffer is None:
-            return
-        self._streaming_text = self._streaming_text_buffer.text()
-        if not self._streaming_text:
-            return
-        with perf_timer("stream_render_markdown"):
-            rendered = self._renderer.render_markdown(
-                self._streaming_text,
-                code_theme=self._get_code_theme(),
-                width=self._get_terminal_width(),
-            ).rstrip("\n")
-        self._last_stream_render_time = time.monotonic()
+    def _commit_streaming_text_frame(self, rendered: str) -> None:
+        """Replace the live text block and schedule one coalesced repaint."""
         if not self._update_block_by_id(self._streaming_block_id, rendered) and rendered:
             self._streaming_block_id = self._append_block(rendered)
             self._sync_transcript_state()
         if self._is_foreground_busy() and self._follow_latest:
             self._scroll_to_bottom()
         self._throttled_invalidate()
+
+    def _render_streaming_text_preview(self) -> None:
+        """Render an inexpensive, terminal-safe live text frame."""
+        if self._streaming_text_buffer is None:
+            return
+        self._streaming_text = self._streaming_text_buffer.text()
+        if not self._streaming_text:
+            return
+        self._last_stream_render_time = time.monotonic()
+        self._commit_streaming_text_frame(_safe_stream_preview(self._streaming_text))
+
+    def _render_streaming_text_final(self) -> None:
+        """Render complete Markdown once at a stable text boundary."""
+        if self._streaming_text_buffer is None:
+            return
+        self._streaming_text = self._streaming_text_buffer.text()
+        if not self._streaming_text:
+            return
+        rendered = self._renderer.render_markdown(
+            self._streaming_text,
+            code_theme=self._get_code_theme(),
+            width=self._get_terminal_width(),
+        ).rstrip("\n")
+        self._commit_streaming_text_frame(rendered)
 
     def _start_streaming_text(self, initial_content: str = "") -> None:
         """Start a bounded streaming text block."""
@@ -1891,11 +1885,11 @@ class TUIApp:
         self._streaming_line_index = len(self._output_lines)
         self._last_stream_render_time = 0.0
         if initial_content:
-            self._streaming_block_id = self._append_block(initial_content)
+            self._streaming_block_id = self._append_block(_safe_stream_preview(initial_content))
             self._sync_transcript_state()
 
     def _update_streaming_text(self, delta: str) -> None:
-        """Append a fragment and schedule a smooth Markdown preview frame."""
+        """Append a fragment and schedule a lightweight live preview frame."""
         if self._streaming_text_buffer is None:
             self._streaming_text_buffer = self._new_stream_accumulator()
         self._streaming_text_buffer.append(delta)
@@ -1905,14 +1899,33 @@ class TUIApp:
         """Synchronously commit complete text before a part or tool boundary."""
         self._cancel_pending_stream_render()
         if self._streaming_text_buffer is not None and self._streaming_text_buffer.text():
-            self._render_streaming_text_preview()
+            self._render_streaming_text_final()
         self._streaming_text = ""
         self._streaming_text_buffer = None
         self._streaming_block_id = None
         self._streaming_line_index = None
 
+    def _commit_streaming_thinking_frame(self, rendered: str) -> None:
+        """Replace the live reasoning block and schedule one coalesced repaint."""
+        if not self._update_block_by_id(self._streaming_thinking_block_id, rendered) and rendered:
+            self._streaming_thinking_block_id = self._append_block(rendered)
+            self._sync_transcript_state()
+        if self._is_foreground_busy() and self._follow_latest:
+            self._scroll_to_bottom()
+        self._throttled_invalidate()
+
     def _render_streaming_thinking_preview(self) -> None:
-        """Render every reasoning delta accumulated through the current frame."""
+        """Render an inexpensive, terminal-safe live reasoning frame."""
+        if self._streaming_thinking_buffer is None:
+            return
+        self._streaming_thinking = self._streaming_thinking_buffer.text()
+        if not self._streaming_thinking:
+            return
+        self._last_stream_render_time = time.monotonic()
+        self._commit_streaming_thinking_frame(_safe_thinking_preview(self._streaming_thinking))
+
+    def _render_streaming_thinking_final(self) -> None:
+        """Render styled reasoning once at a stable boundary."""
         if self._streaming_thinking_buffer is None:
             return
         self._streaming_thinking = self._streaming_thinking_buffer.text()
@@ -1922,13 +1935,7 @@ class TUIApp:
             self._streaming_thinking,
             width=self._get_terminal_width(),
         ).rstrip("\n")
-        self._last_stream_render_time = time.monotonic()
-        if not self._update_block_by_id(self._streaming_thinking_block_id, rendered) and rendered:
-            self._streaming_thinking_block_id = self._append_block(rendered)
-            self._sync_transcript_state()
-        if self._is_foreground_busy() and self._follow_latest:
-            self._scroll_to_bottom()
-        self._throttled_invalidate()
+        self._commit_streaming_thinking_frame(rendered)
 
     def _start_streaming_thinking(self, initial_content: str = "") -> None:
         """Start a bounded reasoning block."""
@@ -1959,7 +1966,7 @@ class TUIApp:
         """Synchronously commit complete reasoning before the next boundary."""
         self._cancel_pending_stream_render()
         if self._streaming_thinking_buffer is not None and self._streaming_thinking_buffer.text():
-            self._render_streaming_thinking_preview()
+            self._render_streaming_thinking_final()
         self._streaming_thinking = ""
         self._streaming_thinking_buffer = None
         self._streaming_thinking_block_id = None
@@ -2232,13 +2239,8 @@ class TUIApp:
         return self._send_steering_message(message)
 
     def _get_pending_steering_count(self) -> int:
-        """Count persisted active-run inputs not yet applied by Pydantic AI."""
-        if self._durable_store is None or self._active_logical_run_id is None:
-            return 0
-        return sum(
-            item.order_index > 0 and item.state.value in {"accepted", "enqueued"}
-            for item in self._durable_store.list_inputs(self._active_logical_run_id)
-        )
+        """Return the in-memory projection maintained at durable input boundaries."""
+        return self._pending_steering_count
 
     def _clear_unconsumed_user_steering(self) -> None:
         """Persisted accepted input is never silently discarded."""
@@ -2267,18 +2269,12 @@ class TUIApp:
             "steering_accepted",
             {
                 "projection_key": steering_projection_key(self._session_id, record.input_id),
-                "text": message,
             },
         )
 
-        async def dispatch() -> None:
-            try:
-                await service.dispatch_pending()
-            except Exception:
-                logger.exception("Durable steering dispatch failed; the accepted input remains pending")
-
+        self._pending_steering_count += 1
+        service.notify_input(self._active_logical_run_id)
         logger.debug("Durable steering accepted (chars=%d)", len(message))
-        self._track_managed_task(asyncio.create_task(dispatch()))
         return True
 
     def _create_oauth_refresh_supervisor(self) -> OAuthRefreshSupervisor | None:
@@ -2766,15 +2762,14 @@ class TUIApp:
         if self._execution_worker is None:
             raise RuntimeError("Durable worker is not initialized")
         try:
-            descriptor = self._runtime_descriptors_by_profile[profile.id]
+            plan = self._execution_worker.activate(profile.id)
         except KeyError as exc:
-            raise RuntimeError(f"Model profile {profile.id!r} has no registered runtime plan") from exc
-        plan = self._execution_worker.activate(descriptor.descriptor_id)
+            raise RuntimeError(f"Model profile {profile.id!r} has no local runtime") from exc
         self._runtime = cast(
             AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment],
             plan.runtime,
         )
-        self._skill_toolset = self._skill_toolsets[descriptor.descriptor_id]
+        self._skill_toolset = self._skill_toolsets[profile.id]
         self._subagent_execution_service = None
         for capability in self._runtime.capabilities:
             if isinstance(capability, DelegationCapability):
@@ -2978,6 +2973,7 @@ class TUIApp:
                     [prompt],
                     origin="feature",
                 )
+                service.notify_input(self._active_logical_run_id)
             except Exception:
                 logger.debug(
                     "Active run closed before shell readiness could be accepted",
@@ -2990,19 +2986,8 @@ class TUIApp:
                     expected=notification,
                 )
 
-            async def dispatch() -> None:
-                try:
-                    await service.dispatch_pending()
-                except Exception:
-                    logger.exception("Shell readiness dispatch failed; the accepted input remains pending")
-                finally:
-                    self._shell_notification_task = None
-                    if not self._is_foreground_busy():
-                        self._route_pending_shell_notifications()
-
-            task = asyncio.create_task(dispatch(), name="yaacli-shell-notification")
-            self._shell_notification_task = task
-            self._track_managed_task(task)
+            if not self._is_foreground_busy():
+                self._route_pending_shell_notifications()
             return
 
         if self._is_foreground_busy():
@@ -3027,20 +3012,16 @@ class TUIApp:
                 and self._session_service is not None
             ):
                 service = self._session_service
-                try:
-                    service.accept_cancel(logical_run_id, reason="agent_task_cancelled_before_start")
-                except Exception:
-                    logger.exception("Failed to persist cancellation for an accepted agent turn")
-                else:
 
-                    async def dispatch_cancel() -> None:
-                        try:
-                            await service.dispatch_pending()
-                        except Exception:
-                            logger.exception("Accepted agent cancellation remains pending dispatch")
+                async def cancel_accepted_run() -> None:
+                    try:
+                        await service.cancel(logical_run_id, reason="agent_task_cancelled_before_start")
+                    except Exception:
+                        logger.exception("Failed to cancel an accepted agent turn")
 
-                    self._track_managed_task(asyncio.create_task(dispatch_cancel()))
+                self._track_managed_task(asyncio.create_task(cancel_accepted_run()))
                 self._active_logical_run_id = None
+                self._pending_steering_count = 0
             self._run_started_at = None
             self._run_timer_paused_at = None
             self._agent_phase = "idle"
@@ -3130,16 +3111,19 @@ class TUIApp:
             raise RuntimeError("Durable session service is not initialized")
         if self._durable_store.get_session(self._session_id) is None:
             self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
+            self._invalidate_session_completion_ids()
         prompt = self._build_user_prompt(user_input, attachments)
         prompt_items: list[UserContent] = [prompt] if isinstance(prompt, str) else list(prompt)
         content = cast(
             list[JsonValue],
             TypeAdapter(list[UserContent]).dump_python(prompt_items, mode="json"),
         )
+        profile = self._active_model_profile
         return self._session_service.accept_turn(
             self._session_id,
             content,
-            descriptor=self._build_runtime_descriptor(self.runtime),
+            model=profile.model if profile is not None else self.config.general.model,
+            model_profile_id=profile.id if profile is not None else None,
         )
 
     def _launch_agent(
@@ -3165,6 +3149,7 @@ class TUIApp:
             return False
 
         self._active_logical_run_id = logical_run.logical_run_id
+        self._pending_steering_count = 0
         if self._run_started_at is None:
             self._run_started_at = time.monotonic()
             self._run_timer_paused_at = None
@@ -3205,6 +3190,9 @@ class TUIApp:
         cancelled = False
         reported_error = False
         run_id = uuid.uuid4().hex[:12]
+        self._active_display_run_id = run_id
+        self._active_run_block_ids.clear()
+        self._active_run_tool_block_ids.clear()
         self._display_adapter = AguiEventAdapter(
             session_id=self._session_id,
             run_id=run_id,
@@ -3220,10 +3208,7 @@ class TUIApp:
             logical_run = self._durable_store.get_run(logical_run_id)
             if logical_run is None:
                 raise RuntimeError(f"Accepted logical run {logical_run_id!r} is unavailable")
-            try:
-                await self._session_service.dispatch_pending()
-            except Exception:
-                logger.exception("Initial turn dispatch failed; the accepted run remains pending")
+            self._session_service.start(logical_run.logical_run_id)
             wait_task = asyncio.create_task(
                 self._session_service.wait(logical_run.logical_run_id),
                 name=f"yaacli-run:{logical_run.logical_run_id}",
@@ -3296,6 +3281,7 @@ class TUIApp:
                 with contextlib.suppress(BaseException):
                     await wait_task
             self._active_logical_run_id = None
+            self._pending_steering_count = 0
             self._finalize_streaming_text()
             self._finalize_streaming_thinking()
             self._reset_hitl_state(owner="main")
@@ -3314,6 +3300,10 @@ class TUIApp:
             self._run_timer_paused_at = None
             self._set_phase(TUIPhase.IDLE)
             self._display_adapter = None
+            self._active_display_run_id = None
+            self._capture_active_run_blocks = False
+            self._active_run_block_ids.clear()
+            self._active_run_tool_block_ids.clear()
 
     def _require_run_revision(self, logical_run_id: str) -> RevisionRecord:
         if self._durable_store is None:
@@ -3349,16 +3339,95 @@ class TUIApp:
             break
         return self._require_run_revision(logical_run_id)
 
+    def _active_run_steering_projection_keys(self) -> set[str]:
+        logical_run_id = self._active_logical_run_id
+        if self._durable_store is None or logical_run_id is None:
+            return set()
+        return {
+            steering_projection_key(self._session_id, item.input_id)
+            for item in self._durable_store.list_inputs(logical_run_id)
+            if item.order_index > 0 and item.origin == "user"
+        }
+
+    def _active_run_display_events(
+        self,
+        events: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Select events that belong to the active display run."""
+        target_run_id = self._active_display_run_id
+        steering_keys = self._active_run_steering_projection_keys()
+        selected: list[dict[str, Any]] = []
+        in_target_run = False
+        for event in events:
+            event_type = str(event.get("type", ""))
+            if event_type == "RUN_STARTED":
+                event_run_id = event.get("runId") or event.get("run_id")
+                in_target_run = isinstance(event_run_id, str) and event_run_id == target_run_id
+            if in_target_run:
+                selected.append(event)
+                continue
+            if event_type != "CUSTOM" or event.get("name") not in {
+                "yaacli.steering_accepted",
+                "yaacli.steering_applied",
+            }:
+                continue
+            value = event.get("value")
+            projection_key = value.get("projection_key") if isinstance(value, dict) else None
+            if isinstance(projection_key, str) and projection_key in steering_keys:
+                selected.append(event)
+        return selected
+
+    def _terminal_run_display_events(self, revision: RevisionRecord) -> list[dict[str, Any]]:
+        """Select canonical events that belong to the active display run."""
+        return self._active_run_display_events(validate_display_events(revision.display_projection))
+
+    def _reconcile_terminal_transcript(self, revision: RevisionRecord) -> None:
+        """Replace only unstable active-run blocks with canonical output."""
+        steering_keys = self._active_run_steering_projection_keys()
+        self._cancel_pending_stream_render()
+        unstable_block_ids = self._active_run_block_ids - self._active_run_tool_block_ids
+        self._transcript.remove(unstable_block_ids)
+        self._active_run_tool_block_ids = {
+            block_id for block_id in self._active_run_tool_block_ids if self._transcript.contains(block_id)
+        }
+        self._active_run_block_ids = set(self._active_run_tool_block_ids)
+        self._sync_transcript_state()
+        self._invalidate_output_cache()
+        self._projected_steering_receipt_keys.difference_update(steering_keys)
+        self._projected_steering_keys.difference_update(steering_keys)
+        self._streaming_text = ""
+        self._streaming_text_buffer = None
+        self._streaming_block_id = None
+        self._streaming_line_index = None
+        self._streaming_thinking = ""
+        self._streaming_thinking_buffer = None
+        self._streaming_thinking_block_id = None
+        self._streaming_thinking_line_index = None
+        canonical_events = [
+            event for event in self._terminal_run_display_events(revision) if event.get("type") != "RUN_STARTED"
+        ]
+        previous_capture = self._capture_active_run_blocks
+        self._capture_active_run_blocks = True
+        try:
+            self._handle_display_events(canonical_events)
+        finally:
+            self._capture_active_run_blocks = previous_capture
+        self._finalize_streaming_text()
+        self._finalize_streaming_thinking()
+        self._scroll_to_bottom()
+
     def _project_terminal_revision(self, revision: RevisionRecord) -> LogicalRunStatus:
         """Restore and project one canonical durable terminal revision."""
-        self._restore_revision(revision)
-        self._restore_output_from_display_events(self._display_replay.snapshot())
-        self._last_snapshot_saved = True
         status_value = revision.terminal.get("status")
         try:
             status = LogicalRunStatus(status_value)
         except ValueError as exc:
             raise RuntimeError(f"Agent run published unknown terminal status {status_value!r}") from exc
+
+        self._restore_revision(revision)
+        if status is not LogicalRunStatus.completed:
+            self._reconcile_terminal_transcript(revision)
+        self._last_snapshot_saved = True
 
         if status is LogicalRunStatus.cancelled:
             reason = revision.terminal.get("reason")
@@ -3406,14 +3475,6 @@ class TUIApp:
             "Durable agent execution failed",
             exc_info=(type(exc), exc, exc.__traceback__),
         )
-
-    def _build_runtime_descriptor(
-        self,
-        runtime: AgentRuntime[TUIContext, Any, TUIEnvironment],
-    ) -> RuntimeDescriptor:
-        if self._execution_worker is None or runtime is not self._execution_worker.runtime:
-            raise RuntimeError("The active runtime is not registered by the durable worker")
-        return self._execution_worker.descriptor
 
     def _current_revision(self) -> RevisionRecord:
         if self._durable_store is None:
@@ -3477,10 +3538,7 @@ class TUIApp:
             )
 
         await self._request_user_action(deferred, on_result=persist_result)
-        try:
-            await session_service.dispatch_pending()
-        except Exception:
-            logger.exception("Durable action dispatch failed; accepted decisions remain pending")
+        session_service.notify_action(batch.logical_run_id)
 
     def _reset_hitl_state(self, *, owner: str | None = None) -> None:
         """Reset one matching HITL interaction, or force-reset all host HITL."""
@@ -4278,6 +4336,9 @@ class TUIApp:
                     "steering_applied",
                     {"projection_key": projection_key, "messages": previews},
                 )
+            else:
+                self._projected_steering_keys.add(projection_key)
+            self._pending_steering_count = max(0, self._pending_steering_count - 1)
             return
 
     async def _paste_clipboard_image(self, input_area: TextArea | None = None) -> None:
@@ -5034,12 +5095,17 @@ class TUIApp:
         ]
 
     def _session_completion_ids(self) -> list[str]:
-        """Return durable session IDs for contextual /session completion."""
-        try:
-            return [info.session_id for info in self._durable_session_infos()]
-        except (OSError, ValueError):
-            logger.debug("Failed to list sessions for completion", exc_info=True)
-            return []
+        """Return cached durable session IDs for contextual /session completion."""
+        if self._session_completion_ids_cache is None:
+            try:
+                self._session_completion_ids_cache = tuple(info.session_id for info in self._durable_session_infos())
+            except (OSError, ValueError):
+                logger.debug("Failed to list sessions for completion", exc_info=True)
+                return []
+        return list(self._session_completion_ids_cache)
+
+    def _invalidate_session_completion_ids(self) -> None:
+        self._session_completion_ids_cache = None
 
     def _clear_transcript(self) -> None:
         """Clear only rendered output, preserving conversation and runtime state."""
@@ -5057,11 +5123,9 @@ class TUIApp:
         old_session_id = self._session_id
         old_session = self._durable_store.get_session(old_session_id)
         if old_session is not None:
-            if old_session.active_execution_id is not None:
-                self._append_system_output("The active run must finish or be cancelled before starting a new session.")
-                return
             self._durable_store.tombstone_session(old_session_id)
         new_session = self._session_service.create_session(str(self.working_dir.resolve()))
+        self._invalidate_session_completion_ids()
         await self._clear_session()
         self._session_id = new_session.session_id
         self._display_adapter = None
@@ -5254,9 +5318,6 @@ class TUIApp:
             case "/cost":
                 self._append_user_input(command)
                 self._show_cost()
-            case "/perf":
-                self._append_user_input(command)
-                self._append_system_output(perf_report())
             case "/dump":
                 self._append_user_input(command)
                 self._dump_history(args.strip() if args else None)
@@ -5627,6 +5688,7 @@ class TUIApp:
         self._background_subagent_ids.clear()
         self._projected_steering_receipt_keys.clear()
         self._projected_steering_keys.clear()
+        self._pending_steering_count = 0
         self._display_replay.clear()
         self._event_renderer.clear()
         self._reset_pending_attachments()
@@ -5827,16 +5889,9 @@ class TUIApp:
         session = self._durable_store.get_session(self._session_id)
         if session is None:
             session = self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
+            self._invalidate_session_completion_ids()
         revision = self._session_service.import_snapshot(
             session.session_id,
-            descriptor=build_runtime_descriptor(
-                agent_spec={"name": "yaacli_main_v2", "model": "offline-import"},
-                host_envelope={
-                    "schema_version": 2,
-                    "workspace_ref": str(self.working_dir.resolve()),
-                    "import_source": str(load_dir),
-                },
-            ),
             payload=RevisionPayload(
                 message_history=history_payload,
                 resumable_state=state_payload,
@@ -5899,11 +5954,6 @@ class TUIApp:
         except (KeyError, ValueError) as exc:
             self._append_system_output(str(exc))
             return False
-        if target.active_execution_id is not None:
-            self._append_system_output(
-                f"Session {target.session_id} has an active execution and cannot be switched in-place."
-            )
-            return False
         await self._clear_session()
         self._session_id = target.session_id
         if target.head_revision_id is not None:
@@ -5945,6 +5995,7 @@ class TUIApp:
                     return True
         session = self._session_service.create_session(str(self.working_dir.resolve()), session_id=self._session_id)
         self._session_id = session.session_id
+        self._invalidate_session_completion_ids()
         return False
 
     def _append_system_output(self, text: str) -> None:
@@ -6141,7 +6192,6 @@ class TUIApp:
             style=self._setup_style(),
             full_screen=True,
             mouse_support=True,
-            min_redraw_interval=self._invalidate_interval,
             refresh_interval=1.0,
         )
 

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from yaacli.app.tui import TUIApp
 from yaacli.config import SessionConfig, YaacliConfig
-from yaacli.durable.application import SessionApplicationService, build_runtime_descriptor
+from yaacli.durable.application import SessionApplicationService
 from yaacli.durable.models import RevisionPayload
 from yaacli.durable.sqlite import SQLiteSessionStore
 
@@ -20,7 +20,6 @@ async def test_auto_restore_selects_newest_durable_session_for_workspace(tmp_pat
     store = SQLiteSessionStore(tmp_path / "sessions.sqlite3")
     try:
         service = SessionApplicationService(store)
-        descriptor = build_runtime_descriptor(agent_spec={"name": "test"})
         for session_id, workspace in (
             ("current-old", current_workspace),
             ("other", other_workspace),
@@ -29,7 +28,6 @@ async def test_auto_restore_selects_newest_durable_session_for_workspace(tmp_pat
             service.create_session(str(workspace.resolve()), session_id=session_id)
             service.import_snapshot(
                 session_id,
-                descriptor=descriptor,
                 payload=RevisionPayload(),
                 source="test",
             )

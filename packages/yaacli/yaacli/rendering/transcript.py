@@ -208,6 +208,32 @@ class TranscriptStore:
     def contains(self, block_id: BlockId | None) -> bool:
         return block_id is not None and block_id in self._id_to_index
 
+    def remove(self, block_ids: set[BlockId]) -> None:
+        """Remove retained blocks by stable identifier."""
+        if not block_ids:
+            return
+        retained = [
+            (block, line_count, byte_count, block_id)
+            for block, line_count, byte_count, block_id in zip(
+                self._blocks,
+                self._line_counts,
+                self._byte_counts,
+                self._block_ids,
+                strict=True,
+            )
+            if block_id not in block_ids
+        ]
+        if len(retained) == len(self._blocks):
+            return
+        self._blocks[:] = [item[0] for item in retained]
+        self._line_counts[:] = [item[1] for item in retained]
+        self._byte_counts[:] = [item[2] for item in retained]
+        self._block_ids[:] = [item[3] for item in retained]
+        self._total_lines = sum(self._line_counts)
+        self._total_bytes = sum(self._byte_counts)
+        self._reindex()
+        self._rebuild_line_ends()
+
     def clear(self) -> None:
         self._blocks.clear()
         self._line_counts.clear()

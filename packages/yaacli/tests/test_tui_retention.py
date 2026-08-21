@@ -16,6 +16,7 @@ from ya_agent_sdk.subagents import (
 from yaacli.app import TUIApp, TUIState
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, YaacliConfig
+from yaacli.rendering.transcript import TranscriptLimits, TranscriptStore
 
 
 @dataclass
@@ -92,6 +93,26 @@ async def test_subagent_completion_projection_is_pending_only_and_session_scoped
 
     assert app._append_system_output.call_count == 2
     assert "exec-b" in app._append_system_output.call_args.args[0]
+
+
+def test_transcript_removes_only_selected_stable_block_ids() -> None:
+    transcript = TranscriptStore()
+    stable = transcript.append("stable history")
+    unstable = transcript.append("current run output")
+    background = transcript.append("background readiness")
+
+    transcript.remove({unstable})
+
+    assert transcript.blocks == ["stable history", "background readiness"]
+    assert transcript.contains(stable) is True
+    assert transcript.contains(background) is True
+
+    transcript.configure(TranscriptLimits(max_lines=1, max_blocks=1, max_bytes=1024))
+    assert transcript.contains(stable) is False
+
+    transcript.remove({stable})
+
+    assert transcript.blocks == ["background readiness"]
 
 
 def test_all_append_paths_share_real_line_and_byte_limits() -> None:
@@ -188,7 +209,7 @@ async def test_terminal_resize_burst_schedules_one_settled_redraw(monkeypatch: p
 
 def test_stream_render_interval_adapts_to_content_size_and_resize() -> None:
     app = make_app()
-    app._stream_render_interval = 1 / 15
+    app._stream_render_interval = 1 / 24
     app._streaming_text_buffer = app._new_stream_accumulator()
 
     app._streaming_text_buffer.append("x" * (32 * 1024))
@@ -200,6 +221,33 @@ def test_stream_render_interval_adapts_to_content_size_and_resize() -> None:
     app._streaming_text_buffer.clear()
     app._resize_active = True
     assert app._effective_stream_render_interval() == 1 / 8
+
+
+def test_status_reads_pending_steering_from_memory_without_store_io() -> None:
+    app = make_app()
+    app._durable_store = MagicMock()
+    app._active_logical_run_id = "run-1"
+    app._pending_steering_count = 2
+
+    assert app._get_pending_steering_count() == 2
+    app._durable_store.list_inputs.assert_not_called()
+
+
+def test_session_completion_ids_are_cached_until_session_membership_changes() -> None:
+    app = make_app()
+    app._session_service = MagicMock()
+    app._session_service.list_session_summaries.return_value = (
+        SimpleNamespace(session_id="session-a"),
+        SimpleNamespace(session_id="session-b"),
+    )
+
+    assert app._session_completion_ids() == ["session-a", "session-b"]
+    assert app._session_completion_ids() == ["session-a", "session-b"]
+    app._session_service.list_session_summaries.assert_called_once_with(limit=100)
+
+    app._invalidate_session_completion_ids()
+    assert app._session_completion_ids() == ["session-a", "session-b"]
+    assert app._session_service.list_session_summaries.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -225,24 +273,23 @@ async def test_pending_stream_frame_moves_when_resize_begins() -> None:
     app._pending_resize_settle_handle.cancel()
 
 
-def test_streaming_markdown_is_rendered_before_finalization_and_throttled() -> None:
+def test_streaming_text_uses_lightweight_preview_and_renders_markdown_once_at_finalization() -> None:
     app = make_app()
-    app._renderer.render_markdown = MagicMock(return_value="MARKDOWN_PREVIEW\n")  # type: ignore[method-assign]
-    app._renderer.render_text = MagicMock(return_value="PLAIN_PREVIEW\n")  # type: ignore[method-assign]
+    app._renderer.render_markdown = MagicMock(return_value="MARKDOWN_FINAL\n")  # type: ignore[method-assign]
 
     app._start_streaming_text("")
     with patch("yaacli.app.tui.time.monotonic", side_effect=[1.0, 1.01, 1.02]):
         app._update_streaming_text("**bold**")
         app._update_streaming_text(" text")
 
-    assert app._renderer.render_markdown.call_count == 1
-    assert app._renderer.render_markdown.call_args.args[0] == "**bold**"
-    app._renderer.render_text.assert_not_called()
-    assert app._output_lines == ["MARKDOWN_PREVIEW"]
+    app._renderer.render_markdown.assert_not_called()
+    assert app._output_lines == ["**bold**"]
 
     app._finalize_streaming_text()
-    assert app._renderer.render_markdown.call_count == 2
+
+    app._renderer.render_markdown.assert_called_once()
     assert app._renderer.render_markdown.call_args.args[0] == "**bold** text"
+    assert app._output_lines == ["MARKDOWN_FINAL"]
 
 
 @pytest.mark.asyncio
@@ -257,14 +304,15 @@ async def test_streaming_markdown_commits_coalesced_trailing_frame() -> None:
     app._update_streaming_text("first")
     app._update_streaming_text(" second")
 
-    assert app._output_lines == ["rendered: first"]
+    assert app._output_lines == ["first"]
     assert app._pending_stream_render_handle is not None
 
     await asyncio.sleep(0.02)
 
-    assert app._output_lines == ["rendered: first second"]
+    assert app._output_lines == ["first second"]
     assert app._pending_stream_render_handle is None
     app._finalize_streaming_text()
+    assert app._output_lines == ["rendered: first second"]
 
 
 @pytest.mark.asyncio
@@ -287,14 +335,15 @@ async def test_text_to_thinking_switch_flushes_text_and_commits_thinking_tail() 
         {"type": "REASONING_MESSAGE_CHUNK", "messageId": "thinking-1", "delta": " thought"},
     ])
 
-    assert app._output_lines == ["text: first tail", "thinking: next"]
+    assert app._output_lines == ["text: first tail", "> next"]
     assert app._pending_stream_render_handle is not None
 
     await asyncio.sleep(0.02)
 
-    assert app._output_lines == ["text: first tail", "thinking: next thought"]
+    assert app._output_lines == ["text: first tail", "> next thought"]
     assert app._pending_stream_render_handle is None
     app._finalize_streaming_thinking()
+    assert app._output_lines == ["text: first tail", "thinking: next thought"]
 
 
 @pytest.mark.asyncio

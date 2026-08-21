@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from click.testing import CliRunner
 from yaacli.cli import cli
-from yaacli.durable.application import SessionApplicationService, build_runtime_descriptor
+from yaacli.durable.application import SessionApplicationService
 from yaacli.durable.models import RevisionPayload
 from yaacli.durable.sqlite import SQLiteSessionStore
 
@@ -19,16 +19,14 @@ def _seed_session(database_path: Path, *, session_id: str = "abc123def456") -> N
         service.create_session("/workspace", session_id=session_id)
         service.import_snapshot(
             session_id,
-            descriptor=build_runtime_descriptor(
-                agent_spec={"name": "yaacli", "model": "test:model"},
-                host_envelope={"model_profile_id": "test-profile"},
-            ),
             payload=RevisionPayload(
                 message_history=[{"kind": "request", "parts": []}],
                 display_projection=[{"type": "RUN_FINISHED"}],
                 terminal={"status": "completed", "output": "done"},
             ),
             source="test",
+            model="test:model",
+            model_profile_id="test-profile",
         )
 
 

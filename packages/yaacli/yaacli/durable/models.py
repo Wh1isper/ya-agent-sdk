@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -53,12 +51,6 @@ class ActionState(StrEnum):
     consumed = "consumed"
 
 
-class OutboxState(StrEnum):
-    pending = "pending"
-    delivering = "delivering"
-    delivered = "delivered"
-
-
 class SessionRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -66,7 +58,6 @@ class SessionRecord(BaseModel):
     workspace_ref: str
     status: SessionStatus
     head_revision_id: str | None = None
-    active_execution_id: str | None = None
     created_at: datetime
     updated_at: datetime
     tombstoned_at: datetime | None = None
@@ -81,7 +72,6 @@ class SessionSummary(BaseModel):
     workspace_ref: str
     status: SessionStatus
     head_revision_id: str | None = None
-    active_execution_id: str | None = None
     created_at: datetime
     updated_at: datetime
     input_preview: str | None = None
@@ -116,7 +106,8 @@ class LogicalRunRecord(BaseModel):
     session_id: str
     execution_id: str
     expected_head_revision_id: str | None = None
-    descriptor_id: str
+    model: str | None = None
+    model_profile_id: str | None = None
     status: LogicalRunStatus
     cancellation_reason: str | None = None
     pending_action_batch_id: str | None = None
@@ -138,9 +129,6 @@ class ExecutionRecord(BaseModel):
 
     execution_id: str
     logical_run_id: str
-    executable_version: str
-    plan_fingerprint: str
-    descriptor_id: str
     status: LogicalRunStatus
     created_at: datetime
     updated_at: datetime
@@ -161,22 +149,6 @@ class InputRecord(BaseModel):
     rejection_reason: str | None = None
     created_at: datetime
     updated_at: datetime
-
-
-class OutboxCommand(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    command_id: str
-    command_kind: str
-    aggregate_id: str
-    payload: dict[str, JsonValue]
-    state: OutboxState
-    attempt_count: int
-    available_at: datetime
-    claimed_at: datetime | None = None
-    delivered_at: datetime | None = None
-    last_error: str | None = None
-    created_at: datetime
 
 
 class EventRecord(BaseModel):
@@ -247,98 +219,15 @@ class ChildPlanManifest(BaseModel):
         return self
 
 
-class RuntimeSecretRequirement(BaseModel):
-    """One secret value required to rebuild a plan without persisting the value."""
-
-    model_config = ConfigDict(frozen=True)
-
-    source: Literal["config", "mcp", "profile", "environment"]
-    source_path: tuple[str | int, ...]
-    target_path: tuple[str | int, ...]
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class MainRuntimeManifest(BaseModel):
-    """Exact host inputs needed to assemble one main-agent runtime."""
-
-    model_config = ConfigDict(frozen=True)
-
-    schema_version: Literal[1] = 1
-    kind: Literal["registered", "yaacli"] = "registered"
-    config_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
-    mcp_snapshot: dict[str, JsonValue] | None = None
-    profile_snapshot: dict[str, JsonValue] | None = None
-    system_prompt: str = ""
-    subagent_specs: tuple[dict[str, JsonValue], ...] = ()
-    workspace_ref: str | None = None
-    config_dir_ref: str | None = None
-    subagent_default_mode: Literal["foreground", "background"] | None = None
-    enable_user_input: bool = False
-    frontend: Literal["tui", "headless", "registered"] = "registered"
-    hitl_policy: Literal["wait", "deny"] = "wait"
-    request_limit: int = Field(default=1000, gt=0)
-    secret_requirements: tuple[RuntimeSecretRequirement, ...] = ()
-
-    @model_validator(mode="after")
-    def _validate_yaacli_manifest(self) -> MainRuntimeManifest:
-        if self.kind == "registered":
-            return self
-        if not self.config_snapshot or self.workspace_ref is None or self.config_dir_ref is None:
-            raise ValueError("YAACLI runtime manifests require config and authority paths")
-        return self
-
-
-class RuntimeDescriptor(BaseModel):
-    """Content-addressed executable-plan descriptor."""
-
-    model_config = ConfigDict(frozen=True)
-
-    descriptor_id: str
-    plan_fingerprint: str
-    executable_version: str
-    agent_spec: dict[str, JsonValue]
-    host_envelope: dict[str, JsonValue] = Field(default_factory=dict)
-    main_plan_manifest: MainRuntimeManifest = Field(default_factory=MainRuntimeManifest)
-    child_plan_manifest: ChildPlanManifest = Field(default_factory=ChildPlanManifest)
-    created_at: datetime
-
-    def behavior_payload(self) -> dict[str, JsonValue]:
-        """Return a detached snapshot of every exact worker behavior field."""
-        payload = self.model_dump(
-            mode="json",
-            include={
-                "executable_version",
-                "agent_spec",
-                "host_envelope",
-                "main_plan_manifest",
-                "child_plan_manifest",
-            },
-        )
-        return payload
-
-    def assert_integrity(self) -> None:
-        """Reject nested mutation after content-addressed descriptor creation."""
-        canonical = json.dumps(
-            self.behavior_payload(),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        fingerprint = hashlib.sha256(canonical).hexdigest()
-        if self.plan_fingerprint != fingerprint or self.descriptor_id != f"sha256:{fingerprint}":
-            raise ValueError("Runtime descriptor content does not match its fingerprint")
-
-
 class StartRunRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     session_id: str
     expected_head_revision_id: str | None = None
     idempotency_key: str
-    descriptor: RuntimeDescriptor
     initial_content: list[JsonValue]
-    plan_fingerprint: str
-    executable_version: str
+    model: str | None = None
+    model_profile_id: str | None = None
 
 
 class RevisionPayload(BaseModel):

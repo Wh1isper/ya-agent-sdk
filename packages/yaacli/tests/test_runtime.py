@@ -55,20 +55,17 @@ from yaacli.config import (
 from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.durable.subagents import LocalProcessorSubagentExecutionHost, SQLiteSubagentExecutionStore
-from yaacli.model_profiles import ResolvedModelProfile, save_selected_model_profile_id
+from yaacli.model_profiles import save_selected_model_profile_id
 from yaacli.runtime import (
     GoalContextHandoffExtension,
-    RuntimeSourceSnapshot,
     _build_delegation_capability,
     _compile_subagent_specs,
     _OptionalMCPToolset,
     _standard_child_capability_specs,
-    build_main_runtime_manifest,
     build_runtime_agent_spec,
     compile_child_plan_manifest,
     compile_runtime_sources,
     create_tui_runtime,
-    restore_main_runtime_manifest,
     runtime_child_plan_manifest,
 )
 from yaacli.session import TUIContext
@@ -755,111 +752,4 @@ def test_runtime_source_snapshot_freezes_prompt_and_subagent_definitions(
     assert first.system_prompt == "prompt one"
     assert [spec.route for spec in first.subagent_specs] == ["helper"]
     assert first_agent_spec["instructions"] == []
-    assert first.fingerprint_payload() != second.fingerprint_payload()
-
-
-def test_main_runtime_manifest_restores_old_profile_mcp_tools_and_prompt_without_secrets(
-    tmp_path: Path,
-) -> None:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    old_config = YaacliConfig(
-        general=GeneralConfig(model="test:old-default", max_requests=17),
-        shell_env={"SERVICE_TOKEN": "shell-secret"},
-        tools=ToolsConfig(
-            enable_codeact=False,
-            mcp_mode="direct",
-            need_approval=["old_tool"],
-        ),
-    )
-    old_mcp = MCPConfig(
-        servers={
-            "old_server": MCPServerConfig(
-                command="old-mcp-command",
-                env={"SERVICE_TOKEN": "mcp-secret"},
-                description="old MCP plan",
-            )
-        }
-    )
-    old_profile = ResolvedModelProfile(
-        id="old-profile",
-        label="Old",
-        model="test:old-profile",
-        model_settings={"temperature": 0.1},
-        instructions="old profile instructions",
-    )
-    sources = RuntimeSourceSnapshot(
-        system_prompt="old system prompt",
-        subagent_specs=(),
-    )
-    manifest = build_main_runtime_manifest(
-        old_config,
-        old_mcp,
-        profile=old_profile,
-        sources=sources,
-        working_dir=tmp_path,
-        config_dir=config_dir,
-        subagent_default_mode=SubagentExecutionMode.background,
-        enable_user_input=True,
-        frontend="tui",
-        hitl_policy="wait",
-    )
-    serialized = manifest.model_dump_json()
-    assert "shell-secret" not in serialized
-    assert "mcp-secret" not in serialized
-
-    current_config = YaacliConfig(
-        general=GeneralConfig(model="test:new-default", max_requests=99),
-        shell_env={"SERVICE_TOKEN": "shell-secret"},
-        tools=ToolsConfig(
-            enable_codeact=True,
-            mcp_mode="proxy",
-            need_approval=["new_tool"],
-        ),
-        model_profiles={
-            "old-profile": ModelProfileConfig(
-                label="Old",
-                model="test:old-profile",
-                model_settings={"temperature": 0.1},
-                instructions="old profile instructions",
-            )
-        },
-    )
-    current_mcp = MCPConfig(
-        servers={
-            "old_server": MCPServerConfig(
-                command="new-mcp-command",
-                env={"SERVICE_TOKEN": "mcp-secret"},
-                description="new mutable MCP config",
-            )
-        }
-    )
-    restored_config, restored_mcp, restored_profile, restored_sources, workspace, restored_config_dir = (
-        restore_main_runtime_manifest(
-            manifest,
-            current_config=current_config,
-            current_mcp_config=current_mcp,
-        )
-    )
-
-    assert restored_config.general.model == "test:old-default"
-    assert restored_config.general.max_requests == 17
-    assert restored_config.tools.need_approval == ["old_tool"]
-    assert restored_config.tools.enable_codeact is False
-    assert restored_config.shell_env == {"SERVICE_TOKEN": "shell-secret"}
-    assert restored_mcp is not None
-    assert restored_mcp.servers["old_server"].command == "old-mcp-command"
-    assert restored_mcp.servers["old_server"].description == "old MCP plan"
-    assert restored_mcp.servers["old_server"].env == {"SERVICE_TOKEN": "mcp-secret"}
-    assert restored_profile == old_profile
-    assert restored_sources == sources
-    assert workspace == tmp_path.resolve()
-    assert restored_config_dir == config_dir.resolve()
-
-    changed_secret_config = current_config.model_copy(update={"shell_env": {"SERVICE_TOKEN": "different-secret"}})
-    with pytest.raises(ValueError, match=r"runtime secret source.*changed"):
-        restore_main_runtime_manifest(
-            manifest,
-            current_config=changed_secret_config,
-            current_mcp_config=current_mcp,
-        )
+    assert first != second
