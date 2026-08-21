@@ -742,7 +742,6 @@ class DurableSubagentCompletionDelivery:
                 idempotency_key=f"subagent-completion:{record.execution_id}",
                 priority=InputPriority.asap,
                 origin="feature",
-                wake_execution=False,
             )
         except (InvalidTransitionError, TombstonedSessionError):
             return None

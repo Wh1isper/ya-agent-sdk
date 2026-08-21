@@ -35,7 +35,7 @@ lint: ## Lint the code
 cli: ## Run the CLI
 	@echo "Running yaacli"
 	@./scripts/sync-skills.sh
-	@rm -f yaacli.log && YAACLI_PERF=1 uv run --package yaacli yaacli -v
+	@rm -f yaacli.log && uv run --package yaacli yaacli -v
 
 .PHONY: run-claw
 run-claw: ## Run the YA Claw backend locally

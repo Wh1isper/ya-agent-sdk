@@ -42,7 +42,6 @@ from yaacli.durable.models import (
     LogicalRunRecord,
     LogicalRunStatus,
     RevisionPayload,
-    RuntimeDescriptor,
     utc_now,
 )
 from yaacli.durable.projections import (
@@ -57,8 +56,8 @@ from yaacli.environment import TUIEnvironment
 from yaacli.session import TUIContext
 
 _USER_CONTENT = TypeAdapter(list[UserContent])
-RuntimeFactory = Callable[
-    [RuntimeDescriptor, str],
+RuntimeBuilder = Callable[
+    [str],
     AgentRuntime[TUIContext, Any, TUIEnvironment],
 ]
 ExecutionEventSink = Callable[[StreamEvent], Awaitable[None]]
@@ -68,54 +67,26 @@ HeadlessHITLPolicy = Literal["wait", "deny"]
 logger = logging.getLogger(__name__)
 
 
-class RuntimePlanUnavailableError(RuntimeError):
-    """A persisted execution references a plan this worker cannot execute exactly."""
+@dataclass(frozen=True, slots=True)
+class LocalRuntimeSpec:
+    """Process-local instructions for building one selectable runtime."""
+
+    runtime_id: str
+    build: RuntimeBuilder
+    request_limit: int
+    hitl_policy: HeadlessHITLPolicy
 
 
 @dataclass(frozen=True, slots=True)
-class RegisteredRuntimePlan:
-    """One entered runtime bound to its immutable descriptor and authority."""
+class LocalRuntime:
+    """One entered runtime owned exclusively by the current process."""
 
-    descriptor: RuntimeDescriptor
+    runtime_id: str
     runtime: AgentRuntime[TUIContext, Any, TUIEnvironment]
     binding_ref: str
     binding_context: TUIContext
-
-
-class RuntimePlanRegistry:
-    """Exact descriptor dispatch with one independently selected active plan."""
-
-    def __init__(self, active_descriptor_id: str) -> None:
-        self._active_descriptor_id = active_descriptor_id
-        self._plans: dict[str, RegisteredRuntimePlan] = {}
-
-    @property
-    def active(self) -> RegisteredRuntimePlan:
-        return self.get(self._active_descriptor_id)
-
-    def register(self, plan: RegisteredRuntimePlan) -> None:
-        plan.descriptor.assert_integrity()
-        descriptor_id = plan.descriptor.descriptor_id
-        existing = self._plans.get(descriptor_id)
-        if existing is not None and existing is not plan:
-            raise ValueError(f"Runtime descriptor {descriptor_id!r} is already registered")
-        self._plans[descriptor_id] = plan
-
-    def get(self, descriptor_id: str) -> RegisteredRuntimePlan:
-        try:
-            return self._plans[descriptor_id]
-        except KeyError as exc:
-            raise RuntimePlanUnavailableError(
-                f"Runtime descriptor {descriptor_id!r} is not registered by this worker"
-            ) from exc
-
-    def activate(self, descriptor_id: str) -> RegisteredRuntimePlan:
-        plan = self.get(descriptor_id)
-        self._active_descriptor_id = descriptor_id
-        return plan
-
-    def list(self) -> tuple[RegisteredRuntimePlan, ...]:
-        return tuple(self._plans.values())
+    request_limit: int
+    hitl_policy: HeadlessHITLPolicy
 
 
 class LocalExecutionCoordinator:
@@ -125,56 +96,35 @@ class LocalExecutionCoordinator:
         self,
         *,
         store: SessionStore,
-        runtime_registry: RuntimePlanRegistry,
+        runtimes: dict[str, LocalRuntime],
+        active_runtime_id: str,
         execution_harness: AgentExecutionHarness | None = None,
         event_sink: ExecutionEventSink | None = None,
         display_projection_provider: DisplayProjectionProvider | None = None,
     ) -> None:
         self.store = store
-        self.runtime_registry = runtime_registry
+        self._runtimes = runtimes
+        self._active_runtime_id = active_runtime_id
         self.execution_harness = execution_harness or AgentExecutionHarness()
         self.event_sink = event_sink
         self.display_projection_provider = display_projection_provider
-        self._outbox_lock = asyncio.Lock()
         self._tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._execution_runtimes: dict[str, LocalRuntime] = {}
         self._action_events: dict[str, asyncio.Event] = {}
         self._runtime_locks: dict[str, asyncio.Lock] = {}
         self._shutting_down = False
 
-    async def dispatch_outbox(self) -> int:
-        """Apply every currently available product command at least once."""
-        delivered = 0
-        async with self._outbox_lock:
-            while commands := self.store.claim_outbox(limit=1):
-                for command in commands:
-                    try:
-                        if command.command_kind == "start_execution":
-                            self._start_execution(_required_string(command.payload, "execution_id"))
-                        elif command.command_kind == "notify_input":
-                            # The product row is the wake authority. PersistedInboxCapability
-                            # drains it at the next native graph boundary.
-                            pass
-                        elif command.command_kind == "notify_action":
-                            execution_id = command.aggregate_id
-                            self._action_events.setdefault(execution_id, asyncio.Event()).set()
-                        elif command.command_kind == "cancel_execution":
-                            await self._cancel_execution(command.aggregate_id)
-                        elif command.command_kind == "cancel_subagent_execution":
-                            await self._cancel_subagent_execution(
-                                _required_string(command.payload, "execution_id"),
-                                _required_string(command.payload, "owner_scope_id"),
-                            )
-                        else:
-                            raise ValueError(f"Unknown execution command kind {command.command_kind!r}")
-                    except Exception as exc:
-                        self.store.retry_outbox(command.command_id, str(exc) or repr(exc))
-                        raise
-                    else:
-                        self.store.complete_outbox(command.command_id)
-                        delivered += 1
-        return delivered
+    @property
+    def active_runtime(self) -> LocalRuntime:
+        return self._runtimes[self._active_runtime_id]
 
-    def _start_execution(self, execution_id: str) -> None:
+    def activate(self, runtime_id: str) -> LocalRuntime:
+        plan = self._runtimes[runtime_id]
+        self._active_runtime_id = runtime_id
+        return plan
+
+    def start(self, execution_id: str) -> None:
+        """Start one execution with the runtime selected by this process."""
         existing = self._tasks.get(execution_id)
         if existing is not None:
             return
@@ -188,6 +138,7 @@ class LocalExecutionCoordinator:
             return
         if run.status is LogicalRunStatus.pending:
             self.store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+        self._execution_runtimes[execution_id] = self.active_runtime
         self._tasks[execution_id] = asyncio.create_task(
             self._execute(execution_id),
             name=f"yaacli-execution-{execution_id}",
@@ -211,31 +162,38 @@ class LocalExecutionCoordinator:
         if task is not None and task.done():
             self._tasks.pop(execution_id, None)
 
+    def notify_input(self, logical_run_id: str) -> None:
+        """Confirm that newly persisted input belongs to a process-local run."""
+        run = self.store.get_run(logical_run_id)
+        if run is None:
+            raise KeyError(logical_run_id)
+        if run.execution_id not in self._tasks:
+            raise RuntimeError(f"Logical run {logical_run_id!r} is not owned by this process")
+
+    def notify_action(self, logical_run_id: str) -> None:
+        """Wake one process-local run after its action decision is persisted."""
+        run = self.store.get_run(logical_run_id)
+        if run is None:
+            raise KeyError(logical_run_id)
+        if run.execution_id not in self._tasks:
+            raise RuntimeError(f"Logical run {logical_run_id!r} is not owned by this process")
+        self._action_events.setdefault(run.execution_id, asyncio.Event()).set()
+
     async def wait(self, logical_run_id: str) -> LogicalRunRecord:
-        """Drive durable commands until the exact logical run is terminal."""
-        while True:
-            run = self.store.get_run(logical_run_id)
-            if run is None:
-                raise KeyError(logical_run_id)
-            if run.terminal:
-                return run
-
-            try:
-                await self.dispatch_outbox()
-            except Exception:
-                logger.warning(
-                    "Durable command dispatch failed while waiting for logical run %s",
-                    logical_run_id,
-                    exc_info=True,
-                )
-
-            task = self._tasks.get(run.execution_id)
-            if task is None:
-                await asyncio.sleep(0.05)
-                continue
-            done, _pending = await asyncio.wait({task}, timeout=0.05)
-            if done:
-                await asyncio.shield(task)
+        """Wait for one execution started by this process."""
+        run = self.store.get_run(logical_run_id)
+        if run is None:
+            raise KeyError(logical_run_id)
+        if run.terminal:
+            return run
+        task = self._tasks.get(run.execution_id)
+        if task is None:
+            raise RuntimeError(f"Logical run {logical_run_id!r} was not started by this process")
+        await asyncio.shield(task)
+        terminal = self.store.get_run(logical_run_id)
+        if terminal is None:
+            raise KeyError(logical_run_id)
+        return terminal
 
     def accept_cancel(self, logical_run_id: str, reason: str) -> None:
         """Durably accept cancellation before attempting process-local dispatch."""
@@ -249,43 +207,13 @@ class LocalExecutionCoordinator:
             LogicalRunStatus.cancelling,
             cancellation_reason=reason,
         )
-        self.store.enqueue_command(
-            "cancel_execution",
-            run.execution_id,
-            {
-                "execution_id": run.execution_id,
-                "logical_run_id": logical_run_id,
-                "reason": reason,
-            },
-            command_id=f"cancel:{run.execution_id}",
-        )
 
     async def cancel(self, logical_run_id: str, reason: str) -> None:
         self.accept_cancel(logical_run_id, reason)
-        await self.dispatch_outbox()
-
-    async def recover_orphaned_executions(self) -> tuple[str, ...]:
-        """Finalize process-owned work that cannot survive a process restart."""
-        recovered: list[str] = []
-        for session in self.store.list_sessions(limit=1_000_000):
-            execution_id = session.active_execution_id
-            if execution_id is None:
-                continue
-            execution = self.store.get_execution(execution_id)
-            if execution is None:
-                continue
-            run = self.store.get_run(execution.logical_run_id)
-            if run is None or run.terminal or run.status is LogicalRunStatus.pending:
-                continue
-            if run.status is LogicalRunStatus.cancelling:
-                await self._commit_cancelled(run)
-            else:
-                await self._commit_interrupted(
-                    run,
-                    reason="Execution was interrupted by process restart before its active segment completed.",
-                )
-            recovered.append(run.logical_run_id)
-        return tuple(recovered)
+        run = self.store.get_run(logical_run_id)
+        if run is None:
+            raise KeyError(logical_run_id)
+        await self._cancel_execution(run.execution_id)
 
     async def shutdown(self) -> None:
         self._shutting_down = True
@@ -294,36 +222,6 @@ class LocalExecutionCoordinator:
             task.cancel()
         if active:
             await asyncio.gather(*active, return_exceptions=True)
-
-    async def _cancel_subagent_execution(self, execution_id: str, owner_scope_id: str) -> None:
-        record = None
-        for plan in self.runtime_registry.list():
-            for capability in plan.runtime.capabilities:
-                if not isinstance(capability, DelegationCapability):
-                    continue
-                try:
-                    record = await capability.service.admin_get(execution_id)
-                except KeyError:
-                    continue
-                break
-            if record is not None:
-                break
-        if record is None:
-            raise KeyError(execution_id)
-        if record.owner_scope_id != owner_scope_id:
-            raise PermissionError(f"Subagent execution {execution_id!r} is not owned by scope {owner_scope_id!r}")
-        descriptor_id = record.parent_runtime_descriptor_id
-        if descriptor_id is None:
-            raise RuntimePlanUnavailableError(f"Subagent execution {execution_id!r} has no owning runtime descriptor")
-        owner_plan = self.runtime_registry.get(descriptor_id)
-        for capability in owner_plan.runtime.capabilities:
-            if isinstance(capability, DelegationCapability):
-                await capability.service.cancel(
-                    execution_id,
-                    caller_scope_id=owner_scope_id,
-                )
-                return
-        raise RuntimePlanUnavailableError(f"Runtime descriptor {descriptor_id!r} does not own a delegation service")
 
     async def _execute(self, execution_id: str) -> dict[str, Any]:
         execution = self.store.get_execution(execution_id)
@@ -334,11 +232,9 @@ class LocalExecutionCoordinator:
             raise KeyError(execution.logical_run_id)
         if run.terminal:
             return await self._replay_terminal(run)
-        try:
-            plan = self._validate_execution_plan(run, execution)
-        except BaseException as exc:
-            await self._commit_plan_failure(run, exc)
-            raise
+        plan = self._execution_runtimes.get(execution_id)
+        if plan is None:
+            raise RuntimeError(f"Execution {execution_id!r} is not owned by this process")
 
         if run.status is LogicalRunStatus.pending:
             run = self.store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
@@ -350,7 +246,7 @@ class LocalExecutionCoordinator:
         if initial.state is not InputState.applied:
             self.store.transition_input(initial.input_id, initial.state, InputState.applied)
 
-        runtime_lock = self._runtime_locks.setdefault(plan.descriptor.descriptor_id, asyncio.Lock())
+        runtime_lock = self._runtime_locks.setdefault(plan.runtime_id, asyncio.Lock())
         execution_binding_ref = f"{plan.binding_ref}:execution:{execution_id}"
         latest_history: list[ModelMessage] | None = None
         latest_context = plan.runtime.ctx
@@ -363,7 +259,7 @@ class LocalExecutionCoordinator:
         )
         try:
             while True:
-                request_limit = plan.descriptor.main_plan_manifest.request_limit
+                request_limit = plan.request_limit
                 remaining_requests = request_limit - cumulative_usage.requests
                 if remaining_requests <= 0:
                     raise RuntimeError(f"Execution exhausted the cumulative model request limit of {request_limit}.")
@@ -465,7 +361,7 @@ class LocalExecutionCoordinator:
                 batch = await self._resolve_action_batch(
                     run,
                     batch,
-                    plan.descriptor.main_plan_manifest.hitl_policy,
+                    plan.hitl_policy,
                 )
                 deferred_results = self._build_deferred_results(requests, batch)
                 self.store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
@@ -498,26 +394,6 @@ class LocalExecutionCoordinator:
         for capability in runtime.capabilities:
             if isinstance(capability, DelegationCapability):
                 await capability.service.deliver_pending(context)
-
-    def _validate_execution_plan(self, run: LogicalRunRecord, execution: Any) -> RegisteredRuntimePlan:
-        descriptor = self.store.get_descriptor(run.descriptor_id)
-        if descriptor is None:
-            raise RuntimePlanUnavailableError(f"Runtime descriptor {run.descriptor_id!r} is unavailable")
-        if (
-            descriptor.descriptor_id != execution.descriptor_id
-            or descriptor.plan_fingerprint != execution.plan_fingerprint
-            or descriptor.executable_version != execution.executable_version
-        ):
-            raise RuntimePlanUnavailableError(f"Execution {execution.execution_id!r} has inconsistent plan identity")
-        plan = self.runtime_registry.get(descriptor.descriptor_id)
-        if (
-            plan.descriptor.plan_fingerprint != descriptor.plan_fingerprint
-            or plan.descriptor.behavior_payload() != descriptor.behavior_payload()
-        ):
-            raise RuntimePlanUnavailableError(
-                f"Runtime descriptor {descriptor.descriptor_id!r} does not match its registered worker plan"
-            )
-        return plan
 
     def _new_execution_context(
         self,
@@ -851,35 +727,38 @@ class LocalExecutionCoordinator:
 
 
 class LocalExecutionWorker:
-    """Own entered runtime plans and their process-local execution coordinator."""
+    """Own process-local runtimes and execute only runs created by this process."""
 
     def __init__(
         self,
         *,
         store: SessionStore,
-        runtime_registry: RuntimePlanRegistry,
+        runtimes: dict[str, LocalRuntime],
         coordinator: LocalExecutionCoordinator,
     ) -> None:
         self.store = store
-        self.runtime_registry = runtime_registry
+        self._runtimes = runtimes
         self.coordinator = coordinator
         self._closed = False
-        self._dispatcher_task: asyncio.Task[None] | None = None
+
+    @property
+    def active(self) -> LocalRuntime:
+        return self.coordinator.active_runtime
 
     @property
     def runtime(self) -> AgentRuntime[TUIContext, Any, TUIEnvironment]:
-        return self.runtime_registry.active.runtime
+        return self.active.runtime
 
     @property
     def binding_ref(self) -> str:
-        return self.runtime_registry.active.binding_ref
+        return self.active.binding_ref
 
     @property
-    def descriptor(self) -> RuntimeDescriptor:
-        return self.runtime_registry.active.descriptor
+    def runtime_id(self) -> str:
+        return self.active.runtime_id
 
-    def activate(self, descriptor_id: str) -> RegisteredRuntimePlan:
-        return self.runtime_registry.activate(descriptor_id)
+    def activate(self, runtime_id: str) -> LocalRuntime:
+        return self.coordinator.activate(runtime_id)
 
     @classmethod
     async def create(
@@ -887,100 +766,54 @@ class LocalExecutionWorker:
         *,
         store: SessionStore,
         state_path: Path,
-        active_descriptor: RuntimeDescriptor,
-        runtime_factory: RuntimeFactory,
-        available_descriptors: Sequence[RuntimeDescriptor] = (),
-        executable_version: str | None = None,
+        active_runtime_id: str,
+        runtime_specs: Sequence[LocalRuntimeSpec],
         event_sink: ExecutionEventSink | None = None,
         display_projection_provider: DisplayProjectionProvider | None = None,
     ) -> LocalExecutionWorker:
         state_path = state_path.expanduser().resolve()
-        if executable_version is None:
-            from yaacli.runtime_identity import runtime_executable_version
+        specs_by_id: dict[str, LocalRuntimeSpec] = {}
+        for spec in runtime_specs:
+            if spec.runtime_id in specs_by_id:
+                raise ValueError(f"Duplicate local runtime ID {spec.runtime_id!r}")
+            specs_by_id[spec.runtime_id] = spec
+        if active_runtime_id not in specs_by_id:
+            raise KeyError(active_runtime_id)
 
-            executable_version = runtime_executable_version()
         base_binding_ref = f"yaacli-runtime:{uuid.uuid5(uuid.NAMESPACE_URL, str(state_path))}"
-        registry = RuntimePlanRegistry(active_descriptor.descriptor_id)
-        coordinator = LocalExecutionCoordinator(
-            store=store,
-            runtime_registry=registry,
-            event_sink=event_sink,
-            display_projection_provider=display_projection_provider,
-        )
-        await coordinator.recover_orphaned_executions()
-        from yaacli.durable.sqlite import SQLiteSessionStore
-        from yaacli.durable.subagents import SQLiteSubagentExecutionStore
-
-        if isinstance(store, SQLiteSessionStore):
-            child_store = SQLiteSubagentExecutionStore(store.path)
-            try:
-                child_store.recover_orphaned_executions()
-            finally:
-                child_store.close_sync()
-
-        descriptors: dict[str, RuntimeDescriptor] = {}
-        for descriptor in (*available_descriptors, *store.list_nonterminal_descriptors(), active_descriptor):
-            descriptor.assert_integrity()
-            existing = descriptors.get(descriptor.descriptor_id)
-            if existing is not None and existing.behavior_payload() != descriptor.behavior_payload():
-                raise RuntimePlanUnavailableError(
-                    f"Runtime descriptor {descriptor.descriptor_id!r} has conflicting persisted content"
-                )
-            descriptors[descriptor.descriptor_id] = descriptor
-
-        entered: list[RegisteredRuntimePlan] = []
+        runtimes: dict[str, LocalRuntime] = {}
+        entered: list[LocalRuntime] = []
         try:
-            for descriptor in descriptors.values():
-                if descriptor.executable_version != executable_version:
-                    raise RuntimePlanUnavailableError(
-                        f"Runtime descriptor {descriptor.descriptor_id!r} requires unavailable executable "
-                        f"{descriptor.executable_version!r}"
-                    )
-                binding_ref = f"{base_binding_ref}:plan:{descriptor.plan_fingerprint}"
-                try:
-                    runtime = runtime_factory(descriptor, binding_ref)
-                except BaseException as exc:
-                    raise RuntimePlanUnavailableError(
-                        f"Runtime descriptor {descriptor.descriptor_id!r} cannot be reconstructed: {exc}"
-                    ) from exc
+            for spec in specs_by_id.values():
+                binding_ref = f"{base_binding_ref}:local:{spec.runtime_id}"
+                runtime = spec.build(binding_ref)
                 await runtime.__aenter__()
-                runtime.ctx.runtime_descriptor_id = descriptor.descriptor_id
-                plan = RegisteredRuntimePlan(
-                    descriptor=descriptor,
+                runtime.ctx.runtime_descriptor_id = None
+                local_runtime = LocalRuntime(
+                    runtime_id=spec.runtime_id,
                     runtime=runtime,
                     binding_ref=binding_ref,
                     binding_context=runtime.ctx,
+                    request_limit=spec.request_limit,
+                    hitl_policy=spec.hitl_policy,
                 )
-                entered.append(plan)
+                runtimes[spec.runtime_id] = local_runtime
+                entered.append(local_runtime)
                 runtime_bindings.register(binding_ref, runtime.ctx, store)
-                registry.register(plan)
         except BaseException:
-            for plan in reversed(entered):
-                runtime_bindings.unregister(plan.binding_ref, plan.binding_context)
-                await plan.runtime.__aexit__(None, None, None)
+            for local_runtime in reversed(entered):
+                runtime_bindings.unregister(local_runtime.binding_ref, local_runtime.binding_context)
+                await local_runtime.runtime.__aexit__(None, None, None)
             raise
 
-        worker = cls(store=store, runtime_registry=registry, coordinator=coordinator)
-        store.recover_outbox()
-        try:
-            await coordinator.dispatch_outbox()
-        except Exception:
-            logger.exception("Initial execution outbox reconciliation failed; retrying in background")
-        worker._dispatcher_task = asyncio.create_task(
-            worker._dispatch_loop(),
-            name="yaacli-execution-outbox",
+        coordinator = LocalExecutionCoordinator(
+            store=store,
+            runtimes=runtimes,
+            active_runtime_id=active_runtime_id,
+            event_sink=event_sink,
+            display_projection_provider=display_projection_provider,
         )
-        return worker
-
-    async def _dispatch_loop(self) -> None:
-        while True:
-            try:
-                await self.coordinator.dispatch_outbox()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Execution outbox dispatch failed; command remains retryable")
-            await asyncio.sleep(0.25)
+        return cls(store=store, runtimes=runtimes, coordinator=coordinator)
 
     async def __aenter__(self) -> LocalExecutionWorker:
         return self
@@ -992,15 +825,10 @@ class LocalExecutionWorker:
         if self._closed:
             return
         self._closed = True
-        if self._dispatcher_task is not None:
-            self._dispatcher_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._dispatcher_task
-            self._dispatcher_task = None
         await self.coordinator.shutdown()
-        for plan in reversed(self.runtime_registry.list()):
-            await plan.runtime.__aexit__(None, None, None)
-            runtime_bindings.unregister(plan.binding_ref, plan.binding_context)
+        for local_runtime in reversed(tuple(self._runtimes.values())):
+            await local_runtime.runtime.__aexit__(None, None, None)
+            runtime_bindings.unregister(local_runtime.binding_ref, local_runtime.binding_context)
 
 
 def _bound_display_projection(events: Sequence[JsonValue]) -> list[JsonValue]:

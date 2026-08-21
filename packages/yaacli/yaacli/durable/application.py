@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from collections.abc import Sequence
@@ -12,25 +11,25 @@ from pydantic import JsonValue
 
 from yaacli.durable.models import (
     ActionBatch,
-    ChildPlanManifest,
     InputPriority,
     InputRecord,
     LogicalRunRecord,
-    MainRuntimeManifest,
     RevisionPayload,
     RevisionRecord,
-    RuntimeDescriptor,
     SessionRecord,
     SessionStatus,
     SessionSummary,
     StartRunRequest,
-    utc_now,
 )
 from yaacli.durable.store import SessionStore
 
 
 class SessionExecutionCoordinator(Protocol):
-    async def dispatch_outbox(self) -> int: ...
+    def start(self, execution_id: str) -> None: ...
+
+    def notify_input(self, logical_run_id: str) -> None: ...
+
+    def notify_action(self, logical_run_id: str) -> None: ...
 
     async def wait(self, logical_run_id: str) -> LogicalRunRecord: ...
 
@@ -107,19 +106,14 @@ class SessionApplicationService:
                 inputs = self.store.list_inputs(run.logical_run_id)
                 if inputs:
                     input_preview = _preview_json_values(inputs[0].content)
-                descriptor = self.store.get_descriptor(run.descriptor_id)
-                if descriptor is not None:
-                    configured_model = descriptor.agent_spec.get("model")
-                    model = configured_model if isinstance(configured_model, str) else None
-                    configured_profile = descriptor.host_envelope.get("model_profile_id")
-                    model_profile_id = configured_profile if isinstance(configured_profile, str) else None
+                model = run.model
+                model_profile_id = run.model_profile_id
             output_preview = _preview_json_value(revision.terminal.get("output"))
         return SessionSummary(
             session_id=session.session_id,
             workspace_ref=session.workspace_ref,
             status=session.status,
             head_revision_id=session.head_revision_id,
-            active_execution_id=session.active_execution_id,
             created_at=session.created_at,
             updated_at=session.updated_at,
             input_preview=input_preview,
@@ -139,16 +133,18 @@ class SessionApplicationService:
         self,
         session_id: str,
         *,
-        descriptor: RuntimeDescriptor,
         payload: RevisionPayload,
         source: str,
+        model: str | None = None,
+        model_profile_id: str | None = None,
     ) -> RevisionRecord:
         self.get_session(session_id)
         return self.store.import_revision(
             session_id,
-            descriptor=descriptor,
             payload=payload,
             source=source,
+            model=model,
+            model_profile_id=model_profile_id,
         )
 
     def accept_turn(
@@ -156,7 +152,8 @@ class SessionApplicationService:
         session_id: str,
         content: Sequence[JsonValue],
         *,
-        descriptor: RuntimeDescriptor,
+        model: str | None = None,
+        model_profile_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> LogicalRunRecord:
         """Durably accept one turn without coupling acknowledgement to dispatch."""
@@ -166,33 +163,37 @@ class SessionApplicationService:
                 session_id=session_id,
                 expected_head_revision_id=session.head_revision_id,
                 idempotency_key=idempotency_key or str(uuid.uuid4()),
-                descriptor=descriptor,
                 initial_content=list(content),
-                plan_fingerprint=descriptor.plan_fingerprint,
-                executable_version=descriptor.executable_version,
+                model=model,
+                model_profile_id=model_profile_id,
             )
         )
-
-    async def dispatch_pending(self) -> int:
-        """Best-effort wake the execution backend for already durable work."""
-        return await self._require_coordinator().dispatch_outbox()
 
     async def start_turn(
         self,
         session_id: str,
         content: Sequence[JsonValue],
         *,
-        descriptor: RuntimeDescriptor,
+        model: str | None = None,
+        model_profile_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> LogicalRunRecord:
         run = self.accept_turn(
             session_id,
             content,
-            descriptor=descriptor,
+            model=model,
+            model_profile_id=model_profile_id,
             idempotency_key=idempotency_key,
         )
-        await self.dispatch_pending()
+        self._require_coordinator().start(run.execution_id)
         return run
+
+    def start(self, logical_run_id: str) -> None:
+        """Start one already accepted run in the current process."""
+        run = self.store.get_run(logical_run_id)
+        if run is None:
+            raise KeyError(logical_run_id)
+        self._require_coordinator().start(run.execution_id)
 
     async def wait(self, logical_run_id: str) -> LogicalRunRecord:
         """Wait for one logical run through the configured execution backend."""
@@ -203,16 +204,20 @@ class SessionApplicationService:
         session_id: str,
         content: Sequence[JsonValue],
         *,
-        descriptor: RuntimeDescriptor,
+        model: str | None = None,
+        model_profile_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> RevisionRecord:
         run = self.accept_turn(
             session_id,
             content,
-            descriptor=descriptor,
+            model=model,
+            model_profile_id=model_profile_id,
             idempotency_key=idempotency_key,
         )
-        await self._require_coordinator().wait(run.logical_run_id)
+        coordinator = self._require_coordinator()
+        coordinator.start(run.execution_id)
+        await coordinator.wait(run.logical_run_id)
         revision = self.store.get_revision_for_run(run.logical_run_id)
         if revision is None:
             raise RuntimeError(f"Logical run {run.logical_run_id!r} terminated without publishing a revision")
@@ -236,6 +241,9 @@ class SessionApplicationService:
             origin=origin,
         )
 
+    def notify_input(self, logical_run_id: str) -> None:
+        self._require_coordinator().notify_input(logical_run_id)
+
     async def submit_input(
         self,
         logical_run_id: str,
@@ -252,7 +260,7 @@ class SessionApplicationService:
             priority=priority,
             origin=origin,
         )
-        await self.dispatch_pending()
+        self._require_coordinator().notify_input(logical_run_id)
         return record
 
     def accept_action(
@@ -271,6 +279,9 @@ class SessionApplicationService:
             actor=actor,
         )
 
+    def notify_action(self, logical_run_id: str) -> None:
+        self._require_coordinator().notify_action(logical_run_id)
+
     async def decide_action(
         self,
         action_item_id: str,
@@ -285,15 +296,14 @@ class SessionApplicationService:
             decision_id=decision_id,
             actor=actor,
         )
-        await self.dispatch_pending()
+        self._require_coordinator().notify_action(batch.logical_run_id)
         return batch
 
     def accept_cancel(self, logical_run_id: str, *, reason: str = "cancelled") -> None:
         self._require_coordinator().accept_cancel(logical_run_id, reason)
 
     async def cancel(self, logical_run_id: str, *, reason: str = "cancelled") -> None:
-        self.accept_cancel(logical_run_id, reason=reason)
-        await self.dispatch_pending()
+        await self._require_coordinator().cancel(logical_run_id, reason)
 
 
 def _preview_json_values(values: Sequence[JsonValue]) -> str | None:
@@ -315,50 +325,3 @@ def _bounded_preview(value: str, *, limit: int = 2000) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 3] + "..."
-
-
-def fingerprint_runtime_behavior(behavior: JsonValue) -> str:
-    """Hash complete host behavior without persisting credentials or large config."""
-    canonical = json.dumps(
-        behavior,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return hashlib.sha256(canonical).hexdigest()
-
-
-def build_runtime_descriptor(
-    *,
-    agent_spec: dict[str, JsonValue],
-    host_envelope: dict[str, JsonValue] | None = None,
-    main_plan_manifest: MainRuntimeManifest | None = None,
-    child_plan_manifest: ChildPlanManifest | None = None,
-    executable_version: str | None = None,
-) -> RuntimeDescriptor:
-    """Build one content-addressed immutable runtime descriptor."""
-    if executable_version is None:
-        from yaacli.runtime_identity import runtime_executable_version
-
-        executable_version = runtime_executable_version()
-    payload: dict[str, JsonValue] = {
-        "executable_version": executable_version,
-        "agent_spec": agent_spec,
-        "host_envelope": host_envelope or {},
-        "main_plan_manifest": (main_plan_manifest or MainRuntimeManifest()).model_dump(mode="json"),
-        "child_plan_manifest": (child_plan_manifest or ChildPlanManifest()).model_dump(mode="json"),
-    }
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    fingerprint = hashlib.sha256(canonical).hexdigest()
-    detached_payload = json.loads(canonical)
-    return RuntimeDescriptor.model_validate({
-        "descriptor_id": f"sha256:{fingerprint}",
-        "plan_fingerprint": fingerprint,
-        **detached_payload,
-        "created_at": utc_now(),
-    })

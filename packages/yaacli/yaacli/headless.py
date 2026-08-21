@@ -32,12 +32,8 @@ from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 from yaacli.app.commands import format_skill_invocation, parse_skill_invocation
 from yaacli.config import ConfigManager, YaacliConfig
 from yaacli.display_replay import BoundedDisplayReplay
-from yaacli.durable.application import (
-    SessionApplicationService,
-    build_runtime_descriptor,
-)
-from yaacli.durable.executor import LocalExecutionWorker
-from yaacli.durable.models import RuntimeDescriptor
+from yaacli.durable.application import SessionApplicationService
+from yaacli.durable.executor import LocalExecutionWorker, LocalRuntimeSpec
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.errors import safe_exception_str
 from yaacli.logging import get_logger
@@ -47,12 +43,10 @@ from yaacli.model_profiles import (
     get_startup_model_profile,
 )
 from yaacli.runtime import (
-    build_main_runtime_manifest,
     build_runtime_agent_spec,
     compile_child_plan_manifest,
     compile_runtime_sources,
     create_tui_runtime,
-    restore_main_runtime_manifest,
 )
 
 logger = get_logger(__name__)
@@ -232,35 +226,18 @@ async def _run_headless_prompt(
         if subagent_mode is not None
         else None
     )
-    main_manifest = build_main_runtime_manifest(
-        config,
-        mcp_config,
-        profile=effective_profile,
-        sources=sources,
-        working_dir=working_dir,
-        config_dir=config_manager.config_dir,
-        subagent_default_mode=subagent_mode,
-        enable_user_input=False,
-        frontend="headless",
-        hitl_policy="deny",
-    )
-    active_descriptor = build_runtime_descriptor(
-        agent_spec=build_runtime_agent_spec(
+    runtime_id = effective_profile.id if effective_profile is not None else "default"
+    agent_spec = AgentSpec.model_validate(
+        build_runtime_agent_spec(
             config,
             profile=effective_profile,
             capability_plugins=capability_plugins,
-        ),
-        main_plan_manifest=main_manifest,
-        child_plan_manifest=child_manifest,
-        host_envelope={
-            "schema_version": 3,
-            "workspace_ref": main_manifest.workspace_ref,
-            "model_profile_id": effective_profile.id if effective_profile is not None else None,
-            "frontend": "headless",
-            "headless_worker": worker,
-        },
+        )
     )
-    skill_toolsets: dict[str, SkillToolset] = {}
+    skill_toolset = SkillToolset(
+        toolset_id="skills",
+        extra_dir_names=[SHARED_SKILLS_DIR_NAME],
+    )
     execution_worker: LocalExecutionWorker | None = None
     resolved_session_id = session_id
     run_id = uuid.uuid4().hex[:12]
@@ -272,44 +249,22 @@ async def _run_headless_prompt(
             raise RuntimeError("Headless event adapter is not initialized")
         sink.emit_many(adapter.adapt_stream_event(event))
 
-    def runtime_factory(
-        descriptor: RuntimeDescriptor,
-        binding_ref: str,
-    ):
-        (
-            runtime_config,
-            runtime_mcp,
-            runtime_profile,
-            runtime_sources,
-            runtime_workspace,
-            runtime_config_dir,
-        ) = restore_main_runtime_manifest(
-            descriptor.main_plan_manifest,
-            current_config=config,
-            current_mcp_config=mcp_config,
-        )
-        mode_value = descriptor.main_plan_manifest.subagent_default_mode
-        mode = SubagentExecutionMode(mode_value) if mode_value is not None else None
-        skill_toolset = SkillToolset(
-            toolset_id="skills",
-            extra_dir_names=[SHARED_SKILLS_DIR_NAME],
-        )
-        skill_toolsets[descriptor.descriptor_id] = skill_toolset
+    def build_runtime(binding_ref: str):
         return create_tui_runtime(
-            config=runtime_config,
-            mcp_config=runtime_mcp,
-            working_dir=runtime_workspace,
-            system_prompt=runtime_sources.system_prompt,
-            child_plan_manifest=descriptor.child_plan_manifest,
-            config_dir=runtime_config_dir,
-            model_profile=runtime_profile,
-            subagent_default_mode=mode,
-            enable_user_input=descriptor.main_plan_manifest.enable_user_input,
+            config=config,
+            mcp_config=mcp_config,
+            working_dir=working_dir,
+            system_prompt=sources.system_prompt,
+            child_plan_manifest=child_manifest,
+            config_dir=config_manager.config_dir,
+            model_profile=effective_profile,
+            subagent_default_mode=subagent_mode,
+            enable_user_input=False,
             skill_toolset=skill_toolset,
             durable_binding_ref=binding_ref,
             durable_database_path=database_path,
             subagent_deferred_resolver=child_deferred_resolver,
-            agent_spec=AgentSpec.model_validate(descriptor.agent_spec),
+            agent_spec=agent_spec,
             capability_catalog=capability_catalog,
             agent_name="yaacli_main_v2",
         )
@@ -319,8 +274,15 @@ async def _run_headless_prompt(
         execution_worker = await LocalExecutionWorker.create(
             store=store,
             state_path=database_path,
-            active_descriptor=active_descriptor,
-            runtime_factory=runtime_factory,
+            active_runtime_id=runtime_id,
+            runtime_specs=[
+                LocalRuntimeSpec(
+                    runtime_id=runtime_id,
+                    build=build_runtime,
+                    request_limit=config.general.max_requests,
+                    hitl_policy="deny",
+                )
+            ],
             event_sink=event_sink,
             display_projection_provider=lambda: [
                 *base_display_projection,
@@ -345,7 +307,7 @@ async def _run_headless_prompt(
         )
         sink.emit(adapter.build_run_started_event())
 
-        await skill_toolsets[active_descriptor.descriptor_id].refresh_context(execution_worker.runtime.ctx)
+        await skill_toolset.refresh_context(execution_worker.runtime.ctx)
         invocation = parse_skill_invocation(
             prompt,
             execution_worker.runtime.ctx.available_skills,
@@ -366,7 +328,8 @@ async def _run_headless_prompt(
         revision = await service.run_turn(
             session.session_id,
             content,
-            descriptor=execution_worker.descriptor,
+            model=effective_profile.model if effective_profile is not None else config.general.model,
+            model_profile_id=effective_profile.id if effective_profile is not None else None,
         )
         output = revision.terminal.get("output")
         output_text = str(output) if output is not None else None

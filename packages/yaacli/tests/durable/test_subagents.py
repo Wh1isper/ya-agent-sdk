@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -402,18 +401,7 @@ async def test_session_tombstone_atomically_fences_and_requests_child_cancellati
             "SELECT input_open, cancel_requested, cancellation_reason FROM subagent_executions WHERE execution_id = ?",
             (record.execution_id,),
         ).fetchone()
-        command_row = connection.execute(
-            "SELECT command_kind, aggregate_id, payload_json, state FROM outbox_commands WHERE command_id = ?",
-            (f"cancel-subagent:{record.execution_id}:0",),
-        ).fetchone()
     assert execution_row == (0, 1, "owner session tombstoned")
-    assert command_row is not None
-    assert command_row[0:2] == ("cancel_subagent_execution", record.execution_id)
-    assert json.loads(command_row[2]) == {
-        "execution_id": record.execution_id,
-        "owner_scope_id": session.session_id,
-        "reason": "owner session tombstoned",
-    }
     assert child_store.list_inputs(record.execution_id)[0].state is InputState.rejected
     assert child_store.list_inputs(record.execution_id)[0].input_id == accepted.input_id
 

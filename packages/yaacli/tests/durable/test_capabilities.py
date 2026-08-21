@@ -2,35 +2,73 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from ya_agent_sdk.inputs import InputDisposition, InputOrigin, LogicalRunInputRouter
-from yaacli.durable.application import build_runtime_descriptor
 from yaacli.durable.bindings import runtime_bindings
-from yaacli.durable.capabilities import DurableInboxPumpCapability
+from yaacli.durable.capabilities import DurableInboxPumpCapability, _model_content
 from yaacli.durable.models import (
     InputPriority,
     InputState,
     LogicalRunStatus,
-    MainRuntimeManifest,
     StartRunRequest,
 )
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.session import TUIContext
 
 
-async def test_durable_inbox_reuses_router_enqueue_once_per_native_attempt(tmp_path: Path) -> None:
+def test_active_run_user_input_uses_legacy_steering_envelope(tmp_path: Path) -> None:
     store = SQLiteSessionStore(tmp_path / "product.sqlite3")
-    descriptor = build_runtime_descriptor(
-        agent_spec={"name": "yaacli_main_v2", "model": "test"},
-        main_plan_manifest=MainRuntimeManifest(),
-    )
     session = store.create_session(str(tmp_path), session_id="session-test")
     run = store.start_run(
         StartRunRequest(
             session_id=session.session_id,
             idempotency_key="turn-test",
-            descriptor=descriptor,
             initial_content=["initial"],
-            plan_fingerprint=descriptor.plan_fingerprint,
-            executable_version=descriptor.executable_version,
+        )
+    )
+    initial = store.list_inputs(run.logical_run_id)[0]
+    steering = store.accept_input(
+        run.logical_run_id,
+        ["change direction"],
+        idempotency_key="steer-test",
+        priority=InputPriority.asap,
+        origin="user",
+    )
+    feature = store.accept_input(
+        run.logical_run_id,
+        ["background result"],
+        idempotency_key="feature-test",
+        priority=InputPriority.asap,
+        origin="feature",
+    )
+
+    try:
+        assert _model_content(initial) == ["initial"]
+        assert _model_content(feature) == ["background result"]
+        assert _model_content(steering) == [
+            '<bus-message source="user">\n'
+            "<steering>\n"
+            "change direction\n"
+            "</steering>\n\n"
+            "<system-reminder>\n"
+            "The user has provided additional guidance during task execution.\n"
+            "Review the <steering> content carefully, consider how it affects your current approach,\n"
+            "and adjust your work accordingly while continuing toward the goal.\n"
+            "</system-reminder>\n"
+            "</bus-message>"
+        ]
+        persisted = next(item for item in store.list_inputs(run.logical_run_id) if item.input_id == steering.input_id)
+        assert persisted.content == ["change direction"]
+    finally:
+        store.close()
+
+
+async def test_durable_inbox_reuses_router_enqueue_once_per_native_attempt(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    session = store.create_session(str(tmp_path), session_id="session-test")
+    run = store.start_run(
+        StartRunRequest(
+            session_id=session.session_id,
+            idempotency_key="turn-test",
+            initial_content=["initial"],
         )
     )
     store.set_run_status(run.logical_run_id, LogicalRunStatus.running)

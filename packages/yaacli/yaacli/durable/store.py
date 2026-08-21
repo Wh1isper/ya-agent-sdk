@@ -17,10 +17,8 @@ from yaacli.durable.models import (
     InputState,
     LogicalRunRecord,
     LogicalRunStatus,
-    OutboxCommand,
     RevisionPayload,
     RevisionRecord,
-    RuntimeDescriptor,
     SessionRecord,
     StartRunRequest,
 )
@@ -52,12 +50,6 @@ class SessionStore(Protocol):
 
     def tombstone_session(self, session_id: str) -> SessionRecord: ...
 
-    def put_descriptor(self, descriptor: RuntimeDescriptor) -> RuntimeDescriptor: ...
-
-    def get_descriptor(self, descriptor_id: str) -> RuntimeDescriptor | None: ...
-
-    def list_nonterminal_descriptors(self) -> tuple[RuntimeDescriptor, ...]: ...
-
     def start_run(self, request: StartRunRequest) -> LogicalRunRecord: ...
 
     def get_run(self, logical_run_id: str) -> LogicalRunRecord | None: ...
@@ -88,7 +80,6 @@ class SessionStore(Protocol):
         idempotency_key: str,
         priority: InputPriority,
         origin: str = "user",
-        wake_execution: bool = True,
     ) -> InputRecord: ...
 
     def list_inputs(
@@ -110,32 +101,14 @@ class SessionStore(Protocol):
 
     def close_and_list_inputs(self, logical_run_id: str) -> tuple[InputRecord, ...]: ...
 
-    def enqueue_command(
-        self,
-        command_kind: str,
-        aggregate_id: str,
-        payload: dict[str, JsonValue],
-        *,
-        command_id: str | None = None,
-    ) -> OutboxCommand: ...
-
-    def recover_outbox(self) -> int:
-        """Make unfinished delivery claims immediately available after worker restart."""
-        ...
-
-    def claim_outbox(self, *, limit: int = 50) -> tuple[OutboxCommand, ...]: ...
-
-    def complete_outbox(self, command_id: str) -> OutboxCommand: ...
-
-    def retry_outbox(self, command_id: str, error: str) -> OutboxCommand: ...
-
     def import_revision(
         self,
         session_id: str,
         *,
-        descriptor: RuntimeDescriptor,
         payload: RevisionPayload,
         source: str,
+        model: str | None = None,
+        model_profile_id: str | None = None,
     ) -> RevisionRecord: ...
 
     def commit_revision(

@@ -45,6 +45,11 @@ The transcript is stored as bounded render blocks and exposed through a virtual 
 - Scrolling away from the bottom disables auto-follow.
 - Returning to the bottom or pressing `Ctrl+L` re-enables auto-follow.
 - Streaming text and thinking update stable block IDs instead of appending duplicate snapshots.
+- A terminal revision never rebuilds the complete live transcript from its bounded,
+  lossy replay projection. Successful runs keep their live segment; failed, cancelled,
+  or interrupted runs replace only the active segment with canonical stable events plus
+  tool calls already observed by the TUI. Uncommitted partial model text is removed,
+  while earlier and current-run tool history and scrollback remain available.
 - Tool previews are bounded; `/tool <call-id>` retrieves the complete retained result.
 
 ## Task Pane
@@ -110,7 +115,7 @@ The phase labels are:
 Background readiness is a session-scoped projection shown in status/output while one of
 the nine foreground phases remains authoritative. It is not a `TUIPhase`.
 
-The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain `accepted` or `enqueued`. It reads the count from `SessionStore`, exposes no content, and maintains no second local queue. Durable acceptance first produces the same replayable `> ...` user-input projection used for an initial prompt; this visible receipt does not imply model application. The count disappears after native enqueue application or explicit terminal rejection. Each newly applied user steering input then produces one replayable `Guidance injected` block with at most eight sanitized single-line previews of 100 characters each. These receipt/application projections survive terminal transcript reconstruction. The application replay identity is a derived digest, never a durable input or native enqueue ID. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
+The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain accepted but not yet applied. `SessionStore` remains authoritative, while the TUI updates a count-only in-memory projection at durable acceptance, native application, and run termination boundaries so rendering never performs synchronous database I/O. The projection exposes no content and is not an input queue. Durable acceptance first produces a replayable `Guidance sent to the active run.` system receipt rather than the `> ...` treatment reserved for ordinary prompts; this visible receipt does not imply model application. The count disappears after native enqueue application or explicit terminal rejection. Each newly applied user steering input then produces one replayable `Guidance injected` block with at most eight sanitized single-line previews of 100 characters each. These receipt/application projections survive terminal segment reconciliation. The application replay identity is a derived digest, never a durable input or native enqueue ID. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
 
 `TUIStateMachine` enforces `VALID_TRANSITIONS`: an invalid transition returns `False`, leaves the authoritative phase unchanged, and is logged by the TUI boundary. The transition table includes all nine phase origins. Background-result readiness does not participate in foreground phase transitions.
 
@@ -159,7 +164,7 @@ The UI uses one explicit foreground boundary covering agent, shell, save, comman
 
 - Ownership is claimed before creating the asynchronous task.
 - A second prompt or shell cannot race the first submission.
-- Busy-safe commands (`/cancel`, `/agents`, `/process`, `/cost`, `/perf`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`) remain available without taking foreground ownership from the active task.
+- Busy-safe commands (`/cancel`, `/agents`, `/process`, `/cost`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`) remain available without taking foreground ownership from the active task.
 - Repeated cancellation does not add another `Task.cancel()` request.
 - A `/cancel` command never cancels its own dispatch task.
 - Non-agent slash commands use `COMMAND_RUNNING`, so Ctrl+C cancellation and Ctrl+D exit gating share the authoritative foreground state.
@@ -186,7 +191,7 @@ The UI uses one explicit foreground boundary covering agent, shell, save, comman
 
 ## Theme and Rendering
 
-The TUI coalesces application invalidation and streaming Markdown previews at a terminal-friendly base cadence of 15 frames per second. Streaming preview rendering is adaptive because each preview parses and highlights the complete retained response: retained text at or above 32 KiB renders no faster than every 100 ms, and text at or above 128 KiB renders no faster than every 200 ms. Finalization at a text, reasoning, or tool boundary still commits the complete latest content immediately.
+User-input redraws are immediate and are not subject to background rendering limits. The TUI coalesces background invalidation and lightweight, terminal-safe streaming previews at a base cadence of 24 frames per second. Preview cadence remains adaptive for large retained responses: text at or above 32 KiB updates no faster than every 100 ms, and text at or above 128 KiB updates no faster than every 200 ms. Complete Markdown and styled reasoning are rendered once at stable text, reasoning, or tool boundaries.
 
 Terminal size changes enter a short resize period. Repeated changes replace one 150 ms settle timer, streaming previews are limited to eight frames per second during the burst, and the settled size receives one final invalidation. The virtual viewport cache includes terminal width as well as scroll offset, viewport height, and output generation, so a width-only resize cannot reuse a cache entry for different geometry. Historical blocks remain bounded pre-rendered ANSI and are not reflowed from source Markdown during resize.
 

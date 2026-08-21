@@ -424,7 +424,6 @@ async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
     config_manager = MockConfigManager(config_dir=tmp_path)
     app = TUIApp(config=config, config_manager=config_manager)
 
-    descriptor = MagicMock(descriptor_id="ws-descriptor")
     runtime = MagicMock()
     runtime.capabilities = []
     runtime.ctx.injected_context_tags = ()
@@ -435,15 +434,14 @@ async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
     skill_toolset = MagicMock()
     skill_toolset.refresh_context = AsyncMock()
     app._execution_worker = worker
-    app._runtime_descriptors_by_profile = {"ws": descriptor}
-    app._skill_toolsets = {"ws-descriptor": skill_toolset}
+    app._skill_toolsets = {"ws": skill_toolset}
     app._model_selector_open = True
     app._model_selector_profiles = build_model_profiles(config)
     app._model_selector_index = 1
 
     await app._apply_model_selector_selection()
 
-    worker.activate.assert_called_once_with("ws-descriptor")
+    worker.activate.assert_called_once_with("ws")
     skill_toolset.refresh_context.assert_awaited_once_with(runtime.ctx)
     assert app._runtime is runtime
     assert app._active_model_profile == ResolvedModelProfile(
@@ -790,7 +788,6 @@ async def test_tui_app_hitl_cancel_takes_priority_over_approval_input(approval_k
         "/cost",
         "/help",
         "/paste-image",
-        "/perf",
         "/process",
         "/remove-image all",
         "/tool call-1",
@@ -1035,7 +1032,9 @@ async def test_tui_app_real_layout_mounts_hidden_task_pane_and_completion_menu(
 
     app._cancel_agent_task.assert_not_awaited()
     app._cancel_managed_tasks.assert_not_awaited()
-    assert captured["min_redraw_interval"] == app._invalidate_interval == 1 / 15
+    assert "min_redraw_interval" not in captured
+    assert app._invalidate_interval == 1 / 24
+    assert app._stream_render_interval == 1 / 24
 
     layout = captured["layout"]
     assert isinstance(layout, Layout)
@@ -3536,7 +3535,7 @@ async def test_tui_app_immediate_agent_cancellation_clears_timer_and_phase() -> 
     app._run_agent = fake_run_agent  # type: ignore[method-assign]
     _stub_agent_turn_acceptance(app)
     service = MagicMock()
-    service.dispatch_pending = AsyncMock(return_value=0)
+    service.cancel = AsyncMock()
     app._session_service = service
     app._launch_agent("hello")
     assert app._agent_task is not None
@@ -3548,7 +3547,7 @@ async def test_tui_app_immediate_agent_cancellation_clears_timer_and_phase() -> 
 
     assert app._run_started_at is None
     assert app._active_logical_run_id is None
-    service.accept_cancel.assert_called_once_with(
+    service.cancel.assert_awaited_once_with(
         "accepted-test-run",
         reason="agent_task_cancelled_before_start",
     )

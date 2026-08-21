@@ -1,26 +1,21 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from yaacli.durable import (
     ActionState,
-    HeadConflictError,
     InputPriority,
     InputState,
     InvalidTransitionError,
     LogicalRunStatus,
-    OutboxState,
     RevisionPayload,
-    RuntimeDescriptor,
     SQLiteSessionStore,
     StartRunRequest,
     TombstonedSessionError,
 )
 from yaacli.durable import sqlite as sqlite_store_module
-from yaacli.durable.application import build_runtime_descriptor
 
 
 def test_store_bootstraps_only_a_truly_empty_database(tmp_path: Path) -> None:
@@ -105,52 +100,36 @@ def test_store_rejects_same_columns_when_constraints_are_missing(tmp_path: Path)
         SQLiteSessionStore(database_path)
 
 
-def _descriptor(suffix: str = "one") -> RuntimeDescriptor:
-    return build_runtime_descriptor(
-        executable_version=f"executable-{suffix}",
-        agent_spec={"name": "main", "model": "test"},
-        host_envelope={"workspace": suffix},
-    ).model_copy(update={"created_at": datetime(2026, 8, 18, tzinfo=UTC)})
-
-
 def _request(
     session_id: str,
     *,
-    descriptor: RuntimeDescriptor | None = None,
     idempotency_key: str = "turn-1",
     expected_head: str | None = None,
+    model: str | None = "test:model",
+    model_profile_id: str | None = "test-profile",
 ) -> StartRunRequest:
-    resolved = descriptor or _descriptor()
     return StartRunRequest(
         session_id=session_id,
         expected_head_revision_id=expected_head,
         idempotency_key=idempotency_key,
-        descriptor=resolved,
-        initial_content=[{"kind": "text", "text": "hello"}],
-        plan_fingerprint=resolved.plan_fingerprint,
-        executable_version=resolved.executable_version,
+        initial_content=["hello"],
+        model=model,
+        model_profile_id=model_profile_id,
     )
 
 
-def test_session_catalog_and_descriptor_survive_reopen(tmp_path: Path) -> None:
+def test_session_catalog_survives_reopen(tmp_path: Path) -> None:
     path = tmp_path / "sessions.sqlite3"
     with SQLiteSessionStore(path) as store:
         created = store.create_session("/workspace", session_id="session-a")
-        stored_descriptor = store.put_descriptor(_descriptor())
-        repeated_descriptor = store.put_descriptor(
-            _descriptor().model_copy(update={"created_at": datetime(2026, 8, 19, tzinfo=UTC)})
-        )
         assert created.workspace_ref == "/workspace"
-        assert stored_descriptor == _descriptor()
-        assert repeated_descriptor == stored_descriptor
 
     with SQLiteSessionStore(path) as reopened:
         assert reopened.get_session("session-a") == created
         assert reopened.list_sessions() == (created,)
-        assert reopened.get_descriptor(_descriptor().descriptor_id) == _descriptor()
 
 
-def test_start_run_atomically_persists_execution_input_and_outbox(tmp_path: Path) -> None:
+def test_start_run_atomically_persists_execution_and_input(tmp_path: Path) -> None:
     with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
         session = store.create_session("/workspace")
         request = _request(session.session_id)
@@ -161,125 +140,64 @@ def test_start_run_atomically_persists_execution_input_and_outbox(tmp_path: Path
             store.start_run(request.model_copy(update={"initial_content": ["different prompt"]}))
 
         assert repeated == run
+        assert run.model == "test:model"
+        assert run.model_profile_id == "test-profile"
         execution = store.get_execution(run.execution_id)
         assert execution is not None
         assert execution.logical_run_id == run.logical_run_id
-        assert execution.executable_version == request.executable_version
-        assert store.get_session(session.session_id).active_execution_id == run.execution_id  # type: ignore[union-attr]
-
+        assert execution.status is LogicalRunStatus.pending
         inputs = store.list_inputs(run.logical_run_id)
         assert len(inputs) == 1
         assert inputs[0].order_index == 0
         assert inputs[0].state is InputState.accepted
-        commands = store.claim_outbox()
-        assert len(commands) == 1
-        assert commands[0].command_kind == "start_execution"
-        assert commands[0].state is OutboxState.delivering
-        assert commands[0].payload["logical_run_id"] == run.logical_run_id
 
 
-def test_start_run_rejects_stale_head_and_competing_execution(tmp_path: Path) -> None:
+def test_start_run_allows_independent_process_owned_runs(tmp_path: Path) -> None:
     with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
         session = store.create_session("/workspace")
-        with pytest.raises(HeadConflictError):
-            store.start_run(_request(session.session_id, expected_head="stale"))
+        first = store.start_run(_request(session.session_id))
+        second = store.start_run(_request(session.session_id, idempotency_key="turn-2"))
 
-        store.start_run(_request(session.session_id))
-        with pytest.raises(InvalidTransitionError, match="active execution"):
-            store.start_run(
-                _request(
-                    session.session_id,
-                    descriptor=_descriptor("two"),
-                    idempotency_key="turn-2",
-                )
-            )
+        assert first.logical_run_id != second.logical_run_id
+        assert first.execution_id != second.execution_id
 
 
-def test_input_inbox_is_idempotent_ordered_and_notified(tmp_path: Path) -> None:
+def test_input_inbox_is_idempotent_and_priority_ordered(tmp_path: Path) -> None:
     with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
         session = store.create_session("/workspace")
         run = store.start_run(_request(session.session_id))
-        store.claim_outbox()
 
         queued = store.accept_input(
             run.logical_run_id,
-            [{"kind": "text", "text": "later"}],
+            ["later"],
             idempotency_key="input-later",
             priority=InputPriority.when_idle,
         )
         urgent = store.accept_input(
             run.logical_run_id,
-            [{"kind": "text", "text": "now"}],
+            ["now"],
             idempotency_key="input-now",
             priority=InputPriority.asap,
         )
         repeated = store.accept_input(
             run.logical_run_id,
-            [{"kind": "text", "text": "now"}],
+            ["now"],
             idempotency_key="input-now",
             priority=InputPriority.asap,
         )
 
         assert repeated == urgent
-        assert [item.input_id for item in store.list_inputs(run.logical_run_id)] == [
-            store.list_inputs(run.logical_run_id)[0].input_id,
-            urgent.input_id,
-            queued.input_id,
-        ]
+        inputs = store.list_inputs(run.logical_run_id)
+        assert [item.order_index for item in inputs] == [0, urgent.order_index, queued.order_index]
         enqueued = store.transition_input(
             urgent.input_id,
             InputState.accepted,
             InputState.enqueued,
             native_enqueue_id="native-1",
         )
-        applied = store.transition_input(
-            urgent.input_id,
-            InputState.enqueued,
-            InputState.applied,
-        )
+        applied = store.transition_input(urgent.input_id, InputState.enqueued, InputState.applied)
         assert enqueued.native_enqueue_id == "native-1"
         assert applied.state is InputState.applied
-        assert len(store.claim_outbox()) == 2
-
-
-def test_outbox_claim_complete_retry_and_idempotency(tmp_path: Path) -> None:
-    with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
-        command = store.enqueue_command(
-            "wake",
-            "run-1",
-            {"run_id": "run-1"},
-            command_id="command-1",
-        )
-        assert store.enqueue_command("wake", "run-1", {"run_id": "run-1"}, command_id="command-1") == command
-
-        claimed = store.claim_outbox()[0]
-        assert claimed.attempt_count == 1
-        retried = store.retry_outbox(claimed.command_id, "temporary")
-        assert retried.state is OutboxState.pending
-        assert retried.last_error == "temporary"
-
-        second = store.enqueue_command("wake", "run-2", {"run_id": "run-2"})
-        delivered = store.complete_outbox(store.claim_outbox()[0].command_id)
-        assert delivered.command_id == second.command_id
-        assert delivered.state is OutboxState.delivered
-        assert store.complete_outbox(delivered.command_id) == delivered
-
-
-def test_outbox_restart_releases_unfinished_delivery_claims(tmp_path: Path) -> None:
-    with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
-        command = store.enqueue_command(
-            "wake",
-            "run-1",
-            {"run_id": "run-1"},
-        )
-        claimed = store.claim_outbox()[0]
-        assert claimed.command_id == command.command_id
-        assert claimed.state is OutboxState.delivering
-
-        assert store.recover_outbox() == 1
-        reclaimed = store.claim_outbox()[0]
-        assert reclaimed.command_id == command.command_id
-        assert reclaimed.attempt_count == 2
 
 
 def test_action_batch_survives_partial_idempotent_decisions(tmp_path: Path) -> None:
@@ -328,7 +246,6 @@ def test_action_batch_survives_partial_idempotent_decisions(tmp_path: Path) -> N
         )
         assert resolved.state is ActionState.resolved
         assert all(item.state is ActionState.resolved for item in resolved.items)
-        assert any(command.command_kind == "notify_action" for command in store.claim_outbox())
 
 
 def test_terminal_revision_and_event_are_atomic_and_idempotent(tmp_path: Path) -> None:
@@ -345,11 +262,7 @@ def test_terminal_revision_and_event_are_atomic_and_idempotent(tmp_path: Path) -
         run = store.start_run(_request(session.session_id))
         store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
         initial = store.list_inputs(run.logical_run_id)[0]
-        store.transition_input(
-            initial.input_id,
-            InputState.accepted,
-            InputState.applied,
-        )
+        store.transition_input(initial.input_id, InputState.accepted, InputState.applied)
         late = store.accept_input(
             run.logical_run_id,
             ["too late"],
@@ -373,49 +286,33 @@ def test_terminal_revision_and_event_are_atomic_and_idempotent(tmp_path: Path) -
 
         assert repeated_revision == revision
         assert repeated_event == event
-        assert event.payload == {
-            "revision_id": revision.revision_id,
-            **payload.terminal,
-        }
+        assert event.payload == {"revision_id": revision.revision_id, **payload.terminal}
         assert store.read_events(session.session_id) == (event,)
         current = store.get_session(session.session_id)
         assert current is not None
         assert current.head_revision_id == revision.revision_id
-        assert current.active_execution_id is None
         assert store.get_run(run.logical_run_id).status is LogicalRunStatus.completed  # type: ignore[union-attr]
-        assert store.get_revision(revision.revision_id) == revision
-        assert store.get_revision_for_run(run.logical_run_id) == revision
         rejected = next(item for item in store.list_inputs(run.logical_run_id) if item.input_id == late.input_id)
         assert rejected.state is InputState.rejected
-        assert rejected.rejection_reason == ("run terminated as completed before input application")
+        assert rejected.rejection_reason == "run terminated as completed before input application"
 
-        cancelled_race = store.start_run(
+        cancelling = store.start_run(
             _request(
                 session.session_id,
                 idempotency_key="cancel-race",
                 expected_head=revision.revision_id,
             )
         )
-        store.set_run_status(
-            cancelled_race.logical_run_id,
-            LogicalRunStatus.running,
-        )
-        store.set_run_status(
-            cancelled_race.logical_run_id,
-            LogicalRunStatus.cancelling,
-        )
-        with pytest.raises(
-            InvalidTransitionError,
-            match="cancelling to completed",
-        ):
+        store.set_run_status(cancelling.logical_run_id, LogicalRunStatus.running)
+        store.set_run_status(cancelling.logical_run_id, LogicalRunStatus.cancelling)
+        with pytest.raises(InvalidTransitionError, match="cancelling to completed"):
             store.commit_terminal(
-                cancelled_race.logical_run_id,
+                cancelling.logical_run_id,
                 commit_kind="success",
                 payload=payload,
                 terminal_status=LogicalRunStatus.completed,
                 event_type="RUN_FINISHED",
             )
-        assert store.get_run(cancelled_race.logical_run_id).status is LogicalRunStatus.cancelling  # type: ignore[union-attr]
 
 
 def test_events_are_ordered_idempotent_and_tombstone_fences_late_writes(tmp_path: Path) -> None:
@@ -436,28 +333,26 @@ def test_events_are_ordered_idempotent_and_tombstone_fences_late_writes(tmp_path
             store.start_run(_request(session.session_id))
 
 
-def test_offline_import_publishes_revision_without_outbox_work(tmp_path: Path) -> None:
-    store = SQLiteSessionStore(tmp_path / "sessions.sqlite3")
-    try:
+def test_offline_import_publishes_revision_with_model_metadata(tmp_path: Path) -> None:
+    with SQLiteSessionStore(tmp_path / "sessions.sqlite3") as store:
         session = store.create_session("/workspace", session_id="import-session")
-        descriptor = _descriptor("import-plan")
         revision = store.import_revision(
             session.session_id,
-            descriptor=descriptor,
             payload=RevisionPayload(
                 message_history=[{"kind": "request", "parts": []}],
                 display_projection=[{"type": "RUN_STARTED"}],
                 terminal={"status": "completed", "output": None},
             ),
             source="/offline/bundle",
+            model="test:model",
+            model_profile_id="test-profile",
         )
 
         assert store.get_session(session.session_id).head_revision_id == revision.revision_id  # type: ignore[union-attr]
         assert revision.commit_kind == "offline_import"
         assert revision.terminal["import_source"] == "/offline/bundle"
-        assert store.claim_outbox() == ()
         run = store.get_run(revision.logical_run_id)
         assert run is not None
         assert run.status is LogicalRunStatus.completed
-    finally:
-        store.close()
+        assert run.model == "test:model"
+        assert run.model_profile_id == "test-profile"

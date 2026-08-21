@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,11 +27,8 @@ from yaacli.durable.models import (
     InputState,
     LogicalRunRecord,
     LogicalRunStatus,
-    OutboxCommand,
-    OutboxState,
     RevisionPayload,
     RevisionRecord,
-    RuntimeDescriptor,
     SessionRecord,
     SessionStatus,
     StartRunRequest,
@@ -43,12 +40,11 @@ from yaacli.durable.sqlite_schema import (
     validate_exact_schema_subset,
 )
 from yaacli.durable.store import (
-    HeadConflictError,
     InvalidTransitionError,
     TombstonedSessionError,
 )
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _TERMINAL_RUN_STATES = {
     LogicalRunStatus.completed,
     LogicalRunStatus.failed,
@@ -106,26 +102,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace_ref TEXT NOT NULL,
     status TEXT NOT NULL,
     head_revision_id TEXT,
-    active_execution_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     tombstoned_at TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_updated_idx ON sessions(updated_at DESC);
 
-CREATE TABLE IF NOT EXISTS runtime_descriptors (
-    descriptor_id TEXT PRIMARY KEY,
-    plan_fingerprint TEXT NOT NULL,
-    descriptor_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS logical_runs (
     logical_run_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     execution_id TEXT NOT NULL UNIQUE,
     expected_head_revision_id TEXT,
-    descriptor_id TEXT NOT NULL REFERENCES runtime_descriptors(descriptor_id),
+    model TEXT,
+    model_profile_id TEXT,
     idempotency_key TEXT NOT NULL,
     status TEXT NOT NULL,
     input_open INTEGER NOT NULL DEFAULT 1,
@@ -141,9 +130,6 @@ CREATE INDEX IF NOT EXISTS logical_runs_session_idx
 CREATE TABLE IF NOT EXISTS executions (
     execution_id TEXT PRIMARY KEY,
     logical_run_id TEXT NOT NULL UNIQUE REFERENCES logical_runs(logical_run_id),
-    executable_version TEXT NOT NULL,
-    plan_fingerprint TEXT NOT NULL,
-    descriptor_id TEXT NOT NULL REFERENCES runtime_descriptors(descriptor_id),
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -178,22 +164,6 @@ CREATE TABLE IF NOT EXISTS run_inputs (
 );
 CREATE INDEX IF NOT EXISTS run_inputs_drain_idx
     ON run_inputs(logical_run_id, state, priority, order_index);
-
-CREATE TABLE IF NOT EXISTS outbox_commands (
-    command_id TEXT PRIMARY KEY,
-    command_kind TEXT NOT NULL,
-    aggregate_id TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    state TEXT NOT NULL,
-    attempt_count INTEGER NOT NULL,
-    available_at TEXT NOT NULL,
-    claimed_at TEXT,
-    delivered_at TEXT,
-    last_error TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS outbox_delivery_idx
-    ON outbox_commands(state, available_at, created_at);
 
 CREATE TABLE IF NOT EXISTS revisions (
     revision_id TEXT PRIMARY KEY,
@@ -389,44 +359,6 @@ class SQLiteSessionStore:
             session = self._session_from_row(row)
             if session.status is SessionStatus.tombstoned:
                 return session
-            if session.active_execution_id is not None:
-                run_row = connection.execute(
-                    "SELECT * FROM logical_runs WHERE execution_id = ?",
-                    (session.active_execution_id,),
-                ).fetchone()
-                if run_row is not None and LogicalRunStatus(run_row["status"]) not in _TERMINAL_RUN_STATES:
-                    connection.execute(
-                        """
-                        UPDATE logical_runs
-                        SET status = ?, input_open = 0,
-                            cancellation_reason = ?, updated_at = ?
-                        WHERE logical_run_id = ?
-                        """,
-                        (
-                            LogicalRunStatus.cancelling.value,
-                            "session tombstoned",
-                            _dt(now),
-                            run_row["logical_run_id"],
-                        ),
-                    )
-                    connection.execute(
-                        "UPDATE executions SET status = ?, updated_at = ? WHERE execution_id = ?",
-                        (
-                            LogicalRunStatus.cancelling.value,
-                            _dt(now),
-                            session.active_execution_id,
-                        ),
-                    )
-                    self._insert_outbox(
-                        connection,
-                        "cancel_execution",
-                        session.active_execution_id,
-                        {
-                            "execution_id": session.active_execution_id,
-                            "logical_run_id": run_row["logical_run_id"],
-                            "reason": "session tombstoned",
-                        },
-                    )
             self._fence_subagents_for_tombstone(
                 connection,
                 session_id=session_id,
@@ -435,8 +367,7 @@ class SQLiteSessionStore:
             connection.execute(
                 """
                 UPDATE sessions
-                SET status = ?, active_execution_id = NULL,
-                    tombstoned_at = ?, updated_at = ?
+                SET status = ?, tombstoned_at = ?, updated_at = ?
                 WHERE session_id = ?
                 """,
                 (
@@ -488,93 +419,13 @@ class SQLiteSessionStore:
                     InputState.enqueued.value,
                 ),
             )
-            self._insert_outbox(
-                connection,
-                "cancel_subagent_execution",
-                record.execution_id,
-                {
-                    "execution_id": record.execution_id,
-                    "owner_scope_id": record.owner_scope_id,
-                    "reason": reason,
-                },
-                command_id=f"cancel-subagent:{record.execution_id}:{record.segment_index}",
-            )
-
-    def put_descriptor(self, descriptor: RuntimeDescriptor) -> RuntimeDescriptor:
-        with self._write() as connection:
-            return self._put_descriptor(connection, descriptor)
-
-    def _put_descriptor(
-        self,
-        connection: sqlite3.Connection,
-        descriptor: RuntimeDescriptor,
-    ) -> RuntimeDescriptor:
-        descriptor.assert_integrity()
-        payload = descriptor.model_dump_json()
-        existing = connection.execute(
-            "SELECT descriptor_json FROM runtime_descriptors WHERE descriptor_id = ?",
-            (descriptor.descriptor_id,),
-        ).fetchone()
-        if existing is not None:
-            stored = RuntimeDescriptor.model_validate_json(existing["descriptor_json"])
-            if (
-                stored.plan_fingerprint != descriptor.plan_fingerprint
-                or stored.behavior_payload() != descriptor.behavior_payload()
-            ):
-                raise ValueError(f"Descriptor ID {descriptor.descriptor_id!r} has different content")
-            return stored
-        connection.execute(
-            """
-            INSERT INTO runtime_descriptors(
-                descriptor_id, plan_fingerprint, descriptor_json, created_at
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (
-                descriptor.descriptor_id,
-                descriptor.plan_fingerprint,
-                payload,
-                _dt(descriptor.created_at),
-            ),
-        )
-        return descriptor
-
-    def get_descriptor(self, descriptor_id: str) -> RuntimeDescriptor | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT descriptor_json FROM runtime_descriptors WHERE descriptor_id = ?",
-                (descriptor_id,),
-            ).fetchone()
-        return RuntimeDescriptor.model_validate_json(row["descriptor_json"]) if row is not None else None
-
-    def list_nonterminal_descriptors(self) -> tuple[RuntimeDescriptor, ...]:
-        """Return every exact plan still referenced by unfinished main work."""
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT DISTINCT descriptor.descriptor_json
-                FROM runtime_descriptors AS descriptor
-                JOIN logical_runs AS run ON run.descriptor_id = descriptor.descriptor_id
-                WHERE run.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
-                ORDER BY descriptor.descriptor_id
-                """
-            ).fetchall()
-        return tuple(RuntimeDescriptor.model_validate_json(row["descriptor_json"]) for row in rows)
 
     def start_run(self, request: StartRunRequest) -> LogicalRunRecord:
-        if request.plan_fingerprint != request.descriptor.plan_fingerprint:
-            raise ValueError("Start-run fingerprint does not match its descriptor")
-        if request.executable_version != request.descriptor.executable_version:
-            raise ValueError("Start-run executable version does not match its descriptor")
         now = utc_now()
         with self._write() as connection:
             session_row = self._required_row(connection, "sessions", "session_id", request.session_id)
             session = self._session_from_row(session_row)
             self._ensure_active_session(session)
-            if session.head_revision_id != request.expected_head_revision_id:
-                raise HeadConflictError(
-                    f"Session {request.session_id!r} head changed from "
-                    f"{request.expected_head_revision_id!r} to {session.head_revision_id!r}"
-                )
             existing = connection.execute(
                 """
                 SELECT * FROM logical_runs
@@ -594,33 +445,29 @@ class SQLiteSessionStore:
                 initial_content = _array(initial_row["content_json"]) if initial_row is not None else None
                 if (
                     record.expected_head_revision_id != request.expected_head_revision_id
-                    or record.descriptor_id != request.descriptor.descriptor_id
+                    or record.model != request.model
+                    or record.model_profile_id != request.model_profile_id
                     or initial_content != list(request.initial_content)
                 ):
                     raise ValueError("Start-run idempotency key was reused with different intent")
                 return record
-            if session.active_execution_id is not None:
-                raise InvalidTransitionError(
-                    f"Session {request.session_id!r} already has active execution {session.active_execution_id!r}"
-                )
-
-            self._put_descriptor(connection, request.descriptor)
             logical_run_id = str(uuid.uuid4())
             execution_id = str(uuid.uuid4())
             connection.execute(
                 """
                 INSERT INTO logical_runs(
                     logical_run_id, session_id, execution_id,
-                    expected_head_revision_id, descriptor_id, idempotency_key,
+                    expected_head_revision_id, model, model_profile_id, idempotency_key,
                     status, input_open, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
                 (
                     logical_run_id,
                     request.session_id,
                     execution_id,
                     request.expected_head_revision_id,
-                    request.descriptor.descriptor_id,
+                    request.model,
+                    request.model_profile_id,
                     request.idempotency_key,
                     LogicalRunStatus.pending.value,
                     _dt(now),
@@ -630,16 +477,12 @@ class SQLiteSessionStore:
             connection.execute(
                 """
                 INSERT INTO executions(
-                    execution_id, logical_run_id, executable_version,
-                    plan_fingerprint, descriptor_id, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_id, logical_run_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     execution_id,
                     logical_run_id,
-                    request.executable_version,
-                    request.plan_fingerprint,
-                    request.descriptor.descriptor_id,
                     LogicalRunStatus.pending.value,
                     _dt(now),
                     _dt(now),
@@ -664,26 +507,9 @@ class SQLiteSessionStore:
                     _dt(now),
                 ),
             )
-            self._insert_outbox(
-                connection,
-                "start_execution",
-                execution_id,
-                {
-                    "command_id": request.idempotency_key,
-                    "execution_id": execution_id,
-                    "logical_run_id": logical_run_id,
-                    "session_id": request.session_id,
-                    "initial_input_id": input_id,
-                    "descriptor_id": request.descriptor.descriptor_id,
-                },
-            )
             connection.execute(
-                """
-                UPDATE sessions
-                SET active_execution_id = ?, updated_at = ?
-                WHERE session_id = ?
-                """,
-                (execution_id, _dt(now), request.session_id),
+                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                (_dt(now), request.session_id),
             )
             return self._run_from_row(self._required_row(connection, "logical_runs", "logical_run_id", logical_run_id))
 
@@ -823,7 +649,6 @@ class SQLiteSessionStore:
         idempotency_key: str,
         priority: InputPriority,
         origin: str = "user",
-        wake_execution: bool = True,
     ) -> InputRecord:
         if origin not in {"user", "feature"}:
             raise ValueError("origin must be 'user' or 'feature'")
@@ -879,17 +704,6 @@ class SQLiteSessionStore:
                     _dt(now),
                 ),
             )
-            if wake_execution:
-                self._insert_outbox(
-                    connection,
-                    "notify_input",
-                    run.execution_id,
-                    {
-                        "execution_id": run.execution_id,
-                        "logical_run_id": logical_run_id,
-                        "input_id": input_id,
-                    },
-                )
             return self._input_from_row(self._required_row(connection, "run_inputs", "input_id", input_id))
 
     def list_inputs(
@@ -994,170 +808,14 @@ class SQLiteSessionStore:
                 )
             return tuple(self._input_from_row(row) for row in rows)
 
-    def enqueue_command(
-        self,
-        command_kind: str,
-        aggregate_id: str,
-        payload: dict[str, JsonValue],
-        *,
-        command_id: str | None = None,
-    ) -> OutboxCommand:
-        with self._write() as connection:
-            return self._insert_outbox(
-                connection,
-                command_kind,
-                aggregate_id,
-                payload,
-                command_id=command_id,
-            )
-
-    def _insert_outbox(
-        self,
-        connection: sqlite3.Connection,
-        command_kind: str,
-        aggregate_id: str,
-        payload: dict[str, JsonValue],
-        *,
-        command_id: str | None = None,
-    ) -> OutboxCommand:
-        resolved_id = command_id or str(uuid.uuid4())
-        now = utc_now()
-        existing = connection.execute("SELECT * FROM outbox_commands WHERE command_id = ?", (resolved_id,)).fetchone()
-        if existing is not None:
-            record = self._outbox_from_row(existing)
-            if record.command_kind != command_kind or record.aggregate_id != aggregate_id or record.payload != payload:
-                raise ValueError("Outbox command ID was reused with different intent")
-            return record
-        connection.execute(
-            """
-            INSERT INTO outbox_commands(
-                command_id, command_kind, aggregate_id, payload_json,
-                state, attempt_count, available_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
-            """,
-            (
-                resolved_id,
-                command_kind,
-                aggregate_id,
-                _json(payload),
-                OutboxState.pending.value,
-                _dt(now),
-                _dt(now),
-            ),
-        )
-        return self._outbox_from_row(self._required_row(connection, "outbox_commands", "command_id", resolved_id))
-
-    def recover_outbox(self) -> int:
-        """Release delivery claims owned by a previous worker process."""
-        now = utc_now()
-        with self._write() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE outbox_commands
-                SET state = ?, available_at = ?, claimed_at = NULL
-                WHERE state = ?
-                """,
-                (
-                    OutboxState.pending.value,
-                    _dt(now),
-                    OutboxState.delivering.value,
-                ),
-            )
-            return cursor.rowcount
-
-    def claim_outbox(self, *, limit: int = 50) -> tuple[OutboxCommand, ...]:
-        if limit < 0:
-            raise ValueError("limit must be non-negative")
-        if limit == 0:
-            return ()
-        now = utc_now()
-        stale_before = now - timedelta(seconds=30)
-        with self._write() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM outbox_commands
-                WHERE available_at <= ?
-                  AND (
-                    state = ? OR (state = ? AND claimed_at <= ?)
-                  )
-                ORDER BY created_at, command_id
-                LIMIT ?
-                """,
-                (
-                    _dt(now),
-                    OutboxState.pending.value,
-                    OutboxState.delivering.value,
-                    _dt(stale_before),
-                    limit,
-                ),
-            ).fetchall()
-            if not rows:
-                return ()
-            command_ids = [row["command_id"] for row in rows]
-            connection.executemany(
-                """
-                UPDATE outbox_commands
-                SET state = ?, attempt_count = attempt_count + 1, claimed_at = ?
-                WHERE command_id = ?
-                """,
-                [(OutboxState.delivering.value, _dt(now), command_id) for command_id in command_ids],
-            )
-            return tuple(
-                self._outbox_from_row(self._required_row(connection, "outbox_commands", "command_id", command_id))
-                for command_id in command_ids
-            )
-
-    def complete_outbox(self, command_id: str) -> OutboxCommand:
-        now = utc_now()
-        with self._write() as connection:
-            row = self._required_row(connection, "outbox_commands", "command_id", command_id)
-            record = self._outbox_from_row(row)
-            if record.state is OutboxState.delivered:
-                return record
-            if record.state is not OutboxState.delivering:
-                raise InvalidTransitionError("Only claimed outbox commands can complete")
-            connection.execute(
-                """
-                UPDATE outbox_commands
-                SET state = ?, delivered_at = ?, last_error = NULL
-                WHERE command_id = ?
-                """,
-                (OutboxState.delivered.value, _dt(now), command_id),
-            )
-            return self._outbox_from_row(self._required_row(connection, "outbox_commands", "command_id", command_id))
-
-    def retry_outbox(self, command_id: str, error: str) -> OutboxCommand:
-        now = utc_now()
-        with self._write() as connection:
-            row = self._required_row(connection, "outbox_commands", "command_id", command_id)
-            record = self._outbox_from_row(row)
-            if record.state is OutboxState.delivered:
-                return record
-            if record.state is not OutboxState.delivering:
-                raise InvalidTransitionError("Only claimed outbox commands can be retried")
-            delay = min(30, 2 ** min(record.attempt_count, 5))
-            connection.execute(
-                """
-                UPDATE outbox_commands
-                SET state = ?, available_at = ?, claimed_at = NULL, last_error = ?
-                WHERE command_id = ?
-                """,
-                (
-                    OutboxState.pending.value,
-                    _dt(now + timedelta(seconds=delay)),
-                    error,
-                    command_id,
-                ),
-            )
-            return self._outbox_from_row(self._required_row(connection, "outbox_commands", "command_id", command_id))
-
     def import_revision(
         self,
         session_id: str,
         *,
-        descriptor: RuntimeDescriptor,
         payload: RevisionPayload,
         source: str,
+        model: str | None = None,
+        model_profile_id: str | None = None,
     ) -> RevisionRecord:
         """Import an offline snapshot without creating executable outbox work."""
         now = utc_now()
@@ -1167,23 +825,21 @@ class SQLiteSessionStore:
         with self._write() as connection:
             session = self._required_session(connection, session_id)
             self._ensure_active_session(session)
-            if session.active_execution_id is not None:
-                raise InvalidTransitionError(f"Session {session_id!r} already has an active execution")
-            self._put_descriptor(connection, descriptor)
             connection.execute(
                 """
                 INSERT INTO logical_runs(
                     logical_run_id, session_id, execution_id,
-                    expected_head_revision_id, descriptor_id, idempotency_key,
+                    expected_head_revision_id, model, model_profile_id, idempotency_key,
                     status, input_open, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     logical_run_id,
                     session_id,
                     execution_id,
                     session.head_revision_id,
-                    descriptor.descriptor_id,
+                    model,
+                    model_profile_id,
                     f"offline-import:{revision_id}",
                     LogicalRunStatus.completed.value,
                     _dt(now),
@@ -1193,16 +849,12 @@ class SQLiteSessionStore:
             connection.execute(
                 """
                 INSERT INTO executions(
-                    execution_id, logical_run_id, executable_version,
-                    plan_fingerprint, descriptor_id, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    execution_id, logical_run_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     execution_id,
                     logical_run_id,
-                    descriptor.executable_version,
-                    descriptor.plan_fingerprint,
-                    descriptor.descriptor_id,
                     LogicalRunStatus.completed.value,
                     _dt(now),
                     _dt(now),
@@ -1318,11 +970,6 @@ class SQLiteSessionStore:
             return revision
         if terminal_status not in _RUN_TRANSITIONS[run.status]:
             raise InvalidTransitionError(f"Cannot transition run from {run.status.value} to {terminal_status.value}")
-        if session.head_revision_id != run.expected_head_revision_id:
-            raise HeadConflictError(
-                f"Session {run.session_id!r} head changed from "
-                f"{run.expected_head_revision_id!r} to {session.head_revision_id!r}"
-            )
         revision_id = str(uuid.uuid4())
         connection.execute(
             """
@@ -1351,21 +998,18 @@ class SQLiteSessionStore:
         cursor = connection.execute(
             """
             UPDATE sessions
-            SET head_revision_id = ?, active_execution_id = NULL, updated_at = ?
+            SET head_revision_id = ?, updated_at = ?
             WHERE session_id = ? AND status = ?
-              AND head_revision_id IS ? AND active_execution_id = ?
             """,
             (
                 revision_id,
                 _dt(now),
                 run.session_id,
                 SessionStatus.active.value,
-                run.expected_head_revision_id,
-                run.execution_id,
             ),
         )
         if cursor.rowcount != 1:
-            raise HeadConflictError(f"Session {run.session_id!r} head or active execution changed")
+            raise TombstonedSessionError(f"Session {run.session_id!r} is tombstoned")
         connection.execute(
             """
             UPDATE run_inputs
@@ -1657,16 +1301,6 @@ class SQLiteSessionStore:
                     """,
                     (ActionState.resolved.value, _dt(now), item.batch_id),
                 )
-                self._insert_outbox(
-                    connection,
-                    "notify_action",
-                    run.execution_id,
-                    {
-                        "execution_id": run.execution_id,
-                        "logical_run_id": run.logical_run_id,
-                        "batch_id": item.batch_id,
-                    },
-                )
             else:
                 connection.execute(
                     "UPDATE action_batches SET updated_at = ? WHERE batch_id = ?",
@@ -1694,7 +1328,6 @@ class SQLiteSessionStore:
             ("logical_runs", "logical_run_id"),
             ("executions", "execution_id"),
             ("run_inputs", "input_id"),
-            ("outbox_commands", "command_id"),
             ("revisions", "revision_id"),
             ("session_events", "event_id"),
             ("action_batches", "batch_id"),
@@ -1769,7 +1402,6 @@ class SQLiteSessionStore:
             workspace_ref=row["workspace_ref"],
             status=SessionStatus(row["status"]),
             head_revision_id=row["head_revision_id"],
-            active_execution_id=row["active_execution_id"],
             created_at=_parse_required_dt(row["created_at"]),
             updated_at=_parse_required_dt(row["updated_at"]),
             tombstoned_at=_parse_dt(row["tombstoned_at"]),
@@ -1782,7 +1414,8 @@ class SQLiteSessionStore:
             session_id=row["session_id"],
             execution_id=row["execution_id"],
             expected_head_revision_id=row["expected_head_revision_id"],
-            descriptor_id=row["descriptor_id"],
+            model=row["model"],
+            model_profile_id=row["model_profile_id"],
             status=LogicalRunStatus(row["status"]),
             cancellation_reason=row["cancellation_reason"],
             pending_action_batch_id=row["pending_action_batch_id"],
@@ -1795,9 +1428,6 @@ class SQLiteSessionStore:
         return ExecutionRecord(
             execution_id=row["execution_id"],
             logical_run_id=row["logical_run_id"],
-            executable_version=row["executable_version"],
-            plan_fingerprint=row["plan_fingerprint"],
-            descriptor_id=row["descriptor_id"],
             status=LogicalRunStatus(row["status"]),
             created_at=_parse_required_dt(row["created_at"]),
             updated_at=_parse_required_dt(row["updated_at"]),
@@ -1833,22 +1463,6 @@ class SQLiteSessionStore:
             rejection_reason=row["rejection_reason"],
             created_at=_parse_required_dt(row["created_at"]),
             updated_at=_parse_required_dt(row["updated_at"]),
-        )
-
-    @staticmethod
-    def _outbox_from_row(row: sqlite3.Row) -> OutboxCommand:
-        return OutboxCommand(
-            command_id=row["command_id"],
-            command_kind=row["command_kind"],
-            aggregate_id=row["aggregate_id"],
-            payload=_object(row["payload_json"]),
-            state=OutboxState(row["state"]),
-            attempt_count=row["attempt_count"],
-            available_at=_parse_required_dt(row["available_at"]),
-            claimed_at=_parse_dt(row["claimed_at"]),
-            delivered_at=_parse_dt(row["delivered_at"]),
-            last_error=row["last_error"],
-            created_at=_parse_required_dt(row["created_at"]),
         )
 
     @staticmethod

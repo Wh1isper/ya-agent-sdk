@@ -14,7 +14,7 @@ from ya_agent_stream_protocol.sdk import AguiEventAdapter
 from yaacli.app import TUIApp
 from yaacli.app.tui import YAACLI_AGUI_ADAPTER_CONFIG, PendingAttachment
 from yaacli.config import CommandDefinition
-from yaacli.durable.models import InputPriority, InputRecord, InputState
+from yaacli.durable.models import InputPriority, InputRecord, InputState, RevisionRecord
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason
 from yaacli.session import TUIContext
 
@@ -108,6 +108,48 @@ def test_tui_display_tool_result_uses_agui_timestamps_for_duration() -> None:
 
     assert any("(1.5s)" in line for line in app._output_lines)
     assert abs(app._event_renderer.tracker.tool_calls["tool-1"].duration() - 1.5) < 0.01
+
+
+def test_non_success_reconciliation_preserves_tools_and_unrelated_background_output() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    app._active_display_run_id = "run-1"
+    app._handle_and_record_display_events([
+        {"type": "RUN_STARTED", "runId": "run-1"},
+        {"type": "TEXT_MESSAGE_START", "messageId": "text-1"},
+        {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": "unstable partial text"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "tool-1",
+            "toolCallName": "shell",
+            "delta": '{"command":"printf kept"}',
+        },
+        {
+            "type": "TOOL_CALL_RESULT",
+            "toolCallId": "tool-1",
+            "toolCallName": "shell",
+            "content": "kept tool result",
+        },
+    ])
+    app._append_system_output("background worker is ready")
+    app._reconcile_terminal_transcript(
+        RevisionRecord(
+            revision_id="revision-1",
+            session_id="session-1",
+            logical_run_id="logical-run-1",
+            commit_kind="failed",
+            display_projection=[],
+            terminal={"status": "failed"},
+            created_at=datetime.now(UTC),
+        )
+    )
+
+    output = "\n".join(app._output_lines)
+    assert "unstable partial text" not in output
+    assert "Calling:" in output
+    assert "Complete:" in output
+    assert "kept tool result" in output
+    assert "background worker is ready" in output
+    assert app._tool_messages["tool-1"].content == "kept tool result"
 
 
 def test_tui_terminal_replay_reconstructs_tools_after_live_render() -> None:
@@ -289,6 +331,7 @@ def test_tui_projects_native_applied_steering_before_product_state_reconciliatio
         ),
     )
     app._durable_store = store
+    app._pending_steering_count = 1
     render = MagicMock(return_value="steering rendered")
     app._event_renderer.render_steering_injected = render  # type: ignore[method-assign]
 
@@ -320,6 +363,7 @@ def test_tui_projects_native_applied_steering_before_product_state_reconciliatio
         "run-1",
         states=(InputState.enqueued, InputState.applied),
     )
+    assert app._pending_steering_count == 0
 
 
 def test_tui_replays_applied_steering_custom_event() -> None:

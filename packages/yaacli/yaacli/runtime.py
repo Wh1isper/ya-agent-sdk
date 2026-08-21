@@ -23,16 +23,12 @@ Example:
 
 from __future__ import annotations
 
-import copy
-import hashlib
-import json
-import os
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from pydantic_ai import AgentSpec, DeferredToolRequests, InstructionPart, ModelSettings, RunContext
 from pydantic_ai.capabilities import AbstractCapability
@@ -82,11 +78,7 @@ from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillTo
 
 from yaacli.config import ConfigManager, MCPConfig, SubagentsConfig, YaacliConfig
 from yaacli.durable.capabilities import DurableInboxPumpCapability
-from yaacli.durable.models import (
-    ChildPlanManifest,
-    MainRuntimeManifest,
-    RuntimeSecretRequirement,
-)
+from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.subagents import (
     DurableSubagentCompletionDelivery,
     DurableSubagentInboxCapability,
@@ -100,7 +92,6 @@ from yaacli.guards import GoalGuardCapability
 from yaacli.logging import get_logger
 from yaacli.model_profiles import (
     ResolvedModelProfile,
-    get_model_profile,
     get_startup_model_profile,
     resolve_profile_model_cfg,
 )
@@ -119,288 +110,10 @@ logger = get_logger(__name__)
 
 @dataclass(frozen=True)
 class RuntimeSourceSnapshot:
-    """Immutable file-derived inputs shared by runtime construction and descriptors."""
+    """Immutable file-derived inputs shared by runtime construction."""
 
     system_prompt: str
     subagent_specs: tuple[SubagentSpec, ...]
-
-    def fingerprint_payload(self) -> dict[str, Any]:
-        return {
-            "system_prompt": self.system_prompt,
-            "subagent_specs": [spec.model_dump(mode="json", by_alias=True) for spec in self.subagent_specs],
-        }
-
-
-_RUNTIME_CONFIG_KEYS = (
-    "general",
-    "subagents",
-    "media",
-    "env",
-    "shell_env",
-    "include_os_env",
-    "security",
-    "tools",
-)
-_SENSITIVE_CONFIG_PATHS = {
-    ("media", "s3", "access_key_id"),
-    ("media", "s3", "secret_access_key"),
-}
-_SENSITIVE_KEY_PARTS = ("api_key", "apikey", "authorization", "cookie", "credential", "password", "secret", "token")
-SecretSource = Literal["config", "mcp", "profile", "environment"]
-
-
-def _value_digest(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _path_value(value: Any, path: tuple[str | int, ...]) -> Any:
-    current = value
-    for part in path:
-        if isinstance(part, int):
-            if not isinstance(current, list):
-                raise KeyError(path)
-            current = current[part]
-        else:
-            if not isinstance(current, dict):
-                raise KeyError(path)
-            current = current[part]
-    return current
-
-
-def _set_path_value(value: Any, path: tuple[str | int, ...], replacement: Any) -> None:
-    if not path:
-        raise ValueError("Runtime secret target path cannot be empty")
-    parent = _path_value(value, path[:-1]) if len(path) > 1 else value
-    final = next(reversed(path))
-    if isinstance(final, int):
-        if not isinstance(parent, list):
-            raise KeyError(path)
-        parent[final] = replacement
-    else:
-        if not isinstance(parent, dict):
-            raise KeyError(path)
-        parent[final] = replacement
-
-
-def _key_is_sensitive(key: str) -> bool:
-    normalized = key.lower().replace("-", "_")
-    return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
-
-
-def _redact_snapshot(
-    value: Any,
-    *,
-    source: SecretSource,
-    target_root: str,
-    force_reference: Callable[[tuple[str | int, ...], Any], bool] | None = None,
-    path: tuple[str | int, ...] = (),
-) -> tuple[Any, list[RuntimeSecretRequirement]]:
-    requirements: list[RuntimeSecretRequirement] = []
-    if isinstance(value, dict):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            item_path = (*path, key)
-            should_reference = item is not None and (
-                _key_is_sensitive(key) or (force_reference is not None and force_reference(item_path, item))
-            )
-            if should_reference:
-                redacted[key] = None
-                requirements.append(
-                    RuntimeSecretRequirement(
-                        source=source,
-                        source_path=item_path,
-                        target_path=(target_root, *item_path),
-                        sha256=_value_digest(item),
-                    )
-                )
-                continue
-            redacted_item, nested = _redact_snapshot(
-                item,
-                source=source,
-                target_root=target_root,
-                force_reference=force_reference,
-                path=item_path,
-            )
-            redacted[key] = redacted_item
-            requirements.extend(nested)
-        return redacted, requirements
-    if isinstance(value, list):
-        redacted_items: list[Any] = []
-        for index, item in enumerate(value):
-            item_path = (*path, index)
-            if force_reference is not None and force_reference(item_path, item):
-                redacted_items.append(None)
-                requirements.append(
-                    RuntimeSecretRequirement(
-                        source=source,
-                        source_path=item_path,
-                        target_path=(target_root, *item_path),
-                        sha256=_value_digest(item),
-                    )
-                )
-                continue
-            redacted_item, nested = _redact_snapshot(
-                item,
-                source=source,
-                target_root=target_root,
-                force_reference=force_reference,
-                path=item_path,
-            )
-            redacted_items.append(redacted_item)
-            requirements.extend(nested)
-        return redacted_items, requirements
-    return value, requirements
-
-
-def build_main_runtime_manifest(
-    config: YaacliConfig,
-    mcp_config: MCPConfig | None,
-    *,
-    profile: ResolvedModelProfile | None,
-    sources: RuntimeSourceSnapshot,
-    working_dir: Path,
-    config_dir: Path,
-    subagent_default_mode: SubagentExecutionMode | None,
-    enable_user_input: bool,
-    frontend: Literal["tui", "headless"],
-    hitl_policy: Literal["wait", "deny"],
-) -> MainRuntimeManifest:
-    """Snapshot one exact YAACLI host plan while retaining secrets only by digest."""
-    full_config = config.model_dump(mode="json")
-    runtime_config = {key: copy.deepcopy(full_config[key]) for key in _RUNTIME_CONFIG_KEYS}
-
-    config_snapshot, requirements = _redact_snapshot(
-        runtime_config,
-        source="config",
-        target_root="config",
-        force_reference=lambda path, item: (
-            path in _SENSITIVE_CONFIG_PATHS or (len(path) >= 2 and path[0] in {"env", "shell_env"})
-        ),
-    )
-    for requirement in tuple(requirements):
-        if requirement.source_path and requirement.source_path[0] == "env":
-            requirements.remove(requirement)
-            env_name = requirement.source_path[1]
-            if not isinstance(env_name, str):
-                raise TypeError("Environment variable names must be strings")
-            requirements.append(
-                requirement.model_copy(
-                    update={
-                        "source": "environment",
-                        "source_path": (env_name,),
-                    }
-                )
-            )
-
-    mcp_snapshot: dict[str, Any] | None = None
-    if mcp_config is not None:
-        raw_mcp = mcp_config.model_dump(mode="json")
-
-        def reference_mcp_value(path: tuple[str | int, ...], item: Any) -> bool:
-            return len(path) >= 3 and path[0] == "servers" and path[2] in {"args", "env", "url", "headers"}
-
-        mcp_snapshot, mcp_requirements = _redact_snapshot(
-            raw_mcp,
-            source="mcp",
-            target_root="mcp",
-            force_reference=reference_mcp_value,
-        )
-        requirements.extend(mcp_requirements)
-
-    raw_profile = profile.model_dump(mode="json") if profile is not None else None
-    profile_snapshot: dict[str, Any] | None = None
-    if raw_profile is not None:
-        profile_snapshot, profile_requirements = _redact_snapshot(
-            raw_profile,
-            source="profile",
-            target_root="profile",
-        )
-        requirements.extend(profile_requirements)
-
-    return MainRuntimeManifest(
-        kind="yaacli",
-        config_snapshot=config_snapshot,
-        mcp_snapshot=mcp_snapshot,
-        profile_snapshot=profile_snapshot,
-        system_prompt=sources.system_prompt,
-        subagent_specs=tuple(spec.model_dump(mode="json", by_alias=True) for spec in sources.subagent_specs),
-        workspace_ref=str(working_dir.expanduser().resolve()),
-        config_dir_ref=str(config_dir.expanduser().resolve()),
-        subagent_default_mode=(subagent_default_mode.value if subagent_default_mode is not None else None),
-        enable_user_input=enable_user_input,
-        frontend=frontend,
-        hitl_policy=hitl_policy,
-        request_limit=config.general.max_requests,
-        secret_requirements=tuple(
-            sorted(requirements, key=lambda item: (item.target_path, item.source, item.source_path))
-        ),
-    )
-
-
-def restore_main_runtime_manifest(
-    manifest: MainRuntimeManifest,
-    *,
-    current_config: YaacliConfig,
-    current_mcp_config: MCPConfig | None,
-) -> tuple[
-    YaacliConfig,
-    MCPConfig | None,
-    ResolvedModelProfile | None,
-    RuntimeSourceSnapshot,
-    Path,
-    Path,
-]:
-    """Resolve secret references and validate every authority needed by a retained plan."""
-    if manifest.kind != "yaacli":
-        raise ValueError("Registered runtime manifests cannot be reconstructed after worker restart")
-
-    snapshots: dict[str, Any] = {
-        "config": copy.deepcopy(manifest.config_snapshot),
-        "mcp": copy.deepcopy(manifest.mcp_snapshot),
-        "profile": copy.deepcopy(manifest.profile_snapshot),
-    }
-    persisted_profile = manifest.profile_snapshot
-    current_profile = None
-    if isinstance(persisted_profile, dict):
-        profile_id = persisted_profile.get("id")
-        if isinstance(profile_id, str):
-            current_profile = get_model_profile(current_config, profile_id)
-    current_sources: dict[str, Any] = {
-        "config": current_config.model_dump(mode="json"),
-        "mcp": current_mcp_config.model_dump(mode="json") if current_mcp_config is not None else None,
-        "profile": current_profile.model_dump(mode="json") if current_profile is not None else None,
-        "environment": dict(os.environ),
-    }
-    for requirement in manifest.secret_requirements:
-        source = current_sources[requirement.source]
-        try:
-            resolved = _path_value(source, requirement.source_path)
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ValueError(
-                f"Required runtime secret source {requirement.source}:{requirement.source_path!r} is unavailable"
-            ) from exc
-        if _value_digest(resolved) != requirement.sha256:
-            raise ValueError(f"Required runtime secret source {requirement.source}:{requirement.source_path!r} changed")
-        target_root = requirement.target_path[0]
-        if not isinstance(target_root, str):
-            raise TypeError("Runtime secret target roots must be strings")
-        _set_path_value(snapshots[target_root], requirement.target_path[1:], resolved)
-
-    config = YaacliConfig.model_validate(snapshots["config"])
-    mcp = MCPConfig.model_validate(snapshots["mcp"]) if snapshots["mcp"] is not None else None
-    profile = ResolvedModelProfile.model_validate(snapshots["profile"]) if snapshots["profile"] is not None else None
-    sources = RuntimeSourceSnapshot(
-        system_prompt=manifest.system_prompt,
-        subagent_specs=tuple(SubagentSpec.model_validate(item) for item in manifest.subagent_specs),
-    )
-    workspace = Path(cast(str, manifest.workspace_ref)).expanduser().resolve()
-    config_dir = Path(cast(str, manifest.config_dir_ref)).expanduser().resolve()
-    if not workspace.is_dir():
-        raise ValueError(f"Runtime workspace authority {workspace} is unavailable")
-    if not config_dir.is_dir():
-        raise ValueError(f"Runtime config authority {config_dir} is unavailable")
-    return config, mcp, profile, sources, workspace, config_dir
 
 
 def runtime_child_plan_manifest(runtime: AgentRuntime[Any, Any, Any]) -> ChildPlanManifest:
@@ -444,7 +157,7 @@ def build_runtime_agent_spec(
     capability_plugins: ResolvedCapabilityPlugins | None = None,
     agent_name: str = "yaacli_main_v2",
 ) -> dict[str, Any]:
-    """Return the normalized main-agent definition used by a durable descriptor."""
+    """Return the normalized main-agent definition for a process-local runtime."""
     model = profile.model if profile is not None else config.general.model
     settings = profile.model_settings if profile is not None else config.general.model_settings
     model_cfg = profile.model_cfg if profile is not None else config.general.model_cfg
