@@ -142,6 +142,9 @@ class SubagentStartEvent(AgentEvent):
         prompt_preview: First N characters of the prompt sent to subagent.
     """
 
+    execution_id: str = ""
+    mode: str = "foreground"
+    parent_logical_run_id: str | None = None
     agent_id: str = ""
     agent_name: str = ""
     prompt_preview: str = ""
@@ -165,6 +168,9 @@ class SubagentCompleteEvent(AgentEvent):
         duration_seconds: How long the subagent ran.
     """
 
+    execution_id: str = ""
+    mode: str = "foreground"
+    parent_logical_run_id: str | None = None
     agent_id: str = ""
     agent_name: str = ""
     success: bool = True
@@ -194,47 +200,6 @@ class UsageSnapshotEvent(AgentEvent):
 
     snapshot: UsageSnapshot | None = None
     source: str = "model_request_complete"
-
-
-# =============================================================================
-# Message Bus Events
-# =============================================================================
-
-
-@dataclass
-class BusMessageInfo:
-    """Info about a single bus message.
-
-    Attributes:
-        content: Original message content (before template rendering).
-            Can be str for text or Sequence[UserContent] for multimodal.
-        rendered_content: Rendered message content (template already applied).
-            Can be str for text or Sequence[UserContent] for multimodal.
-        source: Who sent the message (e.g., "user", agent_id).
-        target: Who should receive the message (agent_id, or None for broadcast).
-        content_text: Text-only representation of the content for display/logging.
-    """
-
-    content: str | Sequence[UserContent]
-    rendered_content: str | Sequence[UserContent]
-    source: str
-    target: str | None = None
-    content_text: str = ""
-
-
-@dataclass
-class MessageReceivedEvent(AgentEvent):
-    """Emitted when bus messages are received and injected into conversation.
-
-    This event is emitted by the bus_message filter when pending messages
-    are consumed and injected. Consumers can use this to display
-    incoming messages in the UI.
-
-    Attributes:
-        messages: List of received message info.
-    """
-
-    messages: list[BusMessageInfo] = field(default_factory=list)
 
 
 # =============================================================================
@@ -369,10 +334,14 @@ class ModelRequestCompleteEvent(AgentEvent):
     Attributes:
         loop_index: Current loop iteration number.
         duration_seconds: Time spent waiting for model response.
+        context_tokens: Tokens reported for the completed model request.
+        context_window_size: Configured model context-window size.
     """
 
     loop_index: int = 0
     duration_seconds: float = 0.0
+    context_tokens: int = 0
+    context_window_size: int = 0
 
 
 # =============================================================================
@@ -416,12 +385,12 @@ class ToolCallsCompleteEvent(AgentEvent):
 
 
 # =============================================================================
-# Tool Search Events
+# Namespace Status Events
 # =============================================================================
 
 
 class NamespaceStatus(StrEnum):
-    """Initialization status of a namespace (toolset) in ToolSearchToolSet."""
+    """Availability status of a host-managed tool namespace."""
 
     connected = "connected"
     """Namespace initialized successfully and is available for use."""
@@ -434,13 +403,12 @@ class NamespaceStatus(StrEnum):
 
 
 @dataclass
-class ToolSearchInitEvent(AgentEvent):
-    """Emitted on first get_tools() call to report namespace initialization status.
+class NamespaceStatusEvent(AgentEvent):
+    """Report current availability for host-managed tool namespaces.
 
-    This event is emitted by ToolSearchToolSet after all wrapped toolsets have
-    been initialized (via __aenter__). It reports which namespaces connected
-    successfully and which were skipped due to initialization failure (when
-    configured as optional via optional_namespaces).
+    Tool Proxy and host-managed MCP adapters emit this event after checking
+    their wrapped toolsets. It reports which namespaces connected successfully,
+    which optional namespaces were skipped, and later runtime errors.
 
     Consumers can use this to display MCP server connection status in the UI.
 

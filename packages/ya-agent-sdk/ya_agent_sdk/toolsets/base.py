@@ -146,14 +146,6 @@ class BaseTool(ABC):
             superseded_by_tags = frozenset({"shell"})  # shell can do mkdir better
     """
 
-    auto_inherit: bool = False
-    """Whether this tool is automatically inherited by subagents.
-
-    When True, this tool will be automatically included in subagent toolsets
-    without being explicitly listed in the subagent's tools or optional_tools.
-    Useful for management/utility tools like task_*, summarize, etc.
-    """
-
     codeact: bool = False
     """Whether this tool may be called from restricted CodeAct Python.
 
@@ -169,11 +161,9 @@ class BaseTool(ABC):
 
     Use this for host-facing tools whose control flow can only be completed by
     the main-agent runner, such as structured user interaction. Subagent
-    builders enforce this on direct SDK Toolsets and again on capability
-    wrappers and dynamic Toolset factory results at the final execution
-    boundary. SDK Toolset listing and calling enforce the policy in subagent
-    contexts even when availability filtering is disabled; ``is_available()``
-    should still enforce the same boundary as defense in depth.
+    execution boundaries enforce this policy for child contexts even when
+    availability filtering is disabled; ``is_available()`` should still
+    enforce the same boundary as defense in depth.
     """
 
     is_context_manage_tool: bool = False
@@ -298,7 +288,7 @@ class BaseToolset(AbstractToolset[AgentDepsT], ABC):
     def description(self) -> str | None:
         """Human-readable description of this toolset.
 
-        Used by ToolSearchToolSet for namespace description resolution.
+        Used by discovery adapters for namespace description resolution.
         Override in subclasses to provide a description.
 
         Returns:

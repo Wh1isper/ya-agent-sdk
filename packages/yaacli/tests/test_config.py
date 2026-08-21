@@ -18,6 +18,7 @@ from yaacli.config import (
     ToolsConfig,
     YaacliConfig,
 )
+from yaacli.durable.sqlite import SQLiteSessionStore
 
 # =============================================================================
 # Config Model Tests
@@ -34,11 +35,7 @@ def test_default_config() -> None:
     assert config.is_configured is False
     assert config.general.model_settings is None
     assert config.general.instructions is None
-    assert config.general.agent_stream_resume_on_error is True
-    assert config.general.agent_stream_resume_max_attempts == 3
-    assert config.general.agent_stream_transport_resume_max_attempts == 20
     assert config.model_profiles == {}
-    assert config.general.agent_stream_resume_prompt.startswith("The previous streaming model request failed")
 
     # Display and local retention
     assert config.display.code_theme == "auto"
@@ -97,10 +94,15 @@ def test_general_config_with_dict_settings() -> None:
     assert config.model_settings["max_tokens"] == 8192
 
 
-def test_general_config_accepts_former_loop_iteration_setting() -> None:
-    """Test migration from the former /loop iteration config key."""
-    config = GeneralConfig.model_validate({"max_loop_iterations": 7})
-    assert config.max_goal_iterations == 7
+def test_general_config_rejects_removed_loop_iteration_setting() -> None:
+    """Removed config keys must fail instead of selecting a different behavior."""
+    with pytest.raises(ValidationError, match="max_loop_iterations"):
+        GeneralConfig.model_validate({"max_loop_iterations": 7})
+
+
+def test_enabled_s3_media_requires_bucket() -> None:
+    with pytest.raises(ValidationError, match=r"media\.s3\.bucket"):
+        YaacliConfig.model_validate({"media": {"s3": {"enabled": True}}})
 
 
 def test_notification_config() -> None:
@@ -142,6 +144,12 @@ def test_tools_config_rejects_invalid_user_input_timeout(timeout_seconds: float)
 # =============================================================================
 
 
+@pytest.mark.parametrize("max_requests", [0, -1])
+def test_general_config_requires_positive_max_requests(max_requests: int) -> None:
+    with pytest.raises(ValidationError):
+        GeneralConfig(max_requests=max_requests)
+
+
 def test_load_defaults(config_manager: ConfigManager, clean_env: None) -> None:
     """Test loading with no config files."""
     config = config_manager.load()
@@ -150,6 +158,83 @@ def test_load_defaults(config_manager: ConfigManager, clean_env: None) -> None:
     assert config.is_configured is False
     assert config.tools.need_approval == []
     assert config_manager.loaded_sources == []
+
+
+def test_capability_plugin_config_uses_fixed_global_path(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    temp_project_dir: Path,
+) -> None:
+    project_config_dir = temp_project_dir / ConfigManager.PROJECT_CONFIG_DIR
+    project_config_dir.mkdir()
+    (project_config_dir / ConfigManager.PLUGIN_MANIFEST_NAME).write_text("not valid TOML", encoding="utf-8")
+
+    plugins = config_manager.load_capability_plugin_config()
+
+    assert config_manager.capability_plugin_manifest_path == temp_config_dir / "plugins.toml"
+    assert plugins.manifest.entry_points == ()
+    assert plugins.root_agent_spec.capabilities == []
+
+
+def test_capability_plugin_config_loads_and_validates_global_manifest(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+) -> None:
+    manifest_path = temp_config_dir / ConfigManager.PLUGIN_MANIFEST_NAME
+    manifest_path.write_text("schema_version = 1\n", encoding="utf-8")
+
+    plugins = config_manager.load_capability_plugin_config()
+
+    assert plugins.manifest.schema_version == 1
+    assert plugins.root_agent_spec.capabilities == []
+
+
+def test_capability_plugin_config_rejects_invalid_global_manifest(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+) -> None:
+    manifest_path = temp_config_dir / ConfigManager.PLUGIN_MANIFEST_NAME
+    manifest_path.write_text("schema_version = 2\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version"):
+        config_manager.load_capability_plugin_config()
+
+
+def test_default_session_database_path_uses_v2_store_without_touching_legacy(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    clean_env: None,
+) -> None:
+    sessions_dir = temp_config_dir / "sessions"
+    sessions_dir.mkdir()
+    legacy_database = sessions_dir / "sessions.sqlite3"
+    legacy_contents = b"legacy YAACLI database"
+    legacy_database.write_bytes(legacy_contents)
+    legacy_mtime_ns = legacy_database.stat().st_mtime_ns
+
+    config_manager.load()
+    database_path = config_manager.get_session_database_path()
+
+    assert database_path == sessions_dir / "sessions-v2.sqlite3"
+    assert not database_path.exists()
+    with SQLiteSessionStore(database_path):
+        pass
+    assert database_path.exists()
+    assert legacy_database.read_bytes() == legacy_contents
+    assert legacy_database.stat().st_mtime_ns == legacy_mtime_ns
+
+
+def test_explicit_session_database_path_is_preserved(
+    config_manager: ConfigManager,
+    temp_config_dir: Path,
+    clean_env: None,
+) -> None:
+    configured_database = temp_config_dir / "custom.sqlite3"
+    (temp_config_dir / "config.toml").write_text(f'[session]\ndatabase_path = "{configured_database.as_posix()}"\n')
+
+    config_manager.load()
+
+    assert config_manager.get_session_database_path() == configured_database
 
 
 def test_load_global_config(
@@ -405,9 +490,11 @@ model = "openai-chat:gpt-4o"
 code_theme = "dark"
 """)
 
+    session_dir = str(temp_config_dir / "sessions")
+    database_path = str(temp_config_dir / "product.sqlite3")
     os.environ["YAACLI_CODE_THEME"] = "light"
-    os.environ["YAACLI_AGENT_STREAM_RESUME_MAX_ATTEMPTS"] = "3"
-    os.environ["YAACLI_AGENT_STREAM_TRANSPORT_RESUME_MAX_ATTEMPTS"] = "17"
+    os.environ["YAACLI_SESSION_DIR"] = session_dir
+    os.environ["YAACLI_DATABASE_PATH"] = database_path
     os.environ["YAACLI_OAUTH_REFRESH_INTERVAL_SECONDS"] = "900"
     os.environ["YAACLI_OAUTH_REFRESH_ON_STARTUP"] = "false"
 
@@ -415,8 +502,8 @@ code_theme = "dark"
 
     assert config.display.code_theme == "light"
     assert config.general.model == "openai-chat:gpt-4o"
-    assert config.general.agent_stream_resume_max_attempts == 3
-    assert config.general.agent_stream_transport_resume_max_attempts == 17
+    assert config.session.session_dir == session_dir
+    assert config.session.database_path == database_path
     assert config.oauth_refresh.interval_seconds == 900
     assert config.oauth_refresh.refresh_on_startup is False
 
@@ -625,10 +712,9 @@ def test_default_commands() -> None:
     assert DEFAULT_COMMANDS["init"].description == "Initialize AGENTS.md"
 
 
-def test_custom_command_ignores_deprecated_mode_field() -> None:
-    command = CommandDefinition.model_validate({"prompt": "Review changes", "mode": "plan"})
-
-    assert command.model_dump() == {"prompt": "Review changes", "description": ""}
+def test_custom_command_rejects_removed_mode_field() -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        CommandDefinition.model_validate({"prompt": "Review changes", "mode": "plan"})
 
 
 def test_get_commands_returns_defaults() -> None:

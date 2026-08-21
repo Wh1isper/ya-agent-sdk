@@ -16,6 +16,7 @@ from ya_claw.app import create_app
 from ya_claw.config import get_settings
 from ya_claw.controller.store import with_usage_snapshot_metadata
 from ya_claw.db.engine import create_engine, create_session_factory
+from ya_claw.execution.state_machine import mark_run_running
 from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
 
 
@@ -23,7 +24,7 @@ from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecor
 def clear_claw_settings(
     monkeypatch,
     tmp_path: Path,
-    initialize_sqlite_database: Callable[[str], None],
+    initialize_sqlite_database: Callable[..., None],
 ) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
@@ -50,13 +51,35 @@ def clear_claw_settings(
 
     get_settings.cache_clear()
     settings = get_settings()
-    initialize_sqlite_database(settings.resolved_database_url)
+    initialize_sqlite_database(
+        settings.resolved_database_url,
+        profile_names=("default", "general"),
+    )
     yield
     get_settings.cache_clear()
 
 
 def _auth_headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
+
+
+def _mark_run_running(session_id: str, run_id: str) -> None:
+    async def _run() -> None:
+        settings = get_settings()
+        engine = create_engine(settings.resolved_database_url)
+        session_factory = create_session_factory(engine)
+        try:
+            async with session_factory() as db_session:
+                session_record = await db_session.get(SessionRecord, session_id)
+                run_record = await db_session.get(RunRecord, run_id)
+                assert isinstance(session_record, SessionRecord)
+                assert isinstance(run_record, RunRecord)
+                mark_run_running(session_record, run_record, claimed_by="api-test")
+                await db_session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
 
 
 def _mark_run_completed(session_id: str, run_id: str, *, output_text: str | None = None) -> None:
@@ -108,7 +131,9 @@ def _set_run_usage_snapshot_index(run_id: str, payload: dict[str, object]) -> No
     asyncio.run(_run())
 
 
-def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
+def test_session_and_run_endpoints_support_rerun_controls_and_events(
+    bind_recording_input_ingress: Callable[..., list[list[dict[str, object]]]],
+) -> None:
     app = create_app()
     with TestClient(app) as client:
         app.state.execution_supervisor = None
@@ -126,6 +151,7 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
         first_run_payload = create_session_response.json()["run"]
         assert isinstance(first_run_payload, dict)
         assert session_payload["status"] == "queued"
+        batches = bind_recording_input_ingress(app.state.runtime_state, first_run_payload["id"])
 
         session_steer_response = client.post(
             f"/api/v1/sessions/{session_payload['id']}/steer",
@@ -134,12 +160,22 @@ def test_session_and_run_endpoints_support_rerun_controls_and_events() -> None:
         )
         assert session_steer_response.status_code == 409
 
+        queued_steer_response = client.post(
+            f"/api/v1/runs/{first_run_payload['id']}/steer",
+            headers=_auth_headers(),
+            json={"input_parts": [{"type": "text", "text": "too early"}]},
+        )
+        assert queued_steer_response.status_code == 409
+        assert queued_steer_response.json()["detail"]["code"] == "run_input_closed"
+
+        _mark_run_running(session_payload["id"], first_run_payload["id"])
         steer_response = client.post(
             f"/api/v1/runs/{first_run_payload['id']}/steer",
             headers=_auth_headers(),
             json={"input_parts": [{"type": "text", "text": "focus on tests"}]},
         )
         assert steer_response.status_code == 200
+        assert batches[0][0]["text"] == "focus on tests"
 
         interrupt_response = client.post(
             f"/api/v1/runs/{first_run_payload['id']}/interrupt",
@@ -278,7 +314,6 @@ def test_submit_uses_session_events_for_streaming_and_run_create_rejects_running
                     {"type": "text", "text": "first", "metadata": None},
                     {"type": "text", "text": "second", "metadata": None},
                 ]
-                assert app.state.runtime_state.consume_steering_inputs(run_id) == []
         finally:
             await engine.dispose()
 
@@ -329,6 +364,7 @@ def test_session_create_uses_single_workspace_response_shape() -> None:
         "input_preview",
         "message",
         "metadata",
+        "output_json",
         "output_text",
         "profile_name",
         "restore_from_run_id",

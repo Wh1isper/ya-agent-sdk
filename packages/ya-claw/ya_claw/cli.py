@@ -420,7 +420,7 @@ def migrate(revision: str) -> None:
 @click.option("--migrate/--no-migrate", default=True, help="Run database migrations before seeding profiles.")
 @click.option("--seed-file", default=None, help="Override the configured profile seed YAML path.")
 def seed_profiles(prune_missing: bool, migrate: bool, seed_file: str | None) -> None:
-    """Seed AgentProfile rows from a YAML seed file."""
+    """Seed execution profile rows from a YAML seed file."""
     seeded_names = cli_application.seed_profiles(
         prune_missing=prune_missing,
         migrate=migrate,

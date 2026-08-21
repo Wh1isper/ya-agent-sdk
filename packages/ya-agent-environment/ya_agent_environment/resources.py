@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 
 from pydantic import BaseModel, Field
 
+from ya_agent_environment.contributions import AgentContributionGroup
 from ya_agent_environment.protocols import InstructableResource, Resource, ResumableResource
 
 T = TypeVar("T")
@@ -92,16 +93,9 @@ class BaseResource(ABC):
         """
         pass  # Default: no-op
 
-    def get_toolsets(self) -> list[Any]:
-        """Return toolsets provided by this resource.
-
-        Default implementation returns empty list.
-        Override to provide actual toolsets.
-
-        Returns:
-            List of toolset instances.
-        """
-        return []
+    def get_capabilities(self) -> tuple[Any, ...]:
+        """Return ordered opaque agent capabilities provided by this resource."""
+        return ()
 
     async def export_state(self) -> dict[str, Any]:
         """Export resource state for serialization.
@@ -473,18 +467,19 @@ class ResourceRegistry:
         self._resources.clear()
         self._factories.clear()
 
-    def get_toolsets(self) -> list[Any]:
-        """Collect toolsets from all resources.
-
-        Iterates through all registered resources and collects their toolsets.
-
-        Returns:
-            Combined list of toolsets from all resources.
-        """
-        toolsets: list[Any] = []
-        for resource in self._resources.values():
-            toolsets.extend(resource.get_toolsets())
-        return toolsets
+    def get_agent_contributions(self) -> tuple[AgentContributionGroup, ...]:
+        """Return one provenance-preserving contribution group per resource."""
+        groups: list[AgentContributionGroup] = []
+        for key, resource in self._resources.items():
+            capabilities = tuple(resource.get_capabilities())
+            if capabilities:
+                groups.append(
+                    AgentContributionGroup(
+                        source_id=f"resource:{key}",
+                        capabilities=capabilities,
+                    )
+                )
+        return tuple(groups)
 
     async def get_context_instructions(self) -> str | None:
         """Return combined context instructions from all resources in XML format.

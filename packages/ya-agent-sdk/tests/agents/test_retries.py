@@ -7,7 +7,8 @@ from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import ModelRetry, RunContext, UnexpectedModelBehavior, UserError
+from pydantic_ai import ModelRetry, RunContext, UnexpectedModelBehavior
+from pydantic_ai.capabilities import Toolset as ToolsetCapability
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -19,10 +20,10 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from ya_agent_sdk.agents.main import create_agent
-from ya_agent_sdk.agents.retries import OverallRetryBudget
+from ya_agent_sdk.capabilities import OverallRetryBudget
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
-from ya_agent_sdk.toolsets.core.base import BaseTool
+from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
 
 
 class RetryAfterSuccessTool(BaseTool):
@@ -67,9 +68,17 @@ async def test_overall_retry_budget_does_not_reset_after_tool_success(tmp_path: 
     runtime = create_agent(
         FunctionModel(function=model_function),
         env=env,
-        tools=[RetryAfterSuccessTool],
+        capabilities=[
+            ToolsetCapability(
+                Toolset(
+                    tools=[RetryAfterSuccessTool],
+                    toolset_id="retry_after_success",
+                ),
+                id="retry_after_success",
+            ),
+            OverallRetryBudget(max_retries=1),
+        ],
         retries={"tools": 1, "output": 1},
-        overall_retries=1,
     )
 
     async with runtime:
@@ -94,15 +103,19 @@ async def test_overall_retry_budget_counts_output_validator_corrections(tmp_path
         FunctionModel(function=model_function),
         env=env,
         output_type=dict[str, str],
-        output_retries=2,
-        overall_retries=0,
+        capabilities=[OverallRetryBudget(max_retries=0)],
+        retries={"tools": 1, "output": 2},
     )
 
-    @runtime.agent.output_validator
-    def reject_output(_ctx: RunContext[AgentContext], output: dict[str, str]) -> dict[str, str]:
-        raise ModelRetry("produce a better final result")
-
     async with runtime:
+
+        @runtime.agent.output_validator
+        def reject_output(
+            _ctx: RunContext[AgentContext],
+            output: dict[str, str],
+        ) -> dict[str, str]:
+            raise ModelRetry("produce a better final result")
+
         with pytest.raises(UnexpectedModelBehavior, match="run-wide model correction retry limit of 0"):
             await runtime.agent.run("exercise output retry", deps=runtime.ctx)
 
@@ -148,6 +161,6 @@ async def test_overall_retry_budget_has_fresh_state_for_each_run() -> None:
     assert budget.retries_used == 2
 
 
-def test_create_agent_rejects_negative_overall_retries() -> None:
-    with pytest.raises(UserError, match="overall_retries must be non-negative or None"):
-        create_agent("test", overall_retries=-1)
+def test_overall_retry_budget_rejects_negative_limit() -> None:
+    with pytest.raises(ValueError, match="max_retries must be non-negative"):
+        OverallRetryBudget(max_retries=-1)

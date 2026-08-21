@@ -1,16 +1,18 @@
 # 01 - Configuration, Profiles, and Workspace Assembly
 
-YA Claw resolves each run from three configuration layers:
+YA Claw resolves each run from four explicit configuration inputs:
 
-- environment variables for service infrastructure and bootstrap defaults
-- storage-backed profiles for durable runtime behavior
-- request-level inputs for transient run selection and execution
+- environment variables for service infrastructure and bootstrap defaults;
+- one optional process-wide SDK capability plugin manifest;
+- storage-backed profiles for durable runtime behavior; and
+- request-level inputs for transient run selection and execution.
 
 ## Configuration Layers
 
 ```mermaid
 flowchart TB
     ENV[Environment Variables] --> RES[Profile and Runtime Resolver]
+    PLUGINS[SDK Plugin Manifest and Catalog Snapshot] --> RES
     STORE[Profiles in SQLite / PostgreSQL] --> RES
     REQ[Run Request] --> RES
     RES --> RUNCFG[Resolved Run Configuration]
@@ -45,6 +47,7 @@ flowchart TB
 | `YA_CLAW_DEFAULT_PROFILE`                              | bootstrap profile name used when a request omits `profile_name`             |
 | `YA_CLAW_PROFILE_SEED_FILE`                            | optional YAML seed file for profiles                                        |
 | `YA_CLAW_AUTO_SEED_PROFILES`                           | create or refresh matching seeded profiles from YAML on startup             |
+| `YA_CLAW_CAPABILITY_PLUGIN_MANIFEST`                   | optional explicit SDK plugin manifest path loaded once before app startup   |
 | `YA_CLAW_WORKSPACE_PROVIDER_BACKEND`                   | bootstrap workspace backend hint for local development or fallback          |
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE`              | Docker image for Docker-backed environment construction                     |
 | `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` | Docker daemon-visible host workspace path for service-in-Docker deployments |
@@ -73,74 +76,148 @@ LLM provider keys and tool API keys stay in environment variables and follow `ya
 Environment variables own infrastructure concerns and bootstrap defaults.
 Profiles own reusable execution behavior.
 
+### Capability Plugin Manifest
+
+`YA_CLAW_CAPABILITY_PLUGIN_MANIFEST` names one administrator-controlled file using the
+SDK schema:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+Plugin distributions are installed into the YA Claw service Python environment.
+`entry_points` selects the exact installed types imported into the process catalog;
+`capabilities` is the ordered root-only grant list. Omission of the environment setting
+means no external types. If a path is configured, a missing file, invalid manifest,
+entry-point import failure, or catalog collision fails before routes or execution
+lifecycles start. YA Claw performs no package installation, project-local discovery,
+ambient load-all, fallback, or hot reload.
+
+The manifest contains durable declarative arguments and recursively rejects secret-like
+keys. It is not a credential file. The settings object resolves and caches one immutable
+SDK `ResolvedCapabilityPlugins` snapshot, and application creation forces that load
+before exposing the service. Profile admission appends manifest grants only to the root
+native `AgentSpec`, before descriptor fingerprinting and persistence. Named children and
+self forks do not inherit those grants; a child can use a selected type only by naming it
+in its own native spec. Profile resolution, async spawn/resume, retained plan restore,
+memory execution, coordinator recovery, and runtime construction all receive the same
+catalog snapshot. A service restart is the adoption boundary for manifest or package
+changes.
+
 ## Execution Profile
 
-An execution profile is a reusable runtime template stored in the relational database.
+For the 2.0 target, an execution profile embeds a native Pydantic AI `AgentSpec` core
+and keeps only Claw workspace, scheduling, authorization, durability, and product policy
+in its host envelope. Profiles can grant canonical serialization names already
+available in the service's SDK catalog; they cannot carry Python import targets.
 
-A profile should define:
+An execution profile is a reusable runtime definition stored in the relational database.
+The profile document is strictly versioned and has three composition boundaries:
 
-- `name`
-- `model`
-- `model_settings_preset`
-- `model_settings_override`
-- `model_config_preset`
-- `model_config_override`
-- `system_prompt`
-- `builtin_toolsets`
-- `subagents`
-- `need_user_approve_tools`
-- `need_user_approve_mcps`
-- `enabled_mcps`
-- `disabled_mcps`
-- `workspace_backend_hint`
-- `enabled`
-- seed metadata such as `source_type` and `source_version`
+```yaml
+schema_version: 2
+name: default
+agent:
+  model: gateway@openai-responses:gpt-5.5
+  name: default
+  instructions: You are a workspace-bound execution agent.
+  model_settings:
+    openai_reasoning_effort: high
+  capabilities:
+    - FilesystemCapability
+    - ShellCapability
+host:
+  model_config_preset: gpt5_270k
+  model_config_override: {}
+  tool_groups: [session, schedule, workflow, agency]
+  need_user_approve_tools: []
+  need_user_approve_mcps: []
+  enabled_mcps: []
+  disabled_mcps: []
+  mcp_servers: {}
+  workspace_backend_hint: docker
+subagents:
+  - schema_version: 1
+    route: explorer
+    execution_modes: [foreground, background]
+    durability: restart
+    agent:
+      model: gateway@anthropic:claude-sonnet-4-6
+      name: explorer
+      description: Inspect the bound workspace.
+      capabilities: [FilesystemCapability]
+      metadata:
+        claw:
+          tool_groups: [session]
+enabled: true
+source_type: seed
+source_version: "2"
+```
 
-### Preset Alignment Rule
+- `agent` is a native Pydantic AI `AgentSpec`. Model, instructions, model settings,
+  retries, output behavior, metadata, and all portable feature grants live here.
+- `host` is `ClawProfileHostConfig`. It contains only Claw-owned model runtime policy,
+  control-plane tool groups, approval policy, MCP selection, and workspace hints.
+- `subagents` is a list of native SDK `SubagentSpec` documents. Every child has its own
+  explicit `AgentSpec`; there is no inheritance compiler or implicit capability copy.
 
-Profile model configuration should align with `ya-agent-sdk` and `yaacli` preset definitions.
+`agent.name`, when present, must equal the profile `name`. Child `agent.name` must equal
+its route. Unknown fields are rejected by API, seed, and runtime resolution.
 
-Recommended resolution order:
+### Capability and Host-tool Boundaries
 
-1. load `model_settings_preset` through `ya_agent_sdk.presets.get_model_settings(...)`
-2. load `model_config_preset` through a YA Claw model config resolver built on SDK preset metadata
-3. merge optional override JSON blocks
-4. apply request-level transient overrides when explicitly allowed
+Portable features are granted by serialization name in `AgentSpec.capabilities` and
+resolved through the immutable SDK `CapabilityCatalog`. Claw profiles do not accept
+Python import targets or infer capabilities from tool names. External types enter the
+catalog only through the explicit process plugin manifest; profile edits cannot load
+code.
 
-### Built-in Toolsets
+Claw's host-only `tool_groups` are limited to:
 
-Profiles select built-in toolsets by name.
+- `session`
+- `schedule`
+- `workflow`
+- `agency`
 
-Important built-in YA Claw toolsets:
+Filesystem, shell, web, media, document conversion, tool search, skills, code execution,
+and delegation are capabilities, not host groups. Final visibility and approval remain
+host policy leaves; they do not become a second behavior-composition plane.
 
-- `session`: read-only current-session inspection tools
-- `schedule`: agent-owned schedule management tools
+### Model Configuration
 
-The `schedule` toolset uses the same internal-client resource pattern as the `session` toolset. The runtime injects current `session_id`, `run_id`, current profile, and bearer token into the resource layer. Agent-facing schedule tools accept a plain text prompt, a cron expression, and boolean session behavior flags.
+Native request settings live in `agent.model_settings`. Claw execution limits and
+security configuration use `host.model_config_preset` plus
+`host.model_config_override`, resolved through the shared SDK preset definitions. The
+host override is merged over the preset once; there is no duplicate per-profile model
+settings compiler.
 
-### Runtime-Wide MCP Configuration
+### MCP Configuration
 
-YA Claw loads MCP server definitions from a dedicated JSON file layer.
+YA Claw loads MCP definitions from the workspace and global MCP JSON layers, then applies
+`host.enabled_mcps`, `host.disabled_mcps`, `host.mcp_servers`, and approval policy.
+Selected definitions become native capability/toolset contributions during runtime
+assembly. Profile MCP policy does not duplicate model or agent definition fields.
 
 Resolution order:
 
 1. workspace file at `<default_mount>/.ya-claw/mcp.json`
 2. global file at `~/.ya-claw/mcp.json`
+3. explicit `host.mcp_servers` entries
 
-The runtime builder injects the resolved MCP servers into every agent through one `ToolProxyToolset`.
-Profiles keep the policy surface through `need_user_approve_mcps`, `enabled_mcps`, and `disabled_mcps`.
+### YAML Seed and Persisted Migration
 
-### YAML Seed
+The seed document itself is `version: 2` and contains `profiles` in the schema above.
+Seed upserts by `name`, records source version/checksum, and removes missing seeded rows
+only under explicit prune mode. Manually created rows remain first-class records.
 
-Profiles should support YAML seed into the database.
-
-Recommended behavior:
-
-- seed file is version-controlled
-- seed operation upserts by profile `name`
-- seed metadata records source version or checksum
-- explicit prune mode removes seeded rows no longer present in YAML
-- manually created rows remain first-class records
+Alembic revision `20260818_000016` performs the only 1.x conversion: it converts existing
+persisted rows once, writes native `agent_spec`, `host_config`, and `subagent_specs`
+columns, then drops the old columns. Runtime and API code do not accept the old shape.
 
 ## Workspace Binding and Mount Sets
 
@@ -324,7 +401,8 @@ Responsibilities:
 - resolve workspace binding
 - build the concrete environment through `EnvironmentFactory`
 - construct `ClawAgentContext`
-- assemble builtin tools, MCP toolsets, approvals, subagents, and prompt template variables
+- instantiate native profile capabilities, host policy capabilities, MCP contributions,
+  and the SDK delegation service
 - create the final `AgentRuntime`
 
 ## Runtime Assembly Flow
@@ -332,14 +410,14 @@ Responsibilities:
 ```mermaid
 sequenceDiagram
     participant COORD as RunCoordinator
-    participant PROF as ProfileResolver
+    participant PROF as Profile descriptor resolver
     participant PROV as WorkspaceProvider
     participant ENVF as EnvironmentFactory
     participant BUILD as ClawRuntimeBuilder
     participant SDK as ya-agent-sdk
 
-    COORD->>PROF: resolve(profile_name)
-    PROF-->>COORD: ResolvedProfile
+    COORD->>PROF: validate accepted profile descriptor
+    PROF-->>COORD: immutable ResolvedProfile
     COORD->>PROV: resolve(metadata)
     PROV-->>COORD: WorkspaceBinding
     COORD->>ENVF: build(binding)
@@ -351,7 +429,7 @@ sequenceDiagram
 
 ## Design Principle
 
-Profiles define reusable behavior.
+Profiles define reusable behavior at run admission; accepted runs execute their immutable content-addressed profile descriptor.
 Workspace bindings define execution boundaries.
 Environment factories define concrete runtime resources.
 Runtime builder defines agent assembly.

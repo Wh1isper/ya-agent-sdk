@@ -150,6 +150,7 @@ cython_debug/
 
 TO-DO.json
 dev/
+local-reference/
 ya_agent_sdk/sandbox/shell/templates/public
 
 # Sync automaticlly

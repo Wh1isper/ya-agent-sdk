@@ -128,16 +128,21 @@ describe('App MSW integration safety net', () => {
       enabled: true,
       updated_at: '2026-07-13T00:00:00Z',
       created_at: '2026-07-13T00:00:00Z',
-      builtin_toolsets: ['session'],
-      toolsets: [],
+      schema_version: 2,
+      agent: {
+        model: 'openai:gpt-4.1-mini',
+        name: 'saved-agent',
+        capabilities: [],
+      },
+      host: {
+        tool_groups: ['session'],
+        need_user_approve_tools: [],
+        need_user_approve_mcps: [],
+        enabled_mcps: [],
+        disabled_mcps: [],
+        mcp_servers: {},
+      },
       subagents: [],
-      include_builtin_subagents: true,
-      unified_subagents: true,
-      need_user_approve_tools: [],
-      need_user_approve_mcps: [],
-      enabled_mcps: [],
-      disabled_mcps: [],
-      mcp_servers: {},
     }
     apiServer.use(
       http.put('*/api/v1/profiles/:profileName', ({ params }) => {

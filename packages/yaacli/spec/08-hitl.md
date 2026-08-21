@@ -1,203 +1,185 @@
-# Human-in-the-Loop Tool Requests
+# Durable Human-in-the-Loop Requests
 
 ## Purpose
 
-YAACLI handles Pydantic AI `DeferredToolRequests` inside the foreground agent turn. A turn does not emit a successful terminal result until every approval and deferred call has been resolved and the model returns final text.
+YAACLI handles native Pydantic AI `DeferredToolRequests` as a stable segment suspension. A logical run does not publish successful terminal output until every
+approval/external call has an audited decision and the model returns final non-deferred
+output.
 
-HITL is both:
+The TUI presents pending actions; `SessionStore` owns durable truth and the local
+coordinator owns process execution.
 
-- an inner execution loop in `TUIApp._run_agent()`; and
-- an explicit interaction phase, `TUIPhase.AWAITING_APPROVAL`, used for input ownership, status, cancellation, and elapsed-time display.
+## Runtime Composition
 
-## Runtime Contract
-
-`create_tui_runtime()` configures the agent output type as:
+`create_tui_runtime()` configures:
 
 ```python
-[str, DeferredToolRequests]
+output_type=[str, DeferredToolRequests]
 ```
 
-Current interaction policy comes from:
+Current host policy comes from existing YAACLI configuration inputs:
 
-- `tools.enable_user_input`, which defaults to `true` and controls registration of the optional `ask_user_question` tool;
-- `tools.user_input_timeout_seconds`, which defaults to 120 seconds and bounds each structured-question wait;
-- `tools.need_approval` for tool names; and
-- `tools.need_approval_mcps` for MCP servers.
+- `tools.enable_user_input` controls `UserInteractionCapability`;
+- `tools.user_input_timeout_seconds` bounds interactive structured-question waits;
+- `tools.need_approval` configures `ToolApprovalCapability.tools`; and
+- `tools.need_approval_mcps` configures `ToolApprovalCapability.toolset_ids`.
 
-The approval values are passed to `create_agent()` as `need_user_approve_tools` and `need_user_approve_mcps`. The TUI passes `enable_user_input` to `create_tui_runtime()`, which adds the SDK interaction tool only for supported interactive hosts. The SDK and `create_tui_runtime()` defaults remain opt-in/disabled at their reusable runtime boundaries.
+These configuration fields remain supported, but they compile into capabilities and
+context state. They are not forwarded as removed `create_agent()` keyword arguments.
+Persisted conversation state cannot weaken current runtime security or approval policy.
 
-Persisted state must not weaken this policy. `restore_resumable_state_safely()` restores conversation data and then reapplies the approval lists from the active runtime.
-
-## Execution Flow
+## Durable Execution Flow
 
 ```mermaid
 sequenceDiagram
+    participant Agent as Pydantic AI Agent
+    participant Coordinator as Local execution coordinator
+    participant Store as SessionStore
+    participant TUI
     participant User
-    participant TUI as TUIApp
-    participant Agent as stream_agent
 
-    User->>TUI: Submit prompt
-    TUI->>Agent: Execute prompt
-    Agent-->>TUI: str or DeferredToolRequests
-
-    loop While output is DeferredToolRequests
-        TUI->>TUI: Enter AWAITING_APPROVAL
-        TUI->>User: Render each approval or deferred call
-        User->>TUI: Explicit decision, result, steering, view, or cancel
-        TUI->>Agent: Execute DeferredToolResults
-        Agent-->>TUI: str or DeferredToolRequests
-    end
-
-    TUI->>TUI: Record final text and terminal event
+    Agent-->>Coordinator: DeferredToolRequests and stable checkpoint
+    Coordinator->>Store: create ActionBatch and suspend run
+    Coordinator->>Coordinator: wait for action notification
+    TUI->>Store: read pending ActionBatch
+    TUI->>User: present exact requests
+    User-->>TUI: explicit decisions/results
+    TUI->>Store: decide action items idempotently
+    Store->>Coordinator: notify_action outbox
+    Coordinator->>Store: reload resolved batch
+    Coordinator->>Agent: matching DeferredToolResults in next segment
 ```
 
-`TUIApp._run_agent()` rejects an empty `DeferredToolRequests` payload and rejects completion without final text. This prevents malformed deferred output from being reported as a successful run.
+Every batch and item has stable identity. Items retain tool-call ID, request payload,
+decision kind, state, decision ID, actor, timestamps, and result. A partially decided
+batch remains pending. Replaying the same decision ID returns the existing outcome;
+reusing it for different intent fails.
+
+The coordinator rejects empty `DeferredToolRequests` and continues segments until final
+output or a terminal error/cancellation.
 
 ## Foreground Ownership and Timing
 
 HITL remains part of the same foreground turn:
 
-- `_run_started_at` is established when the turn is synchronously claimed;
-- entering `AWAITING_APPROVAL` freezes the displayed elapsed time;
-- the entire wait for a deferred request batch is excluded from elapsed time, and timing resumes before the continuation stream starts;
-- entering HITL emits one configurable terminal bell for the batch;
-- ordinary prompts and shell commands cannot start a competing foreground owner;
-- `/cancel` and `Ctrl+C` cancel the active foreground task; and
-- the timer is cleared only when the foreground owner exits.
+- the original durable logical-run/execution ID remains active;
+- `TUIPhase.AWAITING_APPROVAL` owns input classification;
+- the displayed elapsed timer is paused for the user wait and resumes afterward;
+- one configurable terminal bell is emitted for a non-empty batch;
+- another prompt or shell command cannot claim foreground ownership; and
+- `/cancel` or Ctrl+C cancels the durable execution, not an in-memory approval event
+  alone.
 
-## Request Processing
+Process-local panel cursors and `asyncio.Event` objects are presentation details and are
+never persistence truth.
 
-`TUIApp._request_user_action()` processes all entries in deterministic order:
+## Decision Contract
 
-1. every item in `DeferredToolRequests.approvals`;
-2. every item in `DeferredToolRequests.calls`.
+Approvals:
 
-For approvals:
+| Input | Result |
+| --- | --- |
+| `y`, `yes`, `approve` | Explicit approval |
+| `n`, `no`, `reject` | Denial with default reason |
+| `reject <reason>` | Denial with supplied reason |
+| Empty Enter | Keep waiting |
+| Other ordinary text | Durable main-run steering; approval remains pending |
+| `view`, `v` | Expand request without deciding |
+| Busy-safe slash command | Execute locally without deciding |
+| Idle-only/custom command or `!shell` | Reject locally without deciding |
+| `/cancel` | Cancel execution without fabricating a decision |
 
-- approve stores `True` under the original tool-call ID;
-- reject stores `ToolDenied(message=reason)` under that ID.
+External deferred calls:
 
-For deferred calls:
+| Input | Result |
+| --- | --- |
+| Non-empty ordinary text | Supply external result |
+| `/deny <reason>` | Supply an explicit denial result |
+| Empty Enter | Keep waiting |
+| `view`, `v` | Expand request without deciding |
+| Busy-safe slash command | Execute locally without deciding |
+| Idle-only/custom command or `!shell` | Reject locally without deciding |
+| `/cancel` | Cancel without fabricating a result |
 
-- `ask_user_question` is recognized by tool name or deferred metadata kind, parsed into the validated structured schema, and returned as a JSON-compatible answer mapping under the original call ID;
-- if any structured question receives no answer before `tools.user_input_timeout_seconds`, YAACLI discards partial answers and rejects the whole call with a `RetryPromptPart` that explains the timeout and directs the agent to continue using its best judgment without requesting the same input again;
-- any other supplied result becomes a `RetryPromptPart`;
-- an explicit denial for another deferred call also becomes a `RetryPromptPart` whose content records the denial; and
-- the original tool name and tool-call ID are retained.
+Control syntax is classified before ordinary decision/result input. Empty Enter never
+approves. Once the phase leaves `AWAITING_APPROVAL`, cleanup routing wins even if stale
+presentation flags remain.
 
-The resulting `DeferredToolResults` is sent through the same agent stream, which may return another deferred batch.
+## Structured Questions
 
-## Input Contract
+`ask_user_question` is recognized through exact tool name/metadata and parsed with the
+SDK schema. YAACLI renders each question's header, text, numbered options,
+descriptions, and single/multi-select mode.
 
-The real prompt_toolkit Enter handler applies the following contract before ordinary submission:
+- single-select accepts one option number or free text;
+- multi-select accepts comma-separated option numbers or free text;
+- valid numeric input becomes option labels;
+- non-empty non-numeric input remains free text;
+- empty input keeps the question pending; and
+- successful output preserves original questions plus an exact-keyed `answers` map.
 
-| Input while an approval is pending | Action |
-|---|---|
-| `y`, `yes`, `approve` | Approve the current request |
-| `n`, `no`, `reject` | Reject with the default reason |
-| `reject <reason>` | Reject with the supplied reason |
-| Empty Enter | Keep waiting and show the decision hint |
-| Other non-empty ordinary text, including unrecognized slash-prefixed text | Send immediate steering and keep the approval pending |
-| `view`, `v` | Render the full deferred request |
-| Busy-safe slash command | Execute locally without deciding the request |
-| Idle-only/custom registered slash command or `!shell` | Reject locally without deciding the request |
-| `/cancel` | Cancel the foreground run without deciding the request |
+If a configured question timeout expires, partial answers are discarded and the whole
+call receives an explicit retry result directing the model to continue with best
+judgment instead of asking the same question again.
 
-Deferred calls have a separate explicit contract:
+## Steering While Suspended
 
-| Input while a deferred call is pending | Action |
-|---|---|
-| Non-empty ordinary text, including unrecognized slash-prefixed text | Supply the call result |
-| `/deny <reason>` | Deny the call explicitly |
-| Empty Enter | Keep waiting and show the result hint |
-| `view`, `v` | Render the full deferred request |
-| Busy-safe slash command | Execute locally without supplying a result |
-| Idle-only/custom registered slash command or `!shell` | Reject locally without supplying a result |
-| `/cancel` | Cancel without supplying a result |
+Non-decision approval text follows the same durable active-run input path as any other
+steering:
 
-Structured clarification calls render each question separately. A single-select question accepts one option number or free text. A multi-select question accepts comma-separated option numbers or free text. Valid numeric selections are converted to option labels; other non-empty input is preserved as free text, while empty answers keep the question pending without resetting the current wait. Each question receives its own configured timeout. The final successful call result includes the original questions and an `answers` mapping keyed by exact question text; a timeout rejects the whole call instead.
+1. persist an `InputRecord` for the active logical run;
+2. enqueue an idempotent wake notification;
+3. keep the action item pending; and
+4. let `DurableInboxPumpCapability` apply it through native Pydantic AI enqueue at the
+   next host-owned graph boundary.
 
-`/cancel` and deferred-call `/deny` are checked before the generic control classifier. Registered slash commands and the `!` namespace are then resolved before approval steering or deferred-call result parsing; unrecognized slash-prefixed text remains ordinary input. Empty Enter never approves, and approval text outside the explicit allowlist never approves accidentally. The entire HITL parser additionally requires the authoritative phase to remain `AWAITING_APPROVAL`; once cancellation or saving begins, cleanup-phase routing wins even if the pending flag has not yet been reset.
-
-## Steering During Approval
-
-Non-decision approval text follows the normal active-run steering path:
-
-1. clear the compose buffer;
-2. add the text to prompt history;
-3. send a `BusMessage` from `user` to `main` with `STEERING_TEMPLATE`;
-4. leave `_approval_event` unset; and
-5. remain in `TUIPhase.AWAITING_APPROVAL`.
-
-There is no local steering queue, steering prefix mode, or deferred next-prompt queue.
-
-Binary attachments cannot steer an active run. They remain queued for the next turn.
+There is no MessageBus, local steering queue, or deferred next-prompt buffer. Binary
+attachments remain queued for the next turn.
 
 ## Presentation
 
-When a non-empty deferred request batch enters HITL, YAACLI emits one terminal BEL if `notifications.bell_on_user_action_required` is enabled. For each request, YAACLI renders:
+For each request YAACLI renders bounded tool name/arguments, index/total, applicable
+shell-review metadata, and an input hint. Structured questions use their dedicated
+panel. Expansion never decides a request.
 
-- request index and total count;
-- tool name;
-- bounded arguments;
-- shell-review risk and reason metadata when present; and
-- an input hint matching the current approval or deferred-call contract.
+The status bar and panel derive state from the explicit durable action/run state rather
+than dynamic probing of model history.
 
-For `ask_user_question`, YAACLI instead renders a dedicated panel for every question with its short header, question text, numbered labels, option descriptions, selection mode, and cancellation hint.
+## Cancellation and Recovery
 
-`view` toggles the expanded representation without resolving the request. The status bar derives its approval label and progress from the explicit phase and request fields rather than dynamic attribute probing.
+Cancellation closes input, cancels the owning process task, commits cancelled terminal
+state, and never synthesizes approval or external results.
 
-## Cancellation and Cleanup
+After process restart, pending batches remain auditable in `SessionStore`, but the old
+process-owned execution is committed as `interrupted` from its stable suspended
+checkpoint. YAACLI does not recreate the old task or replay the incomplete segment. A
+later continuation is an explicit new turn from the committed head.
 
-Cancellation does not synthesize an approval or a deferred-call result.
+Session switching scopes actions by logical-run/session identity, so an old session's
+decision cannot resolve a new session's request.
 
-When the turn exits, `_reset_hitl_state()` clears:
+## Headless Policy
 
-- pending request lists;
-- current request and metadata;
-- approval result and reason;
-- expansion state; and
-- the in-process `asyncio.Event`.
+Headless mode does not grant `UserInteractionCapability`. If another capability yields
+an approval or external call, headless policy persists and resolves explicit denials,
+then continues until final output or error. It never waits for terminal input.
 
-A cancelled run records `run_cancelled` and may persist a recoverable snapshot according to the TUI persistence policy. A completed run is not reclassified as cancelled if cancellation arrives during post-response persistence.
-
-## Session Restore
-
-Session restore is transactional:
-
-1. parse history, resumable state, and display replay into temporary values;
-2. derive a fresh candidate `TUIContext` from the current runtime;
-3. reset conversation-scoped state on that candidate;
-4. restore persisted state while preserving the active approval policy;
-5. tombstone and reset old background subagents; and
-6. commit context, history, replay, session identity, and message bus without an `await` boundary.
-
-HITL UI state is intentionally process-local. YAACLI does **not** infer or recreate a pending approval prompt from the last `ModelResponse` during restore. The approval `asyncio.Event`, current request cursor, and panel expansion state are reset. Restored model history remains available to the next normal turn, and the active runtime policy determines any future approval request.
-
-## Headless Mode
-
-Headless mode cannot collect interactive HITL input and never registers `ask_user_question`, regardless of `tools.enable_user_input`. Other deferred approvals and calls are converted into explicit denials, sent back as `DeferredToolResults`, and continued until final text or an error is produced.
-
-The headless terminal-event contract is independent of the TUI panel flow:
-
-- successful output is persisted before `RUN_FINISHED` is emitted;
-- persistence failure emits `RUN_ERROR` and no `RUN_FINISHED`; and
-- cancellation emits `run_cancelled` and re-raises cancellation.
+Terminal protocol ordering follows durable commit: success before `RUN_FINISHED`, error
+without false success, and cancellation as `run_cancelled`.
 
 ## Verification Invariants
 
-Tests must cover:
+Tests cover:
 
-- the deferred inner loop and final-text requirement;
-- explicit approve and reject inputs through the real Enter handler;
+- exact durable batch/item creation and workflow suspension;
+- partial and fully resolved idempotent decisions;
+- matching `DeferredToolResults` reconstruction;
+- explicit approve/reject/result/deny input;
 - empty Enter remaining pending;
-- non-decision text steering without resolving approval;
-- deferred-call result and `/deny` routing;
-- `/cancel` priority;
-- `ToolDenied`, generic `RetryPromptPart`, and structured question-result construction;
-- elapsed-time freezing throughout HITL and resumption without charging user wait time;
-- structured-question timeout rejection, prompt content, event cleanup, and continuation;
-- one configurable terminal bell when a non-empty HITL batch starts;
-- runtime approval policy surviving state restore;
-- transactional session isolation; and
-- headless exclusion of `ask_user_question`, plus denial, persistence-failure, and cancellation terminal events.
+- non-decision durable steering without resolving approval;
+- command and cancellation precedence;
+- structured-question parsing, timeout, and cleanup;
+- elapsed-time pause and notification bell;
+- restart/session isolation of pending actions;
+- current policy surviving state restore; and
+- headless denial plus success/error/cancellation terminal ordering.

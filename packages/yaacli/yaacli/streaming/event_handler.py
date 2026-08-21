@@ -28,7 +28,6 @@ from ya_agent_sdk.events import (
     HandoffCompleteEvent,
     HandoffFailedEvent,
     HandoffStartEvent,
-    MessageReceivedEvent,
     ModelRequestStartEvent,
     SubagentCompleteEvent,
     SubagentStartEvent,
@@ -126,8 +125,6 @@ EVENT_TYPES = {
     # Subagent events
     "subagent_start": SubagentStartEvent,
     "subagent_complete": SubagentCompleteEvent,
-    # Message bus
-    "message_received": MessageReceivedEvent,
 }
 
 

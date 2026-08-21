@@ -1,192 +1,230 @@
 ---
 name: agent-builder
-description: Build and configure AI agents with ya-agent-sdk and Pydantic AI. Covers create_agent(), stream_agent(), AgentContext, ResumableState session persistence, toolsets, subagents, environments, and HITL approval. Use when implementing agent applications, wiring tools into an agent, restoring multi-turn sessions, configuring subagent hierarchies, adding approval flows, or working with ya-agent-sdk APIs such as create_agent, export_state, stream_agent, and SubagentConfig.
+description: Build and configure AI agents with ya-agent-sdk and Pydantic AI. Covers capability-first create_agent(), stream_agent(), AgentSpec, AgentContext, ResumableState, portable subagents, environments, native steering, and deferred HITL. Use when implementing agent applications, composing capabilities, restoring sessions, configuring child-agent plans, adding approval flows, or working with ya-agent-sdk runtime APIs.
 ---
 
 # Building Agents with ya-agent-sdk
 
-Build production-ready AI agents with ya-agent-sdk and Pydantic AI.
+Build agents with the 2.0 capability-first runtime. Pydantic AI capabilities are the
+only public behavior-composition surface. Do not pass SDK `tools=` or `toolsets=` to
+`create_agent()`, slice toolsets for children, or use removed MessageBus/generated
+subagent APIs.
 
 ## Start Here
 
-Choose the workflow that matches the task:
+- Construct an unentered runtime with `create_agent()`.
+- Put every agent behavior in the ordered `capabilities=` list.
+- Validate durable static specs with `validate_agent_spec_capabilities()` before
+  fingerprinting or persistence; runtime entry still validates dynamic contributions.
+- Enter `AgentRuntime` before accessing `runtime.agent` or resolved capabilities.
+- Use `stream_agent()` for SDK lifecycle events, native steering, and recovery.
+- Persist both Pydantic AI message history and `runtime.ctx.export_state()`.
+- Use native `AgentSpec` for declarative agent fields.
+- Use `SubagentSpec`, `SubagentPlanResolver`, `SubagentRegistry`, and
+  `SubagentExecutionService` for delegation.
+- Use `DeferredInteractionResolver` for approvals and external deferred calls.
 
-- Use `create_agent()` for one-shot runs and runtime construction.
-- Use `stream_agent()` for interactive or event-driven flows.
-- Use `runtime.ctx.export_state()` and `create_agent(..., state=state)` for multi-turn persistence.
-- Use tool classes, toolsets, hooks, and approval settings for tool-enabled agents.
-- Use `SubagentConfig` and delegation settings for hierarchical agents.
-- Use custom environments and sandbox resources for richer runtime behavior.
+Read the focused references before changing the corresponding subsystem:
 
-Start with these local references:
-
-- Sessions and restore flow: [`./context.md`](./context.md)
-- Streaming and event handling: [`./streaming.md`](./streaming.md), [`./events.md`](./events.md)
-- Tools, hooks, and toolsets: [`./toolset.md`](./toolset.md), [`./tool-search.md`](./tool-search.md), [`./codeact.md`](./codeact.md)
-- Structured clarifying questions and deferred host flows: [`./user-input.md`](./user-input.md)
-- Subagents and delegation: [`./subagent.md`](./subagent.md)
-- Environments and resumable resources: [`./environment.md`](./environment.md), [`./resumable-resources.md`](./resumable-resources.md)
+- Sessions: [`./context.md`](./context.md)
+- Streaming and events: [`./streaming.md`](./streaming.md), [`./events.md`](./events.md)
+- Capability-owned tools and policies: [`./toolset.md`](./toolset.md)
+- Installable capability plugins and application loading: [`./plugins.md`](./plugins.md)
+- Structured deferred input: [`./user-input.md`](./user-input.md)
+- Portable subagents: [`./subagent.md`](./subagent.md)
+- Environment authority: [`./environment.md`](./environment.md),
+  [`./resumable-resources.md`](./resumable-resources.md)
+- Tool Search, proxying, and CodeAct: [`./tool-search.md`](./tool-search.md),
+  [`./tool-proxy.md`](./tool-proxy.md), [`./codeact.md`](./codeact.md)
 
 ## Installation
 
-Install the core package for basic agent construction:
-
 ```bash
-pip install ya-agent-sdk
-uv add ya-agent-sdk
+pip install 'ya-agent-sdk[all]'
+uv add 'ya-agent-sdk[all]'
 ```
 
-Install the full toolkit when you want examples, document tools, tool search, and common integrations:
-
-```bash
-pip install ya-agent-sdk[all]
-uv add ya-agent-sdk[all]
-```
-
-Install selective extras when you want a smaller dependency set:
-
-```bash
-pip install ya-agent-sdk[docker]
-pip install ya-agent-sdk[web]
-pip install ya-agent-sdk[document]
-pip install ya-agent-sdk[s3]
-pip install ya-agent-sdk[tool-search]
-```
+Use selective extras such as `docker`, `web`, `document`, `s3`, `tool-proxy`,
+`oauth`, or `rs` when a smaller installation is needed.
 
 ## Core Workflows
 
-### Create a basic agent
+### Create and enter a runtime
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
-async with create_agent("anthropic:claude-sonnet-4") as runtime:
+runtime = create_agent(
+    "anthropic:claude-sonnet-4",
+    capabilities=[RuntimeFoundationCapability()],
+)
+
+async with runtime:
     result = await runtime.agent.run("Summarize this project", deps=runtime.ctx)
     print(result.output)
 ```
 
+`create_agent()` returns an unentered `AgentRuntime`. Runtime entry first enters the
+Environment and context, collects their contribution groups, validates capability
+ordering and singleton constraints, and then constructs the Pydantic AI `Agent`.
+
+### Compose SDK features
+
+```python
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import (
+    FilesystemCapability,
+    RuntimeFoundationCapability,
+    ShellCapability,
+    ToolApprovalCapability,
+    ToolObservationCapability,
+    ToolRetryCapability,
+    ToolTimeoutCapability,
+    ToolVisibilityCapability,
+)
+
+runtime = create_agent(
+    "anthropic:claude-sonnet-4",
+    capabilities=[
+        RuntimeFoundationCapability(),
+        FilesystemCapability(),
+        ShellCapability(),
+        ToolVisibilityCapability(),
+        ToolApprovalCapability(tools=frozenset({"shell_exec"})),
+        ToolObservationCapability(),
+        ToolRetryCapability(),
+        ToolTimeoutCapability(),
+    ],
+)
+```
+
+Capabilities own tools, instructions, request/history hooks, and run-local state as one
+coherent feature. `RuntimeFoundationCapability` is explicit; `create_agent()` does not
+inject it.
+
 ### Stream responses
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
-runtime = create_agent("openai-chat:gpt-4o")
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    capabilities=[RuntimeFoundationCapability()],
+)
 
 async with stream_agent(runtime, "Hello") as streamer:
     async for event in streamer:
         print(event)
+    streamer.raise_if_exception()
 ```
 
-Read [`./streaming.md`](./streaming.md) and [`./events.md`](./events.md) when the task needs lifecycle hooks, custom event handling, or streamed UX.
-
-### Add tools and toolsets
-
-```python
-from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
-
-async with create_agent(
-    model="anthropic:claude-sonnet-4",
-    system_prompt="You are a coding assistant.",
-    tools=[*filesystem_tools, *shell_tools],
-) as runtime:
-    result = await runtime.agent.run("List the repository files", deps=runtime.ctx)
-    print(result.output)
-```
-
-Read [`./toolset.md`](./toolset.md) when the task needs custom toolsets, hooks, retries, or timeouts. Read [`./tool-search.md`](./tool-search.md) when the available tool surface is large or dynamic.
+Use the SDK stream driver instead of manually advancing Pydantic AI graph nodes when
+you need SDK lifecycle events, logical-run input routing, usage snapshots, or recovery.
 
 ### Persist and restore sessions
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 async with create_agent("openai-chat:gpt-4o") as runtime:
-    await runtime.agent.run("Remember that I prefer concise answers.", deps=runtime.ctx)
+    result = await runtime.agent.run("Remember this", deps=runtime.ctx)
+    messages = result.all_messages()
     state = runtime.ctx.export_state()
 
-restored_runtime = create_agent("openai-chat:gpt-4o", state=state)
+restored = create_agent("openai-chat:gpt-4o", state=state)
+# Pass `messages` as message_history on the next run.
 ```
 
-Read [`./context.md`](./context.md) for `ResumableState`, message history handling, and restore semantics.
+`ResumableState` stores SDK context state, not canonical Pydantic AI message history.
+Hosts persist both.
 
-### Configure approval flows
-
-```python
-from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
-
-async with create_agent(
-    model="anthropic:claude-sonnet-4",
-    tools=[*filesystem_tools, *shell_tools],
-    need_user_approve_tools=["shell", "edit"],
-) as runtime:
-    ...
-```
-
-Read [`./toolset.md`](./toolset.md) when approval rules interact with hooks, tool composition, or custom tool registration. Read [`./user-input.md`](./user-input.md) when the host should opt into structured clarifying questions and resume deferred calls.
-
-### Add subagents
+### Add deferred host interaction
 
 ```python
-from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.subagents import SubagentConfig
-
-researcher = SubagentConfig(
-    name="researcher",
-    description="Research specialist for web search tasks",
-    system_prompt="You gather relevant facts and sources.",
-    tools=["search_with_tavily", "visit_webpage"],
+from pydantic_ai import DeferredToolRequests
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import (
+    RuntimeFoundationCapability,
+    ToolApprovalCapability,
+    UserInteractionCapability,
 )
 
-async with create_agent(
-    "openai-chat:gpt-4o",
-    subagent_configs=[researcher],
-    unified_subagents=True,
-) as runtime:
-    ...
+runtime = create_agent(
+    "anthropic:claude-sonnet-4",
+    capabilities=[
+        RuntimeFoundationCapability(),
+        UserInteractionCapability(),
+        ToolApprovalCapability(tools=frozenset({"shell_exec"})),
+    ],
+    output_type=[str, DeferredToolRequests],
+)
 ```
 
-Read [`./subagent.md`](./subagent.md) for subagent loading, unified delegation, and builtin subagent behavior.
+The host must present every deferred request and resume with matching
+`DeferredToolResults`. Use the typed `DeferredInteractionResolver`; do not inspect a
+runtime-private toolset.
+
+### Add portable subagents
+
+Define each child with native `AgentSpec` inside the thin YA `SubagentSpec` envelope,
+resolve it against one immutable capability catalog, register the resulting plan, and
+inject one `DelegationCapability` backed by a store and driver. See
+[`./subagent.md`](./subagent.md) for a complete example and durability boundaries.
+
+## Public Boundary Checklist
+
+- `capabilities=` is the sole public composition plane.
+- Plugin entry points only add explicitly selected types to one immutable catalog;
+  they never grant behavior or load ambiently.
+- A plugin manifest may append root grants, but named children and self forks receive
+  only their own explicit native grants.
+- `AgentSpec` owns model, settings, instructions, output schema, and serialized
+  capability definitions.
+- `SubagentSpec` adds only delegation policy.
+- Named children receive only capabilities declared in their own native spec.
+- Self forks rebuild an explicit policy and bounded history snapshot; they never clone
+  live parent capabilities.
+- `ToolVisibilityCapability` is the final child execution-boundary defense.
+- Steering uses Pydantic AI `AgentRun.enqueue()` through `LogicalRunInputRouter`.
+- Durable hosts persist input before acknowledgement and keep canonical delivery in
+  their inbox/store. SDK lifecycle events and UI projections are notifications only.
+- There is no MessageBus, generated delegate class, implicit tool inheritance, or
+  runtime compatibility layer in 2.0.
 
 ## Reference Routing
 
-All paths below are local paths relative to this file.
+| Topic                | Local path                                             | Read when                                                  |
+| -------------------- | ------------------------------------------------------ | ---------------------------------------------------------- |
+| Context and sessions | [`./context.md`](./context.md)                         | Persisting context, history, or custom context fields      |
+| Streaming and hooks  | [`./streaming.md`](./streaming.md)                     | Streamed UX, recovery, or lifecycle extensions             |
+| Events               | [`./events.md`](./events.md)                           | Consuming SDK or feature lifecycle events                  |
+| Tools and policies   | [`./toolset.md`](./toolset.md)                         | Writing BaseTool adapters or execution-policy capabilities |
+| Capability plugins   | [`./plugins.md`](./plugins.md)                         | Packaging plugins or adding file-based loading to a host   |
+| Structured input     | [`./user-input.md`](./user-input.md)                   | Approval or external deferred continuation                 |
+| Native Tool Search   | [`./tool-search.md`](./tool-search.md)                 | Deferred native capabilities and large tool libraries      |
+| Subagents            | [`./subagent.md`](./subagent.md)                       | Child specs, resolution, services, stores, or drivers      |
+| Environment          | [`./environment.md`](./environment.md)                 | Filesystem, shell, resources, and lifecycle authority      |
+| Resumable resources  | [`./resumable-resources.md`](./resumable-resources.md) | Reconstructing long-lived external resources               |
+| Skills               | [`./skills.md`](./skills.md)                           | SDK skill catalog loading and refresh                      |
+| Model configuration  | [`./model.md`](./model.md)                             | Models, settings, wrappers, and presets                    |
+| Media                | [`./media.md`](./media.md)                             | Image, audio, video, and file inputs                       |
+| Tool proxy           | [`./tool-proxy.md`](./tool-proxy.md)                   | Search/proxy wrappers around external toolsets             |
+| CodeAct              | [`./codeact.md`](./codeact.md)                         | Restricted Python orchestration                            |
 
-| Topic                | Local path                                             | Read when                                                          |
-| -------------------- | ------------------------------------------------------ | ------------------------------------------------------------------ |
-| Context and sessions | [`./context.md`](./context.md)                         | You need session state, message history, or restore behavior       |
-| Streaming and hooks  | [`./streaming.md`](./streaming.md)                     | You need streaming output, lifecycle hooks, or interactive runs    |
-| Events               | [`./events.md`](./events.md)                           | You need the event model or sideband event handling                |
-| Toolsets             | [`./toolset.md`](./toolset.md)                         | You need tools, toolsets, hooks, retries, or approval settings     |
-| Structured input     | [`./user-input.md`](./user-input.md)                   | You need opt-in clarifying questions or deferred host continuation |
-| Tool search          | [`./tool-search.md`](./tool-search.md)                 | You need discovery across a large or dynamic tool library          |
-| Subagents            | [`./subagent.md`](./subagent.md)                       | You need delegation, subagent configs, or unified subagent tools   |
-| Environment          | [`./environment.md`](./environment.md)                 | You need custom environments or sandbox-backed execution           |
-| Resumable resources  | [`./resumable-resources.md`](./resumable-resources.md) | You need long-lived external resource state                        |
-| Skills system        | [`./skills.md`](./skills.md)                           | You need SDK skill loading, reload, or skill integration details   |
-| Message bus          | [`./message-bus.md`](./message-bus.md)                 | You need agent coordination or user steering through messages      |
-| Model configuration  | [`./model.md`](./model.md)                             | You need model selection, model settings, or configuration details |
-| Logging              | [`./logging.md`](./logging.md)                         | You need runtime logging, diagnostics, or instrumentation setup    |
-| Media upload         | [`./media.md`](./media.md)                             | You need image, audio, video, or file media handling               |
-| Tool proxy           | [`./tool-proxy.md`](./tool-proxy.md)                   | You need wrapped, remote, or proxy-style tools                     |
-| CodeAct              | [`./codeact.md`](./codeact.md)                         | You need restricted Python tool orchestration or reusable programs |
+## Runnable Examples
 
-## Example Programs
+The paths below point to repository sources. Installed and bundled skill artifacts carry
+the same files under `./examples/`.
 
-Use these examples when you need a full application flow:
+- `../../examples/general.py`: capability composition, streaming, typed HITL,
+  persistence, named delegation, and self fork.
+- `../../examples/deepresearch.py`: autonomous capability-first research agent with
+  structured output.
+- `../../examples/capability_plugin/`: installable custom capability package with
+  metadata-only discovery, explicit catalog selection, `AgentSpec` reconstruction, and
+  a credential-free smoke run.
 
-| Scenario                   | Repository source                | Bundled CLI skill            |
-| -------------------------- | -------------------------------- | ---------------------------- |
-| General production pattern | `../../examples/general.py`      | `./examples/general.py`      |
-| Autonomous research agent  | `../../examples/deepresearch.py` | `./examples/deepresearch.py` |
-
-## Workspace Context
-
-This directory is the canonical source for the skill at `skills/agent-builder/`.
-
-- Repository examples live at `../../examples/`.
-- The sync script lives at `../../scripts/sync-skills.sh`.
-- The CLI bundle target is `../../packages/yaacli/yaacli/skills/building-agents/`.
+After editing this canonical skill, run `scripts/sync-skills.sh` to update YAACLI's
+bundled copy.

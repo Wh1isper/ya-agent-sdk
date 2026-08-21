@@ -33,7 +33,7 @@ from ya_agent_sdk.mcp import (
     MCPConfig,
     MCPServerConfig,
     MCPServerSpec,
-    NamedMCPToolset,
+    _ManagedMCPToolset,
     _map_mcp_call_tool_result,
     build_mcp_server,
     build_mcp_servers,
@@ -45,7 +45,7 @@ from ya_agent_sdk.mcp import (
 )
 
 
-class _StubNamedMCPToolset(NamedMCPToolset):
+class _StubManagedMCPToolset(_ManagedMCPToolset):
     def __init__(
         self,
         client: Any,
@@ -252,7 +252,7 @@ async def test_mcp_completed_error_is_returned_without_model_retry() -> None:
 
     client = MagicMock()
     client.call_tool = AsyncMock(return_value=result)
-    mapped = await _StubNamedMCPToolset(client).direct_call_tool("computer_click", {})
+    mapped = await _StubManagedMCPToolset(client).direct_call_tool("computer_click", {})
 
     assert mapped == error
     client.call_tool.assert_awaited_once_with(
@@ -271,7 +271,7 @@ async def test_mcp_task_result_preserves_completed_error_without_retry() -> None
     client = MagicMock()
     client.call_tool = AsyncMock(return_value=task)
 
-    mapped = await _StubNamedMCPToolset(client).direct_call_tool(
+    mapped = await _StubManagedMCPToolset(client).direct_call_tool(
         "computer_click",
         {},
         metadata={"request": "metadata"},
@@ -314,7 +314,7 @@ async def test_mcp_transport_failure_becomes_terminal_tool_failure(failure: Exce
     client.call_tool = AsyncMock(side_effect=failure)
 
     with pytest.raises(ToolFailed, match=str(failure)):
-        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+        await _StubManagedMCPToolset(client).direct_call_tool("computer_observe", {})
 
 
 @pytest.mark.asyncio
@@ -330,7 +330,7 @@ async def test_mcp_task_session_reset_becomes_terminal_tool_failure() -> None:
     client.call_tool = AsyncMock(return_value=task)
 
     with pytest.raises(ToolFailed, match="Cannot access task results outside client context"):
-        await _StubNamedMCPToolset(client).direct_call_tool(
+        await _StubManagedMCPToolset(client).direct_call_tool(
             "computer_click",
             {},
             use_task=True,
@@ -343,7 +343,7 @@ async def test_mcp_lifecycle_transport_failure_becomes_terminal_tool_failure() -
     client.call_tool = AsyncMock(return_value=_mcp_result(structured={"success": True}))
 
     with pytest.raises(ToolFailed, match="service unavailable"):
-        await _StubNamedMCPToolset(
+        await _StubManagedMCPToolset(
             client,
             enter_error=httpx.HTTPStatusError(
                 "service unavailable",
@@ -353,7 +353,7 @@ async def test_mcp_lifecycle_transport_failure_becomes_terminal_tool_failure() -
         ).direct_call_tool("computer_observe", {})
 
     with pytest.raises(ToolFailed, match="Server session was closed unexpectedly"):
-        await _StubNamedMCPToolset(
+        await _StubManagedMCPToolset(
             client,
             exit_error=RuntimeError("Server session was closed unexpectedly"),
         ).direct_call_tool("computer_observe", {})
@@ -365,7 +365,7 @@ async def test_mcp_unknown_or_mixed_failures_propagate_without_hiding_cancellati
     unknown = RuntimeError("application callback failed")
     client.call_tool = AsyncMock(side_effect=unknown)
     with pytest.raises(RuntimeError, match="application callback failed"):
-        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+        await _StubManagedMCPToolset(client).direct_call_tool("computer_observe", {})
 
     transport_group = ExceptionGroup(
         "transport failures",
@@ -373,7 +373,7 @@ async def test_mcp_unknown_or_mixed_failures_propagate_without_hiding_cancellati
     )
     client.call_tool = AsyncMock(side_effect=transport_group)
     with pytest.raises(ToolFailed, match="one"):
-        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+        await _StubManagedMCPToolset(client).direct_call_tool("computer_observe", {})
 
     mixed_group = BaseExceptionGroup(
         "mixed failure",
@@ -381,7 +381,7 @@ async def test_mcp_unknown_or_mixed_failures_propagate_without_hiding_cancellati
     )
     client.call_tool = AsyncMock(side_effect=mixed_group)
     with pytest.raises(BaseExceptionGroup) as exc_info:
-        await _StubNamedMCPToolset(client).direct_call_tool("computer_observe", {})
+        await _StubManagedMCPToolset(client).direct_call_tool("computer_observe", {})
     assert exc_info.value is mixed_group
 
 

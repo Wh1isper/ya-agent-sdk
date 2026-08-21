@@ -34,6 +34,7 @@ Choose the deployment path:
 - Service local + local shell: read [`references/workspace-provider/service-local-local-shell.md`](references/workspace-provider/service-local-local-shell.md)
 - SQLite or PostgreSQL storage: read [`references/database.md`](references/database.md)
 - Profile seeding, subscription-backed Codex profiles, shell review policy, and shell sandbox policy: read [`references/profiles.md`](references/profiles.md)
+- Third-party capability plugin installation and manifest deployment: read [`references/plugins.md`](references/plugins.md)
 - Bridge deployment: read [`references/bridge/overview.md`](references/bridge/overview.md) and [`references/bridge/lark.md`](references/bridge/lark.md)
 - Schedules and heartbeat: read [`references/schedules-heartbeat.md`](references/schedules-heartbeat.md)
 - Session agency: read [`references/agency.md`](references/agency.md)
@@ -51,7 +52,9 @@ Every deployment needs:
 - Docker CLI on `PATH` plus Docker Engine API access for the YA Claw service process when backend is `docker`; the official service image bundles the CLI, but custom images and host installs must provide it
 - `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR` when the service runs in Docker and uses Docker shell execution
 - model/provider credentials available in the YA Claw service process
-- seeded or pre-created AgentProfile rows
+- seeded or pre-created execution profile rows
+- for capability plugins, trusted distributions installed in the service Python
+  environment plus an administrator-controlled manifest path
 
 ## Default Runtime Values
 
@@ -77,11 +80,13 @@ Every deployment needs:
 04. Choose one workspace provider shape.
 05. Grant the service Docker access when the shape uses Docker shell execution.
 06. Configure profile seed when packaged profiles should be loaded at startup.
-07. Start the service with `ya-claw start`.
-08. Verify `/healthz`.
-09. Verify authenticated API or web shell access.
-10. Start a test session and confirm model credentials, workspace tools, and profile behavior.
-11. Enable session agency with `YA_CLAW_AGENCY_ENABLED=true` for deployments that want proactive agency rollout.
+07. If using capability plugins, install them into the service environment, configure
+    `YA_CLAW_CAPABILITY_PLUGIN_MANIFEST`, and restart for every package or manifest change.
+08. Start the service with `ya-claw start`.
+09. Verify `/healthz`.
+10. Verify authenticated API or web shell access.
+11. Start a test session and confirm model credentials, plugin grants, workspace tools, and profile behavior.
+12. Enable session agency with `YA_CLAW_AGENCY_ENABLED=true` for deployments that want proactive agency rollout.
 
 ## Reference Routing
 
@@ -93,7 +98,8 @@ Every deployment needs:
 | Docker workspace provider | [`references/workspace-provider/docker.md`](references/workspace-provider/docker.md)     | You configure Docker Engine access, path mapping, workspace mounts, and container reuse                         |
 | Host service              | [`references/systemd.md`](references/systemd.md)                                         | You run YA Claw as a supervised host service                                                                    |
 | Database                  | [`references/database.md`](references/database.md)                                       | You choose SQLite or PostgreSQL, migrate, backup, or restore storage                                            |
-| Profiles                  | [`references/profiles.md`](references/profiles.md)                                       | You seed profiles, manage AgentProfile configuration, tune shell review, or configure shell sandbox policy      |
+| Profiles                  | [`references/profiles.md`](references/profiles.md)                                       | You seed profiles, manage execution profile configuration, tune shell review, or configure shell sandbox policy |
+| Capability plugins        | [`references/plugins.md`](references/plugins.md)                                         | You install trusted plugin packages, deploy the manifest, or build a derived service image                      |
 | Bridge overview           | [`references/bridge/overview.md`](references/bridge/overview.md)                         | You configure bridge dispatch, adapter enablement, and event-to-run routing                                     |
 | Lark bridge               | [`references/bridge/lark.md`](references/bridge/lark.md)                                 | You connect Lark/Feishu events to YA Claw                                                                       |
 | Bridge operations         | [`references/bridge/operations.md`](references/bridge/operations.md)                     | You verify embedded bridge startup, Lark ingress, dedupe, profiles, and workspace replies                       |

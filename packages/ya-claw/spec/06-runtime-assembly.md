@@ -1,254 +1,262 @@
 # 06 - Runtime Assembly
 
-This document defines how YA Claw turns one durable run intent into one executable SDK runtime.
+YA Claw turns a committed run into one capability-first SDK runtime. Native Pydantic AI
+`AgentSpec` owns the declarative agent contract. `ResolvedProfile` contains that spec
+plus Claw-only host policy; it does not expose a second toolset or subagent composition
+plane.
 
-## Runtime Assembly Goal
+## Assembly Invariants
 
-The runtime assembly path should make each boundary explicit:
+01. A normal run resolves one enabled profile into an immutable `ResolvedProfile`.
+02. An async child run does not resolve the mutable current profile. It joins the
+    server-owned task/session/run linkage, validates the persisted
+    `SubagentPlanDescriptor`, and derives a child profile from that descriptor only.
+03. External run metadata cannot create child authority. `async_task` and
+    `async_task_wake` are stripped at the external run boundary.
+04. Workspace and sandbox authority comes from `WorkspaceProvider` and `Environment`,
+    not from capabilities.
+05. Native `AgentSpec.capabilities` plus explicit host `capabilities=` are the sole
+    runtime behavior-composition inputs to the SDK.
+06. One process-wide capability plugin catalog snapshot is used by admission, root and
+    child plan resolution, retained-plan restoration, and runtime construction.
+07. Manifest grants are applied only to root profile specs before descriptor capture;
+    named children and self forks receive only their own explicit grants.
+08. Root descriptor admission performs a throwaway native static-plan construction with
+    `ClawAgentContext`, the process custom-type tuple, and fresh base host capabilities
+    before fingerprinting or persistence.
+09. A run record is committed before a runtime handle or queued event is published.
+10. SQL run input rows are committed before native enqueue; process-local ingress is not
+    a persistence boundary.
+11. Input admission, native delivery, application correlation, and every terminal run
+    transition serialize on the same database `runs` row. A process-local lock is only
+    an optimization.
+12. A committed `completed` status is irreversible. Notification, event projection,
+    async delivery, memory, or agency post-commit failures are retried or logged without
+    rewriting the run to `failed`.
 
-1. resolve profile
-2. resolve workspace binding
-3. resolve Docker sandbox generation when the binding is Docker-backed
-4. resolve shell sandbox policy from profile, binding, and request metadata
-5. build environment
-6. construct `ClawAgentContext`
-7. create `AgentRuntime`
-8. execute through one `RunCoordinator`
+## ResolvedProfile
 
-## Assembly Objects
+`ResolvedProfile` has two parts.
 
-### ResolvedProfile
+### Native agent definition
 
-`ResolvedProfile` is the concrete execution-ready expansion of a profile row.
+- `agent_spec: AgentSpec`
+- native model and model settings
+- native name, description, instructions, and metadata
+- native dependency and output schemas
+- native retries, end strategy, and tool timeout
+- serialized capability specifications
 
-Suggested fields:
+### Claw host policy
 
-- `name`
-- `model`
-- `model_settings`
-- `model_config`
-- `system_prompt`
-- `builtin_toolsets`
-- `subagent_configs`
-- `need_user_approve_tools`
-- `need_user_approve_mcps`
-- `enabled_mcps`
-- `disabled_mcps`
-- `workspace_backend_hint`
-- `metadata`
+- model transport configuration
+- host tool groups and optional host tool allowlist
+- named child `SubagentSpec` definitions for new executions
+- tool/MCP approval policy
+- shell review and shell sandbox policy
+- MCP server selection
+- workspace backend hint
+- profile source audit metadata
 
-### WorkspaceBinding
+Runtime, API, and seed parsing accept only schema-v2 native `AgentSpec`, host policy,
+and subagent structures. The one conversion of persisted pre-v2 profile rows is owned
+exclusively by its Alembic revision; `ProfileResolver` does not provide a compatibility
+parser.
 
-`WorkspaceBinding` is a declarative workspace value object with a default mount and optional additional mounts.
-
-Suggested fields:
-
-- `host_path`
-- `virtual_path`
-- `cwd`
-- `mounts`
-- `readable_paths`
-- `writable_paths`
-- `fingerprint`
-- `generation`
-- `environment_overrides`
-- `metadata`
-- `backend_hint`
-
-### ClawWorkspaceBindingSnapshot
-
-`ClawAgentContext` should carry a serializable snapshot rather than a live environment object.
-
-Suggested fields:
-
-- `virtual_path`
-- `cwd`
-- `mounts`
-- `readable_paths`
-- `writable_paths`
-- `metadata`
-- `backend_hint`
-
-### ClawAgentContext
-
-`ClawAgentContext` extends `AgentContext` and carries YA Claw execution metadata.
-
-Suggested fields:
-
-- `session_id`
-- `claw_run_id`
-- `profile_name`
-- `restore_from_run_id`
-- `dispatch_mode`
-- `workspace_binding`
-- `source_kind`
-- `source_metadata`
-- `claw_metadata`
-
-### ClawRuntimeBuilder
-
-`ClawRuntimeBuilder` is the factory that assembles the runtime.
-
-Suggested inputs:
-
-- `ResolvedProfile`
-- `WorkspaceBinding`
-- `Environment`
-- optional `ResumableState`
-- run and session metadata
-- source metadata such as API, schedule, heartbeat, or bridge ingress
-- resolved workspace fingerprint and sandbox generation when present
-
-Suggested output:
-
-- `AgentRuntime[ClawAgentContext, OutputT, Environment]`
-
-## Assembly Flow
+## Runtime Assembly Flow
 
 ```mermaid
 sequenceDiagram
+    participant SUP as ExecutionSupervisor
+    participant SQL as Database
     participant COORD as RunCoordinator
-    participant PROF as ProfileResolver
+    participant DESC as Descriptor validator
+    participant PROF as Profile descriptor resolver
+    participant CAT as Process plugin catalog
     participant WP as WorkspaceProvider
     participant EF as EnvironmentFactory
     participant RB as ClawRuntimeBuilder
     participant SDK as ya-agent-sdk
 
-    COORD->>PROF: resolve(profile_name)
-    PROF-->>COORD: ResolvedProfile
-    COORD->>WP: resolve(session metadata + run metadata)
+    SUP->>SQL: claim committed queued run
+    SUP->>COORD: execute(run_id)
+    alt async_task session
+        COORD->>SQL: join task + child session + child run
+        COORD->>DESC: restore and verify descriptor/catalog/policy
+        DESC-->>COORD: immutable child ResolvedProfile
+    else normal session
+        COORD->>SQL: load accepted execution_profile_snapshot
+        COORD->>PROF: validate full descriptor fingerprint
+        PROF-->>COORD: immutable ResolvedProfile
+    end
+    COORD->>CAT: reuse startup snapshot for spec and child validation
+    COORD->>SQL: load relational parent workspace authority for async child
+    COORD->>WP: resolve authoritative session/run workspace metadata
     WP-->>COORD: WorkspaceBinding
-    COORD->>COORD: resolve sandbox generation for Docker binding
-    COORD->>COORD: resolve shell sandbox policy
-    COORD->>EF: build(binding, profile, shell sandbox policy)
+    COORD->>EF: build(binding, profile host policy)
     EF-->>COORD: Environment
-    COORD->>RB: build(profile, binding, environment, restore_state, run metadata)
-    RB->>SDK: create_agent(...)
-    RB-->>COORD: AgentRuntime
+    COORD->>RB: build(spec, host policy, catalog, binding, environment, restore state)
+    RB->>SDK: create_agent(spec=..., custom_capability_types=..., capabilities=...)
+    SDK-->>COORD: AgentRuntime
 ```
 
-## Sandbox Generation Rule
+For normal runs, `profile_name` selects behavior only at admission. After manifest root
+grants are appended, admission calls the SDK's shared
+`validate_agent_spec_capabilities()` helper. It uses public `Agent.from_spec()` with a
+no-network test model, `ClawAgentContext`, and fresh static host capabilities, so plugin
+factory values, templates, and combined native ordering fail before fingerprinting and
+persistence. Runtime entry remains authoritative for Environment/resource contributions,
+durable delegation services, and other dynamic lifecycle state.
 
-Docker-backed bindings resolve sandbox scope before environment construction. API, bridge, and memory runs use a session-owned sandbox generation. Schedule and heartbeat runs use a run-owned sandbox generation and terminal cleanup.
+The accepted run owns a content-addressed descriptor copied from the native profile row
+in that transaction. Runtime never re-resolves the current catalog entry, and descriptor
+validation fails closed on missing or modified content. Memory runs use the same
+admission helper; async child runs retain their separate `SubagentPlanDescriptor`
+boundary and the same SDK validator through `SubagentPlanResolver`.
 
-For session-scoped sandboxes, the coordinator compares the current workspace fingerprint with the current session sandbox state. A matching fingerprint reuses the generation. A changed fingerprint increments the generation and replaces the session sandbox state.
+## Native AgentSpec Preservation
 
-Local bindings use workspace path policy directly and skip Docker sandbox generation.
+`ClawRuntimeBuilder` passes the native resolved `AgentSpec` directly to Pydantic AI with
+the process snapshot's exact `custom_capability_types` tuple. There is no
+Claw-maintained name-to-type switch or manual plugin instantiation. Claw host
+capabilities are added explicitly and separately:
 
-Run state stores the resolved workspace snapshot with fingerprint, sandbox scope, and generation.
+- runtime foundation;
+- Claw workspace/session/schedule/workflow tools;
+- skills for non-child runs;
+- durable delegation for non-child runs;
+- selected MCP proxy;
+- approval, observation, retry, and timeout policy leaves.
 
-## Shell Sandbox Policy Rule
+For child plans, the exact approval tool/MCP sets, MCP selection and normalized server
+configuration, workspace backend hint, complete injected set, and every other
+behavior-affecting configuration value are included in the immutable descriptor
+fingerprint. Resolution validates the
+native and host-injected set together, so singleton collisions fail before persistence.
+Runtime consumes the same host-capability constructor; it does not independently append
+a second policy set after descriptor validation.
 
-Local and mounted shell environments resolve a shell sandbox policy before environment construction. The policy combines profile defaults, workspace binding mounts, request metadata, and source kind into a concrete sandbox snapshot. The default profile is `workspace_write` with bounded workspace writes, full networking, inherited environment variables, time limits, output limits, and audit enabled.
+Native declarative capability entries remain in the spec and are instantiated exactly
+once by Pydantic AI. Programmatic Claw host capabilities remain outside the spec. Native
+singleton and ordering validation therefore sees one combined construction without a
+Claw-specific clearing or reconstruction pass.
 
-The full shell sandbox contract lives in [12-shell-sandbox.md](12-shell-sandbox.md).
+Native instructions stay native. Claw workspace, source-kind, memory, schedule,
+heartbeat, workflow, and agency guidance is appended as additional instructions rather
+than concatenated into a replacement profile prompt. Memory and agency internal runs
+explicitly replace ordinary profile instructions with their dedicated contracts.
 
-## Environment Construction Rule
-
-Environment construction belongs to `EnvironmentFactory`.
-`EnvironmentFactory` owns concrete environment instantiation.
-
-This keeps:
-
-- workspace resolution declarative
-- environment construction replaceable
-- runtime assembly easy to test
-
-## Context Construction Rule
-
-`ClawAgentContext` should be the stable home for YA Claw metadata.
-The context object keeps runtime metadata centralized and typed.
-
-Recommended context construction inputs:
-
-- base SDK `env`
-- resolved model config
-- run and session identifiers
-- workspace binding snapshot
-- profile identity
-- source metadata
-- optional restored state
-
-## Runtime Builder Responsibilities
-
-`ClawRuntimeBuilder` should:
-
-- pass the concrete environment into `create_agent`
-- use `context_type=ClawAgentContext`
-- inject restored `ResumableState` when present
-- attach builtin tools from profile resolution
-- attach runtime-wide MCP toolsets from the active MCP JSON file
-- apply profile MCP filters and approval policy
-- attach subagent configs
-- construct system prompt or template variables from resolved profile and binding
-- inject workspace guidance from `AGENTS.md` when present
-- inject heartbeat guidance from `HEARTBEAT.md` only when `source_kind="heartbeat"`
-
-## Guidance Loading
-
-YA Claw has two workspace guidance files:
-
-| File                           | Loaded for                                              | Purpose                              |
-| ------------------------------ | ------------------------------------------------------- | ------------------------------------ |
-| `<default_mount>/AGENTS.md`    | normal runs, schedule runs, heartbeat runs, bridge runs | general workspace guidance           |
-| `<default_mount>/HEARTBEAT.md` | heartbeat runs only                                     | runtime-owned heartbeat instructions |
-
-Heartbeat guidance should be injected as a tagged block:
-
-```xml
-<heartbeat-guidance path="/workspace/main/HEARTBEAT.md">
-...
-</heartbeat-guidance>
-```
-
-Schedule `isolate_session` runs load schedule input and regular workspace guidance only.
-
-## Schedule and Heartbeat Assembly
-
-Schedule runs carry:
-
-- `trigger_type = "schedule"`
-- `source_kind = "schedule"`
-- `source_metadata.schedule_id`
-- `source_metadata.schedule_fire_id`
-- `source_metadata.execution_mode`
-
-Heartbeat runs carry:
-
-- `trigger_type = "heartbeat"`
-- `source_kind = "heartbeat"`
-- `source_metadata.heartbeat_fire_id`
-- heartbeat profile and prompt from runtime settings
-
-## Example Construction Shape
+If `output_schema` is present, runtime output is composed as:
 
 ```python
-runtime = runtime_builder.build(
-    profile=resolved_profile,
-    binding=workspace_binding,
-    environment=environment,
-    restore_state=restore_state,
-    session_id=session.id,
-    run_id=run.id,
-    source_kind=run.trigger_type,
-    source_metadata=run.metadata.get("source", {}),
-    workspace_metadata=resolved_workspace_metadata,
-    sandbox_generation=workspace_binding.generation,
-)
+[StructuredDict(agent_spec.output_schema), DeferredToolRequests]
 ```
 
-## Testing Boundaries
+Otherwise it is:
 
-Runtime assembly should be testable in layers:
+```python
+[str, DeferredToolRequests]
+```
 
-1. `ProfileResolver` unit tests
-2. `WorkspaceProvider` unit tests
-3. `EnvironmentFactory` unit tests
-4. `ClawRuntimeBuilder` unit tests with stub profile and binding
-5. `RunCoordinator` integration tests from queued run to terminal state
-6. schedule and heartbeat assembly tests for source metadata and guidance loading
+This keeps structured output and deferred interaction support in one native output
+contract. Structured results cross the durable/API boundary as `runs.output_json`, with
+canonical JSON text only as the string-facing projection. Native retries, end strategy,
+`tool_timeout`, metadata, description, model settings, and dependency schema are not
+re-declared by Claw.
 
-## Design Principle
+## Workspace and Sandbox Boundary
 
-YA Claw execution should read like an assembly pipeline.
-Each stage should expose one clear input and one clear output.
+`WorkspaceBinding` is a declarative value containing host/virtual paths, mounts,
+read/write policy, fingerprint, generation, metadata, and backend hint.
+`ClawWorkspaceBindingSnapshot` is the serializable context projection.
+
+Docker-backed bindings resolve sandbox scope and generation before environment
+construction. An async child recovers workspace mount authority from its relational
+parent session while retaining its own child-session sandbox lifecycle; its backend hint
+comes from the verified descriptor. Minimal child metadata is never treated as the
+workspace authority. API, bridge, memory, and ordinary conversation runs use session scope.
+Schedule and heartbeat runs use run scope and terminal cleanup. A matching workspace
+fingerprint reuses a session generation; a changed fingerprint advances it.
+
+Shell sandbox and review policy is host authority. For unattended sources, approval
+requirements are converted to deterministic unattended policy rather than waiting for a
+user who cannot respond.
+
+## Context Construction
+
+`ClawAgentContext` carries typed run metadata and restored SDK state:
+
+- session/run/profile identities;
+- restore source and dispatch mode;
+- workspace binding snapshot and container identity;
+- source kind and source metadata;
+- Claw audit metadata;
+- shell environment and security policy;
+- approval selections;
+- SDK logical-run input ledger and active router.
+
+Live clients such as `ClawSelfClient` are Environment resources. They are not serialized
+into context or descriptors.
+
+## Durable Input Binding
+
+When a native stream is active, the coordinator binds the process-local run ingress to
+`AgentStreamer.enqueue`. It then replays only SQL inbox rows in `accepted` state. The
+SQL row ID is passed as the SDK `input_id`; replay of the same identity validates equal
+content, origin, and priority and returns the existing receipt without another native
+enqueue. The persisted SQL origin selects the SDK `user` or `feature` origin. The SDK
+logical-run ledger owns unresolved native attempts after acceptance. On
+`EnqueuedMessagesEvent`, the coordinator commits the matching SQL row as `applied`
+before consuming the next stream event.
+
+Input admission/delivery and terminal transitions first acquire a no-op database update
+lock on the owning run. Under that lock, explicit idempotency lookup precedes the terminal
+admission check, so an equal retry returns its existing final receipt while a new key is
+rejected. Therefore terminal rejection cannot miss a concurrently accepted row, and
+delivery cannot overwrite a committed rejection with stale `enqueued` state. Permanent
+mapping/validation/type/I/O errors reject only their row and FIFO delivery continues;
+unavailable ingress leaves the current and later rows accepted. Public accepted and
+enqueued events are emitted only when the corresponding SQL transition is new.
+
+This division avoids all three failure modes:
+
+- accepted SQL input is not lost when no ingress is currently bound;
+- an already-enqueued SDK logical input is not duplicated after native enqueue followed
+  by SQL commit failure; and
+- no accepted/enqueued row survives a serialized terminal transition.
+
+## Runtime and Environment Lifecycle
+
+`AgentRuntime` enters the Environment and context before constructing the native Agent.
+It gathers explicit, context, and Environment capability contributions with provenance,
+validates singleton capability IDs, and enters the Agent. Exit unwinds the Agent,
+context, and Environment in reverse order.
+
+The coordinator owns terminal artifact commit, status transition, durable input
+rejection where applicable, post-run lifecycle processing, event projection, and
+runtime-handle cleanup. It marks success committed immediately after the database
+commit; all later projections are outside the reversible state transition. Completed
+runs keep `lifecycle_projected_at` null until Memory and Agency have durably accepted
+their lifecycle effects. Memory acceptance records a unique effect identity in the same
+transaction as its state changes, so retries are idempotent without collapsing distinct
+effects that reference the same source sequence. Conversation projections preserve
+session sequence: a newer completed run remains unprojected while an earlier marker is
+null. Normal completion attempts projection immediately, while startup and periodic
+recovery replay remaining null markers in commit order. Async-task delivery recovery is
+independent, so one post-commit hook cannot block the other. Process shutdown is not used
+as a hidden compatibility or message-delivery mechanism.
+
+## Verification Boundary
+
+Required tests cover:
+
+1. profile normalization into native `AgentSpec`;
+2. catalog-created feature and host capability composition;
+3. native instructions, structured output, deferred requests, retries, end strategy,
+   metadata, dependency schema, and tool timeout;
+4. immutable child descriptor recovery independent of profile mutation;
+5. workspace binding and sandbox generation;
+6. SQL-before-enqueue input delivery and applied correlation;
+7. TestModel end-to-end streaming and deferred interaction;
+8. queued-run recovery and terminal artifact commit; and
+9. complete Claw tests, lint, typing, migration, and diff checks.

@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from decimal import Decimal
 
-from pydantic_ai import PartDeltaEvent, PartEndEvent, PartStartEvent, TextPartDelta, ThinkingPartDelta
-from pydantic_ai.messages import TextPart, ThinkingPart
+from pydantic_ai import (
+    EnqueuedMessagesEvent,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    TextPartDelta,
+    ThinkingPartDelta,
+)
+from pydantic_ai.messages import ModelRequest, TextPart, ThinkingPart, UserPromptPart
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context.agent import StreamEvent
-from ya_agent_sdk.events import ModelRequestStartEvent, UsageSnapshotEvent
+from ya_agent_sdk.events import (
+    AgentEvent,
+    AgentExecutionResumeEvent,
+    AgentExecutionStartEvent,
+    BackgroundShellStartEvent,
+    CompactCompleteEvent,
+    FileChange,
+    FileChangeEvent,
+    HandoffCompleteEvent,
+    ModelRequestStartEvent,
+    SubagentCompleteEvent,
+    SubagentStartEvent,
+    TaskEvent,
+    TaskInfo,
+    TextReplacement,
+    UsageSnapshotEvent,
+)
 from ya_agent_sdk.usage import CostEstimate, UsageSnapshot
 from ya_agent_stream_protocol.agui import AguiReplayBuffer, AguiReplayConfig
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
@@ -102,6 +127,142 @@ def test_agui_event_adapter_serializes_usage_cost_decimals_as_strings() -> None:
     assert isinstance(estimate, dict)
     assert estimate["total_amount"] == "0.003"
     assert estimate["priced_requests"] == 1
+
+
+def test_agui_event_adapter_redacts_internal_subagent_and_enqueue_state() -> None:
+    adapter = AguiEventAdapter(session_id="session-1", run_id="run-1", config=CLAW_ADAPTER_CONFIG)
+    internal_parent_run_id = "550e8400-e29b-41d4-a716-446655440000"
+    internal_enqueue_id = "9e7da301-bbb3-40f4-a570-76e8c25e73b8"
+    sensitive_input = "private steering content"
+
+    events = [
+        *adapter.adapt_stream_event(
+            StreamEvent(
+                agent_id="worker-bg-a7b9",
+                agent_name="worker",
+                event=SubagentStartEvent(
+                    event_id="worker-bg-a7b9",
+                    execution_id="worker-bg-a7b9",
+                    mode="background",
+                    parent_logical_run_id=internal_parent_run_id,
+                    agent_id="worker-bg-a7b9",
+                    agent_name="worker",
+                    prompt_preview="inspect code",
+                ),
+            )
+        ),
+        *adapter.adapt_stream_event(
+            StreamEvent(
+                agent_id="worker-bg-a7b9",
+                agent_name="worker",
+                event=SubagentCompleteEvent(
+                    event_id="worker-bg-a7b9",
+                    execution_id="worker-bg-a7b9",
+                    mode="background",
+                    parent_logical_run_id=internal_parent_run_id,
+                    agent_id="worker-bg-a7b9",
+                    agent_name="worker",
+                    result_preview="done",
+                ),
+            )
+        ),
+        *adapter.adapt_stream_event(
+            StreamEvent(
+                agent_id="main",
+                agent_name="main",
+                event=EnqueuedMessagesEvent(
+                    enqueue_id=internal_enqueue_id,
+                    messages=(ModelRequest(parts=[UserPromptPart(content=sensitive_input)]),),
+                ),
+            )
+        ),
+    ]
+
+    assert [event["name"] for event in events] == [
+        "ya_agent.subagent_start",
+        "ya_agent.subagent_complete",
+        "ya_agent.enqueued_messages",
+    ]
+    serialized = json.dumps(events)
+    assert internal_parent_run_id not in serialized
+    assert internal_enqueue_id not in serialized
+    assert sensitive_input not in serialized
+    assert events[2]["value"]["payload"] == {"message_count": 1}  # type: ignore[index]
+
+
+def test_agui_event_adapter_lifecycle_projection_is_fail_closed() -> None:
+    adapter = AguiEventAdapter(session_id="session-1", run_id="run-1", config=CLAW_ADAPTER_CONFIG)
+    secret = "TOP-SECRET-SENTINEL"  # noqa: S105
+    internal_event_id = "internal-event-id"
+
+    @dataclass
+    class FutureSensitiveEvent(AgentEvent):
+        secret_value: str = ""
+
+    source_events = [
+        AgentExecutionStartEvent(
+            event_id=internal_event_id,
+            user_prompt=secret,
+            message_history_count=3,
+        ),
+        AgentExecutionResumeEvent(
+            event_id=internal_event_id,
+            resume_prompt=secret,
+            message_history_count=4,
+        ),
+        CompactCompleteEvent(
+            event_id=internal_event_id,
+            summary_markdown=secret,
+            condense_result={"secret": secret},
+            original_message_count=10,
+            compacted_message_count=2,
+        ),
+        HandoffCompleteEvent(
+            event_id=internal_event_id,
+            handoff_content=secret,
+            original_message_count=5,
+        ),
+        FileChangeEvent(
+            event_id=internal_event_id,
+            changes=[
+                FileChange(
+                    path="safe.txt",
+                    replacements=[TextReplacement(old_string=secret, new_string=secret)],
+                )
+            ],
+            tool_name="edit",
+        ),
+        TaskEvent(
+            event_id=internal_event_id,
+            tasks=[TaskInfo(id="task-1", subject="safe", description=secret)],
+        ),
+        BackgroundShellStartEvent(
+            event_id=internal_event_id,
+            process_id="process-1",
+            command=secret,
+        ),
+    ]
+
+    projected = [
+        item
+        for source_event in source_events
+        for item in adapter.adapt_stream_event(StreamEvent(agent_id="main", agent_name="main", event=source_event))
+    ]
+    serialized = json.dumps(projected)
+
+    assert len(projected) == len(source_events)
+    assert secret not in serialized
+    assert internal_event_id not in serialized
+    assert (
+        adapter.adapt_stream_event(
+            StreamEvent(
+                agent_id="main",
+                agent_name="main",
+                event=FutureSensitiveEvent(event_id=internal_event_id, secret_value=secret),
+            )
+        )
+        == []
+    )
 
 
 def test_agui_event_adapter_run_started_excludes_input_parts() -> None:

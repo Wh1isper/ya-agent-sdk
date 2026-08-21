@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.context import AgentContext, BusMessage, Task, TaskStatus
+from ya_agent_sdk.context import AgentContext, TaskStatus
 from ya_agent_sdk.events import TaskEvent, TaskInfo
 from ya_agent_sdk.toolsets.base import Instruction
 from ya_agent_sdk.toolsets.core.base import BaseTool
@@ -60,7 +60,6 @@ class TaskCreateTool(BaseTool):
 
     name = "task_create"
     description = "Create a new task. Task status defaults to pending."
-    auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
         """Get instruction for this tool (shared with other task tools)."""
@@ -98,7 +97,6 @@ class TaskGetTool(BaseTool):
 
     name = "task_get"
     description = "Get task details by ID."
-    auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
         """Get instruction for this tool (shared with other task tools)."""
@@ -139,7 +137,6 @@ class TaskUpdateTool(BaseTool):
 
     name = "task_update"
     description = "Update task status, content, or dependencies."
-    auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
         """Get instruction for this tool (shared with other task tools)."""
@@ -147,18 +144,6 @@ class TaskUpdateTool(BaseTool):
         if instruction_file.exists():
             return Instruction(group="task-manager", content=instruction_file.read_text())
         return None
-
-    def _broadcast_update(
-        self,
-        ctx: RunContext[AgentContext],
-        task: Task,
-        update_summary: str,
-    ) -> None:
-        """Broadcast task update to message bus (subagents only)."""
-        if ctx.deps.agent_id == "main":
-            return
-        msg = f"Task '{task.subject}' (#{task.id}) updated: {update_summary}"
-        ctx.deps.message_bus.send(BusMessage(content=msg, source=ctx.deps.agent_id))
 
     def _build_update_summary(
         self,
@@ -229,9 +214,6 @@ class TaskUpdateTool(BaseTool):
             status, subject, description, active_form, owner, add_blocks, add_blocked_by, metadata
         )
 
-        # Broadcast task update to message bus (subagents only)
-        self._broadcast_update(ctx, task, update_text)
-
         await ctx.deps.emit_event(_build_task_event(ctx))
         return f"Updated task #{task_id}: {update_text}"
 
@@ -241,7 +223,6 @@ class TaskListTool(BaseTool):
 
     name = "task_list"
     description = "List all tasks and their status."
-    auto_inherit = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
         """Get instruction for this tool (shared with other task tools)."""

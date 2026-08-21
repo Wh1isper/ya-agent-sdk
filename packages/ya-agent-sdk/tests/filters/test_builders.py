@@ -7,7 +7,6 @@ from ya_agent_sdk.filters._builders import (
     KEEP_TAG_KEY,
     build_context_restored_part,
     build_original_request_parts,
-    build_steering_parts,
     has_keep_tag,
 )
 
@@ -29,31 +28,6 @@ def test_build_original_request_parts_none() -> None:
     """Should return empty list when prompt is None."""
     parts = build_original_request_parts(None)
     assert parts == []
-
-
-# =============================================================================
-# build_steering_parts tests
-# =============================================================================
-
-
-def test_build_steering_parts_with_messages() -> None:
-    """Should return closed user-steering XML with prefixed messages."""
-    parts = build_steering_parts(["Use click", "Add tests"])
-    assert len(parts) == 1
-    assert parts[0].content.startswith("<user-steering>")
-    assert parts[0].content.endswith("</user-steering>")
-    assert "[User Steering] Use click" in parts[0].content
-    assert "[User Steering] Add tests" in parts[0].content
-
-
-def test_build_steering_parts_none() -> None:
-    """Should return empty list when messages is None."""
-    assert build_steering_parts(None) == []
-
-
-def test_build_steering_parts_empty() -> None:
-    """Should return empty list when messages is empty."""
-    assert build_steering_parts([]) == []
 
 
 # =============================================================================

@@ -11,9 +11,11 @@ via ctx.deps.emit_event() for TUI rendering.
 from __future__ import annotations
 
 import uuid
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import Any, TypeVar
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities import AbstractCapability
 
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
 from yaacli.logging import get_logger
@@ -218,6 +220,23 @@ async def goal_guard(ctx: RunContext[TUIContext], output: OutputT) -> OutputT:
 
 
 OutputT = TypeVar("OutputT")
+
+
+@dataclass(kw_only=True)
+class GoalGuardCapability(AbstractCapability[TUIContext]):
+    """Drive YAACLI goal iterations at the native output-validation boundary."""
+
+    id: str | None = "yaacli_goal_guard"
+
+    async def after_output_validate(
+        self,
+        ctx: RunContext[TUIContext],
+        *,
+        output_context: Any,
+        output: Any,
+    ) -> Any:
+        del output_context
+        return await goal_guard(ctx, output)
 
 
 def attach_goal_guard(agent: Agent[TUIContext, OutputT]) -> None:

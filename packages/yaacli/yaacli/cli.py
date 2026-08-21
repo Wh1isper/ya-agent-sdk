@@ -25,8 +25,12 @@ from dotenv import load_dotenv
 
 from yaacli import __version__  # pyright: ignore[reportAttributeAccessIssue]
 from yaacli.config import ConfigManager, WorktreeMetadata, YaacliConfig
+from yaacli.durable.application import SessionApplicationService
+from yaacli.durable.models import SessionSummary
+from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.errors import safe_exception_str
 from yaacli.logging import LOG_FILE_NAME, configure_logging, get_logger
+from yaacli.subagent_config import has_subagent_definition
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
@@ -135,6 +139,40 @@ def get_env_vars_for_model(gateway: str | None, provider: str) -> list[tuple[str
     return env_vars
 
 
+def _set_toml_section_string(
+    content: str,
+    *,
+    section: str,
+    key: str,
+    value: str,
+    after_key: str | None = None,
+) -> str:
+    """Set one string key without touching same-named keys in other sections."""
+    section_pattern = re.compile(rf"(?ms)(^\[{re.escape(section)}\][^\S\n]*\n)(.*?)(?=^\[|\Z)")
+    section_match = section_pattern.search(content)
+    if section_match is None:
+        raise ValueError(f"Missing [{section}] section in configuration template")
+
+    body = section_match.group(2)
+    line = f"{key} = {json.dumps(value, ensure_ascii=False)}"
+    active_pattern = re.compile(rf"(?m)^{re.escape(key)}\s*=.*$")
+    commented_pattern = re.compile(rf"(?m)^#\s*{re.escape(key)}\s*=.*$")
+    if active_pattern.search(body):
+        body = active_pattern.sub(lambda _match: line, body, count=1)
+    elif commented_pattern.search(body):
+        body = commented_pattern.sub(lambda _match: line, body, count=1)
+    elif after_key is not None:
+        anchor_pattern = re.compile(rf"(?m)^{re.escape(after_key)}\s*=.*$")
+        if anchor_pattern.search(body):
+            body = anchor_pattern.sub(lambda match: f"{match.group(0)}\n{line}", body, count=1)
+        else:
+            body = f"{body.rstrip()}\n{line}\n"
+    else:
+        body = f"{body.rstrip()}\n{line}\n"
+
+    return f"{content[: section_match.start(2)]}{body}{content[section_match.end(2) :]}"
+
+
 # =============================================================================
 # Setup Wizard
 # =============================================================================
@@ -179,14 +217,14 @@ def run_setup_wizard(config_manager: ConfigManager) -> bool:
     else:
         click.echo(f"Skipped: {mcp_path} (already exists)")
 
-    # Copy builtin subagents from ya_agent_sdk (only missing files - never overwrite)
+    # Copy builtin subagents only when no supported same-basename definition exists.
     subagents_dir.mkdir(parents=True, exist_ok=True)
     sdk_presets = resources.files("ya_agent_sdk.subagents.presets")
     copied_subagents = []
     for item in sdk_presets.iterdir():
-        if item.name.endswith(".md"):
+        if item.name.endswith((".yaml", ".yml", ".json")):
             target_path = subagents_dir / item.name
-            if not target_path.exists():
+            if not has_subagent_definition(subagents_dir, Path(item.name).stem):
                 with resources.as_file(item) as src:
                     shutil.copy(src, target_path)
                 copied_subagents.append(item.name)
@@ -272,91 +310,39 @@ def run_setup_wizard(config_manager: ConfigManager) -> bool:
     # Read current config and update
     config_content = config_path.read_text()
 
-    # Update model
-    config_content = re.sub(
-        r'^model\s*=\s*".*"',
-        f'model = "{model_str}"',
+    config_content = _set_toml_section_string(
         config_content,
-        flags=re.MULTILINE,
+        section="general",
+        key="model",
+        value=model_str,
     )
-
-    # Update model_settings if we have a preset
     if model_settings_preset:
-        # Check for existing uncommented model_settings line
-        if re.search(r"^model_settings\s*=", config_content, re.MULTILINE):
-            config_content = re.sub(
-                r"^model_settings\s*=\s*.*$",
-                f'model_settings = "{model_settings_preset}"',
-                config_content,
-                flags=re.MULTILINE,
-            )
-        # Check for commented model_settings line and uncomment it
-        elif re.search(r"^#\s*model_settings\s*=", config_content, re.MULTILINE):
-            config_content = re.sub(
-                r"^#\s*model_settings\s*=\s*.*$",
-                f'model_settings = "{model_settings_preset}"',
-                config_content,
-                flags=re.MULTILINE,
-            )
-        else:
-            # Add after model line as last resort
-            config_content = re.sub(
-                r'^(model\s*=\s*"[^"]*")$',
-                f'\\1\nmodel_settings = "{model_settings_preset}"',
-                config_content,
-                flags=re.MULTILINE,
-            )
-
-    # Update model_cfg if we have a preset
+        config_content = _set_toml_section_string(
+            config_content,
+            section="general",
+            key="model_settings",
+            value=model_settings_preset,
+            after_key="model",
+        )
     if model_cfg_preset:
-        # Check for existing uncommented model_cfg line
-        if re.search(r"^model_cfg\s*=", config_content, re.MULTILINE):
-            config_content = re.sub(
-                r"^model_cfg\s*=\s*.*$",
-                f'model_cfg = "{model_cfg_preset}"',
-                config_content,
-                flags=re.MULTILINE,
-            )
-        # Check for commented model_cfg line and uncomment it
-        elif re.search(r"^#\s*model_cfg\s*=", config_content, re.MULTILINE):
-            config_content = re.sub(
-                r"^#\s*model_cfg\s*=\s*.*$",
-                f'model_cfg = "{model_cfg_preset}"',
-                config_content,
-                flags=re.MULTILINE,
-            )
-        else:
-            # Add after model_settings line (or model line if no model_settings)
-            if re.search(r"^model_settings\s*=", config_content, re.MULTILINE):
-                config_content = re.sub(
-                    r'^(model_settings\s*=\s*"[^"]*")$',
-                    f'\\1\nmodel_cfg = "{model_cfg_preset}"',
-                    config_content,
-                    flags=re.MULTILINE,
-                )
-            else:
-                config_content = re.sub(
-                    r'^(model\s*=\s*"[^"]*")$',
-                    f'\\1\nmodel_cfg = "{model_cfg_preset}"',
-                    config_content,
-                    flags=re.MULTILINE,
-                )
+        config_content = _set_toml_section_string(
+            config_content,
+            section="general",
+            key="model_cfg",
+            value=model_cfg_preset,
+            after_key="model_settings" if model_settings_preset else "model",
+        )
 
-    # Update [env] section with new values
     if env_values:
-        # Find or create [env] section
-        if "[env]" in config_content:
-            # Add values after [env]
-            env_lines = "\n".join(f'{k} = "{v}"' for k, v in env_values.items())
-            config_content = re.sub(
-                r"\[env\]\n(#[^\n]*\n)*",
-                f"[env]\n{env_lines}\n",
+        if "[env]" not in config_content:
+            config_content = f"{config_content.rstrip()}\n\n[env]\n"
+        for key, value in env_values.items():
+            config_content = _set_toml_section_string(
                 config_content,
+                section="env",
+                key=key,
+                value=value,
             )
-        else:
-            # Append [env] section
-            env_lines = "\n".join(f'{k} = "{v}"' for k, v in env_values.items())
-            config_content += f"\n[env]\n{env_lines}\n"
 
     config_path.write_text(config_content)
 
@@ -455,15 +441,15 @@ def ensure_builtin_assets(config_manager: ConfigManager) -> None:
     # Ensure config directory exists
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure subagents directory and copy missing presets
+    # Ensure subagents directory and copy presets with absent basenames.
     subagents_dir = config_dir / "subagents"
     subagents_dir.mkdir(exist_ok=True)
     try:
         sdk_presets = resources.files("ya_agent_sdk.subagents.presets")
         for item in sdk_presets.iterdir():
-            if item.name.endswith(".md"):
+            if item.name.endswith((".yaml", ".yml", ".json")):
                 target_path = subagents_dir / item.name
-                if not target_path.exists():
+                if not has_subagent_definition(subagents_dir, Path(item.name).stem):
                     with resources.as_file(item) as src:
                         shutil.copy(src, target_path)
                     logger.debug(f"Copied builtin subagent: {item.name}")
@@ -653,8 +639,7 @@ def cli(
       /clear       - Clear only the visible transcript
       /new         - Start a new conversation and session
       /cancel      - Cancel foreground work
-      /integrate   - Integrate ready background results
-      /agents      - Show background subagents
+      /agents      - Show durable subagent executions
       /process     - Show background shell processes
       /session     - List or restore sessions
       /model       - Select a model profile
@@ -847,24 +832,17 @@ def sessions() -> None:
     """Manage saved YAACLI sessions."""
 
 
-def _session_info_payload(entry: object) -> dict[str, object]:
-    payload = {
-        name: getattr(entry, name)
-        for name in (
-            "id",
-            "path",
-            "updated_at",
-            "created_at",
-            "working_dir",
-            "input_text",
-            "output_text",
-            "message_count",
-            "display_event_count",
-            "metadata",
-        )
-    }
-    payload["path"] = str(payload["path"])
-    return payload
+def _session_summary_payload(entry: object) -> dict[str, object]:
+    if not isinstance(entry, SessionSummary):
+        raise TypeError(f"Expected SessionSummary, got {type(entry)!r}")
+    return entry.model_dump(mode="json")
+
+
+def _session_query_service(
+    config_manager: ConfigManager,
+) -> tuple[SQLiteSessionStore, SessionApplicationService]:
+    store = SQLiteSessionStore(config_manager.get_session_database_path())
+    return store, SessionApplicationService(store)
 
 
 @sessions.command("list")
@@ -872,13 +850,13 @@ def _session_info_payload(entry: object) -> dict[str, object]:
 @click.option("--limit", default=20, show_default=True, type=int, help="Maximum sessions to display.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
 def sessions_list(as_json: bool, limit: int, verbose: bool) -> None:
-    """List saved sessions."""
-    from yaacli.sessions import list_sessions
-
+    """List durable sessions."""
     config_manager = _prepare_session_cli_runtime(verbose)
-    entries = list_sessions(config_manager)[: max(limit, 0)]
+    store, service = _session_query_service(config_manager)
+    with store:
+        entries = service.list_session_summaries(limit=max(limit, 0))
     if as_json:
-        click.echo(json.dumps([_session_info_payload(entry) for entry in entries], ensure_ascii=False, indent=2))
+        click.echo(json.dumps([_session_summary_payload(entry) for entry in entries], ensure_ascii=False, indent=2))
         return
 
     if not entries:
@@ -887,10 +865,11 @@ def sessions_list(as_json: bool, limit: int, verbose: bool) -> None:
 
     click.echo("Session ID     Updated              Messages  Events  Working Dir")
     for entry in entries:
-        updated = entry.updated_at[:19].replace("T", " ")
-        message_count = "-" if entry.message_count is None else str(entry.message_count)
-        event_count = "-" if entry.display_event_count is None else str(entry.display_event_count)
-        click.echo(f"{entry.id:<14} {updated:<20} {message_count:<8} {event_count:<6} {entry.working_dir or '-'}")
+        updated = entry.updated_at.isoformat()[:19].replace("T", " ")
+        click.echo(
+            f"{entry.session_id:<14} {updated:<20} {entry.message_count:<8} "
+            f"{entry.display_event_count:<6} {entry.workspace_ref}"
+        )
 
 
 @sessions.command("show")
@@ -898,29 +877,27 @@ def sessions_list(as_json: bool, limit: int, verbose: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON details.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
 def sessions_show(session_id: str, as_json: bool, verbose: bool) -> None:
-    """Show a saved session."""
-    from yaacli.sessions import get_session_info
-
+    """Show one durable session."""
     config_manager = _prepare_session_cli_runtime(verbose)
-    entry = get_session_info(config_manager, session_id)
-    payload = _session_info_payload(entry)
+    store, service = _session_query_service(config_manager)
+    with store:
+        entry = service.get_session_summary(session_id)
     if as_json:
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        click.echo(json.dumps(_session_summary_payload(entry), ensure_ascii=False, indent=2))
         return
 
-    click.echo(f"Session: {entry.id}")
-    click.echo(f"Path: {entry.path}")
-    click.echo(f"Created: {entry.created_at or '-'}")
-    click.echo(f"Updated: {entry.updated_at}")
-    click.echo(f"Working dir: {entry.working_dir or '-'}")
-    click.echo(f"Messages: {entry.message_count if entry.message_count is not None else '-'}")
-    click.echo(f"Display events: {entry.display_event_count if entry.display_event_count is not None else '-'}")
-    if entry.input_text:
+    click.echo(f"Session: {entry.session_id}")
+    click.echo(f"Created: {entry.created_at.isoformat()}")
+    click.echo(f"Updated: {entry.updated_at.isoformat()}")
+    click.echo(f"Working dir: {entry.workspace_ref}")
+    click.echo(f"Messages: {entry.message_count}")
+    click.echo(f"Display events: {entry.display_event_count}")
+    if entry.input_preview:
         click.echo("Input:")
-        click.echo(entry.input_text)
-    if entry.output_text:
+        click.echo(entry.input_preview)
+    if entry.output_preview:
         click.echo("Output:")
-        click.echo(entry.output_text)
+        click.echo(entry.output_preview)
 
 
 @sessions.command("delete")
@@ -928,16 +905,16 @@ def sessions_show(session_id: str, as_json: bool, verbose: bool) -> None:
 @click.option("--yes", is_flag=True, help="Skip confirmation.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
 def sessions_delete(session_id: str, yes: bool, verbose: bool) -> None:
-    """Delete a saved session."""
-    from yaacli.sessions import delete_session, get_session_info
-
+    """Tombstone one durable session."""
     config_manager = _prepare_session_cli_runtime(verbose)
-    entry = get_session_info(config_manager, session_id)
-    if not yes and not click.confirm(f"Delete session {entry.id}?"):
-        click.echo("Cancelled.")
-        return
-    deleted = delete_session(config_manager, entry.id)
-    click.echo(f"Deleted session: {deleted.id}")
+    store, service = _session_query_service(config_manager)
+    with store:
+        entry = service.get_session_summary(session_id)
+        if not yes and not click.confirm(f"Delete session {entry.session_id}?"):
+            click.echo("Cancelled.")
+            return
+        deleted = service.delete_session(entry.session_id)
+    click.echo(f"Deleted session: {deleted.session_id}")
 
 
 def main() -> None:

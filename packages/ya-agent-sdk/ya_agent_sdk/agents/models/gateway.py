@@ -4,14 +4,14 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-import httpx
+import httpx2
 from pydantic_ai.models import Model
 from pydantic_ai.models import infer_model as legacy_infer_model
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers import Provider
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from ya_agent_sdk.agents.models.utils import create_async_http_client
+from ya_agent_sdk.agents.models.utils import create_async_http_client, create_owned_httpx2_provider
 
 REQUIRED_TOOL_CHOICE_UNSUPPORTED_MODEL_KEYWORDS: tuple[str, ...] = ("deepseek",)
 _OPENAI_PROVIDER_ERROR = (
@@ -36,17 +36,15 @@ def _supports_required_tool_choice(model_name: str) -> bool:
     return not any(keyword in lower for keyword in REQUIRED_TOOL_CHOICE_UNSUPPORTED_MODEL_KEYWORDS)
 
 
-def _request_hook(api_key: str) -> Callable[[httpx.Request], Awaitable[httpx.Request]]:
+def _request_hook(api_key: str) -> Callable[[httpx2.Request], Awaitable[None]]:
     """Request hook for the gateway provider.
 
     It adds the `"Authorization"` header to the request.
     """
 
-    async def _hook(request: httpx.Request) -> httpx.Request:
+    async def _hook(request: httpx2.Request) -> None:
         if "Authorization" not in request.headers:
             request.headers["Authorization"] = f"Bearer {api_key}"
-
-        return request
 
     return _hook
 
@@ -151,7 +149,7 @@ def _build_gateway_http_client(
     api_key: str,
     *,
     extra_headers: dict[str, str] | None,
-) -> httpx.AsyncClient:
+) -> httpx2.AsyncClient:
     # These gateway providers need extra headers through the shared HTTP client.
     # Responses WebSocket aliases also use this client for HTTP fallback.
     needs_extra_headers_patch = provider_name in (
@@ -175,10 +173,20 @@ def _build_gateway_provider(
     gateway_name: str,
     api_key: str,
     base_url: str,
-    http_client: httpx.AsyncClient,
+    http_client: httpx2.AsyncClient | None,
 ) -> Provider[Any]:
     if provider_name in _OPENAI_PROVIDER_ALIASES:
         raise ValueError(_OPENAI_PROVIDER_ERROR)
+    if provider_name in ("bedrock", "converse"):
+        from pydantic_ai.providers.bedrock import BedrockProvider
+
+        return BedrockProvider(
+            api_key=api_key,
+            base_url=base_url,
+            region_name=gateway_name,  # Fake region name to avoid NoRegionError
+        )
+    if http_client is None:
+        raise TypeError(f"Gateway provider {provider_name!r} requires an HTTPX2 client")
     if provider_name in (
         "openai-chat",
         "openai-responses",
@@ -191,14 +199,6 @@ def _build_gateway_provider(
 
         return AnthropicProvider(
             anthropic_client=AsyncAnthropic(auth_token=api_key, base_url=base_url, http_client=http_client)
-        )
-    if provider_name in ("bedrock", "converse"):
-        from pydantic_ai.providers.bedrock import BedrockProvider
-
-        return BedrockProvider(
-            api_key=api_key,
-            base_url=base_url,
-            region_name=gateway_name,  # Fake region name to avoid NoRegionError
         )
     if provider_name == "google":
         from pydantic_ai.providers.google import GoogleProvider
@@ -237,8 +237,22 @@ def make_gateway_provider(
 
     def gateway_provider(provider_name: str) -> Provider[Any]:
         api_key, base_url = _read_gateway_credentials(api_key_env_var, base_url_env_var)
-        http_client = _build_gateway_http_client(provider_name, api_key, extra_headers=extra_headers)
-        return _build_gateway_provider(provider_name, gateway_name, api_key, base_url, http_client)
+        if provider_name in ("bedrock", "converse"):
+            return _build_gateway_provider(provider_name, gateway_name, api_key, base_url, None)
+
+        def create_http_client() -> httpx2.AsyncClient:
+            return _build_gateway_http_client(provider_name, api_key, extra_headers=extra_headers)
+
+        return create_owned_httpx2_provider(
+            lambda http_client: _build_gateway_provider(
+                provider_name,
+                gateway_name,
+                api_key,
+                base_url,
+                http_client,
+            ),
+            http_client_factory=create_http_client,
+        )
 
     return gateway_provider
 
@@ -285,7 +299,7 @@ def _gateway_responses_websocket_headers_builder(
 
     Newer OpenAI client versions no longer expose the Authorization header through
     default_headers in the same way as older versions. HTTP gateway requests still
-    receive Authorization through the httpx request hook, but WebSocket handshakes
+    receive Authorization through the httpx2 request hook, but WebSocket handshakes
     bypass that hook, so the gateway token must be added explicitly here.
     """
 

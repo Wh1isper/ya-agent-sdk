@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from ya_agent_sdk.capabilities import ResolvedCapabilityPlugins
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
 from ya_claw.config import ClawSettings
@@ -46,13 +47,49 @@ from ya_claw.controller.store import (
     read_run_state_blob_if_exists,
     run_blob_path,
 )
+from ya_claw.execution.input_inbox import (
+    RUN_INPUT_CLOSED_CODE,
+    RunInputClosedError,
+    admit_run_input,
+    deliver_accepted_run_inputs,
+    lock_run_record,
+    reject_open_run_inputs,
+)
+from ya_claw.execution.profile import (
+    PROFILE_SNAPSHOT_METADATA_KEY,
+    capture_execution_profile_descriptor,
+)
 from ya_claw.execution.state_machine import cancel_run, interrupt_run, queue_run
 from ya_claw.orm.tables import RunRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
+from ya_claw.session_lineage import require_restore_source
 from ya_claw.workspace.models import metadata_with_workspace
 
 _ACTIVE_RUN_STATUSES = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
 CLAW_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="ya_claw")
+
+
+async def _metadata_with_execution_profile_snapshot(
+    db_session: AsyncSession,
+    *,
+    session_record: SessionRecord,
+    profile_name: str | None,
+    run_metadata: dict[str, Any],
+    capability_plugins: ResolvedCapabilityPlugins | None,
+) -> dict[str, Any]:
+    if session_record.session_type == "async_task":
+        return run_metadata
+    if not isinstance(profile_name, str) or not profile_name.strip():
+        raise ValueError("A resolvable execution profile is required at run admission")
+    descriptor = await capture_execution_profile_descriptor(
+        db_session,
+        profile_name,
+        capability_plugins=capability_plugins,
+    )
+    return {
+        **run_metadata,
+        PROFILE_SNAPSHOT_METADATA_KEY: descriptor.model_dump(mode="json"),
+    }
 
 
 class RunController:
@@ -66,6 +103,33 @@ class RunController:
         runtime_state: InMemoryRuntimeState,
         request: RunCreateRequest,
     ) -> RunDetail:
+        """Create and publish one externally requested run."""
+        run_record = await self.create_record(
+            db_session,
+            request,
+            default_profile_name=settings.default_profile,
+            capability_plugins=settings.resolved_capability_plugins,
+        )
+        await db_session.commit()
+        await db_session.refresh(run_record)
+        await self.publish_created(
+            settings,
+            runtime_state,
+            run_record,
+            dispatch_mode=request.dispatch_mode,
+        )
+        return run_detail_from_record(run_record)
+
+    async def create_record(
+        self,
+        db_session: AsyncSession,
+        request: RunCreateRequest,
+        *,
+        trusted_metadata: bool = False,
+        source_delivery_id: str | None = None,
+        default_profile_name: str | None = None,
+        capability_plugins: ResolvedCapabilityPlugins | None = None,
+    ) -> RunRecord:
         session_id = request.session_id
         if session_id is None:
             if request.restore_from_run_id is not None:
@@ -134,9 +198,18 @@ class RunController:
             restore_from_run_id,
             request.reset_state,
         )
-        run_metadata = sanitize_external_run_metadata(metadata_with_workspace(request.metadata, request.workspace))
+        raw_metadata = metadata_with_workspace(request.metadata, request.workspace)
+        run_metadata = dict(raw_metadata) if trusted_metadata else sanitize_external_run_metadata(raw_metadata)
         if request.reset_state:
             run_metadata["restore_state"] = False
+        effective_profile_name = request.profile_name or session_record.profile_name or default_profile_name
+        run_metadata = await _metadata_with_execution_profile_snapshot(
+            db_session,
+            session_record=session_record,
+            profile_name=effective_profile_name,
+            run_metadata=run_metadata,
+            capability_plugins=capability_plugins,
+        )
 
         sequence_no = await self._next_sequence_no(db_session, session_id)
         run_id = uuid4().hex
@@ -147,41 +220,56 @@ class RunController:
             restore_from_run_id=restore_from_run_id,
             status=RunStatus.QUEUED,
             trigger_type=request.trigger_type,
-            profile_name=request.profile_name or session_record.profile_name,
+            profile_name=effective_profile_name,
             input_parts=[part.model_dump(mode="json") for part in request.input_parts],
             run_metadata=run_metadata,
+            source_delivery_id=source_delivery_id,
         )
         db_session.add(run_record)
         queue_run(session_record, run_record)
+        await db_session.flush()
+        return run_record
 
-        await db_session.commit()
-        await db_session.refresh(run_record)
-
-        ensure_run_dir(settings, run_id)
-        runtime_state.register_run(session_id, run_id, dispatch_mode=request.dispatch_mode)
-        agui_adapter = AguiEventAdapter(session_id=session_id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG)
+    async def publish_created(
+        self,
+        settings: ClawSettings,
+        runtime_state: InMemoryRuntimeState,
+        run_record: RunRecord,
+        *,
+        dispatch_mode: str,
+    ) -> None:
+        """Publish process-local runtime state only after the database commit succeeds."""
+        ensure_run_dir(settings, run_record.id)
+        runtime_state.register_run(
+            run_record.session_id,
+            run_record.id,
+            dispatch_mode=dispatch_mode,
+        )
+        agui_adapter = AguiEventAdapter(
+            session_id=run_record.session_id,
+            run_id=run_record.id,
+            config=CLAW_AGUI_ADAPTER_CONFIG,
+        )
         await runtime_state.append_run_event(
-            run_id,
+            run_record.id,
             agui_adapter.build_run_custom_event(
                 "run_queued",
                 {
-                    "run_id": run_id,
-                    "session_id": session_id,
+                    "run_id": run_record.id,
+                    "session_id": run_record.session_id,
                     "status": run_record.status,
-                    "sequence_no": sequence_no,
-                    "dispatch_mode": request.dispatch_mode,
+                    "sequence_no": run_record.sequence_no,
+                    "dispatch_mode": dispatch_mode,
                 },
             ),
         )
-
         logger.info(
             "Run queued run_id={} session_id={} sequence_no={} dispatch_mode={}",
-            run_id,
-            session_id,
-            sequence_no,
-            request.dispatch_mode,
+            run_record.id,
+            run_record.session_id,
+            run_record.sequence_no,
+            dispatch_mode,
         )
-        return run_detail_from_record(run_record)
 
     async def get(
         self,
@@ -335,35 +423,64 @@ class RunController:
         run_record = await db_session.get(RunRecord, run_id)
         if not isinstance(run_record, RunRecord):
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' was not found.")
-        if run_record.status not in _ACTIVE_RUN_STATUSES:
-            raise HTTPException(status_code=409, detail=f"Run '{run_id}' is not active.")
+        if run_record.status == RunStatus.QUEUED:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": RUN_INPUT_CLOSED_CODE, "message": f"Run '{run_id}' is not accepting input."},
+            )
         if not request.input_parts:
             raise HTTPException(status_code=422, detail="input_parts must not be empty for steer requests.")
 
         input_payload = [part.model_dump(mode="json") for part in request.input_parts]
         try:
-            await runtime_state.record_steering(run_id, input_payload)
-            agui_adapter = AguiEventAdapter(
-                session_id=run_record.session_id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG
+            admission = await admit_run_input(
+                db_session,
+                run_record,
+                input_payload,
+                delivery_key=request.idempotency_key,
             )
-            await runtime_state.append_run_event(
-                run_id,
-                agui_adapter.build_run_custom_event(
-                    "run_steered",
-                    {
-                        "run_id": run_id,
-                        "session_id": run_record.session_id,
-                        "input_parts": input_payload,
-                    },
-                ),
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=409, detail=f"Run '{run_id}' is not active in runtime state.") from exc
+            input_record = admission.record
+        except RunInputClosedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": RUN_INPUT_CLOSED_CODE, "message": str(exc)},
+            ) from exc
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await db_session.commit()
+        await db_session.refresh(input_record)
+
+        agui_adapter = AguiEventAdapter(
+            session_id=run_record.session_id,
+            run_id=run_id,
+            config=CLAW_AGUI_ADAPTER_CONFIG,
+        )
+        payload = {
+            "run_id": run_id,
+            "session_id": run_record.session_id,
+            "disposition": input_record.status,
+        }
+        if admission.created:
+            with suppress(KeyError):
+                await runtime_state.append_run_event(
+                    run_id,
+                    agui_adapter.build_run_custom_event("input_accepted", payload),
+                )
+        await deliver_accepted_run_inputs(db_session, runtime_state, run_id)
+        await db_session.refresh(input_record)
 
         return ControlResponse(
             session_id=run_record.session_id,
             run_id=run_id,
             status=RunStatus(run_record.status),
+            input_id=input_record.id,
+            input_delivery_key=input_record.delivery_key,
+            input_disposition=cast(
+                Literal["accepted", "enqueued", "applied", "rejected"],
+                input_record.status,
+            ),
+            input_sdk_id=input_record.sdk_input_id,
+            input_enqueue_id=input_record.enqueue_id,
         )
 
     async def respond_interaction(
@@ -374,15 +491,22 @@ class RunController:
         interaction_id: str,
         request: InteractionRespondRequest,
     ) -> InteractionRespondResponse:
-        response = await self._hitl_controller.respond_interaction(
+        result = await self._hitl_controller.respond_interaction(
             db_session,
-            runtime_state,
             run_id,
             interaction_id,
             request,
         )
         await db_session.commit()
-        return response
+        with suppress(KeyError):
+            await runtime_state.resolve_hitl_interaction(
+                run_id,
+                interaction_id,
+                approved=result.resolution.approved,
+                reason=result.resolution.reason,
+                user_input=result.resolution.user_input,
+            )
+        return result.response
 
     async def _stop_run(
         self,
@@ -395,13 +519,21 @@ class RunController:
         termination_reason: TerminationReason,
     ) -> RunDetail:
         logger.info("Stopping run run_id={} termination_reason={}", run_id, termination_reason)
-        run_record = await db_session.get(RunRecord, run_id)
+        run_candidate = await db_session.get(RunRecord, run_id)
+        if not isinstance(run_candidate, RunRecord):
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' was not found.")
+        session_record = await lock_session_reference(
+            db_session,
+            run_candidate.session_id,
+        )
+        if not isinstance(session_record, SessionRecord):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{run_candidate.session_id}' was not found.",
+            )
+        run_record = await lock_run_record(db_session, run_id)
         if not isinstance(run_record, RunRecord):
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' was not found.")
-
-        session_record = await db_session.get(SessionRecord, run_record.session_id)
-        if not isinstance(session_record, SessionRecord):
-            raise HTTPException(status_code=404, detail=f"Session '{run_record.session_id}' was not found.")
 
         if run_record.status in _ACTIVE_RUN_STATUSES:
             with suppress(KeyError):
@@ -410,6 +542,21 @@ class RunController:
                 interrupt_run(session_record, run_record)
             else:
                 cancel_run(session_record, run_record)
+            await self._hitl_controller.cancel_pending_batch(
+                db_session,
+                run_id=run_record.id,
+                reason=f"Run terminated by {termination_reason.value}.",
+            )
+            metadata = dict(run_record.run_metadata)
+            metadata.pop("active_interactions", None)
+            metadata.pop("active_hitl_batch_id", None)
+            run_record.run_metadata = metadata
+            await reject_open_run_inputs(
+                db_session,
+                run_id=run_record.id,
+                reason=f"Run terminated with status {run_record.status} before input could be applied.",
+                commit=False,
+            )
             await db_session.commit()
             await db_session.refresh(run_record)
             logger.info(
@@ -419,6 +566,8 @@ class RunController:
                 run_record.status,
                 run_record.termination_reason,
             )
+        else:
+            await db_session.commit()
 
         await self._emit_terminal_event(runtime_state, run_record, event_type)
 
@@ -469,25 +618,17 @@ class RunController:
         session_id: str,
         restore_from_run_id: str,
     ) -> RunRecord:
-        restore_record = await db_session.get(RunRecord, restore_from_run_id)
-        if not isinstance(restore_record, RunRecord):
-            raise HTTPException(status_code=404, detail=f"Run '{restore_from_run_id}' was not found.")
+        session_record = await db_session.get(SessionRecord, session_id)
+        if not isinstance(session_record, SessionRecord):
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' was not found.")
+        restore_record = await require_restore_source(
+            db_session,
+            target_session=session_record,
+            restore_run_id=restore_from_run_id,
+        )
         restore_session_id = restore_record.session_id
         if restore_session_id == session_id:
             return restore_record
-
-        session_record = await db_session.get(SessionRecord, session_id)
-        ancestor_session_id = session_record.parent_session_id if isinstance(session_record, SessionRecord) else None
-        while isinstance(ancestor_session_id, str) and restore_session_id != ancestor_session_id:
-            ancestor_record = await db_session.get(SessionRecord, ancestor_session_id)
-            ancestor_session_id = (
-                ancestor_record.parent_session_id if isinstance(ancestor_record, SessionRecord) else None
-            )
-        if restore_session_id != ancestor_session_id:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Run '{restore_from_run_id}' is not a valid restore source for session '{session_id}'.",
-            )
 
         try:
             restore_session = await lock_session_reference(db_session, restore_session_id)

@@ -1,13 +1,4 @@
-"""TUI session management.
-
-TUIContext extends AgentContext with TUI-specific state such as goal mode.
-
-The message bus (inherited from AgentContext) is used for injecting user
-guidance during agent execution:
-- User sends messages via ctx.send_message("guidance", source="user")
-- SDK's inject_bus_messages filter handles injection
-- SDK's message-bus completion capability enqueues a continuation at the final node boundary
-"""
+"""TUI context for durable input routing, usage, and goal state."""
 
 from __future__ import annotations
 
@@ -37,6 +28,12 @@ class TUIContext(AgentContext):
 
     model_profile_instructions: str | None = None
     """Static instructions for the currently active main-agent model profile."""
+
+    durable_binding_ref: str | None = None
+    """Worker-local authority reference used by persisted inbox capabilities."""
+
+    durable_logical_run_id: str | None = None
+    """Current product logical run selected by the execution coordinator."""
 
     goal_task: str | None = None
     goal_iteration: int = 0

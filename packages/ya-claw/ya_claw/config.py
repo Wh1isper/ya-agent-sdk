@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import socket
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal, cast
@@ -12,6 +12,12 @@ from uuid import uuid4
 from dotenv import dotenv_values, load_dotenv
 from pydantic import AliasChoices, Field, PositiveInt, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from ya_agent_sdk.capabilities import (
+    CapabilityPluginManifest,
+    ResolvedCapabilityPlugins,
+    load_capability_plugins,
+    resolve_capability_plugins,
+)
 from ya_agent_sdk.environment.virtual_path import normalize_virtual_path as normalize_agent_virtual_path
 
 from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchMode
@@ -191,6 +197,7 @@ class ClawSettings(BaseSettings):
     oauth_refresh_failure_retry_seconds: PositiveInt = 60
     oauth_refresh_on_startup: bool = True
     profile_seed_file: Path | None = None
+    capability_plugin_manifest: Path | None = None
     auto_seed_profiles: bool = False
     schedule_dispatch_enabled: bool = True
     schedule_tick_seconds: int = 5
@@ -300,6 +307,19 @@ class ClawSettings(BaseSettings):
         if self.profile_seed_file is None:
             return None
         return self.profile_seed_file.expanduser()
+
+    @property
+    def resolved_capability_plugin_manifest(self) -> Path | None:
+        if self.capability_plugin_manifest is None:
+            return None
+        return self.capability_plugin_manifest.expanduser()
+
+    @cached_property
+    def resolved_capability_plugins(self) -> ResolvedCapabilityPlugins:
+        manifest_path = self.resolved_capability_plugin_manifest
+        if manifest_path is not None:
+            return load_capability_plugins(manifest_path)
+        return resolve_capability_plugins(CapabilityPluginManifest(schema_version=1))
 
     @property
     def run_store_dir(self) -> Path:

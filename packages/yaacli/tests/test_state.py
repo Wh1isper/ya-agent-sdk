@@ -14,7 +14,7 @@ from yaacli.app import (
 
 
 def test_tui_phase_values():
-    """Test TUIPhase enum has every foreground and ready-state value."""
+    """Test TUIPhase enum has every foreground phase value."""
     assert list(TUIPhase) == [
         TUIPhase.IDLE,
         TUIPhase.THINKING,
@@ -25,7 +25,6 @@ def test_tui_phase_values():
         TUIPhase.COMMAND_RUNNING,
         TUIPhase.SAVING,
         TUIPhase.CANCELLING,
-        TUIPhase.BACKGROUND_RESULT_READY,
     ]
     assert set(VALID_TRANSITIONS) == set(TUIPhase)
 
@@ -73,14 +72,13 @@ def test_valid_transitions_from_streaming():
 
 
 def test_valid_transition_graph_covers_every_phase_exactly():
-    """Keep the enforced graph complete for every foreground and ready phase."""
+    """Keep the enforced graph complete for every foreground phase."""
     assert {
         TUIPhase.IDLE: {
             TUIPhase.THINKING,
             TUIPhase.SHELL_RUNNING,
             TUIPhase.COMMAND_RUNNING,
             TUIPhase.SAVING,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.THINKING: {
             TUIPhase.TOOL_CALLING,
@@ -89,7 +87,6 @@ def test_valid_transition_graph_covers_every_phase_exactly():
             TUIPhase.CANCELLING,
             TUIPhase.SAVING,
             TUIPhase.IDLE,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.TOOL_CALLING: {
             TUIPhase.AWAITING_APPROVAL,
@@ -98,14 +95,12 @@ def test_valid_transition_graph_covers_every_phase_exactly():
             TUIPhase.CANCELLING,
             TUIPhase.SAVING,
             TUIPhase.IDLE,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.AWAITING_APPROVAL: {
             TUIPhase.TOOL_CALLING,
             TUIPhase.CANCELLING,
             TUIPhase.SAVING,
             TUIPhase.IDLE,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.STREAMING_OUTPUT: {
             TUIPhase.THINKING,
@@ -114,19 +109,16 @@ def test_valid_transition_graph_covers_every_phase_exactly():
             TUIPhase.CANCELLING,
             TUIPhase.SAVING,
             TUIPhase.IDLE,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.SHELL_RUNNING: {
             TUIPhase.CANCELLING,
             TUIPhase.IDLE,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.COMMAND_RUNNING: {
             TUIPhase.THINKING,
             TUIPhase.SAVING,
             TUIPhase.CANCELLING,
             TUIPhase.IDLE,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.SAVING: {
             TUIPhase.IDLE,
@@ -136,17 +128,9 @@ def test_valid_transition_graph_covers_every_phase_exactly():
             TUIPhase.STREAMING_OUTPUT,
             TUIPhase.COMMAND_RUNNING,
             TUIPhase.CANCELLING,
-            TUIPhase.BACKGROUND_RESULT_READY,
         },
         TUIPhase.CANCELLING: {
             TUIPhase.SAVING,
-            TUIPhase.IDLE,
-            TUIPhase.BACKGROUND_RESULT_READY,
-        },
-        TUIPhase.BACKGROUND_RESULT_READY: {
-            TUIPhase.THINKING,
-            TUIPhase.SHELL_RUNNING,
-            TUIPhase.COMMAND_RUNNING,
             TUIPhase.IDLE,
         },
     } == VALID_TRANSITIONS

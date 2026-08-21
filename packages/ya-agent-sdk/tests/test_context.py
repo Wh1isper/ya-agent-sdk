@@ -43,11 +43,12 @@ async def test_retry_config_defaults_and_validation() -> None:
         "tools": 5,
         "output": 5,
         "toolset": 5,
-        "tool_search": 5,
         "tool_proxy": 5,
     }
     with pytest.raises(ValueError):
         RetryConfig(tools=-1)
+    with pytest.raises(ValueError, match="tool_search"):
+        RetryConfig.model_validate({"tool_search": 2})
 
 
 async def test_model_config_image_split_defaults() -> None:
@@ -131,9 +132,9 @@ async def test_agent_context_create_subagent_context(env: LocalEnvironment) -> N
     async with parent.create_subagent_context("search") as child:
         assert child.parent_run_id == parent.run_id
         assert child.run_id != parent.run_id
-        # Verify agent is registered with correct info
-        assert child.agent_id in parent.agent_registry
-        assert parent.agent_registry[child.agent_id].agent_name == "search"
+        # Stream attribution is shared for the process but not resumable.
+        assert child.agent_id in parent.agent_stream_info
+        assert parent.agent_stream_info[child.agent_id].agent_name == "search"
         assert child.start_at is not None
         assert child.end_at is None
 
@@ -147,7 +148,7 @@ def test_agent_context_rejects_reserved_main_subagent_id(env: LocalEnvironment) 
     with pytest.raises(ValueError, match="reserved for the root agent"):
         parent.create_subagent_context("worker", agent_id="main")
 
-    assert "main" not in parent.agent_registry
+    assert "main" not in parent.agent_stream_info
 
 
 async def test_agent_context_create_subagent_context_with_override(env: LocalEnvironment) -> None:
@@ -180,31 +181,27 @@ async def test_agent_context_create_subagent_context_inherits_security(env: Loca
 
 
 async def test_agent_context_create_subagent_context_inherits_retry_config(env: LocalEnvironment) -> None:
-    parent = AgentContext(env=env, retry_config=RetryConfig(tool_search=2, tool_proxy=3))
+    parent = AgentContext(env=env, retry_config=RetryConfig(tool_proxy=3))
 
     async with parent.create_subagent_context("search") as child:
         assert child.retry_config is parent.retry_config
-        assert child.retry_config.tool_search == 2
         assert child.retry_config.tool_proxy == 3
 
 
 async def test_agent_context_create_subagent_context_resets_prompts(env: LocalEnvironment) -> None:
-    """Should reset user_prompts, previous assistant reference, and steering_messages for subagents."""
+    """Subagents receive independent prompt and logical-input state."""
     parent = AgentContext(env=env)
     parent.user_prompts = "Parent prompt"
     parent.previous_assistant_response_reference = "Previous parent response"
-    parent.steering_messages = ["Parent steering 1", "Parent steering 2"]
 
     async with parent.create_subagent_context("search") as child:
-        # Subagent should have independent prompt tracking
-        assert child.user_prompts is None  # Reset, to be set by subagent caller
+        assert child.user_prompts is None
         assert child.previous_assistant_response_reference is None
-        assert child.steering_messages == []  # Fresh queue for subagent
+        assert child.run_input_ledger is not parent.run_input_ledger
+        assert child.run_input_ledger.records == []
 
-        # Parent's prompts should be unaffected
         assert parent.user_prompts == "Parent prompt"
         assert parent.previous_assistant_response_reference == "Previous parent response"
-        assert parent.steering_messages == ["Parent steering 1", "Parent steering 2"]
 
 
 async def test_agent_context_async_context_manager(env: LocalEnvironment) -> None:
@@ -755,10 +752,9 @@ async def test_export_and_with_state_empty(env: LocalEnvironment) -> None:
     async with AgentContext(env=env) as ctx:
         state = ctx.export_state()
 
-        assert state.subagent_history == {}
         assert state.usage_snapshot_entries == {}
         assert state.user_prompts is None
-        assert state.steering_messages == []
+        assert state.run_input_ledger.records == []
         assert state.handoff_message is None
         assert state.shell_env == {}
         assert state.deferred_tool_metadata == {}
@@ -767,22 +763,17 @@ async def test_export_and_with_state_empty(env: LocalEnvironment) -> None:
     async with AgentContext(env=env) as new_ctx:
         new_ctx.with_state(state)
 
-        assert new_ctx.subagent_history == {}
         assert new_ctx.usage_snapshot_entries == {}
-        assert new_ctx.steering_messages == []
+        assert new_ctx.run_input_ledger.records == []
 
 
 async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
     """Should export and restore state with data correctly."""
-    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
     from pydantic_ai.usage import RunUsage
 
     async with AgentContext(env=env) as ctx:
         # Set up some state
-        ctx.subagent_history["agent-1"] = [
-            ModelRequest(parts=[UserPromptPart(content="Hello")]),
-            ModelResponse(parts=[TextPart(content="Hi there")]),
-        ]
         ctx.update_usage_snapshot_entry(
             agent_id="search",
             agent_name="search",
@@ -793,10 +784,12 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
         )
         ctx.user_prompts = "Test prompt"
         ctx.previous_assistant_response_reference = "Previous response with numbered options"
-        ctx.steering_messages = ["Steering 1", "Steering 2"]
+        ctx.run_input_ledger.record_initial([ModelRequest(parts=[UserPromptPart(content="Retained user input")])])
         ctx.handoff_message = "Handoff summary"
         ctx.shell_env = {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
         ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
+        ctx.tool_proxy.loaded_tools = ["view"]
+        ctx.tool_proxy.loaded_namespaces = ["mcp:filesystem"]
 
         # Default export does NOT include usage_snapshot_entries
         state = ctx.export_state()
@@ -811,37 +804,29 @@ async def test_export_and_with_state_with_data(env: LocalEnvironment) -> None:
     async with AgentContext(env=env) as new_ctx:
         new_ctx.with_state(state)
 
-        # Verify subagent_history is restored correctly
-        assert "agent-1" in new_ctx.subagent_history
-        assert len(new_ctx.subagent_history["agent-1"]) == 2
-        request_msg = new_ctx.subagent_history["agent-1"][0]
-        assert isinstance(request_msg, ModelRequest)
-        assert request_msg.parts[0].content == "Hello"
-
         # Verify usage_snapshot_entries is empty (not restored by default)
         assert new_ctx.usage_snapshot_entries == {}
         assert new_ctx.user_prompts == "Test prompt"
         assert new_ctx.previous_assistant_response_reference == "Previous response with numbered options"
-        assert new_ctx.steering_messages == ["Steering 1", "Steering 2"]
+        assert len(new_ctx.run_input_ledger.records) == 1
+        assert "Retained user input" in str(new_ctx.run_input_ledger.applied_user_messages())
         assert new_ctx.handoff_message == "Handoff summary"
         assert new_ctx.shell_env == {"BASE_KEY": "base_value", "PATH": "/workspace/bin"}
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
+        assert new_ctx.tool_proxy.loaded_tools == ["view"]
+        assert new_ctx.tool_proxy.loaded_namespaces == ["mcp:filesystem"]
+        assert new_ctx.tool_proxy is not state.tool_proxy
 
 
-async def test_export_state_excludes_runtime_self_fork_agent(env: LocalEnvironment) -> None:
-    """Runtime-only self fork agent should not be serialized into state."""
-    sentinel = object()
-    async with AgentContext(env=env) as ctx:
-        ctx.self_fork_agent = sentinel
-        state = ctx.export_state()
+def test_resumable_state_rejects_removed_tool_search_fields() -> None:
+    from ya_agent_sdk.context import ResumableState
 
-        dumped_state = state.model_dump()
-        assert "self_fork_agent" not in dumped_state
-        assert "self_fork_agent" not in state.model_dump_json()
-
-    async with AgentContext(env=env) as new_ctx:
-        new_ctx.with_state(state)
-        assert new_ctx.self_fork_agent is None
+    with pytest.raises(ValueError, match="tool_search_loaded_tools"):
+        ResumableState.model_validate({
+            "schema_version": 2,
+            "tool_search_loaded_tools": ["view"],
+            "tool_search_loaded_namespaces": ["mcp:filesystem"],
+        })
 
 
 async def test_with_state_preserves_runtime_security(env: LocalEnvironment) -> None:
@@ -867,110 +852,20 @@ async def test_with_state_preserves_runtime_security(env: LocalEnvironment) -> N
         assert new_ctx.security.shell_review.on_needs_approval == "deny"
 
 
-async def test_export_state_include_subagent_false(env: LocalEnvironment) -> None:
-    """Should exclude subagent_history and agent_registry when include_subagent=False."""
-    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-    from pydantic_ai.usage import RunUsage
-
-    async with AgentContext(env=env) as ctx:
-        # Set up subagent-related state
-        ctx.subagent_history["agent-1"] = [
-            ModelRequest(parts=[UserPromptPart(content="Hello")]),
-            ModelResponse(parts=[TextPart(content="Hi there")]),
-        ]
-
-        # Simulate creating a subagent to populate agent_registry
-        async with ctx.create_subagent_context("search") as child:
-            child.subagent_history["nested-agent"] = [
-                ModelRequest(parts=[UserPromptPart(content="Nested")]),
-            ]
-
-        # Set up non-subagent state
-        ctx.update_usage_snapshot_entry(
-            agent_id="search",
-            agent_name="search",
-            model_id="openai-chat:gpt-4o",
-            usage=RunUsage(input_tokens=50, output_tokens=50),
-            usage_id="test-uuid",
-            ledger_key="test-uuid",
-        )
-        ctx.user_prompts = "Test prompt"
-        ctx.handoff_message = "Handoff summary"
-        ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
-        ctx.need_user_approve_tools = ["shell", "edit"]
-
-        # Export with include_subagent=False
-        state = ctx.export_state(include_subagent=False)
-
-        # Verify subagent-related fields are empty
-        assert state.subagent_history == {}
-        assert state.agent_registry == {}
-
-        # Verify non-subagent fields are preserved (except usage_snapshot_entries which defaults to not included)
-        assert state.usage_snapshot_entries == {}  # Default: not included
-        assert state.user_prompts == "Test prompt"
-        assert state.handoff_message == "Handoff summary"
-        assert state.deferred_tool_metadata == {"tool-1": {"key": "value"}}
-        assert state.need_user_approve_tools == ["shell", "edit"]
-
-        # Export with include_usage_ledger=True
-        state_with_usages = ctx.export_state(include_subagent=False, include_usage_ledger=True)
-        assert len(state_with_usages.usage_snapshot_entries) == 1
-        assert state_with_usages.usage_snapshot_entries["test-uuid"].usage_id == "test-uuid"
-
-
-async def test_export_state_include_subagent_true_default(env: LocalEnvironment) -> None:
-    """Should include subagent_history and agent_registry when include_subagent=True (default)."""
-    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-
-    async with AgentContext(env=env) as ctx:
-        # Set up subagent-related state
-        ctx.subagent_history["agent-1"] = [
-            ModelRequest(parts=[UserPromptPart(content="Hello")]),
-            ModelResponse(parts=[TextPart(content="Hi there")]),
-        ]
-
-        # Simulate creating a subagent to populate agent_registry
-        async with ctx.create_subagent_context("search"):
-            pass
-
-        # Export with default (include_subagent=True)
-        state_default = ctx.export_state()
-        state_explicit = ctx.export_state(include_subagent=True)
-
-        # Both should include subagent data
-        for state in [state_default, state_explicit]:
-            assert "agent-1" in state.subagent_history
-            assert len(state.subagent_history["agent-1"]) == 2
-            assert len(state.agent_registry) > 0
-
-
 async def test_resumable_state_json_serialization(env: LocalEnvironment) -> None:
-    """Should serialize and deserialize ResumableState to/from JSON."""
-    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    """Should serialize and deserialize SDK-owned resumable state."""
     from ya_agent_sdk.context import ResumableState
 
     async with AgentContext(env=env) as ctx:
-        ctx.subagent_history["agent-1"] = [
-            ModelRequest(parts=[UserPromptPart(content="Hello")]),
-            ModelResponse(parts=[TextPart(content="Hi there")]),
-        ]
         ctx.user_prompts = "Test prompt"
-
         state = ctx.export_state()
 
-        # Serialize to JSON string
-        json_str = state.model_dump_json()
-        assert isinstance(json_str, str)
+    json_str = state.model_dump_json()
+    restored_state = ResumableState.model_validate_json(json_str)
 
-        # Deserialize from JSON string
-        restored_state = ResumableState.model_validate_json(json_str)
-
-        # Verify restored state can be converted back to ModelMessage
-        history = restored_state.to_subagent_history()
-        assert "agent-1" in history
-        assert len(history["agent-1"]) == 2
-        assert history["agent-1"][0].parts[0].content == "Hello"
+    assert restored_state.user_prompts == "Test prompt"
+    assert "subagent_history" not in type(restored_state).model_fields
+    assert "agent_registry" not in type(restored_state).model_fields
 
 
 class _CallableRunUsage:
@@ -1053,159 +948,6 @@ async def test_resumable_state_json_serialization_with_usage_ledger(env: LocalEn
         assert rec2.usage.output_tokens == 75
         assert rec2.usage.requests == 1
         assert rec2.usage.tool_calls == 2
-
-
-async def test_resumable_state_with_binary_content(env: LocalEnvironment) -> None:
-    """Should serialize and deserialize ResumableState with BinaryContent (images, audio) to/from JSON."""
-    import base64
-
-    from pydantic_ai.messages import BinaryContent, ModelRequest, ModelResponse, TextPart, UserPromptPart
-    from ya_agent_sdk.context import ResumableState
-
-    # Create a test 1x1 red PNG image
-    red_pixel_png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
-    )
-
-    async with AgentContext(env=env) as ctx:
-        # Create BinaryContent with image data
-        image_content = BinaryContent(data=red_pixel_png, media_type="image/png")
-
-        # Add history with binary content in user prompt
-        ctx.subagent_history["vision-agent"] = [
-            ModelRequest(parts=[UserPromptPart(content=[image_content, "Describe this image"])]),
-            ModelResponse(parts=[TextPart(content="This is a 1x1 red pixel image.")]),
-        ]
-
-        state = ctx.export_state()
-
-        # Serialize to JSON string
-        json_str = state.model_dump_json()
-        assert isinstance(json_str, str)
-
-        # Verify the binary data is encoded (should be base64 string in JSON)
-        assert "image/png" in json_str
-
-        # Deserialize from JSON string
-        restored_state = ResumableState.model_validate_json(json_str)
-
-        # Verify restored state can be converted back to ModelMessage
-        history = restored_state.to_subagent_history()
-        assert "vision-agent" in history
-        assert len(history["vision-agent"]) == 2
-
-        # Verify the ModelRequest with BinaryContent is properly restored
-        request = history["vision-agent"][0]
-        assert isinstance(request, ModelRequest)
-        user_part = request.parts[0]
-        assert isinstance(user_part, UserPromptPart)
-
-        # UserPromptPart.content should be a list with BinaryContent and str
-        content_list = user_part.content
-        assert isinstance(content_list, list)
-        assert len(content_list) == 2
-
-        # First item should be BinaryContent with the image
-        restored_image = content_list[0]
-        assert isinstance(restored_image, BinaryContent)
-        assert restored_image.media_type == "image/png"
-        assert restored_image.data == red_pixel_png  # Binary data should match exactly
-
-        # Second item should be the text prompt
-        assert content_list[1] == "Describe this image"
-
-
-async def test_resumable_state_with_multiple_binary_contents(env: LocalEnvironment) -> None:
-    """Should handle multiple BinaryContent items across different messages."""
-    import base64
-
-    from pydantic_ai.messages import BinaryContent, ModelRequest, ModelResponse, TextPart, UserPromptPart
-    from ya_agent_sdk.context import ResumableState
-
-    # Create test images
-    red_pixel_png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
-    )
-    # Create a simple test JPEG (minimal valid JPEG)
-    minimal_jpeg = base64.b64decode(
-        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
-        "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwh"
-        "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAAR"
-        "CAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEB"
-        "AQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAB//2Q=="
-    )
-
-    async with AgentContext(env=env) as ctx:
-        image1 = BinaryContent(data=red_pixel_png, media_type="image/png")
-        image2 = BinaryContent(data=minimal_jpeg, media_type="image/jpeg")
-
-        # Multiple agents with binary content
-        ctx.subagent_history["agent-1"] = [
-            ModelRequest(parts=[UserPromptPart(content=[image1, "First image"])]),
-            ModelResponse(parts=[TextPart(content="First response")]),
-        ]
-        ctx.subagent_history["agent-2"] = [
-            ModelRequest(parts=[UserPromptPart(content=[image2, "Second image"])]),
-            ModelResponse(parts=[TextPart(content="Second response")]),
-        ]
-
-        state = ctx.export_state()
-
-        # Serialize and deserialize
-        json_str = state.model_dump_json()
-        restored_state = ResumableState.model_validate_json(json_str)
-        history = restored_state.to_subagent_history()
-
-        # Verify agent-1
-        assert "agent-1" in history
-        req1 = history["agent-1"][0]
-        assert isinstance(req1, ModelRequest)
-        content1 = req1.parts[0].content
-        assert content1[0].data == red_pixel_png
-        assert content1[0].media_type == "image/png"
-
-        # Verify agent-2
-        assert "agent-2" in history
-        req2 = history["agent-2"][0]
-        assert isinstance(req2, ModelRequest)
-        content2 = req2.parts[0].content
-        assert content2[0].data == minimal_jpeg
-        assert content2[0].media_type == "image/jpeg"
-
-
-async def test_resumable_state_with_tool_return_binary_content(env: LocalEnvironment) -> None:
-    """Should restore BinaryContent inside ToolReturnPart content after JSON round-trip."""
-    from pydantic_ai.messages import BinaryContent, ModelRequest, ToolReturnPart
-    from ya_agent_sdk.context import ResumableState
-
-    image_data = b"\x89PNG\r\n\x1a\nexample"
-
-    async with AgentContext(env=env) as ctx:
-        ctx.subagent_history["fetch-agent"] = [
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="fetch",
-                        content=[BinaryContent(data=image_data, media_type="image/png")],
-                        tool_call_id="call_1",
-                    )
-                ]
-            )
-        ]
-
-        json_str = ctx.export_state().model_dump_json()
-        restored_state = ResumableState.model_validate_json(json_str)
-        history = restored_state.to_subagent_history()
-
-        request = history["fetch-agent"][0]
-        assert isinstance(request, ModelRequest)
-        part = request.parts[0]
-        assert isinstance(part, ToolReturnPart)
-        assert isinstance(part.content, list)
-        restored_content = part.content[0]
-        assert isinstance(restored_content, BinaryContent)
-        assert restored_content.data == image_data
-        assert restored_content.media_type == "image/png"
 
 
 async def test_resumable_state_with_need_user_approve_tools(env: LocalEnvironment) -> None:
@@ -1543,59 +1285,6 @@ async def test_get_context_instructions_returns_xml(env: LocalEnvironment) -> No
         assert "<elapsed-time>" in instructions
 
 
-async def test_get_context_instructions_with_known_subagents(env: LocalEnvironment) -> None:
-    """Should include known-subagents when agent_registry has subagents."""
-    from ya_agent_sdk.context import AgentInfo
-
-    async with AgentContext(env=env) as ctx:
-        # Register some subagents
-        ctx.agent_registry["sub1"] = AgentInfo(
-            agent_id="sub1",
-            agent_name="search_agent",
-            parent_agent_id=ctx.run_id,
-        )
-        ctx.agent_registry["sub2"] = AgentInfo(
-            agent_id="sub2",
-            agent_name="reasoning_agent",
-            parent_agent_id=ctx.run_id,
-        )
-
-        instructions = await ctx.get_context_instructions()
-
-        # Check known-subagents section exists
-        assert "<known-subagents" in instructions
-        assert 'hint="Use subagent_info tool for more details"' in instructions
-        assert 'id="sub1"' in instructions
-        assert 'name="search_agent"' in instructions
-        assert 'id="sub2"' in instructions
-        assert 'name="reasoning_agent"' in instructions
-
-
-async def test_get_context_instructions_excludes_main_agent(env: LocalEnvironment) -> None:
-    """Should exclude the main agent from known-subagents."""
-    from ya_agent_sdk.context import AgentInfo
-
-    async with AgentContext(env=env) as ctx:
-        # Register main agent (should be excluded by _agent_id filtering)
-        ctx.agent_registry[ctx.agent_id] = AgentInfo(
-            agent_id=ctx.agent_id,
-            agent_name="main",
-            parent_agent_id=None,
-        )
-        # Register a subagent (should be included)
-        ctx.agent_registry["sub1"] = AgentInfo(
-            agent_id="sub1",
-            agent_name="search_agent",
-            parent_agent_id=ctx.agent_id,
-        )
-
-        instructions = await ctx.get_context_instructions()
-
-        # Should include subagent but not main agent itself
-        assert 'id="sub1"' in instructions
-        assert f'id="{ctx.agent_id}"' not in instructions
-
-
 async def test_get_context_instructions_no_subagents(env: LocalEnvironment) -> None:
     """Should not include known-subagents section when no subagents."""
     async with AgentContext(env=env) as ctx:
@@ -1771,6 +1460,8 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
             ledger_key="old",
         )
         ctx.deferred_tool_metadata["key"] = {"val": 1}
+        ctx.tool_proxy.loaded_tools = ["view"]
+        ctx.tool_proxy.loaded_namespaces = ["mcp:filesystem"]
 
         new = ctx.prepare_new_run()
 
@@ -1783,6 +1474,13 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
         assert new.start_at is not None  # set by prepare_new_run
         assert new.tool_id_wrapper is not ctx.tool_id_wrapper
         assert new.agent_stream_queues is not ctx.agent_stream_queues
+        assert new.tool_proxy.loaded_tools == ["view"]
+        assert new.tool_proxy.loaded_namespaces == ["mcp:filesystem"]
+        assert new.tool_proxy is not ctx.tool_proxy
+        assert new.tool_proxy.loaded_tools is not ctx.tool_proxy.loaded_tools
+        assert new.tool_proxy.loaded_namespaces is not ctx.tool_proxy.loaded_namespaces
+        new.tool_proxy.loaded_tools.append("edit")
+        assert ctx.tool_proxy.loaded_tools == ["view"]
 
         # Private state is reset
         assert new._entered is False
@@ -1792,27 +1490,22 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
 async def test_prepare_new_run_shares_long_lived_state(env: LocalEnvironment) -> None:
     """prepare_new_run should share long-lived state by reference."""
     async with AgentContext(env=env) as ctx:
-        # Pre-populate some shared state
-        ctx.steering_messages.append("test msg")
         ctx.need_user_approve_tools.append("shell")
 
         new = ctx.prepare_new_run()
 
         # Long-lived state is same object (shared reference)
         assert new.env is ctx.env
-        assert new.message_bus is ctx.message_bus
         assert new.task_manager is ctx.task_manager
         assert new.note_manager is ctx.note_manager
         assert new.model_cfg is ctx.model_cfg
         assert new.tool_config is ctx.tool_config
-        assert new.subagent_history is ctx.subagent_history
-        assert new.agent_registry is ctx.agent_registry
-        assert new.steering_messages is ctx.steering_messages
+        assert new.agent_stream_info is ctx.agent_stream_info
+        assert new.active_run_registry is ctx.active_run_registry
         assert new.need_user_approve_tools is ctx.need_user_approve_tools
 
-        # Mutations via new are visible from original (shared reference)
-        new.steering_messages.append("from new")
-        assert "from new" in ctx.steering_messages
+        new.need_user_approve_tools.append("edit")
+        assert "edit" in ctx.need_user_approve_tools
 
 
 async def test_prepare_new_run_preserves_subclass() -> None:
@@ -1825,3 +1518,36 @@ async def test_prepare_new_run_preserves_subclass() -> None:
     new = ctx.prepare_new_run()
     assert isinstance(new, CustomContext)
     assert new.custom_field == "hello"
+
+
+def test_subagent_context_owns_independent_resumable_state() -> None:
+    parent = AgentContext()
+    parent.note_manager.set("scope", "session-a")
+    parent.task_manager.create(
+        subject="Parent task",
+        description="Must remain parent-owned",
+    )
+    parent.files_to_inspect.append("parent.md")
+
+    child = parent.create_subagent_context("worker", "child")
+    child.note_manager.set("scope", "child")
+    child.task_manager.create(
+        subject="Child task",
+        description="Must remain child-owned",
+    )
+    child.files_to_inspect.append("child.md")
+
+    assert child.note_manager is not parent.note_manager
+    assert child.task_manager is not parent.task_manager
+    assert child.files_to_inspect is not parent.files_to_inspect
+    assert child.env is parent.env
+    assert child.active_run_registry is parent.active_run_registry
+    assert parent.note_manager.get("scope") == "session-a"
+    assert len(parent.task_manager.list_all()) == 1
+    assert parent.files_to_inspect == ["parent.md"]
+
+    restored = parent.create_subagent_context("worker", "restored")
+    child.export_state(include_usage_ledger=True).restore(restored)
+    assert restored.note_manager.get("scope") == "child"
+    assert len(restored.task_manager.list_all()) == 2
+    assert restored.files_to_inspect == ["parent.md", "child.md"]

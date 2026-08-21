@@ -46,7 +46,7 @@ It should store:
 - profile records and seed provenance
 - schedules and schedule fire history
 - heartbeat fire history
-- `profile_name` and request metadata needed for routing
+- `profile_name` for display/routing and a server-owned content-addressed profile descriptor for exact queued execution
 
 ### Session Metadata Principle
 
@@ -85,7 +85,7 @@ The filesystem does not need a session-first directory structure.
 
 ## `state.json`
 
-Each committed run may write one `state.json` file.
+Each committed run may write one `state.json` file. A suspended native segment also writes its stable state checkpoint before any durable HITL batch becomes externally visible.
 
 It should include:
 
@@ -122,6 +122,21 @@ Recommended shape:
 
 Related run and session metadata live in the run record and `state.json`.
 Checkpoint metadata belongs in store-side bookkeeping rather than the replay list payload.
+Public replay uses canonical `ya_agent.*` snake-case lifecycle names. Explicit projections
+exclude parent/child logical-run IDs, durable input/delivery IDs, native enqueue IDs,
+idempotency keys, full injected messages, internal SDK event IDs, and resumable state.
+Subagent events retain only their public execution handle and bounded previews;
+`ya_agent.enqueued_messages` exposes only `message_count`.
+
+### Deferred Segment and HITL Durability
+
+A `DeferredToolRequests` boundary is stable only after both message history and exported resumable state have been written to the run store. YA Claw performs that write before creating and publishing the SQL HITL batch. Both approval requests and external deferred calls become ordered interactions and must produce exact per-call results.
+
+Interaction identifiers are immutable and globally unique across a run, so delayed responses cannot target a later batch. Responses serialize on the run, persist one idempotent decision, and commit before process-local execution is notified. A conflicting retry returns the already committed decision. The HITL batch remains pending after its final response until deferred bridge inputs have been staged successfully.
+
+Inputs received through a bridge while HITL is pending remain SQL rows. Deferred admission and staging serialize on the same run lock and revalidate the current batch. When all interactions resolve, YA Claw atomically moves each pending deferred input into the canonical `run_input_inbox`, marks the source row consumed, and closes the batch to further admission in the same transaction. Mapping and native enqueue happen later through the ordinary durable inbox delivery path, so a process crash or late bridge message cannot lose or strand accepted input.
+
+Active segments are process-owned and are not replayed after restart. A stop request explicitly aborts the in-memory HITL wait rather than fabricating decisions. Startup interruption or an aborted continuation cancels any pending HITL batch, denies unresolved interactions, discards every unstaged deferred input for the run regardless of its batch's recorded status, clears active-interaction metadata, and retains the stable filesystem checkpoint for audit or explicit later restoration.
 
 ## In-Process Runtime State
 
@@ -145,9 +160,12 @@ Carries:
 - replayable per-run event buffers
 - session to latest run mapping for live session event routing
 - AGUI replay buffers used for dynamic compaction
-- steering queues
+- live ingress-binding metadata for active delivery only
 - termination signals
 - live subscriber counts
+
+Accepted/enqueued/applied/rejected steering state is stored in SQL `run_input_inbox` and
+the SDK logical input ledger, never in the event buffer.
 
 ## Incremental Event Buffer
 

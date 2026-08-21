@@ -16,7 +16,11 @@ Configuration files are loaded with project-level priority (no merging):
    - Global: ~/.yaacli/mcp.json
    - Project: .yaacli/mcp.json (overrides global entirely)
 
-4. **Environment variables** (YAACLI_*):
+4. **plugins.toml** (trusted in-process capability plugins):
+   - Global only: ~/.yaacli/plugins.toml
+   - Uses the strict YA Agent SDK manifest without project overrides
+
+5. **Environment variables** (YAACLI_*):
    - TUI configuration overrides only (merged on top of config.toml)
    - Does not affect model settings
 """
@@ -28,8 +32,14 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Literal, Self, TypedDict
 
-from pydantic import BaseModel, Field, PositiveInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from ya_agent_sdk.capabilities import (
+    CapabilityPluginManifest,
+    ResolvedCapabilityPlugins,
+    load_capability_plugins,
+    resolve_capability_plugins,
+)
 from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig, load_mcp_config_file
 
 from yaacli.theme import ThemePreference
@@ -59,7 +69,13 @@ __all__ = [
 # =============================================================================
 
 
-class GeneralConfig(BaseModel):
+class _StrictConfigModel(BaseModel):
+    """Base for user-authored config that rejects obsolete and misspelled fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GeneralConfig(_StrictConfigModel):
     """General agent configuration (global only)."""
 
     model: str = ""
@@ -74,23 +90,8 @@ class GeneralConfig(BaseModel):
     instructions: str | None = None
     """Optional static instructions applied when this default model profile is active."""
 
-    max_requests: int = 1000
-    """Maximum requests per session."""
-
-    agent_stream_resume_on_error: bool = True
-    """Resume failed streaming attempts from recovered message history."""
-
-    agent_stream_resume_max_attempts: int = 3
-    """Maximum total streaming attempts for non-transport errors."""
-
-    agent_stream_transport_resume_max_attempts: int = 20
-    """Independent maximum attempts per consecutive transient model transport failure streak."""
-
-    agent_stream_resume_prompt: str = (
-        "The previous streaming model request failed before the agent finished. "
-        "Continue the task from the available conversation history. Avoid repeating completed work."
-    )
-    """Prompt sent when resuming a failed stream attempt."""
+    max_requests: PositiveInt = 1000
+    """Cumulative model-request limit for one durable logical run."""
 
     max_goal_iterations: int = 10
     """Maximum iterations for /goal command."""
@@ -98,22 +99,13 @@ class GeneralConfig(BaseModel):
     system_prompt_file: str = ""
     """Path to custom system prompt file. Empty uses built-in default."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_loop_config(cls, data: object) -> object:
-        """Accept the former /loop iteration setting for existing configs."""
-        if isinstance(data, dict) and "max_goal_iterations" not in data and "max_loop_iterations" in data:
-            data = dict(data)
-            data["max_goal_iterations"] = data["max_loop_iterations"]
-        return data
-
     @property
     def is_configured(self) -> bool:
         """Check if model is configured."""
         return bool(self.model)
 
 
-class ModelProfileConfig(BaseModel):
+class ModelProfileConfig(_StrictConfigModel):
     """Selectable model profile configuration."""
 
     label: str | None = None
@@ -132,7 +124,7 @@ class ModelProfileConfig(BaseModel):
     """Optional static instructions applied when this model profile is active."""
 
 
-class DisplayConfig(BaseModel):
+class DisplayConfig(_StrictConfigModel):
     """Display and rendering configuration."""
 
     code_theme: ThemePreference = "auto"
@@ -166,7 +158,7 @@ class DisplayConfig(BaseModel):
     """Show elapsed time."""
 
 
-class ShellReviewConfig(BaseModel):
+class ShellReviewConfig(_StrictConfigModel):
     """Shell command safety review configuration."""
 
     enabled: bool = False
@@ -183,7 +175,7 @@ class ShellReviewConfig(BaseModel):
         return self
 
 
-class ToolsConfig(BaseModel):
+class ToolsConfig(_StrictConfigModel):
     """Tool permission and availability configuration."""
 
     enable_codeact: bool = True
@@ -205,14 +197,14 @@ class ToolsConfig(BaseModel):
     """MCP servers requiring user approval for all tools."""
 
 
-class SecurityConfig(BaseModel):
+class SecurityConfig(_StrictConfigModel):
     """Security runtime configuration."""
 
     shell_review: ShellReviewConfig = Field(default_factory=ShellReviewConfig)
     """Shell command safety review configuration."""
 
 
-class SubagentOverride(BaseModel):
+class SubagentOverride(_StrictConfigModel):
     """Override settings for a specific subagent."""
 
     model: str | None = None
@@ -221,12 +213,22 @@ class SubagentOverride(BaseModel):
     model_settings: str | dict[str, Any] | None = None
     """Override model settings: preset name or dict of actual values."""
 
+    model_cfg: str | dict[str, Any] | None = None
+    """Override context-window and model capability configuration."""
 
-class SubagentsConfig(BaseModel):
+    @field_validator("model", "model_settings", "model_cfg")
+    @classmethod
+    def _reject_legacy_inherit(cls, value: object) -> object:
+        if value == "inherit":
+            raise ValueError("'inherit' is not a native subagent value; omit the override instead")
+        return value
+
+
+class SubagentsConfig(_StrictConfigModel):
     """Subagent configuration.
 
-    Subagents are loaded from ~/.yaacli/subagents/
-    which is initialized by `yaacli setup`.
+    Subagents are loaded from ~/.yaacli/subagents/, which the first-run
+    setup wizard initializes.
     """
 
     disabled: list[str] = Field(default_factory=list)
@@ -236,7 +238,7 @@ class SubagentsConfig(BaseModel):
     """Override settings for specific subagents."""
 
 
-class CommandDefinition(BaseModel):
+class CommandDefinition(_StrictConfigModel):
     """Definition for a custom slash command.
 
     Custom commands trigger a predefined prompt when invoked via /name.
@@ -259,7 +261,7 @@ DEFAULT_COMMANDS: dict[str, CommandDefinition] = {
 }
 
 
-class S3Config(BaseModel):
+class S3Config(_StrictConfigModel):
     """S3 configuration for media upload."""
 
     enabled: bool = False
@@ -295,8 +297,15 @@ class S3Config(BaseModel):
     force_path_style: bool = False
     """Use path-style URLs. Required for some S3-compatible services (MinIO, Ceph, etc.)."""
 
+    @model_validator(mode="after")
+    def validate_enabled_bucket(self) -> Self:
+        """Require an upload destination whenever S3 media upload is enabled."""
+        if self.enabled and not self.bucket.strip():
+            raise ValueError("media.s3.bucket is required when media.s3.enabled is true")
+        return self
 
-class MediaConfig(BaseModel):
+
+class MediaConfig(_StrictConfigModel):
     """Media handling configuration."""
 
     s3: S3Config = Field(default_factory=S3Config)
@@ -309,7 +318,7 @@ class MediaConfig(BaseModel):
     """Maximum total bytes of clipboard attachments queued for one prompt."""
 
 
-class NotificationConfig(BaseModel):
+class NotificationConfig(_StrictConfigModel):
     """Terminal notification settings for interactive turns."""
 
     bell_on_turn_complete: bool = True
@@ -319,34 +328,20 @@ class NotificationConfig(BaseModel):
     """Emit a terminal bell when an interactive agent turn requires user input."""
 
 
-class SessionConfig(BaseModel):
+class SessionConfig(_StrictConfigModel):
     """Saved session persistence and retention configuration."""
 
     session_dir: str | None = None
-    """Optional directory for saved sessions. Defaults to ``~/.yaacli/sessions``."""
+    """Optional durable storage directory. Defaults to ``~/.yaacli/sessions``."""
 
-    auto_save_history: bool = True
-    """Persist recoverable interactive TUI turns automatically.
-
-    This setting does not control headless durability: successful headless
-    runs always save, while failed or cancelled headless runs emit their
-    terminal event without saving a recovery snapshot.
-    """
+    database_path: str | None = None
+    """Optional SQLite product-store path inside or outside ``session_dir``."""
 
     auto_restore: bool = False
     """Restore the newest session for the current workspace on TUI startup."""
 
-    max_turns_per_session: PositiveInt = 20
-    """Maximum saved turns retained inside each session."""
 
-    max_sessions: PositiveInt = 100
-    """Maximum saved sessions retained globally."""
-
-    max_session_age_days: PositiveInt | None = None
-    """Optional maximum session age in days. Older sessions are pruned on save."""
-
-
-class OAuthRefreshConfig(BaseModel):
+class OAuthRefreshConfig(_StrictConfigModel):
     """OAuth proactive refresh configuration."""
 
     enabled: bool = True
@@ -355,7 +350,7 @@ class OAuthRefreshConfig(BaseModel):
     refresh_on_startup: bool = True
 
 
-class YaacliConfig(BaseModel):
+class YaacliConfig(_StrictConfigModel):
     """Complete yaacli configuration."""
 
     # From global config
@@ -437,17 +432,8 @@ class EnvSettings(BaseSettings):
 
     # Session
     session_dir: str | None = None
-    auto_save_history: bool | None = None
+    database_path: str | None = None
     auto_restore: bool | None = None
-    max_turns_per_session: PositiveInt | None = None
-    max_sessions: PositiveInt | None = None
-    max_session_age_days: PositiveInt | None = None
-
-    # Agent stream recovery
-    agent_stream_resume_on_error: bool | None = None
-    agent_stream_resume_max_attempts: int | None = None
-    agent_stream_transport_resume_max_attempts: int | None = None
-    agent_stream_resume_prompt: str | None = None
 
     # OAuth refresh
     oauth_refresh_enabled: bool | None = None
@@ -465,6 +451,8 @@ class ConfigManager:
     """Manages configuration loading from global, project, and environment sources."""
 
     DEFAULT_CONFIG_DIR = Path.home() / ".yaacli"
+    DEFAULT_SESSION_DATABASE_NAME = "sessions-v2.sqlite3"
+    PLUGIN_MANIFEST_NAME = "plugins.toml"
     PROJECT_CONFIG_DIR = ".yaacli"
 
     def __init__(
@@ -576,31 +564,12 @@ class ConfigManager:
         session: dict[str, Any] = {}
         if env.session_dir is not None:
             session["session_dir"] = env.session_dir
-        if env.auto_save_history is not None:
-            session["auto_save_history"] = env.auto_save_history
+        if env.database_path is not None:
+            session["database_path"] = env.database_path
         if env.auto_restore is not None:
             session["auto_restore"] = env.auto_restore
-        if env.max_turns_per_session is not None:
-            session["max_turns_per_session"] = env.max_turns_per_session
-        if env.max_sessions is not None:
-            session["max_sessions"] = env.max_sessions
-        if env.max_session_age_days is not None:
-            session["max_session_age_days"] = env.max_session_age_days
         if session:
             overrides["session"] = session
-
-        # Agent stream recovery
-        general: dict[str, Any] = {}
-        if env.agent_stream_resume_on_error is not None:
-            general["agent_stream_resume_on_error"] = env.agent_stream_resume_on_error
-        if env.agent_stream_resume_max_attempts is not None:
-            general["agent_stream_resume_max_attempts"] = env.agent_stream_resume_max_attempts
-        if env.agent_stream_transport_resume_max_attempts is not None:
-            general["agent_stream_transport_resume_max_attempts"] = env.agent_stream_transport_resume_max_attempts
-        if env.agent_stream_resume_prompt is not None:
-            general["agent_stream_resume_prompt"] = env.agent_stream_resume_prompt
-        if general:
-            overrides["general"] = general
 
         # OAuth refresh
         oauth_refresh: dict[str, Any] = {}
@@ -646,6 +615,19 @@ class ConfigManager:
         if global_mcp.exists():
             return global_mcp
         return None
+
+    @property
+    def capability_plugin_manifest_path(self) -> Path:
+        """Return the fixed global capability plugin manifest path."""
+        return self._config_dir / self.PLUGIN_MANIFEST_NAME
+
+    def load_capability_plugin_config(self) -> ResolvedCapabilityPlugins:
+        """Load the global plugin manifest or return one empty SDK catalog snapshot."""
+        manifest_path = self.capability_plugin_manifest_path
+        try:
+            return load_capability_plugins(manifest_path)
+        except FileNotFoundError:
+            return resolve_capability_plugins(CapabilityPluginManifest(schema_version=1))
 
     # Entries to exclude from file tree context in ~/.yaacli/
     _TREEIGNORE_DIRS = frozenset({"sessions", "message_history", "worktrees"})
@@ -711,17 +693,20 @@ class ConfigManager:
         return self._project_dir / self.PROJECT_CONFIG_DIR / "tools.toml"
 
     def get_sessions_dir(self) -> Path:
-        """Get sessions directory for session-based storage.
-
-        Returns:
-            Path to the sessions directory under global config.
-            Format: ~/.yaacli/sessions/
-        """
+        """Get the durable storage directory."""
         config = self._config
         configured_dir = config.session.session_dir if config is not None else None
         if configured_dir:
             return Path(configured_dir).expanduser().resolve()
         return self._config_dir / "sessions"
+
+    def get_session_database_path(self) -> Path:
+        """Get the SQLite product-store path."""
+        config = self._config
+        configured = config.session.database_path if config is not None else None
+        if configured:
+            return Path(configured).expanduser().resolve()
+        return self.get_sessions_dir() / self.DEFAULT_SESSION_DATABASE_NAME
 
 
 # =============================================================================

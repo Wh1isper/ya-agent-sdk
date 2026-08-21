@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import anyio
-import httpx
+import httpx2
 import pytest
 from pydantic_ai.exceptions import UserError
 from ya_oauth.types import OAuthAccount, TokenSnapshot
@@ -41,7 +41,7 @@ class FakeTokenSource:
         return TokenSnapshot(
             provider_name="codex",
             access_token=ACCESS_TOKEN_NEW,
-            account=OAuthAccount(chatgpt_account_id="acct_456"),
+            account=OAuthAccount(),
         )
 
 
@@ -87,6 +87,7 @@ def test_build_codex_model_defaults_to_websocket_auto() -> None:
     model = build_codex_model("gpt-5.5", token_source=FakeTokenSource())
 
     assert isinstance(model, CodexWebsocketResponsesModel)
+    assert isinstance(model.provider.client._client, httpx2.AsyncClient)
     assert model.websocket_fallback_state.mode == "auto"
 
 
@@ -95,6 +96,23 @@ def test_build_codex_model_can_force_http() -> None:
 
     assert isinstance(model, CodexResponsesModel)
     assert not isinstance(model, CodexWebsocketResponsesModel)
+
+
+@pytest.mark.asyncio
+async def test_build_codex_model_owned_httpx2_client_closes_and_recreates() -> None:
+    model = build_codex_model("gpt-5.5", token_source=FakeTokenSource())
+    assert isinstance(model, CodexWebsocketResponsesModel)
+    first_client = model.provider.client._client
+
+    async with model:
+        assert first_client.is_closed is False
+    assert first_client.is_closed is True
+
+    async with model:
+        second_client = model.provider.client._client
+        assert second_client is not first_client
+        assert second_client.is_closed is False
+    assert second_client.is_closed is True
 
 
 def test_build_codex_model_requires_streaming_for_non_stream_request() -> None:
@@ -149,13 +167,13 @@ async def test_oauth_bearer_auth_fills_codex_responses_instructions() -> None:
     source = FakeTokenSource()
     seen: list[dict[str, object]] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(dict(json.loads(request.content)))
         assert "version" not in request.headers
-        return httpx.Response(200, json={"ok": True}, request=request)
+        return httpx2.Response(200, json={"ok": True}, request=request)
 
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
         auth=OAuthBearerAuth(source, provider_name="codex"),
     )
 
@@ -173,16 +191,43 @@ async def test_oauth_bearer_auth_fills_codex_responses_instructions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_oauth_bearer_auth_normalizes_async_stream_body() -> None:
+    source = FakeTokenSource()
+    seen: list[dict[str, object]] = []
+
+    async def body():
+        yield b'{"model":"gpt-5.5","max_output_tokens":4096}'
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(dict(json.loads(request.content)))
+        assert "transfer-encoding" not in request.headers
+        assert request.headers["content-length"] == str(len(request.content))
+        return httpx2.Response(200, json={"ok": True}, request=request)
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        auth=OAuthBearerAuth(source, provider_name="codex"),
+    ) as client:
+        await client.post(
+            "https://chatgpt.com/backend-api/codex/responses",
+            content=body(),
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert seen == [{"model": "gpt-5.5", "instructions": "", "store": False}]
+
+
+@pytest.mark.asyncio
 async def test_oauth_bearer_auth_strips_codex_response_token_limits() -> None:
     source = FakeTokenSource()
     seen: list[dict[str, object]] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(dict(json.loads(request.content)))
-        return httpx.Response(200, json={"ok": True}, request=request)
+        return httpx2.Response(200, json={"ok": True}, request=request)
 
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
         auth=OAuthBearerAuth(source, provider_name="codex"),
     )
 
@@ -205,12 +250,12 @@ async def test_oauth_bearer_auth_keeps_token_limits_for_non_codex_response_reque
     source = FakeTokenSource()
     seen: list[dict[str, object]] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(dict(json.loads(request.content)))
-        return httpx.Response(200, json={"ok": True}, request=request)
+        return httpx2.Response(200, json={"ok": True}, request=request)
 
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
         auth=OAuthBearerAuth(source, provider_name="codex"),
     )
 
@@ -223,16 +268,20 @@ async def test_oauth_bearer_auth_keeps_token_limits_for_non_codex_response_reque
 @pytest.mark.asyncio
 async def test_oauth_bearer_auth_refreshes_once_on_401() -> None:
     source = FakeTokenSource()
-    seen: list[str] = []
+    seen: list[dict[str, str | None]] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request.headers["Authorization"])
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append({
+            "authorization": request.headers.get("Authorization"),
+            "account_id": request.headers.get("ChatGPT-Account-ID"),
+            "fedramp": request.headers.get("X-OpenAI-Fedramp"),
+        })
         if len(seen) == 1:
-            return httpx.Response(401, request=request)
-        return httpx.Response(200, json={"ok": True}, request=request)
+            return httpx2.Response(401, request=request)
+        return httpx2.Response(200, json={"ok": True}, request=request)
 
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
+    client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
         auth=OAuthBearerAuth(source, provider_name="codex", extra_headers={"session_id": "s1"}),
     )
 
@@ -240,7 +289,49 @@ async def test_oauth_bearer_auth_refreshes_once_on_401() -> None:
     await client.aclose()
 
     assert response.status_code == 200
-    assert seen == [f"Bearer {ACCESS_TOKEN_OLD}", f"Bearer {ACCESS_TOKEN_NEW}"]
+    assert seen == [
+        {
+            "authorization": f"Bearer {ACCESS_TOKEN_OLD}",
+            "account_id": "acct_123",
+            "fedramp": "true",
+        },
+        {
+            "authorization": f"Bearer {ACCESS_TOKEN_NEW}",
+            "account_id": None,
+            "fedramp": None,
+        },
+    ]
+    assert source.refresh_count == 1
+
+
+@pytest.mark.asyncio
+async def test_oauth_bearer_auth_normalizes_and_replays_async_stream_body_on_401() -> None:
+    source = FakeTokenSource()
+    seen_bodies: list[dict[str, object]] = []
+
+    async def body():
+        yield b'{"model":"gpt-5.5","max_output_tokens":4096}'
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen_bodies.append(dict(json.loads(request.content)))
+        status_code = 401 if len(seen_bodies) == 1 else 200
+        return httpx2.Response(status_code, json={"ok": True}, request=request)
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler),
+        auth=OAuthBearerAuth(source, provider_name="codex"),
+    ) as client:
+        response = await client.post(
+            "https://chatgpt.com/backend-api/codex/responses",
+            content=body(),
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert seen_bodies == [
+        {"model": "gpt-5.5", "instructions": "", "store": False},
+        {"model": "gpt-5.5", "instructions": "", "store": False},
+    ]
     assert source.refresh_count == 1
 
 

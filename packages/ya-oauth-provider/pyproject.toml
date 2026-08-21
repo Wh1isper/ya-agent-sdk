@@ -22,7 +22,6 @@ Repository = "https://github.com/wh1isper/ya-mono"
 dev = [
     "pytest>=7.2.0",
     "pytest-asyncio>=0.25.3",
-    "pytest-httpx>=0.35.0",
     "ruff>=0.9.2",
     "pyright>=1.1.0",
 ]
@@ -41,9 +40,9 @@ bump = true
 
 [tool.hatch.metadata.hooks.uv-dynamic-versioning]
 dependencies = [
-    "httpx>=0.28.1",
+    "httpx2>=2.12.0",
     "pydantic>=2.12.0",
-    "pydantic-ai>=2.21.0,<3",
+    "pydantic-ai>=2.33.0,<3",
     "tenacity>=9.0.0",
     "ya-agent-sdk=={{ version }}",
     "ya-oauth=={{ version }}",
@@ -58,5 +57,5 @@ ya-oauth = { workspace = true }
 
 [tool.deptry]
 ignore = ["DEP001", "DEP002"]
-package_module_name_map = { "httpx" = "httpx", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "pytest-httpx" = "pytest_httpx", "ruff" = "ruff", "pyright" = "pyright", "tenacity" = "tenacity", "ya-agent-sdk" = "ya_agent_sdk", "ya-oauth" = "ya_oauth" }
-per_rule_ignores = { DEP003 = ["anyio", "httpx", "pydantic-ai", "pytest", "tenacity", "ya_agent_sdk"], DEP004 = ["pytest"] }
+package_module_name_map = { "httpx2" = "httpx2", "pydantic" = "pydantic", "pydantic-ai" = "pydantic_ai", "pytest" = "pytest", "pytest-asyncio" = "pytest_asyncio", "ruff" = "ruff", "pyright" = "pyright", "tenacity" = "tenacity", "ya-agent-sdk" = "ya_agent_sdk", "ya-oauth" = "ya_oauth" }
+per_rule_ignores = { DEP003 = ["anyio", "httpx2", "pydantic-ai", "pytest", "tenacity", "ya_agent_sdk"], DEP004 = ["pytest"] }

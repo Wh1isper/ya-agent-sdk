@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -12,12 +12,16 @@ from ya_claw.controller.models import ActiveInteraction, UserInteraction
 from ya_claw.json_types import JsonValue
 
 
+class HitlWaitAborted(RuntimeError):
+    """Raised when a pending HITL wait is stopped without fabricated decisions."""
+
+
 @dataclass(slots=True)
 class ActiveRunHandle:
     run_id: str
     session_id: str
     dispatch_mode: str = "async"
-    steering_inputs: list[list[dict[str, Any]]] = field(default_factory=list)
+    input_ingress: Callable[[str, list[dict[str, Any]]], Awaitable[Any]] | None = None
     events: list[BufferedStreamEvent] = field(default_factory=list)
     replay: AguiReplayBuffer = field(default_factory=AguiReplayBuffer)
     next_event_id: int = 1
@@ -35,6 +39,7 @@ class HitlRunState:
     interactions: list[ActiveInteraction]
     resolved: dict[str, UserInteraction] = field(default_factory=dict)
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    aborted_reason: str | None = None
 
     @property
     def current_interaction(self) -> ActiveInteraction | None:
@@ -56,6 +61,7 @@ class InMemoryRuntimeState:
     hitl_states: dict[str, HitlRunState] = field(default_factory=dict)
     cleanup_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     session_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    run_input_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     subscribers: int = 0
 
     def session_lock(self, session_id: str) -> asyncio.Lock:
@@ -63,6 +69,13 @@ class InMemoryRuntimeState:
         if lock is None:
             lock = asyncio.Lock()
             self.session_locks[session_id] = lock
+        return lock
+
+    def run_input_lock(self, run_id: str) -> asyncio.Lock:
+        lock = self.run_input_locks.get(run_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.run_input_locks[run_id] = lock
         return lock
 
     def register_run(self, session_id: str, run_id: str, *, dispatch_mode: str = "async") -> ActiveRunHandle:
@@ -96,6 +109,7 @@ class InMemoryRuntimeState:
             self.session_latest_run_ids.pop(handle.session_id, None)
         self.background_tasks.pop(run_id, None)
         self.hitl_states.pop(run_id, None)
+        self.run_input_locks.pop(run_id, None)
 
     def schedule_run_cleanup(self, run_id: str, *, delay_seconds: float = 30.0) -> None:
         handle = self.get_run_handle(run_id)
@@ -186,8 +200,10 @@ class InMemoryRuntimeState:
         if state is None:
             raise KeyError(run_id)
         async with state.condition:
-            while state.remaining_count > 0:
+            while state.remaining_count > 0 and state.aborted_reason is None:
                 await state.condition.wait()
+            if state.aborted_reason is not None:
+                raise HitlWaitAborted(state.aborted_reason)
             return [state.resolved[item.interaction_id] for item in state.interactions]
 
     def clear_hitl(self, run_id: str) -> None:
@@ -220,19 +236,36 @@ class InMemoryRuntimeState:
 
         return event
 
-    async def record_steering(self, run_id: str, input_parts: list[dict[str, Any]]) -> None:
+    def bind_input_ingress(
+        self,
+        run_id: str,
+        ingress: Callable[[str, list[dict[str, Any]]], Awaitable[Any]],
+    ) -> None:
         handle = self.get_run_handle(run_id)
         if not isinstance(handle, ActiveRunHandle):
             raise KeyError(run_id)
-        handle.steering_inputs.append(list(input_parts))
+        if handle.input_ingress is not None:
+            raise RuntimeError(f"Run {run_id!r} already has an active input ingress")
+        handle.input_ingress = ingress
 
-    def consume_steering_inputs(self, run_id: str) -> list[list[dict[str, Any]]]:
+    def clear_input_ingress(self, run_id: str) -> None:
+        handle = self.get_run_handle(run_id)
+        if isinstance(handle, ActiveRunHandle):
+            handle.input_ingress = None
+
+    async def record_steering(
+        self,
+        run_id: str,
+        input_id: str,
+        input_parts: list[dict[str, Any]],
+    ) -> Any:
         handle = self.get_run_handle(run_id)
         if not isinstance(handle, ActiveRunHandle):
-            return []
-        pending = list(handle.steering_inputs)
-        handle.steering_inputs.clear()
-        return pending
+            raise KeyError(run_id)
+        ingress = handle.input_ingress
+        if ingress is None:
+            raise RuntimeError(f"Run {run_id!r} is not accepting input")
+        return await ingress(input_id, list(input_parts))
 
     def get_termination_requested(self, run_id: str) -> str | None:
         handle = self.get_run_handle(run_id)
@@ -250,6 +283,7 @@ class InMemoryRuntimeState:
         hitl_state = self.hitl_states.get(run_id)
         if hitl_state is not None:
             async with hitl_state.condition:
+                hitl_state.aborted_reason = termination_reason
                 hitl_state.condition.notify_all()
 
     async def close_run(self, run_id: str) -> None:

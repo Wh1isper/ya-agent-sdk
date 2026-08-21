@@ -69,7 +69,7 @@ flowchart TB
 
     subgraph SDK[ya-agent-sdk]
         AGENT[create_agent]
-        STREAM[stream_agent]
+        STREAM[AgentExecutionHarness]
         CTX[ClawAgentContext]
         ENV[Environment]
     end
@@ -151,7 +151,7 @@ The architecture revolves around a small set of runtime objects:
 - **Workspace Binding**: declarative workspace view for one run, including mount set, default host path, virtual paths, cwd, path policy, and metadata
 - **Environment Factory**: runtime component that turns a workspace binding into a concrete SDK `Environment`
 - **ClawAgentContext**: YA Claw-specific `AgentContext` subclass that carries run, session, profile, workspace, and source metadata
-- **ClawRuntimeBuilder**: runtime component that assembles `Environment`, `ClawAgentContext`, toolsets, and agent configuration into one SDK runtime
+- **ClawRuntimeBuilder**: runtime component that resolves the profile `AgentSpec`, explicit capabilities, `Environment`, and `ClawAgentContext` into one SDK runtime
 - **Execution Supervisor**: in-process manager that claims queued runs, starts coordinators, and tracks active execution
 - **Run Coordinator**: short-lived per-run executor from claim to terminal state
 - **Workflow**: durable Claw-managed orchestration resource that agents can supervise and control through built-in tools

@@ -513,25 +513,20 @@ async def test_registry_restore_one_calls_setup_before_restore() -> None:
         assert resource.call_order == ["setup", "restore"]
 
 
-# --- get_toolsets Tests ---
+# --- get_capabilities Tests ---
 
 
-async def test_base_resource_default_get_toolsets() -> None:
-    """BaseResource should return empty list by default."""
+async def test_base_resource_default_get_capabilities() -> None:
     resource = MinimalBaseResource()
-    toolsets = resource.get_toolsets()
-    assert toolsets == []
+    assert resource.get_capabilities() == ()
 
 
-async def test_registry_get_toolsets_empty() -> None:
-    """Registry should return empty list when no resources."""
+async def test_registry_get_agent_contributions_empty() -> None:
     async with MockEnvironment() as env:
-        toolsets = env.resources.get_toolsets()
-        assert toolsets == []
+        assert env.resources.get_agent_contributions() == ()
 
 
-async def test_registry_get_toolsets_collects_from_resources() -> None:
-    """Registry should collect toolsets from all resources."""
+async def test_registry_get_agent_contributions_preserves_sources() -> None:
 
     class ResourceWithToolset(BaseResource):
         def __init__(self, toolset: object) -> None:
@@ -540,7 +535,7 @@ async def test_registry_get_toolsets_collects_from_resources() -> None:
         async def close(self) -> None:
             pass
 
-        def get_toolsets(self) -> list:
+        def get_capabilities(self) -> list:
             return [self._toolset]
 
     async with MockEnvironment() as env:
@@ -558,24 +553,24 @@ async def test_registry_get_toolsets_collects_from_resources() -> None:
         await env.resources.get_or_create("r1")
         await env.resources.get_or_create("r2")
 
-        toolsets = env.resources.get_toolsets()
-        assert len(toolsets) == 2
-        assert toolset1 in toolsets
-        assert toolset2 in toolsets
+        groups = env.resources.get_agent_contributions()
+        assert [(group.source_id, group.capabilities) for group in groups] == [
+            ("resource:r1", (toolset1,)),
+            ("resource:r2", (toolset2,)),
+        ]
 
 
-async def test_registry_get_toolsets_with_multiple_toolsets() -> None:
-    """Resource can return multiple toolsets."""
+async def test_registry_groups_multiple_capabilities_from_one_resource() -> None:
 
     class MultiToolsetResource(BaseResource):
         def __init__(self, toolsets: list) -> None:
-            self._toolsets = toolsets
+            self._capabilities = toolsets
 
         async def close(self) -> None:
             pass
 
-        def get_toolsets(self) -> list:
-            return self._toolsets
+        def get_capabilities(self) -> list:
+            return self._capabilities
 
     async with MockEnvironment() as env:
         toolset_a = object()
@@ -587,10 +582,10 @@ async def test_registry_get_toolsets_with_multiple_toolsets() -> None:
         env.resources.register_factory("multi", create_multi)
         await env.resources.get_or_create("multi")
 
-        toolsets = env.resources.get_toolsets()
-        assert len(toolsets) == 2
-        assert toolset_a in toolsets
-        assert toolset_b in toolsets
+        groups = env.resources.get_agent_contributions()
+        assert [(group.source_id, group.capabilities) for group in groups] == [
+            ("resource:multi", (toolset_a, toolset_b))
+        ]
 
 
 # --- Factory Environment Access Tests ---
@@ -731,7 +726,7 @@ async def test_registry_close_all_with_exception() -> None:
         async def setup(self) -> None:
             pass
 
-        def get_toolsets(self) -> list:
+        def get_capabilities(self) -> list:
             return []
 
     async with MockEnvironment() as env:
@@ -796,7 +791,7 @@ async def test_registry_close_all_parallel_with_exception() -> None:
         async def setup(self) -> None:
             pass
 
-        def get_toolsets(self) -> list:
+        def get_capabilities(self) -> list:
             return []
 
     async with MockEnvironment() as env:

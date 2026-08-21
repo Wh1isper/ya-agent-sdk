@@ -20,9 +20,8 @@ class TUIPhase(Enum):
     - STREAMING_OUTPUT: Streaming text output
     - SHELL_RUNNING: Running a direct foreground shell command
     - COMMAND_RUNNING: Dispatching a foreground slash command
-    - SAVING: Persisting a session snapshot
+    - SAVING: Persisting a durable revision
     - CANCELLING: Cancelling foreground work
-    - BACKGROUND_RESULT_READY: Background results are ready for integration
     """
 
     IDLE = auto()
@@ -34,7 +33,6 @@ class TUIPhase(Enum):
     COMMAND_RUNNING = auto()
     SAVING = auto()
     CANCELLING = auto()
-    BACKGROUND_RESULT_READY = auto()
 
 
 # Valid state transitions
@@ -44,7 +42,6 @@ VALID_TRANSITIONS: dict[TUIPhase, set[TUIPhase]] = {
         TUIPhase.SHELL_RUNNING,
         TUIPhase.COMMAND_RUNNING,
         TUIPhase.SAVING,
-        TUIPhase.BACKGROUND_RESULT_READY,
     },
     TUIPhase.THINKING: {
         TUIPhase.TOOL_CALLING,
@@ -53,7 +50,6 @@ VALID_TRANSITIONS: dict[TUIPhase, set[TUIPhase]] = {
         TUIPhase.CANCELLING,
         TUIPhase.SAVING,
         TUIPhase.IDLE,
-        TUIPhase.BACKGROUND_RESULT_READY,
     },
     TUIPhase.TOOL_CALLING: {
         TUIPhase.AWAITING_APPROVAL,
@@ -62,14 +58,12 @@ VALID_TRANSITIONS: dict[TUIPhase, set[TUIPhase]] = {
         TUIPhase.CANCELLING,
         TUIPhase.SAVING,
         TUIPhase.IDLE,
-        TUIPhase.BACKGROUND_RESULT_READY,
     },
     TUIPhase.AWAITING_APPROVAL: {
         TUIPhase.TOOL_CALLING,
         TUIPhase.CANCELLING,
         TUIPhase.SAVING,
         TUIPhase.IDLE,
-        TUIPhase.BACKGROUND_RESULT_READY,
     },
     TUIPhase.STREAMING_OUTPUT: {
         TUIPhase.THINKING,
@@ -78,15 +72,13 @@ VALID_TRANSITIONS: dict[TUIPhase, set[TUIPhase]] = {
         TUIPhase.CANCELLING,
         TUIPhase.SAVING,
         TUIPhase.IDLE,
-        TUIPhase.BACKGROUND_RESULT_READY,
     },
-    TUIPhase.SHELL_RUNNING: {TUIPhase.CANCELLING, TUIPhase.IDLE, TUIPhase.BACKGROUND_RESULT_READY},
+    TUIPhase.SHELL_RUNNING: {TUIPhase.CANCELLING, TUIPhase.IDLE},
     TUIPhase.COMMAND_RUNNING: {
         TUIPhase.THINKING,
         TUIPhase.SAVING,
         TUIPhase.CANCELLING,
         TUIPhase.IDLE,
-        TUIPhase.BACKGROUND_RESULT_READY,
     },
     TUIPhase.SAVING: {
         TUIPhase.IDLE,
@@ -96,15 +88,8 @@ VALID_TRANSITIONS: dict[TUIPhase, set[TUIPhase]] = {
         TUIPhase.STREAMING_OUTPUT,
         TUIPhase.COMMAND_RUNNING,
         TUIPhase.CANCELLING,
-        TUIPhase.BACKGROUND_RESULT_READY,
     },
-    TUIPhase.CANCELLING: {TUIPhase.SAVING, TUIPhase.IDLE, TUIPhase.BACKGROUND_RESULT_READY},
-    TUIPhase.BACKGROUND_RESULT_READY: {
-        TUIPhase.THINKING,
-        TUIPhase.SHELL_RUNNING,
-        TUIPhase.COMMAND_RUNNING,
-        TUIPhase.IDLE,
-    },
+    TUIPhase.CANCELLING: {TUIPhase.SAVING, TUIPhase.IDLE},
 }
 
 
@@ -133,7 +118,7 @@ class TUIStateMachine:
     @property
     def is_running(self) -> bool:
         """Check if foreground work is active."""
-        return self._phase not in {TUIPhase.IDLE, TUIPhase.BACKGROUND_RESULT_READY}
+        return self._phase is not TUIPhase.IDLE
 
     @property
     def is_agent_running(self) -> bool:
@@ -239,6 +224,5 @@ class TUIStateMachine:
             TUIPhase.COMMAND_RUNNING: "Running command...",
             TUIPhase.SAVING: "Saving session...",
             TUIPhase.CANCELLING: "Cancelling...",
-            TUIPhase.BACKGROUND_RESULT_READY: "Background result ready",
         }
         return status_map.get(self._phase, "Unknown")

@@ -18,17 +18,17 @@ def test_handoff_message_render() -> None:
     assert "Initial setup complete" in result
 
 
-def test_handoff_message_render_with_auto_load_files() -> None:
+def test_handoff_message_render_with_files_to_inspect() -> None:
     """Should keep inspection paths separate from the rendered summary."""
     msg = HandoffMessage(
         content="Working on API implementation",
-        auto_load_files=["main.py", "config.py"],
+        files_to_inspect=["main.py", "config.py"],
     )
     result = msg.render()
     assert "# Context Summary" in result
     assert "Working on API implementation" in result
     # Paths are stored separately for the prompt-only reminder processor.
-    assert msg.auto_load_files == ["main.py", "config.py"]
+    assert msg.files_to_inspect == ["main.py", "config.py"]
 
 
 def test_handoff_tool_attributes(agent_context: AgentContext) -> None:
@@ -36,7 +36,7 @@ def test_handoff_tool_attributes(agent_context: AgentContext) -> None:
     assert HandoffTool.name == "summarize"
     assert "Summarize current work" in HandoffTool.description
     assert "clear context" in HandoffTool.description
-    path_description = HandoffMessage.model_fields["auto_load_files"].description
+    path_description = HandoffMessage.model_fields["files_to_inspect"].description
     assert path_description is not None
     assert "file contents are not loaded into context" in path_description
 
@@ -87,7 +87,7 @@ async def test_handoff_tool_call(agent_context: AgentContext) -> None:
     assert "# Context Summary" in result
 
 
-async def test_handoff_tool_call_sets_auto_load_files(agent_context: AgentContext) -> None:
+async def test_handoff_tool_call_sets_files_to_inspect(agent_context: AgentContext) -> None:
     """Should store file inspection reminder paths on context."""
     tool = HandoffTool()
 
@@ -97,11 +97,11 @@ async def test_handoff_tool_call_sets_auto_load_files(agent_context: AgentContex
     await tool.call(
         mock_run_ctx,
         content="Working on implementation",
-        auto_load_files=["main.py", "utils.py"],
+        files_to_inspect=["main.py", "utils.py"],
     )
 
-    # Verify auto_load_files is set on context
-    assert agent_context.auto_load_files == ["main.py", "utils.py"]
+    # Verify files_to_inspect is set on context
+    assert agent_context.files_to_inspect == ["main.py", "utils.py"]
 
 
 async def test_handoff_tool_call_overwrites_previous(agent_context: AgentContext) -> None:

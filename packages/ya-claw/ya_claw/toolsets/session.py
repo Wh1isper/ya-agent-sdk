@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_ai import RunContext
+from ya_agent_environment import BaseResource
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core.base import BaseTool
 
@@ -19,6 +20,16 @@ from ya_claw.json_types import JsonArray, JsonValue
 
 CLAW_SELF_CLIENT_KEY = "claw_self_client"
 _DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
+
+
+class ClawSelfApiError(RuntimeError):
+    """Structured failure returned by the authenticated YA Claw self API."""
+
+    def __init__(self, *, status_code: int, code: str | None, detail: str) -> None:
+        super().__init__(f"YA Claw self API request failed with status {status_code}: {detail}")
+        self.status_code = status_code
+        self.code = code
+        self.detail = detail
 
 
 @runtime_checkable
@@ -36,7 +47,7 @@ class SelfSessionClient(Protocol):
     async def get_run_trace(self, *, run_id: str, max_item_chars: int, max_total_chars: int) -> dict[str, Any]: ...
 
 
-class ClawSelfClient:
+class ClawSelfClient(BaseResource):
     """HTTP client scoped to the current YA Claw session."""
 
     def __init__(
@@ -56,14 +67,8 @@ class ClawSelfClient:
         self.profile_name = profile_name
         self._timeout_seconds = timeout_seconds
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
-
-    async def setup(self) -> None:
-        return None
-
-    def get_toolsets(self) -> list[Any]:
-        return []
 
     async def list_source_session_turns(
         self,
@@ -162,6 +167,9 @@ class ClawSelfClient:
         prompt: str,
         name: str | None,
         context: dict[str, Any] | None,
+        sdk_owner_scope_id: str,
+        sdk_idempotency_key: str,
+        sdk_intent_fingerprint: str,
     ) -> dict[str, Any]:
         path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks:spawn"
         payload = {
@@ -171,6 +179,9 @@ class ClawSelfClient:
             "context": dict(context or {}),
             "parent_run_id": self.run_id or None,
             "parent_agent_id": "main",
+            "sdk_owner_scope_id": sdk_owner_scope_id,
+            "sdk_idempotency_key": sdk_idempotency_key,
+            "sdk_intent_fingerprint": sdk_intent_fingerprint,
         }
         return await self._send_json(path, method="POST", payload=payload)
 
@@ -193,12 +204,17 @@ class ClawSelfClient:
         name_or_task_id: str,
         prompt: str | None,
         input_parts: list[dict[str, Any]] | None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         path = f"/api/v1/sessions/{urllib.parse.quote(self.session_id)}/async-tasks/{urllib.parse.quote(name_or_task_id)}:steer"
         return await self._send_json(
             path,
             method="POST",
-            payload={"prompt": prompt, "input_parts": list(input_parts or [])},
+            payload={
+                "prompt": prompt,
+                "input_parts": list(input_parts or []),
+                "idempotency_key": idempotency_key,
+            },
         )
 
     async def cancel_async_subagent(self, *, name_or_task_id: str, reason: str | None) -> dict[str, Any]:
@@ -305,7 +321,7 @@ class ClawSelfClient:
             payload={"input_parts": input_parts, "prompt": prompt},
         )
 
-    async def list_agent_presets(self, *, query: str | None) -> dict[str, Any]:
+    async def list_profiles(self, *, query: str | None) -> dict[str, Any]:
         payload = await asyncio.to_thread(self._get_json_sync, "/api/v1/profiles", {})
         profiles = (
             payload if isinstance(payload, list) else payload.get("profiles") if isinstance(payload, dict) else []
@@ -346,8 +362,8 @@ class ClawSelfClient:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = _decode_error_detail(exc)
-            raise RuntimeError(f"YA Claw self API request failed with status {exc.code}: {detail}") from exc
+            code, detail = _decode_error_detail(exc)
+            raise ClawSelfApiError(status_code=exc.code, code=code, detail=detail) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"YA Claw self API request failed: {exc.reason}") from exc
 
@@ -367,8 +383,8 @@ class ClawSelfClient:
                 raw_body = response.read().decode("utf-8")
                 return json.loads(raw_body) if raw_body else {}
         except urllib.error.HTTPError as exc:
-            detail = _decode_error_detail(exc)
-            raise RuntimeError(f"YA Claw self API request failed with status {exc.code}: {detail}") from exc
+            code, detail = _decode_error_detail(exc)
+            raise ClawSelfApiError(status_code=exc.code, code=code, detail=detail) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"YA Claw self API request failed: {exc.reason}") from exc
 
@@ -586,18 +602,25 @@ def _dump_json(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _decode_error_detail(exc: urllib.error.HTTPError) -> str:
+def _decode_error_detail(exc: urllib.error.HTTPError) -> tuple[str | None, str]:
     try:
         raw_body = exc.read().decode("utf-8", errors="replace")
     except Exception:
-        return exc.reason
+        return None, str(exc.reason)
     if raw_body == "":
-        return exc.reason
+        return None, str(exc.reason)
     try:
         payload = json.loads(raw_body)
     except json.JSONDecodeError:
-        return raw_body[:500]
+        return None, raw_body[:500]
     detail = payload.get("detail") if isinstance(payload, dict) else None
     if isinstance(detail, str):
-        return detail[:500]
-    return raw_body[:500]
+        return None, detail[:500]
+    if isinstance(detail, dict):
+        code = detail.get("code")
+        message = detail.get("message")
+        return (
+            code if isinstance(code, str) else None,
+            message[:500] if isinstance(message, str) else json.dumps(detail, ensure_ascii=False)[:500],
+        )
+    return None, raw_body[:500]

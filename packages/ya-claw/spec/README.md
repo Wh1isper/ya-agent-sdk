@@ -33,13 +33,29 @@ This spec set defines one execution shape:
 | 04      | [04-api.md](04-api.md)                                                                   | HTTP API surface and queued-run API semantics                                |
 | 05      | [05-web-ui-and-operations.md](05-web-ui-and-operations.md)                               | web shell, runtime operations, schedules, and bridge usage                   |
 | 06      | [06-runtime-assembly.md](06-runtime-assembly.md)                                         | `WorkspaceBinding -> Environment -> ClawAgentContext -> AgentRuntime`        |
-| 07      | [07-async-subagents.md](07-async-subagents.md)                                           | session-backed async subagents, wake-up, and management tools                |
+| 07      | [07-async-subagents.md](07-async-subagents.md)                                           | SDK delegation over durable Claw child sessions, runs, and completion outbox |
 | 08      | [08-schedules-and-heartbeat.md](08-schedules-and-heartbeat.md)                           | schedule modes, heartbeat, agent schedule toolset, and timer dispatch        |
 | 09      | [09-session-memory.md](09-session-memory.md)                                             | workspace memory files, internal memory sessions, extract and summary agents |
 | 10      | [10-workspace-mount-sets.md](10-workspace-mount-sets.md)                                 | session-scoped workspace mount sets and multi-folder execution               |
 | 11      | [11-session-agency.md](11-session-agency.md)                                             | singleton agency, context-bearing fires, idle wake, and async task feedback  |
 | 12      | [12-shell-sandbox.md](12-shell-sandbox.md)                                               | default shell sandbox policy, Linux/macOS backends, raw host escalation      |
 | 13      | [13-workflows.md](13-workflows.md)                                                       | Claw-managed workflows, agent supervision tools, profile-backed node runs    |
+
+## Cross-Package Architecture
+
+- [Capability-First Runtime Architecture](../../ya-agent-sdk/spec/05-capability-first-runtime.md) defines native `AgentSpec` profile cores, SDK capability composition, and the YA Claw `steer`/`queue` architecture built on Pydantic AI enqueue semantics.
+- [Portable Subagent Runtime](../../ya-agent-sdk/spec/05-capability-first-runtime/07-subagent-runtime.md) defines native `AgentSpec`-based subagent definitions, YA policy envelopes, plan resolution, registry, execution service, and the Claw SQL session/run driver boundary.
+- [Custom Capability Type Discovery](../../ya-agent-sdk/spec/06-capability-plugins/README.md) defines per-type entry points, explicit imports, SDK-owned validation, an immutable custom-type catalog, and the Claw consumer boundary.
+- [Host-Owned Durable Sessions and Agent Segment Execution](../../ya-agent-sdk/spec/05-capability-first-runtime/06-yaacli-durable-sessions.md) defines the shared SDK harness boundary; Claw retains its own SQL scheduler and composes the harness rather than adopting YAACLI's coordinator.
+
+All documents in this spec set describe the 2.0 runtime. Removed 1.x construction
+surfaces are not accepted by runtime, API, or seed parsing; the one persisted-profile
+conversion is isolated to its Alembic revision.
+
+Claw builds its process catalog through SDK APIs from trusted deployment/application
+choices. Database profiles, seeded YAML, workspace files, requests, sessions, schedules,
+and imported bundles may grant available serialization names but cannot introduce
+Python import targets.
 
 ## Out of Scope
 

@@ -12,6 +12,7 @@ from typing import Any, Literal, cast, get_args
 from urllib.parse import urlparse, urlunparse
 
 import httpx
+import httpx2
 import websockets
 from openai import APIStatusError
 from openai.types.responses import ResponseStreamEvent
@@ -613,7 +614,15 @@ def is_recoverable_websocket_error(exc: BaseException) -> bool:
     if isinstance(exc, APIStatusError):
         return exc.status_code in _RECOVERABLE_HTTP_STATUS_CODES
     return isinstance(
-        exc, (UnexpectedModelBehavior, TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException)
+        exc,
+        (
+            UnexpectedModelBehavior,
+            TimeoutError,
+            OSError,
+            httpx.HTTPError,
+            httpx2.HTTPError,
+            websockets.WebSocketException,
+        ),
     )
 
 
@@ -623,7 +632,15 @@ def _is_retryable_websocket_request_error(exc: BaseException, options: ModelRequ
     if isinstance(exc, APIStatusError):
         return exc.status_code in options.status_codes
     return isinstance(
-        exc, (UnexpectedModelBehavior, TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException)
+        exc,
+        (
+            UnexpectedModelBehavior,
+            TimeoutError,
+            OSError,
+            httpx.HTTPError,
+            httpx2.HTTPError,
+            websockets.WebSocketException,
+        ),
     )
 
 
@@ -647,11 +664,18 @@ def build_openai_responses_websocket_model(
 ) -> WebsocketResponsesModel:
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    from ya_agent_sdk.agents.models.utils import create_async_http_client
+    from ya_agent_sdk.agents.models.utils import create_async_http_client, create_owned_httpx2_provider
 
     mode = websocket_mode or env_responses_websocket_mode("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE", default="auto")
     resolved_extra_headers = dict(extra_headers or {})
-    provider = OpenAIProvider(http_client=create_async_http_client(extra_headers=resolved_extra_headers))
+
+    def create_http_client() -> httpx2.AsyncClient:
+        return create_async_http_client(extra_headers=resolved_extra_headers)
+
+    provider = create_owned_httpx2_provider(
+        lambda http_client: OpenAIProvider(http_client=http_client),
+        http_client_factory=create_http_client,
+    )
 
     async def _headers_builder(request_extra_headers: Mapping[str, str]) -> dict[str, str]:
         headers: dict[str, str] = {}

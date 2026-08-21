@@ -1,300 +1,210 @@
-"""Tests for yaacli.runtime module."""
+"""Capability-first runtime assembly tests for YAACLI 2.0."""
 
 from __future__ import annotations
 
-import sys
 import tempfile
+from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import yaacli.runtime as runtime_module
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart
+import pytest
+import yaml
+from pydantic_ai import AgentSpec
+from pydantic_ai.capabilities import AbstractCapability, CombinedCapability
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.toolsets import FunctionToolset, PrefixedToolset
-from pydantic_ai.usage import RequestUsage
-from ya_agent_sdk.agents.lifecycle import ContextHandoffCompleteContext, ContextHandoffSource
-from ya_agent_sdk.agents.main import stream_agent
-from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
-from ya_agent_sdk.filters.handoff import process_handoff_message
-from ya_agent_sdk.mcp import NamedMCPToolset
-from ya_agent_sdk.toolsets.core.base import Toolset
-from ya_agent_sdk.toolsets.tool_proxy.toolset import ToolProxyToolset
-from yaacli.background import DELEGATE_BACKEND_TOOL_NAME
+from pydantic_ai.toolsets import FunctionToolset
+from ya_agent_sdk.agents.lifecycle import (
+    ContextHandoffCompleteContext,
+    ContextHandoffSource,
+)
+from ya_agent_sdk.capabilities import (
+    CodeActCapability,
+    TaskCapability,
+    ThinkingCapability,
+    ToolApprovalCapability,
+    ToolObservationCapability,
+    ToolRetryCapability,
+    ToolTimeoutCapability,
+    UserInteractionCapability,
+    build_default_capability_catalog,
+)
+from ya_agent_sdk.subagents import (
+    DelegationCapability,
+    SelfForkPolicy,
+    SubagentDurability,
+    SubagentExecutionMode,
+    SubagentExecutionRecord,
+    SubagentPlanResolver,
+    SubagentSpec,
+)
 from yaacli.config import (
+    ConfigManager,
     GeneralConfig,
     MCPConfig,
     MCPServerConfig,
     ModelProfileConfig,
+    SubagentOverride,
+    SubagentsConfig,
     ToolsConfig,
     YaacliConfig,
 )
-from yaacli.runtime import GoalContextHandoffExtension, _OptionalMCPToolset, create_tui_runtime
-from yaacli.toolsets.background import (
-    AsyncDelegateTool,
-    MonitoredShellTool,
-    SpawnDelegateTool,
-    SteerSubagentTool,
-    WaitSubagentTool,
+from yaacli.durable.models import ChildPlanManifest
+from yaacli.durable.sqlite import SQLiteSessionStore
+from yaacli.durable.subagents import LocalProcessorSubagentExecutionHost, SQLiteSubagentExecutionStore
+from yaacli.model_profiles import ResolvedModelProfile, save_selected_model_profile_id
+from yaacli.runtime import (
+    GoalContextHandoffExtension,
+    RuntimeSourceSnapshot,
+    _build_delegation_capability,
+    _compile_subagent_specs,
+    _OptionalMCPToolset,
+    _standard_child_capability_specs,
+    build_main_runtime_manifest,
+    build_runtime_agent_spec,
+    compile_child_plan_manifest,
+    compile_runtime_sources,
+    create_tui_runtime,
+    restore_main_runtime_manifest,
+    runtime_child_plan_manifest,
 )
-
-# =============================================================================
-# create_tui_runtime Tests
-# =============================================================================
+from yaacli.session import TUIContext
+from yaacli.subagent_config import model_cfg_from_agent_spec
 
 
-def test_create_tui_runtime_minimal(tmp_path: Path) -> None:
-    """Test creating runtime with minimal config."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
+def _config() -> YaacliConfig:
+    return YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4"))
+
+
+@dataclass
+class HostPluginCapability(AbstractCapability[Any]):
+    label: str = "default"
+
+    @classmethod
+    def get_serialization_name(cls) -> str:
+        return "test.host_plugin"
+
+
+class HostPluginEntryPoint:
+    name = "test.host_plugin"
+    value = "tests.host_plugin:HostPluginCapability"
+    dist = SimpleNamespace(name="test-host-plugin", version="1.0")
+
+    def load(self) -> object:
+        return HostPluginCapability
+
+
+def _write_subagent_spec(
+    directory: Path,
+    *,
+    route: str = "helper",
+    capabilities: list[object] | None = None,
+    durability: str = "restart",
+) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "route": route,
+        "agent": {
+            "name": route,
+            "description": "Helper",
+            "instructions": "Help.",
+            "capabilities": capabilities or [],
+        },
+        "execution_modes": ["foreground", "background"],
+        "durability": durability,
+    }
+    (directory / f"{route}.yaml").write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_is_an_unentered_plan_then_builds_agent_after_authorities(
+    tmp_path: Path,
+) -> None:
+    runtime = create_tui_runtime(config=_config(), working_dir=tmp_path)
+
+    with pytest.raises(RuntimeError, match="before runtime entry"):
+        _ = runtime.agent
+
+    async with runtime:
+        assert runtime.agent is not None
+        assert runtime.ctx.resources is runtime.env.resources
+        assert any(isinstance(extension, GoalContextHandoffExtension) for extension in runtime.lifecycle_extensions)
+        assert runtime.capability_sources
+
+
+@pytest.mark.asyncio
+async def test_runtime_executes_native_pydantic_ai_agent_without_stream_wrapper(
+    tmp_path: Path,
+) -> None:
+    captured_instructions: list[str | None] = []
+
+    def respond(
+        _messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        captured_instructions.append(info.instructions)
+        return ModelResponse(parts=[TextPart(content="ok")])
 
     runtime = create_tui_runtime(
-        config=config,
+        config=YaacliConfig(
+            general=GeneralConfig(
+                model="openai-chat:gpt-4",
+                instructions="Use the selected profile.",
+            )
+        ),
         working_dir=tmp_path,
     )
+    async with runtime:
+        with runtime.agent.override(model=FunctionModel(respond)):
+            result = await runtime.agent.run("test", deps=runtime.ctx)
 
-    assert runtime is not None
-    assert runtime.env is not None
-    assert runtime.ctx is not None
-    assert runtime.agent is not None
-    assert any(isinstance(extension, GoalContextHandoffExtension) for extension in runtime.lifecycle_extensions)
+    assert result.output == "ok"
+    assert len(captured_instructions) == 1
+    assert "Use the selected profile." in (captured_instructions[0] or "")
 
 
-async def test_create_tui_runtime_uses_custom_config_dir_for_allowed_paths(tmp_path: Path) -> None:
-    """Test runtime wiring with a custom global config directory."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-    config_dir = tmp_path / "custom-config"
-
+@pytest.mark.asyncio
+async def test_runtime_allowed_paths_keep_workspace_and_config_authorities(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "config"
+    workspace = tmp_path / "workspace"
     runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
+        config=_config(),
+        working_dir=workspace,
         config_dir=config_dir,
     )
 
     async with runtime:
-        assert config_dir.resolve() in runtime.env.file_operator._allowed_paths
-
-
-async def test_create_tui_runtime_orders_skill_paths_by_priority(tmp_path: Path) -> None:
-    """Test skill path priority: global, shared, project, project config."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-    config_dir = tmp_path / "custom-config"
-    working_dir = tmp_path / "workspace"
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=working_dir,
-        config_dir=config_dir,
-    )
-
-    async with runtime:
-        allowed_paths = runtime.env.file_operator._allowed_paths
-        expected_prefix = [
+        allowed = runtime.env.file_operator._allowed_paths
+        assert allowed[:5] == [
             Path(tempfile.gettempdir()).resolve(),
             config_dir.resolve(),
             (Path.home() / ".agents").resolve(),
-            working_dir.resolve(),
-            (working_dir / ".yaacli").resolve(),
+            workspace.resolve(),
+            (workspace / ".yaacli").resolve(),
         ]
-        assert allowed_paths[:5] == expected_prefix
         assert runtime.env.tmp_dir is not None
-        assert runtime.env.tmp_dir.resolve() in allowed_paths
+        assert runtime.env.tmp_dir.resolve() in allowed
 
 
-async def test_create_tui_runtime_filetree_context_uses_workspace_only(tmp_path: Path) -> None:
-    """TUI should keep auxiliary roots accessible without rendering them as file trees."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-    config_dir = tmp_path / "custom-config"
-    working_dir = tmp_path / "workspace"
-    config_dir.mkdir()
-    working_dir.mkdir()
-    (config_dir / "config-marker.txt").write_text("config")
-    (working_dir / "app.py").write_text("# app")
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=working_dir,
-        config_dir=config_dir,
-    )
-
-    async with runtime:
-        instructions = await runtime.env.file_operator.get_context_instructions()
-        assert instructions is not None
-
-        assert instructions.count("<directory path=") == 1
-        assert f'<directory path="{working_dir.resolve()}">' in instructions
-        assert f'<directory path="{Path(tempfile.gettempdir()).resolve()}">' not in instructions
-        assert f'<directory path="{config_dir.resolve()}">' not in instructions
-        assert "app.py" in instructions
-        assert "config-marker.txt" not in instructions
-
-        allowed_paths = runtime.env.file_operator._allowed_paths
-        assert Path(tempfile.gettempdir()).resolve() in allowed_paths
-        assert config_dir.resolve() in allowed_paths
-        assert runtime.env.tmp_dir is not None
-        assert runtime.env.tmp_dir.resolve() in allowed_paths
-
-
-async def test_model_profile_instructions_refresh_after_switch(tmp_path: Path) -> None:
-    """Profile instructions are evaluated for each model request after a profile switch."""
-    captured_instructions: list[str | None] = []
-    captured_instruction_parts: list[list[tuple[str, bool]]] = []
-
-    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        captured_instructions.append(info.instructions)
-        parts = info.model_request_parameters.instruction_parts or []
-        captured_instruction_parts.append([(part.content, part.dynamic) for part in parts])
-        return ModelResponse(parts=[TextPart(content="ok")])
-
-    config = YaacliConfig(
-        general=GeneralConfig(
-            model="openai-chat:gpt-4",
-            instructions="Use the default profile instructions.",
-        )
-    )
-    runtime = create_tui_runtime(config=config, working_dir=tmp_path, enable_async_subagents=False)
-
-    async with runtime:
-        with runtime.agent.override(model=FunctionModel(respond)):
-            first_result = await runtime.agent.run("First turn", deps=runtime.ctx)
-            runtime.ctx.model_profile_instructions = "Use the fast profile instructions."
-            await runtime.agent.run("Second turn", deps=runtime.ctx, message_history=first_result.all_messages())
-
-    assert "Use the default profile instructions." in captured_instructions[0]
-    assert "Use the fast profile instructions." in captured_instructions[1]
-    assert "Use the default profile instructions." not in captured_instructions[1]
-    assert ("Use the default profile instructions.", True) in captured_instruction_parts[0]
-    assert ("Use the fast profile instructions.", True) in captured_instruction_parts[1]
-    assert ("Use the default profile instructions.", True) not in captured_instruction_parts[1]
-
-
-async def test_model_profile_instructions_apply_to_legacy_history(tmp_path: Path) -> None:
-    """Profile instructions do not depend on a dynamic system-prompt marker in history."""
-    captured_instructions: list[str | None] = []
-
-    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        captured_instructions.append(info.instructions)
-        return ModelResponse(parts=[TextPart(content="ok")])
-
-    runtime = create_tui_runtime(
-        config=YaacliConfig(
-            general=GeneralConfig(
-                model="openai-chat:gpt-4",
-                instructions="Use the configured profile instructions.",
-            )
-        ),
-        working_dir=tmp_path,
-        enable_async_subagents=False,
-    )
-    legacy_history = [
-        ModelRequest(
-            parts=[
-                SystemPromptPart(content="Legacy system prompt"),
-                UserPromptPart(content="Original request"),
-            ]
-        ),
-        ModelResponse(parts=[TextPart(content="Previous answer")]),
-    ]
-
-    async with runtime:
-        with runtime.agent.override(model=FunctionModel(respond)):
-            await runtime.agent.run("Continue", deps=runtime.ctx, message_history=legacy_history)
-
-    assert len(captured_instructions) == 1
-    assert "Use the configured profile instructions." in captured_instructions[0]
-
-
-async def test_model_profile_instructions_apply_after_handoff(tmp_path: Path) -> None:
-    """Handoff replacement does not remove profile instructions from the next model request."""
-    captured_instructions: list[str | None] = []
-
-    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        captured_instructions.append(info.instructions)
-        return ModelResponse(parts=[TextPart(content="ok")])
-
-    runtime = create_tui_runtime(
-        config=YaacliConfig(
-            general=GeneralConfig(
-                model="openai-chat:gpt-4",
-                instructions="Use the configured profile instructions.",
-            )
-        ),
-        working_dir=tmp_path,
-        enable_async_subagents=False,
-    )
-
-    async with runtime:
-        runtime.ctx.handoff_message = "# Handoff Summary\n\nContinue from this summary."
-        with runtime.agent.override(model=FunctionModel(respond)):
-            await runtime.agent.run("Continue", deps=runtime.ctx)
-
-    assert len(captured_instructions) == 1
-    assert "Use the configured profile instructions." in captured_instructions[0]
-
-
-async def test_model_profile_instructions_apply_after_automatic_compaction(tmp_path: Path) -> None:
-    """Automatic context compaction does not remove profile instructions from later requests."""
-    captured_instructions: list[str | None] = []
-
-    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        captured_instructions.append(info.instructions)
-        return ModelResponse(parts=[TextPart(content="continue")])
-
-    async def stream_respond(_messages: list[ModelMessage], info: AgentInfo):
-        captured_instructions.append(info.instructions)
-        yield "compacted summary"
-
-    runtime = create_tui_runtime(
-        config=YaacliConfig(
-            general=GeneralConfig(
-                model="openai-chat:gpt-4",
-                model_cfg={"context_window": 10, "compact_threshold": 0.1},
-                instructions="Use the configured profile instructions.",
-            )
-        ),
-        working_dir=tmp_path,
-        enable_async_subagents=False,
-    )
-    history = [
-        ModelRequest(
-            parts=[SystemPromptPart(content="Legacy system prompt"), UserPromptPart(content="Original request")]
-        ),
-        ModelResponse(parts=[TextPart(content="Previous answer")], usage=RequestUsage(input_tokens=10)),
-    ]
-
-    async with runtime:
-        with runtime.agent.override(model=FunctionModel(respond, stream_function=stream_respond)):
-            await runtime.agent.run("Continue", deps=runtime.ctx, message_history=history)
-
-    assert len(captured_instructions) >= 2
-    assert all(
-        instruction is not None and "Use the configured profile instructions." in instruction
-        for instruction in captured_instructions
-    )
-
-
-def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None:
-    """Runtime uses the persisted model profile at startup."""
-    from yaacli.model_profiles import save_selected_model_profile_id
-
+def test_runtime_uses_persisted_model_profile(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config = YaacliConfig(
-        general=GeneralConfig(
-            model="openai-chat:gpt-4",
-            model_cfg="claude_200k",
-        ),
+        general=GeneralConfig(model="openai-chat:gpt-4"),
         model_profiles={
             "long": ModelProfileConfig(
                 label="Long",
                 model="openai-chat:gpt-4",
                 model_cfg="gemini_1m",
-            ),
+            )
         },
     )
     save_selected_model_profile_id(config_dir, "long")
@@ -308,22 +218,496 @@ def test_create_tui_runtime_uses_persisted_model_profile(tmp_path: Path) -> None
     assert runtime.ctx.model_cfg.context_window == 1_000_000
 
 
-async def test_goal_context_handoff_extension_marks_active_goal() -> None:
-    """YAACLI lifecycle extension should mark active goals after context handoff."""
-    from yaacli.session import TUIContext
+@pytest.mark.asyncio
+async def test_runtime_codeact_and_user_input_are_explicit_capabilities(
+    tmp_path: Path,
+) -> None:
+    runtime = create_tui_runtime(
+        config=YaacliConfig(
+            general=GeneralConfig(model="openai-chat:gpt-4"),
+            tools=ToolsConfig(enable_codeact=True),
+        ),
+        working_dir=tmp_path,
+        enable_user_input=True,
+    )
 
-    ctx = TUIContext.model_construct()
-    ctx.goal_task = "fix tests"
-    ctx.goal_iteration = 0
-    ctx.goal_max_iterations = 10
-    ctx.goal_needs_post_restore_audit = False
-    ctx.goal_last_context_handoff_source = None
+    async with runtime:
+        assert any(isinstance(item, CodeActCapability) for item in runtime.capabilities)
+        assert any(isinstance(item, TaskCapability) for item in runtime.capabilities)
+        assert any(isinstance(item, UserInteractionCapability) for item in runtime.capabilities)
+        assert not any(isinstance(item, ThinkingCapability) for item in runtime.capabilities)
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_one_plugin_catalog_for_root_and_explicit_children(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / ConfigManager.PLUGIN_MANIFEST_NAME).write_text(
+        """\
+schema_version = 1
+entry_points = ["test.host_plugin"]
+
+[[capabilities]]
+name = "test.host_plugin"
+arguments = { label = "root" }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ya_agent_sdk.capabilities.catalog.importlib.metadata.entry_points",
+        lambda **kwargs: [HostPluginEntryPoint()],
+    )
+    config = _config()
+    plugins = ConfigManager(config_dir=config_dir, project_dir=tmp_path).load_capability_plugin_config()
+    _write_subagent_spec(
+        config_dir / "subagents",
+        capabilities=[{"name": "test.host_plugin", "arguments": {"label": "child"}}],
+        durability="process",
+    )
+    sources = compile_runtime_sources(config, config_dir=config_dir, include_subagents=True)
+    child_manifest = compile_child_plan_manifest(
+        config,
+        profile=None,
+        sources=sources,
+        capability_catalog=plugins.catalog,
+    )
+    descriptors_by_route = {descriptor.spec.route: descriptor for descriptor in child_manifest.descriptors}
+    child_capability_names = [item.name for item in descriptors_by_route["helper"].normalized_agent_spec.capabilities]
+    self_capability_names = [item.name for item in descriptors_by_route["self"].normalized_agent_spec.capabilities]
+    agent_spec = AgentSpec.model_validate(build_runtime_agent_spec(config, profile=None, capability_plugins=plugins))
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        config_dir=config_dir,
+        agent_spec=agent_spec,
+        capability_catalog=plugins.catalog,
+    )
+
+    async with runtime:
+        root_capability = runtime.agent.root_capability
+
+    assert isinstance(root_capability, CombinedCapability)
+    root_plugins = [item for item in root_capability.capabilities if isinstance(item, HostPluginCapability)]
+    assert len(root_plugins) == 1
+    assert root_plugins[0].label == "root"
+    assert "test.host_plugin" in child_capability_names
+    assert "test.host_plugin" not in self_capability_names
+
+
+def test_markdown_subagent_inherits_active_model_settings_before_plan_snapshot(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        """---
+name: helper
+description: Markdown helper
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+---
+
+Return a bounded result.
+""",
+        encoding="utf-8",
+    )
+    config = YaacliConfig(
+        general=GeneralConfig(
+            model="openai-chat:gpt-4",
+            model_settings={"temperature": 0.4, "max_tokens": 4096},
+            model_cfg={"context_window": 100_000},
+        )
+    )
+
+    sources = compile_runtime_sources(config, config_dir=config_dir, include_subagents=True)
+    manifest = compile_child_plan_manifest(config, profile=None, sources=sources)
+    helper = next(descriptor for descriptor in manifest.descriptors if descriptor.spec.route == "helper")
+
+    assert helper.normalized_agent_spec.model == "openai-chat:gpt-4"
+    assert helper.normalized_agent_spec.model_settings == {"temperature": 0.4, "max_tokens": 4096}
+    assert helper.normalized_agent_spec.metadata is not None
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 100_000
+    assert "yaacli_inherit_model_settings" not in helper.normalized_agent_spec.metadata
+    assert "yaacli_inherit_model_cfg" not in helper.normalized_agent_spec.metadata
+
+
+def test_markdown_subagent_route_overrides_replace_inherited_model_configuration(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        """---
+name: helper
+description: Markdown helper
+model_settings: inherit
+model_cfg: inherit
+---
+
+Return a bounded result.
+""",
+        encoding="utf-8",
+    )
+    config = YaacliConfig(
+        general=GeneralConfig(
+            model="openai-chat:gpt-4",
+            model_settings={"temperature": 0.9},
+            model_cfg={"context_window": 100_000},
+        ),
+        subagents=SubagentsConfig(
+            overrides={
+                "helper": SubagentOverride(
+                    model_settings={"temperature": 0.1},
+                    model_cfg={"context_window": 300_000},
+                )
+            }
+        ),
+    )
+
+    sources = compile_runtime_sources(config, config_dir=config_dir, include_subagents=True)
+    manifest = compile_child_plan_manifest(config, profile=None, sources=sources)
+    helper = next(descriptor for descriptor in manifest.descriptors if descriptor.spec.route == "helper")
+
+    assert helper.normalized_agent_spec.model_settings == {"temperature": 0.1}
+    assert helper.normalized_agent_spec.metadata is not None
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 300_000
+    assert "yaacli_inherit_model_settings" not in helper.normalized_agent_spec.metadata
+    assert "yaacli_inherit_model_cfg" not in helper.normalized_agent_spec.metadata
+
+
+def test_markdown_inherited_model_cfg_participates_in_descriptor_identity(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "helper.md").write_text(
+        """---
+name: helper
+description: Markdown helper
+model_cfg: inherit
+---
+
+Return a bounded result.
+""",
+        encoding="utf-8",
+    )
+    first_config = YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4", model_cfg={"context_window": 100_000}))
+    second_config = YaacliConfig(
+        general=GeneralConfig(model="openai-chat:gpt-4", model_cfg={"context_window": 200_000})
+    )
+    sources = compile_runtime_sources(first_config, config_dir=config_dir, include_subagents=True)
+
+    first_manifest = compile_child_plan_manifest(first_config, profile=None, sources=sources)
+    second_manifest = compile_child_plan_manifest(second_config, profile=None, sources=sources)
+    first = next(descriptor for descriptor in first_manifest.descriptors if descriptor.spec.route == "helper")
+    second = next(descriptor for descriptor in second_manifest.descriptors if descriptor.spec.route == "helper")
+
+    assert first.normalized_agent_spec.metadata is not None
+    assert second.normalized_agent_spec.metadata is not None
+    assert first.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 100_000
+    assert second.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 200_000
+    assert first.descriptor_id != second.descriptor_id
+
+
+def test_packaged_subagent_presets_support_yaacli_process_local_driver() -> None:
+    resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        restart_durable=False,
+    )
+    presets = resources.files("ya_agent_sdk.subagents.presets")
+
+    loaded_names: set[str] = set()
+    for item in presets.iterdir():
+        if not item.name.endswith((".yaml", ".yml", ".json")):
+            continue
+        spec = SubagentSpec.model_validate(yaml.safe_load(item.read_text(encoding="utf-8")))
+        plan = resolver.resolve(spec)
+        loaded_names.add(item.name)
+        assert spec.durability is SubagentDurability.process
+        assert plan.restart_durable is False
+
+    assert loaded_names
+
+
+async def test_delegation_builder_isolates_unavailable_retained_descriptor_until_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        restart_durable=False,
+    )
+    retained = resolver.resolve(
+        SubagentSpec(
+            route="helper",
+            durability=SubagentDurability.process,
+            agent=AgentSpec(name="helper", instructions="retained plan"),
+        )
+    )
+    active = resolver.resolve(
+        SubagentSpec(
+            route="helper",
+            durability=SubagentDurability.process,
+            agent=AgentSpec(name="helper", instructions="active plan"),
+        )
+    )
+    manifest = ChildPlanManifest(
+        active_routes={"helper": active.descriptor_id},
+        descriptors=(retained.to_descriptor(), active.to_descriptor()),
+    )
+    database_path = tmp_path / "descriptors.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    retained_store = SQLiteSubagentExecutionStore(database_path)
+    retained_store.put_descriptor(retained)
+    retained_store.close_sync()
+
+    original_restore = SubagentPlanResolver.restore
+
+    def restore_available_plan(self: SubagentPlanResolver, descriptor: Any) -> Any:
+        if descriptor.descriptor_id == retained.descriptor_id:
+            raise ValueError("historical capability unavailable")
+        return original_restore(self, descriptor)
+
+    monkeypatch.setattr(SubagentPlanResolver, "restore", restore_available_plan)
+    capability = _build_delegation_capability(
+        manifest,
+        default_model="test",
+        default_mode=SubagentExecutionMode.foreground,
+        host_capabilities=(),
+        durable_database_path=database_path,
+        durable_binding_ref="test-binding",
+        request_limit=2,
+        default_model_cfg=TUIContext().model_cfg,
+        deferred_resolver=None,
+    )
+    assert capability is not None
+    store = capability.service.store
+    assert isinstance(store, SQLiteSubagentExecutionStore)
+    assert isinstance(capability.service.execution_host, LocalProcessorSubagentExecutionHost)
+    assert capability.allow_mode_override is False
+    try:
+        assert store.get_descriptor(active.descriptor_id) == active.to_descriptor()
+        assert store.get_descriptor(retained.descriptor_id) == retained.to_descriptor()
+        with pytest.raises(KeyError, match="Unknown subagent descriptor"):
+            capability.registry.get_descriptor(retained.descriptor_id)
+
+        provider = capability.service.retained_plan_provider
+        assert provider is not None
+        record = SubagentExecutionRecord(
+            root_execution_id="legacy-execution",
+            execution_id="legacy-execution",
+            owner_scope_id="session",
+            idempotency_key="legacy-execution",
+            descriptor_id=retained.descriptor_id,
+            plan_fingerprint=retained.fingerprint,
+            route=retained.spec.route,
+            mode=SubagentExecutionMode.foreground,
+            parent_agent_id="main",
+            parent_logical_run_id="parent-run",
+            prompt="resume legacy work",
+        )
+        with pytest.raises(ValueError, match="historical capability unavailable"):
+            await provider.load_retained_plan(record)
+
+        monkeypatch.setattr(SubagentPlanResolver, "restore", original_restore)
+        restored = await provider.load_retained_plan(record)
+        assert restored is not None
+        capability.registry.register_retained(restored)
+        exported = runtime_child_plan_manifest(MagicMock(capabilities=(capability,)))
+        assert exported.active_routes == {"helper": active.descriptor_id}
+        assert exported.descriptors == (active.to_descriptor(),)
+    finally:
+        await capability.service.close()
+        product_store.close()
+
+
+def test_native_subagent_model_cfg_override_is_explicit(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    _write_subagent_spec(subagents_dir)
+
+    specs = _compile_subagent_specs(
+        SubagentsConfig(overrides={"helper": SubagentOverride(model_cfg={"context_window": 1_000_000})}),
+        config_dir=config_dir,
+        enable_codeact=True,
+    )
+
+    assert len(specs) == 1
+    child_model_cfg = model_cfg_from_agent_spec(specs[0].agent)
+    assert child_model_cfg is not None
+    assert child_model_cfg.context_window == 1_000_000
+
+
+def test_self_fork_native_grants_compose_with_host_policy_capabilities() -> None:
+    capability_specs = _standard_child_capability_specs(enable_codeact=True)
+    capability_names = {next(iter(item)) for item in capability_specs}
+    assert "TaskCapability" in capability_names
+    assert capability_names.isdisjoint({
+        "ThinkingCapability",
+        "TodoCapability",
+        "ToolApprovalCapability",
+        "ToolObservationCapability",
+        "ToolRetryCapability",
+        "ToolTimeoutCapability",
+    })
+
+    resolver = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        host_capabilities=(
+            ToolApprovalCapability(),
+            ToolObservationCapability(),
+            ToolRetryCapability(),
+            ToolTimeoutCapability(),
+        ),
+    )
+    plan = resolver.resolve_self(
+        SelfForkPolicy(
+            agent=AgentSpec.from_dict({
+                "name": "self",
+                "description": "Bounded self fork",
+                "capabilities": capability_specs,
+            })
+        )
+    )
+
+    assert plan.spec.route == "self"
+    assert len(plan.injected_policy_ids) == 4
+
+
+def test_runtime_defaults_to_no_process_local_subagents(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    _write_subagent_spec(subagents_dir)
+
+    runtime = create_tui_runtime(
+        config=_config(),
+        working_dir=tmp_path,
+        config_dir=config_dir,
+    )
+
+    assert not any(isinstance(capability, DelegationCapability) for capability in runtime.explicit_capabilities)
+
+
+def test_runtime_rejects_subagents_without_durable_worker(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    subagents_dir = config_dir / "subagents"
+    _write_subagent_spec(subagents_dir)
+
+    with pytest.raises(ValueError, match="require an exact child manifest"):
+        create_tui_runtime(
+            config=_config(),
+            working_dir=tmp_path,
+            config_dir=config_dir,
+            subagent_default_mode=SubagentExecutionMode.background,
+        )
+
+
+def test_runtime_direct_and_proxy_mcp_assembly(tmp_path: Path) -> None:
+    direct = create_tui_runtime(
+        config=_config(),
+        mcp_config=MCPConfig(servers={"docs": MCPServerConfig(command="unused")}),
+        working_dir=tmp_path,
+    )
+    proxy = create_tui_runtime(
+        config=YaacliConfig(
+            general=GeneralConfig(model="openai-chat:gpt-4"),
+            tools=ToolsConfig(mcp_mode="proxy"),
+        ),
+        mcp_config=MCPConfig(servers={"docs": MCPServerConfig(command="unused")}),
+        working_dir=tmp_path,
+    )
+
+    assert direct.explicit_capabilities
+    assert proxy.explicit_capabilities
+    assert direct is not proxy
+
+
+@pytest.mark.asyncio
+async def test_runtime_namespaces_duplicate_direct_mcp_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def collide() -> str:
+        return "ok"
+
+    servers = [
+        FunctionToolset([collide], id="one"),
+        FunctionToolset([collide], id="two"),
+    ]
+    monkeypatch.setattr(
+        "yaacli.runtime.build_mcp_servers",
+        lambda *_args, **_kwargs: servers,
+    )
+    visible: set[str] = set()
+
+    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_tui_runtime(
+        config=_config(),
+        mcp_config=MCPConfig(
+            servers={
+                "one": MCPServerConfig(command="unused"),
+                "two": MCPServerConfig(command="unused"),
+            }
+        ),
+        working_dir=tmp_path,
+    )
+    async with runtime:
+        with runtime.agent.override(model=FunctionModel(respond)):
+            await runtime.agent.run("test", deps=runtime.ctx)
+
+    assert {"one_collide", "two_collide"} <= visible
+
+
+@pytest.mark.asyncio
+async def test_optional_mcp_toolset_skips_failed_entry() -> None:
+    class OfflineToolset(FunctionToolset):
+        async def __aenter__(self):
+            raise ConnectionError("offline")
+
+    wrapper = _OptionalMCPToolset(
+        OfflineToolset([], id="offline"),
+        server_name="offline",
+    )
+    ctx = MagicMock()
+    ctx.deps.emit_event = AsyncMock()
+
+    async with wrapper:
+        assert await wrapper.get_tools(ctx) == {}
+
+    ctx.deps.emit_event.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_goal_handoff_extension_marks_only_active_goal() -> None:
     extension = GoalContextHandoffExtension()
+    active = TUIContext()
+    active.goal_task = "ship"
+    inactive = TUIContext()
 
     await extension.on_context_handoff_complete(
         ContextHandoffCompleteContext(
-            event_id="handoff-1",
-            deps=ctx,
+            event_id="active-handoff",
+            deps=active,
+            source=ContextHandoffSource.COMPACT,
+            original_messages=[],
+            trimmed_messages=[],
+            handoff_messages=[],
+            summary_markdown="summary",
+        )
+    )
+    await extension.on_context_handoff_complete(
+        ContextHandoffCompleteContext(
+            event_id="inactive-handoff",
+            deps=inactive,
             source=ContextHandoffSource.COMPACT,
             original_messages=[],
             trimmed_messages=[],
@@ -332,608 +716,150 @@ async def test_goal_context_handoff_extension_marks_active_goal() -> None:
         )
     )
 
-    assert ctx.goal_needs_post_restore_audit is True
-    assert ctx.goal_last_context_handoff_source == "compact"
+    assert active.goal_needs_post_restore_audit is True
+    assert active.goal_last_context_handoff_source == "compact"
+    assert inactive.goal_needs_post_restore_audit is False
 
 
-async def test_goal_context_handoff_extension_marks_goal_through_handoff_filter() -> None:
-    """The summarize handoff filter should trigger YAACLI goal post-restore audit state."""
-    from yaacli.session import TUIContext
-
-    ctx = TUIContext()
-    ctx.goal_task = "fix tests"
-    ctx.lifecycle_extensions = [GoalContextHandoffExtension()]
-    ctx.handoff_message = "# Context Summary\n\nContinue the task."
-    run_ctx = MagicMock()
-    run_ctx.deps = ctx
-
-    result = await process_handoff_message(
-        run_ctx,
-        [ModelRequest(parts=[UserPromptPart(content="original request")])],
-    )
-
-    assert len(result) == 1
-    assert ctx.handoff_message is None
-    assert ctx.goal_needs_post_restore_audit is True
-    assert ctx.goal_last_context_handoff_source == "summarize_tool"
-
-
-async def test_goal_context_handoff_extension_ignores_inactive_goal() -> None:
-    """Inactive goal contexts should not get post-restore audit state."""
-    from yaacli.session import TUIContext
-
-    ctx = TUIContext.model_construct()
-    ctx.goal_task = None
-    ctx.goal_iteration = 0
-    ctx.goal_max_iterations = 10
-    ctx.goal_needs_post_restore_audit = False
-    ctx.goal_last_context_handoff_source = None
-    extension = GoalContextHandoffExtension()
-
-    await extension.on_context_handoff_complete(
-        ContextHandoffCompleteContext(
-            event_id="handoff-1",
-            deps=ctx,
-            source=ContextHandoffSource.SUMMARIZE_TOOL,
-            original_messages=[],
-            trimmed_messages=[],
-            handoff_messages=[],
-            summary_markdown="summary",
+def test_runtime_source_snapshot_freezes_prompt_and_subagent_definitions(
+    tmp_path: Path,
+) -> None:
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("prompt one", encoding="utf-8")
+    _write_subagent_spec(tmp_path / "subagents")
+    config = YaacliConfig(
+        general=GeneralConfig(
+            model="openai-chat:gpt-4",
+            system_prompt_file=str(prompt_path),
         )
     )
 
-    assert ctx.goal_needs_post_restore_audit is False
-    assert ctx.goal_last_context_handoff_source is None
+    first = compile_runtime_sources(
+        config,
+        config_dir=tmp_path,
+        include_subagents=True,
+    )
+    first_agent_spec = build_runtime_agent_spec(
+        config,
+        profile=None,
+    )
+
+    prompt_path.write_text("prompt two", encoding="utf-8")
+    _write_subagent_spec(tmp_path / "subagents", route="second")
+    second = compile_runtime_sources(
+        config,
+        config_dir=tmp_path,
+        include_subagents=True,
+    )
+
+    assert first.system_prompt == "prompt one"
+    assert [spec.route for spec in first.subagent_specs] == ["helper"]
+    assert first_agent_spec["instructions"] == []
+    assert first.fingerprint_payload() != second.fingerprint_payload()
 
 
-def test_create_tui_runtime_with_model_settings(tmp_path: Path) -> None:
-    """Test creating runtime with model settings preset."""
-    # Use openai which is more commonly mocked in tests
-    config = YaacliConfig(
-        general=GeneralConfig(
-            model="openai-chat:gpt-4",
-            model_settings="openai_high",
+def test_main_runtime_manifest_restores_old_profile_mcp_tools_and_prompt_without_secrets(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    old_config = YaacliConfig(
+        general=GeneralConfig(model="test:old-default", max_requests=17),
+        shell_env={"SERVICE_TOKEN": "shell-secret"},
+        tools=ToolsConfig(
+            enable_codeact=False,
+            mcp_mode="direct",
+            need_approval=["old_tool"],
         ),
     )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-    )
-
-    assert runtime is not None
-
-
-def test_create_tui_runtime_exposes_mcp_servers_directly_by_default(tmp_path: Path) -> None:
-    """Test that MCP servers use native toolsets unless proxy mode is requested."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-    mcp_config = MCPConfig(
+    old_mcp = MCPConfig(
         servers={
-            "test": MCPServerConfig(
-                transport="stdio",
-                command="echo",
-                args=["test"],
-            ),
+            "old_server": MCPServerConfig(
+                command="old-mcp-command",
+                env={"SERVICE_TOKEN": "mcp-secret"},
+                description="old MCP plan",
+            )
         }
     )
-
-    runtime = create_tui_runtime(
-        config=config,
-        mcp_config=mcp_config,
+    old_profile = ResolvedModelProfile(
+        id="old-profile",
+        label="Old",
+        model="test:old-profile",
+        model_settings={"temperature": 0.1},
+        instructions="old profile instructions",
+    )
+    sources = RuntimeSourceSnapshot(
+        system_prompt="old system prompt",
+        subagent_specs=(),
+    )
+    manifest = build_main_runtime_manifest(
+        old_config,
+        old_mcp,
+        profile=old_profile,
+        sources=sources,
         working_dir=tmp_path,
-    )
-
-    assert runtime is not None
-    direct_toolsets = [toolset for toolset in runtime.agent.toolsets if isinstance(toolset, PrefixedToolset)]
-    assert len(direct_toolsets) == 1
-    assert direct_toolsets[0].prefix == "test"
-    assert isinstance(direct_toolsets[0].wrapped, NamedMCPToolset)
-    assert not any(isinstance(toolset, ToolProxyToolset) for toolset in runtime.agent.toolsets)
-
-
-def test_create_tui_runtime_can_proxy_mcp_servers(tmp_path: Path) -> None:
-    """Test explicitly exposing MCP servers through the fixed tool proxy."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-        tools=ToolsConfig(mcp_mode="proxy"),
-    )
-    mcp_config = MCPConfig(
-        servers={
-            "test": MCPServerConfig(
-                transport="stdio",
-                command="echo",
-                args=["test"],
-                prefix="ignored-in-proxy-mode",
-            ),
-        }
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        mcp_config=mcp_config,
-        working_dir=tmp_path,
-    )
-
-    mcp_proxies = [toolset for toolset in runtime.agent.toolsets if isinstance(toolset, ToolProxyToolset)]
-    assert len(mcp_proxies) == 1
-    assert mcp_proxies[0].search_tool_name == "mcp_search_tool"
-    assert mcp_proxies[0].call_tool_name == "mcp_call_tool"
-    assert not any(isinstance(toolset, PrefixedToolset) for toolset in runtime.agent.toolsets)
-
-
-async def test_optional_proxy_mcp_streams_startup_failure_status(tmp_path: Path, monkeypatch) -> None:
-    class OfflineToolset(FunctionToolset):
-        async def __aenter__(self):
-            raise ConnectionError("offline")
-
-    offline = OfflineToolset([], id="offline")
-    monkeypatch.setattr(runtime_module, "build_mcp_servers", lambda *_args, **_kwargs: [offline])
-    runtime = create_tui_runtime(
-        config=YaacliConfig(
-            general=GeneralConfig(model="openai-chat:gpt-4"),
-            tools=ToolsConfig(mcp_mode="proxy"),
-        ),
-        mcp_config=MCPConfig(servers={"offline": MCPServerConfig(command="unused", required=False)}),
-        working_dir=tmp_path,
-        config_dir=tmp_path / "config",
-        enable_async_subagents=False,
-    )
-
-    def respond(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
-        return ModelResponse(parts=[TextPart(content="ok")])
-
-    async def stream_respond(_messages: list[ModelMessage], _info: AgentInfo):
-        yield "ok"
-
-    status_events: list[ToolSearchInitEvent] = []
-    async with runtime:
-        with runtime.agent.override(model=FunctionModel(respond, stream_function=stream_respond)):
-            async with stream_agent(runtime, "test") as streamer:
-                async for stream_event in streamer:
-                    if isinstance(stream_event.event, ToolSearchInitEvent):
-                        status_events.append(stream_event.event)
-
-    assert status_events
-    assert status_events[0].namespace_status == {"offline": NamespaceStatus.skipped}
-
-
-async def test_create_tui_runtime_namespaces_duplicate_direct_mcp_tools(tmp_path: Path, monkeypatch) -> None:
-    """Direct MCP servers may expose the same native tool name without conflicts."""
-
-    def collide() -> str:
-        return "ok"
-
-    mcp_servers = [
-        FunctionToolset([collide], id="one"),
-        FunctionToolset([collide], id="two"),
-    ]
-    monkeypatch.setattr(runtime_module, "build_mcp_servers", lambda *_args, **_kwargs: mcp_servers)
-    visible_tool_names: set[str] = set()
-
-    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        visible_tool_names.update(tool.name for tool in info.function_tools)
-        return ModelResponse(parts=[TextPart(content="ok")])
-
-    runtime = create_tui_runtime(
-        config=YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4")),
-        mcp_config=MCPConfig(
-            servers={
-                "one": MCPServerConfig(command="unused"),
-                "two": MCPServerConfig(command="unused"),
-            }
-        ),
-        working_dir=tmp_path,
-        config_dir=tmp_path / "config",
-        enable_async_subagents=False,
-    )
-
-    async with runtime:
-        with runtime.agent.override(model=FunctionModel(respond)):
-            await runtime.agent.run("test", deps=runtime.ctx)
-
-    assert "one_collide" in visible_tool_names
-    assert "two_collide" in visible_tool_names
-
-
-async def test_create_tui_runtime_honors_custom_and_empty_mcp_prefixes(tmp_path: Path, monkeypatch) -> None:
-    """Direct MCP prefixes may be customized or disabled per server."""
-
-    def collide() -> str:
-        return "ok"
-
-    mcp_servers = [
-        FunctionToolset([collide], id="custom"),
-        FunctionToolset([collide], id="unprefixed"),
-    ]
-    monkeypatch.setattr(runtime_module, "build_mcp_servers", lambda *_args, **_kwargs: mcp_servers)
-    visible_tool_names: set[str] = set()
-
-    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        visible_tool_names.update(tool.name for tool in info.function_tools)
-        return ModelResponse(parts=[TextPart(content="ok")])
-
-    runtime = create_tui_runtime(
-        config=YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4")),
-        mcp_config=MCPConfig(
-            servers={
-                "custom": MCPServerConfig(command="unused", prefix="docs"),
-                "unprefixed": MCPServerConfig(command="unused", prefix=""),
-            }
-        ),
-        working_dir=tmp_path,
-        config_dir=tmp_path / "config",
-        enable_async_subagents=False,
-    )
-
-    async with runtime:
-        with runtime.agent.override(model=FunctionModel(respond)):
-            await runtime.agent.run("test", deps=runtime.ctx)
-
-    assert "docs_collide" in visible_tool_names
-    assert "collide" in visible_tool_names
-    assert "custom_collide" not in visible_tool_names
-    assert "unprefixed_collide" not in visible_tool_names
-    assert "_collide" not in visible_tool_names
-
-
-async def test_optional_direct_mcp_emits_skipped_status_after_failed_startup() -> None:
-    class FailingToolset(FunctionToolset):
-        async def __aenter__(self):
-            raise ConnectionError("offline")
-
-    optional = _OptionalMCPToolset(FailingToolset([]), server_name="offline")
-    ctx = MagicMock()
-    ctx.deps.run_id = "run-12345678"
-    ctx.deps.emit_event = AsyncMock()
-
-    async with optional:
-        assert await optional.get_tools(ctx) == {}
-
-    emitted = ctx.deps.emit_event.await_args.args[0]
-    assert isinstance(emitted, ToolSearchInitEvent)
-    assert emitted.namespace_status == {"offline": NamespaceStatus.skipped}
-
-
-async def test_optional_direct_mcp_balances_nested_successful_entries() -> None:
-    class CountingToolset(FunctionToolset):
-        def __init__(self) -> None:
-            super().__init__([])
-            self.enter_count = 0
-            self.exit_count = 0
-
-        async def __aenter__(self):
-            self.enter_count += 1
-            return await super().__aenter__()
-
-        async def __aexit__(self, *args):
-            self.exit_count += 1
-            return await super().__aexit__(*args)
-
-    wrapped = CountingToolset()
-    optional = _OptionalMCPToolset(wrapped, server_name="available")
-
-    async with optional:
-        async with optional:
-            pass
-
-    assert wrapped.enter_count == 2
-    assert wrapped.exit_count == 2
-
-
-async def test_create_tui_runtime_skips_unavailable_optional_direct_mcp(tmp_path: Path) -> None:
-    """An unavailable optional MCP server must not block direct-mode startup."""
-    config = YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4"))
-    mcp_config = MCPConfig(
-        servers={
-            "offline": MCPServerConfig(
-                transport="stdio",
-                command=sys.executable,
-                args=["-c", "pass"],
-                required=False,
-            ),
-        }
-    )
-    runtime = create_tui_runtime(
-        config=config,
-        mcp_config=mcp_config,
-        working_dir=tmp_path,
-        config_dir=tmp_path / "config",
-        enable_async_subagents=False,
-    )
-
-    async with runtime:
-        direct_toolsets = [toolset for toolset in runtime.agent.toolsets if isinstance(toolset, PrefixedToolset)]
-        assert len(direct_toolsets) == 1
-        assert direct_toolsets[0].prefix == "offline"
-
-
-def test_create_tui_runtime_with_need_approval(tmp_path: Path) -> None:
-    """Test creating runtime with tools needing approval."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-        tools=ToolsConfig(need_approval=["shell_sandbox", "file_write"]),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-    )
-
-    assert runtime is not None
-
-
-def test_create_tui_runtime_uses_cwd_by_default() -> None:
-    """Test that runtime uses cwd when working_dir not specified."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-
-    runtime = create_tui_runtime(config=config)
-
-    assert runtime is not None
-
-
-def test_create_tui_runtime_with_model_cfg_preset(tmp_path: Path) -> None:
-    """Test creating runtime with model_cfg preset."""
-    from ya_agent_sdk.context import ModelCapability
-
-    config = YaacliConfig(
-        general=GeneralConfig(
-            model="openai-chat:gpt-4",
-            model_cfg="claude_200k",
-        ),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-    )
-
-    assert runtime is not None
-    # Check model_cfg was applied
-    assert runtime.ctx.model_cfg.context_window == 200_000
-    assert runtime.ctx.model_cfg.max_images == 20
-    assert ModelCapability.vision in runtime.ctx.model_cfg.capabilities
-
-
-def test_create_tui_runtime_with_model_cfg_gemini(tmp_path: Path) -> None:
-    """Test creating runtime with gemini model_cfg preset (has video support)."""
-    from ya_agent_sdk.context import ModelCapability
-
-    # Use openai model to avoid API key requirement, but test gemini preset
-    config = YaacliConfig(
-        general=GeneralConfig(
-            model="openai-chat:gpt-4",
-            model_cfg="gemini_1m",
-        ),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-    )
-
-    assert runtime is not None
-    # Check gemini preset has vision + video capabilities
-    assert runtime.ctx.model_cfg.context_window == 1_000_000
-    assert ModelCapability.vision in runtime.ctx.model_cfg.capabilities
-    assert ModelCapability.video_understanding in runtime.ctx.model_cfg.capabilities
-    assert ModelCapability.youtube_url in runtime.ctx.model_cfg.capabilities
-
-
-def test_create_tui_runtime_with_model_cfg_dict(tmp_path: Path) -> None:
-    """Test creating runtime with custom model_cfg dict."""
-    from ya_agent_sdk.context import ModelCapability
-
-    config = YaacliConfig(
-        general=GeneralConfig(
-            model="openai-chat:gpt-4",
-            model_cfg={
-                "context_window": 100_000,
-                "max_images": 10,
-                "capabilities": ["vision"],
-            },
-        ),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-    )
-
-    assert runtime is not None
-    assert runtime.ctx.model_cfg.context_window == 100_000
-    assert runtime.ctx.model_cfg.max_images == 10
-    assert ModelCapability.vision in runtime.ctx.model_cfg.capabilities
-
-
-async def test_create_tui_runtime_enables_codeact_by_default_and_allows_disabling(tmp_path: Path) -> None:
-    visible_tools: list[set[str]] = []
-    run_code_descriptions: list[str] = []
-
-    def respond(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        visible_tools.append({tool.name for tool in info.function_tools})
-        run_code_descriptions.extend(tool.description for tool in info.function_tools if tool.name == "run_code")
-        return ModelResponse(parts=[TextPart(content="ok")])
-
-    for enable_codeact in (True, False):
-        runtime = create_tui_runtime(
-            config=YaacliConfig(
-                general=GeneralConfig(model="openai-chat:gpt-4"),
-                tools=ToolsConfig(enable_codeact=enable_codeact),
-            ),
-            working_dir=tmp_path,
-            enable_async_subagents=False,
-        )
-        async with runtime:
-            with runtime.agent.override(model=FunctionModel(respond)):
-                await runtime.agent.run("test", deps=runtime.ctx)
-
-    assert {"run_code", "run_program"} <= visible_tools[0]
-    assert {"run_code", "run_program"}.isdisjoint(visible_tools[1])
-    assert len(run_code_descriptions) == 1
-    shell_tool_names = {tool.name for tool in runtime_module.shell_tools} | {MonitoredShellTool.name}
-    assert all(f"{shell_tool}(" not in run_code_descriptions[0] for shell_tool in shell_tool_names)
-
-
-def test_create_tui_runtime_requires_explicit_user_input_support(tmp_path: Path) -> None:
-    config = YaacliConfig(general=GeneralConfig(model="openai-chat:gpt-4"))
-
-    default_runtime = create_tui_runtime(config=config, working_dir=tmp_path)
-    interactive_runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
+        config_dir=config_dir,
+        subagent_default_mode=SubagentExecutionMode.background,
         enable_user_input=True,
+        frontend="tui",
+        hitl_policy="wait",
+    )
+    serialized = manifest.model_dump_json()
+    assert "shell-secret" not in serialized
+    assert "mcp-secret" not in serialized
+
+    current_config = YaacliConfig(
+        general=GeneralConfig(model="test:new-default", max_requests=99),
+        shell_env={"SERVICE_TOKEN": "shell-secret"},
+        tools=ToolsConfig(
+            enable_codeact=True,
+            mcp_mode="proxy",
+            need_approval=["new_tool"],
+        ),
+        model_profiles={
+            "old-profile": ModelProfileConfig(
+                label="Old",
+                model="test:old-profile",
+                model_settings={"temperature": 0.1},
+                instructions="old profile instructions",
+            )
+        },
+    )
+    current_mcp = MCPConfig(
+        servers={
+            "old_server": MCPServerConfig(
+                command="new-mcp-command",
+                env={"SERVICE_TOKEN": "mcp-secret"},
+                description="new mutable MCP config",
+            )
+        }
+    )
+    restored_config, restored_mcp, restored_profile, restored_sources, workspace, restored_config_dir = (
+        restore_main_runtime_manifest(
+            manifest,
+            current_config=current_config,
+            current_mcp_config=current_mcp,
+        )
     )
 
-    assert default_runtime.core_toolset is not None
-    assert interactive_runtime.core_toolset is not None
-    assert "ask_user_question" not in default_runtime.core_toolset._tool_classes
-    assert "ask_user_question" in interactive_runtime.core_toolset._tool_classes
-    assert interactive_runtime.ctx.self_fork_agent is not None
-    self_fork_tool_names = [
-        name
-        for toolset in interactive_runtime.ctx.self_fork_agent._user_toolsets
-        if isinstance(toolset, Toolset)
-        for name in toolset.tool_names
-    ]
-    assert "ask_user_question" not in self_fork_tool_names
+    assert restored_config.general.model == "test:old-default"
+    assert restored_config.general.max_requests == 17
+    assert restored_config.tools.need_approval == ["old_tool"]
+    assert restored_config.tools.enable_codeact is False
+    assert restored_config.shell_env == {"SERVICE_TOKEN": "shell-secret"}
+    assert restored_mcp is not None
+    assert restored_mcp.servers["old_server"].command == "old-mcp-command"
+    assert restored_mcp.servers["old_server"].description == "old MCP plan"
+    assert restored_mcp.servers["old_server"].env == {"SERVICE_TOKEN": "mcp-secret"}
+    assert restored_profile == old_profile
+    assert restored_sources == sources
+    assert workspace == tmp_path.resolve()
+    assert restored_config_dir == config_dir.resolve()
 
-
-def test_create_tui_runtime_can_disable_async_subagents(tmp_path: Path) -> None:
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-        enable_async_subagents=False,
-    )
-
-    assert runtime.core_toolset is not None
-    assert "spawn_delegate" not in runtime.core_toolset._tool_classes
-    assert "steer_subagent" not in runtime.core_toolset._tool_classes
-    assert "wait_subagent" not in runtime.core_toolset._tool_classes
-    assert "shell_monitor" in runtime.core_toolset._tool_classes
-    assert SpawnDelegateTool.name == "spawn_delegate"
-    assert SteerSubagentTool.name == "steer_subagent"
-    assert WaitSubagentTool.name == "wait_subagent"
-
-
-async def test_create_tui_runtime_defaults_to_async_delegate_only(tmp_path: Path) -> None:
-    config_dir = tmp_path / "config"
-    subagents_dir = config_dir / "subagents"
-    subagents_dir.mkdir(parents=True)
-    (subagents_dir / "helper.md").write_text(
-        "---\nname: helper\ndescription: Helper subagent\n---\n\nYou are a helper.\n"
-    )
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-        config_dir=config_dir,
-    )
-
-    assert runtime.core_toolset is not None
-    assert runtime.core_toolset._tool_classes["delegate"] is AsyncDelegateTool
-    assert runtime.core_toolset._tool_classes["wait_subagent"] is WaitSubagentTool
-    assert "spawn_delegate" not in runtime.core_toolset._tool_classes
-    assert DELEGATE_BACKEND_TOOL_NAME in runtime.core_toolset._tool_classes
-
-    async with runtime:
-        runtime.env.background_monitor.set_core_toolset(runtime.core_toolset)
-        run_ctx = MagicMock()
-        run_ctx.deps = runtime.ctx
-
-        visible_tools = await runtime.core_toolset.get_tools(run_ctx)
-        assert "delegate" in visible_tools
-        assert "spawn_delegate" not in visible_tools
-        assert "wait_subagent" not in visible_tools
-        assert DELEGATE_BACKEND_TOOL_NAME not in visible_tools
-
-        instruction_parts = await runtime.core_toolset.get_instructions(run_ctx)
-        instruction_text = "\n".join(part.content for part in instruction_parts or [])
-        assert '<tool-instruction name="delegate">' in instruction_text
-        delegate_instruction = instruction_text.split('<tool-instruction name="delegate">', 1)[1].split(
-            "</tool-instruction>", 1
-        )[0]
-        assert "delegate is asynchronous" in delegate_instruction
-        assert "returns an agent ID immediately" in delegate_instruction
-        assert '<subagent name="helper">' in delegate_instruction
-        assert "Helper subagent" in delegate_instruction
-        assert DELEGATE_BACKEND_TOOL_NAME not in delegate_instruction
-        assert "Delegate calls are blocking" not in delegate_instruction
-
-
-async def test_create_tui_runtime_can_keep_blocking_delegate_and_spawn_delegate(tmp_path: Path) -> None:
-    config_dir = tmp_path / "config"
-    subagents_dir = config_dir / "subagents"
-    subagents_dir.mkdir(parents=True)
-    (subagents_dir / "helper.md").write_text(
-        "---\nname: helper\ndescription: Helper subagent\n---\n\nYou are a helper.\n"
-    )
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-        config_dir=config_dir,
-        enable_async_subagents=True,
-        enable_delegate_subagents=True,
-    )
-
-    assert runtime.core_toolset is not None
-    assert runtime.core_toolset._tool_classes["spawn_delegate"] is SpawnDelegateTool
-    assert runtime.core_toolset._tool_classes["wait_subagent"] is WaitSubagentTool
-    assert runtime.core_toolset._tool_classes["delegate"] is not AsyncDelegateTool
-    assert DELEGATE_BACKEND_TOOL_NAME not in runtime.core_toolset._tool_classes
-
-    async with runtime:
-        runtime.env.background_monitor.set_core_toolset(runtime.core_toolset)
-        run_ctx = MagicMock()
-        run_ctx.deps = runtime.ctx
-
-        visible_tools = await runtime.core_toolset.get_tools(run_ctx)
-        assert "delegate" in visible_tools
-        assert "spawn_delegate" in visible_tools
-        assert "wait_subagent" not in visible_tools
-        assert DELEGATE_BACKEND_TOOL_NAME not in visible_tools
-
-        instruction_parts = await runtime.core_toolset.get_instructions(run_ctx)
-        instruction_text = "\n".join(part.content for part in instruction_parts or [])
-        assert '<tool-instruction name="delegate">' in instruction_text
-        assert '<tool-instruction name="spawn_delegate">' in instruction_text
-        delegate_instruction = instruction_text.split('<tool-instruction name="delegate">', 1)[1].split(
-            "</tool-instruction>", 1
-        )[0]
-        spawn_instruction = instruction_text.split('<tool-instruction name="spawn_delegate">', 1)[1].split(
-            "</tool-instruction>", 1
-        )[0]
-        assert "Delegate calls are blocking" in delegate_instruction
-        assert "Use asynchronous delegation only for bounded work" in spawn_instruction
-
-
-def test_create_tui_runtime_with_no_model_cfg(tmp_path: Path) -> None:
-    """Test creating runtime without model_cfg uses defaults."""
-    config = YaacliConfig(
-        general=GeneralConfig(model="openai-chat:gpt-4"),
-    )
-
-    runtime = create_tui_runtime(
-        config=config,
-        working_dir=tmp_path,
-    )
-
-    assert runtime is not None
-    # Default ModelConfig values
-    assert runtime.ctx.model_cfg.context_window is None
-    assert runtime.ctx.model_cfg.max_images == 20
-    assert len(runtime.ctx.model_cfg.capabilities) == 0
+    changed_secret_config = current_config.model_copy(update={"shell_env": {"SERVICE_TOKEN": "different-secret"}})
+    with pytest.raises(ValueError, match=r"runtime secret source.*changed"):
+        restore_main_runtime_manifest(
+            manifest,
+            current_config=changed_secret_config,
+            current_mcp_config=current_mcp,
+        )

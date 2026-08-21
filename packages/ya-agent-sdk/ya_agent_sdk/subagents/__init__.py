@@ -1,318 +1,85 @@
-"""Subagent configuration and creation utilities.
+"""Portable subagent definitions, resolution, and execution services."""
 
-This module provides utilities for creating subagents from markdown configuration files.
-Each markdown file contains YAML frontmatter with subagent metadata and the system prompt
-as the body content.
-
-YAML Frontmatter Schema::
-
-    ---
-    name: debugger
-    description: Debug code issues
-    instruction: Use this tool when debugging
-    tools:  # Optional - list of tool names from parent toolset
-      - grep
-      - view
-      - edit
-    model: inherit  # Optional - 'inherit' or model name
-    model_settings: anthropic_medium  # Optional - preset name, 'inherit', or dict
-    ---
-
-    System prompt content here...
-
-Usage::
-
-    from ya_agent_sdk.subagents import (
-        parse_subagent_markdown,
-        create_subagent_tool_from_markdown,
-        load_subagent_tools_from_dir,
-        get_builtin_subagent_configs,
-        load_builtin_subagent_tools,
-    )
-    from ya_agent_sdk.toolsets.core.base import Toolset
-
-    # Parse config from markdown string
-    config = parse_subagent_markdown(markdown_content)
-
-    # Create single subagent tool
-    DebuggerTool = create_subagent_tool_from_markdown(
-        "path/to/debugger.md",
-        parent_toolset=main_toolset,
-        model="anthropic:claude-sonnet-4",
-    )
-
-    # Load all builtin subagents
-    subagent_tools = load_builtin_subagent_tools(
-        parent_toolset=main_toolset,
-        model="anthropic:claude-sonnet-4",
-    )
-"""
-
-from __future__ import annotations
-
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-from pydantic_ai.capabilities import AbstractCapability
-
-from ya_agent_sdk.context import ModelConfig
-from ya_agent_sdk.presets import INHERIT
-from ya_agent_sdk.subagents.builder import build_subagent_agent
-from ya_agent_sdk.subagents.config import (
-    SubagentConfig,
-    load_subagent_from_file,
-    load_subagents_from_dir,
-    parse_subagent_markdown,
+from ya_agent_sdk.subagents.capability import DelegationCapability
+from ya_agent_sdk.subagents.resolver import (
+    SubagentPlanResolver,
+    validate_resolved_subagent_plan_integrity,
 )
-from ya_agent_sdk.subagents.factory import (
-    create_subagent_tool_from_config,
-    create_subagent_tool_from_markdown,
-    load_subagent_tools_from_dir,
+from ya_agent_sdk.subagents.service import (
+    AsyncioSubagentExecutionHost,
+    InlineSubagentExecutionHost,
+    InMemorySubagentExecutionStore,
+    InProcessSubagentDriver,
+    RetainedSubagentPlanProvider,
+    SubagentCompletionDelivery,
+    SubagentDeferredResolver,
+    SubagentDriver,
+    SubagentExecutionHost,
+    SubagentExecutionIdConflict,
+    SubagentExecutionIdFactory,
+    SubagentExecutionService,
+    SubagentExecutionStore,
+    SubagentRegistry,
+    create_subagent_execution_id,
+    resolve_subagent_output_type,
 )
-from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
-
-# Lazy imports to avoid circular dependency with toolsets.core.subagent
-# These are re-exported via __getattr__ below
-_LAZY_IMPORTS = (
-    "create_subagent_call_func",
-    "create_subagent_tool",
-    "create_unified_subagent_tool",
-    "get_available_subagent_names",
+from ya_agent_sdk.subagents.spec import (
+    AgentTemplateContext,
+    CustomCapabilityAudit,
+    ResolvedSubagentPlan,
+    SelfForkPolicy,
+    SubagentDeliveryState,
+    SubagentDriverOutcome,
+    SubagentDurability,
+    SubagentExecutionMode,
+    SubagentExecutionRecord,
+    SubagentExecutionState,
+    SubagentHandle,
+    SubagentHistoryPolicy,
+    SubagentInputState,
+    SubagentLinkagePolicy,
+    SubagentPlanDescriptor,
+    SubagentSpec,
+    clone_resolved_subagent_plan,
+    clone_subagent_descriptor,
 )
-
-if TYPE_CHECKING:
-    from pydantic_ai.models import Model
-
-    # Type stubs for lazy imports (actual imports via __getattr__)
-    from ya_agent_sdk.toolsets.core.subagent import (
-        create_subagent_call_func as create_subagent_call_func,
-    )
-    from ya_agent_sdk.toolsets.core.subagent import (
-        create_subagent_tool as create_subagent_tool,
-    )
-    from ya_agent_sdk.toolsets.core.subagent import (
-        create_unified_subagent_tool as create_unified_subagent_tool,
-    )
-    from ya_agent_sdk.toolsets.core.subagent import (
-        get_available_subagent_names as get_available_subagent_names,
-    )
-
-_HERE = Path(__file__).parent
-PRESET_SUBAGNENTS_DIR = _HERE / "presets"
-
-
-def get_builtin_subagent_configs() -> dict[str, SubagentConfig]:
-    """Get all builtin subagent configurations from ya_agent_sdk/subagents/*.md.
-
-    Returns:
-        Dict mapping subagent names to their configurations.
-
-    Example::
-
-        configs = get_builtin_subagent_configs()
-        for name, config in configs.items():
-            print(f"{name}: {config.description}")
-    """
-    return load_subagents_from_dir(PRESET_SUBAGNENTS_DIR)
-
-
-def load_builtin_subagent_tools(
-    parent_toolset: Toolset[Any],
-    *,
-    model: str | Model | None = None,
-    model_settings: dict[str, Any] | str | None = None,
-    model_cfg: ModelConfig | None = None,
-    inherit_hooks: bool = False,
-    pre_capabilities: list[AbstractCapability[Any]] | None = None,
-    capabilities: list[AbstractCapability[Any]] | None = None,
-) -> list[type[BaseTool]]:
-    """Load all builtin subagent tools from ya_agent_sdk/subagents/*.md.
-
-    This is a convenience function that loads all predefined subagent configurations
-    and creates tools from them.
-
-    Args:
-        parent_toolset: The parent toolset to derive tools from.
-        model: Fallback model for all subagents.
-        model_settings: Fallback model settings for all subagents.
-        model_cfg: Fallback ModelConfig for all subagents.
-        pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
-        capabilities: Parent capabilities to inherit unless a subagent config overrides them.
-
-    Returns:
-        List of BaseTool subclasses.
-
-    Example::
-
-        from ya_agent_sdk.subagents import load_builtin_subagent_tools
-        from ya_agent_sdk.toolsets.core.base import Toolset
-
-        main_toolset = Toolset(tools=[ViewTool, EditTool, GrepTool])
-        subagent_tools = load_builtin_subagent_tools(
-            parent_toolset=main_toolset,
-            model="anthropic:claude-sonnet-4",
-            model_settings="anthropic_medium",
-        )
-    """
-    return load_subagent_tools_from_dir(
-        PRESET_SUBAGNENTS_DIR,
-        parent_toolset,
-        model=model,
-        model_settings=model_settings,
-        model_cfg=model_cfg,
-        inherit_hooks=inherit_hooks,
-        pre_capabilities=pre_capabilities,
-        capabilities=capabilities,
-    )
-
-
-def load_unified_subagent_tool_from_dir(
-    dir_path: Path | str,
-    parent_toolset: Toolset[Any],
-    *,
-    name: str = "delegate",
-    description: str = "Delegate task to a specialized subagent",
-    model: str | Model | None = None,
-    model_settings: dict[str, Any] | str | None = None,
-    model_cfg: ModelConfig | None = None,
-    inherit_hooks: bool = False,
-    pre_capabilities: list[AbstractCapability[Any]] | None = None,
-    capabilities: list[AbstractCapability[Any]] | None = None,
-) -> type[BaseTool]:
-    """Load all subagent configs from a directory and create a unified tool.
-
-    This combines all subagents from the directory into a single "delegate" tool
-    that selects subagents by name parameter.
-
-    Args:
-        dir_path: Path to directory containing .md subagent files.
-        parent_toolset: The parent toolset to derive tools from.
-        name: Tool name (default: "delegate").
-        description: Tool description shown to the model.
-        model: Fallback model for subagents with model="inherit".
-        model_settings: Fallback model settings for subagents.
-        model_cfg: Fallback ModelConfig for subagents.
-        pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
-        capabilities: Parent capabilities to inherit unless a subagent config overrides them.
-
-    Returns:
-        A BaseTool subclass that delegates to subagents by name.
-
-    Example::
-
-        DelegateTool = load_unified_subagent_tool_from_dir(
-            "~/.yaacli/subagents",
-            parent_toolset,
-            model="anthropic:claude-sonnet-4",
-        )
-    """
-    from ya_agent_sdk.toolsets.core.subagent import create_unified_subagent_tool
-
-    configs = load_subagents_from_dir(dir_path)
-    return create_unified_subagent_tool(
-        list(configs.values()),
-        parent_toolset,
-        name=name,
-        description=description,
-        model=model,
-        model_settings=model_settings,
-        model_cfg=model_cfg,
-        inherit_hooks=inherit_hooks,
-        pre_capabilities=pre_capabilities,
-        capabilities=capabilities,
-    )
-
-
-def load_builtin_unified_subagent_tool(
-    parent_toolset: Toolset[Any],
-    *,
-    name: str = "delegate",
-    description: str = "Delegate task to a specialized subagent",
-    model: str | Model | None = None,
-    model_settings: dict[str, Any] | str | None = None,
-    model_cfg: ModelConfig | None = None,
-    inherit_hooks: bool = False,
-    pre_capabilities: list[AbstractCapability[Any]] | None = None,
-    capabilities: list[AbstractCapability[Any]] | None = None,
-) -> type[BaseTool]:
-    """Load all builtin subagents as a single unified tool.
-
-    This is a convenience function that creates a unified "delegate" tool
-    from all predefined subagent configurations.
-
-    Args:
-        parent_toolset: The parent toolset to derive tools from.
-        name: Tool name (default: "delegate").
-        description: Tool description shown to the model.
-        model: Fallback model for subagents with model="inherit".
-        model_settings: Fallback model settings for subagents.
-        model_cfg: Fallback ModelConfig for subagents.
-        pre_capabilities: Parent pre-capabilities to inherit unless a subagent config overrides them.
-        capabilities: Parent capabilities to inherit unless a subagent config overrides them.
-
-    Returns:
-        A BaseTool subclass that delegates to builtin subagents by name.
-
-    Example::
-
-        from ya_agent_sdk.subagents import load_builtin_unified_subagent_tool
-
-        DelegateTool = load_builtin_unified_subagent_tool(
-            parent_toolset,
-            model="anthropic:claude-sonnet-4",
-        )
-        # Can call: delegate(subagent_name="debugger", prompt="Fix this error...")
-    """
-    return load_unified_subagent_tool_from_dir(
-        PRESET_SUBAGNENTS_DIR,
-        parent_toolset,
-        name=name,
-        description=description,
-        model=model,
-        model_settings=model_settings,
-        model_cfg=model_cfg,
-        inherit_hooks=inherit_hooks,
-        pre_capabilities=pre_capabilities,
-        capabilities=capabilities,
-    )
-
-
-def __getattr__(name: str) -> object:
-    """Lazy import for symbols from toolsets.core.subagent to avoid circular imports."""
-    if name in _LAZY_IMPORTS:
-        from ya_agent_sdk.toolsets.core.subagent import (
-            create_subagent_call_func,
-            create_subagent_tool,
-            create_unified_subagent_tool,
-            get_available_subagent_names,
-        )
-
-        _lazy_exports = {
-            "create_subagent_call_func": create_subagent_call_func,
-            "create_subagent_tool": create_subagent_tool,
-            "create_unified_subagent_tool": create_unified_subagent_tool,
-            "get_available_subagent_names": get_available_subagent_names,
-        }
-        return _lazy_exports[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 __all__ = [
-    "INHERIT",
-    "SubagentConfig",
-    "build_subagent_agent",
-    "create_subagent_call_func",
-    "create_subagent_tool",
-    "create_subagent_tool_from_config",
-    "create_subagent_tool_from_markdown",
-    "create_unified_subagent_tool",
-    "get_available_subagent_names",
-    "get_builtin_subagent_configs",
-    "load_builtin_subagent_tools",
-    "load_builtin_unified_subagent_tool",
-    "load_subagent_from_file",
-    "load_subagent_tools_from_dir",
-    "load_subagents_from_dir",
-    "load_unified_subagent_tool_from_dir",
-    "parse_subagent_markdown",
+    "AgentTemplateContext",
+    "AsyncioSubagentExecutionHost",
+    "CustomCapabilityAudit",
+    "DelegationCapability",
+    "InMemorySubagentExecutionStore",
+    "InProcessSubagentDriver",
+    "InlineSubagentExecutionHost",
+    "ResolvedSubagentPlan",
+    "RetainedSubagentPlanProvider",
+    "SelfForkPolicy",
+    "SubagentCompletionDelivery",
+    "SubagentDeferredResolver",
+    "SubagentDeliveryState",
+    "SubagentDriver",
+    "SubagentDriverOutcome",
+    "SubagentDurability",
+    "SubagentExecutionHost",
+    "SubagentExecutionIdConflict",
+    "SubagentExecutionIdFactory",
+    "SubagentExecutionMode",
+    "SubagentExecutionRecord",
+    "SubagentExecutionService",
+    "SubagentExecutionState",
+    "SubagentExecutionStore",
+    "SubagentHandle",
+    "SubagentHistoryPolicy",
+    "SubagentInputState",
+    "SubagentLinkagePolicy",
+    "SubagentPlanDescriptor",
+    "SubagentPlanResolver",
+    "SubagentRegistry",
+    "SubagentSpec",
+    "clone_resolved_subagent_plan",
+    "clone_subagent_descriptor",
+    "create_subagent_execution_id",
+    "resolve_subagent_output_type",
+    "validate_resolved_subagent_plan_integrity",
 ]

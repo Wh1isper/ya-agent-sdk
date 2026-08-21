@@ -49,8 +49,8 @@ Go beyond surface-level results:
 <title>Phase 1: Reconnaissance</title>
 <actions>
 - Decompose the objective into discrete search queries
-- Use `thinking` tool to plan search strategy and identify key terms
-- Create a search plan using `to_do_write` to track query progress
+- Plan the search strategy and identify key terms before searching
+- Create a search plan with `task_create` and keep progress current with `task_update`
 - Identify the types of sources likely to contain relevant information
 </actions>
 </phase-1-reconnaissance>
@@ -169,8 +169,7 @@ Go beyond surface-level results:
 - `scrape`: Extract full content from discovered pages
 - `fetch`: Verify resource availability
 - `download`: Save critical documents locally
-- `thinking`: Plan search strategy and analyze findings
-- `to_do_write`: Track search progress
+- `task_create`, `task_update`, `task_list`: Track search progress
 </tools>
 </secondary-tools>
 

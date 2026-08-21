@@ -9,6 +9,8 @@ Pydantic models in `yaacli.config`. Configuration is split by responsibility:
   process-environment, and security settings;
 - `tools.toml` contains interactive tool availability, MCP exposure mode, and tool/MCP approval policy;
 - `mcp.json` contains MCP server definitions;
+- global `plugins.toml` explicitly selects installed capability entry points and grants
+  configured instances to the root agent;
 - `.env` files provide supported `YAACLI_*` overrides and provider or SDK
   environment variables;
 - `state.json` stores local UI selection state such as the last model profile.
@@ -25,7 +27,8 @@ wizard and creates missing global assets without overwriting existing ones.
 | Main configuration | `~/.yaacli/config.toml` | `.yaacli/config.toml` | Project file replaces the global file as a whole |
 | Tool policy | `~/.yaacli/tools.toml` | `.yaacli/tools.toml` | Project file replaces the global file as a whole |
 | MCP configuration | `~/.yaacli/mcp.json` | `.yaacli/mcp.json` | Project file replaces the global file as a whole |
-| Subagents | `~/.yaacli/subagents/*.md` | Project subagents are supplied through CLI/project conventions | Loaded by the runtime |
+| Capability plugins | `~/.yaacli/plugins.toml` | None | Optional fixed global manifest loaded once at startup |
+| Subagents | `~/.yaacli/subagents/*.{md,yaml,yml,json}` | None | Generic Markdown definitions or strict versioned `SubagentSpec` documents |
 | Skills | `~/.yaacli/skills/` | `.yaacli/skills/` | Project skills have higher routing priority |
 | Local state | `~/.yaacli/state.json` | None | Stores selected model-profile state |
 | Saved sessions | `~/.yaacli/sessions/` by default | Configurable | Controlled by `session.session_dir` |
@@ -56,12 +59,6 @@ model = "anthropic:claude-sonnet-4-5"
 model_settings = "anthropic_adaptive_high"
 model_cfg = "claude_200k"
 max_requests = 1000
-agent_stream_resume_on_error = true
-# Non-transport execution recovery attempts.
-agent_stream_resume_max_attempts = 3
-# Independent transient model HTTP/WebSocket recovery attempts.
-agent_stream_transport_resume_max_attempts = 20
-agent_stream_resume_prompt = "Continue from recovered history without repeating completed work."
 max_goal_iterations = 10
 # system_prompt_file = "~/.yaacli/system_prompt.md"
 
@@ -84,16 +81,25 @@ show_token_usage = true
 show_elapsed_time = true
 
 [session]
-auto_save_history = true
 auto_restore = false
-max_turns_per_session = 20
-max_sessions = 100
 # session_dir = "~/.yaacli/sessions"
-# max_session_age_days = 90
+# database_path = "~/.yaacli/sessions/sessions-v2.sqlite3"
 
 [media]
 max_pending_attachments = 8
 max_pending_attachment_bytes = 20971520
+
+[media.s3]
+enabled = false
+bucket = ""
+region = "us-east-1"
+url_mode = "presign"
+presign_expires_seconds = 3600
+force_path_style = false
+
+[notifications]
+bell_on_turn_complete = true
+bell_on_user_action_required = true
 
 [oauth_refresh]
 enabled = true
@@ -124,9 +130,9 @@ prompt = "Please perform a comprehensive review of the current changes."
 ```
 
 The exact complete template is
-`packages/yaacli/yaacli/templates/config.toml`. Custom commands always use the
-same agent execution semantics; the former command-level ACT/PLAN mode is deprecated
-and ignored.
+`packages/yaacli/yaacli/templates/config.toml`. User-authored configuration is strict:
+unknown, misspelled, and removed fields are rejected. Custom commands always use the
+same agent execution semantics and contain only `description` plus `prompt`.
 
 ### General and model profiles
 
@@ -141,9 +147,131 @@ active main-agent profile. YAACLI registers them through a dynamic Pydantic AI
 request, including restored or compacted histories. A `/model` switch therefore takes
 effect without rebuilding prior history.
 
-`general.max_loop_iterations` is accepted as a compatibility input only when
-`max_goal_iterations` is absent. The normalized runtime field is
-`max_goal_iterations`.
+`general.max_requests` bounds cumulative model requests within one durable logical run,
+including every native deferred-tool continuation segment. A later user turn starts a
+new logical run and receives a fresh budget.
+
+Removed `general.max_loop_iterations` input is rejected. `/goal` uses only the strict
+`max_goal_iterations` field.
+
+### Subagent documents
+
+YAACLI accepts two configuration inputs under `~/.yaacli/subagents/`. Both compile to
+the same portable `SubagentSpec` and current capability-first child runtime.
+
+A native YAML or JSON document exposes the complete strict contract:
+
+```yaml
+schema_version: 1
+route: explorer
+agent:
+  name: explorer
+  description: Inspect an unfamiliar codebase.
+  model: anthropic:claude-sonnet-4-5
+  capabilities:
+    - FilesystemCapability
+    - ShellCapability
+history: isolated
+execution_modes: [foreground, background]
+linkage: child
+durability: process
+```
+
+The generic Markdown format keeps YAML frontmatter concise and uses the Markdown body
+for child instructions:
+
+```markdown
+---
+name: explorer
+description: Inspect an unfamiliar codebase.
+instruction: Use this agent for focused local codebase exploration.
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+tools: [glob, grep, ls, view]
+optional_tools: [shell_exec]
+---
+
+You are a codebase exploration specialist. Return concise findings with file paths.
+```
+
+`name` and `description` are required. `instruction`, `tools`, `optional_tools`,
+`model`, `model_settings`, and `model_cfg` are optional. `tools` and `optional_tools`
+accept either YAML lists or comma-separated strings. The loader combines `description`
+and optional `instruction` into the parent-facing native description, while the body
+becomes `AgentSpec.instructions`. `inherit` or an omitted model field uses the active
+root default. A model-settings or model-config mapping/preset is resolved at the same
+trusted configuration boundary used by native overrides. Every inherited value is
+materialized before child plan fingerprinting, so retained descriptors never depend on
+the active profile at restore time.
+
+Markdown is an input adapter, not the removed 1.x execution architecture. For the
+common inherited-tool behavior, YAACLI supplies its current standard safe child
+capability template at the trusted normalization boundary. The template follows
+configuration-dependent built-ins such as CodeAct, while excluding ambient MCP,
+third-party root grants, delegation, host-only tools, and live capability instances.
+The adapter materializes that template into the child's `AgentSpec` before resolution
+and fingerprinting; there is no runtime tool inheritance.
+
+A `tools`/`optional_tools` list adds a final `ToolVisibilityCapability` allowlist over
+the materialized template. Both fields contribute to that allowlist; they neither
+create missing tools nor gate route registration. Native documents remain the format
+for exact capability grants, child policy, custom plugin types, nesting, or host
+requirements.
+
+When `name.md` and `name.yaml`/`name.yml`/`name.json` coexist, Markdown is the complete
+authoritative definition and the same-basename native document is not parsed or merged.
+This makes stale native presets copied during an earlier upgrade inert instead of
+letting their historical capability snapshot override current generic semantics. Other
+duplicate routes remain a configuration error. Future setup runs do not copy a native
+preset when any supported same-basename definition already exists. To use exact native
+policy for a route, keep only its YAML/JSON definition.
+
+YAACLI child execution is process-local, so native configured specs must use `process`.
+A `restart` requirement is rejected rather than silently weakened. The
+`[subagents.overrides.<route>]` table may replace `model`, `model_settings`, or
+`model_cfg` after either source format is normalized. Project configuration does not
+inject a second subagent directory or silently merge child specifications.
+
+### Capability plugins
+
+A plugin distribution must be installed into the same Python environment as YAACLI. For
+an isolated uv tool installation:
+
+```bash
+uv tool install 'yaacli[rs]' --with acme-agent-plugin
+```
+
+The optional fixed global manifest uses the SDK schema directly:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+`entry_points` is an ordered, unique exact-name selection. It controls which installed
+entry-point targets may be imported and added to YAACLI's immutable capability catalog.
+`capabilities` is an ordered root-only grant list; each grant must reference a selected
+name. A selected but ungranted type may be declared in a native child `AgentSpec`.
+Installation alone does not select or grant anything.
+
+YAACLI does not create `plugins.toml`, consider a project-local file, auto-install
+packages, or scan all installed entry points. A missing global file produces the empty
+SDK catalog snapshot. If the file exists, invalid TOML, unsupported schema, unknown
+fields, duplicate or missing entry points, import failures, and catalog collisions are
+fatal. Arguments must be JSON-compatible finite non-secret configuration; secret-like
+keys are rejected recursively. Live authority and credentials belong in typed runtime
+dependencies or host APIs, not durable specs.
+
+The TUI and headless frontend each load the file exactly once at bootstrap. The same
+snapshot is captured by profile, named-child, self-fork, retained-plan, historical, and
+restored runtime factories. Manifest grants are applied only to the main root agent;
+named children and self forks receive only their own explicit native grants. Restart
+YAACLI after changing the file or installed distribution.
 
 ### Display retention
 
@@ -151,24 +279,37 @@ The display section independently bounds lines, blocks, UTF-8 bytes, raw stream
 render bytes, and prompt-history entries. `code_theme` accepts `auto`, `dark`,
 or `light`.
 
-### Session retention
+### Media upload and terminal notifications
 
-The session section controls automatic save/restore and durable retention:
+`media.s3.enabled` activates S3 media upload. `bucket` is then required by runtime
+construction. `region` defaults to `us-east-1`; omitted credentials use the AWS default
+credential chain. `endpoint_url` and `force_path_style` support compatible stores.
+`prefix` scopes object keys. `url_mode="presign"` uses
+`presign_expires_seconds`; `url_mode="cdn"` requires `cdn_base_url`.
+
+`notifications.bell_on_turn_complete` rings after a successful interactive turn.
+`notifications.bell_on_user_action_required` rings when an interactive turn enters a
+user-action boundary. Both default to true and affect only terminal presentation.
+
+### Durable session storage
+
+The session section controls durable database placement and startup restore:
 
 | Field | Default | Meaning |
 | --- | ---: | --- |
-| `session_dir` | `~/.yaacli/sessions` | Optional saved-session directory override |
-| `auto_save_history` | `true` | Save successful, cancelled, and failed recoverable turns from the interactive TUI |
+| `session_dir` | `~/.yaacli/sessions` | Parent directory for the default product database |
+| `database_path` | `<session_dir>/sessions-v2.sqlite3` | Optional product-store override |
 | `auto_restore` | `false` | Restore the newest matching workspace session on TUI startup |
-| `max_turns_per_session` | `20` | Maximum retained turn snapshots per session |
-| `max_sessions` | `100` | Maximum retained sessions globally |
-| `max_session_age_days` | unset | Optional age-based pruning threshold |
 
-Positive limits are validated by Pydantic. `auto_save_history` controls only
-interactive TUI persistence. Headless success is a durable protocol operation
-and always saves a turn; headless failure or cancellation emits its terminal
-event without saving a recovery snapshot. Session storage and restore contracts
-are defined in `05-session-persistence.md`.
+The `sessions-v2.sqlite3` name denotes the YAACLI 2 product-store generation, not the
+internal schema marker. YAACLI does not migrate or open the former default
+`sessions.sqlite3`; that file remains untouched. An explicit `database_path` or
+`YAACLI_DATABASE_PATH` is authoritative and must already be empty or match the exact
+current schema.
+
+Every successful, failed, or cancelled logical run commits a terminal durable revision.
+The removed file-snapshot save and pruning switches do not control this invariant.
+Session storage and restore contracts are defined in `05-session-persistence.md`.
 
 ### Process and shell environments
 
@@ -191,7 +332,7 @@ configuration and is separate from the static `tools.toml` approval list.
 ### Custom slash commands
 
 Each `[commands.<name>]` entry requires `prompt` and may define `description`.
-The former `mode` field is deprecated and ignored. User definitions are merged
+User definitions are merged
 with the built-in `init` command; a user definition with the same name overrides
 the built-in entry. Custom commands start an agent turn and are therefore
 idle-only; submitting one while foreground work is active preserves the draft
@@ -288,14 +429,8 @@ YAACLI_CODE_THEME
 YAACLI_SHOW_TOKEN_USAGE
 YAACLI_SHOW_ELAPSED_TIME
 YAACLI_SESSION_DIR
-YAACLI_AUTO_SAVE_HISTORY
+YAACLI_DATABASE_PATH
 YAACLI_AUTO_RESTORE
-YAACLI_MAX_TURNS_PER_SESSION
-YAACLI_MAX_SESSIONS
-YAACLI_MAX_SESSION_AGE_DAYS
-YAACLI_AGENT_STREAM_RESUME_ON_ERROR
-YAACLI_AGENT_STREAM_RESUME_MAX_ATTEMPTS
-YAACLI_AGENT_STREAM_RESUME_PROMPT
 YAACLI_OAUTH_REFRESH_ENABLED
 YAACLI_OAUTH_REFRESH_INTERVAL_SECONDS
 YAACLI_OAUTH_REFRESH_FAILURE_RETRY_SECONDS
@@ -315,9 +450,11 @@ Normal `yaacli` startup performs the operational setup:
 2. ensure global built-in assets exist;
 3. load configuration;
 4. if `general.model` is empty, run the interactive setup wizard;
-5. create missing `config.toml`, `mcp.json`, subagent presets, and built-in
-   skills without overwriting existing files;
-6. reload configuration and apply `[env]` values.
+5. create missing `config.toml`, `mcp.json`, native YAML subagent presets, and
+   built-in skills without overwriting existing files;
+6. reload configuration and apply `[env]` values; and
+7. load the optional global capability plugin manifest once before compiling runtime
+   profiles and plans.
 
 Configuration is edited through the TOML/JSON files. The implemented top-level
 CLI exposes runtime options and saved-session commands:
@@ -340,7 +477,8 @@ CLI.
 ## Verification
 
 Configuration behavior is covered by `tests/test_config.py`,
-`tests/test_model_profiles.py`, `tests/test_cli.py`, `tests/test_cli_headless.py`,
-and `tests/test_sessions_cli.py`. The environment examples and packaged
+`tests/test_model_profiles.py`, `tests/test_cli_setup.py`,
+`tests/test_config_persistence_policy.py`, `tests/test_cli_headless.py`, and
+`tests/test_sessions_cli.py`. The environment examples and packaged
 configuration templates must remain aligned whenever an override or setting is
 added.

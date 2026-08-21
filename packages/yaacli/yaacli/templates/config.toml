@@ -80,13 +80,8 @@ model = ""
 # proactive_context_management_threshold = 0.5
 # capabilities = ["vision"]  # Options: vision, image_url, video_understanding, video_url, youtube_url, audio_understanding, document_understanding
 
-# Maximum requests per session
+# Cumulative model-request limit for one durable logical run
 max_requests = 1000
-
-# Retry interrupted provider/SSE streams by resuming from recovered message history.
-agent_stream_resume_on_error = true
-agent_stream_resume_max_attempts = 3
-agent_stream_resume_prompt = "The previous streaming model request failed before the agent finished. Continue the task from the available conversation history. Avoid repeating completed work."
 
 # Maximum iterations for /goal command
 # max_goal_iterations = 10
@@ -116,18 +111,12 @@ failure_retry_seconds = 60
 refresh_on_startup = true
 
 [session]
-# Optional saved-session directory override (defaults to ~/.yaacli/sessions).
+# Optional durable storage directory override (defaults to ~/.yaacli/sessions).
 # session_dir = "~/.yaacli/sessions"
-# Save recoverable interactive TUI turns automatically.
-auto_save_history = true
+# Optional SQLite product-store override. The default is sessions-v2.sqlite3.
+# database_path = "~/.yaacli/sessions/sessions-v2.sqlite3"
 # Restore the newest session for the current workspace when the TUI starts.
 auto_restore = false
-# Retain the latest N turn snapshots per session.
-max_turns_per_session = 20
-# Retain the latest N sessions globally.
-max_sessions = 100
-# Optional age-based pruning in days.
-# max_session_age_days = 90
 
 [notifications]
 # Emit terminal bells when a successful interactive turn completes or user input is required.
@@ -172,8 +161,8 @@ enabled = false
 # risk_threshold = "high"
 
 [subagents]
-# Subagents are loaded from ~/.yaacli/subagents/
-# Run `yaacli setup` to initialize default subagents
+# Strict versioned SubagentSpec YAML/JSON files are loaded from ~/.yaacli/subagents/.
+# The first-run setup wizard initializes native default presets.
 
 # Disable specific subagents by name
 disabled = []

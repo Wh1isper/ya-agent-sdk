@@ -17,6 +17,13 @@ uv tool install 'yaacli[rs]'
 yaacli
 ```
 
+Install a trusted capability plugin into the same isolated tool environment with
+`--with`:
+
+```bash
+uv tool install 'yaacli[rs]' --with acme-agent-plugin
+```
+
 `[rs]` installs the native Rust filesystem search binding. The equivalent extra-dependency form is:
 
 ```bash
@@ -30,6 +37,85 @@ Update with uv:
 ```bash
 uv tool upgrade yaacli
 ```
+
+## Subagent Configuration
+
+YAACLI accepts both generic Markdown definitions and native versioned `SubagentSpec`
+YAML/JSON documents under `~/.yaacli/subagents/`. In the interactive TUI, the visible
+`delegate` tool is processor-hosted and fully asynchronous: it immediately returns a
+readable `<subagent-name>-bg-<short-id>` handle. Resume, wait, steering, and cancellation
+reuse that handle; internal durable UUIDs are not model-facing. The one-shot headless
+frontend fixes the same processor-hosted tool to foreground mode and returns the child
+result before shutdown.
+
+```markdown
+---
+name: code-reviewer
+description: Review a bounded change and report evidence-based findings.
+instruction: Use this agent after meaningful implementation or refactoring.
+model: inherit
+model_settings: inherit
+model_cfg: inherit
+tools: [glob, grep, ls, view]
+---
+
+You are a senior code reviewer. Prioritize architecture, correctness, security, and
+critical-path behavior.
+```
+
+Markdown is normalized into the current portable `SubagentSpec`; it does not activate a
+legacy runtime. The frontmatter `description` plus optional `instruction` form the
+parent-facing delegation roster entry; the Markdown body becomes the child's native
+instructions. Omitted or `inherit` model fields use the active root model, settings, and
+context configuration. YAACLI materializes its current standard child capability
+template for the common inherited-tool behavior, then turns any tool list into a final
+visibility allowlist. It does not copy live parent, MCP, plugin, delegation, or
+main-agent-only capabilities.
+
+A same-basename Markdown file is the complete authoritative definition. Any native
+preset copied by an earlier upgrade is ignored rather than merged, so a stale capability
+snapshot cannot override the current standard child template. Other duplicate routes
+remain errors. New setup runs do not copy `code-reviewer.yaml` when
+`code-reviewer.md` already exists. Use native YAML/JSON by itself when exact capability
+grants, plugin types, nesting, or full delegation policy are required. See
+[`spec/02-configuration.md`](spec/02-configuration.md) for both schemas.
+
+## Capability Plugins
+
+YAACLI optionally loads the SDK's strict plugin manifest from the fixed global path
+`~/.yaacli/plugins.toml`:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+Package installation and authorization are separate. The distribution must be installed
+in YAACLI's own Python environment; `entry_points` then selects the exact installed
+types YAACLI may import, and `capabilities` grants ordered instances to the main root
+agent. YAACLI never scans or loads every installed entry point.
+
+The file is global-only because selected Python code executes with YAACLI process
+authority. A project `.yaacli/plugins.toml` is ignored. A missing global file means no
+external plugins; invalid TOML, unknown fields, missing or duplicate entry points,
+import failures, grant argument signature mismatches, and catalog collisions stop
+startup. Manifest arguments are durable non-secret configuration, so secret-like keys
+such as API keys, tokens, passwords, or credentials are rejected recursively. This
+name-based guard cannot detect a secret stored under a neutral key; keep every secret
+value outside the manifest.
+
+Selected types are available to native subagent documents, but root grants do not
+implicitly enter named children or self forks. A child must declare the selected
+serialization name in its own `agent.capabilities`. TUI and headless startup each load
+one catalog snapshot and reuse it for current, historical, child, and restored runtime
+construction. Restart YAACLI after changing the manifest or installed distribution.
+
+See the SDK [file configuration contract](../ya-agent-sdk/spec/06-capability-plugins/03-file-configuration.md)
+and the [installable example](../../examples/capability_plugin/).
 
 Install with pip:
 
@@ -54,7 +140,7 @@ yaacli -p "Continue" --session <session-id> --profile <profile-id>
 yaacli -p "Run an isolated worker task" --worker
 ```
 
-Headless stdout is an NDJSON event stream. Human-readable diagnostics, fatal details, and resume hints are written to stderr so scripts can parse every stdout line as JSON. A successful headless run always saves its durable session turn, independent of `session.auto_save_history`; a failed or cancelled run emits its terminal event but does not save a recovery snapshot. `--worker` requires `--prompt` and disables synchronous delegate subagents for that run. `--profile` applies only to the current invocation; selecting a profile through `/model` persists it for future launches.
+Headless stdout is an NDJSON event stream. Human-readable diagnostics, fatal details, and resume hints are written to stderr so scripts can parse every stdout line as JSON. Every successful, failed, or cancelled logical run commits a terminal durable revision. `--worker` requires `--prompt` and disables delegate subagents for that run. `--profile` applies only to the current invocation; selecting a profile through `/model` persists it for future launches.
 
 Inspect or delete durable sessions without starting the TUI:
 
@@ -64,17 +150,21 @@ yaacli sessions show <session-id>
 yaacli sessions delete <session-id>
 ```
 
-Session IDs may be supplied by unique prefix. The configured session directory and retention controls live under `[session]` in `config.toml`; see [`spec/05-session-persistence.md`](spec/05-session-persistence.md).
+Session IDs may be supplied by unique prefix. The YAACLI 2 product store defaults to
+`~/.yaacli/sessions/sessions-v2.sqlite3`; the former `sessions.sqlite3` is left untouched
+and is not migrated automatically. An explicit `[session] database_path` or
+`YAACLI_DATABASE_PATH` remains authoritative and is validated strictly. See
+[`spec/05-session-persistence.md`](spec/05-session-persistence.md).
 
 ## TUI Interaction
 
 The output viewport has priority over auxiliary UI. The task pane is hidden when empty, uses one summary row by default, and expands with `F2`. The model selector is an overlay and does not permanently consume output rows.
 
 - Enter submits while idle and sends guidance to the active run while an agent is running.
-- Ordinary text submitted during an active agent run is steering. The status bar shows how many steering messages are still waiting for a model request, without exposing their content. Registered slash commands and `!shell` remain local control syntax: safe busy commands execute and idle-only commands are rejected without clearing the draft. Other slash-prefixed text, including absolute paths such as `/home/user/file`, remains ordinary user input.
+- Ordinary text submitted during an active agent run is durable steering. YAACLI persists it before displaying the replayable user-input receipt and waking the owning local execution task; native application later displays a distinct replayable `Guidance injected` projection. The status bar counts accepted/enqueued inputs without exposing their content. Registered slash commands and `!shell` remain local control syntax: safe busy commands execute and idle-only commands are rejected without clearing the draft. Other slash-prefixed text, including absolute paths such as `/home/user/file`, remains ordinary user input.
 - `/cancel` or `Ctrl+C` requests cancellation of cancellable foreground work. Once the TUI enters `SAVING`, persistence is allowed to finish and cannot be cancelled; Ctrl+C does not exit while the save is in progress.
-- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session, terminating and discarding background subagent and shell work owned by the previous session while keeping the runtime environment reusable.
-- Background results never modify or clear the compose area. When the foreground is idle, a deliverable async subagent or monitored-shell notification automatically starts a main-agent turn with a small provenance-aware system reminder; the notification is delivered through the message bus. During an active agent run, `/integrate` can deliver queued notifications to its next model request; otherwise, unread notifications automatically wake the main agent after that run finishes.
+- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session. Tombstoning the previous session atomically closes its main and child input, persists cancellation intent for every nonterminal child, and retries process-local cancellation dispatch; late child success, steering, and completion delivery are fenced while the runtime environment remains reusable.
+- Background results never modify or clear the compose area. A terminal background subagent is projected as session-scoped readiness only; its committed result enters the canonical parent continuation path on the next accepting agent turn and does not automatically wake the model. Monitored-shell notifications are persisted as feature input and may start one idle turn according to shell-monitor policy. There is no `/integrate` command or MessageBus delivery path.
 - `/agents` shows running and recently completed background subagents; `/process` shows active background shell processes.
 - `/attachments` and `/remove-image` inspect or edit images queued for the next turn.
 - `/tool <call-id>` shows the complete retained result for a tool call.

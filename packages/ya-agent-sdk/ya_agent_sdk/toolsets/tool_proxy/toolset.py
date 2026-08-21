@@ -4,9 +4,9 @@ Wraps multiple AbstractToolsets and exposes exactly two tools:
 - ``search_tools`` or ``{prefix}_search_tool``: discover tools via search (returns XML with full schemas)
 - ``call_tool`` or ``{prefix}_call_tool``: invoke any discovered tool by name
 
-Unlike ToolSearchToolSet which dynamically adds tools to the model's tool list,
-ToolProxyToolset keeps the tool list constant (always two tools), maximizing
-prompt cache hit rates for providers that cache based on tool definitions.
+ToolProxyToolset keeps the model-facing tool list constant (always two tools),
+maximizing prompt cache hit rates for providers that cache based on tool
+definitions.
 
 State is stored in AgentContext for automatic session restore via ResumableState.
 """
@@ -23,18 +23,20 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import Field
 from pydantic_ai import RunContext, Tool
-from pydantic_ai.messages import InstructionPart
+from pydantic_ai.messages import InstructionPart, ToolCallPart
+from pydantic_ai.tool_manager import ToolManager
 from pydantic_ai.toolsets.abstract import AbstractToolset, ToolsetTool
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.events import NamespaceStatus, ToolSearchInitEvent
+from ya_agent_sdk.events import NamespaceStatus, NamespaceStatusEvent
+from ya_agent_sdk.toolsets._nested_dispatch import execute_nested_tool_call, prepare_nested_tool
 from ya_agent_sdk.toolsets.base import BaseToolset, collect_instruction_parts
-from ya_agent_sdk.toolsets.tool_search.metadata import ToolMetadata, extract_metadata_from_schema
-from ya_agent_sdk.toolsets.tool_search.strategies.keyword import KeywordSearchStrategy
+from ya_agent_sdk.toolsets.search.metadata import ToolMetadata, extract_metadata_from_schema
+from ya_agent_sdk.toolsets.search.strategies.keyword import KeywordSearchStrategy
 
 if TYPE_CHECKING:
-    from ya_agent_sdk.toolsets.tool_search.strategies import SearchStrategy
+    from ya_agent_sdk.toolsets.search.strategies import SearchStrategy
 
 logger = get_logger(__name__)
 
@@ -89,8 +91,8 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
       any tool or the namespace itself matches a search query.
     - **Loose tools** (toolsets without ``id``): Individual tools load independently.
 
-    State is stored in ``AgentContext.tool_search_loaded_tools`` and
-    ``AgentContext.tool_search_loaded_namespaces``, enabling automatic
+    State is stored in ``AgentContext.tool_proxy.loaded_tools`` and
+    ``AgentContext.tool_proxy.loaded_namespaces``, enabling automatic
     session restore via ``ResumableState``.
 
     Example::
@@ -224,7 +226,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         search index, but only exposes the two proxy tools. The tool list
         never changes across calls.
 
-        On each call, emits a ``ToolSearchInitEvent`` via the context's
+        On each call, emits a ``NamespaceStatusEvent`` via the context's
         sideband stream to report current namespace status.
         """
         await self._collect_and_index_tools(ctx)
@@ -232,7 +234,7 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
         # Emit namespace status event (status can change dynamically)
         if self._init_report:
             await ctx.deps.emit_event(
-                ToolSearchInitEvent(
+                NamespaceStatusEvent(
                     event_id=f"{self._event_id_prefix}-{ctx.deps.run_id[:8]}",
                     namespace_status=dict(self._init_report),
                 )
@@ -557,11 +559,11 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
         for ns in new_namespaces:
             if ns not in loaded_namespaces:
-                ctx.deps.tool_search_loaded_namespaces.append(self._state_key(ns))
+                ctx.deps.tool_proxy.loaded_namespaces.append(self._state_key(ns))
                 logger.debug(f"Namespace {ns!r} discovered via search query {query!r}")
         for tool_name in new_tools:
             if tool_name not in loaded_tools:
-                ctx.deps.tool_search_loaded_tools.append(self._state_key(tool_name))
+                ctx.deps.tool_proxy.loaded_tools.append(self._state_key(tool_name))
                 logger.debug(f"Tool {tool_name!r} discovered via search query {query!r}")
 
         return new_namespaces, new_tools
@@ -636,9 +638,36 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
             )
 
         ts, original_tool = self._toolset_tools_cache[tool_name]
+        parent_manager = ctx.tool_manager
+        if parent_manager is None:
+            raise RuntimeError("ToolProxy requires an active Pydantic AI ToolManager")
 
         try:
-            return await ts.call_tool(tool_name, arguments, ctx, original_tool)
+            prepared_tool = await prepare_nested_tool(parent_manager, ctx, original_tool)
+            nested_manager = ToolManager(
+                toolset=ts,
+                root_capability=parent_manager.root_capability,
+                ctx=ctx,
+                tools={tool_name: prepared_tool},
+                default_max_retries=parent_manager.default_max_retries,
+            )
+            call = ToolCallPart(
+                tool_name=tool_name,
+                args=arguments,
+                tool_call_id=f"{ctx.tool_call_id or self._call_tool_name}__{tool_name}",
+            )
+            validated = await nested_manager.validate_tool_call(
+                call,
+                approved=False,
+                metadata=None,
+                wrap_validation_errors=False,
+            )
+            return await execute_nested_tool_call(
+                nested_manager,
+                validated,
+                call,
+                require_resolution=True,
+            )
         except (ApprovalRequired, CallDeferred):
             raise
         except Exception as e:
@@ -724,11 +753,11 @@ class ToolProxyToolset(BaseToolset[AgentContext]):
 
     def _loaded_tools(self, ctx: RunContext[AgentContext]) -> set[str]:
         """Return loaded tool names scoped to this proxy instance."""
-        return self._loaded_state_names(ctx.deps.tool_search_loaded_tools)
+        return self._loaded_state_names(ctx.deps.tool_proxy.loaded_tools)
 
     def _loaded_namespaces(self, ctx: RunContext[AgentContext]) -> set[str]:
         """Return loaded namespace IDs scoped to this proxy instance."""
-        return self._loaded_state_names(ctx.deps.tool_search_loaded_namespaces)
+        return self._loaded_state_names(ctx.deps.tool_proxy.loaded_namespaces)
 
     def _loaded_state_names(self, entries: Sequence[str]) -> set[str]:
         if not self._state_key_prefix:

@@ -21,10 +21,10 @@ The sync flow is:
 | [`streaming.md`](streaming.md)                     | Streaming and lifecycle hooks       |
 | [`events.md`](events.md)                           | Event model and sideband events     |
 | [`toolset.md`](toolset.md)                         | Toolset architecture                |
+| [`plugins.md`](plugins.md)                         | Installable capability plugins      |
 | [`user-input.md`](user-input.md)                   | Structured deferred user input      |
-| [`tool-search.md`](tool-search.md)                 | Dynamic tool search                 |
-| [`subagent.md`](subagent.md)                       | Subagent architecture               |
-| [`message-bus.md`](message-bus.md)                 | Message bus behavior                |
+| [`tool-search.md`](tool-search.md)                 | Native deferred tool search         |
+| [`subagent.md`](subagent.md)                       | Portable subagent architecture      |
 | [`skills.md`](skills.md)                           | SDK skill system internals          |
 | [`environment.md`](environment.md)                 | Environment abstractions            |
 | [`resumable-resources.md`](resumable-resources.md) | Resumable resources                 |

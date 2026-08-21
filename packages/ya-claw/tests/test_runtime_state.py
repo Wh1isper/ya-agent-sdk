@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from ya_claw.runtime_state import InMemoryRuntimeState, create_runtime_state
+import pytest
+from ya_claw.runtime_state import HitlWaitAborted, InMemoryRuntimeState, create_runtime_state
 
 
 async def _collect_events(state: InMemoryRuntimeState, run_id: str) -> list[dict[str, str]]:
@@ -134,3 +135,30 @@ async def test_runtime_state_hitl_waits_until_all_interactions_resolve() -> None
     assert results[0].approved is True
     assert results[1].approved is False
     assert results[1].reason == "no"
+
+
+async def test_runtime_state_stop_aborts_pending_hitl_wait() -> None:
+    from ya_claw.controller.models import ActiveInteraction
+
+    state = create_runtime_state()
+    state.register_run("session-1", "run-1")
+    state.set_hitl_pending(
+        "run-1",
+        "session-1",
+        [
+            ActiveInteraction(
+                interaction_id="hitl-1",
+                run_id="run-1",
+                session_id="session-1",
+                tool_call_id="tool-1",
+                title="Approve",
+            )
+        ],
+    )
+    waiter = asyncio.create_task(state.wait_hitl_batch("run-1"))
+    await asyncio.sleep(0)
+
+    await state.request_stop("run-1", "cancel")
+
+    with pytest.raises(HitlWaitAborted, match="cancel"):
+        await asyncio.wait_for(waiter, timeout=1)

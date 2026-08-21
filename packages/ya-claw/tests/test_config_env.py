@@ -4,10 +4,40 @@ import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
 from ya_agent_sdk.environment.virtual_path import normalize_virtual_path
 from ya_claw import config as config_module
 from ya_claw.bridge import BridgeAdapterType, BridgeDispatchMode
 from ya_claw.config import ClawSettings
+
+
+def test_capability_plugin_manifest_is_explicit_and_cached(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "plugins.toml"
+    manifest_path.write_text("schema_version = 1\n", encoding="utf-8")
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        capability_plugin_manifest=manifest_path,
+        _env_file=None,
+    )
+
+    first = settings.resolved_capability_plugins
+    manifest_path.write_text("schema_version = 2\n", encoding="utf-8")
+    second = settings.resolved_capability_plugins
+
+    assert settings.resolved_capability_plugin_manifest == manifest_path
+    assert first is second
+    assert first.manifest.schema_version == 1
+
+
+def test_capability_plugin_manifest_fails_when_explicit_path_is_missing(tmp_path: Path) -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        capability_plugin_manifest=tmp_path / "missing.toml",
+        _env_file=None,
+    )
+
+    with pytest.raises(FileNotFoundError):
+        _ = settings.resolved_capability_plugins
 
 
 def test_load_runtime_environment_exports_non_prefixed_provider_variables(

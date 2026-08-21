@@ -306,6 +306,12 @@ async def cancel_session_async_task(
             parent_session_id=session_id,
             task_id_or_name=task_id_or_name,
             request=payload,
+            submit_run=lambda run_id: _dispatch_run(
+                request,
+                run_id,
+                DispatchMode.ASYNC,
+                require_submission=False,
+            ),
         )
 
 
@@ -428,6 +434,18 @@ async def interrupt_session(request: Request, session_id: str) -> RunDetail:
     async with session_factory() as db_session:
         run_id = await session_controller.resolve_active_run_id(db_session, session_id)
         run = await run_controller.interrupt(db_session, settings, runtime_state, run_id)
+        await async_task_controller.recover_pending_deliveries(
+            db_session,
+            settings,
+            runtime_state,
+            submit_run=lambda pending_run_id: _dispatch_run(
+                request,
+                pending_run_id,
+                DispatchMode.ASYNC,
+                require_submission=False,
+            ),
+            parent_session_id=session_id,
+        )
     await _publish_run_notification(request, "run.updated", run)
     return run
 
@@ -440,6 +458,18 @@ async def cancel_session(request: Request, session_id: str) -> RunDetail:
     async with session_factory() as db_session:
         run_id = await session_controller.resolve_active_run_id(db_session, session_id)
         run = await run_controller.cancel(db_session, settings, runtime_state, run_id)
+        await async_task_controller.recover_pending_deliveries(
+            db_session,
+            settings,
+            runtime_state,
+            submit_run=lambda pending_run_id: _dispatch_run(
+                request,
+                pending_run_id,
+                DispatchMode.ASYNC,
+                require_submission=False,
+            ),
+            parent_session_id=session_id,
+        )
     await _publish_run_notification(request, "run.updated", run)
     return run
 

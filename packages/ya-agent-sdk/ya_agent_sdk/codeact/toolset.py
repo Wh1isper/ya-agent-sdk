@@ -17,7 +17,6 @@ from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_ai import (
     ApprovalRequired,
     CallDeferred,
-    DeferredToolRequests,
     FunctionToolset,
     ModelRetry,
     RunContext,
@@ -28,19 +27,17 @@ from pydantic_ai import (
     UserError,
     WrapperToolset,
 )
-from pydantic_ai.exceptions import ToolRetryError
 from pydantic_ai.function_signature import FunctionSignature
 from pydantic_ai.messages import (
     BinaryContent,
     InstructionPart,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnContent,
     UserContent,
     is_multi_modal_content,
 )
 from pydantic_ai.tool_manager import ToolManager
-from pydantic_ai.tools import ToolApproved, ToolDenied
+from pydantic_ai.tools import ToolDenied
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_monty import (
     MontyConversionError,
@@ -63,6 +60,7 @@ from ya_agent_sdk.codeact.programs import (
 )
 from ya_agent_sdk.codeact.runtime import CodeActExecution, CodeActRunState
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets._nested_dispatch import execute_nested_tool_call
 
 _RUN_CODE = "run_code"
 _RUN_PROGRAM = "run_program"
@@ -407,7 +405,7 @@ class CodeActToolset(WrapperToolset[AgentContext]):
             await budget.mark_started(record)
             started = time.monotonic()
             try:
-                result = await _execute_validated_call(nested_manager, validated, call)
+                result = await execute_nested_tool_call(nested_manager, validated, call)
                 if isinstance(result, ToolDenied):
                     record["outcome"] = "denied"
                     try:
@@ -713,59 +711,6 @@ async def _unwrap_tool_return(
     if result.metadata is not None:
         record["tool_return_metadata_omitted"] = True
     return result.return_value
-
-
-async def _execute_validated_call(
-    manager: ToolManager[AgentContext],
-    validated: Any,
-    call: ToolCallPart,
-) -> Any:
-    """Execute a validated nested call and resolve public deferred-result variants."""
-
-    try:
-        return await manager.execute_tool_call(validated, wrap_validation_errors=False)
-    except (CallDeferred, ApprovalRequired) as exc:
-        requests = DeferredToolRequests(
-            approvals=[call] if isinstance(exc, ApprovalRequired) else [],
-            calls=[call] if isinstance(exc, CallDeferred) else [],
-            metadata={call.tool_call_id: exc.metadata} if exc.metadata else {},
-        )
-        deferred = await manager.resolve_deferred_tool_calls(requests)
-        if deferred is None:
-            raise
-        resolved = deferred.to_tool_call_results().get(call.tool_call_id)
-        if resolved is None:
-            raise
-        if isinstance(resolved, ToolDenied):
-            return resolved
-        if isinstance(resolved, ToolFailed):
-            raise resolved from exc
-        if isinstance(resolved, ToolApproved):
-            approved_call = call
-            if resolved.override_args is not None:
-                approved_call = replace(call, args=resolved.override_args)
-            approved = await manager.validate_tool_call(
-                approved_call,
-                approved=True,
-                metadata=deferred.metadata.get(call.tool_call_id),
-                wrap_validation_errors=False,
-            )
-            return await manager.execute_tool_call(approved, wrap_validation_errors=False)
-        if isinstance(resolved, ModelRetry):
-            retry = RetryPromptPart(
-                content=resolved.message,
-                tool_name=call.tool_name,
-                tool_call_id=call.tool_call_id,
-            )
-            raise ToolRetryError(retry) from exc
-        if isinstance(resolved, RetryPromptPart):
-            retry = replace(
-                resolved,
-                tool_name=call.tool_name,
-                tool_call_id=call.tool_call_id,
-            )
-            raise ToolRetryError(retry) from exc
-        return deferred.calls[call.tool_call_id]
 
 
 def _build_catalog(  # noqa: C901

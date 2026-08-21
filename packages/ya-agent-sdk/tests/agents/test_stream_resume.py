@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import httpx
+import httpx2
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import (
@@ -23,60 +23,11 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from ya_agent_sdk.agents.main import _resolve_agent_retries, create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.agents.retry_recovery import close_unreturned_tool_calls, history_has_unreturned_tool_calls
-from ya_agent_sdk.context import ModelConfig, RetryConfig
+from ya_agent_sdk.context import ModelConfig
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.events import AgentExecutionFailedEvent, AgentExecutionResumeEvent, AgentExecutionStartEvent
-
-
-def test_resolve_agent_retries_merges_partial_dict_with_sdk_defaults() -> None:
-    resolved = _resolve_agent_retries({"tools": 4}, output_retries=None)
-
-    assert resolved == {"tools": 4, "output": 5}
-
-
-def test_resolve_agent_retries_defaults_to_five_for_both_categories() -> None:
-    assert _resolve_agent_retries(None, output_retries=None) == {"tools": 5, "output": 5}
-
-
-def test_resolve_agent_retries_uses_retry_config_then_compatibility_overrides() -> None:
-    config = RetryConfig(tools=2, output=3)
-
-    assert _resolve_agent_retries(None, None, config) == {"tools": 2, "output": 3}
-    assert _resolve_agent_retries({"tools": 4}, 6, config) == {"tools": 4, "output": 6}
-
-
-def test_create_agent_applies_retry_config_to_context_agent_and_toolset(tmp_path: Path) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-    config = RetryConfig(tools=2, output=3, toolset=4, tool_search=6, tool_proxy=7)
-
-    runtime = create_agent("test", env=env, retry_config=config)
-
-    assert runtime.ctx.retry_config is config
-    assert runtime.agent._max_tool_retries == 2
-    assert runtime.agent._max_output_retries == 3
-    assert runtime.core_toolset is not None
-    assert runtime.core_toolset.max_retries == 5
-
-
-async def test_create_agent_core_toolset_resolves_runtime_retry_config(tmp_path: Path) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-    runtime = create_agent("test", env=env, retry_config=RetryConfig(toolset=4))
-    assert runtime.core_toolset is not None
-    runtime.ctx.retry_config.toolset = 2
-
-    run_ctx = MagicMock()
-    run_ctx.deps = runtime.ctx
-    assert runtime.core_toolset._resolve_max_retries(run_ctx) == 2
 
 
 def test_completed_native_tool_pair_is_not_treated_as_unreturned() -> None:
@@ -474,12 +425,12 @@ async def test_stream_transport_resume_budget_exhausts_independently(tmp_path: P
     async def stream_function(_messages: list[ModelMessage], _agent_info: AgentInfo):
         nonlocal calls
         calls += 1
-        raise httpx.RemoteProtocolError("incomplete chunked read")
+        raise httpx2.RemoteProtocolError("incomplete chunked read")
         yield  # pragma: no cover
 
     runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
 
-    with pytest.raises(httpx.RemoteProtocolError, match="incomplete chunked read"):
+    with pytest.raises(httpx2.RemoteProtocolError, match="incomplete chunked read"):
         async with stream_agent(
             runtime,
             "start task",
@@ -562,11 +513,11 @@ async def test_stream_event_hook_transport_error_uses_execution_budget(tmp_path:
         yield "model event"
 
     async def failing_event_hook(_event_ctx: Any) -> None:
-        raise httpx.RemoteProtocolError("telemetry endpoint disconnected")
+        raise httpx2.RemoteProtocolError("telemetry endpoint disconnected")
 
     runtime = _make_runtime(tmp_path, FunctionModel(stream_function=stream_function))
 
-    with pytest.raises(httpx.RemoteProtocolError, match="telemetry endpoint disconnected"):
+    with pytest.raises(httpx2.RemoteProtocolError, match="telemetry endpoint disconnected"):
         async with stream_agent(
             runtime,
             "start task",
@@ -625,7 +576,7 @@ async def test_stream_agent_closes_unreturned_tool_calls_before_resume(tmp_path:
     tool_returns = [part for part in tool_closure.parts if isinstance(part, ToolReturnPart)]
     assert len(tool_returns) == 1
     assert tool_returns[0].tool_name == "shell_exec"
-    assert tool_returns[0].tool_call_id.startswith("ya-")
+    assert tool_returns[0].tool_call_id == "call-1"
     assert tool_returns[0].outcome == "failed"
     assert "new user prompt requested before tool results" in str(tool_returns[0].content)
     resume_request = resume_messages[-1]

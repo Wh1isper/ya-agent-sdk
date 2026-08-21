@@ -71,7 +71,7 @@ class HandoffMessage(BaseModel):
 """,
     )
 
-    auto_load_files: list[str] = Field(
+    files_to_inspect: list[str] = Field(
         default_factory=list,
         description=_FILE_INSPECTION_PATHS_DESCRIPTION,
     )
@@ -91,7 +91,6 @@ Use this tool when context is getting large and you need to preserve essential i
 before resetting, or when switching focus to a different topic or task.
 The summary will be injected into the new context automatically.
 """
-    auto_inherit = True
     is_context_manage_tool = True
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
@@ -114,16 +113,15 @@ The summary will be injected into the new context automatically.
 """
             ),
         ],
-        auto_load_files: Annotated[
+        files_to_inspect: Annotated[
             list[str] | None,
             Field(description=_FILE_INSPECTION_PATHS_DESCRIPTION),
         ] = None,
     ) -> str:
-        message = HandoffMessage(content=content, auto_load_files=auto_load_files or [])
+        message = HandoffMessage(content=content, files_to_inspect=files_to_inspect or [])
         # Store rendered message for history processor to pick up
         rendered = message.render()
         ctx.deps.handoff_message = rendered
-        # Preserve the compatibility field for the prompt-only inspection reminder.
-        # Use extend instead of assignment to keep paths set by external callers.
-        ctx.deps.auto_load_files.extend(message.auto_load_files)
+        # Keep paths set by external callers while adding this handoff's reminders.
+        ctx.deps.files_to_inspect.extend(message.files_to_inspect)
         return f"Summary complete. Context refreshed.\n\n{rendered}"

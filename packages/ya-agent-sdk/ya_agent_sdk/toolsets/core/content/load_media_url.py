@@ -9,7 +9,7 @@ Note:
 
 Example::
 
-    from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+    from ya_agent_sdk.context import AgentContext, ModelFeature, ModelConfig
     from ya_agent_sdk.toolsets.core.base import Toolset
     from ya_agent_sdk.toolsets.core.content.load_media_url import LoadMediaUrlTool
 
@@ -26,7 +26,7 @@ from pydantic import Field
 from pydantic_ai import DocumentUrl, ImageUrl, RunContext, VideoUrl
 from pydantic_ai.messages import AudioUrl
 
-from ya_agent_sdk.context import AgentContext, ModelCapability
+from ya_agent_sdk.context import AgentContext, ModelFeature
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.content._url_helper import (
     ContentCategory,
@@ -67,10 +67,10 @@ class LoadMediaUrlTool(BaseTool):
         if model_cfg is None:
             return False
 
-        has_vision = model_cfg.has_capability(ModelCapability.vision)
-        has_video = model_cfg.has_capability(ModelCapability.video_understanding)
-        has_audio = model_cfg.has_capability(ModelCapability.audio_understanding)
-        has_document = model_cfg.has_capability(ModelCapability.document_understanding)
+        has_vision = model_cfg.has_capability(ModelFeature.vision)
+        has_video = model_cfg.has_capability(ModelFeature.video_understanding)
+        has_audio = model_cfg.has_capability(ModelFeature.audio_understanding)
+        has_document = model_cfg.has_capability(ModelFeature.document_understanding)
         enable_load_document = ctx.deps.tool_config.enable_load_document
 
         # Available if any capability is present
@@ -79,10 +79,10 @@ class LoadMediaUrlTool(BaseTool):
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
         """Generate dynamic instruction based on model capabilities."""
         model_cfg = ctx.deps.model_cfg
-        has_vision = model_cfg is not None and model_cfg.has_capability(ModelCapability.vision)
-        has_video = model_cfg is not None and model_cfg.has_capability(ModelCapability.video_understanding)
-        has_audio = model_cfg is not None and model_cfg.has_capability(ModelCapability.audio_understanding)
-        has_document = model_cfg is not None and model_cfg.has_capability(ModelCapability.document_understanding)
+        has_vision = model_cfg is not None and model_cfg.has_capability(ModelFeature.vision)
+        has_video = model_cfg is not None and model_cfg.has_capability(ModelFeature.video_understanding)
+        has_audio = model_cfg is not None and model_cfg.has_capability(ModelFeature.audio_understanding)
+        has_document = model_cfg is not None and model_cfg.has_capability(ModelFeature.document_understanding)
         enable_load_document = ctx.deps.tool_config.enable_load_document
 
         return _INSTRUCTION_TEMPLATE.render(
@@ -173,10 +173,10 @@ class LoadMediaUrlTool(BaseTool):
 
         # Get model capabilities
         model_cfg = ctx.deps.model_cfg
-        has_vision = model_cfg is not None and model_cfg.has_capability(ModelCapability.vision)
-        has_video = model_cfg is not None and model_cfg.has_capability(ModelCapability.video_understanding)
-        has_audio = model_cfg is not None and model_cfg.has_capability(ModelCapability.audio_understanding)
-        has_document = model_cfg is not None and model_cfg.has_capability(ModelCapability.document_understanding)
+        has_vision = model_cfg is not None and model_cfg.has_capability(ModelFeature.vision)
+        has_video = model_cfg is not None and model_cfg.has_capability(ModelFeature.video_understanding)
+        has_audio = model_cfg is not None and model_cfg.has_capability(ModelFeature.audio_understanding)
+        has_document = model_cfg is not None and model_cfg.has_capability(ModelFeature.document_understanding)
         enable_load_document = ctx.deps.tool_config.enable_load_document
 
         return self._resolve_content(

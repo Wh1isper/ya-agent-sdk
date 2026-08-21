@@ -25,9 +25,9 @@ from ya_claw.runtime_state import create_runtime_state
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[..., None]) -> AsyncEngine:
     database_url = f"sqlite+aiosqlite:///{(tmp_path / 'agency.sqlite3').resolve()}"
-    initialize_sqlite_database(database_url)
+    initialize_sqlite_database(database_url, profile_names=("default", "general"))
     engine = create_engine(database_url)
     try:
         yield engine
@@ -61,25 +61,25 @@ def _text(value: str) -> TextPart:
     return TextPart(type="text", text=value)
 
 
-def test_agency_source_session_submit_request_accepts_session_id_aliases_and_requires_kind() -> None:
+def test_agency_source_session_submit_request_requires_canonical_session_id_and_kind() -> None:
     from ya_claw.controller.models import AgencyHandoffKind, AgencySourceSessionSubmitRequest
 
-    modern = AgencySourceSessionSubmitRequest(
+    request = AgencySourceSessionSubmitRequest(
         session_id="session-1",
         prompt="hello",
         handoff_kind=AgencyHandoffKind.REMINDER,
     )
-    legacy = AgencySourceSessionSubmitRequest(
-        source_session_id="session-2",
-        prompt="hello",
-        handoff_kind=AgencyHandoffKind.EXCHANGE,
-    )
 
-    assert modern.session_id == "session-1"
-    assert legacy.session_id == "session-2"
-    assert modern.handoff_kind == AgencyHandoffKind.REMINDER
-    assert legacy.handoff_kind == AgencyHandoffKind.EXCHANGE
-    assert modern.handoff_tags == ["agency-reminder"]
+    assert request.session_id == "session-1"
+    assert request.handoff_kind == AgencyHandoffKind.REMINDER
+    assert request.handoff_tags == ["agency-reminder"]
+    with pytest.raises(ValidationError):
+        AgencySourceSessionSubmitRequest(
+            session_id="session-1",
+            source_session_id="session-2",
+            prompt="hello",
+            handoff_kind=AgencyHandoffKind.EXCHANGE,
+        )
     assert (
         AgencySourceSessionSubmitRequest(
             session_id="session-4",
@@ -332,6 +332,7 @@ async def test_pending_fires_prioritize_message_output_then_memory(
 async def test_fire_steers_active_agency_run(
     db_session: AsyncSession,
     settings: ClawSettings,
+    bind_recording_input_ingress: Callable[..., list[list[dict[str, object]]]],
 ) -> None:
     source_session = SessionRecord(id="session-1", profile_name="general", session_metadata={})
     agency_session = SessionRecord(
@@ -356,6 +357,7 @@ async def test_fire_steers_active_agency_run(
     await db_session.commit()
     runtime_state = create_runtime_state()
     runtime_state.register_run("agency-1", "agency-run-1", dispatch_mode="async")
+    batches = bind_recording_input_ingress(runtime_state, "agency-run-1")
     lifecycle = AgencyLifecycle(settings=settings, runtime_state=runtime_state)
 
     delivery = await lifecycle.observe_message(
@@ -370,7 +372,6 @@ async def test_fire_steers_active_agency_run(
     assert delivery is not None
     assert delivery.delivery == "steered"
     assert delivery.active_run_id == "agency-run-1"
-    batches = runtime_state.consume_steering_inputs("agency-run-1")
     assert len(batches) == 1
     assert batches[0][0]["name"] == "agency_fire"
     fire = await db_session.get(AgencyFireRecord, delivery.fire.id)
@@ -667,6 +668,7 @@ async def test_agency_run_commit_consumes_fires(
 async def test_session_submit_creates_merges_and_steers(
     db_session: AsyncSession,
     settings: ClawSettings,
+    bind_recording_input_ingress: Callable[..., list[list[dict[str, object]]]],
 ) -> None:
     session = SessionRecord(id="session-1", profile_name="general", session_metadata={})
     db_session.add(session)
@@ -704,6 +706,7 @@ async def test_session_submit_creates_merges_and_steers(
     run.status = "running"
     session.active_run_id = run.id
     await db_session.commit()
+    batches = bind_recording_input_ingress(runtime_state, run.id)
     steered = await controller.submit_input(
         db_session,
         settings,
@@ -722,7 +725,7 @@ async def test_session_submit_creates_merges_and_steers(
     await db_session.refresh(run)
     assert RUN_USAGE_SNAPSHOT_METADATA_KEY not in run.run_metadata
     assert [part["text"] for part in run.input_parts] == ["first", "second", "third"]
-    assert runtime_state.consume_steering_inputs(run.id)[0][0]["text"] == "third"
+    assert batches[0][0]["text"] == "third"
 
 
 async def test_agency_submit_to_session_creates_handoff_run(
@@ -873,6 +876,7 @@ async def test_agency_submit_to_session_merges_queued_source_run(
 async def test_agency_submit_to_session_steers_running_source_run(
     db_session: AsyncSession,
     settings: ClawSettings,
+    bind_recording_input_ingress: Callable[..., list[list[dict[str, object]]]],
 ) -> None:
     from ya_claw.controller.agency import AgencyController
     from ya_claw.controller.models import AgencySourceSessionSubmitRequest
@@ -916,6 +920,7 @@ async def test_agency_submit_to_session_steers_running_source_run(
     runtime_state = create_runtime_state()
     runtime_state.register_run("source-session", "source-run", dispatch_mode="async")
     runtime_state.register_run("agency-session", "agency-run", dispatch_mode="async")
+    batches = bind_recording_input_ingress(runtime_state, "source-run")
 
     response = await AgencyController().submit_to_session(
         db_session,
@@ -933,9 +938,8 @@ async def test_agency_submit_to_session_steers_running_source_run(
 
     assert response.delivery == "steered"
     assert response.run_id == "source-run"
-    steering = runtime_state.consume_steering_inputs("source-run")
-    assert steering[0][0]["text"].startswith('<system-reminder>\n<agency-handoff-reference kind="exchange">')
-    assert '<agency-handoff kind="exchange">\nSteer with agency context.\n</agency-handoff>' in steering[0][0]["text"]
+    assert batches[0][0]["text"].startswith('<system-reminder>\n<agency-handoff-reference kind="exchange">')
+    assert '<agency-handoff kind="exchange">\nSteer with agency context.\n</agency-handoff>' in batches[0][0]["text"]
     await db_session.refresh(source_run)
     assert source_run.input_parts[0]["text"] == "original"
     assert source_run.input_parts[1]["text"].startswith('<system-reminder>\n<agency-handoff-reference kind="exchange">')

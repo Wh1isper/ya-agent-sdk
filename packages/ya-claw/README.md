@@ -8,8 +8,9 @@ YA Claw packages a durable runtime shell around `ya-agent-sdk` with:
 
 - one persistent workspace resolved through `WorkspaceProvider`
 - reusable agent profiles
+- explicitly selected installable capability plugins through an SDK-owned manifest
 - resumable sessions and runs
-- in-process active state and async task coordination
+- in-process active handles and live transports over SQL-owned async task state
 - session schedules for timed execution
 - SQLite-first durable state with optional PostgreSQL
 - local filesystem session continuity and exported state
@@ -19,7 +20,7 @@ YA Claw packages a durable runtime shell around `ya-agent-sdk` with:
 ## Current Direction
 
 The target single-node shape runs as one web service.
-The runtime keeps active session state, live delivery, async tasks, schedule dispatch, and bridge coordination inside one runtime process.
+Process memory owns active handles, live delivery transports, and best-effort scheduling coordination. Async-task state, completion intent, parent inbox/continuation targeting, and delivery disposition remain canonical relational state; only the SQL-backed post-run owner dispatches completion, and portable delivery completes only after canonical parent application.
 SQLite is the default durable store.
 PostgreSQL remains an optional storage backend for deployments that prefer an external relational database.
 
@@ -58,7 +59,7 @@ This section is the maintainer index for implementation details that affect code
 
 - `YA_CLAW_API_TOKEN` is required before service startup.
 - `/api/v1/claw/info` exposes service build metadata from `YA_CLAW_SERVICE_VERSION`, `YA_CLAW_SERVICE_COMMIT`, `YA_CLAW_SERVICE_BUILD`, and `YA_CLAW_SERVICE_IMAGE`; Docker builds inject these values for UI display.
-- SQLite is the default durable store at `~/.ya-claw/ya_claw.sqlite3`.
+- SQLite is the default durable store at `~/.ya-claw/ya_claw.sqlite3`; file-backed SQLite engines use WAL and a 30-second busy timeout for the runtime's concurrent readers and writers.
 - `YA_CLAW_DATA_DIR` defaults to `~/.ya-claw/data`.
 - `YA_CLAW_WORKSPACE_DIR` defaults to `~/.ya-claw/data/workspace`.
 - Browser workspace downloads are capped at 100 MiB by default; configure `YA_CLAW_WORKSPACE_DOWNLOAD_MAX_BYTES` to change the enforced per-file limit. The server enforces the cap both before and during streaming.
@@ -92,10 +93,12 @@ This section is the maintainer index for implementation details that affect code
 
 ### Execution Coordination
 
-- Active session state, live events, async task coordination, schedules, and bridge coordination stay in the runtime process.
-- Built-in run orchestration lives in `ya_claw/execution/coordinator.py`.
-- Built-in coordinator dispatch resolves model/runtime behavior from `AgentProfile` rows.
+- Active handles, live events, schedule dispatch, and bridge transports stay in the runtime process; relational rows remain the authority for runs, async tasks, input, and completion delivery.
+- Built-in run orchestration lives in `ya_claw/execution/coordinator.py`; it retains SQL scheduling, workspace, HITL, memory, and delivery ownership while composing the SDK `AgentExecutionHarness` for each native segment.
+- New ordinary runs and new child spawns resolve model/runtime behavior from the selected execution profile. Existing or resumed async-child executions restore the exact immutable descriptor persisted with their SQL execution record; profile drift, reseeding, or route deletion cannot redefine them.
 - `YA_CLAW_DEFAULT_PROFILE` defaults to `default`.
+- `YA_CLAW_CAPABILITY_PLUGIN_MANIFEST` optionally names one strict SDK plugin manifest;
+  omission means no external plugins, while an explicit missing or invalid file is fatal.
 - Runtime instance heartbeat lives in `runtime_instances`.
 - Run records carry claim ownership through `claimed_by` and `claimed_at`.
 - The built-in `session` toolset lets agents inspect their current session through internal HTTP client tools `list_session_turns` and `get_run_trace`; session ID and bearer token stay inside the client resource.
@@ -161,6 +164,78 @@ Pip can install the same runtime shape:
 pip install 'ya-claw[rs]'
 ```
 
+## Capability Plugins
+
+Install each trusted plugin distribution into the YA Claw service's Python environment,
+not only into a Docker workspace container. For an isolated uv tool installation:
+
+```bash
+uv tool install 'ya-claw[rs]' --with acme-agent-plugin
+```
+
+Then point YA Claw at the SDK's strict manifest:
+
+```env
+YA_CLAW_CAPABILITY_PLUGIN_MANIFEST=/etc/ya-claw/plugins.toml
+```
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+`entry_points` explicitly selects installed Python types for the process catalog.
+`capabilities` appends ordered grants to every admitted root profile spec before its
+immutable descriptor is fingerprinted and persisted. Installation alone grants nothing,
+and YA Claw never ambiently loads all installed entry points.
+
+The manifest path is optional; omission produces an empty external catalog. An explicit
+missing path, invalid TOML, unknown field, unsupported version, missing or duplicate
+entry point, import failure, grant argument signature mismatch, or catalog collision
+stops startup. Manifest arguments are durable non-secret configuration; secret-like
+keys are rejected recursively. This name-based guard cannot detect a secret stored under
+a neutral key. Provide live credentials and authority through typed runtime dependencies
+or host APIs instead.
+
+Root manifest grants do not enter named children or self forks. A selected type may be
+used by a child only when that child's native `AgentSpec.capabilities` explicitly grants
+it. Before a root descriptor is fingerprinted or persisted, YA Claw performs native
+static-plan construction with `ClawAgentContext`, the selected custom types, and fresh
+base host capabilities; plugin factory values and combined ordering therefore fail at
+admission rather than after a run is queued. Runtime entry still validates dynamic
+Environment and resource contributions.
+
+YA Claw resolves the file once before application startup and uses the same catalog
+snapshot for profile admission, async children, retained plans, recovery, memory runs,
+and runtime construction. Restart the service after changing the file or distribution.
+
+The official image does not include third-party plugins. Build a derived service image
+that installs the distribution into `/opt/venv`, mount the manifest read-only, and set
+its in-container path:
+
+```dockerfile
+FROM ghcr.io/wh1isper/ya-claw:latest
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN uv pip install --python /opt/venv/bin/python acme-agent-plugin
+```
+
+```yaml
+services:
+  ya-claw:
+    build: .
+    environment:
+      YA_CLAW_CAPABILITY_PLUGIN_MANIFEST: /etc/ya-claw/plugins.toml
+    volumes:
+      - ./plugins.toml:/etc/ya-claw/plugins.toml:ro
+```
+
+See the SDK [file configuration contract](../ya-agent-sdk/spec/06-capability-plugins/03-file-configuration.md)
+and the [installable example](../../examples/capability_plugin/).
+
 ## Quick Start
 
 From the workspace root, start the default runtime flow:
@@ -177,13 +252,14 @@ YA Claw loads `YA_CLAW_*` settings from `packages/ya-claw/.env` and the process 
 YA Claw startup also exports provider variables such as `GATEWAY_API_KEY` and `GATEWAY_BASE_URL` from `packages/ya-claw/.env` into the process environment.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) for shared SDK and tool environment variables when you want the same keys outside YA Claw startup.
 Set `YA_CLAW_PROFILE_SEED_FILE` plus `YA_CLAW_AUTO_SEED_PROFILES=true` when you want packaged profiles to seed into the database on startup. Seeded profiles use create/update semantics: every startup refreshes matching database profiles from the YAML file, including subagent configuration, while profiles absent from the YAML file remain in the database.
-Runs auto-dispatch through the built-in coordinator and resolve model/runtime behavior from AgentProfile rows. The default profile name is `default`.
+Runs auto-dispatch through the built-in coordinator. New ordinary runs and child spawns resolve model/runtime behavior from execution profile rows; existing or resumed async children use their exact persisted immutable descriptor instead. The default profile name is `default`.
 
 Profile, MCP, and coordinator settings:
 
 - `YA_CLAW_PROFILE_SEED_FILE=packages/ya-claw/profiles.yaml`
 - `YA_CLAW_AUTO_SEED_PROFILES=true`
 - `YA_CLAW_DEFAULT_PROFILE=default`
+- `YA_CLAW_CAPABILITY_PLUGIN_MANIFEST=/etc/ya-claw/plugins.toml`
 - `YA_CLAW_WORKSPACE_PROVIDER_BACKEND=local|docker`
 - `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IMAGE=ghcr.io/wh1isper/ya-claw-workspace:latest`
 - `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR=/srv/ya-claw/workspace`
@@ -213,25 +289,33 @@ Profile, MCP, and coordinator settings:
 
 The official YA Claw service and workspace Docker images set `MALLOC_ARENA_MAX=2` and `MALLOC_TRIM_THRESHOLD_=131072` for long-lived Python workloads. Use the same allocator values for systemd or custom container deployments when memory residency matters.
 
-Profiles store model, prompt, model context config, builtin tool groups, subagents, approval policy, security policy, MCP server definitions, and MCP namespace filters. YA Claw accepts profile MCP servers with `streamable_http` transport. Every YA Claw agent runtime receives the profile MCP configuration through `ToolProxyToolset`, and each profile can narrow that surface with `enabled_mcps` and `disabled_mcps`.
+Profiles use strict schema version 2: a native Pydantic AI `AgentSpec`, a Claw-only host policy, and native SDK `SubagentSpec` children. Portable behavior is granted through `AgentSpec.capabilities`; Claw host groups are limited to session, schedule, workflow, and agency control-plane tools. Host policy owns model runtime configuration, approvals, MCP selection and server definitions, and workspace hints. See [`spec/01-configuration-and-workspace-provider.md`](spec/01-configuration-and-workspace-provider.md).
 
 Codex OAuth profiles use the `oauth@codex:gpt-5.5` model string after the service host has run `ya-oauth login codex`. YA Claw maps provider session headers to the YA Claw session ID and provider thread headers to the run ID. Docker deployments should mount a persistent host directory to the service user's `~/.yaai`, keep directory mode `0700` and `auth.json` mode `0600`, and keep credentials out of image layers.
 
-Shell command review is configured per profile under `security.shell_review`. The review model is explicit when enabled, and `model_settings` accepts SDK preset names such as `openai_responses_low` or an inline settings object. YA Claw runs shell review in auto-pilot deny mode: commands that reach `risk_threshold` trigger the configured action, and profile values of `on_needs_approval: defer` are coerced to deny at runtime. The default profile risk threshold is `extra_high`.
+Shell review is configured under `host.model_config_override.security.shell_review`. The review model is explicit when enabled, and `model_settings` accepts an SDK preset name or inline settings. Interactive runs can defer for HITL; unattended schedule, workflow, heartbeat, and agency runs convert deferred review to denial.
 
 ```yaml
+version: 2
 profiles:
-  - name: default
-    model: gateway@openai-responses:gpt-5.5
-    model_settings_preset: openai_responses_high
-    model_config_preset: gpt5_270k
-    security:
-      shell_review:
-        enabled: true
-        model: gateway@openai-responses:gpt-5.4-mini
-        model_settings: openai_responses_low
-        on_needs_approval: deny
-        risk_threshold: extra_high
+  - schema_version: 2
+    name: default
+    agent:
+      model: gateway@openai-responses:gpt-5.5
+      name: default
+      capabilities: [FilesystemCapability, ShellCapability]
+    host:
+      model_config_preset: gpt5_270k
+      model_config_override:
+        security:
+          shell_review:
+            enabled: true
+            model: gateway@openai-responses:gpt-5.4-mini
+            model_settings: openai_responses_low
+            on_needs_approval: defer
+            risk_threshold: extra_high
+      tool_groups: [session]
+    subagents: []
 ```
 
 Session and run requests can provide `workspace.mounts` with one or more logical workspace folders, one default mount, a default cwd, and `rw` or `ro` access per mount. When requests omit workspace configuration, YA Claw uses the shared workspace configured by `YA_CLAW_WORKSPACE_DIR` and maps it to `/workspace`. Workspace guidance and memory use the default logical mount, and runtime prompts list the resolved mount set.
@@ -350,6 +434,10 @@ Every HTTP route except `/healthz` expects `Authorization: Bearer <YA_CLAW_API_T
 - `POST /api/v1/runs/{run_id}/steer` — steer a specific active run
 - `POST /api/v1/runs/{run_id}/interrupt` — interrupt a specific active run
 - `POST /api/v1/runs/{run_id}/cancel` — cancel a specific active run
+
+Direct session/run/async-child steering succeeds only when the addressed logical run is actively accepting input. A queued run, terminal run, or session without an active accepting run returns HTTP 409 before any success response. Success returns the persisted SQL/native receipt fields `input_id`, `input_delivery_key`, `input_disposition`, `input_sdk_id`, and `input_enqueue_id`; an equal idempotent retry returns the same durable receipt. Unified session submit is a separate API and may merge input into a queued run.
+
+Portable SDK subagent spawn is claimed atomically in SQL by owner scope and idempotency key. The task, child session, child run, immutable plan, intent digest, and `applied` initial-input marker commit together before run publication. Concurrent or post-crash retries return that one committed task; a changed intent is rejected and cannot create an orphan child.
 
 ## Spec Set
 

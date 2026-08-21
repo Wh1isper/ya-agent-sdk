@@ -12,15 +12,17 @@ Yet Another Agent SDK for building AI agents with [Pydantic AI](https://ai.pydan
 
 ## Key Features
 
-- Environment-based architecture for file operations, shell access, and resources
+- Capability-first composition over native Pydantic AI capabilities
+- Environment-based authority for file operations, shell access, and resources
 - Fully typed SDK validated with pyright
-- Resumable sessions with state export and restore
-- Hierarchical agents with subagent delegation
-- Tool search for large tool libraries
-- Skills system with hot reload and progressive loading
-- Human-in-the-loop approval and optional structured clarification workflows
-- Event system and streaming support
-- Message bus for agent coordination and user steering
+- Resumable context state plus canonical Pydantic AI message history
+- Native `AgentSpec` profiles and portable subagent execution services
+- Strict versioned TOML configuration for explicitly selected capability plugins
+- Stateless `AgentExecutionHarness` for host-coordinated completed or suspended native segments
+- Native Tool Search, Tool Proxy, skills, MCP, and CodeAct capability integrations
+- Human-in-the-loop approval and structured deferred interaction
+- Native logical-run steering through Pydantic AI `AgentRun.enqueue()`
+- Lifecycle, usage, subagent, compact, and handoff event streaming
 
 ## Installation
 
@@ -37,7 +39,7 @@ pip install 'ya-agent-sdk[docker]'
 pip install 'ya-agent-sdk[web]'
 pip install 'ya-agent-sdk[document]'
 pip install 'ya-agent-sdk[s3]'
-pip install 'ya-agent-sdk[tool-search]'
+pip install 'ya-agent-sdk[tool-proxy]'
 pip install 'ya-agent-sdk[oauth]'
 ```
 
@@ -52,7 +54,7 @@ uv run --package ya-oauth ya-oauth login codex
 Then select the OAuth model string:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 runtime = create_agent("oauth@codex:gpt-5.5")
 ```
@@ -64,7 +66,7 @@ The SDK passes stable session and thread headers into the OAuth provider. YA Cla
 `ya-agent-sdk` includes a built-in OpenAI Responses WebSocket transport for streaming calls. Use either alias to prefer WebSocket with automatic HTTP fallback:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 runtime = create_agent("openai-responses-ws:gpt-5.5")
 # Equivalent alias:
@@ -84,7 +86,7 @@ runtime = create_agent(
 
 Choose `openai_responses_pro_low`, `openai_responses_pro_medium`, `openai_responses_pro_high`, `openai_responses_pro_xhigh`, or `openai_responses_pro_max` to pair pro mode with an explicit effort. `openai_responses_pro` is the medium-effort convenience preset. Existing OpenAI Responses effort presets remain in the default `standard` mode. GPT-5.6 Sol can use `openai_responses_max` for `max` reasoning effort. Terra and Luna convenience aliases are available as `openai_responses_terra` and `openai_responses_luna`. Use `gpt5_350k` for subscription-backed Codex access with a 350K context window; keep using the other GPT-5 `model_cfg` presets when they match the provider's documented context window.
 
-The GPT-5 model-config presets also declare `ModelCapability.openai_prompt_cache_key`. For transports that receive the SDK's provider session headers, `create_agent()` copies the configured model settings and binds `openai_prompt_cache_key` to the exact `x-session-id` value. This includes OAuth Codex, direct Responses WebSocket aliases, and gateway-backed OpenAI Responses over HTTP or WebSocket. Gateway HTTP requests and WebSocket fallback receive the same headers as the handshake. Conflicting request-level header or body overrides are normalized on the copy; caller-owned mappings are not mutated. Models without this explicit capability are left unchanged.
+The GPT-5 model-config presets also declare `ModelFeature.openai_prompt_cache_key`. For transports that receive the SDK's provider session headers, `create_agent()` copies the configured model settings and binds `openai_prompt_cache_key` to the exact `x-session-id` value. This includes OAuth Codex, direct Responses WebSocket aliases, and gateway-backed OpenAI Responses over HTTP or WebSocket. Gateway HTTP requests and WebSocket fallback receive the same headers as the handshake. Conflicting request-level header or body overrides are normalized on the copy; caller-owned mappings are not mutated. Models without this explicit capability are left unchanged.
 
 ## Quick Start
 
@@ -92,44 +94,112 @@ For workspace development, copy [`packages/ya-agent-sdk/.env.example`](.env.exam
 For the runnable example scripts, copy [`examples/.env.example`](../../examples/.env.example) to `examples/.env`.
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
-runtime = create_agent("openai-chat:gpt-4o")
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    capabilities=[RuntimeFoundationCapability()],
+)
 
 async with stream_agent(runtime, "Hello") as streamer:
     async for event in streamer:
         print(event)
+    streamer.raise_if_exception()
 ```
+
+`create_agent()` returns an unentered `AgentRuntime`. `capabilities=` is the sole public behavior-composition surface; the Pydantic AI Agent is built only after the Environment and context have entered and all contribution groups are available. `RuntimeFoundationCapability` is explicit and is not injected by `create_agent()`.
 
 When stream recovery is enabled, delegated subagents and self forks inherit the root run's effective recovery policy. Each child retries transient provider or network stream failures against its own transport budget and resumes from its own recovered history. Successful child-local recovery does not consume the root agent's execution recovery budget; only an exhausted child failure propagates to the root tool-call path.
 
-## Model Correction Retry Budgets
+## Capability Plugins
 
-The five SDK retry categories default to 5 and can be configured together from `create_agent()`:
+Applications can select installed third-party capability types and grant configured
+instances to their root agent with one SDK-owned manifest:
+
+```toml
+schema_version = 1
+entry_points = ["acme.search"]
+
+[[capabilities]]
+name = "acme.search"
+arguments = { result_limit = 10 }
+```
+
+Load the manifest once at trusted process bootstrap, then retain the same catalog
+snapshot in every root, child, and restored runtime factory:
 
 ```python
-from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.context import RetryConfig
+from pydantic_ai import AgentSpec
+from ya_agent_sdk.agents import validate_agent_spec_capabilities
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import load_capability_plugins
+from ya_agent_sdk.context import AgentContext
+
+plugins = load_capability_plugins("/etc/my-agent/plugins.toml")
+root_spec = plugins.apply_to_root_agent_spec(
+    AgentSpec.from_dict({"name": "my-agent"})
+)
+validate_agent_spec_capabilities(
+    root_spec,
+    deps_type=AgentContext,
+    custom_capability_types=plugins.custom_capability_types,
+)
 
 runtime = create_agent(
-    "openai-chat:gpt-4o",
-    retry_config=RetryConfig(
-        tools=5,
-        output=5,
-        toolset=5,
-        tool_search=5,
-        tool_proxy=5,
-    ),
+    "anthropic:claude-sonnet-4-5",
+    spec=root_spec,
+    custom_capability_types=plugins.custom_capability_types,
 )
 ```
 
-`tools` is Pydantic AI's per-tool-name retry limit and resets after that tool succeeds. `output` is cumulative within one run. `toolset`, `tool_search`, and `tool_proxy` configure the corresponding SDK wrappers at run time, including directly supplied toolsets and inherited subagent contexts. An explicit `Toolset(max_retries=...)`, `ToolSearchToolSet(max_retries=...)`, or `ToolProxyToolset(max_retries=...)` remains a local override. Existing `retries`, `output_retries`, and `toolset_max_retries` arguments remain higher-priority compatibility overrides.
+`validate_agent_spec_capabilities()` constructs a throwaway native agent with a
+no-network test model, so plugin `from_spec()` values and the supplied static capability
+ordering can fail before durable admission. Runtime entry still validates dynamic
+Environment, context, and resource contributions.
 
-`BaseTool` `ModelRetry` signals propagate into Pydantic AI instead of being converted to ordinary error strings. Regular subagents and self forks inherit the resolved Pydantic AI tool/output limits from the root SDK construction path.
+The application still owns package installation, the trusted manifest path, missing-file
+policy, and host dependencies. The SDK performs no ambient loading, installation,
+upgrade, sandboxing, or hot reload. Manifest root grants do not enter named children or
+self forks; a selected type is available to a child only when that child's native
+`AgentSpec` explicitly grants it. Manifest arguments are durable non-secret
+configuration, and secret-like keys fail validation recursively. This name-based
+validation cannot recognize a secret placed under a neutral key, so every secret value
+must still remain outside the manifest.
 
-`create_agent(overall_retries=3)` adds a separate run-wide ceiling across tool validation, tool execution, output validation, output functions, and capability-hook correction prompts. This counter never resets after an intervening successful tool call, so it can be stricter than any individual category. Set `overall_retries=None` to disable only this ceiling. HTTP/WebSocket request retries and stream recovery are transport/execution recovery mechanisms and do not consume the model correction budget.
+See the [file configuration specification](spec/06-capability-plugins/03-file-configuration.md),
+the [application integration guide](../../skills/agent-builder/plugins.md), and the
+[runnable installable plugin example](../../examples/capability_plugin/).
 
-Message-bus steering is not model correction. The completion guard uses Pydantic AI `RunContext.enqueue(priority="asap")` to wake an ending run, while the existing message-bus filter remains the source of truth for cursor advancement, actual content injection, events, multimodal content, and compaction. This continuation does not consume tool, output, or overall correction retries.
+## Retry Boundaries
+
+Configure native Pydantic AI tool/output correction limits with `create_agent(retries=...)`. The explicit `OverallRetryBudget` capability supplies a separate cumulative run-wide ceiling and is included in `RuntimeFoundationCapability` with a default of three:
+
+```python
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import OverallRetryBudget
+
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    retries={"tools": 5, "output": 5},
+    capabilities=[OverallRetryBudget(max_retries=3)],
+)
+```
+
+`BaseTool` `ModelRetry` signals propagate unchanged into Pydantic AI. `ToolRetryCapability` is a distinct host-execution retry boundary, while HTTP/WebSocket request retries and `stream_agent()` recovery are transport/execution recovery mechanisms. SDK-created model-provider HTTP clients use `httpx2.AsyncClient`, and request retries use Pydantic AI's `AsyncHTTPX2TenacityTransport`; custom clients passed to current providers must use the same HTTPX2 boundary. Pydantic AI's deprecated, retired GitHub Models provider remains upstream-owned on legacy HTTPX until it is removed in v3. Clients created by the SDK are provider-owned, close with the model context, and are recreated when the model is entered again. None of those consumes the model-correction budget. Native steering is accepted through the active logical-run router and `AgentRun.enqueue()`; it is not a retry prompt.
+
+## Portable Subagents
+
+`SubagentExecutionService` separates portable records and lifecycle semantics from host
+coroutine ownership. The standalone SDK defaults to `InlineSubagentExecutionHost`, so
+`delegate` is foreground-only, runs in the calling tool task, and propagates cancellation
+and failures normally. Applications that intentionally support background work inject a
+`SubagentExecutionHost` such as `AsyncioSubagentExecutionHost` or their own durable
+scheduler. Model-facing execution handles are short and route-prefixed; internal logical
+run and correlation UUIDs remain private.
+
+See [the portable subagent specification](spec/05-capability-first-runtime/07-subagent-runtime.md)
+and [the agent-builder guide](../../skills/agent-builder/subagent.md).
 
 ## Structured Clarifying Questions
 
@@ -137,17 +207,23 @@ The optional `ask_user_question` tool uses Pydantic AI deferred-tool control flo
 
 ```python
 from pydantic_ai import DeferredToolRequests
-from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.toolsets.core.interaction import tools as interaction_tools
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import (
+    RuntimeFoundationCapability,
+    UserInteractionCapability,
+)
 
 runtime = create_agent(
     "anthropic:claude-sonnet-4",
-    tools=[*interaction_tools],
+    capabilities=[
+        RuntimeFoundationCapability(),
+        UserInteractionCapability(),
+    ],
     output_type=[str, DeferredToolRequests],
 )
 ```
 
-The SDK deliberately does **not** include this tool in its default tool surface: hosts must opt in only when they can present `DeferredToolRequests`, collect answers, and resume with matching `DeferredToolResults.calls`. The tool sets `main_agent_only=True`, so regular subagents and self forks remove it from direct SDK `Toolset` instances, capability wrappers, and sync or async dynamic Toolset factory results at both per-run and per-step resolution. SDK `Toolset` also enforces this policy while listing and calling tools in a subagent context, regardless of `skip_unavailable`, so opaque search/proxy composites and stale caches cannot bypass it. Its runtime availability check additionally requires a root main-agent context as defense in depth. Nested subagent runs do not own the host's user-interaction loop. See [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md) for the question schema and a complete continuation example.
+The SDK deliberately does **not** include this capability by default: hosts must opt in only when they can present `DeferredToolRequests`, collect answers, and resume with matching `DeferredToolResults.calls`. The tool carries `main_agent_only` metadata; final `ToolVisibilityCapability` and its own availability check reject it in child execution contexts. Nested subagent runs do not own the host's user-interaction loop unless a host explicitly implements that protocol. Use `DeferredInteractionResolver` rather than runtime-private toolset access. See [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md) for the schema and complete continuation flow.
 
 ## CodeAct
 
@@ -155,20 +231,23 @@ CodeAct lets a model orchestrate eligible host tools from restricted Python whil
 
 ```python
 from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import CodeActCapability, FilesystemCapability
 from ya_agent_sdk.codeact import CodeActConfig
 
 runtime = create_agent(
     "openai-chat:gpt-4o",
-    tools=[...],
-    codeact=CodeActConfig(),
+    capabilities=[
+        FilesystemCapability(),
+        CodeActCapability(config=CodeActConfig()),
+    ],
 )
 ```
 
-SDK `BaseTool` classes opt in with `codeact = True`; external toolsets attach `ToolDefinition.metadata["codeact"] = True`. Host-managed `NamedMCPToolset` tools opt in by default. Eligible tools remain directly model-visible as well as callable through `run_code`.
+SDK `BaseTool` classes opt in with `codeact = True`; external toolsets attach `ToolDefinition.metadata["codeact"] = True`. Actual tools produced by the private host-managed MCP adapter opt in by default. Eligible tools remain directly model-visible as well as callable through `run_code`.
 
 Host-managed MCP results preserve `structuredContent` as the callable Python value while forwarding accompanying image, audio, or binary content through `ToolReturn.content`. Completed MCP error results are returned as structured values for explicit caller inspection rather than raised as `ModelRetry`; transport or protocol failures without a result become terminal `ToolFailed` outcomes. This avoids consuming per-tool retry budgets or implicitly replaying side effects.
 
-When the current Environment provides a `FileOperator`, `run_program(path, inputs)` reads a strict UTF-8 `*.codeact.py` file through it and executes `async def main(inputs)` in a fresh Monty session; otherwise that tool is not exposed. The dedicated suffix distinguishes the restricted program contract from general CPython. Preflight reserves known ambient-builtin names and rejects common ambient-capability imports as an authoring diagnostic, with guidance to use injected CodeAct-eligible tools; the security boundary remains Monty's lack of ambient authority and the injected-tool dispatch boundary. Monty receives no workspace mount or ambient OS access: filesystem, shell, browser, network, and computer-use operations still cross the current Environment tool boundary. `max_concurrency` admits calls before host argument materialization and covers argument serialization, nested validation, and execution. `max_output_bytes` bounds each nested argument set, result, explicit model-facing `ToolReturn.content`, cumulative nested results, and the final returned value before large supported host values are fully encoded or cross into Monty. `timeout_seconds` initiates cancellation at the execution deadline; CodeAct still drains active in-process tool ownership before returning, and `codeact=True` therefore requires cancellation-cooperative tools. See [CodeAct](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/codeact.md) and [the program specification](spec/03-codeact-programs.md).
+When the current Environment provides a `FileOperator`, `run_program(path, inputs)` reads a strict UTF-8 `*.codeact.py` file through it and executes `async def main(inputs)` in a fresh Monty session; otherwise that tool is not exposed. The dedicated suffix distinguishes the restricted program contract from general CPython. Preflight reserves known ambient-builtin names and rejects common ambient-capability imports as an authoring diagnostic, with guidance to use injected CodeAct-eligible tools; the security boundary remains Monty's lack of ambient authority and the injected-tool dispatch boundary. Monty receives no workspace mount or ambient OS access: filesystem, shell, browser, network, and computer-use operations still cross the current Environment tool boundary. `max_concurrency` admits calls before host argument materialization and covers argument serialization, nested validation, and execution. `max_output_bytes` bounds each nested argument set, result, explicit model-facing `ToolReturn.content`, cumulative nested results, and the final returned value before large supported host values are fully encoded or cross into Monty. `timeout_seconds` initiates cancellation at the execution deadline; CodeAct still drains active in-process tool ownership before returning, so tools exposed while `CodeActCapability` is enabled must cooperate with cancellation. See [CodeAct](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/codeact.md) and [the program specification](spec/03-codeact-programs.md).
 
 ## Environment Temporary Storage
 
@@ -203,12 +282,12 @@ Path masks are opt-in. `ShellSandboxConfig.masked_path_aliases` provides recomme
 Configure shell command review on `AgentContext.security.shell_review` to run a small reviewer model before shell execution:
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.context import SecurityConfig, ShellReviewConfig
 
 runtime = create_agent(
     "gateway@openai-responses:gpt-5.5",
-    extra_context_kwargs={
+    context_kwargs={
         "security": SecurityConfig(
             shell_review=ShellReviewConfig(
                 enabled=True,
@@ -264,10 +343,9 @@ This package lives in the [`ya-mono`](https://github.com/wh1isper/ya-mono) works
 - [Events](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/events.md)
 - [Toolset Architecture](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/toolset.md)
 - [Structured User Input](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/user-input.md)
-- [Tool Search](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/tool-search.md)
-- [Subagent System](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/subagent.md)
+- [Native Tool Search](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/tool-search.md)
+- [Portable Subagent Runtime](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/subagent.md)
 - [Skills System](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/skills.md)
-- [Message Bus](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/message-bus.md)
 - [Media Upload](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/media.md)
 - [Custom Environments](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/environment.md)
 - [Resumable Resources](https://github.com/wh1isper/ya-mono/tree/main/skills/agent-builder/resumable-resources.md)

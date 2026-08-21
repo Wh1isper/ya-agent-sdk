@@ -1,358 +1,249 @@
-# AgentContext and Session Management
+# AgentContext and Session State
 
-Session state management, resumable sessions, and extending for custom use cases.
+`AgentContext` is the typed dependency and session-state owner for an entered agent
+runtime. It references the active `Environment` and exposes its filesystem, shell, and
+resource authorities. It also owns the logical-run input ledger, task/note state,
+usage projection, deferred metadata, model context policy, and native input router.
 
-## Overview
+Canonical Pydantic AI message history is separate from `ResumableState`; a host that
+supports continuation must persist both.
 
-- **Session State**: Run ID, timing, user prompts, handoff messages
-- **Model Configuration**: Context window, capabilities, and model settings
-- **Tool Configuration**: API keys and tool-specific settings
-- **Resumable Sessions**: Export/restore state for session persistence
+## Lifecycle
 
 ```mermaid
-flowchart TB
-    subgraph Environment["Environment (long-lived)"]
-        FileOp[FileOperator]
-        Shell[Shell]
-        Resources[ResourceRegistry]
-    end
+flowchart LR
+    Plan[create_agent returns AgentRuntime]
+    Environment[Environment entered]
+    Context[AgentContext entered and restored]
+    Contributions[Capability contributions collected]
+    Agent[Pydantic AI Agent constructed]
+    Run[stream_agent or agent.run]
+    State[export_state]
 
-    subgraph Context["AgentContext (short-lived)"]
-        State[Session State]
-        ModelCfg[ModelConfig]
-        ToolCfg[ToolConfig]
-    end
-
-    subgraph Resumable["ResumableState"]
-        SerializedHistory[Serialized History]
-        Usages[Extra Usages]
-    end
-
-    Environment --> Context
-    Context -->|export_state| Resumable
-    Resumable -->|restore| Context
+    Plan --> Environment --> Context --> Contributions --> Agent --> Run --> State
 ```
 
-## Basic Usage
-
-### Recommended: create_agent + stream_agent
-
-```python
-from ya_agent_sdk.agents import create_agent, stream_agent
-
-runtime = create_agent("openai-chat:gpt-4")
-async with stream_agent(runtime, "Hello") as streamer:
-    async for event in streamer:
-        print(event)
-```
-
-### System Prompt Templates
-
-`create_agent` supports Jinja2 templating for system prompts:
+`runtime.agent`, `runtime.capabilities`, and capability provenance are unavailable until
+runtime entry.
 
 ```python
-# Template string with variables
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
+
 runtime = create_agent(
-    "openai-chat:gpt-4",
-    system_prompt="You are a {{ role }}. {{ instructions | default('') }}",
-    system_prompt_template_vars={"role": "code reviewer"},
+    "openai-chat:gpt-4o",
+    capabilities=[RuntimeFoundationCapability()],
 )
 
-# Default template file (prompts/main.md) with variables
+async with runtime:
+    result = await runtime.agent.run("Hello", deps=runtime.ctx)
+```
+
+`stream_agent()` manages the same runtime lifecycle automatically. Keep an outer
+`async with runtime` when one logical host flow may call `stream_agent()` repeatedly,
+for example across deferred HITL continuations.
+
+## Constructing Context
+
+Use `model_cfg` for context/media/recovery policy and `context_kwargs` for additional
+validated `AgentContext` fields:
+
+```python
+from ya_agent_sdk.context import ModelConfig, ModelFeature, ToolConfig
+
 runtime = create_agent(
-    "openai-chat:gpt-4",
-    system_prompt_template_vars={"project_name": "my-project"},
-)
-```
-
-Templates are always rendered with Jinja2, supporting conditionals and default values even when `template_vars` is empty.
-
-### Manual Context Management
-
-```python
-from ya_agent_sdk.environment import LocalEnvironment
-from ya_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
-
-async with LocalEnvironment() as env:
-    async with AgentContext(
-        env=env,
-        model_cfg=ModelConfig(context_window=200000),
-        tool_config=ToolConfig(tavily_api_key="..."),
-    ) as ctx:
-        await ctx.file_operator.read_file("test.txt")
-```
-
-## Resumable Sessions
-
-Export and restore session state for multi-turn conversations across restarts.
-
-```python
-# Export
-state = ctx.export_state()
-with open("session.json", "w") as f:
-    f.write(state.model_dump_json())
-
-# Restore
-from ya_agent_sdk.context import ResumableState
-state = ResumableState.model_validate_json(Path("session.json").read_text())
-runtime = create_agent("openai-chat:gpt-4", state=state)
-```
-
-### Export Options
-
-```python
-# Default: include subagent history, exclude extra_usages
-state = ctx.export_state()
-
-# Exclude subagent history (smaller state)
-state = ctx.export_state(include_subagent=False)
-
-# Include extra_usages for crash recovery scenarios
-state = ctx.export_state(include_extra_usages=True)
-```
-
-**Note on extra_usages**: By default, `extra_usages` is not included in exported state.
-This is because `extra_usages` is per-run billing data that callers typically handle
-after each run. Set `include_extra_usages=True` only for crash recovery scenarios
-where you need to preserve usage data from an interrupted run.
-
-The `with_state` method accepts `None` for conditional restoration:
-
-```python
-async with AgentContext(...).with_state(maybe_state) as ctx:
-    ...
-```
-
-## Configuration Classes
-
-### ModelConfig
-
-```python
-ModelConfig(
-    context_window=200000,
-    has_image_capability=True,
-    has_video_capability=False,
-)
-```
-
-### ToolConfig
-
-```python
-ToolConfig(
-    tavily_api_key="tvly-xxx",
-    firecrawl_api_key="fc-xxx",
-)
-```
-
-### RetryConfig
-
-```python
-from ya_agent_sdk.context import RetryConfig
-
-RetryConfig(
-    tools=5,
-    output=5,
-    toolset=5,
-    tool_search=5,
-    tool_proxy=5,
-)
-```
-
-Pass it as `create_agent(..., retry_config=...)`. All fields default to 5 and must be non-negative. SDK Toolset, Tool Search, and Tool Proxy wrappers read the policy from `AgentContext`, so subagent contexts inherit it automatically. Wrapper-local `max_retries` values and legacy explicit `create_agent` retry arguments remain overrides.
-
-### Model Wrapper
-
-The `model_wrapper` field enables instrumentation of all LLM calls for observability,
-caching, rate limiting, or cost tracking. The `wrapper_metadata` field and
-`get_wrapper_metadata()` method allow customizing the context passed to the wrapper.
-
-```python
-from ya_agent_sdk.context import AgentContext, ModelWrapper
-from pydantic_ai.models import Model
-
-# Sync wrapper (recommended for create_agent)
-def my_wrapper(model: Model, agent_name: str, context: dict[str, Any]) -> Model:
-    """Wrap model with custom instrumentation.
-
-    Args:
-        model: The pydantic-ai Model to wrap.
-        agent_name: Identifier ('main', 'debugger', 'video-understanding', etc.)
-        context: From ctx.get_wrapper_metadata(). Contains built-in + custom fields.
-    """
-    return LangfuseModel(
-        model,
-        name=agent_name,
-        trace_id=context.get("run_id"),
-        span_id=context.get("agent_id"),
-        parent_span_id=context.get("parent_run_id"),
-        user_id=context.get("user_id"),
-    )
-
-# Usage with custom wrapper_metadata
-runtime = create_agent(
-    "openai-chat:gpt-4",
-    model_wrapper=my_wrapper,
-    extra_context_kwargs={
-        "wrapper_metadata": {
-            "user_id": "user_456",
-            "tags": ["production"],
-        },
+    "anthropic:claude-sonnet-4",
+    model_cfg=ModelConfig(
+        context_window=200_000,
+        capabilities={ModelFeature.vision},
+        stream_resume_on_error=True,
+    ),
+    context_kwargs={
+        "tool_config": ToolConfig(),
+        "shell_env": {"APP_ENV": "development"},
     },
 )
-
-# Runtime modification
-ctx.wrapper_metadata["request_id"] = current_request.id
 ```
 
-**Built-in context fields from `get_wrapper_metadata()`:**
+Use `context_type=MyContext` for a typed application context. Do not pass removed
+free-form `extra_context_kwargs`, `tool_config`, or approval arguments directly to
+`create_agent()`.
 
-| Field           | Description                                          |
-| --------------- | ---------------------------------------------------- |
-| `run_id`        | Current session identifier                           |
-| `agent_id`      | Current agent identifier ("main" or "debugger-a7b9") |
-| `parent_run_id` | Parent session ID (None for main, set for subagents) |
+## `ModelConfig`
 
-**Customizing wrapper context:**
+Important fields include:
+
+| Field                                    | Purpose                                           |
+| ---------------------------------------- | ------------------------------------------------- |
+| `context_window`                         | Total model context window                        |
+| `proactive_context_management_threshold` | Reminder threshold before compaction              |
+| `compact_threshold`                      | Automatic compaction threshold                    |
+| `cold_start_trim_seconds`                | Large tool-result trim policy after cache expiry  |
+| `stream_resume_on_error`                 | Default stream recovery enablement                |
+| `stream_resume_max_attempts`             | Non-transport execution recovery attempts         |
+| `stream_transport_resume_max_attempts`   | Attempts per consecutive transport-failure streak |
+| `stream_resume_prompt`                   | Default recovered-run continuation prompt         |
+| `max_images`, `max_videos`               | History media count limits                        |
+| `max_image_bytes`, `max_image_dimension` | Image normalization bounds                        |
+| `capabilities`                           | Explicit `ModelFeature` set                       |
 
 ```python
-# Option 1: Set wrapper_metadata field (simple)
-ctx.wrapper_metadata = {"trace_id": "abc", "user_id": "123"}
+from ya_agent_sdk.context import ModelConfig, ModelFeature
 
-# Option 2: Override get_wrapper_metadata (advanced)
-class MyContext(AgentContext):
-    session_metadata: dict = Field(default_factory=dict)
-
-    def get_wrapper_metadata(self) -> dict[str, Any]:
-        return {
-            **super().get_wrapper_metadata(),
-            "timestamp": datetime.now().isoformat(),
-            "session": self.session_metadata,
-        }
+config = ModelConfig(
+    context_window=128_000,
+    capabilities={
+        ModelFeature.vision,
+        ModelFeature.audio_understanding,
+    },
+)
+assert config.has_vision
 ```
 
-**Agent name conventions:**
+## Session Persistence
 
-| Context             | agent_name                                 |
-| ------------------- | ------------------------------------------ |
-| Main agent          | `"main"` or user-specified                 |
-| Subagents           | Subagent name (`"debugger"`, `"searcher"`) |
-| Video understanding | `"video-understanding"`                    |
-| Image understanding | `"image-understanding"`                    |
-| Compact filter      | `"compact"`                                |
+Persist model messages and SDK state as separate artifacts:
 
-**Notes:**
+```python
+from pathlib import Path
+from pydantic_ai import ModelMessagesTypeAdapter
+from ya_agent_sdk.context import ResumableState
 
-- `model_wrapper` and `wrapper_metadata` are excluded from serialization (not resumable)
-- In `create_agent` (sync), only sync wrappers are supported
-- In async contexts (compact, subagent, video/image), both sync and async wrappers work
-- Subagent contexts inherit `wrapper_metadata` but have their own `run_id` and `agent_id`
+# After a completed run:
+Path("messages.json").write_bytes(result.all_messages_json())
+Path("state.json").write_text(
+    runtime.ctx.export_state().model_dump_json(indent=2),
+    encoding="utf-8",
+)
 
-## Extending ModelConfig and ToolConfig
+# Before the next run:
+messages = ModelMessagesTypeAdapter.validate_json(
+    Path("messages.json").read_bytes()
+)
+state = ResumableState.model_validate_json(
+    Path("state.json").read_text(encoding="utf-8")
+)
+runtime = create_agent("openai-chat:gpt-4o", state=state)
+result = await runtime.agent.run(
+    "Continue",
+    deps=runtime.ctx,
+    message_history=messages,
+)
+```
 
-Both `ModelConfig` and `ToolConfig` support extension for custom settings.
+`create_agent(state=...)` restores the context before capability contributions are
+resolved. A current host security policy must not be weakened by persisted state.
 
-### Option 1: Inheritance (Recommended)
+`export_state()` excludes the usage ledger by default because normal hosts commit usage
+through their run store. Use `include_usage_ledger=True` only for an explicit recovery
+contract. The old `include_extra_usages` name is not part of new application guidance.
 
-For full type safety, inherit from the config class and override the field in `AgentContext`:
+## Logical-Run Input
+
+`AgentContext.run_input_ledger` is structured retention truth for all user inputs
+applied to the current logical run. `input_router` is a process-local
+`LogicalRunInputRouter` bound only while a native run accepts input, and
+`active_run_registry` locates active main or child routers.
+
+Hosts should not call a MessageBus or append ad hoc replay strings. Native steering is:
+
+1. persist input first when the host is durable;
+2. resolve the active logical-run router;
+3. call `router.enqueue(...)`, which uses Pydantic AI `AgentRun.enqueue()`;
+4. observe native enqueue/application events; and
+5. retain unapplied durable input in the host inbox when no run is active.
+
+Applied user input is preserved by the `RunInputLedger` across compact, handoff, native
+recovery, and durable replay without becoming a second delivery path.
+
+## Context Contributions
+
+An entered context may contribute ordered Pydantic AI capabilities through the
+Environment contribution protocol. The runtime retains every source group separately
+for diagnostics and validates all leaves together. Contributions may provide concrete
+host authority, but they do not mutate the immutable custom capability type catalog or
+silently grant a feature omitted from a child `AgentSpec`.
+
+## Custom Context and State
 
 ```python
 from pydantic import Field
-from ya_agent_sdk.context import AgentContext, ToolConfig, ModelConfig
+from ya_agent_sdk.context import AgentContext, ResumableState
 
-class MyToolConfig(ToolConfig):
-    """Custom tool configuration with additional API keys."""
-    my_service_api_key: str | None = None
-    my_custom_setting: int = 100
 
-class MyModelConfig(ModelConfig):
-    """Custom model configuration."""
-    custom_threshold: float = 0.8
+class AppState(ResumableState):
+    tenant_id: str = ""
 
-class MyContext(AgentContext):
-    tool_config: MyToolConfig = Field(default_factory=MyToolConfig)
-    model_cfg: MyModelConfig = Field(default_factory=MyModelConfig)
+    def restore(self, ctx: "AppContext") -> None:
+        super().restore(ctx)
+        ctx.tenant_id = self.tenant_id
 
-# Usage with create_agent
+
+class AppContext(AgentContext):
+    tenant_id: str = ""
+
+    def export_state(self, **kwargs) -> AppState:
+        base = super().export_state(**kwargs)
+        return AppState(**base.model_dump(), tenant_id=self.tenant_id)
+
+
 runtime = create_agent(
     "openai-chat:gpt-4o",
-    context_type=MyContext,
-    tool_config=MyToolConfig(my_service_api_key="xxx"),
-    model_cfg=MyModelConfig(custom_threshold=0.9),
+    context_type=AppContext,
+    context_kwargs={"tenant_id": "tenant-123"},
 )
 ```
 
-### Option 2: Extra Attributes (Quick Prototyping)
+Keep live clients, callbacks, locks, Environment authorities, and model wrappers out of
+serializable state. Reconstruct them through runtime/environment setup.
 
-Both classes have `extra="allow"`, enabling arbitrary attributes without subclassing:
+## Model Wrapper
+
+`model_wrapper(model, agent_name, metadata)` can wrap every resolved model for tracing,
+caching, or rate limiting. The wrapper passed to `create_agent()` must be synchronous
+because Agent construction occurs during runtime entry. It may return a wrapped
+Pydantic AI `Model`.
 
 ```python
-# Extra attributes are accepted but not type-checked
-config = ToolConfig(
-    tavily_api_key="tvly-xxx",
-    my_custom_key="value",  # Extra attribute
+from pydantic_ai.models import Model
+
+
+def wrap_model(model: Model, agent_name: str, metadata: dict[str, object]) -> Model:
+    return traced(model, name=agent_name, run_id=metadata.get("run_id"))
+
+runtime = create_agent(
+    "openai-chat:gpt-4o",
+    model_wrapper=wrap_model,
+    context_kwargs={
+        "wrapper_metadata": {"tenant_id": "tenant-123"},
+    },
 )
-
-# Access via attribute or model_extra
-config.my_custom_key  # Works at runtime
-config.model_extra["my_custom_key"]  # Also works
 ```
 
-> **Note**: Option 1 is recommended for production code as it provides IDE autocomplete and type checking. Option 2 is useful for quick experiments or dynamic configuration.
+Model wrappers and metadata are process-local and are not part of `ResumableState`.
+Child drivers receive the same wrapper through an explicit host binding, not by
+serializing a live closure.
 
-## ResumableState Fields
+## Manual Context Use
 
-| Field                                   | Type                                   | Description                                                                                                 |
-| --------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `subagent_history`                      | `dict[str, list[dict]]`                | Serialized conversation history per subagent                                                                |
-| `usage_snapshot_entries`                | `dict[str, UsageSnapshotEntry]`        | Cumulative per-run usage ledger entries                                                                     |
-| `user_prompts`                          | `str \| Sequence[UserContent] \| None` | Canonical primary run prompt                                                                                |
-| `previous_assistant_response_reference` | `str \| None`                          | Bounded visible assistant response before the current prompt, used by compact restore to resolve references |
-| `steering_messages`                     | `list[str]`                            | Rendered user-source bus messages retained for compact/handoff replay                                       |
-| `handoff_message`                       | `str \| None`                          | Context handoff message                                                                                     |
-| `context_manage_tool_names`             | `list[str]`                            | Active context management tool names                                                                        |
-| `need_user_approve_tools`               | `list[str]`                            | Tool names requiring user approval                                                                          |
-
-### UsageSnapshotEntry Fields
-
-| Field        | Type          | Description                                                                |
-| ------------ | ------------- | -------------------------------------------------------------------------- |
-| `agent_id`   | `str`         | Agent/source instance ID (e.g., `main`, `searcher-a7b9`)                   |
-| `agent_name` | `str`         | Agent/source name (e.g., `compact`, `image_understanding`, `search`)       |
-| `model_id`   | `str`         | Model identifier (e.g., `openai-chat:gpt-4o`, `anthropic:claude-sonnet-4`) |
-| `usage`      | `RunUsage`    | Cumulative token usage for this agent/source                               |
-| `usage_id`   | `str \| None` | Stable usage record ID for idempotent updates                              |
-| `source`     | `str`         | Component that reported this usage                                         |
-
-## Extending AgentContext
-
-Extend `AgentContext` and `ResumableState` for custom fields:
+Advanced infrastructure can enter an Environment and context directly:
 
 ```python
-class MyContext(AgentContext):
-    custom_field: str = ""
+from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.environment.local import LocalEnvironment
 
-    def export_state(self) -> "MyState":
-        base = super().export_state()
-        return MyState(**base.model_dump(), custom_field=self.custom_field)
-
-class MyState(ResumableState):
-    custom_field: str = ""
-
-    def restore(self, ctx: "MyContext") -> None:
-        super().restore(ctx)
-        ctx.custom_field = self.custom_field
+async with LocalEnvironment() as env:
+    async with AgentContext(env=env) as ctx:
+        text = await ctx.file_operator.read_file("README.md")
 ```
 
-> Full examples: `ya_agent_sdk/context.py`
-
-## ToolIdWrapper
-
-Normalizes tool call IDs across different model providers (OpenAI `call_`, Anthropic `toolu_`, etc.) for consistent session resumption and HITL flows.
-
-Used automatically by the SDK streaming infrastructure.
+Application agents should usually use `create_agent()` so capability contribution
+ordering, state restore, and Agent construction share one lifecycle.
 
 ## See Also
 
-- [environment.md](environment.md) - FileOperator, Shell, and ResourceRegistry
-- [toolset.md](toolset.md) - Creating and using tools
-- [ya-agent-environment](../../packages/ya-agent-environment) - Base protocol definitions
+- [`streaming.md`](streaming.md) - stream driver and recovery
+- [`subagent.md`](subagent.md) - isolated child contexts and durable records
+- [`environment.md`](environment.md) - authority and contribution lifecycle
+- [`resumable-resources.md`](resumable-resources.md) - reconstructable resources
+- [`user-input.md`](user-input.md) - deferred host continuation

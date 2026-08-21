@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from html import escape as _html_escape
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
-from pydantic_ai.tools import RunContext
 from ya_agent_environment import CompletedProcess
 from ya_agent_environment.output import truncate_text_head_tail
 
@@ -97,52 +95,25 @@ async def _write_truncated_files(
     return path_lines
 
 
-async def inject_background_results(
-    ctx: RunContext[AgentContext],
-    messages: list[ModelMessage],
-) -> list[ModelMessage]:
-    """Inject completed background shell results into the conversation.
-
-    This filter:
-    1. Consumes completed background process results (one-time)
-    2. Formats each result with truncation for large output
-    3. Writes the available output to tmp files when the prompt preview is truncated
-    4. Appends a background status summary
-    5. Injects everything as a UserPromptPart in the last ModelRequest
-
-    Filter Order:
-        Should run BEFORE inject_runtime_instructions and AFTER
-        inject_bus_messages.
-
-    Args:
-        ctx: Run context containing AgentContext.
-        messages: Current message history.
-
-    Returns:
-        Modified message history with injected background results.
-    """
-    if not messages or not isinstance(messages[-1], ModelRequest):
-        return messages
-
-    shell = ctx.deps.shell
+async def consume_background_results(context: AgentContext) -> str | None:
+    """Consume and format completed shell work for canonical feature input."""
+    shell = context.shell
     if shell is None:
-        return messages
+        return None
 
     completed = shell.consume_completed_results()
+    if not completed:
+        return None
     summary = shell.background_status_summary()
-
-    if not completed and not summary:
-        return messages
 
     injection_parts: list[str] = []
     for result in completed:
         formatted = _format_completed_result(result)
-        path_lines = await _write_truncated_files(result, ctx.deps)
+        path_lines = await _write_truncated_files(result, context)
         if path_lines:
             formatted += "\n" + "\n".join(path_lines)
         injection_parts.append(formatted)
-
-        await ctx.deps.emit_event(
+        await context.emit_event(
             BackgroundShellCompleteEvent(
                 event_id=f"bg-{result.process_id}",
                 process_id=result.process_id,
@@ -153,9 +124,5 @@ async def inject_background_results(
 
     if summary:
         injection_parts.append(summary)
-
-    content = "\n\n".join(injection_parts)
-    messages[-1].parts = [*messages[-1].parts, UserPromptPart(content=content)]
-
-    logger.debug("Injected %d background result(s)", len(completed))
-    return messages
+    logger.debug("Collected %d background result(s)", len(completed))
+    return "\n\n".join(injection_parts)

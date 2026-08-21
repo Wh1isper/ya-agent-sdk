@@ -230,13 +230,6 @@ class WorkflowEventListResponse(BaseModel):
     events: list[WorkflowEventSummary] = Field(default_factory=list)
 
 
-class AgentPresetCard(BaseModel):
-    name: str
-    model: str | None = None
-    enabled: bool = True
-    builtin_toolsets: list[str] = Field(default_factory=list)
-
-
 class WorkflowController:
     def __init__(self) -> None:
         self._run_controller = RunController()
@@ -1086,7 +1079,12 @@ class WorkflowController:
         node: WorkflowNodeRunRecord,
         spec: Mapping[str, Any],
     ) -> bool:
-        retry_count = int(spec.get("retry_count") or _policy_int(record.definition_snapshot, "retry_count", 0, 0, 10))
+        raw_retry_count = spec.get("retry_count")
+        retry_count = (
+            _policy_int(record.definition_snapshot, "retry_count", 0, 0, 10)
+            if raw_retry_count is None
+            else int(raw_retry_count)
+        )
         if node.attempt_no > retry_count:
             return False
         node.attempt_no += 1

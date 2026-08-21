@@ -25,6 +25,9 @@ _ALLOWED_BRIDGE_EVENT_STATUSES = ("received", "queued", "submitted", "steered", 
 _ALLOWED_AGENCY_FIRE_STATUSES = ("pending", "submitted", "steered", "merged", "consumed", "failed")
 _ALLOWED_ASYNC_TASK_STATUSES = ("queued", "running", "completed", "failed", "cancelled")
 _ALLOWED_ASYNC_TASK_WAKE_POLICIES = ("steer_or_run", "record_only")
+_ALLOWED_RUN_INPUT_STATUSES = ("accepted", "enqueued", "applied", "rejected")
+_ALLOWED_SUBAGENT_INPUT_STATES = ("accepted", "applied", "rejected")
+_ALLOWED_RUN_INPUT_ORIGINS = ("user", "feature")
 _ALLOWED_HITL_BATCH_STATUSES = ("pending", "completed", "cancelled")
 _ALLOWED_HITL_INTERACTION_STATUSES = ("pending", "approved", "denied")
 _ALLOWED_HITL_DEFERRED_INPUT_STATUSES = ("pending", "consumed", "discarded")
@@ -60,22 +63,9 @@ class ProfileRecord(Base):
     __tablename__ = "profiles"
 
     name: Mapped[str] = mapped_column(String(255), primary_key=True)
-    model: Mapped[str] = mapped_column(String(255), nullable=False)
-    model_settings_preset: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    model_settings_override: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    model_config_preset: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    model_config_override: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    builtin_toolsets: Mapped[list[str]] = mapped_column(JSON, default=list)
-    subagents: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    include_builtin_subagents: Mapped[bool] = mapped_column(Boolean, default=False)
-    unified_subagents: Mapped[bool] = mapped_column(Boolean, default=False)
-    need_user_approve_tools: Mapped[list[str]] = mapped_column(JSON, default=list)
-    need_user_approve_mcps: Mapped[list[str]] = mapped_column(JSON, default=list)
-    enabled_mcps: Mapped[list[str]] = mapped_column(JSON, default=list)
-    disabled_mcps: Mapped[list[str]] = mapped_column(JSON, default=list)
-    mcp_servers: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    workspace_backend_hint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    host_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    subagent_specs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     source_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -125,6 +115,8 @@ class RunRecord(Base):
         Index("ix_runs_session_created_at", "session_id", "created_at"),
         Index("ix_runs_session_sequence_no", "session_id", "sequence_no", unique=True),
         Index("ix_runs_session_status_sequence", "session_id", "status", "sequence_no"),
+        Index("ix_runs_lifecycle_projection", "status", "lifecycle_projected_at", "committed_at"),
+        Index("uq_runs_source_delivery", "source_delivery_id", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -136,17 +128,52 @@ class RunRecord(Base):
     profile_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     run_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    source_delivery_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_delivery_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_json: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     termination_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lifecycle_projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     claimed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     session: Mapped[SessionRecord] = relationship(back_populates="runs")
+
+
+class RunInputInboxRecord(Base):
+    __tablename__ = "run_input_inbox"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN {_ALLOWED_RUN_INPUT_STATUSES!s}",
+            name="ck_run_input_inbox_status",
+        ),
+        CheckConstraint(
+            f"origin IN {_ALLOWED_RUN_INPUT_ORIGINS!s}",
+            name="ck_run_input_inbox_origin",
+        ),
+        UniqueConstraint("run_id", "delivery_key", name="uq_run_input_inbox_delivery"),
+        Index("ix_run_input_inbox_run_status", "run_id", "status", "created_at"),
+        Index("ix_run_input_inbox_sdk_input", "run_id", "sdk_input_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    delivery_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), default="user", server_default="user")
+    status: Mapped[str] = mapped_column(String(32), default="accepted", server_default="accepted")
+    input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    sdk_input_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    enqueue_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SessionAsyncTaskRecord(Base):
@@ -160,11 +187,33 @@ class SessionAsyncTaskRecord(Base):
             f"wake_policy IN {_ALLOWED_ASYNC_TASK_WAKE_POLICIES!s}",
             name="ck_session_async_tasks_wake_policy",
         ),
+        CheckConstraint(
+            "(sdk_owner_scope_id IS NULL AND sdk_idempotency_key IS NULL "
+            "AND sdk_intent_fingerprint IS NULL AND sdk_input_state IS NULL) OR "
+            "(sdk_owner_scope_id IS NOT NULL AND sdk_idempotency_key IS NOT NULL "
+            "AND sdk_intent_fingerprint IS NOT NULL AND sdk_input_state IS NOT NULL)",
+            name="ck_session_async_tasks_sdk_identity_complete",
+        ),
+        CheckConstraint(
+            "sdk_owner_scope_id IS NULL OR sdk_owner_scope_id = parent_session_id",
+            name="ck_session_async_tasks_sdk_owner",
+        ),
+        CheckConstraint(
+            f"sdk_input_state IS NULL OR sdk_input_state IN {_ALLOWED_SUBAGENT_INPUT_STATES!s}",
+            name="ck_session_async_tasks_sdk_input_state",
+        ),
         UniqueConstraint("parent_session_id", "name", name="uq_session_async_tasks_parent_name"),
+        UniqueConstraint(
+            "sdk_owner_scope_id",
+            "sdk_idempotency_key",
+            name="uq_session_async_tasks_sdk_idempotency",
+        ),
         Index("ix_session_async_tasks_parent_status", "parent_session_id", "status"),
         Index("ix_session_async_tasks_task_session", "task_session_id"),
         Index("ix_session_async_tasks_task_run", "task_run_id"),
         Index("ix_session_async_tasks_name", "parent_session_id", "name"),
+        Index("ix_session_async_tasks_delivery", "delivery_status"),
+        Index("ix_session_async_tasks_delivery_run", "delivery_run_id"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -177,6 +226,18 @@ class SessionAsyncTaskRecord(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="queued")
     wake_policy: Mapped[str] = mapped_column(String(32), default="steer_or_run")
+    subagent_spec_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    agent_spec_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    plan_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    plan_descriptor_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    plan_descriptor: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    sdk_owner_scope_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sdk_idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sdk_intent_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sdk_input_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    delivery_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    delivery_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    delivery_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_parts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     result_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -206,6 +267,21 @@ class SessionMemoryStateRecord(Base):
     memory_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class MemoryLifecycleEffectRecord(Base):
+    __tablename__ = "memory_lifecycle_effects"
+    __table_args__ = (Index("ix_memory_lifecycle_effects_source", "source_session_id", "source_sequence_no"),)
+
+    effect_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    source_session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    projection_run_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    effect_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class AgencyFireRecord(Base):

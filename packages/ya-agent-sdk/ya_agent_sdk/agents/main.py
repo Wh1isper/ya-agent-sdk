@@ -16,12 +16,13 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Generic, cast
+from typing import TYPE_CHECKING, Any, Generic, Protocol, cast, runtime_checkable
 
 import jinja2
 from pydantic_ai import (
     Agent,
     AgentRetries,
+    AgentSpec,
     DeferredToolRequests,
     DeferredToolResults,
     ModelSettings,
@@ -29,7 +30,8 @@ from pydantic_ai import (
     UserError,
 )
 from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
-from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
+from pydantic_ai._enqueue import EnqueueContent, PendingMessage, PendingMessagePriority
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
     BaseToolCallPart,
     ModelMessage,
@@ -55,13 +57,10 @@ from typing_extensions import TypeVar
 from ya_agent_environment import Environment
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.agents.compact import create_cache_friendly_compact_filter, create_compact_filter
 from ya_agent_sdk.agents.driver import drive_streamed_run
-from ya_agent_sdk.agents.guards import MessageBusGuardCapability
 from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
-from ya_agent_sdk.agents.retries import OverallRetryBudget
 from ya_agent_sdk.agents.retry_recovery import (
     DEFAULT_STREAM_RESUME_PROMPT,
     close_unreturned_tool_calls,
@@ -69,20 +68,16 @@ from ya_agent_sdk.agents.retry_recovery import (
     history_has_unreturned_tool_calls,
     recover_retry_message_history,
 )
-from ya_agent_sdk.codeact import CodeActCapability, CodeActConfig
 from ya_agent_sdk.context import (
     AgentContext,
     AgentInfo,
     AgentStreamEvent,
-    ModelCapability,
     ModelConfig,
+    ModelFeature,
     ModelWrapper,
     ResumableState,
-    RetryConfig,
     StreamEvent,
     StreamRecoveryPolicy,
-    SubagentWrapper,
-    ToolConfig,
     ToolIdWrapper,
 )
 from ya_agent_sdk.environment.local import LocalEnvironment
@@ -98,21 +93,13 @@ from ya_agent_sdk.events import (
     ToolCallsStartEvent,
     UsageSnapshotEvent,
 )
-from ya_agent_sdk.filters.auto_load_files import process_auto_load_files
-from ya_agent_sdk.filters.cold_start import cold_start_trim
-from ya_agent_sdk.filters.environment_instructions import create_environment_instructions_filter
-from ya_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
-from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
-from ya_agent_sdk.toolsets.core.base import BaseTool, GlobalHooks, Toolset
+from ya_agent_sdk.inputs import EnqueueReceipt, InputOrigin, LogicalRunInputRouter
 from ya_agent_sdk.usage import CostEstimate, coerce_run_usage, estimate_latest_model_message_cost
-from ya_agent_sdk.utils import AgentDepsT, EnvT, add_toolset_instructions
-
-from .capabilities import is_process_history_for
+from ya_agent_sdk.utils import AgentDepsT, EnvT, get_latest_request_usage
 
 if TYPE_CHECKING:
-    from pydantic_ai.toolsets import AbstractToolset
+    pass
 
-    from ya_agent_sdk.subagents import SubagentConfig
 
 logger = get_logger(__name__)
 
@@ -215,40 +202,6 @@ def _restore_task_cancellation(task: asyncio.Task[Any] | None, count: int) -> No
         task.cancel()
 
 
-def _filter_subagent_toolset(
-    toolset: AbstractToolset[Any],
-    excluded_tags: frozenset[str],
-) -> AbstractToolset[Any]:
-    """Return a toolset safe for self forks."""
-    if isinstance(toolset, Toolset):
-        return toolset.for_subagent(excluded_tags=excluded_tags)
-    return toolset
-
-
-def _resolve_agent_retries(
-    retries: int | AgentRetries | None,
-    output_retries: int | None,
-    retry_config: RetryConfig | None = None,
-) -> int | AgentRetries:
-    """Resolve SDK retry configuration and compatibility overrides."""
-    effective_config = retry_config or RetryConfig()
-    default_retries: AgentRetries = {
-        "tools": effective_config.tools,
-        "output": effective_config.output,
-    }
-    if isinstance(retries, dict):
-        resolved: AgentRetries = {**default_retries, **retries}
-    elif retries is None:
-        resolved = default_retries.copy()
-    else:
-        resolved = {"tools": retries, "output": retries}
-
-    if output_retries is not None:
-        resolved["output"] = output_retries
-
-    return resolved
-
-
 # =============================================================================
 # Type Variables
 # =============================================================================
@@ -273,106 +226,132 @@ class LifecycleTracker:
 # =============================================================================
 
 
+@runtime_checkable
+class _RuntimeManagedCapability(Protocol):
+    """Private lifecycle boundary for host-backed capability services."""
+
+    async def close_runtime(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCapabilitySource:
+    """One ordered capability source retained for runtime diagnostics."""
+
+    source_id: str
+    capabilities: tuple[AbstractCapability[Any], ...]
+
+
 @dataclass
 class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
-    """Container for agent runtime components with lifecycle management.
-
-    This dataclass holds all the components needed to run an agent,
-    providing a clean interface for accessing the environment, context,
-    and agent instance. It also acts as an async context manager to
-    manage the lifecycle of env, ctx, and agent.
-
-    Type Parameters:
-        AgentDepsT: The context type (subclass of AgentContext).
-        OutputT: The output type from the agent.
-        EnvT: The environment type (subclass of Environment). Defaults to Environment.
-
-    Attributes:
-        env: The environment instance managing resources.
-        ctx: The agent context for session state.
-        agent: The configured pydantic-ai Agent instance.
-        core_toolset: The core toolset with BaseTool instances.
-
-    Example:
-        runtime = create_agent("openai-chat:gpt-4")
-        async with runtime:
-            result = await runtime.agent.run("Hello", deps=runtime.ctx)
-            print(result.output)
-
-        # Or with external env management:
-        async with env:
-            runtime = create_agent("openai-chat:gpt-4", env=env)
-            async with runtime:  # Only enters ctx and agent
-                result = await runtime.agent.run("Hello", deps=runtime.ctx)
-    """
+    """Unentered runtime plan that constructs the Agent after authorities exist."""
 
     env: EnvT
     ctx: AgentDepsT
-    agent: Agent[AgentDepsT, OutputT]
-    core_toolset: Toolset[AgentDepsT] | None
+    explicit_capabilities: tuple[AbstractCapability[AgentDepsT], ...]
+    agent_builder: Callable[
+        [AgentDepsT, tuple[AbstractCapability[AgentDepsT], ...]],
+        Agent[AgentDepsT, OutputT],
+    ] = field(repr=False)
     lifecycle_extensions: list[BaseLifecycleExtension[AgentDepsT, EnvT]] = field(default_factory=list)
-    _exit_stack: AsyncExitStack | None = field(default=None, repr=False)
-    _reentrant_exit_stacks: list[AsyncExitStack] = field(default_factory=list, init=False, repr=False)
+    _agent: Agent[AgentDepsT, OutputT] | None = field(default=None, init=False, repr=False)
+    _resolved_capabilities: tuple[AbstractCapability[AgentDepsT], ...] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _capability_sources: tuple[ResolvedCapabilitySource, ...] = field(
+        default=(),
+        init=False,
+        repr=False,
+    )
+    _exit_stack: AsyncExitStack | None = field(default=None, init=False, repr=False)
     _enter_count: int = field(default=0, init=False, repr=False)
     _enter_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
+    @property
+    def agent(self) -> Agent[AgentDepsT, OutputT]:
+        """Return the entered Agent; construction before runtime entry is an error."""
+        if self._agent is None:
+            raise RuntimeError("AgentRuntime.agent is unavailable before runtime entry")
+        return self._agent
+
+    @property
+    def capabilities(self) -> tuple[AbstractCapability[AgentDepsT], ...]:
+        """Return resolved top-level capabilities in native source order after entry."""
+        if self._resolved_capabilities is None:
+            raise RuntimeError("AgentRuntime.capabilities are unavailable before runtime entry")
+        return self._resolved_capabilities
+
+    @property
+    def capability_sources(self) -> tuple[ResolvedCapabilitySource, ...]:
+        """Return provenance-preserving source groups after entry."""
+        if self._resolved_capabilities is None:
+            raise RuntimeError("Capability provenance is unavailable before runtime entry")
+        return self._capability_sources
+
     async def __aenter__(self) -> AgentRuntime[AgentDepsT, OutputT, EnvT]:
-        """Enter the runtime, managing env/ctx/agent lifecycles.
-
-        Uses reference counting to support re-entrant usage. Only the first
-        entry actually sets up resources; subsequent entries just increment
-        the counter. This is critical when the runtime is entered by an
-        outer lifecycle manager (e.g. TUI app) and re-entered by an inner
-        caller (e.g. stream_agent's run_main) potentially in a different
-        asyncio task. Without reference counting, the inner entry would
-        overwrite the exit stack, orphaning the original resources and
-        causing anyio cancel scope errors on cleanup (since MCP sessions
-        create anyio task groups bound to the entering task).
-
-        Only enters components that are not already entered (checked via _entered flag).
-        Uses AsyncExitStack to track what was entered, ensuring proper cleanup.
-
-        A lock ensures that if two tasks concurrently enter the runtime, the
-        second one waits until the first has fully initialized resources before
-        returning.
-        """
+        """Enter Environment, restore context authority, then construct the Agent."""
         async with self._enter_lock:
             self._enter_count += 1
             if self._enter_count > 1:
-                stack = AsyncExitStack()
-                await stack.__aenter__()
-                try:
-                    if not self.ctx._entered:
-                        await stack.enter_async_context(self.ctx)
-                except BaseException:
-                    self._enter_count -= 1
-                    await stack.__aexit__(*sys.exc_info())
-                    raise
-                self._reentrant_exit_stacks.append(stack)
                 return self
 
-            # Build exit stack locally first, then commit on success.
-            # If any step fails, we rollback the count and close the partial stack.
             stack = AsyncExitStack()
             await stack.__aenter__()
             try:
-                # Enter in order: env -> ctx -> agent
-                # Only enter if not already entered
                 if not self.env._entered:
                     await stack.enter_async_context(self.env)
                 if not self.ctx._entered:
                     await stack.enter_async_context(self.ctx)
-                # Agent uses reference counting, safe to enter multiple times
-                await stack.enter_async_context(self.agent)
+
+                sources = self._collect_capability_sources()
+                capabilities = tuple(
+                    cast(AbstractCapability[AgentDepsT], capability)
+                    for source in sources
+                    for capability in source.capabilities
+                )
+                _validate_capability_sources(sources)
+                for capability in capabilities:
+                    if isinstance(capability, _RuntimeManagedCapability):
+                        stack.push_async_callback(capability.close_runtime)
+                agent = self.agent_builder(self.ctx, capabilities)
+                await stack.enter_async_context(agent)
             except BaseException:
-                # Rollback: close whatever was partially entered and reset count
-                self._enter_count -= 1
+                self._enter_count = 0
                 await stack.__aexit__(*sys.exc_info())
                 raise
 
-            # Commit - all resources entered successfully
+            self._capability_sources = sources
+            self._resolved_capabilities = capabilities
+            self._agent = agent
             self._exit_stack = stack
             return self
+
+    def _collect_capability_sources(self) -> tuple[ResolvedCapabilitySource, ...]:
+        sources: list[ResolvedCapabilitySource] = []
+        if self.explicit_capabilities:
+            sources.append(
+                ResolvedCapabilitySource(
+                    source_id="explicit",
+                    capabilities=cast(tuple[AbstractCapability[Any], ...], self.explicit_capabilities),
+                )
+            )
+        context_capabilities = tuple(self.ctx.get_capabilities())
+        if context_capabilities:
+            sources.append(
+                ResolvedCapabilitySource(
+                    source_id="context",
+                    capabilities=cast(tuple[AbstractCapability[Any], ...], context_capabilities),
+                )
+            )
+        for contribution in self.env.get_agent_contributions():
+            sources.append(
+                ResolvedCapabilitySource(
+                    source_id=contribution.source_id,
+                    capabilities=tuple(contribution.capabilities),
+                )
+            )
+        return tuple(sources)
 
     async def __aexit__(
         self,
@@ -380,34 +359,52 @@ class AgentRuntime(Generic[AgentDepsT, OutputT, EnvT]):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool | None:
-        """Exit the runtime, cleaning up only what we entered.
-
-        Only the last exit (counter reaches 0) actually tears down resources.
-        This ensures that the outermost context manager (which entered the
-        runtime first) performs cleanup in the same asyncio task where
-        resources were created, preventing cross-task cancel scope errors.
-
-        The lock serializes exit with entry so a concurrent __aenter__
-        cannot start re-initializing resources while teardown is in progress.
-        """
+        """Release the runtime on the final balanced exit."""
         async with self._enter_lock:
             if self._enter_count <= 0:
-                logger.warning("AgentRuntime.__aexit__ called with enter_count=%d (unbalanced)", self._enter_count)
+                logger.warning("AgentRuntime.__aexit__ called without a matching entry")
                 return None
             self._enter_count -= 1
             if self._enter_count > 0:
-                if self._reentrant_exit_stacks:
-                    stack = self._reentrant_exit_stacks.pop()
-                    return await stack.__aexit__(exc_type, exc_val, exc_tb)
                 return None
-            while self._reentrant_exit_stacks:
-                stack = self._reentrant_exit_stacks.pop()
-                await stack.__aexit__(exc_type, exc_val, exc_tb)
-            if self._exit_stack:
-                result = await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
-                self._exit_stack = None
-                return result
+            stack = self._exit_stack
+            self._exit_stack = None
+            self._agent = None
+            self._resolved_capabilities = None
+            self._capability_sources = ()
+            if stack is not None:
+                return await stack.__aexit__(exc_type, exc_val, exc_tb)
             return None
+
+
+def _validate_capability_sources(sources: Sequence[ResolvedCapabilitySource]) -> None:
+    """Validate contribution values and singleton IDs with source diagnostics."""
+    seen_ids: dict[str, tuple[str, type[AbstractCapability[Any]]]] = {}
+    for source in sources:
+        for capability in source.capabilities:
+            if not isinstance(capability, AbstractCapability):
+                raise TypeError(
+                    f"Capability source {source.source_id!r} contributed "
+                    f"{type(capability).__name__}, expected AbstractCapability"
+                )
+
+            def visit(
+                leaf: AbstractCapability[Any],
+                source_id: str = source.source_id,
+            ) -> None:
+                if leaf.id is None:
+                    return
+                previous = seen_ids.get(leaf.id)
+                if previous is not None:
+                    previous_source, previous_type = previous
+                    raise ValueError(
+                        f"Duplicate capability id {leaf.id!r} from {previous_source!r} "
+                        f"({previous_type.__name__}) and {source_id!r} "
+                        f"({type(leaf).__name__})"
+                    )
+                seen_ids[leaf.id] = (source_id, type(leaf))
+
+            capability.apply(visit)
 
 
 # =============================================================================
@@ -438,7 +435,7 @@ def _patch_prompt_cache_key(
     model_extra_headers: dict[str, str] | None,
 ) -> ModelSettings | None:
     """Bind capable model requests to the same session used by their headers."""
-    if not model_cfg.has_capability(ModelCapability.openai_prompt_cache_key) or model_extra_headers is None:
+    if not model_cfg.has_capability(ModelFeature.openai_prompt_cache_key) or model_extra_headers is None:
         return model_settings
     session_id = model_extra_headers.get("x-session-id")
     if session_id is None:
@@ -502,424 +499,131 @@ def _load_system_prompt(
 
 
 def create_agent(
-    model: Model | KnownModelName | str | None,
+    model: Model | KnownModelName | str | None = None,
     *,
-    # --- Model Configuration ---
+    spec: AgentSpec | None = None,
+    custom_capability_types: Sequence[type[AbstractCapability[Any]]] = (),
+    capabilities: Sequence[AbstractCapability[AgentDepsT]] = (),
     model_settings: ModelSettings | None = None,
     model_wrapper: ModelWrapper | None = None,
-    subagent_wrapper: SubagentWrapper | None = None,
     output_type: OutputSpec[OutputT] = str,  # type: ignore[assignment]
-    # --- Context ---
     context_type: type[AgentDepsT] = AgentContext,  # type: ignore[assignment]
     model_cfg: ModelConfig | None = None,
-    retry_config: RetryConfig | None = None,
-    # --- Environment ---
-    env: EnvT | type[EnvT] = LocalEnvironment,  # type: ignore[assignment]
-    env_kwargs: dict[str, Any] | None = None,
-    tool_config: ToolConfig | None = None,
-    extra_context_kwargs: dict[str, Any] | None = None,
+    context_kwargs: Mapping[str, Any] | None = None,
     state: ResumableState | None = None,
-    need_user_approve_tools: Sequence[str] | None = None,
-    need_user_approve_mcps: Sequence[str] | None = None,
-    # --- Toolset ---
-    tools: Sequence[type[BaseTool]] | None = None,
-    toolsets: Sequence[AbstractToolset[Any]] | None = None,
-    pre_hooks: dict[str, Any] | None = None,
-    post_hooks: dict[str, Any] | None = None,
-    global_hooks: GlobalHooks | None = None,
-    toolset_max_retries: int | None = None,
-    toolset_timeout: float | None = None,
-    skip_unavailable_tools: bool = True,
-    # --- Compact Filter ---
-    compact_model: str | Model | None = None,
-    compact_model_settings: ModelSettings | None = None,
-    compact_model_cfg: ModelConfig | None = None,
-    use_cache_friendly_compact_filter: bool = True,
-    # --- Subagent ---
-    subagent_configs: Sequence[SubagentConfig] | None = None,
-    include_builtin_subagents: bool = False,
-    unified_subagents: bool = False,
-    unified_subagent_tool_name: str = "delegate",
-    hide_unified_subagent_tool: bool = False,
-    inherit_hooks: bool = True,
-    # --- Capabilities ---
-    pre_capabilities: Sequence[AbstractCapability[AgentDepsT]] | None = None,
-    capabilities: Sequence[AbstractCapability[AgentDepsT]] | None = None,
-    inherit_pre_capabilities: bool = True,
-    inherit_capabilities: bool = True,
-    codeact: CodeActConfig | None = None,
-    # --- Agent ---
-    agent_tools: Sequence[Any] | None = None,
-    agent_name: str = "main",
+    env: EnvT | type[EnvT] = LocalEnvironment,  # type: ignore[assignment]
+    env_kwargs: Mapping[str, Any] | None = None,
+    agent_name: str | None = None,
+    instructions: str | None = None,
     system_prompt: str | None = None,
-    system_prompt_template_vars: dict[str, Any] | None = None,
+    system_prompt_template_vars: Mapping[str, Any] | None = None,
     retries: int | AgentRetries | None = None,
-    output_retries: int | None = None,
-    overall_retries: int | None = 3,
     defer_model_check: bool = False,
-    end_strategy: str = "exhaustive",
-    lifecycle_extensions: Sequence[BaseLifecycleExtension[AgentDepsT, EnvT]] | None = None,
+    end_strategy: str | None = None,
+    lifecycle_extensions: Sequence[BaseLifecycleExtension[AgentDepsT, EnvT]] = (),
 ) -> AgentRuntime[AgentDepsT, OutputT, EnvT]:
-    """Create and configure an agent runtime.
+    """Create an unentered 2.0 runtime plan.
 
-    This function creates an AgentRuntime containing Environment, AgentContext,
-    and Agent. The runtime should be used as an async context manager to manage
-    the lifecycle of these components.
-
-    Args:
-        model: Model string (e.g., "openai-chat:gpt-4") or Model instance.
-
-        model_settings: Optional model settings for inference configuration.
-        model_wrapper: Optional wrapper for model instrumentation (observability, caching).
-        output_type: Expected output type for the agent. Defaults to str.
-
-        env: Environment instance or class. Defaults to LocalEnvironment.
-        env_kwargs: Keyword arguments for Environment instantiation.
-
-        context_type: AgentContext subclass to use. Defaults to AgentContext.
-        model_cfg: ModelConfig for context window and capability settings.
-        retry_config: SDK-wide retry limits for Pydantic AI tools/output and SDK
-            Toolset, Tool Search, and Tool Proxy wrappers. All five default to 5.
-        tool_config: ToolConfig for API keys and tool-specific settings.
-        extra_context_kwargs: Additional kwargs passed to context_type constructor.
-        state: ResumableState to restore session from. Defaults to None.
-        need_user_approve_tools: Tools requiring user approval before execution.
-        need_user_approve_mcps: MCP servers requiring user approval for all tools.
-
-        tools: Sequence of BaseTool classes to include in the toolset.
-        toolsets: Additional AbstractToolset instances to include.
-
-        subagent_configs: Sequence of SubagentConfig for custom subagents.
-        include_builtin_subagents: If True, include builtin subagents from presets/.
-        unified_subagents: If True, create a single unified tool that can call any
-            subagent by name. If False (default), create separate tools for each subagent.
-        unified_subagent_tool_name: Tool name for unified subagents. Defaults to "delegate".
-        hide_unified_subagent_tool: Hide the unified subagent tool from model-visible tools and instructions while keeping it callable by code.
-        pre_hooks: Dict mapping tool names to pre-hook functions.
-        post_hooks: Dict mapping tool names to post-hook functions.
-        global_hooks: GlobalHooks instance for all tools.
-        toolset_max_retries: Deprecated compatibility override for SDK BaseTool
-            retries. When omitted, uses retry_config.toolset.
-        toolset_timeout: Default timeout for tool execution.
-        skip_unavailable_tools: Skip tools where is_available() returns False.
-
-        compact_model: Model for legacy compact filter. Falls back to AgentSettings.
-        compact_model_settings: Model settings for legacy compact filter.
-        compact_model_cfg: Optional compact-specific ModelConfig override. When
-            None, compact uses the runtime context model_cfg.
-        use_cache_friendly_compact_filter: Select the cache-friendly compact filter by default.
-            Set to False to use the legacy compact agent implementation.
-
-        pre_capabilities: Pydantic AI capabilities that run before SDK history
-            capabilities. Use this for ProcessHistory capabilities that must see
-            the raw message history before compact, handoff, file inspection reminder,
-            and runtime instruction filters.
-        capabilities: Pydantic AI capabilities to attach after SDK history capabilities.
-            Capabilities bundle tools, lifecycle hooks, instructions, and model settings
-            into reusable composable units. See pydantic-ai capabilities documentation.
-        inherit_pre_capabilities: If True (default), subagents inherit the parent's
-            pre_capabilities unless overridden by their own config.pre_capabilities.
-        inherit_capabilities: If True (default), subagents inherit the parent's
-            capabilities unless overridden by their own config.capabilities.
-            If False, subagents get no capabilities unless explicitly set in config.
-        codeact: Optional restricted Python orchestration configuration. When set,
-            installs run_code and run_program around each agent's final tool boundary.
-
-        agent_tools: Additional tools to pass directly to Agent (pydantic-ai Tool objects).
-        agent_name: Name of the agent for logging.
-        system_prompt: Custom system prompt or Jinja2 template string. If None, loads from
-            prompts/main.md. When used with system_prompt_template_vars, the string is
-            rendered as a Jinja2 template, supporting conditionals and default values.
-        system_prompt_template_vars: Variables for Jinja2 template rendering. Works with
-            both custom system_prompt strings and the default template file.
-        retries: Compatibility override for Pydantic AI tool and output retries.
-            Int sets both budgets; AgentRetries can set them independently. When
-            omitted, uses retry_config.tools and retry_config.output (both default 5).
-            Tool retries are tracked per tool name and reset after that tool succeeds;
-            output retries are cumulative within one Pydantic AI run and do not reset
-            after an intervening successful tool call.
-        output_retries: Deprecated compatibility override for output retries.
-        overall_retries: Cumulative model correction retry budget for one run. Unlike
-            per-tool retries, it never resets after a successful tool call. Counts retry
-            prompts from tools, output validation, and capability hooks, but not transport
-            retries or enqueued steering. Defaults to 3; set to None to disable.
-        defer_model_check: Defer model validation. Defaults to False.
-        end_strategy: Strategy for ending agent run. Defaults to "exhaustive".
-    Returns:
-        AgentRuntime containing env, ctx, and agent. Use as async context manager.
-
-    Example:
-        Basic usage::
-
-            runtime = create_agent("openai-chat:gpt-4")
-            async with runtime:
-                result = await runtime.agent.run("Hello", deps=runtime.ctx)
-                print(result.output)
-
-        With custom tools and configuration::
-
-            runtime = create_agent(
-                "anthropic:claude-3-5-sonnet",
-                tools=[ReadFileTool, WriteFileTool],
-                model_cfg=ModelConfig(context_window=200000),
-                global_hooks=GlobalHooks(pre=my_pre_hook),
-            )
-            async with runtime:
-                result = await runtime.agent.run("Read config.json", deps=runtime.ctx)
-
-        With external environment management::
-
-            async with SandboxEnvironment(
-                mounts=[VirtualMount(Path("."), Path("/workspace"))],
-                image="python:3.11",
-            ) as sandbox_env:
-                runtime = create_agent("openai-chat:gpt-4", env=sandbox_env)
-
-        With templated system prompt::
-
-            runtime = create_agent(
-                "openai-chat:gpt-4",
-                system_prompt="You are a {{ role }}. {{ extra_instructions | default('') }}",
-                system_prompt_template_vars={"role": "helpful assistant"},
-            )
-                async with runtime:  # Only enters ctx and agent
-                    result = await runtime.agent.run("Run tests", deps=runtime.ctx)
+    ``capabilities`` is the sole public behavior-composition surface. The
+    Pydantic AI Agent is intentionally unavailable until runtime entry, after
+    the Environment has restored its resources and all provenance-preserving
+    contribution groups can be collected.
     """
-    if overall_retries is not None and overall_retries < 0:
-        raise UserError("overall_retries must be non-negative or None")
+    if isinstance(retries, int) and retries < 0:
+        raise UserError("retries must be non-negative or None")
 
-    # --- Environment Setup ---
-    actual_env = env if isinstance(env, Environment) else env(**(env_kwargs or {}))
-    logger.debug("Environment created: %s", type(actual_env).__name__)
-
-    # --- Build Configs ---
-    effective_model_cfg = model_cfg or ModelConfig()
-    effective_retry_config = retry_config or RetryConfig()
-    effective_tool_config = tool_config or ToolConfig()
-    if toolset_max_retries is not None and toolset_max_retries < 0:
-        raise UserError("toolset_max_retries must be non-negative or None")
-
-    # --- Context Setup ---
+    actual_env = env if isinstance(env, Environment) else env(**dict(env_kwargs or {}))
+    extensions = list(lifecycle_extensions)
+    effective_agent_name = agent_name or (spec.name if spec is not None else None) or "main"
+    effective_context_kwargs = dict(context_kwargs or {})
     ctx = context_type(
         env=actual_env,
-        model_cfg=effective_model_cfg,
-        retry_config=effective_retry_config,
-        tool_config=effective_tool_config,
+        model_cfg=model_cfg or ModelConfig(),
         model_wrapper=model_wrapper,
-        subagent_wrapper=subagent_wrapper,
-        need_user_approve_tools=list(need_user_approve_tools) if need_user_approve_tools else [],
-        need_user_approve_mcps=list(need_user_approve_mcps) if need_user_approve_mcps else [],
-        **(extra_context_kwargs or {}),
+        **effective_context_kwargs,
     ).with_state(state)
-    logger.debug("Context created: %s (run_id=%s)", type(ctx).__name__, ctx.run_id)
-
-    model_extra_headers = ctx.get_model_extra_headers() if _model_uses_context_headers(model) else None
-    effective_model_settings = _patch_prompt_cache_key(effective_model_cfg, model_settings, model_extra_headers)
-
-    # --- Capabilities ---
-    # Combine user capabilities, context history capabilities, and built-in ProcessHistory capabilities.
-    # Runtime instructions run after compact so restored histories receive fresh runtime context.
-    context_history_capabilities = [
-        capability
-        for capability in ctx.get_history_capabilities()
-        if not is_process_history_for(capability, inject_runtime_instructions)
-    ]
-    compact_filter = (
-        create_cache_friendly_compact_filter(
-            model_cfg=compact_model_cfg,
-        )
-        if use_cache_friendly_compact_filter
-        else create_compact_filter(
-            model=compact_model,
-            model_settings=compact_model_settings,
-            model_cfg=compact_model_cfg,
-            main_model=model,
-            main_model_settings=model_settings,
-        )
+    ctx.lifecycle_extensions = extensions
+    effective_system_prompt = _load_system_prompt(
+        system_prompt,
+        dict(system_prompt_template_vars or {}),
     )
 
-    user_pre_capabilities = list(pre_capabilities or [])
-    user_capabilities = list(capabilities or [])
-    sdk_history_capabilities: list[AbstractCapability[AgentDepsT]] = [
-        *cast(list[AbstractCapability[AgentDepsT]], context_history_capabilities),
-        ProcessHistory(compact_filter),
-        ProcessHistory(cold_start_trim),
-        ProcessHistory(create_environment_instructions_filter(actual_env)),
-        ProcessHistory(process_auto_load_files),
-        ProcessHistory(inject_runtime_instructions),
-    ]
-    codeact_capabilities: list[AbstractCapability[AgentDepsT]] = (
-        [cast(AbstractCapability[AgentDepsT], CodeActCapability(config=codeact))] if codeact is not None else []
-    )
-    retry_capabilities: list[AbstractCapability[AgentDepsT]] = (
-        [cast(AbstractCapability[AgentDepsT], OverallRetryBudget(max_retries=overall_retries))]
-        if overall_retries is not None
-        else []
-    )
-    guard_capabilities = [cast(AbstractCapability[AgentDepsT], MessageBusGuardCapability())]
-    internal_subagent_capabilities: list[AbstractCapability[AgentDepsT]] = [
-        *retry_capabilities,
-        *guard_capabilities,
-        *codeact_capabilities,
-        *sdk_history_capabilities,
-    ]
-    all_capabilities: list[AbstractCapability[AgentDepsT]] = [
-        *retry_capabilities,
-        *guard_capabilities,
-        *codeact_capabilities,
-        *user_pre_capabilities,
-        *sdk_history_capabilities,
-        *user_capabilities,
-    ]
-
-    # --- Toolset Setup ---
-    all_toolsets: list[AbstractToolset[Any]] = []
-    core_toolset: Toolset[AgentDepsT] | None = None
-
-    # Create Toolset from BaseTool classes if provided
-    tools = tools or []
-    logger.debug("Creating core toolset with %d tools", len(tools))
-    core_toolset = Toolset(
-        tools=tools,
-        pre_hooks=pre_hooks,
-        post_hooks=post_hooks,
-        global_hooks=global_hooks,
-        max_retries=toolset_max_retries,
-        timeout=toolset_timeout,
-        skip_unavailable=skip_unavailable_tools,
-        toolset_id="core",
-    )
-
-    # Add subagent tools if requested
-    if subagent_configs or include_builtin_subagents:
-        from ya_agent_sdk.subagents import get_builtin_subagent_configs
-
-        all_subagent_configs = list(subagent_configs) if subagent_configs else []
-        if include_builtin_subagents:
-            all_subagent_configs.extend(get_builtin_subagent_configs().values())
-
-        if all_subagent_configs:
-            logger.debug("Adding %d subagent configs to toolset", len(all_subagent_configs))
-            # Resolve user capabilities for subagents. SDK history capabilities are passed
-            # separately so subagent config capabilities can override parent user capabilities
-            # while preserving the internal ProcessHistory pipeline.
-            subagent_pre_capabilities: list[AbstractCapability[Any]] | None = (
-                list(user_pre_capabilities) if inherit_pre_capabilities else None
-            )
-            subagent_capabilities: list[AbstractCapability[Any]] | None = (
-                list(user_capabilities) if inherit_capabilities else None
-            )
-            core_toolset = core_toolset._with_subagents(
-                all_subagent_configs,
-                model=model,
-                model_settings=model_settings,
-                model_cfg=effective_model_cfg,
-                retries=_resolve_agent_retries(retries, output_retries, effective_retry_config),
-                unified=unified_subagents,
-                unified_tool_name=unified_subagent_tool_name,
-                hidden=hide_unified_subagent_tool,
-                inherit_hooks=inherit_hooks,
-                pre_capabilities=subagent_pre_capabilities,
-                capabilities=subagent_capabilities,
-                sdk_capabilities=cast(list[AbstractCapability[Any]], internal_subagent_capabilities),
-            )
-
-    # Auto-detect context management tools from registered tools
-    ctx.context_manage_tool_names = [t.name for t in tools if t.is_context_manage_tool]
-
-    all_toolsets.append(core_toolset)
-
-    # Add user-provided toolsets
-    if toolsets:
-        all_toolsets.extend(toolsets)
-
-    # Add environment toolsets (includes both env._toolsets and resource toolsets)
-    all_toolsets.extend(actual_env.get_toolsets())
-
-    # --- System Prompt ---
-    effective_system_prompt = _load_system_prompt(system_prompt, system_prompt_template_vars)
-
-    # --- Create Model with Wrapper ---
-    base_model = infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else model
-    effective_model: Model | None = base_model
-    if base_model is not None and ctx.model_wrapper is not None:
-        wrapper_metadata = ctx.get_wrapper_metadata()
-        wrapped = ctx.model_wrapper(base_model, agent_name, wrapper_metadata)
-        if inspect.isawaitable(wrapped):
-            raise TypeError(
-                "Async model_wrapper cannot be used in create_agent (sync context). "
-                "Use a sync wrapper or wrap the model manually after agent creation."
-            )
-        effective_model = wrapped
-
-    # --- Create Agent ---
-    logger.debug("Creating agent with model=%s, output_type=%s", model, output_type)
-    agent_retries = _resolve_agent_retries(retries, output_retries, effective_retry_config)
-
-    delegation_tags = frozenset({"delegation"})
-    if core_toolset.has_tags(delegation_tags):
-        from ya_agent_sdk.subagents.agent import SubagentAgent
-
-        self_fork_toolsets = [_filter_subagent_toolset(toolset, delegation_tags) for toolset in all_toolsets]
-        self_fork_base_model = (
-            infer_model(model, extra_headers=model_extra_headers) if isinstance(model, str) else base_model
+    def build_agent(
+        runtime_ctx: AgentDepsT,
+        resolved_capabilities: tuple[AbstractCapability[AgentDepsT], ...],
+    ) -> Agent[AgentDepsT, OutputT]:
+        selected_model = model if model is not None else (spec.model if spec is not None else None)
+        model_extra_headers = (
+            runtime_ctx.get_model_extra_headers() if _model_uses_context_headers(selected_model) else None
         )
-        self_fork_agent: Agent[AgentContext, str] = add_toolset_instructions(
-            SubagentAgent(
-                model=self_fork_base_model,
-                system_prompt=effective_system_prompt,
-                model_settings=effective_model_settings,
-                deps_type=AgentContext,
-                output_type=str,
-                tools=agent_tools or (),
-                toolsets=self_fork_toolsets if self_fork_toolsets else None,
-                capabilities=[
-                    *cast(list[AbstractCapability[Any]], all_capabilities),
-                    ProcessHistory(create_system_prompt_filter(system_prompt=effective_system_prompt)),
-                ],
-                retries=agent_retries,
-                defer_model_check=defer_model_check,
-                end_strategy=end_strategy,  # type: ignore[arg-type]
-                name="self",
-            ),
-            self_fork_toolsets,
+        selected_model_settings = (
+            model_settings
+            if model_settings is not None
+            else cast(ModelSettings | None, spec.model_settings if spec is not None else None)
         )
-        ctx.self_fork_agent = self_fork_agent
+        effective_model_settings = _patch_prompt_cache_key(
+            runtime_ctx.model_cfg,
+            selected_model_settings,
+            model_extra_headers,
+        )
+        base_model = (
+            infer_model(selected_model, extra_headers=model_extra_headers)
+            if isinstance(selected_model, str)
+            else selected_model
+        )
+        effective_model: Model | None = base_model
+        if base_model is not None and runtime_ctx.model_wrapper is not None:
+            wrapped = runtime_ctx.model_wrapper(
+                base_model,
+                effective_agent_name,
+                runtime_ctx.get_wrapper_metadata(),
+            )
+            if inspect.isawaitable(wrapped):
+                raise TypeError(
+                    "Async model_wrapper is not supported during runtime construction; "
+                    "use a synchronous wrapper or provide a wrapped Model instance"
+                )
+            effective_model = wrapped
 
-    agent: Agent[AgentDepsT, OutputT] = add_toolset_instructions(
-        Agent(
+        if spec is not None:
+            return cast(
+                Agent[AgentDepsT, OutputT],
+                Agent.from_spec(
+                    spec,
+                    deps_type=context_type,
+                    custom_capability_types=custom_capability_types,
+                    model=effective_model,
+                    output_type=output_type,
+                    instructions=instructions,
+                    system_prompt=effective_system_prompt,
+                    name=effective_agent_name,
+                    model_settings=effective_model_settings,
+                    retries=retries,
+                    defer_model_check=defer_model_check,
+                    end_strategy=cast(Any, end_strategy),
+                    capabilities=resolved_capabilities,
+                ),
+            )
+        return Agent(
             model=effective_model,
+            instructions=instructions,
             system_prompt=effective_system_prompt,
             model_settings=effective_model_settings,
             deps_type=context_type,
             output_type=output_type,
-            tools=agent_tools or (),
-            toolsets=all_toolsets if all_toolsets else None,
-            capabilities=[
-                *all_capabilities,
-                ProcessHistory(create_system_prompt_filter(system_prompt=effective_system_prompt)),
-            ],
-            retries=agent_retries,
+            capabilities=resolved_capabilities,
+            retries=retries,
             defer_model_check=defer_model_check,
-            end_strategy=end_strategy,  # type: ignore[arg-type]
-            name=agent_name,
-        ),
-        all_toolsets,
-    )
+            end_strategy=cast(Any, end_strategy or "graceful"),
+            name=effective_agent_name,
+        )
 
-    logger.debug(
-        "Agent created: toolsets=%d, capabilities=%d",
-        len(all_toolsets) if all_toolsets else 0,
-        len(all_capabilities),
-    )
-    runtime_extensions = list(lifecycle_extensions or [])
-    ctx.lifecycle_extensions = runtime_extensions
-    return AgentRuntime[AgentDepsT, OutputT, EnvT](
+    return AgentRuntime(
         env=actual_env,
         ctx=ctx,
-        agent=agent,
-        core_toolset=core_toolset,
-        lifecycle_extensions=runtime_extensions,
+        explicit_capabilities=tuple(capabilities),
+        agent_builder=build_agent,
+        lifecycle_extensions=extensions,
     )
 
 
@@ -1193,6 +897,7 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
     _partial_text: PartialTextAccumulator = field(default_factory=PartialTextAccumulator)
     _tool_id_wrapper: ToolIdWrapper | None = None
+    _input_router: LogicalRunInputRouter | None = None
     run: AgentRun[AgentDepsT, OutputT] | None = None
     exception: BaseException | None = None
     _interrupted: bool = False
@@ -1231,6 +936,23 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
         sdk_metadata.setdefault("reason", "stream_interrupted")
         metadata["ya_agent_sdk"] = sdk_metadata
         response.metadata = metadata
+
+    async def enqueue(
+        self,
+        *content: EnqueueContent,
+        priority: PendingMessagePriority = "asap",
+        origin: InputOrigin = InputOrigin.user,
+        input_id: str | None = None,
+    ) -> EnqueueReceipt:
+        """Accept structured input for this logical run through native enqueue."""
+        if self._input_router is None:
+            raise RuntimeError("This stream has no active logical input router")
+        return await self._input_router.enqueue(
+            *content,
+            priority=priority,
+            origin=origin,
+            input_id=input_id,
+        )
 
     def interrupt(self) -> None:
         """Interrupt the stream immediately, cancelling all running tasks.
@@ -1435,7 +1157,12 @@ async def stream_agent(  # noqa: C901
         msg = "Cannot specify both 'user_prompt' and 'user_prompt_factory'. Use one or the other."
         raise UserError(msg)
 
-    # Extract agent from runtime
+    # Enter an unentered runtime in the caller task so Environment restoration
+    # and capability resolution complete before the Agent is accessed. The
+    # producer task owns only its fresh per-run context.
+    entered_runtime_here = runtime._enter_count == 0
+    if entered_runtime_here:
+        await runtime.__aenter__()
     agent = runtime.agent
     extensions = list(runtime.lifecycle_extensions)
 
@@ -1444,10 +1171,15 @@ async def stream_agent(  # noqa: C901
     # leaking between consecutive runs, which causes "was created in a
     # different Context" errors when pydantic-ai's cleanup runs in the
     # wrong contextvars.Context (see pydantic-ai issue #674).
-    fresh_ctx = runtime.ctx.prepare_new_run()
+    fresh_ctx = runtime.ctx.prepare_new_run(
+        resume_logical_run=deferred_tool_results is not None,
+    )
     runtime.ctx = fresh_ctx
     ctx = fresh_ctx
     ctx.lifecycle_extensions = extensions
+    input_router = LogicalRunInputRouter(ctx.run_input_ledger)
+    ctx.input_router = input_router
+    input_registration = ctx.active_run_registry.register(input_router)
 
     def configure_stream_recovery_policy() -> StreamRecoveryPolicy:
         effective_resume_on_error = ctx.model_cfg.stream_resume_on_error if resume_on_error is None else resume_on_error
@@ -1531,6 +1263,7 @@ async def stream_agent(  # noqa: C901
         if pre_event_hook:
             await pre_event_hook(event_ctx)
 
+        input_router.observe_event(event)
         wrapped_event = ctx.tool_id_wrapper.wrap_event(event)
         partial_text.observe(wrapped_event)
         await output_queue.put(
@@ -1649,11 +1382,14 @@ async def stream_agent(  # noqa: C901
             source="main_model_request_cost",
         )
 
+        latest_request_usage = get_latest_request_usage(run.all_messages())
         await emit_lifecycle_event(
             ModelRequestCompleteEvent(
                 event_id=ctx.run_id,
                 loop_index=current_loop,
                 duration_seconds=time.perf_counter() - node_start_time,
+                context_tokens=(latest_request_usage.total_tokens if latest_request_usage is not None else 0),
+                context_window_size=ctx.model_cfg.context_window or 0,
             )
         )
         snapshot = ctx.build_usage_snapshot()
@@ -1736,34 +1472,38 @@ async def stream_agent(  # noqa: C901
             deferred_tool_results=effective_deferred_tool_results,
         ) as run:
             streamer.run = run
-
-            start_ctx = AgentStartContext(
-                runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run
-            )
-            await run_extension_method(extensions, "on_agent_start", start_ctx, logger=logger)
-            if on_agent_start:
-                await on_agent_start(start_ctx)
-
-            await process_all_nodes(run, attempt_index=attempt_index)
-
-            complete_ctx = AgentCompleteContext(
-                runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run
-            )
-            await run_extension_method(extensions, "on_agent_complete", complete_ctx, logger=logger)
-            if on_agent_complete:
-                await on_agent_complete(complete_ctx)
-
-            await ctx.emit_usage_snapshot_event(source="session_end")
-
-            await emit_lifecycle_event(
-                AgentExecutionCompleteEvent(
-                    event_id=ctx.run_id,
-                    total_loops=tracker.loop_index,
-                    total_duration_seconds=time.perf_counter() - stream_start_time,
-                    final_message_count=len(run.all_messages()),
-                    attempt_index=attempt_index,
+            native_attempt_id = f"{ctx.run_id}:{attempt_index}"
+            await input_router.bind(run, native_attempt_id=native_attempt_id)
+            try:
+                start_ctx = AgentStartContext(
+                    runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run
                 )
-            )
+                await run_extension_method(extensions, "on_agent_start", start_ctx, logger=logger)
+                if on_agent_start:
+                    await on_agent_start(start_ctx)
+
+                await process_all_nodes(run, attempt_index=attempt_index)
+
+                complete_ctx = AgentCompleteContext(
+                    runtime=runtime, agent_info=main_agent_info, output_queue=output_queue, run=run
+                )
+                await run_extension_method(extensions, "on_agent_complete", complete_ctx, logger=logger)
+                if on_agent_complete:
+                    await on_agent_complete(complete_ctx)
+
+                await ctx.emit_usage_snapshot_event(source="session_end")
+
+                await emit_lifecycle_event(
+                    AgentExecutionCompleteEvent(
+                        event_id=ctx.run_id,
+                        total_loops=tracker.loop_index,
+                        total_duration_seconds=time.perf_counter() - stream_start_time,
+                        final_message_count=len(run.all_messages()),
+                        attempt_index=attempt_index,
+                    )
+                )
+            finally:
+                input_router.unbind(native_attempt_id=native_attempt_id)
 
     failure_event_emitted = False
 
@@ -1953,9 +1693,21 @@ async def stream_agent(  # noqa: C901
             await on_runtime_ready(ready_ctx)
         effective_user_prompt = ready_ctx.user_prompt
         effective_deferred_tool_results = ready_ctx.deferred_tool_results
-        # Persist the canonical prompt actually passed to Agent.iter(), including
-        # any host or lifecycle hook edits, so compact and handoff restore it.
+        # Persist the canonical prompt actually passed to Agent.iter(). The
+        # structured ledger, rather than a text-only steering side channel, is
+        # authoritative for compaction and continuation retention.
         ctx.user_prompts = effective_user_prompt
+        if (
+            effective_deferred_tool_results is None
+            and effective_user_prompt is not None
+            and not ctx.run_input_ledger.records
+        ):
+            initial_content = (
+                (effective_user_prompt,) if isinstance(effective_user_prompt, str) else tuple(effective_user_prompt)
+            )
+            initial = PendingMessage.from_content(*initial_content, priority="asap")
+            if initial is not None:
+                ctx.run_input_ledger.record_initial(initial.messages)
         return effective_user_prompt, effective_deferred_tool_results
 
     async def run_main() -> None:
@@ -2030,7 +1782,7 @@ async def stream_agent(  # noqa: C901
                         agent_info = (
                             main_agent_info
                             if agent_id == main_agent_info.agent_id
-                            else ctx.agent_registry.get(agent_id)
+                            else ctx.agent_stream_info.get(agent_id)
                         )
                         await output_queue.put(
                             StreamEvent(
@@ -2065,8 +1817,10 @@ async def stream_agent(  # noqa: C901
         _tasks=[main_task, poll_task],
         _partial_text=partial_text,
         _tool_id_wrapper=ctx.tool_id_wrapper,
+        _input_router=input_router,
     )
 
+    deferred_suspension = False
     try:
         yield streamer
     except Exception as e:
@@ -2076,6 +1830,7 @@ async def stream_agent(  # noqa: C901
             raise  # Re-raise so caller can handle it
     else:
         if (run := streamer.run) and (result := run.result) and isinstance(result.output, DeferredToolRequests):
+            deferred_suspension = True
             result.output = ctx.tool_id_wrapper.wrap_deferred_tool_requests(result.output)
     finally:
         # Cancel all running tasks to initiate clean shutdown.
@@ -2152,4 +1907,12 @@ async def stream_agent(  # noqa: C901
                 if still_running or not isinstance(gather_interrupt, asyncio.CancelledError):
                     raise gather_interrupt
         finally:
+            input_router.close(
+                reason="logical run completed",
+                reject_unresolved=not deferred_suspension,
+            )
+            ctx.active_run_registry.unregister(input_registration)
+            ctx.input_router = None
+            if entered_runtime_here:
+                await runtime.__aexit__(None, None, None)
             _restore_task_cancellation(current_task, cleared_cancellations)

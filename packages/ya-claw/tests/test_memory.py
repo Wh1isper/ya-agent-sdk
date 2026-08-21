@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -25,7 +26,13 @@ from ya_claw.memory.lifecycle import (
 )
 from ya_claw.memory.store import WorkspaceMemoryStore
 from ya_claw.memory.summary_prompt import MEMORY_SUMMARY_SYSTEM_PROMPT
-from ya_claw.orm.tables import RunRecord, SessionMemoryStateRecord, SessionRecord
+from ya_claw.orm.tables import (
+    MemoryLifecycleEffectRecord,
+    ProfileRecord,
+    RunRecord,
+    SessionMemoryStateRecord,
+    SessionRecord,
+)
 from ya_claw.runtime_state import create_runtime_state
 from ya_claw.workspace import LocalWorkspaceProvider
 
@@ -139,9 +146,17 @@ async def test_memory_lifecycle_queues_extract_after_turn_threshold(
         profile_name="general",
         claw_metadata={},
     )
+    repeated = await lifecycle.on_run_committed(
+        source_session_id="session-1",
+        source_run_id="run-2",
+        source_sequence_no=2,
+        profile_name="general",
+        claw_metadata={},
+    )
 
     state = await db_session.get(SessionMemoryStateRecord, "session-1")
     assert first == []
+    assert repeated == []
     assert len(second) == 1
     assert submitted == second
     assert isinstance(state, SessionMemoryStateRecord)
@@ -156,6 +171,46 @@ async def test_memory_lifecycle_queues_extract_after_turn_threshold(
     assert memory_run.run_metadata["memory"]["source_run_ids"] == ["run-2"]
     await db_session.refresh(state)
     assert state.turns_since_extract == 0
+
+
+async def test_memory_lifecycle_deduplicates_by_effect_identity(
+    db_session: AsyncSession,
+    db_engine: AsyncEngine,
+    settings: ClawSettings,
+) -> None:
+    session = SessionRecord(id="session-1", profile_name="general", session_metadata={})
+    run = _completed_run("run-1", "session-1", 1)
+    db_session.add_all([session, run])
+    await db_session.commit()
+    lifecycle = MemoryLifecycle(
+        settings=settings.model_copy(update={"memory_extract_every_turns": 100}),
+        session_factory=create_session_factory(db_engine),
+        runtime_state=create_runtime_state(),
+    )
+
+    async def apply(effect_id: str, effect_kind: str) -> list[str]:
+        return await lifecycle.on_run_committed(
+            source_session_id="session-1",
+            source_run_id="run-1",
+            source_sequence_no=1,
+            profile_name="general",
+            claw_metadata={},
+            effect_id=effect_id,
+            effect_kind=effect_kind,
+        )
+
+    await asyncio.gather(
+        apply("effect-1", "conversation_run"),
+        apply("effect-1", "conversation_run"),
+    )
+    await apply("effect-2", "agency_capture")
+
+    state = await db_session.get(SessionMemoryStateRecord, "session-1")
+    assert isinstance(state, SessionMemoryStateRecord)
+    await db_session.refresh(state)
+    assert state.turns_since_extract == 2
+    assert isinstance(await db_session.get(MemoryLifecycleEffectRecord, "effect-1"), MemoryLifecycleEffectRecord)
+    assert isinstance(await db_session.get(MemoryLifecycleEffectRecord, "effect-2"), MemoryLifecycleEffectRecord)
 
 
 async def test_memory_lifecycle_skips_automated_task_runs(
@@ -246,8 +301,10 @@ async def test_memory_lifecycle_triggers_summary_after_extract_count(
         submit_run=lambda run_id: not submitted.append(run_id),
     )
     queued = await lifecycle.on_memory_run_committed(memory_run_id="memory-run-1")
+    repeated = await lifecycle.on_memory_run_committed(memory_run_id="memory-run-1")
 
     await db_session.refresh(state)
+    assert repeated == []
     assert state.extract_count == 1
     assert state.extracts_since_summary == 2
     assert len(queued) == 1
@@ -902,6 +959,18 @@ async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], 
 async def db_session(db_engine: AsyncEngine) -> AsyncSession:
     session_factory = create_session_factory(db_engine)
     async with session_factory() as session:
+        session.add(
+            ProfileRecord(
+                name="general",
+                agent_spec={"model": "test"},
+                host_config={},
+                subagent_specs=[],
+                enabled=True,
+                source_type="test",
+                source_version="1",
+            )
+        )
+        await session.commit()
         yield session
 
 

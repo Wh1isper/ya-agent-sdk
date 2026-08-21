@@ -1057,48 +1057,48 @@ def test_model_cfg_presets_structure() -> None:
 
 def test_model_cfg_capabilities() -> None:
     """Test that ModelConfig presets have correct capabilities."""
-    from ya_agent_sdk.context import ModelCapability
+    from ya_agent_sdk.context import ModelFeature
 
     # Claude: vision + document, no video
     cfg_claude = get_model_cfg("claude_200k")
-    assert ModelCapability.vision in cfg_claude["capabilities"]
-    assert ModelCapability.document_understanding in cfg_claude["capabilities"]
-    assert ModelCapability.video_understanding not in cfg_claude["capabilities"]
+    assert ModelFeature.vision in cfg_claude["capabilities"]
+    assert ModelFeature.document_understanding in cfg_claude["capabilities"]
+    assert ModelFeature.video_understanding not in cfg_claude["capabilities"]
 
     # GPT-5: vision and OpenAI prompt cache keys, no video
     cfg_gpt = get_model_cfg("gpt5_270k")
-    assert ModelCapability.vision in cfg_gpt["capabilities"]
-    assert ModelCapability.openai_prompt_cache_key in cfg_gpt["capabilities"]
-    assert ModelCapability.video_understanding not in cfg_gpt["capabilities"]
+    assert ModelFeature.vision in cfg_gpt["capabilities"]
+    assert ModelFeature.openai_prompt_cache_key in cfg_gpt["capabilities"]
+    assert ModelFeature.video_understanding not in cfg_gpt["capabilities"]
 
     cfg_gpt_350k = get_model_cfg("gpt5_350k")
-    assert ModelCapability.vision in cfg_gpt_350k["capabilities"]
-    assert ModelCapability.openai_prompt_cache_key in cfg_gpt_350k["capabilities"]
-    assert ModelCapability.video_understanding not in cfg_gpt_350k["capabilities"]
+    assert ModelFeature.vision in cfg_gpt_350k["capabilities"]
+    assert ModelFeature.openai_prompt_cache_key in cfg_gpt_350k["capabilities"]
+    assert ModelFeature.video_understanding not in cfg_gpt_350k["capabilities"]
 
     cfg_gpt_1m = get_model_cfg("gpt5_1m")
-    assert ModelCapability.vision in cfg_gpt_1m["capabilities"]
-    assert ModelCapability.openai_prompt_cache_key in cfg_gpt_1m["capabilities"]
-    assert ModelCapability.video_understanding not in cfg_gpt_1m["capabilities"]
+    assert ModelFeature.vision in cfg_gpt_1m["capabilities"]
+    assert ModelFeature.openai_prompt_cache_key in cfg_gpt_1m["capabilities"]
+    assert ModelFeature.video_understanding not in cfg_gpt_1m["capabilities"]
 
     # DeepSeek V4: reasoning round-trip required
     cfg_deepseek_400k = get_model_cfg("deepseek_v4_400k")
-    assert cfg_deepseek_400k["capabilities"] == {ModelCapability.reasoning_required}
+    assert cfg_deepseek_400k["capabilities"] == {ModelFeature.reasoning_required}
 
     cfg_deepseek_v4 = get_model_cfg("deepseek_v4_1m")
-    assert cfg_deepseek_v4["capabilities"] == {ModelCapability.reasoning_required}
+    assert cfg_deepseek_v4["capabilities"] == {ModelFeature.reasoning_required}
 
     # MiMo V2.5: reasoning round-trip required and foreign thinking stripped
     cfg_mimo = get_model_cfg("mimo_v2_5")
     assert cfg_mimo["capabilities"] == {
-        ModelCapability.reasoning_required,
-        ModelCapability.reasoning_foreign_incompatible,
+        ModelFeature.reasoning_required,
+        ModelFeature.reasoning_foreign_incompatible,
     }
 
     cfg_mimo_pro = get_model_cfg("mimo_v2_5_pro")
     assert cfg_mimo_pro["capabilities"] == {
-        ModelCapability.reasoning_required,
-        ModelCapability.reasoning_foreign_incompatible,
+        ModelFeature.reasoning_required,
+        ModelFeature.reasoning_foreign_incompatible,
     }
 
     # Grok 4.5: vision, no video
@@ -1106,14 +1106,14 @@ def test_model_cfg_capabilities() -> None:
     assert cfg_grok["context_window"] == 500_000
     assert cfg_grok["max_images"] == 20
     assert cfg_grok["max_videos"] == 0
-    assert cfg_grok["capabilities"] == {ModelCapability.vision}
+    assert cfg_grok["capabilities"] == {ModelFeature.vision}
 
     # Gemini: vision + video + document
     cfg_gemini = get_model_cfg("gemini_1m")
-    assert ModelCapability.vision in cfg_gemini["capabilities"]
-    assert ModelCapability.video_understanding in cfg_gemini["capabilities"]
-    assert ModelCapability.youtube_url in cfg_gemini["capabilities"]
-    assert ModelCapability.document_understanding in cfg_gemini["capabilities"]
+    assert ModelFeature.vision in cfg_gemini["capabilities"]
+    assert ModelFeature.video_understanding in cfg_gemini["capabilities"]
+    assert ModelFeature.youtube_url in cfg_gemini["capabilities"]
+    assert ModelFeature.document_understanding in cfg_gemini["capabilities"]
 
 
 def test_get_model_cfg_by_enum() -> None:

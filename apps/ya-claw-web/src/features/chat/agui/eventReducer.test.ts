@@ -30,7 +30,7 @@ describe('AGUI event reducer', () => {
 
   it('renders task snapshots from custom events', () => {
     const timeline = buildTimeline([
-      custom('ya_agent.task_event', {
+      custom('ya_agent.task', {
         tasks: [
           { id: '1', subject: 'Design', status: 'completed' },
           {
@@ -51,8 +51,8 @@ describe('AGUI event reducer', () => {
 
   it('renders context usage custom events', () => {
     const timeline = buildTimeline([
-      custom('ya_agent.context_update_event', {
-        total_tokens: 180000,
+      custom('ya_agent.model_request_complete', {
+        context_tokens: 180000,
         context_window_size: 270000,
       }),
     ])
@@ -62,6 +62,27 @@ describe('AGUI event reducer', () => {
       totalTokens: 180000,
       contextWindowSize: 270000,
     })
+  })
+
+  it('renders canonical subagent lifecycle events', () => {
+    const timeline = buildTimeline([
+      custom('ya_agent.subagent_start', {
+        agent_id: 'worker-bg-a7b9',
+        agent_name: 'worker',
+        prompt_preview: 'inspect code',
+      }),
+      custom('ya_agent.subagent_complete', {
+        agent_id: 'worker-bg-a7b9',
+        agent_name: 'worker',
+        success: true,
+        result_preview: 'done',
+      }),
+    ])
+
+    expect(timeline.blocks).toMatchObject([
+      { kind: 'subagent', status: 'running', agentId: 'worker-bg-a7b9' },
+      { kind: 'subagent', status: 'completed', agentId: 'worker-bg-a7b9' },
+    ])
   })
 
   it('replaces prior cost snapshots by transport run instead of summing them', () => {
@@ -130,41 +151,33 @@ describe('AGUI event reducer', () => {
     })
   })
 
-  it('renders steering delivery and SDK message injection events', () => {
+  it('renders durable steering acceptance and application events', () => {
     const timeline = buildTimeline(
       [
-        custom('ya_claw.run_steered', {
-          input_parts: [{ type: 'text', text: 'please continue' }],
-        }),
-        custom('ya_agent.message_received', {
-          messages: [
-            {
-              source: 'user',
-              target: 'main',
-              content_text: 'please continue',
-              rendered_content: 'please continue',
-            },
-          ],
-        }),
+        custom('ya_claw.input_accepted', { disposition: 'accepted' }),
+        custom('ya_claw.input_enqueued', { disposition: 'enqueued' }),
+        custom('ya_claw.input_applied', { disposition: 'applied' }),
       ],
       [],
       'run-a',
       { includeRuntimeEvents: false },
     )
 
-    expect(timeline.blocks).toHaveLength(2)
+    expect(timeline.blocks).toHaveLength(3)
     expect(timeline.blocks[0]).toMatchObject({
       kind: 'steering',
-      title: 'Steer delivered',
+      title: 'Steer accepted',
       status: 'delivered',
-      delivery: 'runtime_state',
     })
     expect(timeline.blocks[1]).toMatchObject({
       kind: 'steering',
+      title: 'Steer enqueued',
+      status: 'delivered',
+    })
+    expect(timeline.blocks[2]).toMatchObject({
+      kind: 'steering',
       title: 'Steer injected',
       status: 'injected',
-      delivery: 'message_bus',
-      prompt: 'please continue',
     })
   })
 })

@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ya_agent_environment import Environment
+from ya_agent_environment import BaseResource, Environment
 from ya_agent_sdk.context import AgentContext
 from ya_claw.toolsets.schedule import CreateWorkflowScheduleTool
 from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY
 from ya_claw.toolsets.workflow import (
     CreateWorkflowTool,
+    ListProfilesTool,
     ListWorkflowRunsTool,
     ListWorkflowsTool,
     StartWorkflowTool,
@@ -29,21 +30,15 @@ class FakeRunContext:
         self.deps = deps
 
 
-class FakeWorkflowClient:
+class FakeWorkflowClient(BaseResource):
     def __init__(self) -> None:
         self.session_id = "session-1"
         self.run_id = "run-1"
         self.profile_name = "default"
         self.calls: list[dict[str, Any]] = []
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
-
-    async def setup(self) -> None:
-        return None
-
-    def get_toolsets(self) -> list[Any]:
-        return []
 
     async def list_session_turns(
         self, *, limit: int, before_sequence_no: int | None, cursor: str | None
@@ -131,7 +126,7 @@ class FakeWorkflowClient:
     ) -> dict[str, Any]:
         return {"id": workflow_run_id, "node_id": node_id, "input_parts": input_parts, "prompt": prompt}
 
-    async def list_agent_presets(self, *, query: str | None) -> dict[str, Any]:
+    async def list_profiles(self, *, query: str | None) -> dict[str, Any]:
         return {"profiles": [{"name": query or "default"}]}
 
 
@@ -149,6 +144,16 @@ def test_workflow_tools_are_available_with_workflow_client() -> None:
     assert ListWorkflowsTool().is_available(ctx) is True  # type: ignore[arg-type]
     assert CreateWorkflowTool().is_available(ctx) is True  # type: ignore[arg-type]
     assert StartWorkflowTool().is_available(ctx) is True  # type: ignore[arg-type]
+    assert ListProfilesTool().name == "list_profiles"
+
+
+async def test_list_profiles_uses_canonical_execution_profile_surface() -> None:
+    client = FakeWorkflowClient()
+    ctx = _context_with_client(client)
+
+    result = await ListProfilesTool().call(ctx, query="research")  # type: ignore[arg-type]
+
+    assert json.loads(result) == {"profiles": [{"name": "research"}]}
 
 
 async def test_list_workflows_passes_current_session_filter_flags() -> None:

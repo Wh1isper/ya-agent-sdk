@@ -9,7 +9,7 @@ Example::
     from contextlib import AsyncExitStack
     from pydantic_ai import Agent
 
-    from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+    from ya_agent_sdk.context import AgentContext, ModelFeature, ModelConfig
     from ya_agent_sdk.environment.local import LocalEnvironment
     from ya_agent_sdk.filters.capability import filter_by_capability
 
@@ -19,7 +19,7 @@ Example::
             AgentContext(
                 env=env,
                 model_cfg=ModelConfig(
-                    capabilities={ModelCapability.vision},  # Model supports vision
+                    capabilities={ModelFeature.vision},  # Model supports vision
                 ),
             )
         )
@@ -48,7 +48,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import RunContext
 
 from ya_agent_sdk._logger import logger
-from ya_agent_sdk.context import AgentContext, ModelCapability
+from ya_agent_sdk.context import AgentContext, ModelFeature
 
 
 def _is_image_content(item: object) -> bool:
@@ -191,9 +191,9 @@ def filter_by_capability(
     if model_cfg is None:
         return message_history
 
-    has_vision = model_cfg.has_capability(ModelCapability.vision)
-    has_video = model_cfg.has_capability(ModelCapability.video_understanding)
-    has_document = model_cfg.has_capability(ModelCapability.document_understanding)
+    has_vision = model_cfg.has_capability(ModelFeature.vision)
+    has_video = model_cfg.has_capability(ModelFeature.video_understanding)
+    has_document = model_cfg.has_capability(ModelFeature.document_understanding)
 
     # If model has all capabilities, no filtering needed
     if has_vision and has_video and has_document:

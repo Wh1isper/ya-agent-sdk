@@ -22,7 +22,14 @@ from pydantic_ai import (
     ToolReturn,
     UserError,
 )
-from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, HandleDeferredToolCalls
+from pydantic_ai.capabilities import (
+    AbstractCapability,
+    CapabilityOrdering,
+    HandleDeferredToolCalls,
+)
+from pydantic_ai.capabilities import (
+    Toolset as ToolsetCapability,
+)
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -40,7 +47,8 @@ from pydantic_ai.toolsets import AbstractToolset, PrefixedToolset, ToolsetTool, 
 from pydantic_ai.usage import RunUsage
 from ya_agent_environment import Environment
 from ya_agent_sdk.agents.main import create_agent
-from ya_agent_sdk.codeact import CodeActConfig
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
+from ya_agent_sdk.codeact import CodeActCapability, CodeActConfig
 from ya_agent_sdk.codeact import toolset as codeact_toolset
 from ya_agent_sdk.codeact.programs import validate_static_tool_references
 from ya_agent_sdk.codeact.toolset import (
@@ -142,13 +150,22 @@ def _runtime(
     capabilities: Sequence[AbstractCapability[AgentContext]] | None = None,
 ):
     env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+    runtime_capabilities = [RuntimeFoundationCapability(), *(capabilities or ())]
+    if tools:
+        runtime_capabilities.append(
+            ToolsetCapability(
+                Toolset(tools=tools, toolset_id="test_sdk_tools"),
+                id="test_sdk_tools",
+            )
+        )
+    runtime_capabilities.extend(
+        ToolsetCapability(toolset, id=f"test_external_{index}") for index, toolset in enumerate(toolsets or ())
+    )
+    runtime_capabilities.append(CodeActCapability(config=config or CodeActConfig()))
     return create_agent(
         FunctionModel(function=model_function),
         env=env,
-        tools=tools or [],
-        toolsets=toolsets or [],
-        codeact=config or CodeActConfig(),
-        capabilities=capabilities,
+        capabilities=runtime_capabilities,
     )
 
 
@@ -1116,7 +1133,7 @@ async def test_run_program_is_hidden_without_environment_file_operator() -> None
     runtime = create_agent(
         FunctionModel(function=model_function),
         env=_EmptyEnvironment(),
-        codeact=CodeActConfig(),
+        capabilities=[CodeActCapability(config=CodeActConfig())],
     )
     async with runtime:
         await runtime.agent.run("inspect tools", deps=runtime.ctx)
@@ -1323,7 +1340,7 @@ async def test_final_output_limit_is_enforced(tmp_path: Path) -> None:
     )
 
 
-async def test_codeact_none_exposes_no_codeact_tools(tmp_path: Path) -> None:
+async def test_omitting_codeact_capability_exposes_no_codeact_tools(tmp_path: Path) -> None:
     seen_tools: set[str] = set()
     env = LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
 
@@ -1331,7 +1348,7 @@ async def test_codeact_none_exposes_no_codeact_tools(tmp_path: Path) -> None:
         seen_tools.update(tool.name for tool in info.function_tools)
         return ModelResponse(parts=[TextPart(content="done")])
 
-    runtime = create_agent(FunctionModel(function=model_function), env=env, codeact=None)
+    runtime = create_agent(FunctionModel(function=model_function), env=env)
     async with runtime:
         await runtime.agent.run("inspect tools", deps=runtime.ctx)
 
@@ -1456,10 +1473,12 @@ async def test_run_code_uses_structured_observation_while_propagating_screenshot
         Tool(computer_click, metadata={"codeact": True}),
     ])
     model_calls = 0
+    model_inputs: list[list[ModelMessage]] = []
 
     def model_function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         nonlocal model_calls
         model_calls += 1
+        model_inputs.append(messages)
         if model_calls == 1:
             return ModelResponse(
                 parts=[
@@ -1487,7 +1506,8 @@ async def test_run_code_uses_structured_observation_while_propagating_screenshot
     assert returned.content == {"operation_id": "op-456", "effect_status": "committed"}
     supplemental = [
         part.content
-        for message in result.all_messages()
+        for messages in model_inputs
+        for message in messages
         if isinstance(message, ModelRequest)
         for part in message.parts
         if isinstance(part, UserPromptPart)
@@ -1498,7 +1518,7 @@ async def test_run_code_uses_structured_observation_while_propagating_screenshot
         and isinstance(content[0], str)
         and "<filtered-content type='image'>" in content[0]
         for content in supplemental
-    )
+    ), supplemental
 
 
 async def test_executor_admits_calls_before_argument_serialization(

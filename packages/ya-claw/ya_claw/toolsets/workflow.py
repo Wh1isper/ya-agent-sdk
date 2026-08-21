@@ -44,7 +44,7 @@ class WorkflowClient(SelfSessionClient, Protocol):
         prompt: str | None,
     ) -> dict[str, Any]: ...
 
-    async def list_agent_presets(self, *, query: str | None) -> dict[str, Any]: ...
+    async def list_profiles(self, *, query: str | None) -> dict[str, Any]: ...
 
 
 class ListWorkflowsTool(BaseTool):
@@ -368,9 +368,9 @@ class CancelWorkflowRunTool(BaseTool):
             return f"Error: {exc}"
 
 
-class ListAgentPresetsTool(BaseTool):
-    name = "list_agent_presets"
-    description = "List available YA Claw profiles usable as workflow node agent presets."
+class ListProfilesTool(BaseTool):
+    name = "list_profiles"
+    description = "List available YA Claw execution profiles for workflow nodes."
 
     def is_available(self, ctx: RunContext[AgentContext]) -> bool:
         return _get_workflow_client(ctx) is not None
@@ -384,7 +384,7 @@ class ListAgentPresetsTool(BaseTool):
         if client is None:
             return "Error: YA Claw workflow client is unavailable."
         try:
-            return _dump_json(await client.list_agent_presets(query=query))
+            return _dump_json(await client.list_profiles(query=query))
         except Exception as exc:
             return f"Error: {exc}"
 

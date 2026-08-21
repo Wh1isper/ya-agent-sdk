@@ -1,10 +1,6 @@
-"""Toolsets for ya-agent-sdk.
+"""Base-tool adapters for ya-agent-sdk.
 
-This module provides:
-- BaseTool: Abstract base class for individual tools
-- BaseToolset: Abstract base class for toolsets with instruction support
-- Toolset: Container for tools with hooks and HITL support
-- InstructableToolset: Protocol for toolsets that provide instructions
+Cross-cutting execution behavior is composed through native Pydantic AI capabilities.
 """
 
 from ya_agent_sdk.toolsets.base import (
@@ -14,30 +10,13 @@ from ya_agent_sdk.toolsets.base import (
     Instruction,
     UserInputPreprocessResult,
 )
-from ya_agent_sdk.toolsets.core.base import (
-    CallMetadata,
-    GlobalHooks,
-    GlobalPostHookFunc,
-    GlobalPreHookFunc,
-    HookableToolsetTool,
-    PostHookFunc,
-    PreHookFunc,
-    Toolset,
-    UserInteraction,
-)
+from ya_agent_sdk.toolsets.core.base import Toolset, UserInteraction
 
 __all__ = [
     "BaseTool",
     "BaseToolset",
-    "CallMetadata",
-    "GlobalHooks",
-    "GlobalPostHookFunc",
-    "GlobalPreHookFunc",
-    "HookableToolsetTool",
     "InstructableToolset",
     "Instruction",
-    "PostHookFunc",
-    "PreHookFunc",
     "Toolset",
     "UserInputPreprocessResult",
     "UserInteraction",

@@ -179,21 +179,21 @@ agent = Agent(
 
 The filter checks model capabilities before uploading:
 
-- `ModelCapability.image_url` - Required to upload images
-- `ModelCapability.video_url` - Required to upload videos
-- `ModelCapability.audio_understanding` - Model can process audio content natively
+- `ModelFeature.image_url` - Required to upload images
+- `ModelFeature.video_url` - Required to upload videos
+- `ModelFeature.audio_understanding` - Model can process audio content natively
 
 Configure capabilities in `ModelConfig`:
 
 ```python
-from ya_agent_sdk.context import ModelConfig, ModelCapability
+from ya_agent_sdk.context import ModelConfig, ModelFeature
 
 model_cfg = ModelConfig(
     capabilities={
-        ModelCapability.vision,
-        ModelCapability.image_url,  # Model accepts image URLs
-        ModelCapability.video_url,  # Model accepts video URLs
-        ModelCapability.audio_understanding,  # Model can process audio
+        ModelFeature.vision,
+        ModelFeature.image_url,  # Model accepts image URLs
+        ModelFeature.video_url,  # Model accepts video URLs
+        ModelFeature.audio_understanding,  # Model can process audio
     }
 )
 ```

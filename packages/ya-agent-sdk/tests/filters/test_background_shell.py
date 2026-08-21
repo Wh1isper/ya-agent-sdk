@@ -1,33 +1,22 @@
-"""Tests for background_shell filter."""
+"""Tests for canonical background-shell completion formatting."""
 
 from pathlib import PurePosixPath
 from unittest.mock import AsyncMock, MagicMock
 
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-from pydantic_ai.tools import RunContext
 from ya_agent_environment import CompletedProcess, Shell
 from ya_agent_environment.shell import ExecutionHandle
-from ya_agent_sdk.filters.background_shell import inject_background_results
+from ya_agent_sdk.filters.background_shell import consume_background_results
 
 
-def _make_ctx(shell: Shell | None = None, file_operator=None) -> RunContext:
-    """Create a minimal RunContext with mocked AgentContext."""
-    deps = MagicMock()
-    deps.shell = shell
-    deps.file_operator = file_operator
-    deps.tmp_dir = PurePosixPath("/agent-tmp") if file_operator is not None else None
-    deps.resolve_tmp_path.side_effect = lambda name: PurePosixPath("/agent-tmp") / name
-    deps.run_id = "test-run-12345678"
-    deps.emit_event = AsyncMock()
-
-    ctx = MagicMock(spec=RunContext)
-    ctx.deps = deps
-    return ctx
-
-
-def _make_messages_with_user_prompt(text: str = "hello") -> list:
-    """Create a message list ending with a ModelRequest."""
-    return [ModelRequest(parts=[UserPromptPart(content=text)])]
+def _make_context(shell: Shell | None = None, file_operator=None) -> MagicMock:
+    context = MagicMock()
+    context.shell = shell
+    context.file_operator = file_operator
+    context.tmp_dir = PurePosixPath("/agent-tmp") if file_operator is not None else None
+    context.resolve_tmp_path.side_effect = lambda name: PurePosixPath("/agent-tmp") / name
+    context.run_id = "test-run-12345678"
+    context.emit_event = AsyncMock()
+    return context
 
 
 class MockShell(Shell):
@@ -39,7 +28,7 @@ class MockShell(Shell):
         self._mock_summary = summary
 
     async def _create_process(self, command, *, env=None, cwd=None) -> ExecutionHandle:
-        raise NotImplementedError("MockShell._create_process not used in filter tests")
+        raise NotImplementedError("MockShell._create_process not used in formatter tests")
 
     def consume_completed_results(self) -> list[CompletedProcess]:
         results = self._mock_completed
@@ -50,25 +39,15 @@ class MockShell(Shell):
         return self._mock_summary
 
 
-async def test_no_shell_returns_unchanged() -> None:
-    """When shell is None, messages should be unchanged."""
-    ctx = _make_ctx(shell=None)
-    messages = _make_messages_with_user_prompt()
-    result = await inject_background_results(ctx, messages)
-    assert len(result[-1].parts) == 1
+async def test_no_shell_returns_none() -> None:
+    assert await consume_background_results(_make_context()) is None
 
 
-async def test_no_activity_returns_unchanged() -> None:
-    """When no completed results and no summary, unchanged."""
-    shell = MockShell(completed=[], summary=None)
-    ctx = _make_ctx(shell=shell)
-    messages = _make_messages_with_user_prompt()
-    result = await inject_background_results(ctx, messages)
-    assert len(result[-1].parts) == 1
+async def test_no_activity_returns_none() -> None:
+    assert await consume_background_results(_make_context(MockShell())) is None
 
 
-async def test_completed_result_injected() -> None:
-    """Completed result should be injected as UserPromptPart."""
+async def test_completed_result_is_formatted_and_emitted() -> None:
     completed = CompletedProcess(
         process_id="abc123",
         command="make test",
@@ -78,21 +57,18 @@ async def test_completed_result_injected() -> None:
         stderr="",
         truncated=False,
     )
-    shell = MockShell(completed=[completed], summary=None)
-    ctx = _make_ctx(shell=shell)
-    messages = _make_messages_with_user_prompt()
+    context = _make_context(MockShell(completed=[completed]))
 
-    result = await inject_background_results(ctx, messages)
-    assert len(result[-1].parts) == 2
-    injected = result[-1].parts[1]
-    assert isinstance(injected, UserPromptPart)
-    assert "abc123" in injected.content
-    assert "make test" in injected.content
-    assert "All tests passed" in injected.content
+    result = await consume_background_results(context)
+
+    assert result is not None
+    assert "abc123" in result
+    assert "make test" in result
+    assert "All tests passed" in result
+    context.emit_event.assert_awaited_once()
 
 
-async def test_failed_result_injected() -> None:
-    """Failed process result should show exit code."""
+async def test_failed_result_includes_exit_code_and_stderr() -> None:
     completed = CompletedProcess(
         process_id="def456",
         command="make build",
@@ -102,32 +78,15 @@ async def test_failed_result_injected() -> None:
         stderr="compilation error",
         truncated=False,
     )
-    shell = MockShell(completed=[completed], summary=None)
-    ctx = _make_ctx(shell=shell)
-    messages = _make_messages_with_user_prompt()
 
-    result = await inject_background_results(ctx, messages)
-    injected = result[-1].parts[1]
-    assert 'exit-code="1"' in injected.content
-    assert "compilation error" in injected.content
+    result = await consume_background_results(_make_context(MockShell(completed=[completed])))
+
+    assert result is not None
+    assert 'exit-code="1"' in result
+    assert "compilation error" in result
 
 
-async def test_summary_only_injected() -> None:
-    """Summary without completed results should still inject."""
-    summary_xml = '<background-processes>\n  <process id="p1" status="running" command="sleep 100" elapsed="30s" />\n</background-processes>'
-    shell = MockShell(completed=[], summary=summary_xml)
-    ctx = _make_ctx(shell=shell)
-    messages = _make_messages_with_user_prompt()
-
-    result = await inject_background_results(ctx, messages)
-    assert len(result[-1].parts) == 2
-    injected = result[-1].parts[1]
-    assert "background-processes" in injected.content
-    assert "running" in injected.content
-
-
-async def test_completed_plus_summary() -> None:
-    """Both completed results and summary should be injected together."""
+async def test_completed_result_and_running_summary_are_combined() -> None:
     completed = CompletedProcess(
         process_id="abc123",
         command="echo done",
@@ -137,19 +96,16 @@ async def test_completed_plus_summary() -> None:
         stderr="",
         truncated=False,
     )
-    summary_xml = '<background-processes>\n  <process id="xyz" status="running" command="sleep 100" elapsed="5s" />\n</background-processes>'
-    shell = MockShell(completed=[completed], summary=summary_xml)
-    ctx = _make_ctx(shell=shell)
-    messages = _make_messages_with_user_prompt()
+    summary = '<background-processes><process id="xyz" status="running" /></background-processes>'
 
-    result = await inject_background_results(ctx, messages)
-    injected = result[-1].parts[1]
-    assert "background-result" in injected.content
-    assert "background-processes" in injected.content
+    result = await consume_background_results(_make_context(MockShell([completed], summary)))
+
+    assert result is not None
+    assert "background-result" in result
+    assert "background-processes" in result
 
 
 async def test_one_time_consumption() -> None:
-    """Second call should not inject again (results consumed)."""
     completed = CompletedProcess(
         process_id="abc123",
         command="echo hello",
@@ -159,50 +115,37 @@ async def test_one_time_consumption() -> None:
         stderr="",
         truncated=False,
     )
-    shell = MockShell(completed=[completed], summary=None)
-    ctx = _make_ctx(shell=shell)
+    context = _make_context(MockShell(completed=[completed]))
 
-    messages = _make_messages_with_user_prompt()
-    await inject_background_results(ctx, messages)
-    assert len(messages[-1].parts) == 2
-
-    # Second call: no more results
-    messages2 = _make_messages_with_user_prompt()
-    await inject_background_results(ctx, messages2)
-    assert len(messages2[-1].parts) == 1
+    assert await consume_background_results(context) is not None
+    assert await consume_background_results(context) is None
 
 
-async def test_truncated_output_with_file_op() -> None:
-    """Large output should retain its head and tail and write full content to tmp."""
-    large_stdout = "HEAD-" + "x" * 30000 + "-TAIL"
+async def test_large_output_retains_head_and_tail_and_writes_file() -> None:
     completed = CompletedProcess(
         process_id="big1",
         command="big output",
         cwd=None,
         exit_code=0,
-        stdout=large_stdout,
+        stdout="HEAD-" + "x" * 30000 + "-TAIL",
         stderr="",
         truncated=False,
     )
-    shell = MockShell(completed=[completed], summary=None)
+    file_operator = AsyncMock()
+    context = _make_context(MockShell(completed=[completed]), file_operator)
 
-    file_op = AsyncMock()
-    file_op.write_file = AsyncMock()
-    ctx = _make_ctx(shell=shell, file_operator=file_op)
-    messages = _make_messages_with_user_prompt()
+    result = await consume_background_results(context)
 
-    await inject_background_results(ctx, messages)
-    injected = messages[-1].parts[1]
-    assert "truncated" in injected.content.lower()
-    assert "HEAD-" in injected.content
-    assert "-TAIL" in injected.content
-    assert "full output" in injected.content.lower()
-    assert "Full stdout:" in injected.content
-    file_op.write_file.assert_called_once()
+    assert result is not None
+    assert "truncated" in result.lower()
+    assert "HEAD-" in result
+    assert "-TAIL" in result
+    assert "full output" in result.lower()
+    assert "Full stdout:" in result
+    file_operator.write_file.assert_awaited_once()
 
 
-async def test_source_capped_output_is_not_labeled_as_full() -> None:
-    """Environment-capped injection output should direct the agent to shell_wait for retained output."""
+async def test_source_capped_output_is_not_labeled_full() -> None:
     completed = CompletedProcess(
         process_id="capped1",
         command="large output",
@@ -212,38 +155,13 @@ async def test_source_capped_output_is_not_labeled_as_full() -> None:
         stderr="",
         truncated=True,
     )
-    shell = MockShell(completed=[completed], summary=None)
-    file_op = AsyncMock()
-    file_op.write_file = AsyncMock()
-    ctx = _make_ctx(shell=shell, file_operator=file_op)
-    messages = _make_messages_with_user_prompt()
+    file_operator = AsyncMock()
+    context = _make_context(MockShell(completed=[completed]), file_operator)
 
-    await inject_background_results(ctx, messages)
-    injected = messages[-1].parts[1]
-    assert "stored output" in injected.content.lower()
-    assert "Stored stdout:" in injected.content
-    assert "shell_wait can retrieve the retained terminal output" in injected.content
-    assert "full output" not in injected.content.lower()
-    assert "Full stdout:" not in injected.content
+    result = await consume_background_results(context)
 
-
-async def test_no_model_request_returns_unchanged() -> None:
-    """If last message is not ModelRequest, should return unchanged."""
-    shell = MockShell(
-        completed=[
-            CompletedProcess(
-                process_id="x",
-                command="echo",
-                cwd=None,
-                exit_code=0,
-                stdout="out",
-                stderr="",
-                truncated=False,
-            )
-        ],
-        summary=None,
-    )
-    ctx = _make_ctx(shell=shell)
-    messages = [ModelResponse(parts=[TextPart(content="response")])]
-    result = await inject_background_results(ctx, messages)
-    assert result == messages
+    assert result is not None
+    assert "stored output" in result.lower()
+    assert "Stored stdout:" in result
+    assert "shell_wait can retrieve the retained terminal output" in result
+    assert "full output" not in result.lower()

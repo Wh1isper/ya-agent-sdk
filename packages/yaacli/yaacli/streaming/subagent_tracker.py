@@ -13,6 +13,12 @@ from rich.text import Text
 from yaacli.rendering import RichRenderer
 
 
+def format_subagent_display_id(agent_id: str, agent_name: str) -> str:
+    """Keep host identities readable even for legacy bare execution IDs."""
+    prefix = f"{agent_name}-"
+    return agent_id if agent_id.startswith(prefix) else f"{prefix}{agent_id}"
+
+
 @dataclass
 class SubagentState:
     """State for a single subagent execution."""
@@ -113,8 +119,12 @@ class SubagentTracker:
         line_index = state.line_index if state else None
 
         text = Text()
+        display_id = format_subagent_display_id(
+            agent_id,
+            state.agent_name if state is not None else "subagent",
+        )
         if success:
-            text.append(f"[{agent_id}] ", style="cyan")
+            text.append(f"[{display_id}] ", style="cyan")
             text.append("Done ", style="bold green")
             text.append(f"({duration_seconds:.1f}s)", style="dim")
             if request_count > 0:
@@ -126,7 +136,7 @@ class SubagentTracker:
                     preview += "..."
                 text.append(f' | "{preview}"', style="dim italic")
         else:
-            text.append(f"[{agent_id}] ", style="cyan")
+            text.append(f"[{display_id}] ", style="cyan")
             text.append("Failed ", style="bold red")
             text.append(f"({duration_seconds:.1f}s)", style="dim")
             if error:
@@ -147,7 +157,8 @@ class SubagentTracker:
             return ""
 
         text = Text()
-        text.append(f"[{agent_id}] ", style="cyan")
+        display_id = format_subagent_display_id(agent_id, state.agent_name)
+        text.append(f"[{display_id}] ", style="cyan")
         text.append("Running... ", style="dim")
 
         if state.tool_names:

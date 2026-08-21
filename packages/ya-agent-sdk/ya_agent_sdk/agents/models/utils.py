@@ -2,19 +2,24 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any, TypeVar
 
 import httpx
+import httpx2
 import websockets
 from openai import APIStatusError
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models import get_user_agent
-from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
+from pydantic_ai.providers import Provider
+from pydantic_ai.retries import AsyncHTTPX2TenacityTransport, RetryConfig, wait_retry_after
 from tenacity import before_sleep_log, retry_if_exception, stop_after_attempt, wait_exponential
 from tenacity.retry import RetryBaseT
 
 logger = logging.getLogger(__name__)
+
+ProviderT = TypeVar("ProviderT", bound=Provider[Any])
 
 DEFAULT_MODEL_REQUEST_RETRY_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 _DEFAULT_RETRY_ATTEMPTS = 5
@@ -74,8 +79,8 @@ def create_async_http_client(
     connect: int = 5,
     read: int = 300,
     retry_options: ModelRequestRetryOptions | None = None,
-) -> httpx.AsyncClient:
-    """Create a new httpx.AsyncClient with optional extra headers and model-request retries.
+) -> httpx2.AsyncClient:
+    """Create a new httpx2.AsyncClient with optional extra headers and model-request retries.
 
     Each call creates a new client instance. When used through a pydantic-ai Provider,
     the provider manages the client's lifecycle.
@@ -85,29 +90,45 @@ def create_async_http_client(
     if extra_headers:
         headers.update(extra_headers)
 
-    request_timeout = httpx.Timeout(timeout=timeout, connect=connect, read=read)
+    request_timeout = httpx2.Timeout(timeout=timeout, connect=connect, read=read)
     transport = create_model_request_retry_transport(retry_options=retry_options)
     if transport is None:
-        return httpx.AsyncClient(timeout=request_timeout, headers=headers)
+        return httpx2.AsyncClient(timeout=request_timeout, headers=headers)
 
-    return httpx.AsyncClient(
+    return httpx2.AsyncClient(
         transport=transport,
         timeout=request_timeout,
         headers=headers,
     )
 
 
+def create_owned_httpx2_provider(
+    provider_factory: Callable[[httpx2.AsyncClient], ProviderT],
+    *,
+    http_client_factory: Callable[[], httpx2.AsyncClient] = create_async_http_client,
+) -> ProviderT:
+    """Build a provider that owns and can recreate an SDK-created HTTPX2 client."""
+
+    http_client = http_client_factory()
+    provider = provider_factory(http_client)
+    # Pydantic AI uses these fields for provider context-manager close and re-entry.
+    # This mirrors pydantic_ai.providers.gateway for internally created clients.
+    provider._own_http_client = http_client  # pyright: ignore[reportPrivateUsage]
+    provider._http_client_factory = http_client_factory  # pyright: ignore[reportPrivateUsage]
+    return provider
+
+
 def create_model_request_retry_transport(
     *,
     retry_options: ModelRequestRetryOptions | None = None,
-    wrapped: httpx.AsyncBaseTransport | None = None,
-) -> AsyncTenacityTransport | None:
+    wrapped: httpx2.AsyncBaseTransport | None = None,
+) -> AsyncHTTPX2TenacityTransport | None:
     """Create pydantic-ai's tenacity transport for retryable model HTTP requests."""
 
     options = retry_options or env_model_request_retry_options()
     if not options.should_retry:
         return None
-    return AsyncTenacityTransport(
+    return AsyncHTTPX2TenacityTransport(
         config=build_model_request_retry_config(options),
         wrapped=wrapped,
         validate_response=lambda response: validate_model_retry_response(response, options),
@@ -138,7 +159,7 @@ def build_model_request_retry_config(
     )
 
 
-def validate_model_retry_response(response: httpx.Response, options: ModelRequestRetryOptions | None = None) -> None:
+def validate_model_retry_response(response: httpx2.Response, options: ModelRequestRetryOptions | None = None) -> None:
     """Raise HTTPStatusError only for HTTP statuses that should be retried."""
 
     resolved = options or env_model_request_retry_options()
@@ -153,9 +174,9 @@ def is_retryable_model_request_exception(
     """Return whether a model request exception is transient enough to retry."""
 
     resolved = options or env_model_request_retry_options()
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx2.HTTPStatusError):
         return exc.response.status_code in resolved.status_codes
-    return isinstance(exc, httpx.RequestError | httpx.StreamError)
+    return isinstance(exc, httpx2.RequestError | httpx2.StreamError)
 
 
 def is_retryable_model_stream_exception(
@@ -165,7 +186,7 @@ def is_retryable_model_stream_exception(
     """Return whether a model stream failed because of a transient provider or transport error.
 
     Streaming response bodies are consumed after the HTTP transport has returned,
-    so mid-stream failures cannot be replayed by ``AsyncTenacityTransport``. Walk
+    so mid-stream failures cannot be replayed by ``AsyncHTTPX2TenacityTransport``. Walk
     provider exception chains to recognize those failures after an SDK wraps the
     original HTTPX or WebSocket exception.
     """
@@ -189,11 +210,14 @@ def _is_retryable_model_stream_exception_branch(
 
     if isinstance(exc, ModelHTTPError | APIStatusError):
         return exc.status_code in options.status_codes
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, httpx.HTTPStatusError | httpx2.HTTPStatusError):
         return exc.response.status_code in options.status_codes
     if isinstance(exc, UnexpectedModelBehavior):
         return _is_retryable_unexpected_model_behavior(exc, options, seen=branch_seen)
-    if isinstance(exc, httpx.TransportError | websockets.WebSocketException | TimeoutError | OSError):
+    if isinstance(
+        exc,
+        httpx.TransportError | httpx2.TransportError | websockets.WebSocketException | TimeoutError | OSError,
+    ):
         return True
     if isinstance(exc, BaseExceptionGroup):
         return bool(exc.exceptions) and all(
@@ -280,6 +304,7 @@ __all__ = [
     "build_model_request_retry_config",
     "create_async_http_client",
     "create_model_request_retry_transport",
+    "create_owned_httpx2_provider",
     "env_model_request_retry_options",
     "is_retryable_model_request_exception",
     "is_retryable_model_stream_exception",

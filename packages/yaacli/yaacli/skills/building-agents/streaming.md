@@ -41,7 +41,7 @@ flowchart TB
 ## Basic Usage
 
 ```python
-from ya_agent_sdk.agents import create_agent, stream_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 
 runtime = create_agent("openai-chat:gpt-4o")
 
@@ -360,7 +360,7 @@ Stream recovery keeps two independent attempt budgets:
 - `stream_resume_max_attempts` covers non-transport execution failures.
 - `stream_transport_resume_max_attempts` covers each consecutive streak of transient model HTTP/WebSocket failures, including HTTP response bodies that disconnect after streaming has started. Transport failures do not consume the execution budget, and a successful model request resets the transport failure streak.
 
-These are execution/transport recovery budgets, not model correction retries. Tool/output `ModelRetry` accounting and the SDK's cumulative `overall_retries` ceiling are configured on `create_agent()`; transport and stream resume attempts do not consume them. Likewise, message-bus steering wakes an ending run through `RunContext.enqueue`, not `ModelRetry`.
+These are execution/transport recovery budgets, not model correction retries. Native Pydantic AI tool/output retries are configured with `create_agent(retries=...)`; the SDK's cumulative ceiling is the explicit `OverallRetryBudget` capability. Transport and stream resume attempts do not consume either budget. Native steering enters the active logical run through `AgentRun.enqueue()` and is not a `ModelRetry`.
 
 Retry recovery performs durable message-history cleanup before the next attempt:
 

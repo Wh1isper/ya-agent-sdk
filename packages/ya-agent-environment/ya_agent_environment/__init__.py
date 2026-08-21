@@ -5,6 +5,7 @@ environment operations, allowing different backends (local, remote, S3, SSH, etc
 to be used interchangeably.
 """
 
+from ya_agent_environment.contributions import AgentContributionGroup
 from ya_agent_environment.environment import Environment
 from ya_agent_environment.exceptions import (
     EnvironmentError as EnvironmentError,
@@ -53,6 +54,7 @@ __all__ = [
     "DEFAULT_CHUNK_SIZE",
     "DEFAULT_INSTRUCTIONS_MAX_DEPTH",
     "DEFAULT_INSTRUCTIONS_SKIP_DIRS",
+    "AgentContributionGroup",
     "BackgroundProcess",
     "BaseResource",
     "CompletedProcess",

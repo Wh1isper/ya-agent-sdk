@@ -47,7 +47,7 @@ import copy
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, Unpack
 
-from ya_agent_sdk.context import ModelCapability
+from ya_agent_sdk.context import ModelFeature
 
 if TYPE_CHECKING:
     from pydantic_ai import ModelSettings
@@ -1493,7 +1493,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision, ModelCapability.document_understanding},
+        "capabilities": {ModelFeature.vision, ModelFeature.document_understanding},
     },
     ModelConfigPreset.CLAUDE_400K.value: {
         "context_window": 400_000,
@@ -1503,7 +1503,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision, ModelCapability.document_understanding},
+        "capabilities": {ModelFeature.vision, ModelFeature.document_understanding},
     },
     ModelConfigPreset.CLAUDE_1M.value: {
         "context_window": 1_000_000,
@@ -1513,7 +1513,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision, ModelCapability.document_understanding},
+        "capabilities": {ModelFeature.vision, ModelFeature.document_understanding},
     },
     # OpenAI GPT-5 series (vision, no video support)
     ModelConfigPreset.GPT5_270K.value: {
@@ -1524,7 +1524,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision, ModelCapability.openai_prompt_cache_key},
+        "capabilities": {ModelFeature.vision, ModelFeature.openai_prompt_cache_key},
     },
     ModelConfigPreset.GPT5_350K.value: {
         "context_window": 350_000,
@@ -1534,7 +1534,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision, ModelCapability.openai_prompt_cache_key},
+        "capabilities": {ModelFeature.vision, ModelFeature.openai_prompt_cache_key},
     },
     ModelConfigPreset.GPT5_1M.value: {
         "context_window": 922_000,
@@ -1544,7 +1544,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision, ModelCapability.openai_prompt_cache_key},
+        "capabilities": {ModelFeature.vision, ModelFeature.openai_prompt_cache_key},
     },
     # DeepSeek V4 models (text-only, high output limits)
     ModelConfigPreset.DEEPSEEK_V4_400K.value: {
@@ -1555,7 +1555,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": False,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.reasoning_required},
+        "capabilities": {ModelFeature.reasoning_required},
     },
     ModelConfigPreset.DEEPSEEK_V4_1M.value: {
         "context_window": 1_000_000,
@@ -1565,7 +1565,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": False,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.reasoning_required},
+        "capabilities": {ModelFeature.reasoning_required},
     },
     # MiMo V2.5 models (text-only reasoning models)
     ModelConfigPreset.MIMO_V2_5_1M.value: {
@@ -1577,8 +1577,8 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
         "capabilities": {
-            ModelCapability.reasoning_required,
-            ModelCapability.reasoning_foreign_incompatible,
+            ModelFeature.reasoning_required,
+            ModelFeature.reasoning_foreign_incompatible,
         },
     },
     ModelConfigPreset.MIMO_V2_5_PRO_1M.value: {
@@ -1590,8 +1590,8 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
         "capabilities": {
-            ModelCapability.reasoning_required,
-            ModelCapability.reasoning_foreign_incompatible,
+            ModelFeature.reasoning_required,
+            ModelFeature.reasoning_foreign_incompatible,
         },
     },
     # Grok 4.5 models (text + image, no video support)
@@ -1603,7 +1603,7 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "split_large_images": True,
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
-        "capabilities": {ModelCapability.vision},
+        "capabilities": {ModelFeature.vision},
     },
     # Gemini models (vision + video support)
     ModelConfigPreset.GEMINI_200K.value: {
@@ -1615,11 +1615,11 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
         "capabilities": {
-            ModelCapability.vision,
-            ModelCapability.video_understanding,
-            ModelCapability.youtube_url,
-            ModelCapability.audio_understanding,
-            ModelCapability.document_understanding,
+            ModelFeature.vision,
+            ModelFeature.video_understanding,
+            ModelFeature.youtube_url,
+            ModelFeature.audio_understanding,
+            ModelFeature.document_understanding,
         },
     },
     ModelConfigPreset.GEMINI_1M.value: {
@@ -1631,11 +1631,11 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "image_split_max_height": 4096,
         "image_split_overlap": 50,
         "capabilities": {
-            ModelCapability.vision,
-            ModelCapability.video_understanding,
-            ModelCapability.youtube_url,
-            ModelCapability.audio_understanding,
-            ModelCapability.document_understanding,
+            ModelFeature.vision,
+            ModelFeature.video_understanding,
+            ModelFeature.youtube_url,
+            ModelFeature.audio_understanding,
+            ModelFeature.document_understanding,
         },
     },
 }

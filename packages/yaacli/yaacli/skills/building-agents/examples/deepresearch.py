@@ -53,15 +53,23 @@ from pydantic_ai.messages import (
     TextPartDelta,
 )
 from ya_agent_sdk.agents.main import create_agent, stream_agent
-from ya_agent_sdk.context import ModelCapability, ModelConfig, ResumableState, StreamEvent, ToolConfig
+from ya_agent_sdk.capabilities import (
+    DocumentConversionCapability,
+    FilesystemCapability,
+    MediaReadCapability,
+    NoteCapability,
+    RuntimeFoundationCapability,
+    ShellCapability,
+    TaskCapability,
+    ToolObservationCapability,
+    ToolRetryCapability,
+    ToolTimeoutCapability,
+    ToolVisibilityCapability,
+    WebContentCapability,
+    WebSearchCapability,
+)
+from ya_agent_sdk.context import ModelConfig, ModelFeature, ResumableState, StreamEvent, ToolConfig
 from ya_agent_sdk.presets import GEMINI_THINKING_LEVEL_HIGH
-from ya_agent_sdk.toolsets.core.content import tools as content_tools
-from ya_agent_sdk.toolsets.core.context import tools as context_tools
-from ya_agent_sdk.toolsets.core.document import tools as document_tools
-from ya_agent_sdk.toolsets.core.enhance import tools as enhance_tools
-from ya_agent_sdk.toolsets.core.filesystem import tools as filesystem_tools
-from ya_agent_sdk.toolsets.core.shell import tools as shell_tools
-from ya_agent_sdk.toolsets.core.web import tools as web_tools
 
 # =============================================================================
 # Configuration
@@ -287,23 +295,29 @@ async def main() -> None:
     # Load system prompt with objective
     system_prompt = load_system_prompt(objective)
 
-    # Create and run the agent
+    # Create and run the capability-first agent. This autonomous host deliberately
+    # omits ToolApprovalCapability and UserInteractionCapability.
     runtime = create_agent(
         model="gemini@google-cloud:gemini-3-pro-preview",
         model_settings=cast(ModelSettings, GEMINI_THINKING_LEVEL_HIGH),
         system_prompt=system_prompt,
-        tools=[
-            *content_tools,
-            *context_tools,
-            *document_tools,
-            *enhance_tools,
-            *filesystem_tools,
-            *shell_tools,
-            *web_tools,
+        capabilities=[
+            RuntimeFoundationCapability(),
+            MediaReadCapability(),
+            DocumentConversionCapability(),
+            FilesystemCapability(),
+            ShellCapability(),
+            WebSearchCapability(),
+            WebContentCapability(),
+            TaskCapability(),
+            NoteCapability(),
+            ToolVisibilityCapability(),
+            ToolObservationCapability(),
+            ToolRetryCapability(),
+            ToolTimeoutCapability(),
         ],
-        # No need_user_approve_tools - fully autonomous
-        model_cfg=ModelConfig(context_window=200_000, capabilities={ModelCapability.vision}),
-        tool_config=ToolConfig(),
+        model_cfg=ModelConfig(context_window=200_000, capabilities={ModelFeature.vision}),
+        context_kwargs={"tool_config": ToolConfig()},
         state=state,
         output_type=ToolOutput(
             type_=TaskComplete,
@@ -317,7 +331,6 @@ async def main() -> None:
             ),
             max_retries=3,
         ),
-        include_builtin_subagents=True,
     )
 
     async with stream_agent(

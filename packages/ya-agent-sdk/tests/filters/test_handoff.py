@@ -62,8 +62,7 @@ async def test_process_handoff_with_handoff_message(tmp_path: Path) -> None:
             assert ctx.handoff_message is None
 
 
-async def test_process_handoff_with_user_prompts(tmp_path: Path) -> None:
-    """Should include original user_prompts in restored request."""
+async def test_process_handoff_retains_applied_logical_input(tmp_path: Path) -> None:
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
@@ -71,57 +70,22 @@ async def test_process_handoff_with_user_prompts(tmp_path: Path) -> None:
     ) as env:
         async with AgentContext(env=env) as ctx:
             ctx.handoff_message = "Summary"
-            ctx.user_prompts = "Build me a web app with React"
+            retained = ModelRequest(parts=[UserPromptPart(content="Focus on tests")])
+            ctx.run_input_ledger.record_initial([retained])
 
             mock_ctx = MagicMock()
             mock_ctx.deps = ctx
-
-            request = ModelRequest(parts=[UserPromptPart(content="Continue")])
-            history = [request]
+            history = [ModelRequest(parts=[UserPromptPart(content="Continue")])]
 
             result = await process_handoff_message(mock_ctx, history)
 
-            assert len(result) == 1
-
-            restored = result[0]
-            assert isinstance(restored, ModelRequest)
-            assert any(isinstance(p, SystemPromptPart) for p in restored.parts)
-            user_parts = [p for p in restored.parts if isinstance(p, UserPromptPart)]
-            assert "original-request" in user_parts[0].content
-            assert "Build me a web app with React" in user_parts[0].content
-
-
-async def test_process_handoff_with_steering_messages(tmp_path: Path) -> None:
-    """Should include steering messages in restored request and clear them after."""
-    async with LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    ) as env:
-        async with AgentContext(env=env) as ctx:
-            ctx.handoff_message = "Summary"
-            ctx.user_prompts = "Original task"
-            ctx.steering_messages = ["Focus on tests", "Skip docs"]
-
-            mock_ctx = MagicMock()
-            mock_ctx.deps = ctx
-
-            request = ModelRequest(parts=[UserPromptPart(content="Continue")])
-            history = [request]
-
-            result = await process_handoff_message(mock_ctx, history)
-
-            assert len(result) == 1
-
+            assert len(result) == 2
             restored = result[0]
             assert isinstance(restored, ModelRequest)
             user_parts = [p for p in restored.parts if isinstance(p, UserPromptPart)]
-            assert any("user-steering" in p.content for p in user_parts)
-            assert any("[User Steering] Focus on tests" in p.content for p in user_parts)
-            assert any("[User Steering] Skip docs" in p.content for p in user_parts)
             assert any("context-restored" in p.content for p in user_parts)
-
-            assert ctx.steering_messages == []
+            assert result[1] == retained
+            assert result[1] is not retained
 
 
 async def test_process_handoff_without_user_prompts(tmp_path: Path) -> None:
@@ -171,7 +135,7 @@ async def test_process_handoff_empty_history(tmp_path: Path) -> None:
 
 
 async def test_process_handoff_last_message_has_user_prompt(tmp_path: Path) -> None:
-    """Last message should have UserPromptPart for auto_load_files compatibility."""
+    """Last message should have UserPromptPart for files_to_inspect compatibility."""
     async with LocalEnvironment(
         allowed_paths=[tmp_path],
         default_path=tmp_path,
@@ -254,7 +218,7 @@ async def test_process_handoff_no_events_when_streaming_disabled(tmp_path: Path)
 
 def test_build_handoff_messages_basic() -> None:
     """Should build one restored request with summary and reminder."""
-    result = _build_handoff_messages("Test summary", tool_call_id="test-id")
+    result = _build_handoff_messages("Test summary")
 
     assert len(result) == 1
 
@@ -267,22 +231,17 @@ def test_build_handoff_messages_basic() -> None:
     assert any("summarize tool has already completed this handoff" in p.content for p in user_parts)
 
 
-def test_build_handoff_messages_with_prompt_and_steering() -> None:
-    """Should include original prompt and steering in restored request."""
-    result = _build_handoff_messages(
-        "Summary",
-        original_prompt="Build a CLI tool",
-        steering_messages=["Use click library"],
-    )
+def test_build_handoff_messages_with_retained_input() -> None:
+    retained = ModelRequest(parts=[UserPromptPart(content="Build a CLI tool")])
+
+    result = _build_handoff_messages("Summary", [retained])
 
     restored = result[0]
     assert isinstance(restored, ModelRequest)
     user_parts = [p for p in restored.parts if isinstance(p, UserPromptPart)]
-    assert "original-request" in user_parts[0].content
-    assert "Build a CLI tool" in user_parts[0].content
-    assert any("user-steering" in p.content for p in user_parts)
-    assert any("[User Steering] Use click library" in p.content for p in user_parts)
     assert any("context-restored" in p.content for p in user_parts)
+    assert result[1] == retained
+    assert result[1] is not retained
 
 
 # =============================================================================
@@ -294,7 +253,7 @@ def test_build_handoff_messages_tags_with_keep_handoff() -> None:
     """Handoff restored request should have keep:handoff metadata."""
     from ya_agent_sdk.filters._builders import KEEP_HANDOFF, KEEP_TAG_KEY
 
-    result = _build_handoff_messages("Summary", original_prompt="Hello", tool_call_id="test-id")
+    result = _build_handoff_messages("Summary")
 
     assert len(result) == 1
     restored = result[0]
@@ -303,20 +262,10 @@ def test_build_handoff_messages_tags_with_keep_handoff() -> None:
     assert restored.metadata[KEEP_TAG_KEY] == KEEP_HANDOFF
 
 
-def test_build_handoff_messages_uses_shared_builders() -> None:
-    """Handoff messages should use shared builders for original-request, steering, context-restored."""
-    result = _build_handoff_messages(
-        "Summary",
-        original_prompt="Build a CLI",
-        steering_messages=["Use click"],
-        tool_call_id="test-id",
-    )
+def test_build_handoff_messages_uses_restoration_marker() -> None:
+    result = _build_handoff_messages("Summary")
 
     restored = result[0]
     assert isinstance(restored, ModelRequest)
     user_parts = [p for p in restored.parts if isinstance(p, UserPromptPart)]
-    assert any("original-request" in p.content for p in user_parts)
-    assert any("Build a CLI" in p.content for p in user_parts)
-    assert any("user-steering" in p.content for p in user_parts)
-    assert any("[User Steering] Use click" in p.content for p in user_parts)
     assert any("context-restored" in p.content for p in user_parts)

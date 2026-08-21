@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from ya_agent_sdk.subagents import (
+    SubagentDeliveryState,
+    SubagentExecutionMode,
+    SubagentExecutionRecord,
+    SubagentExecutionState,
+)
 from yaacli.app import TUIApp, TUIState
 from yaacli.clipboard import ClipboardImage, ClipboardImageReadResult
 from yaacli.config import CommandDefinition, YaacliConfig
@@ -30,6 +36,62 @@ class MockConfigManager:
 
 def make_app() -> TUIApp:
     return TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+
+
+async def test_subagent_completion_projection_is_pending_only_and_session_scoped() -> None:
+    app = make_app()
+    app._session_id = "session-a"
+    first = SubagentExecutionRecord(
+        execution_id="exec-a",
+        root_execution_id="root",
+        owner_scope_id="session-a",
+        idempotency_key="key-a",
+        descriptor_id="helper:one",
+        plan_fingerprint="one",
+        route="helper",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.succeeded,
+        delivery_state=SubagentDeliveryState.pending,
+        parent_agent_id="main",
+        parent_logical_run_id="run-a",
+        prompt="work",
+    )
+    second = first.model_copy(
+        update={
+            "execution_id": "exec-b",
+            "owner_scope_id": "session-b",
+            "idempotency_key": "key-b",
+            "parent_logical_run_id": "run-b",
+        }
+    )
+    execution_store = MagicMock()
+    execution_store.list = AsyncMock(return_value=(first, second))
+    session_store = MagicMock()
+    session_store.get_run.side_effect = lambda run_id: SimpleNamespace(
+        session_id="session-a" if run_id == "run-a" else "session-b"
+    )
+    delivery_service = MagicMock()
+    delivery_service.deliver_pending = AsyncMock()
+    runtime_context = SimpleNamespace(delegation_scope_id="existing-scope")
+    app._subagent_execution_store = execution_store
+    app._subagent_execution_service = delivery_service
+    app._runtime = SimpleNamespace(ctx=runtime_context)  # type: ignore[assignment]
+    app._durable_store = session_store
+    app._append_system_output = MagicMock()  # type: ignore[method-assign]
+
+    await app._refresh_subagent_completion_projection()
+    await app._refresh_subagent_completion_projection()
+
+    app._append_system_output.assert_called_once()
+    assert "exec-a" in app._append_system_output.call_args.args[0]
+    delivery_service.deliver_pending.assert_not_awaited()
+    assert runtime_context.delegation_scope_id == "existing-scope"
+
+    app._session_id = "session-b"
+    await app._refresh_subagent_completion_projection()
+
+    assert app._append_system_output.call_count == 2
+    assert "exec-b" in app._append_system_output.call_args.args[0]
 
 
 def test_all_append_paths_share_real_line_and_byte_limits() -> None:
@@ -336,31 +398,3 @@ async def test_pending_attachment_count_and_byte_budgets() -> None:
 
     assert len(app._pending_attachments) == 1
     assert any("Attachment limit reached" in block for block in app._output_lines)
-
-
-@pytest.mark.asyncio
-async def test_async_session_save_does_not_block_event_loop() -> None:
-    app = make_app()
-    started = threading.Event()
-    release = threading.Event()
-
-    def blocking_save(**_: object) -> object:
-        started.set()
-        assert release.wait(timeout=2)
-        return object()
-
-    runtime = MagicMock()
-    runtime.ctx.export_state.return_value.model_dump_json.return_value = "{}"
-    app._runtime = runtime
-    app._display_replay.append({"type": "CUSTOM", "name": "test", "value": "payload"})
-    with patch("yaacli.app.tui.save_session_turn", side_effect=blocking_save):
-        save_task = asyncio.create_task(
-            app._save_session_snapshot_async(include_usage_ledger=False, save_reason="test")
-        )
-        assert await asyncio.to_thread(started.wait, 1)
-
-        # This event-loop turn would be blocked if persistence ran synchronously.
-        await asyncio.sleep(0)
-        assert save_task.done() is False
-        release.set()
-        assert await save_task is True

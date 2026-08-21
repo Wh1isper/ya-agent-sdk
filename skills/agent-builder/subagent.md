@@ -1,339 +1,418 @@
-# Subagent System
+# Portable Subagent Runtime
 
-Hierarchical agent architectures where a main agent delegates specialized tasks to child agents.
+YA Agent SDK 2.0 uses one host-neutral subagent domain model and one execution service.
+Foreground delegation, background delegation, named resume, targeted steering,
+cancellation, and self fork are operations over the same records and plans.
 
-## Overview
+Removed 1.x concepts are not accepted at runtime: `SubagentConfig`, generated delegate
+tool classes, `Toolset.with_subagents()`, implicit/automatic tool inheritance, hidden
+delegate backends, and MessageBus delivery.
 
-- **Markdown-based Configuration**: Define subagents using markdown files with YAML frontmatter
-- **Tool Inheritance**: Subagents inherit tools from parent toolset with optional filtering
-- **Auto-Inherit Tools**: Management tools (task\_\*, summarize) are automatically inherited by all subagents
-- **Model Flexibility**: Subagents can use different models or inherit from parent
-- **Dynamic Availability**: Subagent tools are automatically disabled when required tools are unavailable
-- **Unified Delegation** (Recommended): Single `delegate` tool to call any subagent by name
+## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph MainAgent["Main Agent"]
-        MainToolset["Toolset"]
-        DelegateTool["delegate Tool"]
-    end
+flowchart LR
+    Definition[SubagentSpec and AgentSpec]
+    Catalog[CapabilityCatalog]
+    Resolver[SubagentPlanResolver]
+    Plan[ResolvedSubagentPlan]
+    Registry[SubagentRegistry]
+    Capability[DelegationCapability]
+    Service[SubagentExecutionService]
+    Store[SubagentExecutionStore]
+    Driver[SubagentDriver]
+    Child[Child logical run]
 
-    subgraph Subagents["Subagents"]
-        Debugger["debugger"]
-        Explorer["explorer"]
-        Searcher["searcher"]
-    end
-
-    MainToolset -->|subset| Subagents
-    DelegateTool -->|delegates by name| Subagents
-    Subagents -->|returns result| MainAgent
+    Definition --> Resolver
+    Catalog --> Resolver
+    Resolver --> Plan
+    Plan --> Registry
+    Registry --> Capability
+    Capability --> Service
+    Service --> Store
+    Service --> Driver
+    Driver --> Child
 ```
 
-## Quick Start (Recommended: create_agent with unified_subagents)
+The layers have distinct responsibilities:
 
-The simplest way to use subagents is via `create_agent` with `unified_subagents=True`:
+- native Pydantic AI `AgentSpec` owns model, settings, description, instructions,
+  output schema, and serialized capability configuration;
+- YA `SubagentSpec` adds route, history, recursion, execution mode, linkage, host
+  requirements, and durability policy;
+- `SubagentPlanResolver` validates and fingerprints exact child grants;
+- `SubagentRegistry` stores immutable plan snapshots;
+- `DelegationCapability` contributes the model-facing tools and roster instruction;
+- `SubagentExecutionService` owns host-neutral lifecycle semantics;
+- the store and driver define process-local or restart-durable execution.
+
+## Complete In-Process Example
 
 ```python
-from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.subagents import SubagentConfig
-
-# Define custom subagents
-configs = [
-    SubagentConfig(
-        name="researcher",
-        description="Research specialist",
-        system_prompt="You are a research specialist...",
-        tools=["search", "scrape"],
-    ),
-    SubagentConfig(
-        name="analyst",
-        description="Data analyst",
-        system_prompt="You are a data analyst...",
-        tools=["view", "grep"],
-    ),
-]
-
-# Create agent with unified subagents (single 'delegate' tool)
-runtime = create_agent(
-    "anthropic:claude-sonnet-4",
-    tools=[...],
-    subagent_configs=configs,
-    unified_subagents=True,  # Creates single 'delegate' tool
+from pydantic_ai import AgentSpec
+from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import (
+    RuntimeFoundationCapability,
+    build_default_capability_catalog,
 )
-
-# Or with builtin subagents
-runtime = create_agent(
-    "anthropic:claude-sonnet-4",
-    tools=[...],
-    include_builtin_subagents=True,
-    unified_subagents=True,
-)
-```
-
-### Unified Tool Signature
-
-```python
-async def delegate(
-    subagent_name: str,  # Name of subagent to call (e.g., "self", "debugger", "explorer")
-    prompt: str,         # Task to delegate
-    agent_id: str | None = None,  # Optional ID to resume conversation
-) -> str:
-    ...
-```
-
-### Self Fork
-
-Unified delegate includes the built-in `subagent_name="self"` target. A self fork uses the current agent's system prompt, message history, model, capabilities, and ordinary tools, while delegation tools are hidden from the fork.
-
-Use self forks for full-context subtasks:
-
-- plan-then-execute workflows where independent plan steps can run in parallel
-- mid-task repository exploration while the parent continues implementation
-- assumption checks, approach comparisons, and implementation spikes
-
-Ask each self fork to return concise findings, changed files, tests run, and risks.
-
-```python
-# After creating a plan, issue independent calls in the same model response.
-delegate(subagent_name="self", prompt="Implement plan step 1. Return changed files and test results.")
-delegate(subagent_name="self", prompt="Explore the data-loading path and report relevant files, assumptions, and risks.")
-```
-
-### Key Benefits
-
-| Aspect      | Unified (Recommended)             | Individual Tools        |
-| ----------- | --------------------------------- | ----------------------- |
-| Tool Count  | 1 tool                            | N tools                 |
-| Instruction | Single combined instruction       | N separate instructions |
-| Selection   | `subagent_name` parameter         | Tool name selection     |
-| Flexibility | Dynamic availability per subagent | Per-tool availability   |
-
-## Alternative: Manual Unified Tool Creation
-
-For more control, you can create the unified tool manually:
-
-```python
-from ya_agent_sdk.agents import create_agent
 from ya_agent_sdk.subagents import (
-    SubagentConfig,
-    create_unified_subagent_tool,
-    load_builtin_unified_subagent_tool,
-)
-from ya_agent_sdk.toolsets.core.base import Toolset
-
-# Option 1: Load builtin subagents as unified tool
-parent_toolset = Toolset(tools=[GrepTool, ViewTool, SearchTool, ...])
-DelegateTool = load_builtin_unified_subagent_tool(
-    parent_toolset,
-    model="anthropic:claude-sonnet-4",
+    DelegationCapability,
+    InMemorySubagentExecutionStore,
+    InProcessSubagentDriver,
+    SelfForkPolicy,
+    SubagentExecutionMode,
+    SubagentExecutionService,
+    SubagentPlanResolver,
+    SubagentRegistry,
+    SubagentSpec,
 )
 
-# Option 2: Custom subagents as unified tool
-DelegateTool = create_unified_subagent_tool(
-    configs,
-    parent_toolset,
-    model="anthropic:claude-sonnet-4",
+model = "anthropic:claude-sonnet-4"
+catalog = build_default_capability_catalog()
+resolver = SubagentPlanResolver(catalog, default_model=model)
+
+researcher = resolver.resolve(
+    SubagentSpec(
+        route="researcher",
+        execution_modes=(SubagentExecutionMode.foreground,),
+        agent=AgentSpec.from_dict(
+            {
+                "name": "researcher",
+                "description": "Research a bounded question and return sources",
+                "instructions": "Return concise sourced findings and uncertainties.",
+                "capabilities": [
+                    {"RuntimeFoundationCapability": {}},
+                    {"WebSearchCapability": {}},
+                    {"WebContentCapability": {}},
+                    {"ToolObservationCapability": {}},
+                    {"ToolRetryCapability": {}},
+                    {"ToolTimeoutCapability": {}},
+                ],
+            }
+        ),
+    )
 )
 
-# Use with create_agent
+self_plan = resolver.resolve_self(
+    SelfForkPolicy(
+        agent=AgentSpec.from_dict(
+            {
+                "name": "self",
+                "description": "Fork the parent for a bounded independent task",
+                "model": model,
+                "instructions": "Work independently and report concise findings.",
+                "capabilities": [
+                    {"RuntimeFoundationCapability": {}},
+                    {"FilesystemCapability": {"writable": False}},
+                    {"ToolObservationCapability": {}},
+                    {"ToolRetryCapability": {}},
+                    {"ToolTimeoutCapability": {}},
+                ],
+            }
+        ),
+        history_message_limit=50,
+        execution_modes=(SubagentExecutionMode.foreground,),
+    )
+)
+
+registry = SubagentRegistry([researcher, self_plan])
+service = SubagentExecutionService(
+    registry,
+    InMemorySubagentExecutionStore(),
+    InProcessSubagentDriver(
+        custom_capability_types=catalog.custom_capability_types,
+    ),
+)
+
 runtime = create_agent(
-    "anthropic:claude-sonnet-4",
-    tools=[..., DelegateTool],
+    model,
+    capabilities=[
+        RuntimeFoundationCapability(),
+        DelegationCapability(registry=registry, service=service),
+    ],
 )
 ```
 
-## Alternative: Individual Subagent Tools
+`DelegationCapability.close_runtime()` closes its service when the owning
+`AgentRuntime` exits. The in-memory store and in-process driver are truthful
+process-local adapters; active executions do not survive process loss.
 
-For cases where you need each subagent as a separate tool:
+## Portable Definition
 
-```python
-from ya_agent_sdk.agents import create_agent
-from ya_agent_sdk.subagents import SubagentConfig
+### Host file adapters
 
-config = SubagentConfig(
-    name="researcher",
-    description="Research specialist for web searches",
-    system_prompt="You are a research specialist...",
-    tools=["search", "scrape"],
-)
+`SubagentSpec` is the portable runtime boundary, not a requirement that every human
+configuration file use the native YAML/JSON shape. A host may accept a concise Markdown
+subagent definition with YAML frontmatter and normalize it into `SubagentSpec` before
+catalog resolution, fingerprinting, or persistence.
 
-runtime = create_agent(
-    "anthropic:claude-sonnet-4",
-    tools=[SearchTool, ScrapeTool, ViewTool],
-    subagent_configs=[config],
-    include_builtin_subagents=True,
-)
-```
+Keep that adapter at the trusted host configuration boundary. It must materialize an
+explicit `AgentSpec`, capability list, model settings, and delegation policy. It must
+not restore `SubagentConfig`, generated delegate classes, ambient parent-tool copying,
+or alternate execution semantics. Persist only the normalized plan/descriptor so a
+restart never depends on reparsing mutable Markdown.
 
-## Configuration Format
-
-Subagents are defined using markdown files with YAML frontmatter:
+YAACLI supports this generic input form under `~/.yaacli/subagents/*.md`:
 
 ```markdown
 ---
-name: debugger
-description: Debugging specialist for errors and test failures
-instruction: |
-  Use the debugger subagent when encountering error messages or stack traces.
-tools:
-  - grep
-  - view
-optional_tools:
-  - shell
-  - edit
+name: explorer
+description: Inspect an unfamiliar codebase.
+instruction: Use this agent for focused codebase exploration.
 model: inherit
 model_settings: inherit
 model_cfg: inherit
+tools: [glob, grep, ls, view]
 ---
 
-You are an expert debugger specializing in systematic root cause analysis.
+Return concise findings with exact file paths and unresolved questions.
 ```
 
-### Configuration Fields
+The host combines `description` and optional `instruction` for the parent-facing roster,
+uses the body as child instructions, resolves `inherit` against the active root
+configuration, and converts tool names into a visibility policy over an explicit child
+capability plan. For generic definitions, YAACLI materializes its current standard safe
+child template at this trusted boundary to preserve the common inherited-tool behavior
+without copying live parent capabilities. Configuration-dependent reconstructable
+features may enter that template; ambient MCP, arbitrary plugin grants, delegation, and
+host-only capabilities do not.
 
-| Field            | Type          | Required | Description                                                      |
-| ---------------- | ------------- | -------- | ---------------------------------------------------------------- |
-| `name`           | `str`         | Yes      | Unique identifier, used as tool name or subagent_name parameter  |
-| `description`    | `str`         | Yes      | Shown to model when selecting tools/subagents                    |
-| `instruction`    | `str`         | No       | Injected into parent's system prompt                             |
-| `system_prompt`  | `str`         | Yes      | Markdown body content (after frontmatter)                        |
-| `tools`          | `list[str]`   | No       | Required tools from parent (ALL must be available)               |
-| `optional_tools` | `list[str]`   | No       | Optional tools (included if available)                           |
-| `model`          | `str`         | No       | `"inherit"` or model name (e.g., `"anthropic:claude-sonnet-4"`)  |
-| `model_settings` | `str \| dict` | No       | `"inherit"`, preset name, or dict config                         |
-| `model_cfg`      | `str \| dict` | No       | `"inherit"`, preset name (e.g., `"claude_200k"`), or dict config |
+When generic Markdown and a native document have the same basename, YAACLI treats the
+Markdown as the complete definition and ignores the native sidecar. It never combines a
+current generic definition with a historical native capability snapshot. Native
+`SubagentSpec` YAML/JSON remains the right standalone input when users need custom
+capability serialization names, nesting, durability, or complete delegation policy.
 
-### Tool Availability Rules
+### `SubagentSpec`
 
-- **Required tools** (`tools`): ALL must be available in parent toolset for subagent to be enabled
-- **Optional tools** (`optional_tools`): Included if available, not required for availability
-- **Auto-inherit tools**: Tools with `auto_inherit=True` are automatically included in all subagents (e.g., `task_*`, `summarize`)
-- **Main-agent-only tools**: Tools with `main_agent_only=True` are removed from regular subagents and self forks, including SDK Toolsets contributed or wrapped by inherited capabilities and sync or async dynamic Toolset factory results resolved per run or per step, even under full inheritance or explicit selection; SDK Toolset listing and calling also enforce the boundary regardless of `skip_unavailable`, opaque composites, or stale proxy caches
-- **No tools specified**: Subagent inherits all parent tools except main-agent-only tools and is always available
+| Field                   | Meaning                                                                     |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `route`                 | Stable parent-facing target name; must match `AgentSpec.name` when provided |
+| `agent`                 | Native Pydantic AI `AgentSpec` core                                         |
+| `history`               | `isolated`, `resumable`, or `parent_snapshot`                               |
+| `history_message_limit` | Bounded history grant, 1 to 1000 messages                                   |
+| `host_requirements`     | Explicit host features required before registration                         |
+| `max_depth`             | Maximum child depth for this route                                          |
+| `spawn_targets`         | Routes this child may spawn                                                 |
+| `execution_modes`       | Allowed `foreground` and/or `background` modes                              |
+| `linkage`               | `child` for parent delivery or `detached`                                   |
+| `durability`            | `process` or `restart` requirement                                          |
 
-### Stream Recovery
+A named child receives exactly the capabilities listed in its native `AgentSpec` plus
+the resolver's explicitly enumerated host-policy capabilities. An omitted capability is
+not inherited from the parent.
 
-When delegation runs inside `stream_agent(..., resume_on_error=True)`, regular subagents and self forks inherit the root run's effective execution and transport recovery budgets and resume prompt. Each child recovers its own message history, closes interrupted tool calls before replay, and resets its transport failure streak after a successful child model request. Successful child-local recovery does not consume the root agent's non-transport recovery budget; only an exhausted child failure propagates to the root tool-call path. Direct subagent calls outside `stream_agent()` fall back to the child `ModelConfig` stream recovery settings.
+The resolver injects a final `ToolVisibilityCapability` when the native spec does not
+already declare one. If a spec declares an explicit allow/deny policy, that policy is
+preserved and remains authoritative.
 
-### Auto-Inherit Tools
+### Capability serialization
 
-Some management tools are automatically inherited by all subagents without explicit configuration:
-
-| Tool          | Purpose                                  |
-| ------------- | ---------------------------------------- |
-| `task_create` | Create tasks for tracking work           |
-| `task_update` | Update task status and dependencies      |
-| `task_list`   | List all tasks                           |
-| `task_get`    | Get task details                         |
-| `summarize`   | Summarize context for session management |
-
-To create a custom auto-inherit tool:
-
-```python
-class MyManagementTool(BaseTool):
-    name = "my_tool"
-    description = "A management tool"
-    auto_inherit = True  # Automatically inherited by all subagents
-
-    async def call(self, ctx: RunContext[AgentContext]) -> str:
-        return "result"
-```
-
-## Builtin Presets
-
-Located in `ya_agent_sdk/subagents/presets/`:
-
-| Preset          | Purpose                                         | Required Tools               |
-| --------------- | ----------------------------------------------- | ---------------------------- |
-| `debugger`      | Systematic debugging and root cause analysis    | `glob`, `grep`, `view`, `ls` |
-| `explorer`      | Codebase navigation and structure understanding | `glob`, `grep`, `view`, `ls` |
-| `code-reviewer` | Code quality, security, and maintainability     | `glob`, `grep`, `view`, `ls` |
-| `searcher`      | Web research for documentation and solutions    | `search`                     |
+Use Pydantic AI capability specifications inside `AgentSpec`:
 
 ```python
-from ya_agent_sdk.subagents import (
-    get_builtin_subagent_configs,
-    load_builtin_unified_subagent_tool,  # Recommended
-    load_builtin_subagent_tools,         # Individual tools
+AgentSpec.from_dict(
+    {
+        "name": "reviewer",
+        "model": "openai-chat:gpt-4o",
+        "capabilities": [
+            {"RuntimeFoundationCapability": {}},
+            {"FilesystemCapability": {"writable": False}},
+            {
+                "ToolVisibilityCapability": {
+                    "allow": ["glob", "grep", "ls", "view"]
+                }
+            },
+        ],
+    }
 )
-
-# Inspect configurations
-configs = get_builtin_subagent_configs()
-
-# Load as unified tool (recommended)
-DelegateTool = load_builtin_unified_subagent_tool(parent_toolset, model="anthropic:claude-sonnet-4")
-
-# Or load as individual tools
-subagent_tools = load_builtin_subagent_tools(parent_toolset, model="anthropic:claude-sonnet-4")
 ```
 
-## API Reference
+SDK built-ins come from `build_default_capability_catalog()`. Selected custom types
+must be added through that catalog's explicit type or selected entry-point inputs.
+Profiles and persisted specs may reference trusted serialization names but cannot add
+Python import targets. A custom capability whose tools may emit native deferred output
+must also inherit `SupportsDeferredOutput` so resolved child output types include
+`DeferredToolRequests`.
 
-> Full docstrings and examples: `ya_agent_sdk/subagents/__init__.py`
+## Resolution and Fingerprints
 
-### Core
+`SubagentPlanResolver`:
 
-| Function/Class            | Description                                      |
-| ------------------------- | ------------------------------------------------ |
-| `SubagentConfig`          | Pydantic model for subagent configuration        |
-| `INHERIT`                 | Special value indicating inheritance from parent |
-| `parse_subagent_markdown` | Parse markdown string to SubagentConfig          |
-| `load_subagent_from_file` | Load SubagentConfig from a markdown file         |
-| `load_subagents_from_dir` | Load all SubagentConfigs from a directory        |
+1. deep-clones and validates the portable envelope;
+2. checks host requirements and requested durability;
+3. supplies `default_model` only when native `AgentSpec.model` is absent;
+4. renders only native template-capable description/instruction fields against the
+   frozen `AgentTemplateContext.template` projection;
+5. validates capability construction with native `Agent.from_spec()`;
+6. audits custom capability provenance;
+7. injects enumerated host policy grants; and
+8. creates a content-addressed immutable plan and descriptor.
 
-### Unified Subagent Factory (Recommended)
+The fingerprint includes the complete YA envelope, normalized native spec (including
+capability names and configuration), template projection, host policy IDs, effective
+output contract, durability, and bounded initial history. Packaging provenance in
+`custom_capability_audit` is retained separately and does not participate in identity
+or resume compatibility. The fingerprint is the full 64-lowercase-hex SHA-256 digest,
+and the content-addressed descriptor ID is `<route>:<full fingerprint>`;
+host-capability and durable-registration identities also retain the full digest.
+Mutating a plan after resolution causes registry or driver validation to fail.
 
-| Function                              | Description                                       |
-| ------------------------------------- | ------------------------------------------------- |
-| `create_unified_subagent_tool`        | Create single delegate tool from multiple configs |
-| `load_unified_subagent_tool_from_dir` | Load from directory as unified tool               |
-| `load_builtin_unified_subagent_tool`  | Load builtin presets as unified tool              |
-| `get_available_subagent_names`        | Get subagent names from unified tool class        |
+For restart-durable execution, persist `plan.to_descriptor()` before start and restore
+it with a compatible resolver. Never recover by re-reading a mutable profile name. A
+registry keeps one active plan per route for new spawns and a separate descriptor index
+for retained execution versions; existing records always select by `descriptor_id`.
+When that descriptor is not resident, a host may provide
+`RetainedSubagentPlanProvider`; the execution service restores and revalidates the exact
+historical plan as retained, never as the active route. Persist schema-v3 execution
+records with `owner_scope_id`, `segment_index`, independent child resumable state,
+durable steering inbox, deferred state, and correlated parent completion input. Reject
+older durable schemas explicitly; do not infer ownership or add a runtime compatibility
+adapter.
 
-### Individual Subagent Factory
+## Self Fork
 
-| Function                             | Description                              |
-| ------------------------------------ | ---------------------------------------- |
-| `create_subagent_tool_from_config`   | Create tool from SubagentConfig          |
-| `create_subagent_tool_from_markdown` | Create tool from markdown file or string |
-| `load_subagent_tools_from_dir`       | Load all subagent tools from a directory |
-| `get_builtin_subagent_configs`       | Get builtin preset configurations        |
-| `load_builtin_subagent_tools`        | Load builtin presets as individual tools |
+`self` is a normal registered route resolved from `SelfForkPolicy`. It does not clone a
+live `Agent`, capability instance, context, toolset, or model client.
 
-### Low-Level (Advanced)
+At delegation time, `DelegationCapability` snapshots the parent's canonical messages,
+removes the current incomplete `ModelResponse`, bounds the snapshot by
+`history_message_limit`, and passes it through the same execution service. Future parent
+messages are not shared implicitly.
 
-| Function                    | Description                                 |
-| --------------------------- | ------------------------------------------- |
-| `create_subagent_tool`      | Create tool from custom call function       |
-| `create_subagent_call_func` | Create call function from pydantic-ai Agent |
+Grant only capabilities that are safe and reconstructable in the child. User-facing
+HITL and delegation should remain absent unless the host explicitly implements the
+nested policy.
+
+## Model-Facing Tools
+
+One `DelegationCapability` exposes:
+
+| Tool              | Purpose                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| `delegate`        | Spawn a route or resume `agent_id`; foreground waits and background returns a handle |
+| `subagent_info`   | List plans/executions or inspect one execution                                       |
+| `wait_subagent`   | Bounded wait for one execution or one-shot fan-in across current executions          |
+| `steer_subagent`  | Send targeted native logical-run input                                               |
+| `cancel_subagent` | Request idempotent cancellation                                                      |
+
+The SDK default executes foreground delegation inline in the calling tool task. A host
+must explicitly inject a `SubagentExecutionHost` that supports background mode before it
+can expose asynchronous delegation. Mode is fixed by the host by default; construction
+rejects visible routes that do not allow that mode. Mode remains explicit record data
+and is never inferred from an ID string.
+
+Every model-facing operation is authorized by `AgentContext.delegation_scope_id`.
+Model inspection returns an operational projection rather than the full durable record,
+and steering returns only the execution handle plus disposition. Internal logical-run,
+inbox, enqueue, idempotency, and resumable-state identities remain host-only.
+
+Standalone roots default it to their stable root run ID; durable hosts use a stable
+session/root scope. Delegate, resume, and steering calls derive replay-stable operation
+keys from the parent logical run, native `tool_call_id`, operation, and target/resumed
+execution. Spawn idempotency is local to that scope, children inherit it, and
+one scope cannot inspect, wait for, steer, cancel, resume, or recover another scope's
+children. Host-wide inspection uses the separate `admin_get()` and `admin_list()`
+methods, never a model tool.
+
+## History, Steering, and Completion
+
+Each child owns a distinct `AgentContext`, logical run ID, `RunInputLedger`, router,
+history, task/note state, and run-local capability state. Durable hosts persist and
+restore that independent state for every segment; switching the visible parent session
+never selects a different child context. Shared Environment/routing authorities are
+explicit host services, not mutable context aliases.
+
+`resume()` starts a linked new execution only after a prior execution is terminal. It
+uses that record's exact descriptor and history even if the active route changed or was
+deleted; it never falls back to the current route. Native `DeferredToolRequests` instead
+use `continue_deferred()`: resolve every pending approval/call exactly once with matching
+`DeferredToolResults`, then continue the same execution and child logical run at the
+next segment. A host may inject
+`SubagentDeferredResolver` to perform the same continuation automatically after the
+suspended record commits; foreground wait then spans all resolved segments. Without
+that resolver, suspension remains explicit for manual continuation. History and usage
+remain cumulative, and the initial prompt is not replayed.
+
+The initial delegation prompt begins as `accepted`. Each driver outcome must report its
+`input_state`; the driver reports `applied` only after `record_initial()` or an equivalent
+durable host admission, and reports `rejected` on failure or cancellation before that
+boundary. A post-admission model failure remains `applied` and cannot be downgraded.
+
+Targeted steering is accepted only while the child execution is accepting input. A
+durable host persists it in the child's owner-scoped inbox before acknowledging it,
+drains each identity once per native attempt at graph boundaries, and reports
+accepted/enqueued/applied/rejected truthfully. A suspended durable child may accept input
+for its next continuation segment. Admission is linearized by the authoritative
+router/inbox: if terminal closure wins the race, steering returns `rejected` rather than
+failing the parent run. Unknown handles, owner-scope violations, malformed content, and
+idempotency-key reuse with different content remain errors. The standalone adapter
+returns `rejected` when no active router exists.
+
+Cancellation is idempotent for terminal records. Cancelling a suspended execution
+terminalizes it as `cancelled` and rejects any input that can no longer be applied.
+
+Every running child context carries its exact immutable plan descriptor. A nested spawn
+checks the `spawn_targets` from that descriptor, never from the route's mutable active
+plan; policy edits or active-route deletion therefore cannot add or revoke authority for
+an already-running child.
+
+A background result is committed before parent delivery. The in-process service can
+enqueue it into an active parent router. A durable host instead retains one idempotent,
+owner-scoped completion envelope in the parent inbox. The child remains pending delivery
+while that input is only accepted/enqueued; only canonical parent application marks it
+delivered. Terminal rejection clears the correlation so a later compatible run can
+receive it. UI events and readiness projections may notify a human, but they never
+substitute for canonical model input and never imply an automatic model wake.
+
+## Host Drivers
+
+- **Standalone SDK:** `InlineSubagentExecutionHost`,
+  `InMemorySubagentExecutionStore`, and `InProcessSubagentDriver`; foreground only and no
+  restart guarantee.
+- **YAACLI:** processor-owned asynchronous execution host, SQLite product records, and
+  `LocalSubagentDriver`; execution is process-local, persisted steering/result state is
+  inspectable, and restart orphans become `lost`.
+- **YA Claw:** SQL child sessions/runs plus its execution supervisor and durable outbox.
+
+Driver and store `restart_durable` declarations must agree. A plan requiring
+`SubagentDurability.restart` is rejected by the process-local resolver/driver.
 
 ## Best Practices
 
-1. **Use Unified Subagent**: Prefer `create_unified_subagent_tool` over individual tools for cleaner interface.
-2. **Focused Responsibility**: Each subagent should have a clear, specific purpose.
-3. **Minimal Required Tools**: Only require essential tools; use `optional_tools` for nice-to-haves.
-4. **Behavior-Focused Instructions**: Write `instruction` to help the parent decide when delegation is useful. Do not repeat tool capability lists that are already present in schemas.
-5. **Delegate Meaningful Work**: Delegate bounded subtasks with clear scope, independent value, specialist fit, or useful parallelism. Do not delegate tiny one-step actions or simple lookups.
-6. **Parent Owns Integration**: The parent agent remains responsible for planning, integrating results, user-facing synthesis, and final decisions.
-7. **Handle Missing Tools**: Subagents auto-disable when required tools are unavailable.
-8. **Execution Model**: Delegate calls are blocking. Multiple delegates in the same model response run concurrently (parallel-but-blocking), but the agent waits until all complete. This is not async/fire-and-forget.
+1. Give every route one focused responsibility and bounded expected output.
+2. Declare coherent child capabilities, not copied tool names.
+3. Keep host requirements explicit and fail before model invocation.
+4. Prefer `foreground` for results needed immediately; use `background` only when
+   independent progress has value.
+5. Use idempotency keys for retried spawn operations.
+6. Resume with the returned short route-prefixed execution handle and its exact retained
+   descriptor; internal logical-run UUIDs are never model-facing.
+7. Keep parent planning, integration, and user-facing synthesis in the parent.
+8. Treat lifecycle events as observations; stores and canonical input own truth.
+9. Use a restart-durable host driver whenever process loss must not lose work.
 
-## Integration with Task Manager
+## API Reference
 
-Use task tracking with subagents only when the overall workflow is complex enough to benefit from visible progress, ownership, or dependency state.
-Do not create tasks merely because a subagent is available.
+| API                              | Responsibility                                                              |
+| -------------------------------- | --------------------------------------------------------------------------- |
+| `SubagentSpec`                   | Thin YA delegation envelope around native `AgentSpec`                       |
+| `SelfForkPolicy`                 | Declarative bounded self-fork definition                                    |
+| `SubagentPlanResolver`           | Validation, normalization, audit, and fingerprinting                        |
+| `ResolvedSubagentPlan`           | Immutable exact-grant host-local execution plan                             |
+| `SubagentPlanDescriptor`         | Portable content-addressed durable snapshot                                 |
+| `SubagentRegistry`               | Public immutable plan registry                                              |
+| `DelegationCapability`           | Model-facing tools and roster instructions                                  |
+| `SubagentExecutionService`       | Spawn, deferred continuation, resume, steer, cancel, wait, inspect, deliver |
+| `SubagentExecutionHost`          | Host-selectable inline or asynchronous coroutine ownership                  |
+| `SubagentExecutionIdConflict`    | Typed store signal used to retry a colliding public handle                  |
+| `InlineSubagentExecutionHost`    | SDK default foreground execution in the calling task                        |
+| `AsyncioSubagentExecutionHost`   | Explicit process-local async task host for applications                     |
+| `SubagentDeferredResolver`       | Optional host-authorized child HITL continuation boundary                   |
+| `SubagentExecutionStore`         | Host-neutral execution-record persistence protocol                          |
+| `SubagentDriver`                 | Host-neutral resolved-plan execution protocol                               |
+| `InMemorySubagentExecutionStore` | Standalone process-local store                                              |
+| `InProcessSubagentDriver`        | Standalone process-local Pydantic AI driver                                 |
 
-Recommended flow for tracked delegated work:
-
-1. Create tasks only for meaningful work items with independent value, ownership, dependency, or delegation target.
-2. Assign `owner` when useful for visibility.
-3. Include the task ID, expected outcome, constraints, and reporting expectations in the delegation prompt.
-4. Update task status when delegated work starts and when results are integrated, blocked, or completed.
-
-If no task list is needed, delegate directly and do not ask the subagent to create or claim tasks.
-
-## See Also
-
-- [context.md](context.md) - AgentContext and subagent history management
-- [toolset.md](toolset.md) - Toolset architecture and tool creation
-- [model.md](model.md) - Model configuration and presets
+See the canonical architecture specification at
+`packages/ya-agent-sdk/spec/05-capability-first-runtime/07-subagent-runtime.md`.

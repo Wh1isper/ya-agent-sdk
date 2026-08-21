@@ -3,7 +3,7 @@
 This module contains the core toolset implementations including:
 - context: Context management tools (handoff)
 - document: Document processing tools
-- enhance: Enhancement tools (todo, thinking)
+- enhance: Enhancement tools (tasks, notes, thinking)
 - filesystem: File system operation tools
 - shell: Shell command execution tools
 - subagent: Sub-agent delegation tools

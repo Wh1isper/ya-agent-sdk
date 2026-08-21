@@ -12,7 +12,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
     VideoUrl,
 )
-from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+from ya_agent_sdk.context import AgentContext, ModelConfig, ModelFeature
 from ya_agent_sdk.filters.media_upload import create_media_upload_filter
 from ya_agent_sdk.media import MediaUploader
 
@@ -41,7 +41,7 @@ def mock_ctx_with_image_url():
     """Create mock context with IMAGE_URL capability."""
     ctx = MagicMock()
     ctx.deps = MagicMock(spec=AgentContext)
-    ctx.deps.model_cfg = ModelConfig(capabilities={ModelCapability.image_url})
+    ctx.deps.model_cfg = ModelConfig(capabilities={ModelFeature.image_url})
     return ctx
 
 
@@ -50,7 +50,7 @@ def mock_ctx_with_video_url():
     """Create mock context with VIDEO_URL capability."""
     ctx = MagicMock()
     ctx.deps = MagicMock(spec=AgentContext)
-    ctx.deps.model_cfg = ModelConfig(capabilities={ModelCapability.video_url})
+    ctx.deps.model_cfg = ModelConfig(capabilities={ModelFeature.video_url})
     return ctx
 
 
@@ -59,7 +59,7 @@ def mock_ctx_with_both():
     """Create mock context with both IMAGE_URL and VIDEO_URL capabilities."""
     ctx = MagicMock()
     ctx.deps = MagicMock(spec=AgentContext)
-    ctx.deps.model_cfg = ModelConfig(capabilities={ModelCapability.image_url, ModelCapability.video_url})
+    ctx.deps.model_cfg = ModelConfig(capabilities={ModelFeature.image_url, ModelFeature.video_url})
     return ctx
 
 
@@ -68,7 +68,7 @@ def mock_ctx_without_url_caps():
     """Create mock context without URL capabilities."""
     ctx = MagicMock()
     ctx.deps = MagicMock(spec=AgentContext)
-    ctx.deps.model_cfg = ModelConfig(capabilities={ModelCapability.vision})
+    ctx.deps.model_cfg = ModelConfig(capabilities={ModelFeature.vision})
     return ctx
 
 

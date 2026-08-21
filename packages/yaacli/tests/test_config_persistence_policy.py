@@ -16,11 +16,8 @@ def test_session_config_defaults() -> None:
     config = SessionConfig()
 
     assert config.session_dir is None
-    assert config.auto_save_history is True
+    assert config.database_path is None
     assert config.auto_restore is False
-    assert config.max_turns_per_session == 20
-    assert config.max_sessions == 100
-    assert config.max_session_age_days is None
 
 
 def test_packaged_config_template_exposes_terminal_bell_policy() -> None:
@@ -39,27 +36,13 @@ def test_packaged_config_template_exposes_session_persistence_policy() -> None:
     defaults = SessionConfig()
 
     assert '# session_dir = "~/.yaacli/sessions"' in template_text
-    assert session_template["auto_save_history"] is defaults.auto_save_history
+    assert '# database_path = "~/.yaacli/sessions/sessions-v2.sqlite3"' in template_text
     assert session_template["auto_restore"] is defaults.auto_restore
-    assert session_template["max_turns_per_session"] == defaults.max_turns_per_session
-    assert session_template["max_sessions"] == defaults.max_sessions
-    assert "# max_session_age_days = 90" in template_text
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("max_turns_per_session", 0),
-        ("max_turns_per_session", -1),
-        ("max_sessions", 0),
-        ("max_sessions", -1),
-        ("max_session_age_days", 0),
-        ("max_session_age_days", -1),
-    ],
-)
-def test_session_config_rejects_non_positive_limits(field: str, value: int) -> None:
-    with pytest.raises(ValidationError):
-        SessionConfig.model_validate({field: value})
+def test_session_config_rejects_removed_file_snapshot_policy() -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SessionConfig.model_validate({"auto_save_history": False})
 
 
 @pytest.mark.parametrize("shell_review", [{}, {"model": ""}, {"model": "   "}])
@@ -98,13 +81,7 @@ def test_supported_process_environment_overrides_are_applied(
     environment = {
         "YAACLI_SHOW_TOKEN_USAGE": "false",
         "YAACLI_SHOW_ELAPSED_TIME": "false",
-        "YAACLI_AUTO_SAVE_HISTORY": "false",
         "YAACLI_AUTO_RESTORE": "true",
-        "YAACLI_MAX_TURNS_PER_SESSION": "7",
-        "YAACLI_MAX_SESSIONS": "11",
-        "YAACLI_MAX_SESSION_AGE_DAYS": "13",
-        "YAACLI_AGENT_STREAM_RESUME_ON_ERROR": "false",
-        "YAACLI_AGENT_STREAM_RESUME_PROMPT": "Resume without repeating work.",
         "YAACLI_OAUTH_REFRESH_ENABLED": "false",
         "YAACLI_OAUTH_REFRESH_FAILURE_RETRY_SECONDS": "17",
     }
@@ -118,13 +95,7 @@ def test_supported_process_environment_overrides_are_applied(
 
     assert config.display.show_token_usage is False
     assert config.display.show_elapsed_time is False
-    assert config.session.auto_save_history is False
     assert config.session.auto_restore is True
-    assert config.session.max_turns_per_session == 7
-    assert config.session.max_sessions == 11
-    assert config.session.max_session_age_days == 13
-    assert config.general.agent_stream_resume_on_error is False
-    assert config.general.agent_stream_resume_prompt == "Resume without repeating work."
     assert config.oauth_refresh.enabled is False
     assert config.oauth_refresh.failure_retry_seconds == 17
 

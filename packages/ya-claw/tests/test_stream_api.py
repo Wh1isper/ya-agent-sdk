@@ -13,7 +13,7 @@ from ya_claw.config import get_settings
 def clear_claw_settings(
     monkeypatch,
     tmp_path: Path,
-    initialize_sqlite_database: Callable[[str], None],
+    initialize_sqlite_database: Callable[..., None],
 ) -> None:
     for env_name in (
         "YA_CLAW_API_TOKEN",
@@ -21,6 +21,8 @@ def clear_claw_settings(
         "YA_CLAW_DATA_DIR",
         "YA_CLAW_WEB_DIST_DIR",
         "YA_CLAW_WORKSPACE_DIR",
+        "YA_CLAW_PROFILE_SEED_FILE",
+        "YA_CLAW_AUTO_SEED_PROFILES",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -28,9 +30,13 @@ def clear_claw_settings(
     monkeypatch.setenv("YA_CLAW_DATA_DIR", str(tmp_path / "runtime-data"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setenv("YA_CLAW_WORKSPACE_PROVIDER_BACKEND", "local")
+    monkeypatch.setenv("YA_CLAW_AUTO_SEED_PROFILES", "false")
     get_settings.cache_clear()
     settings = get_settings()
-    initialize_sqlite_database(settings.resolved_database_url)
+    initialize_sqlite_database(
+        settings.resolved_database_url,
+        profile_names=("default",),
+    )
     yield
     get_settings.cache_clear()
 

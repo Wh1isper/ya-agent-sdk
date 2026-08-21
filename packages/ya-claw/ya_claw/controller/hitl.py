@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from contextlib import suppress
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -20,6 +19,7 @@ from ya_claw.controller.models import (
     InteractionRespondResponse,
     UserInteraction,
 )
+from ya_claw.execution.input_inbox import accept_run_input, lock_run_record
 from ya_claw.orm.tables import (
     BridgeHitlMessageRecord,
     HitlBatchRecord,
@@ -27,7 +27,12 @@ from ya_claw.orm.tables import (
     HitlInteractionRecord,
     RunRecord,
 )
-from ya_claw.runtime_state import InMemoryRuntimeState
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionResponseResult:
+    response: InteractionRespondResponse
+    resolution: UserInteraction
 
 
 class DeferredInputPayload(BaseModel):
@@ -62,7 +67,11 @@ class HitlController:
             raise ValueError("interactions must not be empty")
         existing = await self.get_pending_batch_for_run(db_session, run_id)
         if existing is not None:
-            active = await self.get_active_interactions(db_session, run_id=run_id)
+            active = await self.get_active_interactions(
+                db_session,
+                run_id=run_id,
+                batch_id=existing.id,
+            )
             return HitlBatchPayload(
                 batch_id=existing.id,
                 run_id=run_id,
@@ -111,45 +120,65 @@ class HitlController:
         record = result.scalar_one_or_none()
         return record if isinstance(record, HitlBatchRecord) else None
 
-    async def get_active_interactions(self, db_session: AsyncSession, *, run_id: str) -> list[ActiveInteraction]:
-        result = await db_session.execute(
-            select(HitlInteractionRecord)
-            .where(HitlInteractionRecord.run_id == run_id)
-            .order_by(HitlInteractionRecord.sequence_no.asc())
-        )
+    async def get_active_interactions(
+        self,
+        db_session: AsyncSession,
+        *,
+        run_id: str,
+        batch_id: str | None = None,
+    ) -> list[ActiveInteraction]:
+        statement = select(HitlInteractionRecord).where(HitlInteractionRecord.run_id == run_id)
+        if batch_id is not None:
+            statement = statement.where(HitlInteractionRecord.batch_id == batch_id)
+        result = await db_session.execute(statement.order_by(HitlInteractionRecord.sequence_no.asc()))
         return [_interaction_model_from_record(record) for record in result.scalars().all()]
 
     async def respond_interaction(
         self,
         db_session: AsyncSession,
-        runtime_state: InMemoryRuntimeState,
         run_id: str,
         interaction_id: str,
         request: InteractionRespondRequest,
-    ) -> InteractionRespondResponse:
-        run_record = await db_session.get(RunRecord, run_id)
+    ) -> InteractionResponseResult:
+        run_record = await lock_run_record(db_session, run_id)
         if not isinstance(run_record, RunRecord):
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' was not found.")
         if run_record.status != "running":
             raise HTTPException(status_code=409, detail=f"Run '{run_id}' is not waiting for interaction.")
-        batch = await self.get_pending_batch_for_run(db_session, run_id)
-        if batch is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' has no pending HITL batch.")
+
+        active_batch_id = run_record.run_metadata.get("active_hitl_batch_id")
+        batch = None
+        if isinstance(active_batch_id, str):
+            batch = await db_session.get(HitlBatchRecord, active_batch_id, with_for_update=True)
+        if not isinstance(batch, HitlBatchRecord):
+            batch_result = await db_session.execute(
+                select(HitlBatchRecord)
+                .where(HitlBatchRecord.run_id == run_id, HitlBatchRecord.status == "pending")
+                .order_by(HitlBatchRecord.created_at.desc())
+                .with_for_update()
+                .limit(1)
+            )
+            batch = batch_result.scalar_one_or_none()
+        if not isinstance(batch, HitlBatchRecord):
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' has no active HITL batch.")
 
         result = await db_session.execute(
-            select(HitlInteractionRecord).where(
+            select(HitlInteractionRecord)
+            .where(
                 HitlInteractionRecord.batch_id == batch.id,
                 HitlInteractionRecord.interaction_id == interaction_id,
             )
+            .with_for_update()
         )
         interaction_record = result.scalar_one_or_none()
         if not isinstance(interaction_record, HitlInteractionRecord):
             raise HTTPException(status_code=404, detail=f"Interaction '{interaction_id}' was not found.")
 
         now = datetime.now(UTC)
-        status = "approved" if request.approved else "denied"
         if interaction_record.status == "pending":
-            interaction_record.status = status
+            if batch.status != "pending":
+                raise HTTPException(status_code=409, detail=f"HITL batch '{batch.id}' is already {batch.status}.")
+            interaction_record.status = "approved" if request.approved else "denied"
             interaction_record.response = {
                 "approved": request.approved,
                 "reason": request.reason,
@@ -159,45 +188,40 @@ class HitlController:
             interaction_record.resolved_at = now
             interaction_record.updated_at = now
 
-        active_interactions = await self.get_active_interactions(db_session, run_id=run_id)
+        active_interactions = await self.get_active_interactions(
+            db_session,
+            run_id=run_id,
+            batch_id=batch.id,
+        )
         current = _current_interaction(active_interactions)
         remaining = sum(1 for interaction in active_interactions if interaction.status == "pending")
         batch.current_interaction_id = current.interaction_id if current is not None else None
         batch.updated_at = now
-        if remaining == 0:
-            batch.status = "completed"
-            batch.completed_at = now
 
         metadata = dict(run_record.run_metadata)
-        if remaining > 0:
-            metadata["active_interactions"] = [
-                interaction.model_dump(mode="json") for interaction in active_interactions
-            ]
-            metadata["active_hitl_batch_id"] = batch.id
-        else:
-            metadata.pop("active_interactions", None)
-            metadata.pop("active_hitl_batch_id", None)
+        metadata["active_interactions"] = [interaction.model_dump(mode="json") for interaction in active_interactions]
+        metadata["active_hitl_batch_id"] = batch.id
         run_record.run_metadata = metadata
-
-        with suppress(KeyError):
-            await runtime_state.resolve_hitl_interaction(
-                run_id,
-                interaction_id,
-                approved=request.approved,
-                reason=request.reason,
-                user_input=request.user_input,
-            )
 
         await db_session.flush()
         resolved = _interaction_model_from_record(interaction_record)
-        return InteractionRespondResponse(
-            session_id=run_record.session_id,
-            run_id=run_id,
-            interaction_id=resolved.interaction_id,
-            tool_call_id=resolved.tool_call_id,
-            status=resolved.status,
-            remaining_interaction_count=remaining,
-            current_interaction=current,
+        stored_response = interaction_record.response if isinstance(interaction_record.response, dict) else {}
+        return InteractionResponseResult(
+            response=InteractionRespondResponse(
+                session_id=run_record.session_id,
+                run_id=run_id,
+                interaction_id=resolved.interaction_id,
+                tool_call_id=resolved.tool_call_id,
+                status=resolved.status,
+                remaining_interaction_count=remaining,
+                current_interaction=current,
+            ),
+            resolution=UserInteraction(
+                tool_call_id=resolved.tool_call_id,
+                approved=resolved.status == "approved",
+                reason=stored_response.get("reason"),
+                user_input=stored_response.get("user_input"),
+            ),
         )
 
     async def mark_batch_completed(self, db_session: AsyncSession, *, run_id: str) -> None:
@@ -211,6 +235,52 @@ class HitlController:
         batch.updated_at = now
         await db_session.flush()
 
+    async def cancel_pending_batch(
+        self,
+        db_session: AsyncSession,
+        *,
+        run_id: str,
+        reason: str,
+    ) -> bool:
+        """Close orphaned HITL state when its process-owned run is interrupted."""
+        batch = await self.get_pending_batch_for_run(db_session, run_id)
+        now = datetime.now(UTC)
+        if batch is not None:
+            batch.status = "cancelled"
+            batch.current_interaction_id = None
+            batch.completed_at = now
+            batch.updated_at = now
+            interaction_result = await db_session.execute(
+                select(HitlInteractionRecord)
+                .where(
+                    HitlInteractionRecord.batch_id == batch.id,
+                    HitlInteractionRecord.status == "pending",
+                )
+                .with_for_update()
+            )
+            for interaction in interaction_result.scalars().all():
+                interaction.status = "denied"
+                interaction.response = {"approved": False, "reason": reason, "user_input": None}
+                interaction.resolved_at = now
+                interaction.updated_at = now
+
+        input_result = await db_session.execute(
+            select(HitlDeferredInputRecord)
+            .where(
+                HitlDeferredInputRecord.run_id == run_id,
+                HitlDeferredInputRecord.status == "pending",
+            )
+            .with_for_update()
+        )
+        deferred_inputs = list(input_result.scalars().all())
+        for deferred_input in deferred_inputs:
+            deferred_input.status = "discarded"
+            deferred_input.updated_at = now
+        if batch is not None or deferred_inputs:
+            await db_session.flush()
+            return True
+        return False
+
     async def enqueue_deferred_input(
         self,
         db_session: AsyncSession,
@@ -220,38 +290,64 @@ class HitlController:
         conversation_id: str | None,
         input_parts: list[dict[str, Any]],
         source_metadata: dict[str, Any] | None = None,
-    ) -> int:
+    ) -> int | None:
+        run_record = await lock_run_record(db_session, batch.run_id)
+        if not isinstance(run_record, RunRecord) or run_record.status != "running":
+            return None
+        locked_batch = await db_session.get(
+            HitlBatchRecord,
+            batch.id,
+            populate_existing=True,
+            with_for_update=True,
+        )
+        if (
+            not isinstance(locked_batch, HitlBatchRecord)
+            or locked_batch.run_id != run_record.id
+            or locked_batch.status != "pending"
+        ):
+            return None
         existing = await self._find_existing_deferred_input(db_session, message)
         if existing is not None:
-            return await self.count_pending_deferred_inputs(db_session, run_id=batch.run_id, batch_id=batch.id)
+            return await self.count_pending_deferred_inputs(
+                db_session,
+                run_id=locked_batch.run_id,
+                batch_id=locked_batch.id,
+            )
 
         next_sequence_result = await db_session.execute(
-            select(func.max(HitlDeferredInputRecord.sequence_no)).where(HitlDeferredInputRecord.batch_id == batch.id)
-        )
-        next_sequence = (next_sequence_result.scalar_one_or_none() or 0) + 1
-        db_session.add(
-            HitlDeferredInputRecord(
-                id=uuid4().hex,
-                batch_id=batch.id,
-                session_id=batch.session_id,
-                run_id=batch.run_id,
-                conversation_id=conversation_id,
-                adapter=message.adapter,
-                tenant_key=message.tenant_key,
-                external_event_id=message.event_id,
-                external_message_id=message.message_id,
-                external_chat_id=message.chat_id,
-                sequence_no=next_sequence,
-                input_parts=input_parts,
-                source_metadata=dict(source_metadata or {}),
-                status="pending",
+            select(func.max(HitlDeferredInputRecord.sequence_no)).where(
+                HitlDeferredInputRecord.batch_id == locked_batch.id
             )
         )
+        next_sequence = (next_sequence_result.scalar_one_or_none() or 0) + 1
         try:
-            await db_session.flush()
+            async with db_session.begin_nested():
+                db_session.add(
+                    HitlDeferredInputRecord(
+                        id=uuid4().hex,
+                        batch_id=locked_batch.id,
+                        session_id=locked_batch.session_id,
+                        run_id=locked_batch.run_id,
+                        conversation_id=conversation_id,
+                        adapter=message.adapter,
+                        tenant_key=message.tenant_key,
+                        external_event_id=message.event_id,
+                        external_message_id=message.message_id,
+                        external_chat_id=message.chat_id,
+                        sequence_no=next_sequence,
+                        input_parts=input_parts,
+                        source_metadata=dict(source_metadata or {}),
+                        status="pending",
+                    )
+                )
+                await db_session.flush()
         except IntegrityError:
-            await db_session.rollback()
-        return await self.count_pending_deferred_inputs(db_session, run_id=batch.run_id, batch_id=batch.id)
+            pass
+        return await self.count_pending_deferred_inputs(
+            db_session,
+            run_id=locked_batch.run_id,
+            batch_id=locked_batch.id,
+        )
 
     async def count_pending_deferred_inputs(
         self,
@@ -274,13 +370,17 @@ class HitlController:
         value = result.scalar_one()
         return int(value)
 
-    async def consume_deferred_inputs(
+    async def stage_deferred_inputs(
         self,
         db_session: AsyncSession,
         *,
         run_id: str,
         batch_id: str,
     ) -> list[DeferredInputPayload]:
+        """Atomically move HITL-gap inputs into the canonical run inbox."""
+        run_record = await lock_run_record(db_session, run_id)
+        if not isinstance(run_record, RunRecord):
+            raise KeyError(run_id)
         result = await db_session.execute(
             select(HitlDeferredInputRecord)
             .where(
@@ -289,11 +389,19 @@ class HitlController:
                 HitlDeferredInputRecord.status == "pending",
             )
             .order_by(HitlDeferredInputRecord.sequence_no.asc(), HitlDeferredInputRecord.created_at.asc())
+            .with_for_update()
         )
         records = [record for record in result.scalars().all() if isinstance(record, HitlDeferredInputRecord)]
         now = datetime.now(UTC)
         payloads: list[DeferredInputPayload] = []
         for record in records:
+            await accept_run_input(
+                db_session,
+                run_record,
+                list(record.input_parts),
+                delivery_key=f"hitl-deferred:{record.id}",
+                origin="user",
+            )
             record.status = "consumed"
             record.consumed_at = now
             record.updated_at = now

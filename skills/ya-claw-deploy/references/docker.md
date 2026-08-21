@@ -36,6 +36,21 @@ docker build -f Dockerfile.ya-claw -t ya-claw:dev .
 docker build -f Dockerfile.ya-claw-workspace -t ya-claw-workspace:dev .
 ```
 
+### Derived image for capability plugins
+
+Third-party capability plugins run inside the service process. Install them into the
+service `/opt/venv`; adding them only to the workspace image has no effect:
+
+```dockerfile
+FROM ghcr.io/wh1isper/ya-claw:latest
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN uv pip install --python /opt/venv/bin/python acme-agent-plugin
+```
+
+Keep package installation in the immutable image. Supply the versioned manifest as a
+read-only runtime mount and restart the service after any image or manifest change. See
+[`plugins.md`](plugins.md).
+
 ## Server Startup Contract
 
 The server image runs:
@@ -87,6 +102,7 @@ YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER=auto
 YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME=/home/claw
 YA_CLAW_PROFILE_SEED_FILE=/etc/ya-claw/profiles.yaml
 YA_CLAW_AUTO_SEED_PROFILES=true
+YA_CLAW_CAPABILITY_PLUGIN_MANIFEST=/etc/ya-claw/plugins.toml
 MALLOC_ARENA_MAX=2
 MALLOC_TRIM_THRESHOLD_=131072
 GATEWAY_API_KEY=replace-with-provider-key
@@ -115,9 +131,11 @@ services:
       YA_CLAW_WORKSPACE_DIR: /var/lib/ya-claw/workspace
       YA_CLAW_WORKSPACE_PROVIDER_BACKEND: docker
       YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOST_WORKSPACE_DIR: /srv/ya-claw/workspace
+      YA_CLAW_CAPABILITY_PLUGIN_MANIFEST: /etc/ya-claw/plugins.toml
     volumes:
       - /srv/ya-claw:/var/lib/ya-claw
       - ./profiles.yaml:/etc/ya-claw/profiles.yaml:ro
+      - ./plugins.toml:/etc/ya-claw/plugins.toml:ro
       - /var/run/docker.sock:/var/run/docker.sock
 ```
 

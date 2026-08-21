@@ -39,9 +39,9 @@ class RecordingSupervisor:
 
 
 @pytest.fixture
-async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[[str], None]) -> AsyncEngine:
+async def db_engine(tmp_path: Path, initialize_sqlite_database: Callable[..., None]) -> AsyncEngine:
     database_url = f"sqlite+aiosqlite:///{(tmp_path / 'workflows.sqlite3').resolve()}"
-    initialize_sqlite_database(database_url)
+    initialize_sqlite_database(database_url, profile_names=("default", "general"))
     engine = create_engine(database_url)
     try:
         yield engine
@@ -258,6 +258,23 @@ async def test_workflow_executor_advances_dag_and_projects_result(
         "session_id": second_node.session_id,
         "run_id": second_node.run_id,
     }
+
+
+async def test_node_retry_count_zero_overrides_workflow_default(
+    db_session: AsyncSession,
+) -> None:
+    record = WorkflowRunRecord(definition_snapshot={"policy": {"retry_count": 2}})
+    node = WorkflowNodeRunRecord(attempt_no=1)
+
+    retried = await WorkflowController()._retry_node_if_available(
+        db_session,
+        record,
+        node,
+        {"retry_count": 0},
+    )
+
+    assert retried is False
+    assert node.attempt_no == 1
 
 
 async def test_workflow_executor_service_dispatch_once(

@@ -21,7 +21,7 @@ The CLI uses the Codex device-code login flow, stores credentials in `~/.yaai/au
 SDK users can run:
 
 ```python
-from ya_agent_sdk.agents import create_agent
+from ya_agent_sdk.agents.main import create_agent
 
 async with create_agent("oauth@codex:gpt-5.5") as runtime:
     result = await runtime.agent.run("Hello", deps=runtime.ctx)
@@ -40,12 +40,22 @@ model_cfg = "gpt5_350k"
 YA Claw profile:
 
 ```yaml
-- name: codex-oauth
-  model: oauth@codex:gpt-5.5
-  model_settings_preset: openai_responses_high
-  model_config_preset: gpt5_350k
-  builtin_toolsets:
-    - core
+version: 2
+profiles:
+  - schema_version: 2
+    name: codex-oauth
+    agent:
+      model: oauth@codex:gpt-5.5
+      name: codex-oauth
+      model_settings:
+        openai_reasoning_effort: high
+      capabilities:
+        - FilesystemCapability
+        - ShellCapability
+    host:
+      model_config_preset: gpt5_350k
+      tool_groups: [session]
+    subagents: []
 ```
 
 ## Package Responsibilities
@@ -212,7 +222,7 @@ x-client-request-id: <thread_id>
 
 ## SDK Session Headers
 
-`AgentContext.get_model_extra_headers()` returns a stable header set. YA Claw passes `provider_session_id` and `provider_thread_id` through `extra_context_kwargs`; YAACLI uses the context `run_id` fallback.
+`AgentContext.get_model_extra_headers()` returns a stable header set. YA Claw passes `provider_session_id` and `provider_thread_id` through `context_kwargs`; YAACLI uses the context `run_id` fallback.
 
 ## Implementation Order
 

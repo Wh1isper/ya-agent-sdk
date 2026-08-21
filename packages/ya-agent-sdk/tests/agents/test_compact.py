@@ -1,9 +1,8 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai import ThinkingPart, ToolOutput
+from pydantic_ai import ModelSettings, ThinkingPart, ToolOutput
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
     BinaryContent,
@@ -19,7 +18,6 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.agents import compact as compact_module
-from ya_agent_sdk.agents import main as main_module
 from ya_agent_sdk.agents.compact import (
     _COMPACT_STRIP_KEYS,
     _DEFAULT_INJECTED_TAGS,
@@ -37,12 +35,8 @@ from ya_agent_sdk.agents.compact import (
     create_compact_filter,
     get_compact_agent,
 )
-from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.context.agent import PROJECT_GUIDANCE_TAG, USER_RULES_TAG
-from ya_agent_sdk.environment.local import LocalEnvironment
-from ya_agent_sdk.filters.auto_load_files import process_auto_load_files
-from ya_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
 
 def _history_processors_from_agent(runtime) -> list:
@@ -817,156 +811,6 @@ def test_trim_strips_last_turn_by_default() -> None:
 # =============================================================================
 
 
-async def test_create_agent_keeps_auto_load_files_processor_after_compact_filter(tmp_path: Path) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-
-    async with create_agent(
-        model="test",
-        env=env,
-    ) as runtime:
-        processors = _history_processors_from_agent(runtime)
-        auto_load_indexes = [i for i, processor in enumerate(processors) if processor is process_auto_load_files]
-
-        assert len(auto_load_indexes) == 2
-        assert auto_load_indexes[-1] > auto_load_indexes[0]
-
-
-async def test_create_agent_runs_runtime_instructions_after_compact(tmp_path: Path) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-
-    async with create_agent(
-        model="test",
-        env=env,
-    ) as runtime:
-        processors = _history_processors_from_agent(runtime)
-        runtime_indexes = [i for i, processor in enumerate(processors) if processor is inject_runtime_instructions]
-        compact_indexes = [
-            i for i, processor in enumerate(processors) if getattr(processor, "__name__", "") == "compact_filter"
-        ]
-        auto_load_indexes = [i for i, processor in enumerate(processors) if processor is process_auto_load_files]
-
-        assert len(runtime_indexes) == 1
-        assert compact_indexes
-        assert auto_load_indexes
-        assert runtime_indexes[0] > compact_indexes[0]
-        assert runtime_indexes[0] > auto_load_indexes[-1]
-
-
-def test_create_agent_uses_cache_friendly_compact_filter_by_default(tmp_path: Path, monkeypatch) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-    cache_friendly_filter = MagicMock(__name__="cache_friendly_compact_filter")
-    legacy_filter = MagicMock(__name__="legacy_compact_filter")
-    create_cache_friendly = MagicMock(return_value=cache_friendly_filter)
-    create_legacy = MagicMock(return_value=legacy_filter)
-    monkeypatch.setattr(main_module, "create_cache_friendly_compact_filter", create_cache_friendly)
-    monkeypatch.setattr(main_module, "create_compact_filter", create_legacy)
-
-    runtime = create_agent(model="test", env=env)
-
-    create_cache_friendly.assert_called_once_with(model_cfg=None)
-    create_legacy.assert_not_called()
-    assert cache_friendly_filter in _history_processors_from_agent(runtime)
-
-
-def test_create_agent_passes_explicit_compact_model_cfg_to_cache_friendly_filter(tmp_path: Path, monkeypatch) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-    cache_friendly_filter = MagicMock(__name__="cache_friendly_compact_filter")
-    create_cache_friendly = MagicMock(return_value=cache_friendly_filter)
-    compact_cfg = ModelConfig(context_window=123, compact_threshold=0.5)
-    monkeypatch.setattr(main_module, "create_cache_friendly_compact_filter", create_cache_friendly)
-
-    runtime = create_agent(
-        model="test",
-        env=env,
-        model_cfg=ModelConfig(context_window=10),
-        compact_model_cfg=compact_cfg,
-    )
-
-    create_cache_friendly.assert_called_once_with(model_cfg=compact_cfg)
-    assert cache_friendly_filter in _history_processors_from_agent(runtime)
-
-
-def test_create_agent_legacy_compact_filter_uses_runtime_model_cfg_by_default(tmp_path: Path, monkeypatch) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-    cache_friendly_filter = MagicMock(__name__="cache_friendly_compact_filter")
-    legacy_filter = MagicMock(__name__="legacy_compact_filter")
-    create_cache_friendly = MagicMock(return_value=cache_friendly_filter)
-    create_legacy = MagicMock(return_value=legacy_filter)
-    monkeypatch.setattr(main_module, "create_cache_friendly_compact_filter", create_cache_friendly)
-    monkeypatch.setattr(main_module, "create_compact_filter", create_legacy)
-
-    runtime = create_agent(
-        model="test",
-        env=env,
-        model_cfg=ModelConfig(context_window=10),
-        use_cache_friendly_compact_filter=False,
-    )
-
-    create_cache_friendly.assert_not_called()
-    create_legacy.assert_called_once_with(
-        model=None,
-        model_settings=None,
-        model_cfg=None,
-        main_model="test",
-        main_model_settings=None,
-    )
-    assert legacy_filter in _history_processors_from_agent(runtime)
-
-
-def test_create_agent_can_use_legacy_compact_filter(tmp_path: Path, monkeypatch) -> None:
-    env = LocalEnvironment(
-        allowed_paths=[tmp_path],
-        default_path=tmp_path,
-        tmp_base_dir=tmp_path,
-    )
-    cache_friendly_filter = MagicMock(__name__="cache_friendly_compact_filter")
-    legacy_filter = MagicMock(__name__="legacy_compact_filter")
-    create_cache_friendly = MagicMock(return_value=cache_friendly_filter)
-    create_legacy = MagicMock(return_value=legacy_filter)
-    compact_cfg = ModelConfig(context_window=123, compact_threshold=0.5)
-    monkeypatch.setattr(main_module, "create_cache_friendly_compact_filter", create_cache_friendly)
-    monkeypatch.setattr(main_module, "create_compact_filter", create_legacy)
-
-    runtime = create_agent(
-        model="test",
-        env=env,
-        compact_model="compact-model",
-        compact_model_settings={"temperature": 0},
-        compact_model_cfg=compact_cfg,
-        use_cache_friendly_compact_filter=False,
-    )
-
-    create_cache_friendly.assert_not_called()
-    create_legacy.assert_called_once_with(
-        model="compact-model",
-        model_settings={"temperature": 0},
-        model_cfg=compact_cfg,
-        main_model="test",
-        main_model_settings=None,
-    )
-    assert legacy_filter in _history_processors_from_agent(runtime)
-
-
 async def test_agent_context_resets_compact_depth_for_new_run_and_subagent(agent_context: AgentContext) -> None:
     agent_context._compact_depth = 2
 
@@ -1173,7 +1017,8 @@ def test_build_compacted_messages_tags_response_with_keep() -> None:
     from ya_agent_sdk.agents.compact import _build_compacted_messages
     from ya_agent_sdk.filters._builders import KEEP_COMPACT, KEEP_TAG_KEY
 
-    messages = _build_compacted_messages("Summary text", "Original prompt")
+    retained = ModelRequest(parts=[UserPromptPart(content="Original prompt")])
+    messages = _build_compacted_messages("Summary text", [retained])
     # Message 0: initial request (no keep tag)
     assert messages[0].metadata is None or KEEP_TAG_KEY not in (messages[0].metadata or {})
     # Message 1: ModelResponse with summary
@@ -1186,27 +1031,24 @@ def test_build_compacted_messages_tags_response_with_keep() -> None:
     assert messages[2].metadata[KEEP_TAG_KEY] == KEEP_COMPACT
 
 
-def test_build_compacted_messages_uses_shared_builders() -> None:
-    """Compacted messages should contain original-request, previous reference, steering, and restored parts."""
+def test_build_compacted_messages_retains_logical_input_and_reference() -> None:
     from ya_agent_sdk.agents.compact import _build_compacted_messages
 
+    retained = ModelRequest(parts=[UserPromptPart(content="Build a CLI")])
     messages = _build_compacted_messages(
         "Summary text",
-        "Build a CLI",
-        steering_messages=["Use click"],
+        [retained],
         previous_assistant_reference="1. Add tests\n2. Update docs",
     )
-    final_request = messages[2]
-    assert isinstance(final_request, ModelRequest)
-    user_parts = [p for p in final_request.parts if isinstance(p, UserPromptPart)]
-    # Should have: original-request, previous reference, steering, and context-restored
-    assert any("original-request" in p.content for p in user_parts)
-    assert any("Build a CLI" in p.content for p in user_parts)
-    assert any("previous-assistant-reference" in p.content for p in user_parts)
-    assert any("1. Add tests\n2. Update docs" in p.content for p in user_parts)
-    assert any("user-steering" in p.content for p in user_parts)
-    assert any("[User Steering] Use click" in p.content for p in user_parts)
-    assert any("context-restored" in p.content for p in user_parts)
+
+    restoration = messages[2]
+    assert isinstance(restoration, ModelRequest)
+    restoration_parts = [part for part in restoration.parts if isinstance(part, UserPromptPart)]
+    assert any("previous-assistant-reference" in part.content for part in restoration_parts)
+    assert any("1. Add tests\n2. Update docs" in part.content for part in restoration_parts)
+    assert any("context-restored" in part.content for part in restoration_parts)
+    assert messages[3] == retained
+    assert messages[3] is not retained
 
 
 # =============================================================================
@@ -1219,7 +1061,10 @@ def test_trim_history_preserves_keep_tagged_response() -> None:
     from ya_agent_sdk.agents.compact import _build_compacted_messages, _trim_history_for_compact
 
     # Simulate a history that includes a prior compact summary
-    prior_compact = _build_compacted_messages("Prior session summary with lots of detail", "Original prompt")
+    prior_compact = _build_compacted_messages(
+        "Prior session summary with lots of detail",
+        [ModelRequest(parts=[UserPromptPart(content="Original prompt")])],
+    )
 
     # Add normal conversation messages after the compact summary
     normal_messages: list[ModelMessage] = [
@@ -1238,7 +1083,7 @@ def test_trim_history_preserves_keep_tagged_response() -> None:
     assert trimmed[2] is prior_compact[2]  # ModelRequest with context-restored - same object
 
     # Normal messages should still be processed (injected context stripped)
-    trimmed_normal_request = trimmed[3]
+    trimmed_normal_request = trimmed[4]
     assert isinstance(trimmed_normal_request, ModelRequest)
     user_parts = [p for p in trimmed_normal_request.parts if isinstance(p, UserPromptPart)]
     # runtime-context should be stripped from normal messages
@@ -1253,9 +1098,8 @@ def test_trim_history_preserves_keep_tagged_handoff() -> None:
 
     # Build handoff messages (tagged with keep:handoff)
     handoff_msgs = _build_handoff_messages(
-        "Handoff summary with critical context " * 50,  # Long summary
-        original_prompt="Build something",
-        steering_messages=["Focus on tests"],
+        "Handoff summary with critical context " * 50,
+        [ModelRequest(parts=[UserPromptPart(content="Build something")])],
     )
 
     # Add more conversation after handoff
@@ -1396,6 +1240,7 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
     assert call_args.kwargs["message_history"] == message_history
     assert call_args.kwargs["deps"] is agent_context
     assert call_args.kwargs["output_type"] is str
+    assert call_args.kwargs["model_settings"] == ModelSettings(tool_choice="none")
     assert "instructions" not in call_args.kwargs
 
     assert len(compacted) == 3
@@ -1546,7 +1391,7 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
     assert compact_deps.model_cfg == agent_context.model_cfg
 
     assert len(compacted) == 3
-    assert agent_context.auto_load_files == []
+    assert agent_context.files_to_inspect == []
     assert agent_context.force_inject_instructions is True
     snapshot = agent_context.build_usage_snapshot()
     compact_entries = [entry for entry in snapshot.entries if entry.agent_id == "compact"]

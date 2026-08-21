@@ -13,7 +13,7 @@ from pydantic import Field
 from pydantic_ai import BinaryContent, RunContext, ToolReturn, VideoUrl
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.context import AgentContext, ModelCapability
+from ya_agent_sdk.context import AgentContext, ModelFeature
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.content._url_helper import (
     ContentCategory,
@@ -214,10 +214,10 @@ class ReadMediaTool(BaseTool):
     def _model_supports(self, ctx: RunContext[AgentContext], kind: MediaKind) -> bool:
         model_cfg = ctx.deps.model_cfg
         if kind == "image":
-            return model_cfg.has_capability(ModelCapability.vision)
+            return model_cfg.has_capability(ModelFeature.vision)
         if kind == "video":
-            return model_cfg.has_capability(ModelCapability.video_understanding)
-        return model_cfg.has_capability(ModelCapability.audio_understanding)
+            return model_cfg.has_capability(ModelFeature.video_understanding)
+        return model_cfg.has_capability(ModelFeature.audio_understanding)
 
     def _max_inline_bytes(self, ctx: RunContext[AgentContext], kind: MediaKind) -> int:
         tool_config = ctx.deps.tool_config

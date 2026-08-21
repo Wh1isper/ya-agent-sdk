@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,20 +12,25 @@ from typing import Any, Protocol, cast
 from loguru import logger
 from pydantic import BaseModel
 from pydantic_ai import DeferredToolRequests, DeferredToolResults
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
+from pydantic_ai.messages import EnqueuedMessagesEvent, ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai.tools import ToolDenied
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_environment import Environment
-from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime, AgentStreamer, stream_agent
-from ya_agent_sdk.context import BusMessage, ResumableState, StreamEvent
+from ya_agent_sdk.agents.main import AgentInterrupted, AgentRuntime
+from ya_agent_sdk.context import ResumableState, StreamEvent
 from ya_agent_sdk.environment import SandboxEnvironment
 from ya_agent_sdk.events import ModelRequestCompleteEvent, ModelRequestStartEvent, UsageSnapshotEvent
-from ya_agent_sdk.presets import INHERIT, resolve_model_cfg, resolve_model_settings
-from ya_agent_sdk.subagents import get_builtin_subagent_configs
-from ya_agent_sdk.subagents.config import SubagentConfig
-from ya_agent_sdk.toolsets.core.base import UserInteraction as SdkUserInteraction
+from ya_agent_sdk.execution import AgentExecutionHarness, AgentSegment, AgentSegmentRequest
+from ya_agent_sdk.inputs import InputDisposition, InputOrigin
+from ya_agent_sdk.interactions import (
+    DeferredApprovalResolution,
+    DeferredCallResolution,
+    DeferredInteractionResolution,
+    DeferredInteractionResolver,
+)
+from ya_agent_sdk.subagents import SubagentPlanDescriptor
 from ya_agent_sdk.usage import UsageSnapshot, combine_usage_snapshots
 from ya_agent_stream_protocol.sdk import AguiAdapterConfig, AguiEventAdapter
 
@@ -40,20 +47,34 @@ from ya_claw.controller.models import (
     TriggerType,
     parse_input_parts,
 )
+from ya_claw.controller.session_lifecycle import lock_session_reference
 from ya_claw.controller.store import extract_usage_snapshot_from_state, with_usage_snapshot_metadata
-from ya_claw.execution.background import BACKGROUND_MONITOR_KEY, BackgroundMonitor
 from ya_claw.execution.checkpoint import build_message_checkpoint, commit_run_artifacts, write_message_checkpoint
 from ya_claw.execution.input import InputMappingResult, map_input_parts
-from ya_claw.execution.profile import ProfileResolver, ResolvedProfile
+from ya_claw.execution.input_inbox import (
+    deliver_accepted_run_inputs,
+    lock_run_record,
+    mark_run_input_applied,
+    reject_open_run_inputs,
+)
+from ya_claw.execution.lifecycle_projection import CompletedRunProjector
+from ya_claw.execution.profile import (
+    PROFILE_SNAPSHOT_METADATA_KEY,
+    ProfileResolver,
+    ResolvedProfile,
+    resolved_profile_from_descriptor,
+    resolved_profile_from_subagent_plan,
+)
 from ya_claw.execution.restore import ResolvedRestorePoint, load_restore_point
 from ya_claw.execution.runtime import ClawRuntimeBuilder
 from ya_claw.execution.state_machine import complete_run, fail_run, interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
+from ya_claw.execution.subagents import restore_claw_subagent_plan
 from ya_claw.hitl import build_active_interactions
 from ya_claw.json_types import JsonValue
 from ya_claw.memory.lifecycle import MemoryLifecycle
 from ya_claw.notifications import NotificationHub
-from ya_claw.orm.tables import RunRecord, SessionAsyncTaskRecord, SessionRecord
+from ya_claw.orm.tables import RunInputInboxRecord, RunRecord, SessionAsyncTaskRecord, SessionRecord
 from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.toolsets.session import CLAW_SELF_CLIENT_KEY, ClawSelfClient
 from ya_claw.workspace import (
@@ -74,13 +95,7 @@ from ya_claw.workspace.models import (
 from ya_claw.workspace.runtime_models import build_session_sandbox_state_from_sandbox, session_sandbox_event_payload
 
 CLAW_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="ya_claw")
-
-
-@dataclass(slots=True)
-class AgencyMemorySource:
-    source_session_id: str
-    source_run_id: str | None
-    source_sequence_no: int
+_ASYNC_DELIVERY_RECOVERY_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -90,6 +105,7 @@ class ExecutionBuffers:
     latest_usage_snapshot: UsageSnapshot | None = None
     terminal_event: dict[str, Any] | None = None
     output_text: str | None = None
+    output_json: JsonValue = None
     claw_metadata: dict[str, Any] = field(default_factory=dict)
     success_committed: bool = False
     terminal_event_emitted: bool = False
@@ -137,6 +153,7 @@ class ExecutionSupervisor:
         profile_resolver: ProfileResolver,
         runtime_builder: ClawRuntimeBuilder,
         notification_hub: NotificationHub | None = None,
+        execution_harness: AgentExecutionHarness | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
@@ -146,8 +163,11 @@ class ExecutionSupervisor:
         self._profile_resolver = profile_resolver
         self._runtime_builder = runtime_builder
         self._notification_hub = notification_hub
+        self._execution_harness = execution_harness or AgentExecutionHarness()
         self._run_store = RunStore(settings)
+        self._hitl_controller = HitlController()
         self._accepting_submissions = True
+        self._delivery_recovery_task: asyncio.Task[None] | None = None
 
     @property
     def accepting_submissions(self) -> bool:
@@ -171,8 +191,47 @@ class ExecutionSupervisor:
     def schedule_run(self, run_id: str) -> bool:
         return self.submit_run(run_id)
 
+    async def startup(self) -> dict[str, list[str]]:
+        """Recover durable work and start supervised async-delivery retries."""
+        recovery = await self.startup_recover()
+        if self._delivery_recovery_task is None or self._delivery_recovery_task.done():
+            self._delivery_recovery_task = asyncio.create_task(
+                self._delivery_recovery_loop(),
+                name="ya-claw-async-delivery-recovery",
+            )
+        return recovery
+
+    async def _delivery_recovery_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_ASYNC_DELIVERY_RECOVERY_INTERVAL_SECONDS)
+            try:
+                recovered = await self.recover_pending_async_deliveries()
+                if recovered:
+                    logger.info(
+                        "Periodic async delivery recovery completed run_ids={}",
+                        recovered,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Periodic async delivery recovery failed; pending deliveries remain retryable")
+            try:
+                projected = await self.recover_pending_lifecycle_projections()
+                if projected:
+                    logger.info("Periodic lifecycle projection recovery completed run_ids={}", projected)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Periodic lifecycle projection recovery failed; completed runs remain retryable")
+
     async def shutdown(self) -> None:
         self._accepting_submissions = False
+        delivery_recovery_task = self._delivery_recovery_task
+        self._delivery_recovery_task = None
+        if delivery_recovery_task is not None:
+            delivery_recovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await delivery_recovery_task
         active_tasks = self._active_background_tasks()
         if not active_tasks:
             logger.info("Execution supervisor stopped")
@@ -234,12 +293,32 @@ class ExecutionSupervisor:
             result = await db_session.execute(statement)
             records = list(result.scalars().all())
             cancelled_ids: list[str] = []
-            for run_record in records:
-                session_record = await db_session.get(SessionRecord, run_record.session_id)
-                if not isinstance(session_record, SessionRecord):
+            for candidate in records:
+                session_record, run_record = await _lock_run_scope(
+                    db_session,
+                    session_id=candidate.session_id,
+                    run_id=candidate.id,
+                )
+                if run_record.status != "running":
                     continue
-                run_record.error_message = "Run was marked interrupted during YA Claw startup recovery."
+                recovery_reason = "Run was marked interrupted during YA Claw startup recovery."
+                run_record.error_message = recovery_reason
                 interrupt_run(session_record, run_record)
+                await self._hitl_controller.cancel_pending_batch(
+                    db_session,
+                    run_id=run_record.id,
+                    reason=recovery_reason,
+                )
+                metadata = dict(run_record.run_metadata)
+                metadata.pop("active_interactions", None)
+                metadata.pop("active_hitl_batch_id", None)
+                run_record.run_metadata = metadata
+                await reject_open_run_inputs(
+                    db_session,
+                    run_id=run_record.id,
+                    reason="Run was interrupted during startup recovery before input could be applied.",
+                    commit=False,
+                )
                 cancelled_ids.append(run_record.id)
             await db_session.flush()
             await self._process_recovered_async_task_runs(db_session, records)
@@ -295,17 +374,64 @@ class ExecutionSupervisor:
         logger.info("Recovered stale async task runs count={} run_ids={}", len(recovered_ids), recovered_ids)
         return recovered_ids
 
+    async def recover_pending_async_deliveries(self) -> list[str]:
+        async with self._session_factory() as db_session:
+            return await AsyncTaskController().recover_pending_deliveries(
+                db_session,
+                self._settings,
+                self._runtime_state,
+                submit_run=self.submit_run,
+            )
+
+    async def recover_pending_lifecycle_projections(self) -> list[str]:
+        return await CompletedRunProjector(
+            settings=self._settings,
+            session_factory=self._session_factory,
+            runtime_state=self._runtime_state,
+            run_store=self._run_store,
+            submit_run=self.submit_run,
+            agency_submit_run=self.submit_run,
+        ).recover_pending()
+
     async def startup_recover(self) -> dict[str, list[str]]:
+        empty = {
+            "cancelled_running": [],
+            "recovered_async_tasks": [],
+            "recovered_async_deliveries": [],
+            "recovered_lifecycle_projections": [],
+            "submitted_queued": [],
+        }
         try:
             cancelled_running = await self.cancel_orphaned_running_runs()
-            recovered_async_tasks = await self.recover_stale_async_task_runs()
-            submitted_queued = await self.recover_queued_runs()
         except SQLAlchemyError:
             logger.warning("Run tables are unavailable; skipping startup recovery.")
-            return {"cancelled_running": [], "recovered_async_tasks": [], "submitted_queued": []}
+            return empty
+
+        try:
+            recovered_async_tasks = await self.recover_stale_async_task_runs()
+        except Exception:
+            logger.exception("Stale async task recovery failed; other durable recovery will continue")
+            recovered_async_tasks = []
+        try:
+            recovered_async_deliveries = await self.recover_pending_async_deliveries()
+        except Exception:
+            logger.exception("Async delivery recovery failed; other durable recovery will continue")
+            recovered_async_deliveries = []
+        try:
+            recovered_lifecycle_projections = await self.recover_pending_lifecycle_projections()
+        except Exception:
+            logger.exception("Lifecycle projection recovery failed; queued run recovery will continue")
+            recovered_lifecycle_projections = []
+        try:
+            submitted_queued = await self.recover_queued_runs()
+        except SQLAlchemyError:
+            logger.warning("Run tables became unavailable during queued run recovery.")
+            submitted_queued = []
         return {
             "cancelled_running": cancelled_running,
             "recovered_async_tasks": recovered_async_tasks,
+            "recovered_async_deliveries": recovered_async_deliveries,
+            "recovered_lifecycle_projections": recovered_lifecycle_projections,
             "submitted_queued": submitted_queued,
         }
 
@@ -324,6 +450,8 @@ class ExecutionSupervisor:
                 runtime_builder=self._runtime_builder,
                 run_store=self._run_store,
                 notification_hub=self._notification_hub,
+                execution_harness=self._execution_harness,
+                submit_run=self.submit_run,
             )
             await coordinator.execute(run_id)
         finally:
@@ -335,7 +463,12 @@ class ExecutionSupervisor:
             return False
 
         async with self._session_factory() as db_session:
-            session_record, run_record = await _load_run_scope(db_session, run_id)
+            loaded_session, loaded_run = await _load_run_scope(db_session, run_id)
+            session_record, run_record = await _lock_run_scope(
+                db_session,
+                session_id=loaded_session.id,
+                run_id=loaded_run.id,
+            )
             if run_record.status != "queued":
                 logger.debug("Run claim skipped run_id={} status={}", run_id, run_record.status)
                 return False
@@ -393,6 +526,8 @@ class RunCoordinator:
         runtime_builder: ClawRuntimeBuilder,
         run_store: RunStore | None = None,
         notification_hub: NotificationHub | None = None,
+        execution_harness: AgentExecutionHarness | None = None,
+        submit_run: Callable[[str], bool] | None = None,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
@@ -402,8 +537,20 @@ class RunCoordinator:
         self._profile_resolver = profile_resolver
         self._runtime_builder = runtime_builder
         self._notification_hub = notification_hub
+        self._execution_harness = execution_harness or AgentExecutionHarness()
         self._run_store = run_store or RunStore(settings)
+        self._submit_run = submit_run
         self._hitl_controller = HitlController()
+
+    def _completed_run_projector(self) -> CompletedRunProjector:
+        return CompletedRunProjector(
+            settings=self._settings,
+            session_factory=self._session_factory,
+            runtime_state=self._runtime_state,
+            run_store=self._run_store,
+            submit_run=self._submit_memory_run,
+            agency_submit_run=self._submit_background_run,
+        )
 
     async def execute(self, run_id: str) -> None:  # noqa: C901
         buffers = ExecutionBuffers()
@@ -418,9 +565,17 @@ class RunCoordinator:
                     logger.debug("Run execution skipped run_id={} reason=termination_requested", run_id)
                     return
 
-                profile = await self._profile_resolver.resolve(run_record.profile_name or session_record.profile_name)
-                profile = self._derive_async_task_profile(profile, run_record)
-                workspace_binding = self._resolve_workspace_binding(run_record, session_record, profile)
+                profile = await self._resolve_run_profile(
+                    db_session,
+                    session_record,
+                    run_record,
+                )
+                workspace_binding = await self._resolve_workspace_binding(
+                    db_session,
+                    run_record,
+                    session_record,
+                    profile,
+                )
                 self._persist_run_workspace_snapshot(run_record, workspace_binding)
                 await db_session.commit()
                 restore_point = None
@@ -478,10 +633,34 @@ class RunCoordinator:
                     )
                     write_message_checkpoint(self._run_store, checkpoint)
                 await db_session.commit()
+                await db_session.refresh(run_record)
+                async_task_controller = AsyncTaskController()
+                await async_task_controller.on_run_terminal(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    run_record=run_record,
+                    submit_run=self._submit_memory_run,
+                )
+                await async_task_controller.recover_pending_deliveries(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    submit_run=self._submit_memory_run,
+                    parent_session_id=session_record.id,
+                )
         except Exception as exc:
             logger.exception("YA Claw run execution failed run_id={}", run_id)
             async with self._session_factory() as db_session:
-                session_record, run_record = await _load_run_scope(db_session, run_id)
+                session_candidate, run_candidate = await _load_run_scope(
+                    db_session,
+                    run_id,
+                )
+                session_record, run_record = await _lock_run_scope(
+                    db_session,
+                    session_id=session_candidate.id,
+                    run_id=run_candidate.id,
+                )
                 _index_run_usage_snapshot(run_record, buffers)
                 if buffers.latest_message_payload is not None:
                     checkpoint = build_message_checkpoint(
@@ -492,13 +671,54 @@ class RunCoordinator:
                     )
                     write_message_checkpoint(self._run_store, checkpoint)
                 termination_requested = self._runtime_state.get_termination_requested(run_id)
-                if run_record.status == "cancelled" or termination_requested is not None:
+                if run_record.status in _TERMINAL_RUN_STATUSES or termination_requested is not None:
                     await db_session.commit()
+                    if run_record.status == "completed":
+                        buffers.success_committed = True
+                    logger.error(
+                        "Post-commit run processing failed without changing terminal state run_id={} status={}",
+                        run_id,
+                        run_record.status,
+                    )
+                    try:
+                        async_task_controller = AsyncTaskController()
+                        await async_task_controller.on_run_terminal(
+                            db_session,
+                            self._settings,
+                            self._runtime_state,
+                            run_record=run_record,
+                            submit_run=self._submit_memory_run,
+                        )
+                        await async_task_controller.recover_pending_deliveries(
+                            db_session,
+                            self._settings,
+                            self._runtime_state,
+                            submit_run=self._submit_memory_run,
+                            parent_session_id=session_record.id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Terminal run recovery hook failed run_id={} status={}",
+                            run_id,
+                            run_record.status,
+                        )
+                    if run_record.status == "completed":
+                        try:
+                            await self._completed_run_projector().project(run_id)
+                        except Exception:
+                            logger.exception("Terminal run lifecycle projection failed run_id={}", run_id)
                     return
 
                 fail_run(session_record, run_record)
                 run_record.error_message = self._stringify_error(exc)
                 run_record.output_text = buffers.output_text
+                run_record.output_json = buffers.output_json
+                await reject_open_run_inputs(
+                    db_session,
+                    run_id=run_record.id,
+                    reason="Run failed before input could be applied.",
+                    commit=False,
+                )
                 await db_session.commit()
                 await db_session.refresh(run_record)
                 async_task_controller = AsyncTaskController()
@@ -508,6 +728,13 @@ class RunCoordinator:
                     self._runtime_state,
                     run_record=run_record,
                     submit_run=self._submit_memory_run,
+                )
+                await async_task_controller.recover_pending_deliveries(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    submit_run=self._submit_memory_run,
+                    parent_session_id=session_record.id,
                 )
                 if session_record.session_type == "memory":
                     lifecycle = MemoryLifecycle(
@@ -575,10 +802,20 @@ class RunCoordinator:
         buffers: ExecutionBuffers,
     ) -> None:
         async with self._session_factory() as db_session:
-            session_record, run_record = await _load_run_scope(db_session, run_id)
-            if run_record.status == "cancelled":
+            session_candidate, run_candidate = await _load_run_scope(
+                db_session,
+                run_id,
+            )
+            session_record, run_record = await _lock_run_scope(
+                db_session,
+                session_id=session_candidate.id,
+                run_id=run_candidate.id,
+            )
+            if run_record.status in _TERMINAL_RUN_STATUSES:
                 _index_run_usage_snapshot(run_record, buffers)
                 await db_session.commit()
+                if run_record.status == "completed":
+                    buffers.success_committed = True
                 return
 
             effective_message_payload = buffers.latest_message_payload or {
@@ -597,7 +834,14 @@ class RunCoordinator:
             }
             complete_run(session_record, run_record)
             run_record.output_text = buffers.output_text
+            run_record.output_json = buffers.output_json
             _index_run_usage_snapshot(run_record, buffers)
+            await reject_open_run_inputs(
+                db_session,
+                run_id=run_record.id,
+                reason="Run completed before input could be applied.",
+                commit=False,
+            )
             agui_adapter = AguiEventAdapter(
                 session_id=session_record.id, run_id=run_id, config=CLAW_AGUI_ADAPTER_CONFIG
             )
@@ -606,6 +850,7 @@ class RunCoordinator:
                     "termination_reason": run_record.termination_reason,
                     "committed_at": run_record.committed_at.isoformat() if run_record.committed_at else None,
                     "output_text": run_record.output_text,
+                    "output_json": run_record.output_json,
                 }
             )
             commit_run_artifacts(
@@ -619,89 +864,52 @@ class RunCoordinator:
                 ),
             )
             await db_session.commit()
-            await db_session.refresh(run_record)
-            await _publish_run_status_notification(
-                self._notification_hub,
-                "run.updated",
-                run_record,
-            )
-
-            await self._runtime_state.append_run_event(
-                run_id,
-                buffers.terminal_event,
-                terminal=True,
-            )
             buffers.success_committed = True
-            buffers.terminal_event_emitted = True
             buffers.clear_runtime_handle = dispatch_mode != "stream"
+            await db_session.refresh(run_record)
+            try:
+                await _publish_run_status_notification(
+                    self._notification_hub,
+                    "run.updated",
+                    run_record,
+                )
+            except Exception:
+                logger.exception("Run completion notification failed run_id={}", run_id)
+
+            try:
+                await self._runtime_state.append_run_event(
+                    run_id,
+                    buffers.terminal_event,
+                    terminal=True,
+                )
+            except Exception:
+                logger.exception("Run completion event delivery failed run_id={}", run_id)
+            else:
+                buffers.terminal_event_emitted = True
             if not buffers.clear_runtime_handle:
                 self._runtime_state.schedule_run_cleanup(run_id)
-            lifecycle = MemoryLifecycle(
-                settings=self._settings,
-                session_factory=self._session_factory,
-                runtime_state=self._runtime_state,
-                submit_run=self._submit_memory_run,
-                agency_submit_run=self._submit_background_run,
-            )
-            async_task_controller = AsyncTaskController()
-            await async_task_controller.on_run_terminal(
-                db_session,
-                self._settings,
-                self._runtime_state,
-                run_record=run_record,
-                submit_run=self._submit_memory_run,
-            )
-            if session_record.session_type == "memory":
-                await lifecycle.on_memory_run_committed(memory_run_id=run_record.id)
-            elif session_record.session_type == "async_task":
-                logger.debug("Skipping memory capture for async task session run_id={}", run_record.id)
-            elif session_record.session_type == "agency":
-                agency_lifecycle = AgencyLifecycle(
-                    settings=self._settings,
-                    runtime_state=self._runtime_state,
-                    submit_run=self._submit_background_run,
+            try:
+                async_task_controller = AsyncTaskController()
+                await async_task_controller.on_run_terminal(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    run_record=run_record,
+                    submit_run=self._submit_memory_run,
                 )
-                await agency_lifecycle.on_agency_run_committed(db_session, run_record)
-                if self._settings.agency_memory_capture_enabled:
-                    agency_metadata = (
-                        run_record.run_metadata.get("agency") if isinstance(run_record.run_metadata, dict) else None
-                    )
-                    for source in await _agency_memory_sources(db_session, agency_metadata):
-                        await lifecycle.on_run_committed(
-                            source_session_id=source.source_session_id,
-                            source_run_id=source.source_run_id or run_record.id,
-                            source_sequence_no=source.source_sequence_no,
-                            profile_name=run_record.profile_name,
-                            claw_metadata=buffers.claw_metadata,
-                        )
-            else:
-                await lifecycle.on_run_committed(
-                    source_session_id=session_record.id,
-                    source_run_id=run_record.id,
-                    source_sequence_no=run_record.sequence_no,
-                    profile_name=run_record.profile_name,
-                    claw_metadata=buffers.claw_metadata,
+                await async_task_controller.recover_pending_deliveries(
+                    db_session,
+                    self._settings,
+                    self._runtime_state,
+                    submit_run=self._submit_memory_run,
+                    parent_session_id=session_record.id,
                 )
-                if self._settings.agency_enabled and run_record.trigger_type != TriggerType.AGENCY_HANDOFF.value:
-                    agency_lifecycle = AgencyLifecycle(
-                        settings=self._settings,
-                        runtime_state=self._runtime_state,
-                        submit_run=self._submit_background_run,
-                    )
-                    await agency_lifecycle.observe_run_output(
-                        db_session,
-                        source_session_id=session_record.id,
-                        source_run_id=run_record.id,
-                        source_sequence_no=run_record.sequence_no,
-                        trigger_type=run_record.trigger_type,
-                        source_kind=run_record.trigger_type,
-                        output_text=run_record.output_text,
-                        metadata={
-                            "profile_name": run_record.profile_name,
-                            "termination_reason": run_record.termination_reason,
-                            "head_success_run_id": session_record.head_success_run_id,
-                        },
-                    )
+            except Exception:
+                logger.exception("Completed run async task projection failed run_id={}", run_id)
+            try:
+                await self._completed_run_projector().project(run_id)
+            except Exception:
+                logger.exception("Completed run lifecycle projection failed run_id={}", run_id)
             logger.info(
                 "Run completed run_id={} session_id={} output_text_chars={}",
                 run_id,
@@ -762,8 +970,6 @@ class RunCoordinator:
             workspace_binding.cwd,
         )
         environment = self._environment_factory.build(workspace_binding, profile=profile)
-        background_monitor = BackgroundMonitor(run_id=run_id, runtime_state=self._runtime_state)
-        environment.resources.set(BACKGROUND_MONITOR_KEY, background_monitor)
         memory_metadata = run_metadata.get("memory") if isinstance(run_metadata, dict) else None
         agency_metadata = run_metadata.get("agency") if isinstance(run_metadata, dict) else None
         self_client_session_id = _memory_source_session_id(memory_metadata) or session_id
@@ -796,7 +1002,6 @@ class RunCoordinator:
             dispatch_mode=dispatch_mode,
             source_kind=trigger_type,
             source_metadata=source_metadata,
-            async_subagents_context=None,
             claw_metadata={
                 "profile": profile.metadata,
                 "trigger_type": trigger_type,
@@ -813,8 +1018,6 @@ class RunCoordinator:
         try:
             async with runtime:
                 try:
-                    background_monitor.set_core_toolset(runtime.core_toolset)
-
                     runtime.ctx.container_id = self._extract_environment_container_id(environment)
                     await self._persist_workspace_sandbox(session_id, workspace_binding, environment)
                     refresh_task = self._start_workspace_sandbox_refresh(
@@ -833,8 +1036,7 @@ class RunCoordinator:
                         current_user_prompt = next_user_prompt
                         next_user_prompt = None
                         segment_base_usage_snapshot = cumulative_usage_snapshot
-                        async with stream_agent(
-                            runtime,
+                        segment_request: AgentSegmentRequest[ClawAgentContext, Any, Environment] = AgentSegmentRequest(
                             user_prompt=current_user_prompt,
                             user_prompt_factory=(
                                 (lambda runtime_obj: self._build_initial_prompt(runtime_obj, input_parts))
@@ -847,13 +1049,23 @@ class RunCoordinator:
                             resume_max_attempts=self._settings.agent_stream_resume_max_attempts,
                             transport_resume_max_attempts=self._settings.agent_stream_transport_resume_max_attempts,
                             resume_prompt=self._settings.agent_stream_resume_prompt,
+                        )
+                        async with self._execution_harness.stream_segment(
+                            runtime,
+                            segment_request,
                         ) as streamer:
-                            steering_task = asyncio.create_task(
-                                self._forward_runtime_signals(
-                                    run_id=run_id,
+                            self._runtime_state.bind_input_ingress(
+                                run_id,
+                                lambda input_id, raw_batch: self._enqueue_runtime_input(
+                                    input_id,
+                                    raw_batch,
                                     runtime=runtime,
                                     streamer=streamer,
                                 ),
+                            )
+                            await self._deliver_accepted_run_inputs(run_id)
+                            steering_task = asyncio.create_task(
+                                self._forward_runtime_signals(run_id=run_id, streamer=streamer),
                                 name=f"ya-claw-run-{run_id}-signals",
                             )
                             try:
@@ -866,11 +1078,33 @@ class RunCoordinator:
                                     if updated_usage_snapshot is not None:
                                         cumulative_usage_snapshot = updated_usage_snapshot
                                         buffers.latest_usage_snapshot = updated_usage_snapshot
+                                    if isinstance(
+                                        effective_stream_event.event,
+                                        EnqueuedMessagesEvent,
+                                    ):
+                                        input_applied = await self._mark_run_input_applied(
+                                            run_id,
+                                            effective_stream_event.event,
+                                            runtime=runtime,
+                                        )
+                                        if input_applied:
+                                            await self._runtime_state.append_run_event(
+                                                run_id,
+                                                agui_adapter.build_run_custom_event(
+                                                    "input_applied",
+                                                    {"disposition": InputDisposition.applied.value},
+                                                ),
+                                            )
+                                    if isinstance(
+                                        effective_stream_event.event,
+                                        ModelRequestStartEvent,
+                                    ):
+                                        await self._mark_source_delivery_applied(run_id)
                                     for agui_event in agui_adapter.adapt_stream_event(effective_stream_event):
                                         await self._runtime_state.append_run_event(run_id, agui_event)
                                     if streamer.run is not None:
                                         output = streamer.run.result.output if streamer.run.result else None
-                                        buffers.output_text = self._stringify_output(output)
+                                        buffers.output_text, buffers.output_json = self._normalize_output(output)
                                         if isinstance(
                                             effective_stream_event.event,
                                             (ModelRequestStartEvent, ModelRequestCompleteEvent, UsageSnapshotEvent),
@@ -885,6 +1119,7 @@ class RunCoordinator:
                                 streamer.raise_if_exception()
                                 logger.debug("Agent stream completed run_id={} session_id={}", run_id, session_id)
                             finally:
+                                self._runtime_state.clear_input_ingress(run_id)
                                 steering_task.cancel()
                                 await asyncio.gather(steering_task, return_exceptions=True)
 
@@ -893,10 +1128,11 @@ class RunCoordinator:
                                     raise AgentInterrupted()
                                 raise RuntimeError("Stream agent completed without run context.")
 
+                            segment_outcome = streamer.outcome()
                             buffers.latest_message_payload = self._build_message_payload(
                                 streamer.run,
                                 replay_events=self._runtime_state.get_replay_events(run_id),
-                                recoverable_messages=streamer.recoverable_messages(),
+                                recoverable_messages=list(segment_outcome.checkpoint.messages),
                             )
                             runtime.ctx.container_id = self._extract_environment_container_id(environment)
                             buffers.claw_metadata = dict(runtime.ctx.claw_metadata)
@@ -909,22 +1145,25 @@ class RunCoordinator:
                                 message_payload=buffers.latest_message_payload,
                                 usage_snapshot=cumulative_usage_snapshot,
                             )
-                            output = streamer.run.result.output if streamer.run.result else None
+                            output = segment_outcome.output
                             if isinstance(output, DeferredToolRequests):
-                                message_history = list(streamer.run.all_messages())
+                                message_history = list(segment_outcome.checkpoint.messages)
+                                self._persist_deferred_segment_checkpoint(
+                                    run_id=run_id,
+                                    session_id=session_id,
+                                    buffers=buffers,
+                                )
                                 deferred_tool_results = await self._handle_deferred_tool_requests(
                                     run_id=run_id,
                                     session_id=session_id,
                                     deferred_requests=output,
-                                    message_history=message_history,
-                                    runtime=runtime,
                                     agui_adapter=agui_adapter,
                                     run_metadata=run_metadata,
                                 )
                                 use_initial_prompt = False
                                 continue
 
-                            buffers.output_text = self._stringify_output(output)
+                            buffers.output_text, buffers.output_json = self._normalize_output(output)
                             logger.debug(
                                 "Agent run artifacts prepared run_id={} message_count={} output_text_chars={}",
                                 run_id,
@@ -934,36 +1173,13 @@ class RunCoordinator:
                                 len(buffers.output_text or ""),
                             )
                             async with self._runtime_state.session_lock(session_id):
-                                pending_steering = self._runtime_state.consume_steering_inputs(run_id)
-                                if not pending_steering:
-                                    drained_background = await background_monitor.drain_or_cancel(timeout=10.0)
-                                    if not drained_background:
-                                        logger.warning(
-                                            "YA Claw background subagents cancelled after drain timeout run_id={}",
-                                            run_id,
-                                        )
-                                    pending_steering = self._runtime_state.consume_steering_inputs(run_id)
-                                if not pending_steering:
-                                    await self._commit_successful_run(
-                                        run_id=run_id,
-                                        session_id=session_id,
-                                        dispatch_mode=dispatch_mode,
-                                        buffers=buffers,
-                                    )
-                                    break
-                            message_history = list(streamer.run.all_messages())
-                            deferred_tool_results = None
-                            use_initial_prompt = False
-                            next_user_prompt = await self._build_steering_prompt_from_batches(
-                                pending_steering,
-                                runtime=runtime,
-                            )
-                            logger.info(
-                                "Continuing run after terminal-gate steering run_id={} batch_count={}",
-                                run_id,
-                                len(pending_steering),
-                            )
-                            continue
+                                await self._commit_successful_run(
+                                    run_id=run_id,
+                                    session_id=session_id,
+                                    dispatch_mode=dispatch_mode,
+                                    buffers=buffers,
+                                )
+                            break
 
                 finally:
                     if refresh_task is not None:
@@ -973,14 +1189,38 @@ class RunCoordinator:
             runtime.ctx.container_id = self._extract_environment_container_id(environment)
             await self._persist_workspace_sandbox(session_id, workspace_binding, environment, final=True)
 
+    def _persist_deferred_segment_checkpoint(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        buffers: ExecutionBuffers,
+    ) -> None:
+        """Persist the stable native segment before exposing its HITL batch."""
+        if buffers.latest_state_payload is None or buffers.latest_message_payload is None:
+            raise RuntimeError("Deferred segment completed without stable checkpoint payloads")
+        checkpointed_at = datetime.now(UTC).isoformat()
+        self._run_store.write_state(
+            run_id,
+            {
+                **buffers.latest_state_payload,
+                "run_id": run_id,
+                "session_id": session_id,
+                "checkpoint_kind": "deferred_segment",
+                "checkpointed_at": checkpointed_at,
+            },
+        )
+        self._run_store.write_message(
+            run_id,
+            self._extract_replay_events(buffers.latest_message_payload),
+        )
+
     async def _handle_deferred_tool_requests(
         self,
         *,
         run_id: str,
         session_id: str,
         deferred_requests: DeferredToolRequests,
-        message_history: list[ModelMessage],
-        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
         agui_adapter: AguiEventAdapter,
         run_metadata: dict[str, Any],
     ) -> DeferredToolResults | None:
@@ -1000,24 +1240,44 @@ class RunCoordinator:
         batch_id = await self._enter_hitl_pending(
             run_id, interactions, agui_adapter, deferred_requests=deferred_requests
         )
+        inputs_staged = False
         try:
             user_interactions = await self._runtime_state.wait_hitl_batch(run_id)
-            if runtime.core_toolset is None:
-                raise RuntimeError("Core toolset is unavailable for HITL processing.")
-            sdk_user_interactions = [
-                SdkUserInteraction(
-                    tool_call_id=interaction.tool_call_id,
-                    approved=interaction.approved,
-                    reason=interaction.reason,
-                    user_input=interaction.user_input,
-                )
-                for interaction in user_interactions
-            ]
-            results = await runtime.core_toolset.process_hitl_call(runtime.ctx, sdk_user_interactions, message_history)
-            await self._forward_deferred_hitl_inputs(run_id=run_id, batch_id=batch_id, runtime=runtime)
+            external_call_ids = {request.tool_call_id for request in deferred_requests.calls}
+            resolutions: list[DeferredInteractionResolution] = []
+            for interaction in user_interactions:
+                if interaction.tool_call_id in external_call_ids:
+                    resolutions.append(
+                        DeferredCallResolution(
+                            tool_call_id=interaction.tool_call_id,
+                            result=(
+                                interaction.user_input
+                                if interaction.approved
+                                else ToolDenied(message=interaction.reason or "External call denied")
+                            ),
+                        )
+                    )
+                else:
+                    resolutions.append(
+                        DeferredApprovalResolution(
+                            tool_call_id=interaction.tool_call_id,
+                            approved=interaction.approved,
+                            reason=interaction.reason,
+                            override_args=(
+                                interaction.user_input if isinstance(interaction.user_input, dict) else None
+                            ),
+                        )
+                    )
+            results = DeferredInteractionResolver().resolve(deferred_requests, resolutions)
+            await self._forward_deferred_hitl_inputs(run_id=run_id, batch_id=batch_id)
+            inputs_staged = True
             return results
         finally:
-            await self._exit_hitl_pending(run_id, agui_adapter)
+            await self._exit_hitl_pending(
+                run_id,
+                agui_adapter,
+                inputs_staged=inputs_staged,
+            )
 
     async def _enter_hitl_pending(
         self,
@@ -1031,7 +1291,11 @@ class RunCoordinator:
             raise ValueError("interactions must not be empty")
         session_id = interactions[0].session_id
         async with self._session_factory() as db_session:
-            _, run_record = await _load_run_scope(db_session, run_id)
+            _, run_record = await _lock_run_scope(
+                db_session,
+                session_id=session_id,
+                run_id=run_id,
+            )
             batch = await self._hitl_controller.create_batch(
                 db_session,
                 session_id=session_id,
@@ -1063,11 +1327,29 @@ class RunCoordinator:
         )
         return batch.batch_id
 
-    async def _exit_hitl_pending(self, run_id: str, agui_adapter: AguiEventAdapter) -> None:
+    async def _exit_hitl_pending(
+        self,
+        run_id: str,
+        agui_adapter: AguiEventAdapter,
+        *,
+        inputs_staged: bool,
+    ) -> None:
         self._runtime_state.clear_hitl(run_id)
         async with self._session_factory() as db_session:
-            session_record, run_record = await _load_run_scope(db_session, run_id)
-            await self._hitl_controller.mark_batch_completed(db_session, run_id=run_id)
+            run_reference = await db_session.get(RunRecord, run_id)
+            if not isinstance(run_reference, RunRecord):
+                raise TypeError(f"Run '{run_id}' was not found.")
+            session_record, run_record = await _lock_run_scope(
+                db_session,
+                session_id=run_reference.session_id,
+                run_id=run_id,
+            )
+            if not inputs_staged:
+                await self._hitl_controller.cancel_pending_batch(
+                    db_session,
+                    run_id=run_id,
+                    reason="HITL continuation ended before deferred inputs were staged.",
+                )
             metadata = dict(run_record.run_metadata)
             metadata.pop("active_interactions", None)
             metadata.pop("active_hitl_batch_id", None)
@@ -1078,7 +1360,7 @@ class RunCoordinator:
         await self._runtime_state.append_run_event(
             run_id,
             agui_adapter.build_run_custom_event(
-                "hitl_resolved",
+                "hitl_resolved" if inputs_staged else "hitl_cancelled",
                 {
                     "run_id": run_id,
                     "session_id": session_record.id,
@@ -1091,21 +1373,18 @@ class RunCoordinator:
         *,
         run_id: str,
         batch_id: str,
-        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
     ) -> None:
         async with self._session_factory() as db_session:
-            deferred_inputs = await self._hitl_controller.consume_deferred_inputs(
+            deferred_inputs = await self._hitl_controller.stage_deferred_inputs(
                 db_session,
                 run_id=run_id,
                 batch_id=batch_id,
             )
+            await self._hitl_controller.mark_batch_completed(db_session, run_id=run_id)
             await db_session.commit()
         for deferred_input in deferred_inputs:
-            parts = parse_input_parts(list(deferred_input.input_parts))
-            mapping = await map_input_parts(parts, file_operator=runtime.ctx.file_operator)
-            runtime.ctx.send_message(BusMessage(content=self._build_user_prompt(mapping), source="user", target="main"))
             logger.debug(
-                "Forwarded deferred HITL input run_id={} batch_id={} sequence_no={}",
+                "Staged deferred HITL input in canonical inbox run_id={} batch_id={} sequence_no={}",
                 run_id,
                 batch_id,
                 deferred_input.sequence_no,
@@ -1119,111 +1398,149 @@ class RunCoordinator:
         mapping = await map_input_parts(input_parts, file_operator=runtime_obj.ctx.file_operator)
         return self._build_user_prompt(mapping)
 
+    async def _enqueue_runtime_input(
+        self,
+        input_id: str,
+        raw_batch: list[dict[str, Any]],
+        *,
+        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
+        streamer: AgentSegment[ClawAgentContext, Any, Environment],
+    ) -> Any:
+        async with self._session_factory() as db_session:
+            input_record = await db_session.get(RunInputInboxRecord, input_id)
+            if not isinstance(input_record, RunInputInboxRecord):
+                raise TypeError(f"Run input {input_id!r} no longer exists")
+            origin = InputOrigin(input_record.origin)
+        parts = parse_input_parts(list(raw_batch))
+        mapping = await map_input_parts(parts, file_operator=runtime.ctx.file_operator)
+        content = self._build_user_prompt(mapping)
+        if isinstance(content, str):
+            return await streamer.enqueue(
+                content,
+                origin=origin,
+                input_id=input_id,
+            )
+        return await streamer.enqueue(
+            *content,
+            origin=origin,
+            input_id=input_id,
+        )
+
+    async def _deliver_accepted_run_inputs(self, run_id: str) -> None:
+        async with self._session_factory() as db_session:
+            await deliver_accepted_run_inputs(
+                db_session,
+                self._runtime_state,
+                run_id,
+            )
+
+    async def _mark_run_input_applied(
+        self,
+        run_id: str,
+        event: EnqueuedMessagesEvent,
+        *,
+        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
+    ) -> bool:
+        router = runtime.ctx.input_router
+        sdk_input_id = router.observe_event(event) if router is not None else None
+        async with self._session_factory() as db_session:
+            record = await mark_run_input_applied(
+                db_session,
+                run_id=run_id,
+                sdk_input_id=sdk_input_id,
+                enqueue_id=event.enqueue_id,
+            )
+        return record is not None
+
+    async def _mark_source_delivery_applied(self, run_id: str) -> None:
+        """Persist that a continuation command reached a native model request."""
+        async with self._session_factory() as db_session:
+            run_record = await lock_run_record(db_session, run_id)
+            if not isinstance(run_record, RunRecord):
+                return
+            if run_record.source_delivery_id is None or run_record.source_delivery_applied_at is not None:
+                return
+            run_record.source_delivery_applied_at = datetime.now(UTC)
+            await db_session.commit()
+
     async def _forward_runtime_signals(
         self,
         *,
         run_id: str,
-        runtime: AgentRuntime[ClawAgentContext, Any, Environment],
-        streamer: AgentStreamer[ClawAgentContext, Any],
+        streamer: AgentSegment[ClawAgentContext, Any, Environment],
     ) -> None:
         while True:
             termination_reason = self._runtime_state.get_termination_requested(run_id)
             if isinstance(termination_reason, str):
                 streamer.interrupt()
                 return
-
-            steering_batches = self._runtime_state.consume_steering_inputs(run_id)
-            for raw_batch in steering_batches:
-                logger.debug("Forwarding steering input run_id={} input_parts={}", run_id, len(raw_batch))
-                parts = parse_input_parts(list(raw_batch))
-                mapping = await map_input_parts(parts, file_operator=runtime.ctx.file_operator)
-                content = self._build_user_prompt(mapping)
-                runtime.ctx.send_message(BusMessage(content=content, source="user", target="main"))
-
             await asyncio.sleep(0.1)
 
-    def _derive_async_task_profile(self, profile: ResolvedProfile, run_record: RunRecord) -> ResolvedProfile:
-        metadata = run_record.run_metadata if isinstance(run_record.run_metadata, dict) else {}
-        async_task = metadata.get("async_task") if isinstance(metadata.get("async_task"), dict) else None
-        if not isinstance(async_task, dict):
-            return profile
-        subagent_name = async_task.get("subagent_name")
-        if not isinstance(subagent_name, str) or subagent_name.strip() == "":
-            return profile
-        config = next((item for item in profile.subagent_configs if item.name == subagent_name), None)
-        if config is None and profile.include_builtin_subagents:
-            config = get_builtin_subagent_configs().get(subagent_name)
-        if config is None:
-            raise ValueError(f"Subagent '{subagent_name}' is not configured for profile '{profile.name}'.")
-        return ResolvedProfile(
-            name=profile.name,
-            model=config.model if config.model is not None and config.model != INHERIT else profile.model,
-            model_settings=self._resolve_async_subagent_model_settings(config, profile),
-            model_config=self._resolve_async_subagent_model_config(config, profile),
-            system_prompt=config.system_prompt,
-            builtin_toolsets=profile.builtin_toolsets,
-            builtin_tool_allowlist=self._async_task_tool_allowlist(profile, config),
-            subagent_configs=profile.subagent_configs,
-            include_builtin_subagents=profile.include_builtin_subagents,
-            unified_subagents=profile.unified_subagents,
-            need_user_approve_tools=profile.need_user_approve_tools,
-            need_user_approve_mcps=profile.need_user_approve_mcps,
-            shell_review=profile.shell_review,
-            shell_sandbox=profile.shell_sandbox,
-            enabled_mcps=profile.enabled_mcps,
-            disabled_mcps=profile.disabled_mcps,
-            mcp_servers=profile.mcp_servers,
-            workspace_backend_hint=profile.workspace_backend_hint,
-            metadata={**profile.metadata, "async_subagent_name": subagent_name},
+    async def _resolve_run_profile(
+        self,
+        db_session: AsyncSession,
+        session_record: SessionRecord,
+        run_record: RunRecord,
+    ) -> ResolvedProfile:
+        if session_record.session_type != "async_task":
+            descriptor = run_record.run_metadata.get(PROFILE_SNAPSHOT_METADATA_KEY)
+            if not isinstance(descriptor, dict):
+                raise RuntimeError(f"Run {run_record.id!r} has no exact execution profile descriptor")
+            return resolved_profile_from_descriptor(descriptor)
+
+        result = await db_session.execute(
+            select(SessionAsyncTaskRecord)
+            .where(
+                SessionAsyncTaskRecord.task_session_id == session_record.id,
+                SessionAsyncTaskRecord.task_run_id == run_record.id,
+            )
+            .limit(1)
         )
+        task_record = result.scalar_one_or_none()
+        if not isinstance(task_record, SessionAsyncTaskRecord):
+            raise TypeError(f"Async task run '{run_record.id}' has no server-owned task linkage.")
+        session_metadata = session_record.session_metadata if isinstance(session_record.session_metadata, dict) else {}
+        session_task = session_metadata.get("async_task")
+        session_task_id = session_task.get("task_id") if isinstance(session_task, dict) else None
+        run_metadata = run_record.run_metadata if isinstance(run_record.run_metadata, dict) else {}
+        run_task = run_metadata.get("async_task")
+        run_task_id = run_task.get("task_id") if isinstance(run_task, dict) else None
+        if session_task_id != task_record.id or run_task_id != task_record.id:
+            raise RuntimeError(f"Async task run '{run_record.id}' has inconsistent session/run linkage.")
+        if not isinstance(task_record.plan_descriptor, dict):
+            raise TypeError(f"Async task '{task_record.id}' has no immutable 2.0 plan descriptor.")
+        descriptor = SubagentPlanDescriptor.model_validate(task_record.plan_descriptor)
+        if descriptor.spec.route != task_record.subagent_name:
+            raise ValueError("Async task descriptor route does not match the task record")
+        if descriptor.descriptor_id != task_record.plan_descriptor_ref:
+            raise ValueError("Async task descriptor identity does not match the task record")
+        if descriptor.fingerprint != task_record.plan_fingerprint:
+            raise ValueError("Async task descriptor fingerprint does not match the task record")
+        plan = restore_claw_subagent_plan(
+            descriptor,
+            capability_catalog=self._settings.resolved_capability_plugins.catalog,
+        )
+        return resolved_profile_from_subagent_plan(plan)
 
-    def _resolve_async_subagent_model_settings(
+    async def _resolve_workspace_binding(
         self,
-        config: SubagentConfig,
-        profile: ResolvedProfile,
-    ) -> dict[str, Any] | None:
-        if config.model_settings is not None and config.model_settings != INHERIT:
-            return resolve_model_settings(config.model_settings)
-        return profile.model_settings
-
-    def _resolve_async_subagent_model_config(
-        self,
-        config: SubagentConfig,
-        profile: ResolvedProfile,
-    ) -> dict[str, Any] | None:
-        if config.model_cfg is not None and config.model_cfg != INHERIT:
-            return resolve_model_cfg(config.model_cfg)
-        return profile.model_config
-
-    def _async_task_tool_allowlist(self, profile: ResolvedProfile, config: SubagentConfig) -> list[str] | None:
-        if config.tools is None and config.optional_tools is None:
-            return None
-        selected = set(config.tools or []) | set(config.optional_tools or [])
-        parent_tool_names = {
-            getattr(tool, "name", tool.__name__)
-            for tool in self._runtime_builder._resolve_builtin_tools(profile.builtin_toolsets)
-        }
-        management_tools = {
-            "spawn_delegate",
-            "list_async_subagents",
-            "get_async_subagent",
-            "steer_async_subagent",
-            "cancel_async_subagent",
-        }
-        inherited_management_tools = parent_tool_names & management_tools
-        return sorted((selected & parent_tool_names) | inherited_management_tools)
-
-    async def _build_async_subagents_context(self, parent_session_id: str) -> str | None:
-        async with self._session_factory() as db_session:
-            return await AsyncTaskController().build_injected_context(db_session, parent_session_id=parent_session_id)
-
-    def _resolve_workspace_binding(
-        self,
+        db_session: AsyncSession,
         run_record: RunRecord,
         session_record: SessionRecord,
         profile: ResolvedProfile,
     ) -> WorkspaceBinding:
         session_metadata = session_record.session_metadata if isinstance(session_record.session_metadata, dict) else {}
+        workspace_authority_metadata = session_metadata
+        if session_record.session_type == "async_task" and isinstance(session_record.parent_session_id, str):
+            parent_session = await db_session.get(
+                SessionRecord,
+                session_record.parent_session_id,
+            )
+            if not isinstance(parent_session, SessionRecord):
+                raise RuntimeError(f"Async task session {session_record.id!r} has no authoritative parent session")
+            workspace_authority_metadata = (
+                parent_session.session_metadata if isinstance(parent_session.session_metadata, dict) else {}
+            )
         run_metadata = run_record.run_metadata if isinstance(run_record.run_metadata, dict) else {}
         trigger_type = str(run_record.trigger_type)
         sandbox_scope = _sandbox_scope_for_trigger(trigger_type)
@@ -1234,7 +1551,7 @@ class RunCoordinator:
             "trigger_type": trigger_type,
         }
         workspace_metadata = merge_workspace_metadata(
-            session_metadata=session_metadata,
+            session_metadata=workspace_authority_metadata,
             run_metadata=run_metadata,
         )
         if workspace_metadata is not None:
@@ -1582,13 +1899,32 @@ class RunCoordinator:
             "message_count": len(messages) if isinstance(messages, list) else None,
         }
 
-    def _stringify_output(self, output: object) -> str | None:
+    def _normalize_output(
+        self,
+        output: object,
+    ) -> tuple[str | None, JsonValue]:
         if output is None:
-            return None
+            return None, None
         if isinstance(output, str):
             value = output.strip()
-            return value or None
-        return str(output)
+            return value or None, None
+        if isinstance(output, BaseModel):
+            json_value: JsonValue = output.model_dump(mode="json")
+        elif is_dataclass(output) and not isinstance(output, type):
+            json_value = cast(JsonValue, asdict(output))
+        elif isinstance(output, dict | list | int | float | bool):
+            json_value = cast(JsonValue, output)
+        else:
+            return str(output), None
+        return (
+            json.dumps(
+                json_value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            json_value,
+        )
 
     def _stringify_error(self, exc: Exception) -> str:
         try:
@@ -1598,17 +1934,10 @@ class RunCoordinator:
         return value[:4000]
 
     def _submit_background_run(self, run_id: str) -> bool:
-        supervisor = ExecutionSupervisor(
-            settings=self._settings,
-            session_factory=self._session_factory,
-            runtime_state=self._runtime_state,
-            workspace_provider=self._workspace_provider,
-            environment_factory=self._environment_factory,
-            profile_resolver=self._profile_resolver,
-            runtime_builder=self._runtime_builder,
-            notification_hub=self._notification_hub,
-        )
-        return supervisor.submit_run(run_id)
+        if self._submit_run is None:
+            logger.info("Run submission skipped run_id={} reason=no_submission_gateway", run_id)
+            return False
+        return self._submit_run(run_id)
 
     def _submit_memory_run(self, run_id: str) -> bool:
         return self._submit_background_run(run_id)
@@ -1688,67 +2017,6 @@ def _agency_primary_source_session_id(agency_metadata: object) -> str | None:
     return source_session_ids[0] if source_session_ids else None
 
 
-async def _agency_memory_sources(db_session: AsyncSession, agency_metadata: object) -> list[AgencyMemorySource]:
-    if not isinstance(agency_metadata, dict):
-        return []
-    result: list[AgencyMemorySource] = []
-    seen: set[tuple[str, str | None]] = set()
-    for source in _agency_sources(agency_metadata):
-        source_session_id = source.get("source_session_id")
-        source_run_id = source.get("source_run_id")
-        if not isinstance(source_session_id, str) or not source_session_id.strip():
-            continue
-        if source_run_id is not None and not isinstance(source_run_id, str):
-            source_run_id = None
-        key = (source_session_id, source_run_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        sequence_no = await _source_sequence_no(
-            db_session, source_session_id=source_session_id, source_run_id=source_run_id
-        )
-        if sequence_no is None:
-            continue
-        result.append(
-            AgencyMemorySource(
-                source_session_id=source_session_id,
-                source_run_id=source_run_id,
-                source_sequence_no=sequence_no,
-            )
-        )
-    return result
-
-
-def _agency_sources(agency_metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    values = agency_metadata.get("sources")
-    if isinstance(values, list):
-        return [dict(item) for item in values if isinstance(item, dict)]
-    return [
-        {"source_session_id": source_session_id, "source_run_id": None}
-        for source_session_id in _agency_source_session_ids(agency_metadata)
-    ]
-
-
-async def _source_sequence_no(
-    db_session: AsyncSession,
-    *,
-    source_session_id: str,
-    source_run_id: str | None,
-) -> int | None:
-    if isinstance(source_run_id, str) and source_run_id.strip():
-        source_run = await db_session.get(RunRecord, source_run_id)
-        if isinstance(source_run, RunRecord) and source_run.session_id == source_session_id:
-            return source_run.sequence_no
-    result = await db_session.execute(
-        select(RunRecord.sequence_no)
-        .where(RunRecord.session_id == source_session_id)
-        .order_by(RunRecord.sequence_no.desc())
-        .limit(1)
-    )
-    value = result.scalar_one_or_none()
-    return value if isinstance(value, int) else None
-
-
 def _trigger_type_from_run_metadata(run_metadata: dict[str, Any]) -> str | None:
     value = run_metadata.get("trigger_type")
     return value if isinstance(value, str) else None
@@ -1758,6 +2026,8 @@ def _deny_deferred_tool_requests(deferred_requests: DeferredToolRequests, *, rea
     results = DeferredToolResults()
     for request in deferred_requests.approvals:
         results.approvals[request.tool_call_id] = ToolDenied(message=reason)
+    for request in deferred_requests.calls:
+        results.calls[request.tool_call_id] = ToolDenied(message=reason)
     return results
 
 
@@ -1912,6 +2182,24 @@ def _normalize_metadata_string(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+async def _lock_run_scope(
+    db_session: AsyncSession,
+    *,
+    session_id: str,
+    run_id: str,
+) -> tuple[SessionRecord, RunRecord]:
+    """Lock session then run for all serialized run state transitions."""
+    session_record = await lock_session_reference(db_session, session_id)
+    if not isinstance(session_record, SessionRecord):
+        raise TypeError(f"Session '{session_id}' was not found.")
+    run_record = await lock_run_record(db_session, run_id)
+    if not isinstance(run_record, RunRecord):
+        raise TypeError(f"Run '{run_id}' was not found.")
+    if run_record.session_id != session_record.id:
+        raise RuntimeError(f"Run '{run_id}' does not belong to session '{session_id}'.")
+    return session_record, run_record
 
 
 async def _load_run_scope(db_session: AsyncSession, run_id: str) -> tuple[SessionRecord, RunRecord]:

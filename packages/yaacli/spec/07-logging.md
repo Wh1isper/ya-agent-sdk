@@ -1,187 +1,75 @@
-# TUI Logging System
+# Logging
 
 ## Overview
 
-TUI logging has two modes:
+YAACLI logging must never write to stdout or stderr while the terminal UI is active.
+There are two modes:
 
-1. **Silent mode** (default): No log output, prevents interference with TUI display
-2. **Verbose mode** (`-v` flag): Logs written to `yaacli.log` in current directory
+| Mode | Root handler | Result |
+| --- | --- | --- |
+| Default | `logging.NullHandler` | logging is silent |
+| Verbose (`-v`) | one `RotatingFileHandler` | logs are written to `./yaacli.log` |
 
-Additionally, log messages are emitted as `LogEvent` instances to an asyncio Queue for potential TUI panel display.
+There is no asyncio logging queue, `LogEvent`, or TUI log panel. Durable product events
+and live agent events use their own typed event paths rather than Python logging.
 
-## Logging Modes
+## Handler Ownership
 
-| Mode | Startup Behavior | TUI Runtime Behavior |
-|------|------------------|---------------------|
-| Normal | NullHandler (silent) | Queue only |
-| Verbose (`-v`) | FileHandler (`yaacli.log`) | Queue + FileHandler |
-
-## Architecture
+YAACLI configures the root logger with exactly one stderr-safe handler. The `yaacli`,
+`ya_agent_sdk`, and `py.warnings` loggers clear direct handlers and propagate to that
+root handler. This avoids duplicate records and prevents multiple handlers from rotating
+the same file.
 
 ```mermaid
 flowchart LR
-    subgraph Loggers
-        TUI[yaacli logger]
-        SDK[ya_agent_sdk logger]
-    end
-
-    subgraph Handlers
-        QH[QueueHandler]
-        FH[FileHandler]
-    end
-
-    subgraph Output
-        Queue[(asyncio.Queue)]
-        File[(yaacli.log)]
-    end
-
-    TUI --> QH
-    SDK --> QH
-    QH --> Queue
-
-    TUI -.->|verbose mode| FH
-    SDK -.->|verbose mode| FH
-    FH -.-> File
+    YA[yaacli] --> ROOT[Root logger]
+    SDK[ya_agent_sdk] --> ROOT
+    WARN[py.warnings] --> ROOT
+    ROOT -->|default| NULL[NullHandler]
+    ROOT -->|verbose| FILE[Rotating yaacli.log]
 ```
 
-## Components
+Python warnings are captured into logging. The known SWIG `DeprecationWarning` noise is
+filtered explicitly.
 
-### LogEvent
+## Verbose Retention
 
-Extends `ya_agent_sdk.events.AgentEvent` to carry log information:
+The file handler writes UTF-8 records using:
 
-```python
-@dataclass
-class LogEvent(AgentEvent):
-    level: str = "INFO"        # DEBUG, INFO, WARNING, ERROR, CRITICAL
-    logger_name: str = ""       # e.g., "yaacli.session"
-    message: str = ""           # Formatted log message
-    func_name: str = ""         # Function where log was called
-    line_no: int = 0            # Line number
+```text
+%(asctime)s %(levelname)s [%(name)s] %(message)s
 ```
 
-### QueueHandler
+Retention is bounded by:
 
-Custom `logging.Handler` that emits `LogEvent` to a queue:
+- active file: `yaacli.log`;
+- maximum size: 5 MiB per file;
+- backups: 3;
+- maximum retained footprint: approximately 20 MiB.
 
-```python
-class QueueHandler(logging.Handler):
-    def __init__(self, queue: Queue, level: int = logging.DEBUG):
-        super().__init__(level)
-        self._queue = queue
-
-    def emit(self, record: logging.LogRecord) -> None:
-        event = LogEvent(
-            event_id=f"log-{record.created:.0f}-{record.lineno}",
-            level=record.levelname,
-            logger_name=record.name,
-            message=self.format(record),
-            func_name=record.funcName,
-            line_no=record.lineno,
-        )
-        self._queue.put_nowait(event)
-```
-
-## Usage
-
-### CLI Startup Logging
-
-Called in `cli.py` before TUI starts:
-
-```python
-from yaacli.logging import configure_logging
-
-# Silent mode (default)
-configure_logging(verbose=False)
-
-# Verbose mode - logs to yaacli.log
-configure_logging(verbose=True)
-```
-
-### TUI Runtime Logging
-
-Called in `app.py` when TUI initializes:
-
-```python
-import asyncio
-from yaacli.logging import configure_tui_logging
-
-# Create queue for log events
-log_queue = asyncio.Queue()
-
-# Configure with verbose mode for file logging
-configure_tui_logging(log_queue, verbose=True)
-```
-
-### Getting a Logger
-
-```python
-from yaacli.logging import get_logger
-
-logger = get_logger(__name__)
-logger.info("Processing user input")
-logger.warning("Token usage high")
-logger.error("Connection failed")
-```
-
-## Design Decisions
-
-### Why File-Based for Verbose Mode?
-
-1. **TUI-safe**: No stdout/stderr output that corrupts display
-2. **Persistent**: Logs preserved for debugging after session ends
-3. **Simple**: `tail -f yaacli.log` for real-time monitoring
-
-### Why Silent by Default?
-
-- TUI provides visual feedback for important events
-- Log noise distracts from user interaction
-- File I/O overhead unnecessary for normal operation
-
-### Log Levels
-
-| Level    | Usage                                  |
-| -------- | -------------------------------------- |
-| DEBUG    | Detailed tracing (verbose mode)        |
-| INFO     | Normal operations                      |
-| WARNING  | Potential issues                       |
-| ERROR    | Failures                               |
-| CRITICAL | Fatal errors                           |
-
-## API Reference
+## API
 
 ### `configure_logging(verbose=False)`
 
-Configure logging for CLI startup phase.
+Configures startup logging. Default mode discards records; verbose mode writes
+DEBUG-and-above YAACLI/SDK records to the rotating file.
 
-- `verbose=False`: NullHandler (silent)
-- `verbose=True`: FileHandler (`yaacli.log`)
+### `configure_tui_logging(level=logging.INFO, verbose=False)`
 
-### `configure_tui_logging(queue, level=logging.INFO, verbose=False)`
-
-Configure logging for TUI runtime.
-
-- Always adds QueueHandler for log events
-- `verbose=True`: Also adds FileHandler
+Configures the entered TUI using the same single-handler policy. Verbose mode selects
+DEBUG for YAACLI and SDK loggers. In default mode `level` controls their logger level,
+while the root remains stderr-safe and silent.
 
 ### `reset_logging()`
 
-Clear all handlers. Useful for tests.
+Stops warning capture, removes and closes handlers installed by YAACLI, and resets
+initialization state. Tests and alternate hosts use it before reconfiguration.
 
 ### `get_logger(name)`
 
-Get a logger under the `yaacli` namespace.
+Returns a logger below the `yaacli` namespace, adding that prefix when needed.
 
-## File Location
+## Verification
 
-Log file is always created in the current working directory:
-
-```
-./yaacli.log
-```
-
-Format:
-```
-2026-01-15 14:30:00,123 DEBUG [yaacli.session] Starting agent run
-2026-01-15 14:30:01,456 INFO [ya_agent_sdk.agents.main] Streaming response
-```
+`tests/test_logging.py` verifies silent mode, one rotating handler, bounded rotation,
+warning routing, idempotent configuration, and reset behavior.

@@ -576,7 +576,8 @@ class ScheduleController:
             runtime_state,
             RunCreateRequest(
                 session_id=fork_session.id,
-                reset_state=True,
+                restore_from_run_id=source_session.head_success_run_id,
+                reset_state=False,
                 profile_name=fork_session.profile_name,
                 input_parts=parse_input_parts(list(fire_record.input_parts)),
                 trigger_type=TriggerType.SCHEDULE,

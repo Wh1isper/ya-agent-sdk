@@ -321,21 +321,18 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
   const payload = extractCustomPayload(value)
   const id = `${name}:${event.timestamp ?? Date.now()}:${Math.random()}`
 
-  if (name === 'ya_agent.task_event') {
+  if (name === 'ya_agent.task') {
     return {
       kind: 'task_board',
       id,
       tasks: Array.isArray(payload.tasks) ? (payload.tasks as TaskInfo[]) : [],
     } satisfies TaskBoardBlock
   }
-  if (
-    name === 'yaacli.context_update_event' ||
-    name === 'ya_agent.context_update_event'
-  ) {
+  if (name === 'ya_agent.model_request_complete') {
     return {
       kind: 'context_meter',
       id,
-      totalTokens: numberField(payload, 'total_tokens'),
+      totalTokens: numberField(payload, 'context_tokens'),
       contextWindowSize: numberField(payload, 'context_window_size'),
     } satisfies ContextMeterBlock
   }
@@ -358,7 +355,7 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
   if (name.includes('usage')) {
     return { kind: 'usage', id, name, payload } satisfies UsageBlock
   }
-  if (name === 'ya_agent.subagent_start_event') {
+  if (name === 'ya_agent.subagent_start') {
     return {
       kind: 'subagent',
       id,
@@ -368,7 +365,7 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       promptPreview: stringField(payload, 'prompt_preview') ?? undefined,
     } satisfies SubagentBlock
   }
-  if (name === 'ya_agent.subagent_complete_event') {
+  if (name === 'ya_agent.subagent_complete') {
     return {
       kind: 'subagent',
       id,
@@ -381,7 +378,7 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       durationSeconds: numberField(payload, 'duration_seconds'),
     } satisfies SubagentBlock
   }
-  if (name === 'ya_agent.file_change_event') {
+  if (name === 'ya_agent.file_change') {
     return {
       kind: 'file_change',
       id,
@@ -389,7 +386,7 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       toolName: stringField(payload, 'tool_name') ?? undefined,
     } satisfies FileChangeBlock
   }
-  if (name === 'ya_agent.note_event') {
+  if (name === 'ya_agent.note') {
     const entries =
       payload.entries && typeof payload.entries === 'object'
         ? payload.entries
@@ -400,17 +397,20 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       entries: entries as Record<string, string>,
     } satisfies NoteSnapshotBlock
   }
-  if (name === 'ya_claw.run_steered') {
+  if (name === 'ya_claw.input_accepted' || name === 'ya_claw.input_enqueued') {
     return steeringBlockFromPayload({
       id,
-      title: 'Steer delivered',
+      title:
+        name === 'ya_claw.input_accepted' ? 'Steer accepted' : 'Steer enqueued',
       status: 'delivered',
-      payload: { delivery: 'runtime_state', ...payload },
+      payload,
     })
   }
-  if (name === 'ya_agent.message_received') {
-    return steeringBlockFromMessageReceivedPayload({
+  if (name === 'ya_claw.input_applied') {
+    return steeringBlockFromPayload({
       id,
+      title: 'Steer injected',
+      status: 'injected',
       payload,
     })
   }
@@ -448,36 +448,6 @@ function steeringBlockFromPayload({
       : [],
     prompt: payload.prompt,
     delivery: stringField(payload, 'delivery') ?? undefined,
-    payload,
-  }
-}
-
-function steeringBlockFromMessageReceivedPayload({
-  id,
-  payload,
-}: {
-  id: string
-  payload: Record<string, unknown>
-}): SteeringBlock {
-  const messages = Array.isArray(payload.messages)
-    ? (payload.messages as Array<Record<string, unknown>>)
-    : []
-  const renderedMessages = messages
-    .map((message) => message.rendered_content ?? message.content_text)
-    .filter((message) => message !== undefined)
-  return {
-    kind: 'steering',
-    id,
-    title: 'Steer injected',
-    status: 'injected',
-    inputParts: [],
-    prompt:
-      renderedMessages.length === 1
-        ? renderedMessages[0]
-        : renderedMessages.length > 1
-          ? renderedMessages
-          : undefined,
-    delivery: 'message_bus',
     payload,
   }
 }

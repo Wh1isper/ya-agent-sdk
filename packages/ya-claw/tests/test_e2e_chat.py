@@ -2,7 +2,7 @@
 
 Verifies:
 1. Session create via HTTP POST /api/v1/sessions
-2. Auto-dispatch through an AgentProfile
+2. Auto-dispatch through an execution profile
 3. Supervisor claim + coordinator execution
 4. AGUI events via SSE stream
 5. Commit artifacts (state.json, message.json)

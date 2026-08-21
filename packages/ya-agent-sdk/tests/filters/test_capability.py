@@ -13,7 +13,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
     VideoUrl,
 )
-from ya_agent_sdk.context import AgentContext, ModelCapability, ModelConfig
+from ya_agent_sdk.context import AgentContext, ModelConfig, ModelFeature
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.filters.capability import filter_by_capability
 
@@ -48,7 +48,7 @@ async def test_filter_by_capability_with_all_capabilities(tmp_path: Path) -> Non
         async with AgentContext(
             env=env,
             model_cfg=ModelConfig(
-                capabilities={ModelCapability.vision, ModelCapability.video_understanding},
+                capabilities={ModelFeature.vision, ModelFeature.video_understanding},
             ),
         ) as ctx:
             mock_ctx = MagicMock()
@@ -107,7 +107,7 @@ async def test_filter_by_capability_filters_videos_without_video_understanding(t
         async with AgentContext(
             env=env,
             model_cfg=ModelConfig(
-                capabilities={ModelCapability.vision},  # Only vision, no video
+                capabilities={ModelFeature.vision},  # Only vision, no video
             ),
         ) as ctx:
             mock_ctx = MagicMock()

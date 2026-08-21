@@ -27,7 +27,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, ThinkingPart, Tool
 
 from ya_agent_sdk._logger import logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.context.agent import ModelCapability, ModelConfig
+from ya_agent_sdk.context.agent import ModelConfig, ModelFeature
 
 _SYNTHETIC_REASONING_CONTENT = ""
 """Placeholder text for synthesized ThinkingPart.
@@ -102,8 +102,8 @@ def _reasoning_policy(model_cfg: object) -> tuple[bool, bool] | None:
         return None
     caps = model_cfg.capabilities
     return (
-        ModelCapability.reasoning_required in caps,
-        ModelCapability.reasoning_foreign_incompatible in caps,
+        ModelFeature.reasoning_required in caps,
+        ModelFeature.reasoning_foreign_incompatible in caps,
     )
 
 

@@ -1,11 +1,7 @@
-"""Toolset implementation with hooks and HITL support.
+"""Core BaseTool adapter with HITL support.
 
-This module provides:
-- Toolset: Container for tools with hooks and HITL support
-- HookableToolsetTool: Extended ToolsetTool with hook support
-- Hook types and utilities
-
-Base classes (BaseTool, BaseToolset) are in ya_agent_sdk.toolsets.base.
+Base classes (BaseTool, BaseToolset) are in ya_agent_sdk.toolsets.base. Cross-cutting
+execution policy belongs in native Pydantic AI capabilities rather than this adapter.
 """
 
 from __future__ import annotations
@@ -13,11 +9,10 @@ from __future__ import annotations
 import functools
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 
 from pydantic import BaseModel, Field
-from pydantic_ai import AgentRetries, ApprovalRequired, CallDeferred, ModelRetry, RunContext, Tool, UserError
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai import ApprovalRequired, CallDeferred, ModelRetry, RunContext, Tool, UserError
 from pydantic_ai.messages import InstructionPart, ModelMessage
 from pydantic_ai.tools import (
     DeferredToolResults,
@@ -35,13 +30,6 @@ from ya_agent_sdk.toolsets.base import (
     Instruction,
 )
 from ya_agent_sdk.utils import get_tool_name_from_id
-
-if TYPE_CHECKING:
-    from pydantic_ai import ModelSettings
-    from pydantic_ai.models import Model
-
-    from ya_agent_sdk.context import ModelConfig
-    from ya_agent_sdk.subagents import SubagentConfig
 
 logger = get_logger(__name__)
 
@@ -65,37 +53,9 @@ class UserInteraction(BaseModel):
     )
 
 
-CallMetadata = dict[str, Any]
-"""Metadata dictionary shared across hooks within a single call_tool invocation."""
-
-PreHookFunc = Callable[[RunContext[AgentDepsT], dict[str, Any], CallMetadata], Awaitable[dict[str, Any]]]
-"""Pre-hook function signature: (ctx, tool_args, metadata) -> modified_tool_args"""
-
-PostHookFunc = Callable[[RunContext[AgentDepsT], Any, CallMetadata], Awaitable[Any]]
-"""Post-hook function signature: (ctx, result, metadata) -> modified_result"""
-
-GlobalPreHookFunc = Callable[[RunContext[AgentDepsT], str, dict[str, Any], CallMetadata], Awaitable[dict[str, Any]]]
-"""Global pre-hook function signature: (ctx, tool_name, tool_args, metadata) -> modified_tool_args"""
-
-GlobalPostHookFunc = Callable[[RunContext[AgentDepsT], str, Any, CallMetadata], Awaitable[Any]]
-"""Global post-hook function signature: (ctx, tool_name, result, metadata) -> modified_result"""
-
-
-class GlobalHooks(BaseModel):
-    """Container for global hooks applied to all tools."""
-
-    pre: GlobalPreHookFunc[Any] | None = None
-    """Global pre-hook applied before tool-specific pre-hooks."""
-
-    post: GlobalPostHookFunc[Any] | None = None
-    """Global post-hook applied after tool-specific post-hooks."""
-
-    model_config = {"arbitrary_types_allowed": True}
-
-
 @dataclass(kw_only=True)
-class HookableToolsetTool(ToolsetTool[AgentDepsT]):
-    """Extended ToolsetTool with hook and instruction support."""
+class _BaseToolsetTool(ToolsetTool[AgentDepsT]):
+    """Internal Pydantic AI tool wrapper for one ``BaseTool``."""
 
     call_func: Callable[[dict[str, Any], RunContext[AgentDepsT]], Awaitable[Any]]
     """The function to call when the tool is invoked."""
@@ -106,37 +66,17 @@ class HookableToolsetTool(ToolsetTool[AgentDepsT]):
     timeout: float | None = None
     """Timeout in seconds for tool execution."""
 
-    pre_hook: PreHookFunc[AgentDepsT] | None = None
-    """Tool-specific pre-hook."""
-
-    post_hook: PostHookFunc[AgentDepsT] | None = None
-    """Tool-specific post-hook."""
-
     tool_instance: BaseTool | None = None
     """Reference to the BaseTool instance for HITL processing."""
 
 
 class Toolset(BaseToolset[AgentDepsT]):
-    """A toolset that manages tools with hooks and HITL support.
-
-    Example:
-        toolset = Toolset(
-            tools=[ReadFileTool, WriteFileTool],
-            pre_hooks={"read_file": my_pre_hook},
-            post_hooks={"write_file": my_post_hook},
-            global_hooks=GlobalHooks(pre=global_pre, post=global_post),
-        )
-
-        agent = Agent(model="openai-chat:gpt-4", toolsets=[toolset])
-    """
+    """Adapt ``BaseTool`` classes to a native Pydantic AI toolset."""
 
     def __init__(
         self,
         tools: Sequence[type[BaseTool]],
         *,
-        pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None,
-        post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None,
-        global_hooks: GlobalHooks | None = None,
         max_retries: int | None = None,
         timeout: float | None = None,
         toolset_id: str | None = None,
@@ -147,9 +87,6 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         Args:
             tools: Sequence of BaseTool classes to include in this toolset.
-            pre_hooks: Dict mapping tool names to pre-hook functions.
-            post_hooks: Dict mapping tool names to post-hook functions.
-            global_hooks: Global hooks applied to all tools.
             max_retries: Explicit maximum retries for tool execution. When omitted,
                 uses ``ctx.deps.retry_config.toolset`` (default 5).
             timeout: Default timeout for tool execution.
@@ -164,10 +101,6 @@ class Toolset(BaseToolset[AgentDepsT]):
         self._id = toolset_id
         self._skip_unavailable = skip_unavailable
         self._description = description
-
-        self.pre_hooks = pre_hooks or {}
-        self.post_hooks = post_hooks or {}
-        self.global_hooks = global_hooks or GlobalHooks()
 
         # Store tool classes, instances created lazily in get_tools
         self._tool_classes: dict[str, type[BaseTool]] = {}
@@ -256,314 +189,6 @@ class Toolset(BaseToolset[AgentDepsT]):
         tool_instance = self._get_tool_instance(tool_name)
         return self._is_tool_allowed_in_context(tool_instance, ctx) and tool_instance.is_available(ctx)
 
-    def is_tool_available_to_subagent(
-        self,
-        tool_name: str,
-        ctx: RunContext[AgentDepsT],
-    ) -> bool:
-        """Check whether a tool may be inherited and is currently available."""
-        tool_cls = self._tool_classes.get(tool_name)
-        if tool_cls is None or tool_cls.main_agent_only:
-            return False
-        return self._get_tool_instance(tool_name).is_available(ctx)
-
-    def has_tags(self, tags: set[str] | frozenset[str]) -> bool:
-        """Return whether any tool in this toolset has any of the given tags."""
-        return any(tool_cls.tags & tags for tool_cls in self._tool_classes.values())
-
-    def exclude_tags(
-        self,
-        tags: set[str] | frozenset[str],
-        *,
-        inherit_hooks: bool = True,
-    ) -> Toolset[AgentDepsT]:
-        """Create a Toolset excluding tools that have any of the given tags."""
-        selected_names = {name for name, tool_cls in self._tool_classes.items() if not tool_cls.tags & tags}
-        selected_classes = [tool_cls for name, tool_cls in self._tool_classes.items() if name in selected_names]
-
-        pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None
-        post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None
-        global_hooks: GlobalHooks | None = None
-
-        if inherit_hooks:
-            pre_hooks = {k: v for k, v in self.pre_hooks.items() if k in selected_names}
-            post_hooks = {k: v for k, v in self.post_hooks.items() if k in selected_names}
-            global_hooks = self.global_hooks
-
-        return Toolset(
-            tools=selected_classes,
-            pre_hooks=pre_hooks,
-            post_hooks=post_hooks,
-            global_hooks=global_hooks,
-            max_retries=self._max_retries,
-            timeout=self.timeout,
-            toolset_id=self._id,
-            skip_unavailable=self._skip_unavailable,
-            description=self._description,
-        )
-
-    def for_subagent(
-        self,
-        *,
-        excluded_tags: set[str] | frozenset[str] = frozenset(),
-        inherit_hooks: bool = True,
-    ) -> Toolset[AgentDepsT]:
-        """Create a copy safe to attach to a subagent.
-
-        Main-agent-only tools are always removed. Callers may additionally
-        remove tagged capabilities such as delegation tools used to create the
-        subagent itself.
-        """
-        selected_names = {
-            name
-            for name, tool_cls in self._tool_classes.items()
-            if not tool_cls.main_agent_only and not tool_cls.tags & excluded_tags
-        }
-        selected_classes = [tool_cls for name, tool_cls in self._tool_classes.items() if name in selected_names]
-
-        pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None
-        post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None
-        global_hooks: GlobalHooks | None = None
-
-        if inherit_hooks:
-            pre_hooks = {k: v for k, v in self.pre_hooks.items() if k in selected_names}
-            post_hooks = {k: v for k, v in self.post_hooks.items() if k in selected_names}
-            global_hooks = self.global_hooks
-
-        return Toolset(
-            tools=selected_classes,
-            pre_hooks=pre_hooks,
-            post_hooks=post_hooks,
-            global_hooks=global_hooks,
-            max_retries=self._max_retries,
-            timeout=self.timeout,
-            toolset_id=self._id,
-            skip_unavailable=self._skip_unavailable,
-            description=self._description,
-        )
-
-    def subset(
-        self,
-        tool_names: list[str] | None = None,
-        *,
-        inherit_hooks: bool = False,
-        include_auto_inherit: bool = False,
-    ) -> Toolset[AgentDepsT]:
-        """Create a subset Toolset with only the specified tools.
-
-        This is useful for creating subagent toolsets that only have access to
-        a subset of the parent agent's tools.
-
-        Args:
-            tool_names: List of tool names to include. None means all tools.
-            inherit_hooks: Whether to inherit pre/post hooks for selected tools.
-            include_auto_inherit: Whether to automatically include tools with
-                auto_inherit=True, even if not in tool_names. Default False.
-
-        Returns:
-            A new Toolset instance with the selected tools.
-
-        Example::\n
-            # Create main toolset
-            main_toolset = Toolset(tools=[ViewTool, EditTool, ShellTool])
-
-            # Create subset for subagent (only view and edit)
-            sub_toolset = main_toolset.subset(["view", "edit"])
-
-            # Include auto_inherit tools automatically
-            sub_toolset = main_toolset.subset(["view"], include_auto_inherit=True)
-        """
-        if tool_names is None:
-            selected_classes = list(self._tool_classes.values())
-            selected_names = set(self._tool_classes.keys())
-        else:
-            selected_classes = []
-            selected_names: set[str] = set()
-            for name in tool_names:
-                if name in self._tool_classes:
-                    selected_classes.append(self._tool_classes[name])
-                    selected_names.add(name)
-                else:
-                    logger.debug(f"Tool {name!r} not found in parent toolset, skipping")
-
-            # Add auto_inherit tools if requested
-            if include_auto_inherit:
-                for name, tool_cls in self._tool_classes.items():
-                    if name not in selected_names and getattr(tool_cls, "auto_inherit", False):
-                        selected_classes.append(tool_cls)
-                        selected_names.add(name)
-                        logger.debug(f"Auto-including tool {name!r} (auto_inherit=True)")
-
-        pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None
-        post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None
-        global_hooks: GlobalHooks | None = None
-
-        if inherit_hooks:
-            pre_hooks = {k: v for k, v in self.pre_hooks.items() if k in selected_names}
-            post_hooks = {k: v for k, v in self.post_hooks.items() if k in selected_names}
-            global_hooks = self.global_hooks
-
-        return Toolset(
-            tools=selected_classes,
-            pre_hooks=pre_hooks,
-            post_hooks=post_hooks,
-            global_hooks=global_hooks,
-            max_retries=self._max_retries,
-            timeout=self.timeout,
-        )
-
-    def with_subagents(
-        self,
-        configs: Sequence[SubagentConfig],
-        *,
-        model: str | Model | None = None,
-        model_settings: ModelSettings | dict[str, Any] | str | None = None,
-        model_cfg: ModelConfig | None = None,
-        retries: int | AgentRetries = 5,
-        unified: bool = False,
-        unified_tool_name: str = "delegate",
-        hidden: bool = False,
-        inherit_hooks: bool = False,
-        pre_capabilities: list[AbstractCapability[Any]] | None = None,
-        capabilities: list[AbstractCapability[Any]] | None = None,
-    ) -> Toolset[AgentDepsT]:
-        """Create a new Toolset that includes subagent tools."""
-        return self._with_subagents(
-            configs,
-            model=model,
-            model_settings=model_settings,
-            model_cfg=model_cfg,
-            retries=retries,
-            unified=unified,
-            unified_tool_name=unified_tool_name,
-            hidden=hidden,
-            inherit_hooks=inherit_hooks,
-            pre_capabilities=pre_capabilities,
-            capabilities=capabilities,
-        )
-
-    def _with_subagents(
-        self,
-        configs: Sequence[SubagentConfig],
-        *,
-        model: str | Model | None = None,
-        model_settings: ModelSettings | dict[str, Any] | str | None = None,
-        model_cfg: ModelConfig | None = None,
-        retries: int | AgentRetries = 5,
-        unified: bool = False,
-        unified_tool_name: str = "delegate",
-        hidden: bool = False,
-        inherit_hooks: bool = False,
-        pre_capabilities: list[AbstractCapability[Any]] | None = None,
-        capabilities: list[AbstractCapability[Any]] | None = None,
-        sdk_capabilities: list[AbstractCapability[Any]] | None = None,
-    ) -> Toolset[AgentDepsT]:
-        """Create a new Toolset that includes subagent tools.
-
-        Subagent tools are created from the provided configurations, using this
-        toolset as the parent. Each subagent will have access to a subset of
-        tools as specified in its configuration.
-
-        Args:
-            configs: Sequence of SubagentConfig defining the subagents to create.
-            model: Fallback model for subagents with 'inherit' or None model.
-            model_settings: Fallback model settings for subagents with 'inherit' or None.
-            model_cfg: Fallback ModelConfig for subagents.
-            retries: Pydantic AI tool and output retry limits for subagents.
-            unified: If True, create a single unified tool that can call any subagent
-                by name parameter. If False (default), create separate tools for each
-                subagent.
-            unified_tool_name: Tool name for unified subagents.
-            hidden: Hide generated subagent tools from model-visible tools and instructions while keeping them callable by code.
-            inherit_hooks: Whether to inherit hooks from parent toolset.
-            pre_capabilities: Parent pre-capabilities to pass to subagents. Each subagent
-                inherits these unless its config.pre_capabilities overrides them.
-            capabilities: Parent user capabilities to pass to subagents. Each subagent
-                inherits these unless its config.capabilities overrides them.
-            sdk_capabilities: SDK internal capabilities that subagents always receive.
-
-        Returns:
-            A new Toolset instance with subagent tools added.
-
-        Example::
-
-            from ya_agent_sdk.subagents import SubagentConfig
-
-            # Create toolset with subagents (individual tools)
-            config = SubagentConfig(
-                name="debugger",
-                description="Debug code issues",
-                system_prompt="You are a debugging expert...",
-                tools=["grep", "view"],
-            )
-            toolset_with_subs = toolset.with_subagents(
-                [config],
-                model="anthropic:claude-sonnet-4",
-            )
-
-            # Or create unified delegate tool (recommended)
-            toolset_unified = toolset.with_subagents(
-                [config1, config2],
-                model="anthropic:claude-sonnet-4",
-                unified=True,
-            )
-        """
-        # Import here to avoid circular dependency
-        from ya_agent_sdk.subagents.factory import _create_subagent_tool
-        from ya_agent_sdk.toolsets.core.subagent.unified import _create_unified_subagent_tool
-
-        if not configs:
-            return self
-
-        if unified:
-            # Create single unified 'delegate' tool
-            unified_tool = _create_unified_subagent_tool(
-                configs,
-                parent_toolset=cast(Any, self),
-                name=unified_tool_name,
-                hidden=hidden,
-                model=model,
-                model_settings=model_settings,
-                model_cfg=model_cfg,
-                retries=retries,
-                inherit_hooks=inherit_hooks,
-                pre_capabilities=pre_capabilities,
-                capabilities=capabilities,
-                sdk_capabilities=sdk_capabilities,
-            )
-            subagent_tools = [unified_tool]
-        else:
-            # Create individual tool for each subagent
-            subagent_tools = [
-                _create_subagent_tool(
-                    cfg,
-                    parent_toolset=cast(Any, self),
-                    model=model,
-                    model_settings=model_settings,
-                    model_cfg=model_cfg,
-                    retries=retries,
-                    inherit_hooks=inherit_hooks,
-                    pre_capabilities=pre_capabilities,
-                    capabilities=capabilities,
-                    sdk_capabilities=sdk_capabilities,
-                )
-                for cfg in configs
-            ]
-
-        all_tools = list(self._tool_classes.values()) + subagent_tools
-
-        return Toolset(
-            tools=all_tools,
-            pre_hooks=self.pre_hooks,
-            post_hooks=self.post_hooks,
-            global_hooks=self.global_hooks,
-            max_retries=self._max_retries,
-            timeout=self.timeout,
-            toolset_id=self._id,
-            skip_unavailable=self._skip_unavailable,
-            description=self._description,
-        )
-
     def _create_pydantic_tool(self, name: str, tool_instance: BaseTool) -> Tool[AgentDepsT]:
         """Create a pydantic_ai Tool wrapper for a BaseTool instance."""
 
@@ -634,7 +259,7 @@ class Toolset(BaseToolset[AgentDepsT]):
                 metadata={**(tool_def.metadata or {}), "codeact": tool_instance.codeact},
             )
 
-            tools[name] = HookableToolsetTool(
+            tools[name] = _BaseToolsetTool(
                 toolset=self,
                 tool_def=tool_def,
                 max_retries=self._resolve_max_retries(ctx),
@@ -642,8 +267,6 @@ class Toolset(BaseToolset[AgentDepsT]):
                 call_func=pydantic_tool.function_schema.call,
                 is_async=pydantic_tool.function_schema.is_async,
                 timeout=self.timeout,
-                pre_hook=self.pre_hooks.get(name),
-                post_hook=self.post_hooks.get(name),
                 tool_instance=tool_instance,
             )
 
@@ -653,7 +276,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         self,
         args: dict[str, Any],
         ctx: RunContext[AgentDepsT],
-        tool: HookableToolsetTool[AgentDepsT],
+        tool: _BaseToolsetTool[AgentDepsT],
     ) -> object:
         """Execute the tool function and capture exceptions.
 
@@ -678,38 +301,23 @@ class Toolset(BaseToolset[AgentDepsT]):
         except Exception as e:
             return e
 
-    async def call_tool(  # noqa: C901
+    async def call_tool(
         self,
         name: str,
         tool_args: dict[str, Any],
         ctx: RunContext[AgentDepsT],
         tool: ToolsetTool[AgentDepsT],
     ) -> object:
-        """Call a tool with hooks.
+        """Execute one ``BaseTool`` through the native toolset boundary.
 
-        Execution order: global_pre -> tool_pre -> execute -> tool_post -> global_post
-
-        A shared metadata dictionary is created at the start of each call_tool invocation
-        and passed to all hooks. This allows hooks to share data within a single tool call:
-        - Pre-hooks can store data (e.g., start_time, tracing spans)
-        - Post-hooks can read that data (e.g., calculate duration, close spans)
-
-        Post-hooks receive the result, which may be an Exception instance if the tool
-        execution failed. Hooks can:
-        - Log/monitor errors by checking `isinstance(result, Exception)`
-        - Transform errors into user-friendly messages
-        - Recover from certain errors by returning a fallback value
-
-        If the final result is still an Exception after all hooks, it will be raised.
-
-        Control flow exceptions (ApprovalRequired, CallDeferred, ModelRetry) are handled specially:
-        post-hooks are called for observation only (return values discarded), and the
-        original exception is always re-raised.
+        Cross-cutting visibility, approval, timeout, retry, and observation behavior is
+        composed as Pydantic AI capabilities. Pydantic AI control-flow exceptions are
+        therefore propagated unchanged from this adapter.
         """
         logger.debug(f"call_tool: {name!r} with args keys: {list(tool_args.keys())}")
 
-        if not isinstance(tool, HookableToolsetTool):
-            msg = f"Expected HookableToolsetTool, got {type(tool)}"
+        if not isinstance(tool, _BaseToolsetTool):
+            msg = f"Expected _BaseToolsetTool, got {type(tool)}"
             raise UserError(msg)
 
         if tool.tool_instance is not None and not self._is_tool_allowed_in_context(tool.tool_instance, ctx):
@@ -721,59 +329,9 @@ class Toolset(BaseToolset[AgentDepsT]):
             logger.debug(f"call_tool: {name!r} requires user approval")
             raise ApprovalRequired(metadata=approval_metadata)
 
-        # Create call-scoped metadata dict shared across all hooks
-        metadata: CallMetadata = {}
-        args = tool_args
-
-        if self.global_hooks.pre:
-            logger.debug(f"call_tool: {name!r} executing global pre-hook")
-            args = await self.global_hooks.pre(ctx, name, args, metadata)
-
-        if tool.pre_hook:
-            logger.debug(f"call_tool: {name!r} executing tool pre-hook")
-            args = await tool.pre_hook(ctx, args, metadata)
-
-        logger.debug(f"call_tool: {name!r} executing tool function")
-        try:
-            result = await self._call_tool_func(args, ctx, tool)
-        except (ApprovalRequired, CallDeferred, ModelRetry) as exc:
-            # Pydantic AI control flow exceptions must propagate directly.
-            # ApprovalRequired: conditional approval from within tool (e.g. protected files)
-            # CallDeferred: external tool execution (result provided outside agent run)
-            # ModelRetry: model-correctable tool failure counted by Pydantic AI
-            #
-            # Post-hooks are called for observation only (e.g., close tracing spans,
-            # record metrics). Their return values are ignored -- the original
-            # exception is always re-raised to preserve control flow.
-            if tool.post_hook:
-                logger.debug(f"call_tool: {name!r} executing tool post-hook (control flow exception)")
-                try:
-                    await tool.post_hook(ctx, exc, metadata)
-                except Exception:
-                    logger.exception(f"call_tool: {name!r} tool post-hook failed while observing control flow")
-            if self.global_hooks.post:
-                logger.debug(f"call_tool: {name!r} executing global post-hook (control flow exception)")
-                try:
-                    await self.global_hooks.post(ctx, name, exc, metadata)
-                except Exception:
-                    logger.exception(f"call_tool: {name!r} global post-hook failed while observing control flow")
-            raise
-        except Exception as e:
-            # Let the post-hook handle the exception
-            logger.debug(f"call_tool: {name!r} tool function raised exception: {type(e).__name__}")
-            result = e
-
-        if tool.post_hook:
-            logger.debug(f"call_tool: {name!r} executing tool post-hook")
-            result = await tool.post_hook(ctx, result, metadata)
-
-        if self.global_hooks.post:
-            logger.debug(f"call_tool: {name!r} executing global post-hook")
-            result = await self.global_hooks.post(ctx, name, result, metadata)
-
-        # Wrap into a non-Exception result so won't break the agentic loop
+        result = await self._call_tool_func(tool_args, ctx, tool)
         if isinstance(result, BaseException):
-            logger.debug(f"call_tool: {name!r} raising exception: {type(result).__name__}")
+            logger.debug(f"call_tool: {name!r} returned error: {type(result).__name__}")
             return f"Error calling tool {name}: {result}"
 
         logger.debug(f"call_tool: {name!r} completed successfully")

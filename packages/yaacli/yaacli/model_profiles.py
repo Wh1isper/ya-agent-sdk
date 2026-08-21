@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
-from ya_agent_sdk.context import ModelCapability, ModelConfig
+from ya_agent_sdk.context import ModelConfig, ModelFeature
 from ya_agent_sdk.presets import resolve_model_cfg
 
 from yaacli.config import YaacliConfig
@@ -163,7 +163,7 @@ def resolve_profile_model_cfg(model_cfg_input: str | dict[str, Any] | None) -> M
     if "capabilities" in cfg_dict:
         caps = cfg_dict["capabilities"]
         if isinstance(caps, (list, set)):
-            cfg_dict["capabilities"] = {ModelCapability(c) if isinstance(c, str) else c for c in caps}
+            cfg_dict["capabilities"] = {ModelFeature(c) if isinstance(c, str) else c for c in caps}
 
     return ModelConfig(**cfg_dict)
 

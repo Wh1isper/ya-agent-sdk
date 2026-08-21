@@ -98,7 +98,7 @@ class MCPConfig(BaseModel):
     servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
-class NamedMCPToolset(MCPToolset):
+class _ManagedMCPToolset(MCPToolset):
     """Host-managed MCP tools with stable namespace and CodeAct metadata.
 
     Provider-native MCP integrations do not pass through this class. Tools
@@ -314,7 +314,7 @@ def build_mcp_server(
                 logger.warning("MCP server %r has stdio transport but no command, skipping", name)
                 return None
             null_path = "NUL" if sys.platform == "win32" else "/dev/null"
-            return NamedMCPToolset(
+            return _ManagedMCPToolset(
                 StdioTransport(
                     command=config.command, args=config.args, env=config.env or None, log_file=Path(null_path)
                 ),
@@ -326,7 +326,7 @@ def build_mcp_server(
             if not config.url:
                 logger.warning("MCP server %r has streamable_http transport but no url, skipping", name)
                 return None
-            return NamedMCPToolset(
+            return _ManagedMCPToolset(
                 config.url,
                 headers=config.headers or None,
                 tool_prefix=tool_prefix,

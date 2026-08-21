@@ -44,20 +44,28 @@ def build_codex_model(
     websocket_mode: ResponsesWebsocketMode | None = None,
 ) -> Model:
     """Build a Codex OAuth-backed OpenAI Responses model."""
-    import httpx
+    import httpx2
     from pydantic_ai.models import get_user_agent
-    from ya_agent_sdk.agents.models.utils import create_model_request_retry_transport
+    from ya_agent_sdk.agents.models.utils import (
+        create_model_request_retry_transport,
+        create_owned_httpx2_provider,
+    )
 
     source = token_source or create_codex_token_source()
-    transport = create_model_request_retry_transport()
-    auth = OAuthBearerAuth(source, provider_name="codex", extra_headers=extra_headers)
-    headers = {"User-Agent": get_user_agent()}
-    timeout = httpx.Timeout(timeout=900, connect=5, read=300)
-    if transport is None:
-        http_client = httpx.AsyncClient(auth=auth, headers=headers, timeout=timeout)
-    else:
-        http_client = httpx.AsyncClient(auth=auth, headers=headers, timeout=timeout, transport=transport)
-    provider = OpenAIProvider(api_key="oauth-managed", base_url=base_url, http_client=http_client)
+
+    def create_http_client() -> httpx2.AsyncClient:
+        transport = create_model_request_retry_transport()
+        auth = OAuthBearerAuth(source, provider_name="codex", extra_headers=extra_headers)
+        headers = {"User-Agent": get_user_agent()}
+        timeout = httpx2.Timeout(timeout=900, connect=5, read=300)
+        if transport is None:
+            return httpx2.AsyncClient(auth=auth, headers=headers, timeout=timeout)
+        return httpx2.AsyncClient(auth=auth, headers=headers, timeout=timeout, transport=transport)
+
+    provider = create_owned_httpx2_provider(
+        lambda http_client: OpenAIProvider(api_key="oauth-managed", base_url=base_url, http_client=http_client),
+        http_client_factory=create_http_client,
+    )
     mode = websocket_mode or env_responses_websocket_mode("YA_OAUTH_CODEX_RESPONSES_TRANSPORT", default="auto")
     if mode == "http":
         return CodexResponsesModel(model_name, provider=provider, profile=_codex_profile())
