@@ -66,6 +66,7 @@ from ya_claw.execution.profile import (
     resolved_profile_from_subagent_plan,
 )
 from ya_claw.execution.restore import ResolvedRestorePoint, load_restore_point
+from ya_claw.execution.resumable_state import load_resumable_state
 from ya_claw.execution.runtime import ClawRuntimeBuilder
 from ya_claw.execution.state_machine import complete_run, fail_run, interrupt_run, mark_run_running
 from ya_claw.execution.store import RunStore
@@ -1767,7 +1768,7 @@ class RunCoordinator:
             raw_state = restore_point.state.get("exported_state")
         if not isinstance(raw_state, dict):
             return None
-        return ResumableState.model_validate(raw_state)
+        return load_resumable_state(raw_state)
 
     def _extract_message_history(self, restore_point: ResolvedRestorePoint | None) -> list[ModelMessage] | None:
         if restore_point is None:

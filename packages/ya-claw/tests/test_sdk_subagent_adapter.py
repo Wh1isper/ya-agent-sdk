@@ -462,6 +462,12 @@ async def test_sdk_steering_replays_applied_input_after_terminal_transition(
             idempotency_key="terminal-replay-input",
         )
         await client.complete(handle.execution_id, "done")
+        completed = await service.wait(
+            handle.execution_id,
+            caller_scope_id="parent-session",
+            timeout=2,
+        )
+        assert completed.state is SubagentExecutionState.succeeded
         resumed = await service.resume(
             handle.execution_id,
             "continue on a new run",
