@@ -30,6 +30,7 @@ from yaacli.durable.executor import (
 )
 from yaacli.durable.models import (
     ExecutionCheckpointRecord,
+    InputPriority,
     InputState,
     LogicalRunStatus,
     MainRuntimeManifest,
@@ -754,8 +755,30 @@ async def test_suspended_run_does_not_block_another_session(tmp_path: Path) -> N
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("steering_state", "expected_event_names", "expected_final_state"),
+    [
+        (
+            InputState.accepted,
+            ("checkpoint.stable", "yaacli.steering_accepted"),
+            InputState.rejected,
+        ),
+        (
+            InputState.applied,
+            (
+                "checkpoint.stable",
+                "yaacli.steering_accepted",
+                "yaacli.steering_applied",
+            ),
+            InputState.applied,
+        ),
+    ],
+)
 async def test_startup_marks_active_execution_interrupted_from_latest_checkpoint(
     tmp_path: Path,
+    steering_state: InputState,
+    expected_event_names: tuple[str, ...],
+    expected_final_state: InputState,
 ) -> None:
     store = SQLiteSessionStore(tmp_path / "product.sqlite3")
     descriptor = build_runtime_descriptor(
@@ -783,6 +806,13 @@ async def test_startup_marks_active_execution_interrupted_from_latest_checkpoint
             segment_status="suspended",
             payload=RevisionPayload(
                 message_history=[{"kind": "checkpoint"}],
+                display_projection=[
+                    {
+                        "type": "CUSTOM",
+                        "name": "checkpoint.stable",
+                        "value": {"text": "stable checkpoint projection"},
+                    }
+                ],
                 usage={"requests": 1},
             ),
             deferred_requests={"approvals": [], "calls": [], "metadata": {}},
@@ -790,6 +820,26 @@ async def test_startup_marks_active_execution_interrupted_from_latest_checkpoint
             updated_at=now,
         )
     )
+    steering_text = "remember this after restart"
+    steering = store.accept_input(
+        run.logical_run_id,
+        [steering_text],
+        idempotency_key="restart-steering",
+        priority=InputPriority.asap,
+        wake_execution=False,
+    )
+    if steering_state is InputState.applied:
+        store.transition_input(
+            steering.input_id,
+            InputState.accepted,
+            InputState.enqueued,
+            native_enqueue_id="restart-enqueue",
+        )
+        store.transition_input(
+            steering.input_id,
+            InputState.enqueued,
+            InputState.applied,
+        )
 
     worker = await LocalExecutionWorker.create(
         store=store,
@@ -810,6 +860,33 @@ async def test_startup_marks_active_execution_interrupted_from_latest_checkpoint
         assert revision.usage == {"requests": 1}
         assert revision.terminal["status"] == "interrupted"
         assert "process restart" in str(revision.terminal["reason"])
+        assert [
+            event.get("name")
+            for event in revision.display_projection
+            if isinstance(event, dict) and event.get("type") == "CUSTOM"
+        ] == list(expected_event_names)
+        receipt = revision.display_projection[1]
+        assert isinstance(receipt, dict)
+        receipt_value = receipt.get("value")
+        assert isinstance(receipt_value, dict)
+        assert receipt_value["text"] == steering_text
+        projection_key = receipt_value["projection_key"]
+        assert isinstance(projection_key, str)
+        assert projection_key.startswith("steering-")
+        assert steering.input_id not in projection_key
+        if steering_state is InputState.applied:
+            applied = revision.display_projection[2]
+            assert isinstance(applied, dict)
+            applied_value = applied.get("value")
+            assert isinstance(applied_value, dict)
+            assert applied_value == {
+                "projection_key": projection_key,
+                "messages": [steering_text],
+            }
+        persisted_steering = next(
+            item for item in store.list_inputs(run.logical_run_id) if item.input_id == steering.input_id
+        )
+        assert persisted_steering.state is expected_final_state
         assert store.list_nonterminal_descriptors() == ()
     finally:
         await worker.close()

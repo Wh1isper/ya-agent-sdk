@@ -22,7 +22,6 @@ import asyncio
 import codecs
 import contextlib
 import difflib
-import hashlib
 import json
 import os
 import re
@@ -168,6 +167,11 @@ from yaacli.durable.models import (
     SessionRecord,
     SessionSummary,
 )
+from yaacli.durable.projections import (
+    MAX_STEERING_PREVIEW_MESSAGES,
+    single_line_steering_preview,
+    steering_projection_key,
+)
 from yaacli.durable.restoration import restore_resumable_state_safely
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.durable.subagents import SQLiteSubagentExecutionStore
@@ -230,8 +234,6 @@ _DEFAULT_MAX_PENDING_ATTACHMENTS = 8
 _DEFAULT_MAX_PENDING_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _MAX_RETAINED_TOOL_RESULT_CHARS = 64 * 1024
 _MAX_RETAINED_TOOL_ARG_CHARS = 64 * 1024
-_MAX_STEERING_PREVIEW_CHARS = 100
-_MAX_STEERING_PREVIEW_MESSAGES = 8
 _SESSION_SELECTOR_MAX_VISIBLE = 8
 _SESSION_SELECTOR_MAX_WIDTH = 110
 _SESSION_SELECTOR_MIN_WIDTH = 24
@@ -388,22 +390,6 @@ def _single_line_session_preview(value: str | None) -> str | None:
     printable = "".join(character if character.isprintable() else " " for character in value)
     normalized = " ".join(printable.split())
     return normalized or None
-
-
-def _single_line_steering_preview(value: str) -> str:
-    """Build a bounded display-only preview of applied steering input."""
-    normalized = _single_line_session_preview(value) or ""
-    if len(normalized) <= _MAX_STEERING_PREVIEW_CHARS:
-        return normalized
-    suffix = "..."
-    return f"{normalized[: _MAX_STEERING_PREVIEW_CHARS - len(suffix)].rstrip()}{suffix}"
-
-
-def _steering_projection_key(session_id: str, input_id: str) -> str:
-    """Derive a replay-stable display identity without exposing a durable input ID."""
-    key = hashlib.sha256(session_id.encode()).digest()
-    digest = hashlib.blake2b(input_id.encode(), key=key, digest_size=16).hexdigest()
-    return f"steering-{digest}"
 
 
 def _truncate_display_text(value: str, max_width: int) -> str:
@@ -1661,8 +1647,8 @@ class TUIApp:
                         and isinstance(messages, list)
                     ):
                         previews = [
-                            _single_line_steering_preview(message)
-                            for message in messages[:_MAX_STEERING_PREVIEW_MESSAGES]
+                            single_line_steering_preview(message)
+                            for message in messages[:MAX_STEERING_PREVIEW_MESSAGES]
                             if isinstance(message, str)
                         ]
                         previews = [preview for preview in previews if preview]
@@ -2286,7 +2272,7 @@ class TUIApp:
         self._record_display_system_event(
             "steering_accepted",
             {
-                "projection_key": _steering_projection_key(self._session_id, record.input_id),
+                "projection_key": steering_projection_key(self._session_id, record.input_id),
                 "text": message,
             },
         )
@@ -4280,7 +4266,7 @@ class TUIApp:
             logical_run_id,
             states=(InputState.enqueued, InputState.applied),
         ):
-            projection_key = _steering_projection_key(self._session_id, item.input_id)
+            projection_key = steering_projection_key(self._session_id, item.input_id)
             if (
                 item.order_index <= 0
                 or item.origin != "user"
@@ -4289,8 +4275,8 @@ class TUIApp:
             ):
                 continue
             previews = [
-                _single_line_steering_preview(content)
-                for content in item.content[:_MAX_STEERING_PREVIEW_MESSAGES]
+                single_line_steering_preview(content)
+                for content in item.content[:MAX_STEERING_PREVIEW_MESSAGES]
                 if isinstance(content, str)
             ]
             if previews:

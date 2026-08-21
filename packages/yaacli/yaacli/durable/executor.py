@@ -44,6 +44,7 @@ from yaacli.durable.models import (
     RuntimeDescriptor,
     utc_now,
 )
+from yaacli.durable.projections import DURABLE_STEERING_EVENT_NAMES, durable_steering_display_events
 from yaacli.durable.restoration import restore_resumable_state_safely
 from yaacli.durable.store import SessionStore
 from yaacli.environment import TUIEnvironment
@@ -57,11 +58,6 @@ RuntimeFactory = Callable[
 ExecutionEventSink = Callable[[StreamEvent], Awaitable[None]]
 DisplayProjectionProvider = Callable[[], Sequence[JsonValue]]
 HeadlessHITLPolicy = Literal["wait", "deny"]
-
-_DURABLE_DISPLAY_EVENT_NAMES = frozenset({
-    "yaacli.steering_accepted",
-    "yaacli.steering_applied",
-})
 
 logger = logging.getLogger(__name__)
 
@@ -781,15 +777,43 @@ class LocalExecutionCoordinator:
                 display_projection=revision.display_projection,
                 usage=revision.usage,
             )
-        if self.display_projection_provider is None:
-            return payload
         return payload.model_copy(
             update={
-                "display_projection": _merge_durable_display_projection(
+                "display_projection": self._stable_terminal_display_projection(
+                    run,
                     payload.display_projection,
-                    self.display_projection_provider(),
                 )
             }
+        )
+
+    def _stable_terminal_display_projection(
+        self,
+        run: LogicalRunRecord,
+        stable: Sequence[JsonValue],
+    ) -> list[JsonValue]:
+        merged = list(stable)
+        if self.display_projection_provider is not None:
+            merged = _merge_durable_display_projection(
+                merged,
+                self.display_projection_provider(),
+            )
+        return self._with_durable_steering_projection(run, merged)
+
+    def _current_terminal_display_projection(self, run: LogicalRunRecord) -> list[JsonValue]:
+        current = list(self.display_projection_provider()) if self.display_projection_provider is not None else []
+        return self._with_durable_steering_projection(run, current)
+
+    def _with_durable_steering_projection(
+        self,
+        run: LogicalRunRecord,
+        projection: Sequence[JsonValue],
+    ) -> list[JsonValue]:
+        return _merge_durable_display_projection(
+            projection,
+            durable_steering_display_events(
+                run.session_id,
+                self.store.list_inputs(run.logical_run_id),
+            ),
         )
 
     def _revision_payload(
@@ -814,9 +838,7 @@ class LocalExecutionCoordinator:
                     "native": context.run_input_ledger.model_dump(mode="json"),
                 },
             ),
-            display_projection=(
-                list(self.display_projection_provider()) if self.display_projection_provider is not None else []
-            ),
+            display_projection=self._current_terminal_display_projection(run),
             usage=cast(dict[str, Any], to_jsonable_python(usage)),
             terminal=terminal,
         )
@@ -996,7 +1018,7 @@ def _durable_display_event_identity(event: JsonValue) -> tuple[str, str] | None:
         return None
     name = event.get("name")
     value = event.get("value")
-    if not isinstance(name, str) or name not in _DURABLE_DISPLAY_EVENT_NAMES or not isinstance(value, dict):
+    if not isinstance(name, str) or name not in DURABLE_STEERING_EVENT_NAMES or not isinstance(value, dict):
         return None
     projection_key = value.get("projection_key")
     if not isinstance(projection_key, str) or not projection_key:

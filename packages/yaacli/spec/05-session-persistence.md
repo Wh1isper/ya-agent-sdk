@@ -162,8 +162,10 @@ At terminal boundaries the store closes ingress. Every previously accepted input
 be applied or rejected with a reason before terminal publication. Failure, cancellation,
 and interruption retain only stable checkpoint projection plus the identity-keyed
 `steering_accepted` and `steering_applied` durable UI facts; uncommitted model text,
-reasoning, and tool events remain excluded. Late writes to a closed, cancelling,
-terminal, or tombstoned run fail explicitly.
+reasoning, and tool events remain excluded. These facts are deterministically rebuilt
+from run-scoped durable input rows before terminal commit, so process-restart recovery
+does not depend on restoring the previous frontend replay first. Late writes to a
+closed, cancelling, terminal, or tombstoned run fail explicitly.
 
 See [04-steering.md](04-steering.md).
 
