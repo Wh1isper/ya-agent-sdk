@@ -376,16 +376,6 @@ def _positive_int_config(value: object, default: int) -> int:
     return value if isinstance(value, int) and value > 0 else default
 
 
-def _safe_stream_preview(value: str) -> str:
-    """Return untrusted streaming text without terminal control sequences."""
-    return "".join(character if character in {"\n", "\t"} or character.isprintable() else "�" for character in value)
-
-
-def _safe_thinking_preview(value: str) -> str:
-    """Format a lightweight reasoning preview without invoking Rich."""
-    return "\n".join(f"> {line}" for line in _safe_stream_preview(value).split("\n"))
-
-
 def _single_line_session_preview(value: str | None) -> str | None:
     """Normalize untrusted session metadata for one terminal line."""
     if value is None:
@@ -728,7 +718,7 @@ class TUIApp:
 
     # Streaming render throttle (separate from UI invalidation)
     _last_stream_render_time: float = field(default=0.0, init=False)
-    _stream_render_interval: float = field(default=1 / 24, init=False)  # Lightweight live preview cadence
+    _stream_render_interval: float = field(default=1 / 15, init=False)  # Base Markdown preview cadence
     _pending_stream_render_handle: asyncio.TimerHandle | None = field(default=None, init=False, repr=False)
     _pending_stream_render_deadline: float | None = field(default=None, init=False, repr=False)
     _pending_stream_render_callback: Callable[[], None] | None = field(default=None, init=False, repr=False)
@@ -1852,17 +1842,7 @@ class TUIApp:
         self._throttled_invalidate()
 
     def _render_streaming_text_preview(self) -> None:
-        """Render an inexpensive, terminal-safe live text frame."""
-        if self._streaming_text_buffer is None:
-            return
-        self._streaming_text = self._streaming_text_buffer.text()
-        if not self._streaming_text:
-            return
-        self._last_stream_render_time = time.monotonic()
-        self._commit_streaming_text_frame(_safe_stream_preview(self._streaming_text))
-
-    def _render_streaming_text_final(self) -> None:
-        """Render complete Markdown once at a stable text boundary."""
+        """Render every text delta accumulated through the current Markdown frame."""
         if self._streaming_text_buffer is None:
             return
         self._streaming_text = self._streaming_text_buffer.text()
@@ -1873,6 +1853,7 @@ class TUIApp:
             code_theme=self._get_code_theme(),
             width=self._get_terminal_width(),
         ).rstrip("\n")
+        self._last_stream_render_time = time.monotonic()
         self._commit_streaming_text_frame(rendered)
 
     def _start_streaming_text(self, initial_content: str = "") -> None:
@@ -1885,21 +1866,21 @@ class TUIApp:
         self._streaming_line_index = len(self._output_lines)
         self._last_stream_render_time = 0.0
         if initial_content:
-            self._streaming_block_id = self._append_block(_safe_stream_preview(initial_content))
-            self._sync_transcript_state()
+            self._render_streaming_text_preview()
 
     def _update_streaming_text(self, delta: str) -> None:
-        """Append a fragment and schedule a lightweight live preview frame."""
+        """Append a fragment and schedule a smooth Markdown preview frame."""
         if self._streaming_text_buffer is None:
             self._streaming_text_buffer = self._new_stream_accumulator()
         self._streaming_text_buffer.append(delta)
+        self._streaming_text = self._streaming_text_buffer.text()
         self._request_stream_render(self._render_streaming_text_preview)
 
     def _finalize_streaming_text(self) -> None:
         """Synchronously commit complete text before a part or tool boundary."""
         self._cancel_pending_stream_render()
         if self._streaming_text_buffer is not None and self._streaming_text_buffer.text():
-            self._render_streaming_text_final()
+            self._render_streaming_text_preview()
         self._streaming_text = ""
         self._streaming_text_buffer = None
         self._streaming_block_id = None
@@ -1915,17 +1896,7 @@ class TUIApp:
         self._throttled_invalidate()
 
     def _render_streaming_thinking_preview(self) -> None:
-        """Render an inexpensive, terminal-safe live reasoning frame."""
-        if self._streaming_thinking_buffer is None:
-            return
-        self._streaming_thinking = self._streaming_thinking_buffer.text()
-        if not self._streaming_thinking:
-            return
-        self._last_stream_render_time = time.monotonic()
-        self._commit_streaming_thinking_frame(_safe_thinking_preview(self._streaming_thinking))
-
-    def _render_streaming_thinking_final(self) -> None:
-        """Render styled reasoning once at a stable boundary."""
+        """Render every reasoning delta accumulated through the current frame."""
         if self._streaming_thinking_buffer is None:
             return
         self._streaming_thinking = self._streaming_thinking_buffer.text()
@@ -1935,6 +1906,7 @@ class TUIApp:
             self._streaming_thinking,
             width=self._get_terminal_width(),
         ).rstrip("\n")
+        self._last_stream_render_time = time.monotonic()
         self._commit_streaming_thinking_frame(rendered)
 
     def _start_streaming_thinking(self, initial_content: str = "") -> None:
@@ -1956,17 +1928,18 @@ class TUIApp:
             self._throttled_invalidate()
 
     def _update_streaming_thinking(self, delta: str) -> None:
-        """Append reasoning and schedule a smooth lightweight preview frame."""
+        """Append reasoning and schedule a smooth styled preview frame."""
         if self._streaming_thinking_buffer is None:
             self._streaming_thinking_buffer = self._new_stream_accumulator()
         self._streaming_thinking_buffer.append(delta)
+        self._streaming_thinking = self._streaming_thinking_buffer.text()
         self._request_stream_render(self._render_streaming_thinking_preview)
 
     def _finalize_streaming_thinking(self) -> None:
         """Synchronously commit complete reasoning before the next boundary."""
         self._cancel_pending_stream_render()
         if self._streaming_thinking_buffer is not None and self._streaming_thinking_buffer.text():
-            self._render_streaming_thinking_final()
+            self._render_streaming_thinking_preview()
         self._streaming_thinking = ""
         self._streaming_thinking_buffer = None
         self._streaming_thinking_block_id = None

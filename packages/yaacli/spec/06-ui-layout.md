@@ -191,7 +191,7 @@ The UI uses one explicit foreground boundary covering agent, shell, save, comman
 
 ## Theme and Rendering
 
-User-input redraws are immediate and are not subject to background rendering limits. The TUI coalesces background invalidation and lightweight, terminal-safe streaming previews at a base cadence of 24 frames per second. Preview cadence remains adaptive for large retained responses: text at or above 32 KiB updates no faster than every 100 ms, and text at or above 128 KiB updates no faster than every 200 ms. Complete Markdown and styled reasoning are rendered once at stable text, reasoning, or tool boundaries.
+User-input redraws are immediate and are not subject to background rendering limits. The TUI coalesces background invalidation at a base cadence of 24 frames per second, while the more expensive streaming Markdown and styled-reasoning previews use an independent base cadence of 15 frames per second. Preview cadence remains adaptive for large retained responses: text at or above 32 KiB updates no faster than every 100 ms, and text at or above 128 KiB updates no faster than every 200 ms. Stable text, reasoning, and tool boundaries synchronously commit the complete latest rendering.
 
 Terminal size changes enter a short resize period. Repeated changes replace one 150 ms settle timer, streaming previews are limited to eight frames per second during the burst, and the settled size receives one final invalidation. The virtual viewport cache includes terminal width as well as scroll offset, viewport height, and output generation, so a width-only resize cannot reuse a cache entry for different geometry. Historical blocks remain bounded pre-rendered ANSI and are not reflowed from source Markdown during resize.
 

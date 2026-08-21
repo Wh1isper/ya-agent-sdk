@@ -1034,7 +1034,7 @@ async def test_tui_app_real_layout_mounts_hidden_task_pane_and_completion_menu(
     app._cancel_managed_tasks.assert_not_awaited()
     assert "min_redraw_interval" not in captured
     assert app._invalidate_interval == 1 / 24
-    assert app._stream_render_interval == 1 / 24
+    assert app._stream_render_interval == 1 / 15
 
     layout = captured["layout"]
     assert isinstance(layout, Layout)

@@ -209,7 +209,7 @@ async def test_terminal_resize_burst_schedules_one_settled_redraw(monkeypatch: p
 
 def test_stream_render_interval_adapts_to_content_size_and_resize() -> None:
     app = make_app()
-    app._stream_render_interval = 1 / 24
+    app._stream_render_interval = 1 / 15
     app._streaming_text_buffer = app._new_stream_accumulator()
 
     app._streaming_text_buffer.append("x" * (32 * 1024))
@@ -273,23 +273,24 @@ async def test_pending_stream_frame_moves_when_resize_begins() -> None:
     app._pending_resize_settle_handle.cancel()
 
 
-def test_streaming_text_uses_lightweight_preview_and_renders_markdown_once_at_finalization() -> None:
+def test_streaming_markdown_is_rendered_before_finalization_and_throttled() -> None:
     app = make_app()
-    app._renderer.render_markdown = MagicMock(return_value="MARKDOWN_FINAL\n")  # type: ignore[method-assign]
+    app._renderer.render_markdown = MagicMock(return_value="MARKDOWN_PREVIEW\n")  # type: ignore[method-assign]
 
     app._start_streaming_text("")
     with patch("yaacli.app.tui.time.monotonic", side_effect=[1.0, 1.01, 1.02]):
         app._update_streaming_text("**bold**")
         app._update_streaming_text(" text")
 
-    app._renderer.render_markdown.assert_not_called()
-    assert app._output_lines == ["**bold**"]
+    assert app._renderer.render_markdown.call_count == 1
+    assert app._renderer.render_markdown.call_args.args[0] == "**bold**"
+    assert app._output_lines == ["MARKDOWN_PREVIEW"]
 
     app._finalize_streaming_text()
 
-    app._renderer.render_markdown.assert_called_once()
+    assert app._renderer.render_markdown.call_count == 2
     assert app._renderer.render_markdown.call_args.args[0] == "**bold** text"
-    assert app._output_lines == ["MARKDOWN_FINAL"]
+    assert app._output_lines == ["MARKDOWN_PREVIEW"]
 
 
 @pytest.mark.asyncio
@@ -304,15 +305,14 @@ async def test_streaming_markdown_commits_coalesced_trailing_frame() -> None:
     app._update_streaming_text("first")
     app._update_streaming_text(" second")
 
-    assert app._output_lines == ["first"]
+    assert app._output_lines == ["rendered: first"]
     assert app._pending_stream_render_handle is not None
 
     await asyncio.sleep(0.02)
 
-    assert app._output_lines == ["first second"]
+    assert app._output_lines == ["rendered: first second"]
     assert app._pending_stream_render_handle is None
     app._finalize_streaming_text()
-    assert app._output_lines == ["rendered: first second"]
 
 
 @pytest.mark.asyncio
@@ -335,15 +335,14 @@ async def test_text_to_thinking_switch_flushes_text_and_commits_thinking_tail() 
         {"type": "REASONING_MESSAGE_CHUNK", "messageId": "thinking-1", "delta": " thought"},
     ])
 
-    assert app._output_lines == ["text: first tail", "> next"]
+    assert app._output_lines == ["text: first tail", "thinking: next"]
     assert app._pending_stream_render_handle is not None
 
     await asyncio.sleep(0.02)
 
-    assert app._output_lines == ["text: first tail", "> next thought"]
+    assert app._output_lines == ["text: first tail", "thinking: next thought"]
     assert app._pending_stream_render_handle is None
     app._finalize_streaming_thinking()
-    assert app._output_lines == ["text: first tail", "thinking: next thought"]
 
 
 @pytest.mark.asyncio
