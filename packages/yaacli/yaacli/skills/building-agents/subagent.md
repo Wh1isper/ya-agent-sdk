@@ -85,7 +85,6 @@ researcher = resolver.resolve(
                     {"WebSearchCapability": {}},
                     {"WebContentCapability": {}},
                     {"ToolObservationCapability": {}},
-                    {"ToolRetryCapability": {}},
                     {"ToolTimeoutCapability": {}},
                 ],
             }
@@ -105,7 +104,6 @@ self_plan = resolver.resolve_self(
                     {"RuntimeFoundationCapability": {}},
                     {"FilesystemCapability": {"writable": False}},
                     {"ToolObservationCapability": {}},
-                    {"ToolRetryCapability": {}},
                     {"ToolTimeoutCapability": {}},
                 ],
             }

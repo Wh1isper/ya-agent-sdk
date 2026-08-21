@@ -173,7 +173,7 @@ the [application integration guide](../../skills/agent-builder/plugins.md), and 
 
 ## Retry Boundaries
 
-Configure native Pydantic AI tool/output correction limits with `create_agent(retries=...)`. The explicit `OverallRetryBudget` capability supplies a separate cumulative run-wide ceiling and is included in `RuntimeFoundationCapability` with a default of three:
+Configure native Pydantic AI tool/output correction limits with `create_agent(retries=...)`. When omitted, SDK `RetryConfig` supplies five for both tools and output. The explicit `OverallRetryBudget` capability supplies a separate cumulative run-wide ceiling and is included in `RuntimeFoundationCapability` with a default of five:
 
 ```python
 from ya_agent_sdk.agents.main import create_agent
@@ -182,11 +182,13 @@ from ya_agent_sdk.capabilities import OverallRetryBudget
 runtime = create_agent(
     "openai-chat:gpt-4o",
     retries={"tools": 5, "output": 5},
-    capabilities=[OverallRetryBudget(max_retries=3)],
+    capabilities=[OverallRetryBudget(max_retries=5)],
 )
 ```
 
-`BaseTool` `ModelRetry` signals propagate unchanged into Pydantic AI. `ToolRetryCapability` is a distinct host-execution retry boundary, while HTTP/WebSocket request retries and `stream_agent()` recovery are transport/execution recovery mechanisms. SDK-created model-provider HTTP clients use `httpx2.AsyncClient`, and request retries use Pydantic AI's `AsyncHTTPX2TenacityTransport`; custom clients passed to current providers must use the same HTTPX2 boundary. Pydantic AI's deprecated, retired GitHub Models provider remains upstream-owned on legacy HTTPX until it is removed in v3. Clients created by the SDK are provider-owned, close with the model context, and are recreated when the model is entered again. None of those consumes the model-correction budget. Native steering is accepted through the active logical-run router and `AgentRun.enqueue()`; it is not a retry prompt.
+`BaseTool` `ModelRetry` signals propagate unchanged into Pydantic AI, while HTTP/WebSocket request retries and `stream_agent()` recovery are transport/execution recovery mechanisms. SDK-created model-provider HTTP clients use `httpx2.AsyncClient`, and request retries use Pydantic AI's `AsyncHTTPX2TenacityTransport`; custom clients passed to current providers must use the same HTTPX2 boundary. Pydantic AI's deprecated, retired GitHub Models provider remains upstream-owned on legacy HTTPX until it is removed in v3. Clients created by the SDK are provider-owned, close with the model context, and are recreated when the model is entered again. None of those consumes the model-correction budget. Native steering is accepted through the active logical-run router and `AgentRun.enqueue()`; it is not a retry prompt.
+
+`ToolTimeoutCapability()` applies a generic 600-second ceiling to one validated tool execution attempt. Set `YA_AGENT_TOOL_TIMEOUT_SECONDS` to a positive finite number to change that default when the capability is constructed, or pass `timeout=` explicitly for one capability instance. A tool definition may declare a shorter timeout; longer tool-specific values remain capped by the capability ceiling. Tools should own stricter operation-specific deadlines and return their normal bounded timeout result where appropriate. If the generic ceiling expires, the capability raises Pydantic AI's `ModelRetry` with the tool name, effective deadline, cancellation state, and partial-side-effect warning. Pydantic AI accounts for the correction against the native per-tool retry budget; the model can inspect state before deciding whether to retry, so the same potentially side-effecting call is not blindly replayed.
 
 ## Portable Subagents
 

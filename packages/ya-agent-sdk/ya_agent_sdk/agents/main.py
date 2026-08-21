@@ -585,6 +585,13 @@ def create_agent(
                 )
             effective_model = wrapped
 
+        effective_retries = retries
+        if effective_retries is None and (spec is None or spec.retries is None):
+            effective_retries = AgentRetries(
+                tools=runtime_ctx.retry_config.tools,
+                output=runtime_ctx.retry_config.output,
+            )
+
         if spec is not None:
             return cast(
                 Agent[AgentDepsT, OutputT],
@@ -598,7 +605,7 @@ def create_agent(
                     system_prompt=effective_system_prompt,
                     name=effective_agent_name,
                     model_settings=effective_model_settings,
-                    retries=retries,
+                    retries=effective_retries,
                     defer_model_check=defer_model_check,
                     end_strategy=cast(Any, end_strategy),
                     capabilities=resolved_capabilities,
@@ -612,7 +619,7 @@ def create_agent(
             deps_type=context_type,
             output_type=output_type,
             capabilities=resolved_capabilities,
-            retries=retries,
+            retries=effective_retries,
             defer_model_check=defer_model_check,
             end_strategy=cast(Any, end_strategy or "graceful"),
             name=effective_agent_name,

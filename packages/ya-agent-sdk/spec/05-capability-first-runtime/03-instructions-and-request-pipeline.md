@@ -323,13 +323,11 @@ Tool policy uses native phase ordering before it uses capability ordering:
 | --- | --- | --- |
 | `ToolVisibilityCapability` | `prepare_tools` plus a `before_tool_execute` enforcement recheck | none |
 | `ToolApprovalCapability` | `prepare_tools` projects native approval requirements; native deferred resolution owns continuation | none |
-| `ToolObservationCapability` | `wrap_tool_execute` around one logical validated call | wraps `ToolRetryCapability` and `ToolTimeoutCapability` |
-| `ToolRetryCapability` | `wrap_tool_execute` around non-native execution attempts | wraps `ToolTimeoutCapability` |
+| `ToolObservationCapability` | `wrap_tool_execute` around one logical validated call | wraps `ToolTimeoutCapability` |
 | `ToolTimeoutCapability` | `wrap_tool_execute` around one attempt | none |
 
-This yields `observation -> retry -> timeout -> tool` when all three wrappers are
-present. Direct observation-to-timeout ordering preserves logical-call observation when
-retry is omitted. Visibility and approval are not inserted into that wrapper chain:
+This yields `observation -> timeout -> tool` when both wrappers are present. Visibility
+and approval are not inserted into that wrapper chain:
 prepared definitions are resolved before validated execution, and the visibility guard
 fails closed at execution even for stale calls. All function tools contributed by SDK,
 Pydantic AI toolset, or external capabilities cross the same final `ToolManager` policy

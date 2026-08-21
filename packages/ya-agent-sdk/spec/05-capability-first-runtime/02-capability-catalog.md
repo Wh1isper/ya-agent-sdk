@@ -127,16 +127,20 @@ metadata enum is renamed from `ModelFeature` to `ModelFeature` without an alias.
 | `ToolApprovalCapability` | project approval policy onto native tool definitions and deferred-call resolution |
 | `ToolTimeoutCapability` | bound each execution attempt around the final validated tool call |
 | `ToolVisibilityCapability` | filter prepared definitions, then recheck final host allow/deny and main-agent-only policy before execution |
-| `ToolObservationCapability` | observe one logical validated call around all non-native execution attempts |
-| `ToolRetryCapability` | account for and run non-native execution attempts, separate from model and recovery budgets |
+| `ToolObservationCapability` | observe one logical validated call around timeout execution |
 
 The policy applies through native capability hooks after all built-in and external tool
 contributions are assembled. Visibility and approval use preparation/execution-guard
 phases; they are not tool-execution wrappers. The only semantic execution nesting is
-`ToolObservationCapability` outside `ToolRetryCapability` outside
-`ToolTimeoutCapability`. Direct pairwise ordering keeps the same meaning when retry or
-observation is omitted. CodeAct eligibility stays trusted tool metadata consumed by
-`CodeActCapability`.
+`ToolObservationCapability` outside `ToolTimeoutCapability`. The timeout capability
+defaults to a 600-second generic ceiling, reads `YA_AGENT_TOOL_TIMEOUT_SECONDS` when
+constructed, and preserves any shorter timeout declared by a tool definition. Longer
+tool-specific values remain capped by the capability ceiling; operation-specific short
+deadlines belong to the tool. Generic ceiling expiry raises native `ModelRetry` with a
+partial-side-effect warning. Pydantic AI accounts for the correction against its
+per-tool retry budget and returns it to the model rather than blindly replaying a
+potentially side-effecting call. CodeAct eligibility stays trusted tool metadata
+consumed by `CodeActCapability`.
 
 ## 7. Existing Toolset Mapping
 
