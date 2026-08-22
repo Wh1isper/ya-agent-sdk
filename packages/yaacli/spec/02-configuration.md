@@ -82,6 +82,9 @@ show_elapsed_time = true
 
 [session]
 auto_restore = false
+max_turns_per_session = 20
+max_sessions = 100
+# max_session_age_days = 90
 # session_dir = "~/.yaacli/sessions"
 # database_path = "~/.yaacli/sessions/sessions-v2.sqlite3"
 
@@ -300,6 +303,15 @@ The session section controls durable database placement and startup restore:
 | `session_dir` | `~/.yaacli/sessions` | Parent directory for the default product database |
 | `database_path` | `<session_dir>/sessions-v2.sqlite3` | Optional product-store override |
 | `auto_restore` | `false` | Restore the newest matching workspace session on TUI startup |
+| `max_turns_per_session` | `20` | Retain the newest complete run bundles in each session |
+| `max_sessions` | `100` | Retain at most this many active, quiescent sessions |
+| `max_session_age_days` | unset | Optionally tombstone quiescent sessions older than this many days |
+
+Retention is safety-first. Nonterminal main or child work is never selected for automatic
+session tombstoning. Manual tombstoning refuses a nonterminal main run and atomically
+records nonterminal children as cancelled. A maintenance pass physically purges only previously tombstoned,
+now-quiescent sessions, then tombstones newly selected sessions; this two-pass boundary
+preserves the write fence and terminal-state check before physical deletion.
 
 The `sessions-v2.sqlite3` name denotes the YAACLI 2 product-store generation, not the
 internal schema marker. YAACLI does not migrate or open the former default

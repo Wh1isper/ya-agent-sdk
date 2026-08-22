@@ -114,7 +114,9 @@ attaches to that execution and supports:
 - durable subagent inspection, steering, cancellation, and completion; and
 - session reattachment and terminal/interrupted logical-run recovery after process restart.
 
-Active main work is committed as `interrupted` from its latest stable checkpoint; it is
-not replayed. Active process-local child work is marked `lost`, while its exact record,
+A controlled main-process interruption publishes a terminal recovery snapshot containing
+safe partial text and resumable host state, but never resumes the old segment. A hard
+process restart commits active main work as `interrupted` from its latest stable
+checkpoint. Active process-local child work is marked `lost`, while its exact record,
 history, and descriptor remain inspectable. MessageBus and generated-subagent
 compatibility layers do not exist in the 2.0 runtime.

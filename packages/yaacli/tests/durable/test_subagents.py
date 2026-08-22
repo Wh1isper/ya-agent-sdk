@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -21,6 +21,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.capabilities import SupportsDeferredOutput, build_default_capability_catalog
 from ya_agent_sdk.inputs import InputDisposition, InputOrigin, LogicalRunInputRouter, RunInputLedger
 from ya_agent_sdk.subagents import (
+    ResolvedSubagentPlan,
     SubagentDeliveryState,
     SubagentDurability,
     SubagentExecutionMode,
@@ -32,7 +33,7 @@ from ya_agent_sdk.subagents import (
     SubagentRegistry,
     SubagentSpec,
 )
-from yaacli.durable.models import InputState
+from yaacli.durable.models import InputState, SessionStatus
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.durable.store import TombstonedSessionError
 from yaacli.durable.subagents import (
@@ -42,6 +43,22 @@ from yaacli.durable.subagents import (
     SQLiteSubagentExecutionStore,
 )
 from yaacli.session import TUIContext
+
+
+def _put_worker_descriptor(store: SQLiteSubagentExecutionStore) -> ResolvedSubagentPlan:
+    plan = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        restart_durable=False,
+    ).resolve(
+        SubagentSpec(
+            route="worker",
+            agent=AgentSpec(name="worker", model="test"),
+            durability=SubagentDurability.process,
+        )
+    )
+    store.put_descriptor(plan)
+    return plan
 
 
 @dataclass
@@ -148,6 +165,7 @@ async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_u
             durability=SubagentDurability.process,
         )
     )
+    store.put_descriptor(plan)
     registry = SubagentRegistry([plan])
     service = SubagentExecutionService(
         registry,
@@ -246,6 +264,9 @@ async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_u
         )
         assert duplicate.execution_id == handle.execution_id
         assert len(await store.list(owner_scope_id="session")) == 1
+        page, total = await store.list_page(owner_scope_id="session", offset=0, limit=1)
+        assert total == 1
+        assert page[0].execution_id == handle.execution_id
     finally:
         await service.close()
         product_store.close()
@@ -258,13 +279,14 @@ async def test_local_subagent_steering_is_persisted_before_graph_application(
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
     store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
         root_execution_id="child-running",
         owner_scope_id="session",
         idempotency_key="child-running",
-        descriptor_id="descriptor",
-        plan_fingerprint="fingerprint",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
         route="worker",
         mode=SubagentExecutionMode.foreground,
         state=SubagentExecutionState.running,
@@ -327,13 +349,14 @@ async def test_local_subagent_steering_returns_rejected_when_input_closes_during
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
     store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
         root_execution_id="child-running",
         owner_scope_id="session",
         idempotency_key="child-running",
-        descriptor_id="descriptor",
-        plan_fingerprint="fingerprint",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
         route="worker",
         mode=SubagentExecutionMode.background,
         state=SubagentExecutionState.running,
@@ -372,13 +395,14 @@ async def test_session_tombstone_atomically_fences_and_requests_child_cancellati
     product_store = SQLiteSessionStore(database_path)
     session = product_store.create_session(str(tmp_path), session_id="session")
     child_store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(child_store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
         root_execution_id="child-running",
         owner_scope_id=session.session_id,
         idempotency_key="child-running",
-        descriptor_id="worker:descriptor",
-        plan_fingerprint="descriptor",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
         route="worker",
         mode=SubagentExecutionMode.background,
         state=SubagentExecutionState.running,
@@ -414,29 +438,63 @@ async def test_session_tombstone_atomically_fences_and_requests_child_cancellati
             idempotency_key="too-late",
             origin=InputOrigin.user,
         )
-    with pytest.raises(TombstonedSessionError):
-        await child_store.save(
-            record.model_copy(
-                update={
-                    "state": SubagentExecutionState.succeeded,
-                    "input_state": SubagentInputState.applied,
-                    "output": "must be fenced",
-                }
-            )
+    late_success = await child_store.save(
+        record.model_copy(
+            update={
+                "state": SubagentExecutionState.succeeded,
+                "input_state": SubagentInputState.applied,
+                "output": "must be fenced",
+            }
         )
-
-    cancelled = record.model_copy(
-        update={
-            "state": SubagentExecutionState.cancelled,
-            "input_state": SubagentInputState.rejected,
-            "error": "Subagent execution was cancelled",
-            "completed_at": datetime.now(UTC),
-        }
     )
-    await child_store.save(cancelled)
+
     persisted = await child_store.get(record.execution_id)
     assert persisted is not None
     assert persisted.state is SubagentExecutionState.cancelled
+    assert persisted.input_state is SubagentInputState.rejected
+    assert persisted.error == "owner session tombstoned"
+    assert late_success == persisted
+
+    maintenance = product_store.run_maintenance()
+    assert maintenance.purged_sessions == 1
+    assert await child_store.get(record.execution_id) is None
+
+    await child_store.close()
+    product_store.close()
+
+
+async def test_age_retention_skips_session_with_nonterminal_child(tmp_path: Path) -> None:
+    database_path = tmp_path / "child-retention.sqlite3"
+    now = datetime(2026, 1, 31, tzinfo=UTC)
+    product_store = SQLiteSessionStore(database_path, max_session_age_days=30)
+    session = product_store.create_session(str(tmp_path), session_id="session")
+    child_store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(child_store)
+    record = SubagentExecutionRecord(
+        execution_id="child-running",
+        root_execution_id="child-running",
+        owner_scope_id=session.session_id,
+        idempotency_key="child-running",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.running,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="work",
+    )
+    await child_store.create(record)
+    product_store._connection.execute(
+        "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+        ((now - timedelta(days=31)).isoformat(), session.session_id),
+    )
+
+    result = product_store.run_maintenance(now=now)
+
+    assert result.tombstoned_sessions == 0
+    assert product_store.get_session(session.session_id).status is SessionStatus.active  # type: ignore[union-attr]
+    assert await child_store.get(record.execution_id) == record
 
     await child_store.close()
     product_store.close()
@@ -447,13 +505,14 @@ async def test_subagent_store_marks_process_orphans_lost_on_reopen(tmp_path: Pat
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
     store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-orphan",
         root_execution_id="child-orphan",
         owner_scope_id="session",
         idempotency_key="child-orphan",
-        descriptor_id="descriptor",
-        plan_fingerprint="fingerprint",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
         route="worker",
         mode=SubagentExecutionMode.background,
         state=SubagentExecutionState.running,
@@ -492,13 +551,14 @@ async def test_opening_read_only_subagent_store_does_not_recover_live_execution(
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
     owner = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(owner)
     record = SubagentExecutionRecord(
         execution_id="child-live",
         root_execution_id="child-live",
         owner_scope_id="session",
         idempotency_key="child-live",
-        descriptor_id="descriptor",
-        plan_fingerprint="fingerprint",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
         route="worker",
         mode=SubagentExecutionMode.background,
         state=SubagentExecutionState.running,
@@ -569,6 +629,49 @@ async def test_subagent_store_retains_exact_descriptors_for_terminal_records(
     descriptors = store.list_referenced_descriptors()
     assert descriptors == (terminal_plan.to_descriptor(),)
     assert resolver.restore(descriptors[0]).fingerprint == terminal_plan.fingerprint
+    assert store.get_descriptor(retained.descriptor_id) is not None
+    await store.close()
+
+    maintenance = product_store.run_maintenance()
+    assert maintenance.pruned_descriptors == 1
+    reopened = SQLiteSubagentExecutionStore(database_path)
+    try:
+        assert reopened.get_descriptor(retained.descriptor_id) is None
+        assert reopened.get_descriptor(terminal_plan.descriptor_id) == terminal_plan.to_descriptor()
+    finally:
+        await reopened.close()
+        product_store.close()
+
+
+async def test_execution_create_restores_active_descriptor_swept_by_concurrent_maintenance(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "descriptor-race.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="session")
+    store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
+
+    maintenance = product_store.run_maintenance()
+    assert maintenance.pruned_descriptors == 1
+    assert store.get_descriptor(plan.descriptor_id) is None
+
+    record = SubagentExecutionRecord(
+        root_execution_id="execution",
+        execution_id="execution",
+        owner_scope_id="session",
+        idempotency_key="execution",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="work",
+    )
+    assert await store.create(record) == record
+    assert store.get_descriptor(plan.descriptor_id) == plan.to_descriptor()
+
     await store.close()
     product_store.close()
 
@@ -623,13 +726,14 @@ async def test_child_inbox_reuses_router_enqueue_on_new_native_attempt(tmp_path:
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
     store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
         root_execution_id="child-running",
         owner_scope_id="session",
         idempotency_key="child-running",
-        descriptor_id="descriptor",
-        plan_fingerprint="fingerprint",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
         route="worker",
         mode=SubagentExecutionMode.foreground,
         state=SubagentExecutionState.running,
@@ -701,13 +805,14 @@ async def test_child_inbox_applies_idempotent_steering_at_graph_boundary(tmp_pat
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
     store = SQLiteSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
         root_execution_id="child-running",
         owner_scope_id="session",
         idempotency_key="child-running",
-        descriptor_id="descriptor",
-        plan_fingerprint="fingerprint",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
         route="worker",
         mode=SubagentExecutionMode.foreground,
         state=SubagentExecutionState.running,

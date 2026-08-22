@@ -117,6 +117,12 @@ refresh_on_startup = true
 # database_path = "~/.yaacli/sessions/sessions-v2.sqlite3"
 # Restore the newest session for the current workspace when the TUI starts.
 auto_restore = false
+# Retain the newest complete turn bundles per session.
+max_turns_per_session = 20
+# Retain at most this many active sessions across workspaces.
+max_sessions = 100
+# Optional inactivity age limit. Omit to disable age-based session retention.
+# max_session_age_days = 90
 
 [notifications]
 # Emit terminal bells when a successful interactive turn completes or user input is required.

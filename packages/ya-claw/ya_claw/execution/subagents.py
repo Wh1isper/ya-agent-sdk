@@ -12,7 +12,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic_ai import AgentSpec
 from pydantic_ai.capabilities import AbstractCapability
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ya_agent_sdk.capabilities import (
     CapabilityCatalog,
@@ -356,6 +356,61 @@ class ClawSubagentExecutionStore:
                 if record is not None and record.owner_scope_id == self._parent_session_id:
                     records.append(await self._synchronize(db_session, task, record))
             return tuple(records)
+
+    async def list_page(
+        self,
+        *,
+        owner_scope_id: str,
+        offset: int,
+        limit: int,
+    ) -> tuple[tuple[SubagentExecutionRecord, ...], int]:
+        if owner_scope_id != self._parent_session_id:
+            return (), 0
+        filters = (
+            SessionAsyncTaskRecord.parent_session_id == self._parent_session_id,
+            SessionAsyncTaskRecord.sdk_owner_scope_id == owner_scope_id,
+        )
+        async with self._session_factory() as db_session:
+            total = await db_session.scalar(select(func.count()).select_from(SessionAsyncTaskRecord).where(*filters))
+            result = await db_session.execute(
+                select(SessionAsyncTaskRecord)
+                .where(*filters)
+                .order_by(
+                    SessionAsyncTaskRecord.created_at.asc(),
+                    SessionAsyncTaskRecord.name.asc(),
+                )
+                .offset(offset)
+                .limit(limit)
+            )
+            records: list[SubagentExecutionRecord] = []
+            for task in result.scalars().all():
+                record = self._record_from_task(task)
+                if record is None or record.owner_scope_id != owner_scope_id:
+                    raise RuntimeError("Claw SDK execution row has no matching execution record")
+                records.append(await self._synchronize(db_session, task, record))
+            return tuple(records), int(total or 0)
+
+    async def list_nonterminal_ids(
+        self,
+        *,
+        owner_scope_id: str,
+    ) -> tuple[str, ...]:
+        if owner_scope_id != self._parent_session_id:
+            return ()
+        async with self._session_factory() as db_session:
+            result = await db_session.execute(
+                select(SessionAsyncTaskRecord.name)
+                .where(
+                    SessionAsyncTaskRecord.parent_session_id == self._parent_session_id,
+                    SessionAsyncTaskRecord.sdk_owner_scope_id == owner_scope_id,
+                    SessionAsyncTaskRecord.status.in_(("queued", "running")),
+                )
+                .order_by(
+                    SessionAsyncTaskRecord.created_at.asc(),
+                    SessionAsyncTaskRecord.name.asc(),
+                )
+            )
+            return tuple(str(execution_id) for execution_id in result.scalars().all())
 
     def _require_owner_scope(self, record: SubagentExecutionRecord) -> None:
         if record.owner_scope_id != self._parent_session_id:

@@ -569,7 +569,7 @@ class BackgroundShellStartEvent(AgentEvent):
     """Emitted when a background shell process is started.
 
     Attributes:
-        process_id: Unique identifier for the background process.
+        process_id: Session-local handle for the background process.
         command: The shell command that was started.
     """
 
@@ -585,7 +585,7 @@ class BackgroundShellCompleteEvent(AgentEvent):
     process results during the next agent turn.
 
     Attributes:
-        process_id: Unique identifier for the background process.
+        process_id: Session-local handle for the background process.
         command: The shell command that was executed.
         exit_code: Process exit code (0 = success).
     """
@@ -600,7 +600,7 @@ class BackgroundShellKilledEvent(AgentEvent):
     """Emitted when a background shell process is manually killed.
 
     Attributes:
-        process_id: Unique identifier for the background process.
+        process_id: Session-local handle for the background process.
         command: The shell command that was killed.
     """
 

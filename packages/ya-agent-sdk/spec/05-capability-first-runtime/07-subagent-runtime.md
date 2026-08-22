@@ -288,7 +288,9 @@ explicitly.
 
 Presentation is a consumer of the registry. `DelegationCapability` contributes the
 model-callable tools and dynamic roster instructions, but it does not hide the registry
-inside a generated tool class.
+inside a generated tool class. The instruction roster includes at most the first 20
+routes, truncates each description to 300 characters, and directs the model to paged
+`subagent_info` discovery when more routes exist.
 
 YAACLI and YA Claw never read `_get_roster_instruction`, `_can_delegate`,
 `_available_subagents`, `__delegate_backend`, `_get_tool_instance`, or equivalent
@@ -338,30 +340,55 @@ through model tools.
 Foreground `delegate` is:
 
 ```text
-spawn(mode=foreground) -> inline child operation -> return or raise in the caller task
+spawn(mode=foreground) -> inline child operation -> return bounded execution result
 ```
 
 The standalone SDK's default `InlineSubagentExecutionHost` supports foreground only.
-Cancellation and exceptions remain attached to the calling tool. A host that needs
-background mode must inject an execution host that explicitly supports it.
+Caller cancellation remains attached to the calling tool. Child terminal state and a
+bounded output page are returned as structured execution data, including the public
+`execution_id`. A host that needs background mode must inject an execution host that
+explicitly supports it.
 
 Background `delegate` is:
 
 ```text
-spawn(mode=background) -> return handle immediately
+spawn(mode=background) -> return bounded execution result immediately
 ```
 
-Both create the same execution record, child logical run, history, input routing,
-usage ownership, cancellation semantics, and lifecycle events. They differ in coroutine
-ownership and whether the calling tool waits. Host mode is fixed by default and omitted
-from the model-facing `delegate` schema; construction rejects any visible route that
-does not allow that fixed mode. An application exposes mode override only when it
-intentionally supports both semantics.
+Both return the same structured projection with `execution_id`, route, mode, state,
+resume linkage, bounded error metadata, and a paged output field. They create the same
+execution record, child logical run, history, input routing, usage ownership,
+cancellation semantics, and lifecycle events. They differ in coroutine ownership and
+whether the calling tool waits. Host mode is fixed by default and omitted from the
+model-facing `delegate` and `resume_subagent` schemas; construction rejects any visible
+route that does not allow that fixed mode. An application exposes mode override only
+when it intentionally supports both semantics.
 
 Multiple foreground delegates requested in one parent model step may execute
 concurrently when the selected driver supports it, but the parent still receives their
 results as ordinary tool results. Background completion is delivered later through the
 canonical completion path in Section 13.
+
+The model-facing capability exposes distinct spawn and continuation tools:
+
+- `delegate(subagent_name, prompt)` starts a new execution;
+- `resume_subagent(execution_id, prompt)` starts a linked execution from that exact
+  terminal record and returns a new `execution_id`;
+- `subagent_info(execution_id=...)` reads one bounded output page, while the no-ID form
+  returns independently paged active plans and execution summaries;
+- `wait_subagent(execution_id=...)` returns one bounded result page, while the no-ID form
+  snapshots every current nonterminal execution, waits in batches of 20 under one
+  optional overall timeout, and returns independently paged summaries; and
+- `steer_subagent` and `cancel_subagent` target one exact `execution_id`.
+
+`delegate` never accepts a resume identity, and `resume_subagent` never asks the model to
+repeat the route. Foreground and background return the same JSON projection. Text output
+is returned directly inside the projection's `output.content`; structured output is
+canonical JSON text with `content_type="json"`. Output pages default to 4,000 characters
+and are capped at 16,000. `next_offset` points to the next page. Plan and execution
+lists default to 20 entries per page and are capped at 100. List and fan-in projections
+omit output, usage, descriptors, and deferred payloads. Stores may implement the bounded
+page protocol so inspection does not deserialize records outside the requested page.
 
 ### 9.2 Execution record
 
@@ -381,15 +408,16 @@ A `SubagentExecutionRecord` includes:
 - correlated parent completion-input identity plus completion-delivery state; and
 - creation, update, and terminal timestamps.
 
-Public execution handles are short, route-prefixed identifiers:
-`<route>-<short-id>` for inline executions and `<route>-bg-<short-id>` for hosted
-background executions. The model receives and reuses that handle for resume, wait,
-steer, and cancel; it never writes an internal UUID. Explicit `mode` remains canonical
-record data, so policy and UI suppression never infer behavior from the `-bg-` marker.
+Public execution handles are short, route-prefixed identifiers in the form
+`<route>-<4hex>`, for example `code-reviewer-f1a2`. Foreground and background use the
+same format. The model receives and reuses `execution_id` for resume, wait, steer, and
+cancel; it never writes an internal UUID. Explicit `mode` remains canonical record data,
+so policy and UI behavior never infer execution semantics from the handle.
 Logical-run IDs, operation identities, and durable correlations remain opaque internal
 values. Model-facing inspection projects only operational status/result fields, and
 steering returns the public execution handle plus disposition; neither surface exposes
-child logical-run, inbox-input, enqueue, idempotency, or resumable-state identities.
+child logical-run, inbox-input, enqueue, idempotency, descriptor, usage, deferred-payload,
+or resumable-state identities.
 
 ## 10. Execution Host, Driver, and Store Boundary
 
@@ -555,13 +583,18 @@ Child-linked background completion uses a durable delivery record and outbox:
    applied. If the parent terminal fence rejects that input, clear the correlation and
    restore pending delivery for redirection to a later compatible run.
 
-Delivery is idempotent by child execution/result identity. A typed host lifecycle event
-may notify the UI immediately, but it cannot replace the canonical completion envelope
-when the model must observe the result. Detached background execution commits terminal
-state with delivery `not_required`; it never injects completion into or wakes the parent.
+Delivery is idempotent by child execution/result identity. The canonical completion
+envelope uses the same bounded model projection as the tool result: it includes the
+execution handle and at most the default 4,000-character output page, with
+`next_offset` directing the model to `subagent_info` when more is needed. It never
+injects full usage, descriptor, deferred, or resumable state. A typed host lifecycle
+event may notify the UI immediately, but it cannot replace the canonical completion
+envelope when the model must observe the result. Detached background execution commits
+terminal state with delivery `not_required`; it never injects completion into or wakes
+the parent.
 
 Foreground completion remains the normal delegate tool return. The same committed
-terminal result backs both the return and later inspection.
+terminal result backs both the bounded return and paged later inspection.
 
 ## 14. Lifecycle Events
 
@@ -607,10 +640,10 @@ YAACLI uses the durable session architecture in
   state, history, steering inbox,
   actions, cumulative usage, deferred segment state, results, and completion delivery;
 - the interactive TUI fixes model-facing `delegate` to background mode, omits the mode
-  argument, and commits the child record before immediately returning a
-  `<route>-bg-<short-id>` handle;
+  argument, and commits the child record before immediately returning a structured
+  result with a `<route>-<4hex>` execution handle;
 - the one-shot headless frontend fixes the same tool to foreground and waits for its
-  `<route>-<short-id>` execution before shutdown;
+  `<route>-<4hex>` execution before shutdown;
 - in both frontends, the processor-owned execution host, rather than the SDK inline
   adapter, owns the child task and supports bounded wait/cancel/close;
 - detached background children do not publish detailed model/tool streams into an
@@ -750,6 +783,13 @@ empty-list inheritance are not interpreted at runtime.
 
 - standalone foreground executes inline in the caller task over the same portable record
   model used by hosted background execution;
+- `delegate` starts only new work, `resume_subagent` accepts one exact terminal
+  `execution_id`, and both modes return the same structured handle/result projection;
+- public handles use `<route>-<4hex>` regardless of mode, while each linked resume gets a
+  new handle and records `resumed_from`;
+- specific output, list, fan-in, and background-completion projections enforce their
+  default and maximum budgets without exposing descriptors, full usage, or deferred
+  payloads;
 - repeated spawn with one idempotency key creates one child within an owner scope while
   the same key in another scope remains independent;
 - every model-facing operation and pending-delivery recovery is owner-scoped;

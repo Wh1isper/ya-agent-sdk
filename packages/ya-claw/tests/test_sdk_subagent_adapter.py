@@ -381,6 +381,9 @@ async def test_sdk_service_preserves_public_handle_case_and_punctuation(
 
     assert handle.execution_id.startswith("Worker/a-")
     assert task.name == handle.execution_id
+    page, total = await service.list_page(caller_scope_id="parent-session", offset=0, limit=1)
+    assert total == 1
+    assert page[0].execution_id == handle.execution_id
     await service.close()
 
 

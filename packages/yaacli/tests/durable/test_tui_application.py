@@ -57,14 +57,28 @@ session_dir = "{session_dir}"
     def reject_historical_descriptor_scan(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("TUI startup must not eagerly scan historical child descriptors")
 
+    startup_logs: list[str] = []
     monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
     monkeypatch.setattr(
         "yaacli.app.tui.SQLiteSubagentExecutionStore.list_referenced_descriptors",
         reject_historical_descriptor_scan,
     )
+    monkeypatch.setattr(
+        "yaacli.app.tui.logger.info",
+        lambda message, *args: startup_logs.append(message % args),
+    )
     app = TUIApp(config, manager, working_dir=tmp_path)
 
     async with app:
+        stage_logs = [line for line in startup_logs if line.startswith("Startup stage ")]
+        assert [line.split(" completed in ", 1)[0] for line in stage_logs] == [
+            "Startup stage runtime-sources",
+            "Startup stage durable-store-and-plans",
+            "Startup stage active-runtime",
+            "Startup stage application-services",
+            "Startup stage background-services",
+        ]
+        assert any(line.startswith("TUI startup completed in ") for line in startup_logs)
         assert await app._restore_startup_session() is False
         app._append_block("historical tool output before completed run")
         assert app._launch_agent("hello durable tui") is True
@@ -112,9 +126,9 @@ session_dir = "{session_dir}"
         _messages: list[ModelMessage],
         _info: Any,
     ) -> AsyncIterator[str]:
+        yield "cancelled partial output"
         model_started.set()
         await asyncio.Event().wait()
-        yield "unreachable"
 
     def minimal_runtime_factory(*args: Any, **kwargs: Any):
         del args
@@ -162,6 +176,9 @@ session_dir = "{session_dir}"
             "status": "cancelled",
             "reason": "user_interrupted",
         }
+        history = str(revision.message_history)
+        assert history.count("cancel this durable turn") == 1
+        assert history.count("cancelled partial output") == 1
         assert (
             sum(
                 event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_accepted"
@@ -177,6 +194,7 @@ session_dir = "{session_dir}"
         assert steering_text not in str(app._display_replay.snapshot())
         assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
         assert any("historical tool output before cancelled run" in line for line in app._output_lines)
+        assert any("cancelled partial output" in line for line in app._output_lines)
         assert any("Cancelled · durable cancellation recorded" in line for line in app._output_lines)
         assert not any("[ERROR]" in line or "RuntimeError" in line for line in app._output_lines)
         cancellation_events = [
@@ -215,9 +233,9 @@ session_dir = "{session_dir}"
         _messages: list[ModelMessage],
         _info: Any,
     ) -> AsyncIterator[str]:
+        yield "interrupted partial output"
         model_started.set()
         await asyncio.Event().wait()
-        yield "unreachable"
 
     def minimal_runtime_factory(*args: Any, **kwargs: Any):
         del args
@@ -258,6 +276,9 @@ session_dir = "{session_dir}"
         assert revision is not None
         assert revision.terminal["status"] == "interrupted"
         assert "interrupted before its active segment completed" in str(revision.terminal["reason"])
+        assert str(revision.message_history).count("interrupt this durable turn") == 1
+        assert str(revision.message_history).count("interrupted partial output") == 1
+        assert any("interrupted partial output" in line for line in app._output_lines)
         assert any("Agent run ended with status interrupted" in line for line in app._output_lines)
         assert not any(str(event.get("name", "")).endswith("run_cancelled") for event in app._display_replay.snapshot())
         assert app._last_snapshot_saved is True
@@ -267,7 +288,7 @@ session_dir = "{session_dir}"
         assert any("[Goal] Stopped after an error at iteration 3" in line for line in app._output_lines)
 
 
-async def test_tui_failed_run_restores_only_durable_projection(
+async def test_tui_failed_run_restores_recoverable_state_and_next_turn_history(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
@@ -288,15 +309,22 @@ session_dir = "{session_dir}"
     config = manager.load()
     partial_streamed = asyncio.Event()
     release_failure = asyncio.Event()
+    model_calls = 0
+    continuation_messages: list[ModelMessage] = []
 
     async def failing_response(
-        _messages: list[ModelMessage],
+        messages: list[ModelMessage],
         _info: Any,
     ) -> AsyncIterator[str]:
-        yield "uncommitted partial output"
-        partial_streamed.set()
-        await release_failure.wait()
-        raise RuntimeError("model exploded")
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            yield "recoverable partial output"
+            partial_streamed.set()
+            await release_failure.wait()
+            raise RuntimeError("model exploded")
+        continuation_messages.extend(messages)
+        yield "continued after recovered failure"
 
     def minimal_runtime_factory(*args: Any, **kwargs: Any):
         del args
@@ -340,7 +368,10 @@ session_dir = "{session_dir}"
         assert revision is not None
         assert revision.terminal["status"] == "failed"
         assert revision.terminal["error"] == "model exploded"
-        assert revision.resumable_state == {}
+        assert "transient" in str(revision.resumable_state)
+        history = str(revision.message_history)
+        assert history.count("fail this durable turn") == 1
+        assert history.count("recoverable partial output") == 1
         assert (
             sum(
                 event.get("type") == "CUSTOM" and event.get("name") == "yaacli.steering_accepted"
@@ -349,23 +380,38 @@ session_dir = "{session_dir}"
             == 1
         )
         assert not any(event.get("name") == "yaacli.steering_applied" for event in revision.display_projection)
-        assert not any(
-            event.get("type") in {"RUN_STARTED", "TEXT_MESSAGE_CHUNK"} for event in revision.display_projection
+        assert any(event.get("type") == "RUN_STARTED" for event in revision.display_projection)
+        assert any(
+            event.get("type") == "TEXT_MESSAGE_CHUNK" and "recoverable partial output" in str(event.get("delta"))
+            for event in revision.display_projection
         )
         assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "rejected"
         replay = app._display_replay.snapshot()
         assert sum(event.get("type") == "RUN_ERROR" for event in replay) == 1
-        assert not any(event.get("type") in {"RUN_STARTED", "TEXT_MESSAGE_CHUNK"} for event in replay)
+        assert any(event.get("type") == "RUN_STARTED" for event in replay)
+        assert any(
+            event.get("type") == "TEXT_MESSAGE_CHUNK" and "recoverable partial output" in str(event.get("delta"))
+            for event in replay
+        )
         assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
         assert any("historical tool output before failed run" in line for line in app._output_lines)
-        assert not any("uncommitted partial output" in line for line in app._output_lines)
-        assert app.runtime.ctx.note_manager.get("transient") is None
+        assert any("recoverable partial output" in line for line in app._output_lines)
+        assert app.runtime.ctx.note_manager.get("transient") == "not committed"
         assert any("Agent run ended with status failed: model exploded" in line for line in app._output_lines)
         assert app._last_snapshot_saved is True
         assert app._active_logical_run_id is None
         assert app.phase is TUIPhase.IDLE
         assert app.runtime.ctx.goal_active is False
         assert any("[Goal] Stopped after an error at iteration 4" in line for line in app._output_lines)
+
+        assert app._launch_agent("continue after failed turn") is True
+        continuation_task = app._agent_task
+        assert continuation_task is not None
+        await asyncio.wait_for(continuation_task, timeout=5)
+        continued = str(continuation_messages)
+        assert continued.count("fail this durable turn") == 1
+        assert continued.count("recoverable partial output") == 1
+        assert continued.count("continue after failed turn") == 1
 
 
 async def test_tui_failed_run_keeps_observed_tool_history(
@@ -453,12 +499,14 @@ session_dir = "{session_dir}"
         revision = app._durable_store.get_revision_for_run(logical_run_id)
         assert revision is not None
         assert revision.terminal["status"] == "failed"
-        assert not any(str(event.get("type", "")).startswith("TOOL_CALL_") for event in revision.display_projection)
+        assert any(event.get("type") == "TOOL_CALL_CHUNK" for event in revision.display_projection)
+        assert any(event.get("type") == "TOOL_CALL_RESULT" for event in revision.display_projection)
+        assert "uncommitted output after tool" in str(revision.message_history)
         output = "\n".join(app._output_lines)
         assert "Calling:" in output
         assert "Complete:" in output
         assert "observed tool result: kept after failure" in output
-        assert "uncommitted output after tool" not in output
+        assert "uncommitted output after tool" in output
         assert "model failed after visible tool" in output
 
 
@@ -564,15 +612,18 @@ session_dir = "{session_dir}"
             )
             == 1
         )
-        assert not any(
-            event.get("type") in {"RUN_STARTED", "TEXT_MESSAGE_CHUNK"} for event in revision.display_projection
+        assert any(event.get("type") == "RUN_STARTED" for event in revision.display_projection)
+        assert any(
+            event.get("type") == "TEXT_MESSAGE_CHUNK" and "uncommitted second output" in str(event.get("delta"))
+            for event in revision.display_projection
         )
         assert app._durable_store.list_inputs(logical_run_id)[1].state.value == "applied"
 
         output = "\n".join(app._output_lines)
         assert sum("Guidance sent to the active run." in line for line in app._output_lines) == 1
         assert output.count("Guidance injected") == 1
-        assert "uncommitted output before injected failure" not in output
+        assert "uncommitted output before injected failure" in output
+        assert "uncommitted second output" in output
         assert "model failed after steering injection" in output
 
 

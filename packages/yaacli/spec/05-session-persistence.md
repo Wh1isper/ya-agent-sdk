@@ -73,10 +73,13 @@ The executable version hashes participating first-party code and package/native 
 critical dependency versions, and Python/compiler/platform metadata. YAACLI has one
 executable identity; it does not maintain workflow/application version aliases.
 
-Worker startup enters every exact plan required by current configuration or pending
-work. A persisted run executes only when its descriptor ID, full plan fingerprint,
-behavior payload, and executable identity match the registered plan. Falling back to a
-current profile, current child route, or similar-looking plan is forbidden.
+Worker startup enters only the active model profile. Other configured profile plans
+remain process-local build specifications and are entered asynchronously on first
+selection, then cached for the process lifetime. Shutdown exits only runtimes that were
+actually entered. A persisted run executes only when its descriptor ID, full plan
+fingerprint, behavior payload, and executable identity match the registered plan.
+Falling back to a current profile, current child route, or similar-looking plan is
+forbidden.
 
 ### Logical run, execution, and checkpoint
 
@@ -101,8 +104,10 @@ are:
 - `wait(logical_run_id)`; and
 - `cancel(logical_run_id, reason)`.
 
-TUI and headless frontends use the same service. `LocalExecutionWorker` owns entered
-runtime plans and one `LocalExecutionCoordinator`; it is not itself product state.
+TUI and headless frontends use the same service. `LocalExecutionWorker` owns the lazy
+profile build catalog, entered-runtime cache, and one `LocalExecutionCoordinator`; it
+is not itself product state. A profile becomes active only after its runtime enters
+successfully, so failed lazy activation leaves the previous profile authoritative.
 
 Starting a turn is one product transaction:
 
@@ -141,8 +146,9 @@ A runtime plan has one lock because the entered `AgentRuntime` is shared. The lo
 held only during a native segment. It is released before waiting for actions, so one
 suspended session cannot block another session using the same descriptor.
 
-Live `StreamEvent` values are sent directly to the frontend event sink. They are
-transient observations, not canonical durability records.
+Live `StreamEvent` values are sent directly to the frontend event sink. They remain
+transient until a stable segment boundary or a controlled terminal recovery snapshot
+publishes the safe recoverable subset.
 
 ## Active Input and Terminal Fence
 
@@ -159,15 +165,23 @@ coordinator performs this reconciliation before host display projection and befo
 later model failure can fence unresolved input.
 
 At terminal boundaries the store closes ingress. Every previously accepted input must
-be applied or rejected with a reason before terminal publication. Failure, cancellation,
-and interruption retain only stable checkpoint projection plus the identity-keyed
-`steering_accepted` and `steering_applied` durable UI facts; uncommitted model text,
-reasoning, and tool events remain excluded. These facts are deterministically rebuilt
-from run-scoped durable input rows before terminal commit, so process-restart recovery
-does not depend on restoring the previous frontend replay first. The merged terminal
-projection passes through the same per-event, event-count, run-count, and byte budgets
-as live display replay; retained applied facts never outlive their accepted receipt.
-Late writes to a closed, cancelling, terminal, or tombstoned run fail explicitly.
+be applied or rejected with a reason before terminal publication. On controlled failure,
+cancellation, or worker shutdown, the coordinator captures the active segment's SDK
+`recoverable_messages()`, resumable state, input ledger, usage, and bounded display
+projection before releasing process-local state. This terminal recovery snapshot keeps
+the submitted prompt and safe text-only partial assistant output. Completed tool calls
+remain visible; incomplete tool calls are excluded and are never replayed.
+
+A terminal recovery snapshot is not an execution checkpoint and cannot resume the old
+segment. The old logical run remains terminal, and a later user continuation is a new
+logical run from the published revision. Unresolved steering is rejected and removed
+from resumable native input while identity-keyed `steering_accepted` and
+`steering_applied` UI facts retain their existing durable fence. If recovery capture
+fails, or no process-local segment survives, terminal publication falls back to the
+latest stable checkpoint. The merged terminal projection passes through the same
+per-event, event-count, run-count, and byte budgets as live display replay; retained
+applied facts never outlive their accepted receipt. Late writes to a closed, cancelling,
+terminal, or tombstoned run fail explicitly.
 
 See [04-steering.md](04-steering.md).
 
@@ -195,14 +209,14 @@ Startup reconciliation is explicit:
 - `pending` runs remain eligible for normal outbox dispatch;
 - `cancelling` runs commit `cancelled`;
 - process-owned `running` or `suspended` runs commit terminal `interrupted`; and
-- interrupted publication uses the latest stable checkpoint when present.
+- restart-time interrupted publication uses the latest stable checkpoint when present.
 
 The incomplete active segment is never invoked again. `interrupted` is terminal for the
 old execution. A later user continuation is a new logical run from the published head.
 
-Worker shutdown cancels active tasks and commits `interrupted`. Explicit user cancel
-sets cancellation intent first and commits `cancelled`; shutdown and cancellation are
-not conflated. Even if the foreground waiter itself receives `CancelledError`, it waits
+Worker shutdown cancels active tasks, captures recoverable in-memory state, and commits
+`interrupted`. Explicit user cancel sets cancellation intent first and commits
+`cancelled`; shutdown and cancellation are not conflated. Even if the foreground waiter itself receives `CancelledError`, it waits
 through shielded durable settlement and projects the committed revision as canonical
 truth. The TUI emits `run_cancelled` only for a `cancelled` revision; `interrupted` and
 `failed` retain their error semantics. Every terminal revision restores the durable
@@ -229,10 +243,11 @@ Consequences:
 - it does not recreate or replay child model/tool work;
 - SDK inline and YAACLI hosted execution share one portable service lifecycle, but
   YAACLI does not use the SDK inline execution host;
-- public child handles are `<route>-bg-<short-id>` in the interactive TUI and
-  `<route>-<short-id>` for headless foreground execution; they are reused directly for
-  resume, wait, steer, and cancel, while model-facing inspection/steering projections
-  keep internal logical-run/correlation IDs private;
+- public child handles use `<route>-<4hex>` in both frontends; mode is explicit record
+  data rather than an ID marker, `resume_subagent` receives the prior terminal
+  `execution_id` and returns a new linked handle, and wait, steer, and cancel target one
+  exact execution while bounded model-facing projections keep internal descriptors,
+  usage, deferred payloads, and logical-run/correlation IDs private;
 - spawn and steering idempotency are owner scoped;
 - suspended children keep their durable inbox open for the next continuation segment,
   each input identity is enqueued at most once per native attempt, and terminal admission
@@ -240,12 +255,15 @@ Consequences:
 - cancelling a suspended child commits terminal `cancelled` state and rejects unresolved
   input, while repeated cancellation of any terminal child returns the same record;
 - child request usage is cumulative across native deferred continuation;
-- every active child descriptor is persisted before its delegation service is exposed;
+- every active child descriptor is persisted before its delegation service is exposed,
+  and execution creation reasserts that descriptor in the same transaction so concurrent
+  descriptor GC cannot create a dangling reference;
 - an exact historical child descriptor remains in SQLite while an execution record references it, but it is not embedded into a new root runtime descriptor or eagerly reconstructed at startup;
 - resume and nested authorization load a historical descriptor lazily through the retained-plan provider, revalidate its exact identity, and fail that operation explicitly when compatible executable capability code is unavailable without blocking current runtime startup;
 - terminal completion enters the canonical parent input path idempotently; and
-- tombstoning an owner closes child inboxes, persists cancellation commands, and fences
-  late model starts, saves, steering, and success commits.
+- tombstoning an owner closes child inboxes, atomically records every nonterminal child
+  as cancelled, persists cancellation intent, and fences late model starts, saves,
+  steering, and success commits.
 
 The TUI poller is a session-scoped readiness projection only. Switching sessions does
 not reparent work.
@@ -259,9 +277,11 @@ persisted state cannot weaken current security or approval policy.
 
 `/new` publishes a fresh session identity. It does not reuse the previous head or inbox.
 
-Deletion writes a tombstone that hides the session, closes active input, requests main
-cancellation, atomically fences every nonterminal child, rejects pending child input,
-enqueues idempotent child cancellation commands, and rejects all later product writes.
+Deletion refuses a session with nonterminal main work. For an inactive main session it
+writes a tombstone that hides the session, atomically records every nonterminal child
+as cancelled, rejects pending child input, persists child cancellation intent, and
+rejects all later product writes. Physical purge waits until both main and child work
+are terminal.
 
 ## Offline Export and Import
 
@@ -286,6 +306,21 @@ commit:
 
 `SQLiteSessionStore` enables foreign keys, WAL mode, `synchronous=FULL`, and a bounded
 busy timeout. Writes use `BEGIN IMMEDIATE`.
+
+Terminal publication deletes its execution checkpoint in the same transaction because
+the full terminal revision supersedes that segment boundary. Retention deletes complete
+old run bundles rather than trimming individual payload columns: action decisions,
+events, checkpoints, inputs, revisions, execution rows, and the logical run are removed
+together while the session head and newest configured number of turns remain intact.
+
+Startup maintenance physically purges only previously tombstoned sessions whose main and
+child work is now terminal, then selects only quiescent active sessions for count- or
+age-based tombstoning. It performs a mark-and-sweep of subagent plan descriptors from all
+surviving execution records and a passive WAL checkpoint. `VACUUM` runs only when
+reclaimable pages exceed a bounded size threshold and the persisted minimum interval has
+elapsed; it is never part of a product write transaction. Automatic vacuum uses a short
+lock timeout, records attempts for retry throttling, and defers busy-database failures
+rather than blocking or failing startup.
 
 Only an empty database may bootstrap the current unified schema. Every nonempty database
 must match the exact marker and normalized table/index definitions. Validation runs

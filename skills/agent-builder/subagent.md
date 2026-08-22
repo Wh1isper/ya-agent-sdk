@@ -284,15 +284,20 @@ nested policy.
 
 ## Model-Facing Tools
 
-One `DelegationCapability` exposes:
+One `DelegationCapability` exposes a roster of at most 20 routes per model request,
+with each description capped at 300 characters. When more routes exist, use paged
+`subagent_info` discovery.
 
-| Tool              | Purpose                                                                              |
-| ----------------- | ------------------------------------------------------------------------------------ |
-| `delegate`        | Spawn a route or resume `agent_id`; foreground waits and background returns a handle |
-| `subagent_info`   | List plans/executions or inspect one execution                                       |
-| `wait_subagent`   | Bounded wait for one execution or one-shot fan-in across current executions          |
-| `steer_subagent`  | Send targeted native logical-run input                                               |
-| `cancel_subagent` | Request idempotent cancellation                                                      |
+It exposes:
+
+| Tool              | Purpose                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `delegate`        | Start a new route execution                                     |
+| `resume_subagent` | Start a linked continuation from one terminal `execution_id`    |
+| `subagent_info`   | List paged summaries or inspect one execution with paged output |
+| `wait_subagent`   | Bounded wait for one execution or summary-only one-shot fan-in  |
+| `steer_subagent`  | Send targeted native logical-run input                          |
+| `cancel_subagent` | Request idempotent cancellation                                 |
 
 The SDK default executes foreground delegation inline in the calling tool task. A host
 must explicitly inject a `SubagentExecutionHost` that supports background mode before it
@@ -300,10 +305,20 @@ can expose asynchronous delegation. Mode is fixed by the host by default; constr
 rejects visible routes that do not allow that mode. Mode remains explicit record data
 and is never inferred from an ID string.
 
+Foreground and background return the same structured result, always including the
+short route-prefixed `execution_id` such as `code-reviewer-f1a2`. A continuation receives
+a new execution ID and exposes the prior ID as `resumed_from`. `delegate` has no resume
+argument; use `resume_subagent(execution_id, prompt)` so spawn and continuation intent
+remain unambiguous.
+
 Every model-facing operation is authorized by `AgentContext.delegation_scope_id`.
-Model inspection returns an operational projection rather than the full durable record,
-and steering returns only the execution handle plus disposition. Internal logical-run,
+Model inspection returns an operational projection rather than the full durable record.
+Specific execution reads return at most 4,000 output characters by default (16,000 max)
+and expose `next_offset` for paging. No-ID inspection independently pages plans and
+execution summaries at 20 entries by default (100 max); fan-in pages summary-only
+results with the same limits. Descriptor IDs, full usage, deferred payloads, logical-run,
 inbox, enqueue, idempotency, and resumable-state identities remain host-only.
+Background completion uses the same bounded projection.
 
 Standalone roots default it to their stable root run ID; durable hosts use a stable
 session/root scope. Delegate, resume, and steering calls derive replay-stable operation
@@ -384,8 +399,9 @@ Driver and store `restart_durable` declarations must agree. A plan requiring
 4. Prefer `foreground` for results needed immediately; use `background` only when
    independent progress has value.
 5. Use idempotency keys for retried spawn operations.
-6. Resume with the returned short route-prefixed execution handle and its exact retained
-   descriptor; internal logical-run UUIDs are never model-facing.
+6. Resume with `resume_subagent` and the returned short route-prefixed `execution_id`;
+   the linked execution receives a new handle while internal logical-run UUIDs remain
+   host-only.
 7. Keep parent planning, integration, and user-facing synthesis in the parent.
 8. Treat lifecycle events as observations; stores and canonical input own truth.
 9. Use a restart-durable host driver whenever process loss must not lose work.

@@ -38,8 +38,15 @@ exposed as `shell_monitor`. It:
 3. starts the process through `Shell.start()`;
 4. registers its process ID for incremental monitoring;
 5. emits `BackgroundShellStartEvent`; and
-6. returns the ID used by `shell_wait`, `shell_status`, `shell_input`, `shell_signal`,
-   and `shell_kill`.
+6. returns the session-local handle used by `shell_wait`, `shell_status`,
+   `shell_input`, `shell_signal`, and `shell_kill`.
+
+The shared Environment shell allocates compact sequential handles such as `process-1`.
+They are scoped to the current shell session and restart from `process-1` only after a
+successful session reset has confirmed termination of all prior work. The monitor does
+not allocate or translate IDs. OS PIDs, process groups, container exec identities, and
+host run IDs remain internal ownership details and never replace the model-facing
+handle.
 
 The tool is available only while both the Environment shell and monitor are active.
 Ordinary `shell_exec(background=True)` processes receive completion detection through

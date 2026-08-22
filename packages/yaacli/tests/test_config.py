@@ -46,6 +46,9 @@ def test_default_config() -> None:
     assert config.display.max_prompt_history == 500
     assert config.media.max_pending_attachments == 8
     assert config.media.max_pending_attachment_bytes == 20 * 1024 * 1024
+    assert config.session.max_turns_per_session == 20
+    assert config.session.max_sessions == 100
+    assert config.session.max_session_age_days is None
     assert config.notifications.bell_on_turn_complete is True
     assert config.notifications.bell_on_user_action_required is True
 
@@ -148,6 +151,19 @@ def test_tools_config_rejects_invalid_user_input_timeout(timeout_seconds: float)
 def test_general_config_requires_positive_max_requests(max_requests: int) -> None:
     with pytest.raises(ValidationError):
         GeneralConfig(max_requests=max_requests)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_turns_per_session", 0),
+        ("max_sessions", -1),
+        ("max_session_age_days", 0),
+    ],
+)
+def test_session_retention_requires_positive_limits(field: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        YaacliConfig.model_validate({"session": {field: value}})
 
 
 def test_load_defaults(config_manager: ConfigManager, clean_env: None) -> None:
@@ -495,6 +511,9 @@ code_theme = "dark"
     os.environ["YAACLI_CODE_THEME"] = "light"
     os.environ["YAACLI_SESSION_DIR"] = session_dir
     os.environ["YAACLI_DATABASE_PATH"] = database_path
+    os.environ["YAACLI_MAX_TURNS_PER_SESSION"] = "12"
+    os.environ["YAACLI_MAX_SESSIONS"] = "34"
+    os.environ["YAACLI_MAX_SESSION_AGE_DAYS"] = "56"
     os.environ["YAACLI_OAUTH_REFRESH_INTERVAL_SECONDS"] = "900"
     os.environ["YAACLI_OAUTH_REFRESH_ON_STARTUP"] = "false"
 
@@ -504,6 +523,9 @@ code_theme = "dark"
     assert config.general.model == "openai-chat:gpt-4o"
     assert config.session.session_dir == session_dir
     assert config.session.database_path == database_path
+    assert config.session.max_turns_per_session == 12
+    assert config.session.max_sessions == 34
+    assert config.session.max_session_age_days == 56
     assert config.oauth_refresh.interval_seconds == 900
     assert config.oauth_refresh.refresh_on_startup is False
 

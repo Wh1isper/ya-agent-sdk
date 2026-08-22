@@ -1000,6 +1000,8 @@ class TUIApp:
 
     async def _initialize_runtime(self) -> TUIApp:
         """Build runtime resources under the lifecycle cleanup boundary."""
+        startup_started_at = time.monotonic()
+        phase_started_at = startup_started_at
         logger.debug("Resolved terminal theme: %s (%s)", self._theme.variant, self._theme.source)
         mcp_config = self.config_manager.load_mcp_config()
         capability_plugins = self.config_manager.load_capability_plugin_config()
@@ -1012,7 +1014,15 @@ class TUIApp:
         )
         self._runtime_sources = sources
         database_path = self.config_manager.get_session_database_path()
-        self._durable_store = SQLiteSessionStore(database_path)
+        logger.info("Startup stage runtime-sources completed in %.3fs", time.monotonic() - phase_started_at)
+
+        phase_started_at = time.monotonic()
+        self._durable_store = SQLiteSessionStore(
+            database_path,
+            max_turns_per_session=self.config.session.max_turns_per_session,
+            max_sessions=self.config.session.max_sessions,
+            max_session_age_days=self.config.session.max_session_age_days,
+        )
 
         configured_profiles = build_model_profiles(self.config)
         runtime_profiles: list[ResolvedModelProfile | None] = [*configured_profiles] or [None]
@@ -1020,28 +1030,26 @@ class TUIApp:
         self._skill_toolsets.clear()
         for profile in runtime_profiles:
             runtime_id = profile.id if profile is not None else "default"
-            child_manifest = compile_child_plan_manifest(
-                self.config,
-                profile=profile,
-                sources=sources,
-                capability_catalog=capability_catalog,
-            )
-            agent_spec = AgentSpec.model_validate(
-                build_runtime_agent_spec(
-                    self.config,
-                    profile=profile,
-                    capability_plugins=capability_plugins,
-                )
-            )
 
             def build_runtime(
                 binding_ref: str,
                 *,
                 runtime_id: str = runtime_id,
                 runtime_profile: ResolvedModelProfile | None = profile,
-                runtime_child_manifest=child_manifest,
-                runtime_agent_spec: AgentSpec = agent_spec,
             ) -> AgentRuntime[TUIContext, Any, TUIEnvironment]:
+                runtime_child_manifest = compile_child_plan_manifest(
+                    self.config,
+                    profile=runtime_profile,
+                    sources=sources,
+                    capability_catalog=capability_catalog,
+                )
+                runtime_agent_spec = AgentSpec.model_validate(
+                    build_runtime_agent_spec(
+                        self.config,
+                        profile=runtime_profile,
+                        capability_plugins=capability_plugins,
+                    )
+                )
                 skill_toolset = SkillToolset(
                     toolset_id="skills",
                     extra_dir_names=[SHARED_SKILLS_DIR_NAME],
@@ -1076,6 +1084,9 @@ class TUIApp:
             )
 
         active_runtime_id = self._active_model_profile.id if self._active_model_profile is not None else "default"
+        logger.info("Startup stage durable-store-and-plans completed in %.3fs", time.monotonic() - phase_started_at)
+
+        phase_started_at = time.monotonic()
 
         async def event_sink(event: StreamEvent) -> None:
             self._handle_execution_stream_event(event)
@@ -1093,6 +1104,8 @@ class TUIApp:
             self._durable_store.close()
             self._durable_store = None
             raise
+        logger.info("Startup stage active-runtime completed in %.3fs", time.monotonic() - phase_started_at)
+        phase_started_at = time.monotonic()
         self._runtime = cast(
             AgentRuntime[TUIContext, str | DeferredToolRequests, TUIEnvironment],
             self._execution_worker.runtime,
@@ -1110,6 +1123,8 @@ class TUIApp:
             PROJECT_GUIDANCE_TAG,
             USER_RULES_TAG,
         )
+        logger.info("Startup stage application-services completed in %.3fs", time.monotonic() - phase_started_at)
+        phase_started_at = time.monotonic()
 
         self._oauth_refresh_supervisor = self._create_oauth_refresh_supervisor()
         if self._oauth_refresh_supervisor is not None:
@@ -1141,6 +1156,8 @@ class TUIApp:
             name="yaacli-subagent-completion-projection",
         )
         self._track_managed_task(projection_task)
+        logger.info("Startup stage background-services completed in %.3fs", time.monotonic() - phase_started_at)
+        logger.info("TUI startup completed in %.3fs", time.monotonic() - startup_started_at)
         return self
 
     async def _run_shutdown_stage(self, name: str, operation: Callable[[], Awaitable[Any]]) -> Any:
@@ -2735,7 +2752,7 @@ class TUIApp:
         if self._execution_worker is None:
             raise RuntimeError("Durable worker is not initialized")
         try:
-            plan = self._execution_worker.activate(profile.id)
+            plan = await self._execution_worker.activate(profile.id)
         except KeyError as exc:
             raise RuntimeError(f"Model profile {profile.id!r} has no local runtime") from exc
         self._runtime = cast(

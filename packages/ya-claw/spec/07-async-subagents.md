@@ -160,21 +160,28 @@ stateDiagram-v2
 
 ## Spawn and Resume
 
-The model-facing operation is the SDK `delegate` tool:
+The model-facing SDK uses separate spawn and continuation tools:
 
 ```python
 delegate(
     subagent_name: str,
     prompt: str,
     mode: Literal["foreground", "background"] | None = None,
-    agent_id: str | None = None,
+) -> str
+
+resume_subagent(
+    execution_id: str,
+    prompt: str,
+    mode: Literal["foreground", "background"] | None = None,
 ) -> str
 ```
 
-`agent_id=None` creates a new SDK execution. Supplying a terminal execution ID resumes
-that execution's route and committed history. Foreground waits for the durable child
-result; background returns the execution handle immediately. Both modes use the same
-Claw child-session and supervised-run path.
+`delegate` creates a new SDK execution. `resume_subagent` resolves the exact terminal
+execution's route, committed history, and immutable descriptor and creates a linked
+execution with a new short handle. Foreground waits for the durable child result;
+background returns immediately. Both return the same bounded structured projection and
+use the same Claw child-session and supervised-run path. Handles use
+`<route>-<4hex>` in both modes; explicit mode data, not the handle, controls behavior.
 
 Claw's store and driver perform the following host work:
 
@@ -269,13 +276,20 @@ run, checks both linkage copies, then restores the descriptor from `session_asyn
 `DelegationCapability` is the only model-facing delegation surface. Every operation is
 scoped to the current parent session by the injected Claw store.
 
-| Tool              | Purpose                                                        |
-| ----------------- | -------------------------------------------------------------- |
-| `delegate`        | create or resume foreground/background work                    |
-| `subagent_info`   | list registered plans and executions, or inspect one execution |
-| `wait_subagent`   | wait for one committed background execution                    |
-| `steer_subagent`  | enqueue input to an active child by SDK execution ID           |
-| `cancel_subagent` | cancel active durable child work                               |
+| Tool              | Purpose                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `delegate`        | create new foreground/background work                           |
+| `resume_subagent` | create linked work from one terminal SDK execution ID           |
+| `subagent_info`   | list paged summaries or inspect one execution with paged output |
+| `wait_subagent`   | wait for one execution or perform summary-only one-shot fan-in  |
+| `steer_subagent`  | enqueue input to an active child by SDK execution ID            |
+| `cancel_subagent` | cancel active durable child work                                |
+
+Specific execution results and background completion include a 4,000-character output
+page by default and expose `next_offset` for further reads. No-ID inspection independently
+pages plans and execution summaries at 20 entries by default; fan-in returns a paged
+summary-only result. Model projections omit descriptors, full usage, deferred payloads,
+and internal logical-run/correlation identities.
 
 `steer_subagent` crosses the SDK steering-driver boundary and then enters Claw's durable
 run input inbox:

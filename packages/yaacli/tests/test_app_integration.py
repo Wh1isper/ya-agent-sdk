@@ -430,7 +430,7 @@ async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
     runtime.ctx.model_cfg.context_window = 270000
     plan = MagicMock(runtime=runtime)
     worker = MagicMock()
-    worker.activate.return_value = plan
+    worker.activate = AsyncMock(return_value=plan)
     skill_toolset = MagicMock()
     skill_toolset.refresh_context = AsyncMock()
     app._execution_worker = worker
@@ -441,7 +441,7 @@ async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
 
     await app._apply_model_selector_selection()
 
-    worker.activate.assert_called_once_with("ws")
+    worker.activate.assert_awaited_once_with("ws")
     skill_toolset.refresh_context.assert_awaited_once_with(runtime.ctx)
     assert app._runtime is runtime
     assert app._active_model_profile == ResolvedModelProfile(

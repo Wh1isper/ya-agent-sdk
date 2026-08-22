@@ -9,32 +9,32 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
-from dotenv import load_dotenv
 
 from yaacli import __version__  # pyright: ignore[reportAttributeAccessIssue]
-from yaacli.config import ConfigManager, WorktreeMetadata, YaacliConfig
-from yaacli.durable.application import SessionApplicationService
-from yaacli.durable.models import SessionSummary
-from yaacli.durable.sqlite import SQLiteSessionStore
-from yaacli.errors import safe_exception_str
-from yaacli.logging import LOG_FILE_NAME, configure_logging, get_logger
-from yaacli.subagent_config import has_subagent_definition
+
+if TYPE_CHECKING:
+    from yaacli.config import ConfigManager, WorktreeMetadata, YaacliConfig
+    from yaacli.durable.application import SessionApplicationService
+    from yaacli.durable.sqlite import SQLiteSessionStore
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -191,6 +191,8 @@ def run_setup_wizard(config_manager: ConfigManager) -> bool:
     Returns:
         True if setup completed successfully, False if user cancelled.
     """
+    from yaacli.subagent_config import has_subagent_definition
+
     click.echo()
     click.echo(click.style("Welcome to YAACLI CLI!", fg="cyan", bold=True))
     click.echo("Let's set up your configuration.\n")
@@ -370,6 +372,8 @@ def load_package_env_files() -> None:
     loaded first, so it wins duplicate keys; the working-directory file only
     supplies keys that are still unset.
     """
+    from dotenv import load_dotenv
+
     load_dotenv(_PACKAGE_ROOT / ".env", override=False)
     load_dotenv(Path.cwd() / ".env", override=False)
 
@@ -436,6 +440,8 @@ def ensure_builtin_assets(config_manager: ConfigManager) -> None:
     Args:
         config_manager: Configuration manager instance.
     """
+    from yaacli.subagent_config import has_subagent_definition
+
     config_dir = config_manager.config_dir
 
     # Ensure config directory exists
@@ -520,6 +526,8 @@ def _create_worktree(branch_name: str | None) -> tuple[Path, str, bool]:
         branch_name = f"yaacli/{timestamp}"
 
     # Create worktree directory under ~/.yaacli/worktrees/{project_hash}/{branch}
+    from yaacli.config import ConfigManager
+
     proj_hash = _project_hash(git_root)
     worktrees_dir = ConfigManager.DEFAULT_CONFIG_DIR / "worktrees" / proj_hash
     worktrees_dir.mkdir(parents=True, exist_ok=True)
@@ -559,12 +567,23 @@ def _create_worktree(branch_name: str | None) -> tuple[Path, str, bool]:
 
 
 def _prepare_cli_runtime(verbose: bool) -> tuple[ConfigManager, YaacliConfig]:
+    import_started_at = time.monotonic()
+    from yaacli.config import ConfigManager
+    from yaacli.logging import configure_logging
+
     configure_logging(verbose=verbose)
     logger.info("Starting yaacli v%s", __version__)
+    logger.info("Startup stage runtime-imports completed in %.3fs", time.monotonic() - import_started_at)
+
+    config_started_at = time.monotonic()
     load_package_env_files()
     config_manager = ConfigManager()
     config = config_manager.load()
+    logger.info("Startup stage configuration completed in %.3fs", time.monotonic() - config_started_at)
+
+    assets_started_at = time.monotonic()
     ensure_builtin_assets(config_manager)
+    logger.info("Startup stage builtin-assets completed in %.3fs", time.monotonic() - assets_started_at)
     if not config.is_configured:
         if not run_setup_wizard(config_manager):
             raise click.exceptions.Exit(0)
@@ -574,6 +593,9 @@ def _prepare_cli_runtime(verbose: bool) -> tuple[ConfigManager, YaacliConfig]:
 
 
 def _prepare_session_cli_runtime(verbose: bool) -> ConfigManager:
+    from yaacli.config import ConfigManager
+    from yaacli.logging import configure_logging
+
     configure_logging(verbose=verbose)
     logger.info("Starting yaacli sessions command v%s", __version__)
     load_package_env_files()
@@ -713,6 +735,9 @@ def cli(
         click.echo("\nGoodbye!", err=headless_mode)
         exit_code = 130
     except Exception as e:
+        from yaacli.errors import safe_exception_str
+        from yaacli.logging import LOG_FILE_NAME
+
         logger.exception("Fatal error")
         click.echo(err=headless_mode)
         click.echo(click.style("=" * 60, fg="red"), err=headless_mode)
@@ -833,6 +858,8 @@ def sessions() -> None:
 
 
 def _session_summary_payload(entry: object) -> dict[str, object]:
+    from yaacli.durable.models import SessionSummary
+
     if not isinstance(entry, SessionSummary):
         raise TypeError(f"Expected SessionSummary, got {type(entry)!r}")
     return entry.model_dump(mode="json")
@@ -841,7 +868,16 @@ def _session_summary_payload(entry: object) -> dict[str, object]:
 def _session_query_service(
     config_manager: ConfigManager,
 ) -> tuple[SQLiteSessionStore, SessionApplicationService]:
-    store = SQLiteSessionStore(config_manager.get_session_database_path())
+    from yaacli.durable.application import SessionApplicationService
+    from yaacli.durable.sqlite import SQLiteSessionStore
+
+    config = config_manager.config
+    store = SQLiteSessionStore(
+        config_manager.get_session_database_path(),
+        max_turns_per_session=config.session.max_turns_per_session,
+        max_sessions=config.session.max_sessions,
+        max_session_age_days=config.session.max_session_age_days,
+    )
     return store, SessionApplicationService(store)
 
 

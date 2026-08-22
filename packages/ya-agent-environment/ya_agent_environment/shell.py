@@ -295,6 +295,7 @@ class Shell(ABC):
         self._stdin_streams: dict[str, WritableStream] = {}
         self._signal_handlers: dict[str, Callable[[int], Awaitable[None]]] = {}
         self._background_lifecycle_lock = asyncio.Lock()
+        self._next_process_number = 1
 
         # Session-scoped work receives the current generation through a
         # ContextVar. Child tasks inherit it automatically. Host tasks without
@@ -363,7 +364,7 @@ class Shell(ABC):
         must not override this ownership boundary.
         """
         self.assert_session_access()
-        operation_id = f"foreground-{self._generate_process_id()}"
+        operation_id = f"foreground-{uuid4().hex[:12]}"
         effective_timeout = self._resolve_execute_timeout(timeout)
         loop = asyncio.get_running_loop()
         deadline = None if effective_timeout is None else loop.time() + effective_timeout
@@ -680,8 +681,10 @@ class Shell(ABC):
     # ------------------------------------------------------------------
 
     def _generate_process_id(self) -> str:
-        """Generate a unique process ID for background processes."""
-        return uuid4().hex[:12]
+        """Allocate the next session-local model-facing process handle."""
+        process_id = f"process-{self._next_process_number}"
+        self._next_process_number += 1
+        return process_id
 
     def _setup_background_process(
         self,
@@ -1015,12 +1018,22 @@ class Shell(ABC):
         if cancelled_error is not None:
             raise cancelled_error
 
-    async def _reset_background_processes_locked(self) -> None:
+    async def _reset_background_processes_locked(
+        self,
+        *,
+        reset_process_sequence: bool = True,
+    ) -> None:
         """Serialize process creation and the complete reset snapshot."""
         async with self._background_lifecycle_lock:
-            await self._reset_background_processes_unlocked()
+            await self._reset_background_processes_unlocked(
+                reset_process_sequence=reset_process_sequence,
+            )
 
-    async def _reset_background_processes_unlocked(self) -> None:
+    async def _reset_background_processes_unlocked(
+        self,
+        *,
+        reset_process_sequence: bool = True,
+    ) -> None:
         """Reset tracked work while the execution lifecycle lock is held.
 
         Failed process termination is reported and its execution handle remains
@@ -1085,8 +1098,17 @@ class Shell(ABC):
         if failed_process_ids:
             failures = {process_id: self._background_cleanup_errors[process_id] for process_id in failed_process_ids}
             raise ShellBackgroundResetError(failures)
+
+        # Process handles are local to one shell session. Reuse the compact
+        # sequence only after every prior execution is confirmed terminated.
+        if reset_process_sequence:
+            self._reset_process_handle_sequence()
         if cancelled_error is not None:
             raise cancelled_error
+
+    def _reset_process_handle_sequence(self) -> None:
+        """Reset this shell's allocator after a complete session reset."""
+        self._next_process_number = 1
 
     async def close(self) -> None:
         """Clean up resources owned by this Shell.
@@ -1589,21 +1611,37 @@ class DeferredShell(Shell):
             (self._resolved_shell._retained_completed_status_summary() if self._resolved_shell is not None else None),
         )
 
-    async def _reset_background_processes_locked(self) -> None:
+    async def _reset_background_processes_locked(
+        self,
+        *,
+        reset_process_sequence: bool = True,
+    ) -> None:
         """Reset proxy and backend in the same lock order used by start()."""
         errors: list[BaseException] = []
         async with self._background_lifecycle_lock:
             try:
-                await super()._reset_background_processes_unlocked()
+                await super()._reset_background_processes_unlocked(
+                    reset_process_sequence=False,
+                )
             except BaseException as exc:
                 errors.append(exc)
             if self._resolved_shell is not None:
                 try:
-                    await self._resolved_shell.reset_background_processes()
+                    await self._resolved_shell._reset_background_processes_locked(
+                        reset_process_sequence=False,
+                    )
                 except BaseException as exc:
                     errors.append(exc)
+            if not errors and reset_process_sequence:
+                self._reset_process_handle_sequence()
         if errors:
             raise errors[0]
+
+    def _reset_process_handle_sequence(self) -> None:
+        """Reset proxy and resolved-shell allocators after composite success."""
+        super()._reset_process_handle_sequence()
+        if self._resolved_shell is not None:
+            self._resolved_shell._reset_process_handle_sequence()
 
     async def close(self) -> None:
         """Close proxy and resolved shell resources."""

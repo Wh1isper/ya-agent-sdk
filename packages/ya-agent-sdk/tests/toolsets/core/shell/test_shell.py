@@ -36,6 +36,19 @@ async def test_shell_tool_empty_command(tmp_path: Path) -> None:
         assert "empty" in result.get("error", "").lower()
 
 
+async def test_shell_tool_background_returns_short_process_handle(tmp_path: Path) -> None:
+    """Background mode should expose the Shell's compact session-local handle."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        mock_run_ctx = MagicMock(spec=RunContext)
+        mock_run_ctx.deps = ctx
+
+        result = await ShellTool().call(mock_run_ctx, "echo hello", background=True)
+
+        assert result["process_id"] == "process-1"
+
+
 async def test_shell_tool_accepts_default_shell_executable(tmp_path: Path) -> None:
     """Should execute commands with LocalShell's default shell executable."""
     async with AsyncExitStack() as stack:
